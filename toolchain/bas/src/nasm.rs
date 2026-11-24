@@ -369,6 +369,7 @@ pub(crate) fn is_marker(line: &[u8]) -> bool {
         op.text.starts_with(b"%")
             || op.text.eq_ignore_ascii_case(b"bits")
             || op.text.eq_ignore_ascii_case(b"times")
+            || matches!(op.text, b"o32" | b"o64")
     })
 }
 

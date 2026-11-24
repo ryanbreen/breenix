@@ -81,6 +81,22 @@ pub(crate) enum Endpoint {
     Symbol(usize),
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct LabelDifference {
+    pub(crate) end: Endpoint,
+    pub(crate) start: Endpoint,
+    pub(crate) addend: i64,
+}
+
+struct ConstantField {
+    difference: LabelDifference,
+    section: usize,
+    offset: usize,
+    width: usize,
+    signed: bool,
+    at: Location,
+}
+
 struct SizeExpression {
     symbol: usize,
     end: Endpoint,
@@ -98,6 +114,7 @@ pub(crate) struct Object {
     references: Vec<Reference>,
     text_mappings: Vec<(usize, u64, &'static [u8])>,
     sizes: Vec<SizeExpression>,
+    constants: Vec<ConstantField>,
     last_output_at: Location,
 }
 
@@ -112,6 +129,7 @@ impl Object {
             references: Vec::new(),
             text_mappings: Vec::new(),
             sizes: Vec::new(),
+            constants: Vec::new(),
             last_output_at: Location { line: 1, column: 1 },
         }
     }
@@ -150,6 +168,10 @@ impl Object {
 
     pub(crate) fn in_text(&self) -> bool {
         self.sections[self.current].flags & SHF_EXECINSTR != 0
+    }
+
+    pub(crate) fn in_progbits(&self) -> bool {
+        self.sections[self.current].kind == SHT_PROGBITS
     }
 
     pub(crate) fn symbol(&mut self, name: &str, at: Location) -> usize {
@@ -398,6 +420,54 @@ impl Object {
         });
     }
 
+    pub(crate) fn constant_field(
+        &mut self,
+        difference: LabelDifference,
+        width: usize,
+        signed: bool,
+        at: Location,
+    ) -> Result<()> {
+        if !self.in_progbits() {
+            return Err(at.error("label difference requires a section with file contents"));
+        }
+        let offset = self.sections[self.current].bytes.len();
+        self.fill(at, width as u64, 0)?;
+        self.constants.push(ConstantField {
+            difference,
+            section: self.current,
+            offset,
+            width,
+            signed,
+            at,
+        });
+        Ok(())
+    }
+
+    fn resolve_constants(&mut self) -> Result<()> {
+        for field in &self.constants {
+            let here = (field.section as u16 + 1, field.offset as u64);
+            let (end_section, end) = self.endpoint(field.difference.end, here);
+            let (start_section, start) = self.endpoint(field.difference.start, here);
+            if end_section == SHN_UNDEF || start_section == SHN_UNDEF {
+                return Err(field.at.error("undefined label in label difference"));
+            }
+            if end_section != start_section {
+                return Err(field.at.error("label difference requires a common section"));
+            }
+            let value = i128::from(end) - i128::from(start) + i128::from(field.difference.addend);
+            let sign_bit = 1i128 << (field.width * 8 - 1);
+            let maximum = if field.signed { sign_bit } else { sign_bit * 2 } - 1;
+            if !(-sign_bit..=maximum).contains(&value) {
+                return Err(field
+                    .at
+                    .error("label difference out of range for field width"));
+            }
+            self.sections[field.section].bytes[field.offset..field.offset + field.width]
+                .copy_from_slice(&value.to_le_bytes()[..field.width]);
+        }
+        Ok(())
+    }
+
     fn resolve_references(&mut self) -> Result<()> {
         for reference in &self.references {
             let Reference {
@@ -474,23 +544,23 @@ impl Object {
         Ok(())
     }
 
-    fn size_endpoint(&self, expression: &SizeExpression, endpoint: Endpoint) -> Result<(u16, u64)> {
+    fn endpoint(&self, endpoint: Endpoint, here: (u16, u64)) -> (u16, u64) {
         match endpoint {
-            Endpoint::Here => Ok(expression.here),
+            Endpoint::Here => here,
             Endpoint::Symbol(index) => {
                 let symbol = &self.symbols[index];
-                if symbol.section == SHN_UNDEF {
-                    return Err(expression.at.error("undefined label in symbol size"));
-                }
-                Ok((symbol.section, symbol.value))
+                (symbol.section, symbol.value)
             }
         }
     }
 
     fn resolve_sizes(&mut self) -> Result<()> {
         for expression in &self.sizes {
-            let (end_section, end) = self.size_endpoint(expression, expression.end)?;
-            let (start_section, start) = self.size_endpoint(expression, expression.start)?;
+            let (end_section, end) = self.endpoint(expression.end, expression.here);
+            let (start_section, start) = self.endpoint(expression.start, expression.here);
+            if end_section == SHN_UNDEF || start_section == SHN_UNDEF {
+                return Err(expression.at.error("undefined label in symbol size"));
+            }
             if start_section != end_section || end < start {
                 return Err(expression
                     .at
@@ -553,6 +623,7 @@ impl Object {
     pub(crate) fn finish(mut self) -> Result<Vec<u8>> {
         self.resolve_sizes()?;
         self.resolve_aliases()?;
+        self.resolve_constants()?;
         self.resolve_references()?;
         let symbols = self.object_symbols()?;
         let sections: Vec<_> = self

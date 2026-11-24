@@ -7,6 +7,7 @@ mod vector;
 
 use bobj::elf::amd64::{R_32, R_32S, R_GOTPCREL, R_PC32, R_PLT32, R_TPOFF32};
 
+use crate::object::LabelDifference;
 use crate::parser::{signed_value, starts_number, Parser, Token};
 use crate::Result;
 
@@ -15,6 +16,7 @@ struct Reg {
     number: u8,
     width: usize,
     high_byte: bool,
+    low_byte_rex: bool,
 }
 
 impl Reg {
@@ -23,6 +25,7 @@ impl Reg {
             number,
             width,
             high_byte: false,
+            low_byte_rex: false,
         }
     }
 
@@ -47,7 +50,10 @@ impl Reg {
         ];
         for (row, names) in NAMES.iter().enumerate() {
             if let Some(number) = names.iter().position(|&candidate| candidate == name) {
-                return Self::new(number as u8, 1 << row);
+                return Self {
+                    low_byte_rex: row == 0 && number >= 4,
+                    ..Self::new(number as u8, 1 << row)
+                };
             }
         }
         if let Some(index) = ["ah", "ch", "dh", "bh"]
@@ -58,13 +64,18 @@ impl Reg {
                 number: index as u8 + 4,
                 width: 1,
                 high_byte: true,
+                low_byte_rex: false,
             };
         }
         Self::default()
     }
 
     fn needs_rex_byte(self) -> bool {
-        self.width == 1 && self.number >= 4 && !self.high_byte
+        self.low_byte_rex
+    }
+
+    fn needs_long_mode(self) -> bool {
+        self.width == 8 || self.number >= 8 || self.needs_rex_byte()
     }
 }
 
@@ -79,6 +90,7 @@ struct Address<'a> {
     ip_relative: bool,
     displacement: i64,
     label: Option<Token<'a>>,
+    difference: Option<(usize, LabelDifference)>,
     relocation: u32,
 }
 
@@ -153,14 +165,22 @@ fn operand_width(name: &str) -> usize {
 
 impl<'a> Address<'a> {
     fn register(&mut self, p: &mut Parser<'a, '_>, name: Token<'a>, reg: Reg) -> Result<()> {
-        if self.ip_relative || !matches!(reg.width, 4 | 8) {
-            return Err(p.error(name.column, "expected a 32-bit or 64-bit base or index"));
+        let legal_width = if p.x86_bits() == 64 {
+            matches!(reg.width, 4 | 8)
+        } else {
+            matches!(reg.width, 2 | 4) && !reg.needs_long_mode()
+        };
+        if self.ip_relative || !legal_width {
+            return Err(p.error(name.column, "invalid base or index register in this mode"));
         }
         if self.addr_width != 0 && self.addr_width != reg.width {
             return Err(p.error(name.column, "mixed address register widths"));
         }
         self.addr_width = reg.width;
         let scaled = p.take(b'*');
+        if scaled && reg.width == 2 {
+            return Err(p.error(name.column, "16-bit address registers cannot be scaled"));
+        }
         if !scaled && self.base.is_none() {
             self.base = Some(reg.number);
             return Ok(());
@@ -194,10 +214,27 @@ impl<'a> Address<'a> {
     }
 
     fn term(&mut self, p: &mut Parser<'a, '_>, negative: bool) -> Result<()> {
-        if p.take(b'(') {
-            self.term(p, negative)?;
-            return p.expect(b')', "expected ')' in address expression");
+        p.peek();
+        let column = p.column;
+        if let Some(difference) = p.label_difference()? {
+            if negative || self.difference.is_some() || self.label.is_some() {
+                return Err(p.error(column, "expected one additive label difference"));
+            }
+            self.difference = Some((column, difference));
+            return Ok(());
         }
+        let mut groups = 0;
+        while p.take(b'(') {
+            groups += 1;
+        }
+        self.simple_term(p, negative)?;
+        for _ in 0..groups {
+            p.expect(b')', "expected ')' in address expression")?;
+        }
+        Ok(())
+    }
+
+    fn simple_term(&mut self, p: &mut Parser<'a, '_>, negative: bool) -> Result<()> {
         if p.peek().is_ascii_digit() {
             let column = p.column;
             let mut magnitude = p.magnitude()?;
@@ -218,10 +255,10 @@ impl<'a> Address<'a> {
             ));
         }
         if matches!(name.text, "rip" | "eip") {
-            if self.addr_width != 0 {
+            if p.x86_bits() != 64 || self.addr_width != 0 {
                 return Err(p.error(
                     name.column,
-                    "instruction pointer cannot be combined with other registers",
+                    "instruction pointer addressing requires 64-bit mode and no other registers",
                 ));
             }
             self.ip_relative = true;
@@ -231,7 +268,7 @@ impl<'a> Address<'a> {
             if reg.width != 0 {
                 return self.register(p, name, reg);
             }
-            if self.label.is_some() {
+            if self.label.is_some() || self.difference.is_some() {
                 return Err(p.error(name.column, "expected at most one address label"));
             }
             self.label = Some(name);
@@ -283,7 +320,16 @@ impl<'a> Address<'a> {
                 p.expect(b'+', "expected '+', '-' or ']' in memory address")?;
             }
         }
+        if address.addr_width == 0 {
+            address.addr_width = usize::from(p.x86_bits() / 8);
+        }
         if let Some(label) = address.label {
+            if address.addr_width == 2 {
+                return Err(p.error(
+                    label.column,
+                    "16-bit addresses require a constant displacement",
+                ));
+            }
             if address.relocation == 0 {
                 address.relocation = if address.ip_relative {
                     R_PC32
@@ -301,16 +347,36 @@ impl<'a> Address<'a> {
                 ));
             }
         } else {
-            let maximum = if address.addr_width == 4 && !address.ip_relative {
-                i64::from(u32::MAX)
-            } else {
-                i64::from(i32::MAX)
+            let (minimum, maximum) = match address.addr_width {
+                2 => (i64::from(i16::MIN), i64::from(u16::MAX)),
+                4 if !address.ip_relative => (i64::from(i32::MIN), i64::from(u32::MAX)),
+                _ => (i64::from(i32::MIN), i64::from(i32::MAX)),
             };
-            if !(i64::from(i32::MIN)..=maximum).contains(&address.displacement) {
-                return Err(p.error(name.column, "memory displacement out of disp32 range"));
+            if !(minimum..=maximum).contains(&address.displacement) {
+                let reason = if address.addr_width == 2 {
+                    "memory displacement out of disp16 range"
+                } else {
+                    "memory displacement out of disp32 range"
+                };
+                return Err(p.error(name.column, reason));
             }
         }
         Ok(address)
+    }
+
+    // Intel SDM Vol. 2A Table 2-1. BP alone uses mod=01, disp8=0.
+    fn rm16(self) -> Option<u8> {
+        match (self.base, self.index) {
+            (Some(3), Some(6)) | (Some(6), Some(3)) => Some(0),
+            (Some(3), Some(7)) | (Some(7), Some(3)) => Some(1),
+            (Some(5), Some(6)) | (Some(6), Some(5)) => Some(2),
+            (Some(5), Some(7)) | (Some(7), Some(5)) => Some(3),
+            (Some(6), None) => Some(4),
+            (Some(7), None) => Some(5),
+            (Some(5) | None, None) => Some(6),
+            (Some(3), None) => Some(7),
+            _ => None,
+        }
     }
 }
 
@@ -318,12 +384,17 @@ struct Encoder<'borrow, 'src, 'obj> {
     p: &'borrow mut Parser<'src, 'obj>,
     op: Token<'src>,
     locked: bool,
+    o32: bool,
+    sized: bool,
 }
 
 impl<'src> Encoder<'_, 'src, '_> {
     fn operand(&mut self) -> Result<Operand<'src>> {
         let name = self.p.word();
         let reg = Reg::named(name.text);
+        if self.bits() != 64 && reg.needs_long_mode() {
+            return Err(self.p.error(name.column, "register requires 64-bit mode"));
+        }
         let memory = if reg.width == 0 {
             Address::parse(self.p, name)?
         } else {
@@ -362,6 +433,9 @@ impl<'src> Encoder<'_, 'src, '_> {
     }
 
     fn prefixes(&mut self, reg: Reg, rm: Operand<'_>, mut rex: u8, mandatory: u8) -> Result<()> {
+        if self.bits() != 64 && (rex != 0 || reg.width == 8) {
+            return Err(self.p.error(rm.column, "register requires 64-bit mode"));
+        }
         if mandatory == 0xf0 {
             self.emit(&[mandatory])?;
         }
@@ -369,23 +443,53 @@ impl<'src> Encoder<'_, 'src, '_> {
             self.emit(&[rm.memory.segment])?;
         }
         if mandatory != 0 && mandatory != 0xf0 {
+            if self.o32 {
+                return Err(self
+                    .p
+                    .error(self.op.column, "o32 conflicts with the opcode prefix"));
+            }
             self.emit(&[mandatory])?;
-        } else if reg.width == 2 {
-            self.emit(&[0x66])?;
+        } else {
+            self.operand_override(reg.width)?;
         }
-        if rm.memory.addr_width == 4 {
+        if rm.memory.addr_width != 0 && rm.memory.addr_width != usize::from(self.bits() / 8) {
             self.emit(&[0x67])?;
         }
         if reg.width == 8 {
             rex |= 8;
         }
-        if rex != 0 || reg.needs_rex_byte() || rm.reg.needs_rex_byte() {
+        if self.bits() == 64 && (rex != 0 || reg.needs_rex_byte() || rm.reg.needs_rex_byte()) {
             if reg.high_byte || rm.reg.high_byte {
                 return Err(self
                     .p
                     .error(rm.column, "high byte register cannot be encoded with REX"));
             }
             self.emit(&[0x40 | rex])?;
+        }
+        Ok(())
+    }
+
+    fn bits(&self) -> u8 {
+        self.p.x86_bits()
+    }
+
+    fn default_operand(&self) -> usize {
+        if self.bits() == 16 {
+            2
+        } else {
+            4
+        }
+    }
+
+    fn operand_override(&mut self, width: usize) -> Result<()> {
+        self.sized = true;
+        if self.o32 && width != 4 {
+            return Err(self
+                .p
+                .error(self.op.column, "o32 requires a 32-bit operand size"));
+        }
+        if matches!(width, 2 | 4) && width != self.default_operand() {
+            self.emit(&[0x66])?;
         }
         Ok(())
     }
@@ -404,20 +508,32 @@ impl<'src> Encoder<'_, 'src, '_> {
         }
 
         let addr = rm.memory;
-        let base = addr.base.map_or(5, |number| number & 7);
+        let legacy16 = addr.addr_width == 2;
+        let base = if legacy16 {
+            addr.rm16()
+                .ok_or_else(|| self.p.error(rm.column, "invalid 16-bit address registers"))?
+        } else {
+            addr.base.map_or(5, |number| number & 7)
+        };
         let index = addr.index.map_or(4, |number| number & 7);
+        let full_width = if legacy16 { 2 } else { 4 };
+        let no_disp_base = if legacy16 { 6 } else { 5 };
         let (mode, disp_width) = if addr.base.is_none() {
-            (0, 4)
-        } else if addr.label.is_some() {
-            (2, 4)
-        } else if addr.displacement == 0 && base != 5 {
+            (0, full_width)
+        } else if addr.label.is_some() || addr.difference.is_some() {
+            (2, full_width)
+        } else if addr.displacement == 0 && base != no_disp_base {
             (0, 0)
         } else if i8::try_from(addr.displacement).is_ok() {
             (1, 1)
         } else {
-            (2, 4)
+            (2, full_width)
         };
-        let sib = !addr.ip_relative && (addr.index.is_some() || addr.base.is_none() || base == 4);
+        let sib = !legacy16
+            && !addr.ip_relative
+            && (addr.index.is_some()
+                || (addr.base.is_none() && self.bits() == 64)
+                || (addr.base.is_some() && base == 4));
         rex |= u8::from(addr.base.is_some_and(|number| number >= 8));
         rex |= u8::from(addr.index.is_some_and(|number| number >= 8)) << 1;
         self.prefixes(reg, rm, rex, mandatory)?;
@@ -429,15 +545,26 @@ impl<'src> Encoder<'_, 'src, '_> {
         if let Some(label) = addr.label {
             self.p
                 .reference(label, addr.relocation, addr.displacement, trailing)
+        } else if let Some((column, mut difference)) = addr.difference {
+            difference.addend = difference
+                .addend
+                .checked_add(addr.displacement)
+                .ok_or_else(|| self.p.error(column, "symbol addend out of range"))?;
+            self.p.constant_field(
+                column,
+                difference,
+                disp_width,
+                addr.ip_relative || addr.addr_width == 8,
+            )
         } else {
             self.emit_word(addr.displacement as u64, disp_width)
         }
     }
 
-    fn branch_displacement(&mut self, allow_plt: bool) -> Result<()> {
+    fn branch_displacement(&mut self, allow_plt: bool, width: usize) -> Result<()> {
         if starts_number(self.p.peek()) {
-            let value = self.p.integer(4, true)?;
-            return self.emit_word(value, 4);
+            let value = self.p.integer(width, true)?;
+            return self.emit_word(value, width);
         }
         let label = self.p.word();
         if !label.is_name() {
@@ -447,11 +574,15 @@ impl<'src> Encoder<'_, 'src, '_> {
         }
         let kind = match self.p.relocation_modifier()? {
             0 => R_PC32,
-            R_PLT32 if allow_plt => R_PLT32,
+            R_PLT32 if allow_plt && width == 4 => R_PLT32,
             _ => return Err(self.p.error(label.column, "unsupported branch relocation")),
         };
         let addend = self.p.addend()?;
-        self.p.reference(label, kind, addend, 0)
+        if width == 2 {
+            self.p.rel16(label, addend)
+        } else {
+            self.p.reference(label, kind, addend, 0)
+        }
     }
 
     fn lock_prefix(&self) -> u32 {
@@ -501,8 +632,14 @@ impl<'src> Encoder<'_, 'src, '_> {
                 return Ok(false);
             }
             match suffix {
-                "w" => self.emit(&[0x66])?,
-                "q" => self.emit(&[0x48])?,
+                "w" => self.operand_override(2)?,
+                "d" => self.operand_override(4)?,
+                "q" if self.bits() == 64 => self.emit(&[0x48])?,
+                "q" => {
+                    return Err(self
+                        .p
+                        .error(op.column, "qword string operation requires 64-bit mode"))
+                }
                 _ => (),
             }
             self.emit(&[opcode + u8::from(suffix != "b")])?;
@@ -518,30 +655,48 @@ impl<'src> Encoder<'_, 'src, '_> {
 }
 
 pub(crate) fn instruction<'a>(p: &mut Parser<'a, '_>, mut op: Token<'a>) -> Result<()> {
-    if !p.object.in_text() {
+    if !(p.object.in_text() || p.uses_nasm() && p.object.in_progbits()) {
         return Err(p.error(op.column, "instructions require .text"));
     }
     if op.text == "o64" {
         let next = p.word();
-        if next.text != "sysret" {
+        if next.text != "sysret" || p.x86_bits() != 64 {
             return Err(p.error(next.column, "o64 requires sysret"));
         }
         return p.emit(op.column, &[0x48, 0x0f, 0x07]);
+    }
+    let o32 = op.text == "o32";
+    if o32 {
+        op = p.word();
     }
     let locked = op.text == "lock";
     if locked {
         op = p.word();
     }
-    let mut encoder = Encoder { p, op, locked };
-    if encoder.lockable()? {
-        return Ok(());
-    }
-    if locked {
+    let mut encoder = Encoder {
+        p,
+        op,
+        locked,
+        o32,
+        sized: false,
+    };
+    let lockable = encoder.lockable()?;
+    if locked && !lockable {
         return Err(encoder
             .p
             .error(op.column, "instruction does not accept lock"));
     }
-    if encoder.string_instruction()? || encoder.integer()? || encoder.sse()? || encoder.x87()? {
+    if lockable
+        || encoder.string_instruction()?
+        || encoder.integer()?
+        || encoder.sse()?
+        || encoder.x87()?
+    {
+        if o32 && !encoder.sized {
+            return Err(encoder
+                .p
+                .error(op.column, "instruction does not accept o32"));
+        }
         return Ok(());
     }
     Err(encoder

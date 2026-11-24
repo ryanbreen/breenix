@@ -19,7 +19,7 @@ LLVM_READELF = os.environ.get("LLVM_READELF", "llvm-readelf")
 
 SECTION = re.compile(
     r"\s*\[\s*(\d+)\]\s+(\S+)\s+(\S+)\s+\w+\s+\w+\s+(\w+)\s+\w+"
-    r"\s+([A-Z]*)\s+(\d+)\s+(\d+)\s+(\d+)\s*$"
+    r"\s+(\S*)\s+(\d+)\s+(\d+)\s+(\d+)\s*$"
 )
 SYMBOL = re.compile(r"\s*\d+:\s+(\w+)\s+(\d+)\s+(\w+)\s+(\w+)\s+(\w+)\s+(\w+)\s*(.*)")
 RELA = re.compile(r"([0-9a-f]+)\s+[0-9a-f]+\s+(R_\w+)\s+[0-9a-f]+\s+(\S+)\s+([+-])\s+(\w+)")
@@ -40,14 +40,20 @@ def metadata(obj):
         for i, name, kind, size, flags, link, info, align in
         (match.groups() for match in map(SECTION.fullmatch, output.splitlines()) if match)
     }
+    section_count = int(re.search(r"^There are (\d+) section headers,", output, re.M)[1])
+    assert set(sections) == set(range(1, section_count)), output
+    assert re.search(r"^\s*\[\s*0\]\s+NULL\s+0+\s+0+\s+0+\s+0+\s+0\s+0\s+0$", output, re.M)
     symbols = {}
     file_symbols = []
     section_symbols = []
     relocations = {}
+    relocation_counts = {}
+    symbol_count = 0
     active = None
     for line in output.splitlines():
         match = SYMBOL.fullmatch(line)
         if match:
+            symbol_count += 1
             value, size, kind, binding, visibility, section, name = match.groups()
             if not name and section == "UND":
                 assert (value, size, kind, binding, visibility) == (
@@ -67,6 +73,7 @@ def metadata(obj):
             active = line.split("'")[1]
             assert active not in relocations
             relocations[active] = {}
+            relocation_counts[active] = int(re.search(r"contains (\d+) entr", line)[1])
         match = RELA.fullmatch(line)
         if match:
             offset, kind, name, sign, addend = match.groups()
@@ -75,6 +82,8 @@ def metadata(obj):
             relocations[active][offset] = (kind, name, int(sign + addend, 16))
         elif re.match(r"^[0-9a-f]+\s+\w+\s+R_", line):
             raise AssertionError(f"unparsed relocation: {line}")
+    assert symbol_count == int(re.search(r"Symbol table '.symtab' contains (\d+) entr", output)[1])
+    assert relocation_counts == {name: len(rows) for name, rows in relocations.items()}
     return sections, symbols, file_symbols, section_symbols, relocations
 
 
@@ -195,8 +204,9 @@ def trampoline_view(obj, symbols, relas, size, section):
 
 
 def compare(bas, source, directory):
-    reference = directory / "nasm.o"
-    candidate = directory / "bas.o"
+    stem = Path(source).stem
+    reference = directory / f"{stem}.nasm.o"
+    candidate = directory / f"{stem}.bas.o"
     run("nasm", "-f", "elf64", source, "-o", reference)
     run(bas, "-o", candidate, source)
     trampoline = source.endswith("/ap_trampoline.asm")

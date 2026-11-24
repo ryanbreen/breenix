@@ -64,7 +64,8 @@ accepts `//`. The initial section is `.text`, where instructions go.
 
 ## NASM syntax for x86 kernel assembly
 
-An x86 source file containing a preprocessor directive, `bits` or `times`
+An x86 source file containing a preprocessor directive, `bits`, `times`,
+`o32` or `o64`
 uses NASM local-label syntax throughout the file. A colon-terminated label
 with a single leading dot and references to that name belong to the preceding
 non-local label. For example, `.loop` below `entry:` defines `entry.loop`.
@@ -78,13 +79,31 @@ The dialect uses a single definition per name and does not implement NASM
 macro overloading, `%%` labels, conditional directives or includes.
 
 `times N` repeats a data declaration (`db`, `dw`, `dd`, `dq`) or instruction.
-Use a nonnegative integer literal or a macro that expands to one. `bits 16`,
-`bits 32` and `bits 64` select the mode. Data declarations work in each mode
-and instruction encoding currently requires `bits 64`, the default.
-In this dialect, parentheses may group either term or the entire difference
-in the bas `.size` directive.
+Use a nonnegative integer literal or a macro that expands to one. `bits 16`
+and `bits 32` set the default operand and address sizes to 16 and 32 bits
+respectively. `bits 64` is the initial mode, with 32-bit integer operands
+and 64-bit addresses by default. Register widths select the override when
+the instruction permits it. The legacy modes accept the 16-bit ModR/M
+address forms and the 32-bit ModR/M and SIB forms.
 
-The source for these NASM forms is the pinned manual in the
+`o32` selects the 32-bit operand size without changing address size.
+For example, `bits 16` with `o32 lgdt [0x100]` loads a six-byte descriptor
+using a 16-bit direct address. Use `jmp dword far [address]` for an
+m16:32 pointer in 16-bit mode, or `jmp far [address]` in 32-bit mode.
+MOV transfers segment selectors and uses EAX-class registers for control
+register moves in either legacy mode and RAX-class registers in 64-bit mode.
+
+Data and address fields can use `end - start + addend`. The two labels
+must be in the same section. Forward references use a fixed-width field
+filled after layout, and a 16-bit displacement requires a constant.
+Parentheses may group the labels or the difference in this dialect.
+Integer immediates also accept a literal left shift, such as `1 << 5`.
+
+The kernel sources use NASM's default non-executable flags for `.text.entry`
+and emit the trampoline in `.rodata` for copying at startup. NASM-style
+`align` in file-backed sections defaults to NOP padding.
+
+The pinned NASM manual and Intel SDM are in the
 [specification ledger](../docs/spec-ledger.md#edition-pins).
 
 ## Integer instructions
@@ -204,5 +223,8 @@ cargo test --locked -p bas
 
 The runner checks the x86-64 fixtures and the AArch64 branch corpus with
 the independent elfcheck. The byte expectations cite the pinned ISA tables
-in `toolchain/tests/bas/` and `toolchain/corpus/assembler-aarch64/`. The Rust
-test exercises malformed source on both targets.
+in `toolchain/tests/bas/` and `toolchain/corpus/assembler-aarch64/`.
+The Cargo tests include the
+[kernel object comparison](../tests/bas_kernel/differences.md). It uses
+`python3`, `nasm`, `llvm-objdump` and `llvm-readelf` from PATH. Set
+`LLVM_OBJDUMP` and `LLVM_READELF` to override the LLVM executable paths.

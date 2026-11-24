@@ -36,22 +36,51 @@ impl Encoder<'_, '_, '_> {
     }
 
     fn mov(&mut self) -> Result<()> {
-        let (first, _, _) = self.p.lookahead();
+        let (first, delimiter, _) = self.p.lookahead();
         if first.text.starts_with("cr") {
             let control = self.p.word();
             self.p.expect(b',', "expected ',' between mov operands")?;
             let reg = self.operand()?;
             return self.control_move(control, reg, false);
         }
+        if let Some(segment) = segment_register(first.text).filter(|_| delimiter != b':') {
+            self.p.word();
+            if segment == 1 {
+                return Err(self.p.error(first.column, "mov cannot load cs"));
+            }
+            self.p.expect(b',', "expected ',' between mov operands")?;
+            let src = self.operand()?;
+            let width = if src.width() == 8 && self.bits() == 64 {
+                8
+            } else {
+                src.match_width(self.p, 2)?;
+                0
+            };
+            return self.modrm(0x8e, Reg::new(segment, width), src, 0);
+        }
         let dest = self.operand()?;
         self.p.expect(b',', "expected ',' between mov operands")?;
         if starts_number(self.p.peek()) {
             return self.mov_immediate(dest);
         }
-        let (next, _, _) = self.p.lookahead();
+        let (next, delimiter, _) = self.p.lookahead();
         if next.text.starts_with("cr") {
             let control = self.p.word();
             return self.control_move(control, dest, true);
+        }
+        if let Some(segment) = segment_register(next.text).filter(|_| delimiter != b':') {
+            self.p.word();
+            let width = if dest.is_memory() {
+                dest.match_width(self.p, 2)?;
+                0
+            } else if dest.reg.width >= 2 {
+                dest.reg.width
+            } else {
+                return Err(self
+                    .p
+                    .error(dest.column, "segment selector requires at least 16 bits"));
+            };
+            return self.modrm(0x8c, Reg::new(segment, width), dest, 0);
         }
         let src = self.operand()?;
         let (opcode, reg, rm) = if src.is_memory() {
@@ -79,10 +108,15 @@ impl Encoder<'_, '_, '_> {
             "cr4" => 4,
             _ => return Err(self.p.error(control.column, "unsupported control register")),
         };
-        if reg.reg.width != 8 {
+        let long = self.bits() == 64;
+        if reg.reg.width != if long { 8 } else { 4 } {
             return Err(self.p.error(
                 reg.column,
-                "control register move requires a 64-bit register",
+                if long {
+                    "control register move requires a 64-bit register"
+                } else {
+                    "control register move requires a 32-bit register"
+                },
             ));
         }
         if reg.reg.number >= 8 {
@@ -155,6 +189,19 @@ impl Encoder<'_, '_, '_> {
             if !test && width != 1 && fits_sign_extended(value, 1, width) {
                 opcode = 0x83;
                 immediate = 1;
+            }
+            // The accumulator form saves a ModR/M byte when using a full
+            // immediate (SDM Vol. 2A/B, arithmetic opcode tables).
+            if self.bits() != 64
+                && !self.locked
+                && !test
+                && opcode != 0x83
+                && !dest.is_memory()
+                && dest.reg.number == 0
+            {
+                self.operand_override(width)?;
+                self.emit(&[group * 8 + 4 + u8::from(width != 1)])?;
+                return self.emit_word(value, immediate);
             }
             self.modrm(lock | opcode, Reg::new(group, width), dest, immediate)?;
             return self.emit_word(value, immediate);
@@ -281,36 +328,39 @@ impl Encoder<'_, '_, '_> {
 
     // PUSH/POP: 50/58+rd, FF /6, 8F /0 and PUSH 6A ib or 68 id.
     fn stack(&mut self, push: bool) -> Result<()> {
+        let default = usize::from(self.bits() / 8);
+        let width = if self.o32 && default != 8 { 4 } else { default };
         let (first, next, _) = self.p.lookahead();
-        if push && first.text == "qword" && starts_number(next) {
+        if push && default == 8 && first.text == "qword" && starts_number(next) {
             self.p.word();
         }
         if push && starts_number(self.p.peek()) {
-            let value = self.p.integer(4, true)?;
-            let immediate = if fits_sign_extended(value, 1, 4) {
+            let full = width.min(4);
+            let value = self.p.integer(full, true)?;
+            let immediate = if fits_sign_extended(value, 1, full) {
                 1
             } else {
-                4
+                full
             };
+            self.operand_override(width)?;
             self.emit(&[if immediate == 1 { 0x6a } else { 0x68 }])?;
             return self.emit_word(value, immediate);
         }
         let operand = self.operand()?;
-        let width = operand.width();
-        if !matches!(width, 0 | 2 | 8) {
-            return Err(self.p.error(
-                operand.column,
-                "push/pop requires a 16- or 64-bit operand width",
-            ));
+        let width = match operand.width() {
+            0 => width,
+            explicit => explicit,
+        };
+        if !matches!(width, 2) && width != if default == 8 { 8 } else { 4 } {
+            return Err(self
+                .p
+                .error(operand.column, "invalid push/pop operand width for mode"));
         }
         if operand.is_memory() {
-            // Long mode defaults to 64 bits without REX.W.
-            let digit = Reg::new(if push { 6 } else { 0 }, if width == 2 { 2 } else { 0 });
+            let digit = Reg::new(if push { 6 } else { 0 }, if width == 8 { 0 } else { width });
             self.modrm(if push { 0xff } else { 0x8f }, digit, operand, 0)
         } else {
-            if width == 2 {
-                self.emit(&[0x66])?;
-            }
+            self.operand_override(width)?;
             if operand.reg.number >= 8 {
                 self.emit(&[0x41])?;
             }
@@ -319,25 +369,71 @@ impl Encoder<'_, '_, '_> {
         }
     }
 
-    // Near CALL/JMP: E8/E9 cd, or FF /2 or /4 with a 64-bit operand.
+    // Near CALL/JMP: E8/E9 cw/cd or FF /2 and /4. Far indirect JMP: FF /5.
     fn transfer(&mut self, call: bool) -> Result<()> {
         let (name, next, following) = self.p.lookahead();
+        if !call && (name.text == "far" || following.text == "far") {
+            let first = self.p.word();
+            let width = if first.text == "far" {
+                if self.o32 {
+                    4
+                } else {
+                    self.default_operand()
+                }
+            } else {
+                self.p.word();
+                operand_width(first.text)
+            };
+            if !matches!(width, 2 | 4) {
+                return Err(self
+                    .p
+                    .error(first.column, "far jump requires a word or dword offset"));
+            }
+            let dest = self.required_memory(0)?;
+            if dest.width() != 0 {
+                return Err(self
+                    .p
+                    .error(dest.column, "specify the far offset size before far"));
+            }
+            return self.modrm(0xff, Reg::new(5, width), dest, 0);
+        }
         let indirect = (name.text.is_empty() && next == b'[')
             || (operand_width(name.text) != 0 && (next == b'[' || following.is_name()))
             || (segment(name.text) != 0 && next == b':')
             || Reg::named(name.text).width != 0;
         if indirect {
             let dest = self.operand()?;
-            if !matches!(dest.width(), 0 | 8) {
+            let width = match dest.width() {
+                0 if self.o32 && self.bits() != 64 => 4,
+                0 => usize::from(self.bits() / 8),
+                width => width,
+            };
+            let valid = if self.bits() == 64 {
+                width == 8
+            } else {
+                matches!(width, 2 | 4)
+            };
+            if !valid {
                 return Err(self
                     .p
-                    .error(dest.column, "near call/jmp requires a 64-bit operand width"));
+                    .error(dest.column, "invalid near call/jmp operand width for mode"));
             }
-            self.modrm(0xff, Reg::new(if call { 2 } else { 4 }, 0), dest, 0)
+            self.modrm(
+                0xff,
+                Reg::new(if call { 2 } else { 4 }, if width == 8 { 0 } else { width }),
+                dest,
+                0,
+            )
         } else {
-            self.emit(&[if call { 0xe8 } else { 0xe9 }])?;
-            self.branch_displacement(true)
+            self.relative_branch(if call { 0xe8 } else { 0xe9 }, true)
         }
+    }
+
+    fn relative_branch(&mut self, opcode: u32, allow_plt: bool) -> Result<()> {
+        let width = if self.o32 { 4 } else { self.default_operand() };
+        self.operand_override(width)?;
+        self.opcode(opcode)?;
+        self.branch_displacement(allow_plt, width)
     }
 
     // Jcc, SETcc and CMOVcc share condition numbers and aliases.
@@ -376,8 +472,7 @@ impl Encoder<'_, '_, '_> {
         let code = condition as u32;
         match prefix {
             "j" => {
-                self.opcode(0x0f80 + code)?;
-                self.branch_displacement(false)?;
+                self.relative_branch(0x0f80 + code, false)?;
             }
             "set" => {
                 let dest = self.operand()?;
@@ -404,6 +499,9 @@ impl Encoder<'_, '_, '_> {
     }
 
     fn ret(&mut self) -> Result<()> {
+        if self.o32 && self.bits() != 64 {
+            self.operand_override(4)?;
+        }
         if self.p.at_end() {
             return self.emit(&[0xc3]);
         }
@@ -527,6 +625,19 @@ impl Encoder<'_, '_, '_> {
     pub(super) fn integer(&mut self) -> Result<bool> {
         match self.op.text {
             "mov" => self.mov()?,
+            "lgdt" => {
+                // LGDT's operand attribute is independent of the address
+                // attribute (SDM Vol. 2A, LGDT/LIDT).
+                let width = if self.bits() == 64 {
+                    0
+                } else if self.o32 {
+                    4
+                } else {
+                    self.default_operand()
+                };
+                let address = self.required_memory(0)?;
+                self.modrm(0x0f01, Reg::new(2, width), address, 0)?;
+            }
             "out" => {
                 let port = self.p.word();
                 self.p.expect(b',', "expected ',' between out operands")?;
@@ -550,13 +661,23 @@ impl Encoder<'_, '_, '_> {
             "shl" | "sal" => self.shift(4)?,
             "shr" => self.shift(5)?,
             "sar" => self.shift(7)?,
+            "cbw" | "cwde" | "cwd" | "cdq" => {
+                let name = self.op.text;
+                self.operand_override(if matches!(name, "cbw" | "cwd") { 2 } else { 4 })?;
+                self.emit(&[if matches!(name, "cbw" | "cwde") {
+                    0x98
+                } else {
+                    0x99
+                }])?;
+            }
             name => {
+                if self.bits() != 64 && matches!(name, "cdqe" | "cqo" | "swapgs" | "iretq") {
+                    return Err(self
+                        .p
+                        .error(self.op.column, "instruction requires 64-bit mode"));
+                }
                 let opcode = match name {
-                    "cbw" => 0x6698,
-                    "cwde" => 0x98,
                     "cdqe" => 0x4898,
-                    "cwd" => 0x6699,
-                    "cdq" => 0x99,
                     "cqo" => 0x4899,
                     "leave" => 0xc9,
                     "cld" => 0xfc,
@@ -580,4 +701,12 @@ impl Encoder<'_, '_, '_> {
         }
         Ok(true)
     }
+}
+
+fn segment_register(name: &str) -> Option<u8> {
+    // MOV Sreg and MOV from Sreg use the same three-bit field.
+    ["es", "cs", "ss", "ds", "fs", "gs"]
+        .iter()
+        .position(|&register| register == name)
+        .map(|index| index as u8)
 }
