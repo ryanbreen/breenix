@@ -7,6 +7,7 @@ use bobj::elf::{
 };
 
 use crate::aarch64::Relocation;
+use crate::nasm::Syntax;
 use crate::object::{Endpoint, Object};
 use crate::{Diagnostic, Location, Result, Target};
 
@@ -47,6 +48,8 @@ pub(crate) struct Parser<'src, 'obj> {
     line_number: usize,
     pub(crate) column: usize,
     pub(crate) object: &'obj mut Object,
+    nasm: Option<&'obj mut Syntax>,
+    origin: Option<Location>,
 }
 
 impl<'src, 'obj> Parser<'src, 'obj> {
@@ -56,14 +59,22 @@ impl<'src, 'obj> Parser<'src, 'obj> {
             line_number,
             column: 0,
             object,
+            nasm: None,
+            origin: None,
         }
     }
 
+    pub(crate) fn with_nasm(mut self, syntax: &'obj mut Syntax, origin: Option<Location>) -> Self {
+        self.nasm = Some(syntax);
+        self.origin = origin;
+        self
+    }
+
     fn location(&self, column: usize) -> Location {
-        Location {
+        self.origin.unwrap_or(Location {
             line: self.line_number,
             column: column + 1,
-        }
+        })
     }
 
     pub(crate) fn error(&self, column: usize, message: &'static str) -> Diagnostic {
@@ -216,7 +227,16 @@ impl<'src, 'obj> Parser<'src, 'obj> {
         if !name.is_name() {
             return Err(self.error(name.column, "expected a symbol name"));
         }
-        Ok(self.object.symbol(name.text, self.location(name.column)))
+        let at = self.location(name.column);
+        if let Some(syntax) = &self.nasm {
+            if name.text.starts_with('.') && !name.text.starts_with("..") {
+                let scope = syntax.scope.as_deref().ok_or_else(|| {
+                    at.error("local label has no preceding non-local label")
+                })?;
+                return Ok(self.object.symbol(&format!("{scope}{}", name.text), at));
+            }
+        }
+        Ok(self.object.symbol(name.text, at))
     }
 
     pub(crate) fn reference(
@@ -457,12 +477,29 @@ impl<'src, 'obj> Parser<'src, 'obj> {
         if starts_number(self.peek()) {
             self.object.symbols[index].size = self.count()?;
         } else {
+            // NASM macro bodies can wrap either term or the full difference.
+            let mut groups = self.size_groups();
             let end = self.size_term()?;
+            while groups > 0 && self.take(b')') {
+                groups -= 1;
+            }
             self.expect(b'-', "expected 'END - START' after symbol name")?;
+            groups += self.size_groups();
             let start = self.size_term()?;
+            for _ in 0..groups {
+                self.expect(b')', "expected ')' in symbol size")?;
+            }
             self.object.size_expression(index, end, start, at);
         }
         Ok(())
+    }
+
+    fn size_groups(&mut self) -> usize {
+        let mut groups = 0;
+        while self.nasm.is_some() && self.take(b'(') {
+            groups += 1;
+        }
+        groups
     }
 
     fn directive(&mut self, op: Token<'_>) -> Result<bool> {
@@ -530,13 +567,19 @@ impl<'src, 'obj> Parser<'src, 'obj> {
             if self.take(b':') {
                 let index = self.symbol(op)?;
                 self.object.define_label(index, self.location(op.column))?;
+                if let Some(syntax) = &mut self.nasm {
+                    if !op.text.starts_with('.') {
+                        syntax.scope = Some(op.text.to_owned());
+                    }
+                }
                 continue;
             }
-            if !self.directive(op)? {
-                match self.object.target {
-                    Target::X86_64 => crate::x86::instruction(self, op)?,
-                    Target::Aarch64 => crate::aarch64::instruction(self, op)?,
-                }
+            if self.nasm.is_some() && op.text.eq_ignore_ascii_case("bits") {
+                self.set_bits()?;
+            } else if self.nasm.is_some() && op.text.eq_ignore_ascii_case("times") {
+                self.repeat()?;
+            } else if !self.directive(op)? {
+                self.instruction(op)?;
             }
             if !self.at_end() {
                 return Err(self.error(self.column, "unexpected input after operands"));
@@ -544,5 +587,63 @@ impl<'src, 'obj> Parser<'src, 'obj> {
             break;
         }
         Ok(())
+    }
+
+    fn set_bits(&mut self) -> Result<()> {
+        let mode = self.word();
+        let bits = match mode.text {
+            "16" => 16,
+            "32" => 32,
+            "64" => 64,
+            _ => return Err(self.error(mode.column, "expected BITS 16, 32 or 64")),
+        };
+        if let Some(syntax) = &mut self.nasm {
+            syntax.bits = bits;
+        }
+        Ok(())
+    }
+
+    fn repeat(&mut self) -> Result<()> {
+        self.peek();
+        let count_at = self.column;
+        let count = self.count()?;
+        if count > 1_048_576 {
+            return Err(self.error(count_at, "TIMES count exceeds the supported limit"));
+        }
+        if !self.byte().is_ascii_whitespace() {
+            return Err(self.error(self.column, "expected whitespace after TIMES count"));
+        }
+        let op = self.word();
+        if op.text.is_empty() || self.peek() == b':' {
+            return Err(self.error(op.column, "expected data or an instruction after TIMES"));
+        }
+        let operands = self.column;
+        for _ in 0..count {
+            self.column = operands;
+            match op.text {
+                "db" => self.emit_data_list(1)?,
+                "dw" => self.emit_data_list(2)?,
+                "dd" => self.emit_data_list(4)?,
+                "dq" => self.emit_data_list(8)?,
+                _ => self.instruction(op)?,
+            }
+            if !self.at_end() {
+                return Err(self.error(self.column, "unexpected input after operands"));
+            }
+        }
+        if count == 0 {
+            self.column = self.line.len();
+        }
+        Ok(())
+    }
+
+    fn instruction(&mut self, op: Token<'src>) -> Result<()> {
+        if self.nasm.as_ref().is_some_and(|syntax| syntax.bits != 64) {
+            return Err(self.error(op.column, "instruction encoding requires BITS 64"));
+        }
+        match self.object.target {
+            Target::X86_64 => crate::x86::instruction(self, op),
+            Target::Aarch64 => crate::aarch64::instruction(self, op),
+        }
     }
 }

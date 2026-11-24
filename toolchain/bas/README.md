@@ -61,6 +61,31 @@ accepts `//`. The initial section is `.text`, where instructions go.
   offsets in one section, such as `. - NAME`. A dot in that expression
   denotes the directive's offset.
 
+## NASM syntax for x86 kernel assembly
+
+An x86 source file containing a preprocessor directive, `bits` or `times`
+uses NASM local-label syntax throughout the file. A colon-terminated label
+with a single leading dot and references to that name belong to the preceding
+non-local label. For example, `.loop` below `entry:` defines `entry.loop`.
+
+`%define NAME replacement` substitutes whole tokens. `%define NAME(a,b)
+replacement` substitutes the named arguments into the body. `%macro NAME N`
+through `%endmacro` defines a fixed-arity statement macro. Invoke it as
+`NAME arg1, arg2` and use `%1` through `%N` in the body. Macro names are
+case-sensitive. Quotes and semicolon comments are protected from substitution.
+The dialect uses a single definition per name and does not implement NASM
+macro overloading, `%%` labels, conditional directives or includes.
+
+`times N` repeats a data declaration (`db`, `dw`, `dd`, `dq`) or instruction.
+Use a nonnegative integer literal or a macro that expands to one. `bits 16`,
+`bits 32` and `bits 64` select the mode. Data declarations work in each mode
+and instruction encoding currently requires `bits 64`, the default.
+In this dialect, parentheses may group either term or the entire difference
+in the bas `.size` directive.
+
+The source for these NASM forms is the pinned manual in the
+[specification ledger](../docs/spec-ledger.md#edition-pins).
+
 ## Integer instructions
 
 - `movsx` and `movzx` extend a byte or word into a wider register. `movsxd`
