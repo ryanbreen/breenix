@@ -310,10 +310,10 @@ def inner(args):
                 started = time.time()
                 log = logs / 'rust-host-build.log'
                 with log.open('w') as output:
-                    status = subprocess.call([str(clone / 'userspace/programs/build.sh'), '--arch', 'x86_64',
-                                              '--hosted-bin', 'rust-host-startup-probe', '--features', 'rust-host'],
+                    status = subprocess.call([str(clone / 'userspace/programs/build.sh'),
+                                              '--arch', 'x86_64', '--rust-host'],
                                              cwd=clone, stdout=output, stderr=subprocess.STDOUT)
-                if not clean_build(status, log, 'hosted Rust startup probe', logs, out):
+                if not clean_build(status, log, 'hosted Rust suite and probes', logs, out):
                     return 1
                 subprocess.run([sys.executable, str(clone / 'scripts/rust_host_stage.py'),
                                 '--arch', 'x86_64', '--image', str(root), '--suite', args.suite],

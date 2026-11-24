@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install the hosted suite and probe on a private image for an explicit selection."""
+"""Install the hosted suite and probes on a private image for an explicit selection."""
 
 import argparse
 from pathlib import Path
@@ -14,23 +14,29 @@ from metal_root import require_e2fsprogs
 PROGRAMS = Path(__file__).resolve().parents[1] / 'userspace/programs'
 SUITE_PATH = '/sbin/suite-rust-host'
 PROBE_PATH = '/usr/libexec/breenix/rust-host/startup-probe'
+PROCESS_PROBE_PATH = '/usr/libexec/breenix/rust-host/process-probe'
+# Leave room for file-mmap's X0.9-sized fixture and ext2 allocation metadata.
+SCRATCH_HEADROOM = 192 * 1024 * 1024
 
 
 def probe_for_suite(selection, probe):
     return probe if 'rust-host' in selection.split(',') else None
 
 
-def stage(image, selection, suite, probe):
+def stage(image, selection, suite, probe, process_probe):
     probe = probe_for_suite(selection, probe)
     if probe is None:
         return
-    entries = ((SUITE_PATH, suite), (PROBE_PATH, probe))
+    entries = ((SUITE_PATH, suite), (PROBE_PATH, probe), (PROCESS_PROBE_PATH, process_probe))
     for _, elf in entries:
         with elf.open('rb') as source:
             if source.read(4) != b'\x7fELF':
                 raise ValueError(f'hosted Rust binary is not an ELF: {elf}')
 
-    debugfs, = require_e2fsprogs('debugfs')
+    debugfs, resize2fs = require_e2fsprogs('debugfs', 'resize2fs')
+    with image.open('r+b') as disk:
+        disk.truncate(image.stat().st_size + SCRATCH_HEADROOM)
+    subprocess.run([resize2fs, image], check=True, capture_output=True)
     with tempfile.TemporaryDirectory(prefix='rust-host-stage-') as temporary:
         commands = Path(temporary) / 'commands'
         commands.write_text(
@@ -58,8 +64,8 @@ def main():
     parser.add_argument('--image', type=Path, required=True)
     args = parser.parse_args()
     release = PROGRAMS / f'target/hosted/{args.arch}-breenix/release'
-    installed = PROGRAMS / 'aarch64' if args.arch == 'aarch64' else PROGRAMS
-    stage(args.image, args.suite, installed / 'suite-rust-host.elf', release / 'rust-host-startup-probe')
+    stage(args.image, args.suite, release / 'suite-rust-host',
+          release / 'rust-host-startup-probe', release / 'rust-host-process-probe')
 
 
 if __name__ == '__main__':

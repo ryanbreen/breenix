@@ -414,8 +414,7 @@ if [ "$BUILD" -eq 1 ]; then
     echo "==> Building userspace"
     run_build "$ROOT/userspace/programs/build.sh" --arch aarch64
     if [ "$MODE" = suite ] && [[ ",$SUITE," == *,rust-host,* ]]; then
-        run_build "$ROOT/userspace/programs/build.sh" --arch aarch64 \
-            --hosted-bin rust-host-startup-probe --features rust-host
+        run_build "$ROOT/userspace/programs/build.sh" --arch aarch64 --rust-host
     fi
     echo "==> Building the ext2 disk"
     run_build "$ROOT/scripts/create_ext2_disk.sh" --arch aarch64

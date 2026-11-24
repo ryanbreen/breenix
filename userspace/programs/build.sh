@@ -18,7 +18,7 @@
 #   ./userspace/programs/build.sh --hosted-bin NAME [--features FEATURES]
 #     Build a single bin into target/hosted for the selected architecture.
 #   ./userspace/programs/build.sh --rust-host
-#     Build the opt-in suite and startup probe into target/hosted.
+#     Build the opt-in suite and its probes into target/hosted.
 
 set -e
 
@@ -141,9 +141,10 @@ build_rust_programs() (
     if [[ -n "$HOSTED_BIN" ]]; then
         export RUSTFLAGS="$HOSTED_RUSTFLAGS -C metadata=breenix_std_$FORK_COMMIT"
         extra_link_flags=()
-        if [[ "$HOSTED_BIN" == suite-rust-host || "$HOSTED_BIN" == rust-host-startup-probe ]]; then
-            extra_link_flags=(-Cforce-unwind-tables=yes)
-        fi
+        case "$HOSTED_BIN" in
+            suite-rust-host|rust-host-startup-probe|rust-host-process-probe)
+                extra_link_flags=(-Cforce-unwind-tables=yes) ;;
+        esac
         # Keep hosted ELFs out of the ordinary install pool. cargo rustc
         # passes the arguments after -- to this bin's rustc invocation only.
         cargo rustc --release --target "$TARGET_JSON" --target-dir "$SCRIPT_DIR/target/hosted" \
@@ -192,6 +193,9 @@ if [[ -n "$HOSTED_BIN" ]]; then
     build_rust_programs
     if [[ "$RUST_HOST" == 1 ]]; then
         HOSTED_BIN="rust-host-startup-probe"
+        echo "  Building hosted userspace binary $HOSTED_BIN ($ARCH)..."
+        build_rust_programs
+        HOSTED_BIN="rust-host-process-probe"
         echo "  Building hosted userspace binary $HOSTED_BIN ($ARCH)..."
         build_rust_programs
     fi
