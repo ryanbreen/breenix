@@ -65,7 +65,7 @@ class SuiteWatcherTest(unittest.TestCase):
         runner = (ROOT / "libs/libbreenix/src/suite.rs").read_text()
         default = int(re.search(r"DEFAULT_CASE_LIMIT_MS: u64 = ([\d_]+);", runner)[1].replace("_", ""))
         tables = []
-        for name in ("ARM_BUSYBOX_CASE_ALLOWANCES", "NAMED_CASE_ALLOWANCES"):
+        for name in ("NAMED_CASE_ALLOWANCES", "ARM_BUSYBOX_CASE_ALLOWANCES"):
             table = runner.split("pub const " + name, 1)[1].split("];", 1)[0]
             tables.append({(suite, case): int(ms.replace("_", "")) for suite, case, ms in
                            re.findall(r'\("([^"]+)", "([^"]+)", ([\d_]+)\)', table)})
@@ -73,17 +73,24 @@ class SuiteWatcherTest(unittest.TestCase):
         helper_path = ROOT / "scripts/suite-deadlines.py"
         launcher = (ROOT / "scripts/boot-interactive.sh").read_text()
         old_deadline = int(re.search(r"^GATE_TIMEOUT=(\d+)$", launcher, re.MULTILINE)[1])
-        deadlines = (runpy.run_path(str(helper_path))["suite_deadlines"](suites, "aarch64")
-                     if helper_path.exists() else dict.fromkeys(suites, old_deadline))
-        for suite in suites:
-            manifest = json.loads((ROOT / f"docs/suites/{suite}.json").read_text())
-            cases = [f'{category["id"]}/{case["id"]}' for category in manifest["categories"]
-                     for case in category["cases"]]
-            total = sum(tables[0].get((suite, case), tables[1].get((suite, case), default))
-                        for case in cases)
-            self.assertGreaterEqual(deadlines[suite], (total * 5 + 3999) // 4000, suite)
+        sequence_deadlines = runpy.run_path(str(helper_path))["suite_deadlines"]
+        deadlines = sequence_deadlines(suites, "aarch64")
+        for arch, by_suite, expected in (
+            ("aarch64", deadlines, [1757, 3250, 2425]),
+            ("x86_64", sequence_deadlines(suites, "x86_64"), [1769, 3250, 2425]),
+        ):
+            with self.subTest(arch=arch):
+                allowances = tables[0] | tables[1] if arch == "aarch64" else tables[0]
+                for suite in suites:
+                    manifest = json.loads((ROOT / f"docs/suites/{suite}.json").read_text())
+                    cases = [f'{category["id"]}/{case["id"]}' for category in manifest["categories"]
+                             for case in category["cases"] if "targets" not in case or arch in case["targets"]]
+                    total = sum(allowances.get((suite, case), default) for case in cases)
+                    if arch == "aarch64" and suite == "toolchain":
+                        self.assertEqual(total, 1_405_000)
+                    self.assertGreaterEqual(by_suite[suite], (total * 5 + 3999) // 4000, suite)
+                self.assertEqual([by_suite[suite] for suite in suites], expected)
         self.assertEqual(old_deadline, 1800)  # Previous per-suite gate.
-        self.assertEqual([deadlines[suite] for suite in suites], [1757, 3250, 2425])
         watcher = runpy.run_path(str(ROOT / "scripts/watch-qemu.py"))
         for index, suite in enumerate(suites):
             self.assertEqual(watcher["deadline_for_suite"](1800, deadlines, suites, index), deadlines[suite])

@@ -41,6 +41,39 @@ EXPECTATIONS = {
 }
 
 
+class ToolchainTargetVerdictTests(unittest.TestCase):
+    def test_single_and_sequence_scorers_require_the_target_registry(self):
+        path = ROOT / "docs/suites/toolchain.json"
+        manifest = json.loads(path.read_text())
+        template = (FIXTURES / "all-pass.txt").read_text().replace("SUITE fixture", "SUITE toolchain")
+        before = next(line for line in template.splitlines() if " MEMORY before " in line)
+        after = [line for line in template.splitlines() if " MEMORY after " in line or " MEMORY reclaimed=" in line]
+        with tempfile.TemporaryDirectory() as directory:
+            serial = Path(directory) / "serial.txt"
+            for recorded_arch, count in (("aarch64", 70), ("x86_64", 73)):
+                cases = [f'{category["id"]}/{case["id"]}' for category in manifest["categories"]
+                         if recorded_arch == "x86_64" or category["id"] != "kernel-asm"
+                         for case in category["cases"]]
+                self.assertEqual(len(cases), count)
+                serial.write_text("\n".join([
+                    f"SUITE toolchain START cases={count}", before,
+                    *(f"SUITE toolchain CASE {case} PASS ms=1" for case in cases),
+                    f"SUITE toolchain DONE passed={count} failed=0 skipped=0 total={count}",
+                    *after,
+                ]) + "\n")
+                for scorer, args in (("suite-verdict.py", [str(path)]), ("suite-sequence.py", ["score", "toolchain"])):
+                    for arch in ("aarch64", "x86_64"):
+                        with self.subTest(recorded_arch=recorded_arch, scorer=scorer, arch=arch):
+                            result = subprocess.run([sys.executable, str(ROOT / "scripts" / scorer),
+                                                     *args, str(serial), "--arch", arch],
+                                                    capture_output=True, text=True)
+                            if arch == recorded_arch:
+                                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                            else:
+                                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                                self.assertIn("but the manifest lists", result.stdout)
+
+
 class FilesystemRootVerdictTests(unittest.TestCase):
     def score(self, root_records, include_case):
         manifest = dict(MANIFEST, id="filesystem", categories=[
