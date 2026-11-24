@@ -18,6 +18,61 @@ def git(*args):
 
 
 class RustcPort(unittest.TestCase):
+    def test_linux_profile_per_crate(self):
+        path = RECORDS / '9.json'
+        self.assertTrue(path.is_file(), 'X0.9 Linux rustc profile has not been recorded')
+        record = json.loads(path.read_text())
+        self.assertEqual(record['executor'], 'linux-build-container')
+        self.assertEqual(record['target'], 'x86_64-breenix')
+        self.assertEqual(record['profile'], 'selfhost')
+        self.assertEqual(record['toolchain'], 'nightly-2025-06-24')
+        self.assertTrue(record['prediction'].strip())
+        self.assertLess(datetime.datetime.fromisoformat(record['prediction_time']),
+                        datetime.datetime.fromisoformat(record['time']))
+        self.assertRegex(record['workspace_commit'], r'^[0-9a-f]{40}$')
+        self.assertIn('--profile', record['command'])
+        self.assertIn('selfhost', record['command'])
+        self.assertTrue(record['rustc_wrapper'].endswith('/x0-rustc-probe.sh'))
+
+        crates = record['crates']
+        self.assertEqual(set(crates), {'bobj', 'bas', 'bld', 'bar', 'bnm', 'bcc', 'bmake'})
+        self.assertIn('std', record['std_information_only'])
+        self.assertIn('core', record['std_information_only'])
+        self.assertFalse(set(crates) & set(record['std_information_only']))
+        for name, units in crates.items():
+            with self.subTest(crate=name):
+                self.assertTrue(units)
+                self.assertIn('lib', {unit['kind'] for unit in units})
+                if name != 'bobj':
+                    self.assertIn('bin', {unit['kind'] for unit in units})
+                for unit in units:
+                    for field in ('peak_rss_kib', 'peak_threads', 'largest_anonymous_mapping_bytes',
+                                  'largest_file_mapping_bytes', 'scratch_bytes'):
+                        self.assertIs(type(unit[field]), int, field)
+                        self.assertGreater(unit[field], 0, field)
+                    self.assertGreater(unit['wall_seconds'], 0)
+                    syscalls = unit['syscall_families']
+                    self.assertTrue(syscalls['memory'])
+                    self.assertTrue(syscalls['process_and_threads'])
+                    self.assertTrue(syscalls['file_metadata'])
+                    self.assertEqual(set(syscalls), {'memory', 'limits', 'process_and_threads',
+                                                     'pipes', 'wait', 'locks', 'file_metadata'})
+                    limit = unit['min_stack_kib']
+                    self.assertTrue(64 <= limit <= 65536)
+                    trials = unit['stack_exit_status']
+                    self.assertEqual(trials['65536'], 0)
+                    self.assertEqual(trials[str(limit)], 0)
+                    if limit > 64:
+                        self.assertNotEqual(trials[str(limit - 1)], 0)
+
+        for target in ('x86_64-breenix', 'aarch64-breenix'):
+            digests = record['release_parity'][target]
+            self.assertRegex(digests['parent_commit'], r'^[0-9a-f]{40}$')
+            self.assertEqual(digests['parent_sha256'], digests['profile_sha256'])
+            self.assertEqual(set(digests['parent_sha256']), set(crates))
+            for digest in digests['parent_sha256'].values():
+                self.assertRegex(digest, r'^[0-9a-f]{64}$')
+
     def test_llvm_config_route_recorded(self):
         path = RECORDS / '3.json'
         self.assertTrue(path.is_file(), 'X0.3 LLVM configuration result has not been recorded')

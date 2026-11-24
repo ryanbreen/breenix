@@ -46,6 +46,25 @@ fn string_value<'a>(text: &'a str, key: &str) -> Option<&'a str> {
 }
 
 #[test]
+fn selfhost_profile_inherits_release() {
+    let manifest = fs::read_to_string(toolchain().join("Cargo.toml")).expect("read Cargo.toml");
+    let profile = manifest
+        .split("\n[")
+        .find_map(|table| table.strip_prefix("profile.selfhost]"))
+        .expect("declare the selfhost profile");
+    assert_eq!(string_value(profile, "inherits"), Some("release"));
+    assert_eq!(
+        profile
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .count(),
+        1,
+        "selfhost must inherit release without overrides"
+    );
+}
+
+#[test]
 fn lock_has_only_path_packages() {
     let root = toolchain();
     let manifest = fs::read_to_string(root.join("Cargo.toml")).expect("read toolchain/Cargo.toml");
