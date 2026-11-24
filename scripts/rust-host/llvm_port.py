@@ -147,6 +147,9 @@ def main():
                f'-DLLVM_NATIVE_TOOL_DIR={native / "bin"}', '-DLLVM_ENABLE_THREADS=ON',
                '-DBUILD_SHARED_LIBS=OFF', '-DLLVM_BUILD_LLVM_DYLIB=OFF',
                '-DLLVM_LINK_LLVM_DYLIB=OFF', *common)
+    if args.resume:
+        # Re-run the cached header probe after a Breenix sysroot update.
+        command += ('-U', 'HAVE_SYSEXITS_H')
     stage('configure', command, allowlist=allowed['upstream cmake'])
     verify_llvm(ROOT, llvm)
 

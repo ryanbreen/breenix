@@ -102,9 +102,9 @@
     }
   },
   "configure": {
-    "started": "2026-11-24T20:00:13.968456+00:00",
-    "ended": "2026-11-24T20:00:28.335888+00:00",
-    "elapsed_seconds": 14.367741790832952,
+    "started": "2026-11-24T20:17:26.072823+00:00",
+    "ended": "2026-11-24T20:17:30.004894+00:00",
+    "elapsed_seconds": 3.9319263328798115,
     "command": [
       "taskpolicy",
       "-b",
@@ -142,27 +142,25 @@
       "-DLLVM_ENABLE_ZSTD=OFF",
       "-DLLVM_ENABLE_LIBXML2=OFF",
       "-DLLVM_ENABLE_TERMINFO=OFF",
-      "-DLLVM_TARGETS_TO_BUILD=AArch64;AMDGPU;ARM;BPF;Hexagon;LoongArch;MSP430;Mips;NVPTX;PowerPC;RISCV;Sparc;SystemZ;WebAssembly;X86"
+      "-DLLVM_TARGETS_TO_BUILD=AArch64;AMDGPU;ARM;BPF;Hexagon;LoongArch;MSP430;Mips;NVPTX;PowerPC;RISCV;Sparc;SystemZ;WebAssembly;X86",
+      "-U",
+      "HAVE_SYSEXITS_H"
     ],
     "exit_status": 0,
     "first_error": null,
     "diagnostics": {
       "CMake Warning (deprecated) at <llvm-project>/cmake/Modules/CMakePolicy.cmake:6 (cmake_policy):\n  The OLD behavior for policy CMP0116 will be removed from a future version\n  of CMake.\n\n  The cmake-policies(7) manual explains that the OLD behaviors of all\n  policies are deprecated and that a policy should be set to OLD only under\n  specific short-term circumstances.  Projects should be ported to the NEW\n  behavior and not rely on setting a policy to OLD.\nCall Stack (most recent call first):\n  CMakeLists.txt:8 (include)\nThis warning is for project developers.  Use -Wno-author or -Wno-deprecated\nto suppress it.": 1,
-      "CMake Warning (policy) at cmake/modules/HandleLLVMOptions.cmake:905 (CHECK_C_SOURCE_COMPILES):\n  Policy CMP0219 is not set: Macro invocations preserve backslashes in\n  arguments.  Run \"cmake --help-policy CMP0219\" for policy details.  Use the\n  cmake_policy command to set the policy and suppress this warning.\n\n  Command \"CHECK_C_SOURCE_COMPILES\" called with arguments containing\n  backslashes.\n\n  Since the policy is not set, backslashes in the arguments:\n\n   \"// \\\\\\n//\\nint main(void) {return 0;}\"\n\n  will be interpreted as escape sequences for compatibility.\n\n  Set the policy to NEW to instead pass\n\n   \"// \\\\\\\\\\\\n//\\\\nint main(void) {return 0;}\"\n\n  so that argument parsing will preserve the original values.\nCall Stack (most recent call first):\n  CMakeLists.txt:1019 (include)\nThis warning is for project developers.  Use -Wno-author or -Wno-policy to\nsuppress it.": 1,
-      "CMake Warning (unused-cli):\n  Manually-specified variables were not used by the project:\n\n    LLVM_ENABLE_TERMINFO": 1
+      "CMake Warning (policy) at cmake/modules/HandleLLVMOptions.cmake:905 (CHECK_C_SOURCE_COMPILES):\n  Policy CMP0219 is not set: Macro invocations preserve backslashes in\n  arguments.  Run \"cmake --help-policy CMP0219\" for policy details.  Use the\n  cmake_policy command to set the policy and suppress this warning.\n\n  Command \"CHECK_C_SOURCE_COMPILES\" called with arguments containing\n  backslashes.\n\n  Since the policy is not set, backslashes in the arguments:\n\n   \"// \\\\\\n//\\nint main(void) {return 0;}\"\n\n  will be interpreted as escape sequences for compatibility.\n\n  Set the policy to NEW to instead pass\n\n   \"// \\\\\\\\\\\\n//\\\\nint main(void) {return 0;}\"\n\n  so that argument parsing will preserve the original values.\nCall Stack (most recent call first):\n  CMakeLists.txt:1019 (include)\nThis warning is for project developers.  Use -Wno-author or -Wno-policy to\nsuppress it.": 1
     },
     "warnings": {
       "CMake Warning (deprecated) at <llvm-project>/cmake/Modules/CMakePolicy.cmake:6 (cmake_policy):\n  The OLD behavior for policy CMP0116 will be removed from a future version\n  of CMake.\n\n  The cmake-policies(7) manual explains that the OLD behaviors of all\n  policies are deprecated and that a policy should be set to OLD only under\n  specific short-term circumstances.  Projects should be ported to the NEW\n  behavior and not rely on setting a policy to OLD.\nCall Stack (most recent call first):\n  CMakeLists.txt:8 (include)\nThis warning is for project developers.  Use -Wno-author or -Wno-deprecated\nto suppress it.": 1,
+      "CMake Warning (policy) at cmake/modules/HandleLLVMOptions.cmake:905 (CHECK_C_SOURCE_COMPILES):\n  Policy CMP0219 is not set: Macro invocations preserve backslashes in\n  arguments.  Run \"cmake --help-policy CMP0219\" for policy details.  Use the\n  cmake_policy command to set the policy and suppress this warning.\n\n  Command \"CHECK_C_SOURCE_COMPILES\" called with arguments containing\n  backslashes.\n\n  Since the policy is not set, backslashes in the arguments:\n\n   \"// \\\\\\n//\\nint main(void) {return 0;}\"\n\n  will be interpreted as escape sequences for compatibility.\n\n  Set the policy to NEW to instead pass\n\n   \"// \\\\\\\\\\\\n//\\\\nint main(void) {return 0;}\"\n\n  so that argument parsing will preserve the original values.\nCall Stack (most recent call first):\n  CMakeLists.txt:1019 (include)\nThis warning is for project developers.  Use -Wno-author or -Wno-policy to\nsuppress it.": 1
+    },
+    "log_sha256": "b1a054eeb671ae791d9665af6f49afb5707d315159d843861b94053cb4e71079",
+    "allowlist": {
+      "CMake Warning (deprecated) at <llvm-project>/cmake/Modules/CMakePolicy.cmake:6 (cmake_policy):\n  The OLD behavior for policy CMP0116 will be removed from a future version\n  of CMake.\n\n  The cmake-policies(7) manual explains that the OLD behaviors of all\n  policies are deprecated and that a policy should be set to OLD only under\n  specific short-term circumstances.  Projects should be ported to the NEW\n  behavior and not rely on setting a policy to OLD.\nCall Stack (most recent call first):\n  CMakeLists.txt:8 (include)\nThis warning is for project developers.  Use -Wno-author or -Wno-deprecated\nto suppress it.": 1,
       "CMake Warning (policy) at cmake/modules/HandleLLVMOptions.cmake:905 (CHECK_C_SOURCE_COMPILES):\n  Policy CMP0219 is not set: Macro invocations preserve backslashes in\n  arguments.  Run \"cmake --help-policy CMP0219\" for policy details.  Use the\n  cmake_policy command to set the policy and suppress this warning.\n\n  Command \"CHECK_C_SOURCE_COMPILES\" called with arguments containing\n  backslashes.\n\n  Since the policy is not set, backslashes in the arguments:\n\n   \"// \\\\\\n//\\nint main(void) {return 0;}\"\n\n  will be interpreted as escape sequences for compatibility.\n\n  Set the policy to NEW to instead pass\n\n   \"// \\\\\\\\\\\\n//\\\\nint main(void) {return 0;}\"\n\n  so that argument parsing will preserve the original values.\nCall Stack (most recent call first):\n  CMakeLists.txt:1019 (include)\nThis warning is for project developers.  Use -Wno-author or -Wno-policy to\nsuppress it.": 1,
       "CMake Warning (unused-cli):\n  Manually-specified variables were not used by the project:\n\n    LLVM_ENABLE_TERMINFO": 1
-    },
-    "log_sha256": "c2cd0750ed785e10c2d99a59789e4f6cb4be50f0902ea9a671ad120dae6ba186",
-    "allowlist": {
-      "upstream cmake": {
-        "CMake Warning (deprecated) at <llvm-project>/cmake/Modules/CMakePolicy.cmake:6 (cmake_policy):\n  The OLD behavior for policy CMP0116 will be removed from a future version\n  of CMake.\n\n  The cmake-policies(7) manual explains that the OLD behaviors of all\n  policies are deprecated and that a policy should be set to OLD only under\n  specific short-term circumstances.  Projects should be ported to the NEW\n  behavior and not rely on setting a policy to OLD.\nCall Stack (most recent call first):\n  CMakeLists.txt:8 (include)\nThis warning is for project developers.  Use -Wno-author or -Wno-deprecated\nto suppress it.": 1,
-        "CMake Warning (policy) at cmake/modules/HandleLLVMOptions.cmake:905 (CHECK_C_SOURCE_COMPILES):\n  Policy CMP0219 is not set: Macro invocations preserve backslashes in\n  arguments.  Run \"cmake --help-policy CMP0219\" for policy details.  Use the\n  cmake_policy command to set the policy and suppress this warning.\n\n  Command \"CHECK_C_SOURCE_COMPILES\" called with arguments containing\n  backslashes.\n\n  Since the policy is not set, backslashes in the arguments:\n\n   \"// \\\\\\n//\\nint main(void) {return 0;}\"\n\n  will be interpreted as escape sequences for compatibility.\n\n  Set the policy to NEW to instead pass\n\n   \"// \\\\\\\\\\\\n//\\\\nint main(void) {return 0;}\"\n\n  so that argument parsing will preserve the original values.\nCall Stack (most recent call first):\n  CMakeLists.txt:1019 (include)\nThis warning is for project developers.  Use -Wno-author or -Wno-policy to\nsuppress it.": 1,
-        "CMake Warning (unused-cli):\n  Manually-specified variables were not used by the project:\n\n    LLVM_ENABLE_TERMINFO": 1
-      }
     }
   }
 }

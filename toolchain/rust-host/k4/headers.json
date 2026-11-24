@@ -1,0 +1,15 @@
+[
+  {
+    "header": "libs/libbreenix-libc/include/machine/endian.h",
+    "specification": "POSIX.1-2024",
+    "section": "Base Definitions, chapter 13, <endian.h>",
+    "step": "25.8d K4 u2",
+    "note": "Ruling 92 permits this include path to forward to the POSIX header."
+  },
+  {
+    "header": "libs/libbreenix-libc/include/sysexits.h",
+    "specification": "LSB Core Generic 5.0",
+    "section": "14.4.96, sysexits.h",
+    "step": "25.8d K4 u2"
+  }
+]
