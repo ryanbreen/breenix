@@ -56,8 +56,8 @@ fn cfa_rules_from_dwarf5_table_6_3() {
             end,
             Rules {
                 cfa: Some(CfaRule::RegisterOffset { register, offset }),
-                // D.4 describes R7 architecturally. D.5 encodes its CFI
-                // column as same_value and the FDE never changes it.
+                // D.4 describes R7 architecturally. D.5 sets its CFI column
+                // to same_value, which remains in effect through the FDE.
                 registers: [Same, Undef, Undef, Undef, r4, Same, r6, Same, r8],
             },
         )
