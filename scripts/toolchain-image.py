@@ -22,6 +22,7 @@ BUSYBOX = CORPUS / "busybox"
 BUSYBOX_MILESTONE = "toolchain/busybox-on-box"
 BUSYBOX_SCRATCH = "toolchain-scratch.img"
 KERNEL_ASSEMBLY_MILESTONE = "toolchain/kernel-assembly"
+BUSYBOX_MILESTONES = (BUSYBOX_MILESTONE, KERNEL_ASSEMBLY_MILESTONE)
 KERNEL_ASSEMBLY = CORPUS / "kernel-asm"
 KERNEL_ASSEMBLY_RECORD = "kernel-assembly.record"
 KERNEL_ASM_CORPUS = ("privileged.s", "privileged.hex")
@@ -294,7 +295,7 @@ def seal(bundle, commit, arch, tool_record, milestone=None):
     sources.update({CORPUS / path: source for path, source in c17_libc_inputs().items()})
     required.update((*libc_references(), CORPUS / "libc-functions.txt"))
 
-    busybox = busybox_inputs() if milestone == BUSYBOX_MILESTONE else {}
+    busybox = busybox_inputs() if milestone in BUSYBOX_MILESTONES else {}
     if {path for path in files if path.is_relative_to(BUSYBOX)} != busybox.keys():
         raise ValueError("BusyBox inputs differ from the selected fixture file set")
     sources.update(busybox)
@@ -391,14 +392,14 @@ def install(debugfs, image, bundle, arch, scratch, milestone=None):
     record = json.loads((bundle / "build.json").read_text())
     busybox = {path for path in files if path.is_relative_to(BUSYBOX)}
     disk = bundle / BUSYBOX_SCRATCH
-    if milestone == BUSYBOX_MILESTONE:
+    assembly = kernel_assembly_record(tree, files, arch, milestone)
+    if milestone in BUSYBOX_MILESTONES:
         if (busybox != busybox_inputs().keys()
                 or record.get("busyboxInputs") != {str(path): digest(tree / path) for path in busybox}
                 or record.get("busyboxScratch") != busybox_scratch_record(disk)):
             raise ValueError("BusyBox fixture differs from its build record")
     elif busybox or "busyboxInputs" in record or "busyboxScratch" in record or disk.exists() or disk.is_symlink():
-        raise ValueError("BusyBox fixture requires toolchain/busybox-on-box")
-    assembly = kernel_assembly_record(tree, files, arch, milestone)
+        raise ValueError("BusyBox fixture requires toolchain/busybox-on-box or toolchain/kernel-assembly")
     if ((assembly is None and "kernelAssembly" in record)
             or (assembly is not None and record.get("kernelAssembly") != assembly)):
         raise ValueError("kernel assembly fixture differs from its build record")
@@ -452,7 +453,7 @@ def stage(base, output, suites, bundle, arch, milestone=None):
             or output.resolve() in {seed.resolve() for seed in seeds}):
         raise ValueError("suite staging requires a separate output image")
     toolchain = "toolchain" in suites.split(",")
-    if milestone in (BUSYBOX_MILESTONE, KERNEL_ASSEMBLY_MILESTONE) and not toolchain:
+    if milestone in BUSYBOX_MILESTONES and not toolchain:
         raise ValueError(f"{milestone} requires the toolchain suite")
     debugfs, = require_e2fsprogs("debugfs")
     for path in (*PREFIXES, SUITE):

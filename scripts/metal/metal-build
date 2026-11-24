@@ -199,9 +199,9 @@ def inner(args):
     transfer = transfer_fixture.selected(args.suite)
     toolchain = 'toolchain' in suites
     milestone = getattr(args, 'milestone', None)
-    busybox = milestone == 'toolchain/busybox-on-box'
     kernel_assembly = milestone == KERNEL_ASSEMBLY_MILESTONE
-    if (busybox or kernel_assembly) and not toolchain:
+    busybox = kernel_assembly or milestone == 'toolchain/busybox-on-box'
+    if busybox and not toolchain:
         raise ValueError(f'{milestone} requires the toolchain suite')
     toolchain_build = None
     kernel_image = None
@@ -347,7 +347,7 @@ def inner(args):
                 log = logs / 'toolchain-build.log'
                 # Other milestones use the existing bundle contract, including
                 # when deployed host tools build a commit before this fixture.
-                selection = ['--milestone', milestone] if busybox or kernel_assembly else []
+                selection = ['--milestone', milestone] if busybox else []
                 receipt = ['--kernel-assembly-record', str(assembly_record)] if kernel_assembly else []
                 with log.open('w') as output:
                     status = subprocess.call([str(script / 'build-toolchain.sh'), '--arch', 'x86_64',

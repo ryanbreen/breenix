@@ -286,7 +286,7 @@ def build(arch, work, dev, corpus, milestone=None, assembly_record=None):
 
         build_linker_objects(arch, clang, work, corpus)
 
-    if milestone == image.BUSYBOX_MILESTONE:
+    if milestone in image.BUSYBOX_MILESTONES:
         for path, source in image.busybox_inputs().items():
             destination = corpus / path.relative_to(image.CORPUS)
             destination.parent.mkdir(parents=True, exist_ok=True)
