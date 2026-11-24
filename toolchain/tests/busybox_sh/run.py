@@ -150,9 +150,9 @@ def phases_chain_from_predecessor_hashes(directory):
     fixture, env, expected = mac_fixture(directory)
     output = directory / "build"
     for phase in (
-        "unpack", "patch", "generators", "configure",
+        "unpack", "patch", "generators", "configure", "inventory",
         "build-libbb-1", "build-libbb-2", "build-libbb-3", "build-libbb-4",
-        "build-applets-1", "build-applets-2", "build-applets-3", "link-and-list",
+        "build-applets-1", "build-applets-2", "build-applets-3", "build-applets-4", "link-and-list",
     ):
         pass_phase(fixture, output, env, phase)
     assert json.loads((output / "applets.json").read_text()) == expected
@@ -182,17 +182,41 @@ def phase_refuses_missing_or_altered_predecessor(directory):
 def object_group_chain_equals_directory_goal(directory):
     fixture, env, _ = mac_fixture(directory)
     output = directory / "build"
-    pass_phase(fixture, output, env, "unpack-configure")
+    for phase in ("unpack", "patch", "generators", "configure"):
+        pass_phase(fixture, output, env, phase)
+    assert not (output / "applets.goals").exists(), "configure already ran the inventory"
+    header = output / "busybox-1.37.0/include/applet_tables.h"
+    stat = header.stat()
+    original = header.read_bytes()
+    header.write_bytes(original + b"\n/* changed after configure */\n")
+    altered = run_driver(fixture, output, env, "inventory")
+    assert altered.returncode == 1 and "predecessor configure" in altered.stderr, altered.stderr
+    header.write_bytes(original)
+    os.utime(header, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    pass_phase(fixture, output, env, "inventory")
     baseline = directory / "configured"
     shutil.copytree(output, baseline, symlinks=True)
     for phase in ("build-libbb-1", "build-libbb-2", "build-libbb-3", "build-libbb-4"):
         pass_phase(fixture, output, env, phase)
+    for phase in ("build-applets-1", "build-applets-2", "build-applets-3"):
+        pass_phase(fixture, output, env, phase)
     source = output / "busybox-1.37.0"
+    goals = (output / "applets.goals").read_text().splitlines()
+    assert len(goals) == 94
+    assert all((source / goal).is_file() for goal in goals[:79])
+    assert not any((source / goal).exists() for goal in goals[79:])
+    early_link = run_driver(fixture, output, env, "link-and-list")
+    assert early_link.returncode == 1 and "predecessor build-applets-4" in early_link.stderr, early_link.stderr
+    pass_phase(fixture, output, env, "build-applets-4")
+
     def directory_outputs():
-        objects = sorted((source / "libbb").glob("*.o"))
-        assert len(objects) == 129, len(objects)
-        archive = source / "libbb/lib.a"
-        return {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in [*objects, archive]}
+        libbb = (output / "libbb.goals").read_text().splitlines()
+        assert len(libbb) == 128
+        directories = {Path(goal).parent for goal in libbb + goals}
+        paths = {source / goal for goal in libbb + goals}
+        paths.update(source / subdir / "built-in.o" for subdir in directories)
+        paths.update(path for subdir in directories if (path := source / subdir / "lib.a").is_file())
+        return {str(path.relative_to(source)): hashlib.sha256(path.read_bytes()).hexdigest() for path in paths}
 
     expected = directory_outputs()
     # Replay from clean inputs at the same path so compile-time paths and
@@ -200,6 +224,7 @@ def object_group_chain_equals_directory_goal(directory):
     output.rename(directory / "split")
     baseline.rename(output)
     pass_phase(fixture, output, env, "build-libbb")
+    pass_phase(fixture, output, env, "build-applets")
     actual = directory_outputs()
     assert actual == expected, sorted(name for name, digest in expected.items() if actual.get(name) != digest)
 

@@ -245,6 +245,17 @@ run_configure() {
     ) > "$output/config.log" 2>&1 || { cat "$output/config.log" >&2; fail 'configure failed'; }
     mark "applets/usage and applets/applet_tables"
     logged_make config.log applets/applets.o V=1
+    receipts busybox-1.37.0/.config busybox-1.37.0/include/autoconf.h \
+        busybox-1.37.0/include/usage_compressed.h busybox-1.37.0/include/applet_tables.h \
+        busybox-1.37.0/applets/applets.o busybox-1.37.0/applets/built-in.o
+    report_time configure
+}
+
+run_inventory() {
+    begin inventory
+    needs configure
+    check_settings
+    cd "$source"
     mark "inventory object goals"
     # The native configuration and applet generators have left their headers
     # current. Only the pinned configuration's printed target compile commands
@@ -268,11 +279,11 @@ run_configure() {
     ' libbb="$output/libbb.goals" applets="$output/applets.goals" "$output/goals.log"
     [ "$(wc -l < "$output/libbb.goals")" -eq 128 ] || fail 'Kbuild libbb inventory differs from the pinned config'
     [ "$(wc -l < "$output/applets.goals")" -eq 94 ] || fail 'Kbuild applet inventory differs from the pinned config'
-    receipts busybox-1.37.0/.config busybox-1.37.0/include/autoconf.h \
-        busybox-1.37.0/include/usage_compressed.h busybox-1.37.0/include/applet_tables.h \
-        busybox-1.37.0/applets/applets.o busybox-1.37.0/applets/built-in.o \
-        libbb.goals applets.goals
-    report_time configure
+    cp "$predecessor" "$receipt.new"
+    (cd "$output" && sha256sum libbb.goals applets.goals) >> "$receipt.new" ||
+        fail "cannot record $step"
+    mv "$receipt.new" "$receipt"
+    report_time inventory
 }
 
 # Keep the pinned Kbuild recipes and its exported build configuration. A
@@ -351,8 +362,8 @@ build_objects() {
 
 run_link() {
     begin link-and-list
-    if [ -f "$output/build-applets-3.sha256" ]; then needs build-applets-3
-    else needs build-applets
+    if [ -f "$output/build-applets.sha256" ]; then needs build-applets
+    else needs build-applets-4
     fi
     check_settings
     cd "$source"
@@ -500,9 +511,10 @@ run_phase() {
         patch) run_patch ;;
         generators) run_generators ;;
         configure) run_configure ;;
-        unpack-configure) run_unpack; run_patch; run_generators; run_configure ;;
-        build-libbb) build_objects "$1" libbb 1 128 configure ;;
-        build-libbb-1) build_objects "$1" libbb 1 32 configure ;;
+        inventory) run_inventory ;;
+        unpack-configure) run_unpack; run_patch; run_generators; run_configure; run_inventory ;;
+        build-libbb) build_objects "$1" libbb 1 128 inventory ;;
+        build-libbb-1) build_objects "$1" libbb 1 32 inventory ;;
         build-libbb-2) build_objects "$1" libbb 33 64 build-libbb-1 ;;
         build-libbb-3) build_objects "$1" libbb 65 96 build-libbb-2 ;;
         build-libbb-4) build_objects "$1" libbb 97 128 build-libbb-3 ;;
@@ -513,7 +525,8 @@ run_phase() {
             build_objects "$1" applets 1 94 "$last_libbb" ;;
         build-applets-1) build_objects "$1" applets 1 32 build-libbb-4 ;;
         build-applets-2) build_objects "$1" applets 33 64 build-applets-1 ;;
-        build-applets-3) build_objects "$1" applets 65 94 build-applets-2 ;;
+        build-applets-3) build_objects "$1" applets 65 79 build-applets-2 ;;
+        build-applets-4) build_objects "$1" applets 80 94 build-applets-3 ;;
         link-and-list) run_link ;;
         *) fail "unknown phase: $1" ;;
     esac

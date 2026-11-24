@@ -312,6 +312,10 @@
           "title": "Apply the config and generate the applet build inputs"
         },
         {
+          "id": "inventory",
+          "title": "Record the pinned Kbuild object goals in recipe order"
+        },
+        {
           "id": "build-libbb-1",
           "title": "Build libbb object group 1"
         },
@@ -338,6 +342,10 @@
         {
           "id": "build-applets-3",
           "title": "Build applet object group 3"
+        },
+        {
+          "id": "build-applets-4",
+          "title": "Build applet object group 4"
         },
         {
           "id": "link-and-list",

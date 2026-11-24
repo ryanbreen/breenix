@@ -2130,9 +2130,9 @@ fn toolchain_manifest_registers_busybox_chain() {
     for (id, expected) in [
         ("gnu-workloads", &["gnu-c-extensions", "gnu-make-features", "kbuild-host-programs"][..]),
         ("busybox", &[
-            "unpack", "patch", "generators", "configure",
+            "unpack", "patch", "generators", "configure", "inventory",
             "build-libbb-1", "build-libbb-2", "build-libbb-3", "build-libbb-4",
-            "build-applets-1", "build-applets-2", "build-applets-3",
+            "build-applets-1", "build-applets-2", "build-applets-3", "build-applets-4",
             "link-and-list", "required-usage",
         ][..]),
     ] {

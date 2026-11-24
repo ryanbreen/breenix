@@ -2113,6 +2113,23 @@ class DriverTest(StateTest):
         table = runner.split('pub const NAMED_CASE_ALLOWANCES', 1)[1].split('];', 1)[0]
         named = {(suite, case): int(ms) for suite, case, ms in
                  re.findall(r'\("([^"]+)", "([^"]+)", ([\d_]+)\)', table)}
+        # Ruling 68 bounds configure and inventory from serial timestamps and
+        # reserves two thirds of the observed applet-group time for each half.
+        busybox_ms = {
+            'unpack': 6941, 'patch': 4908, 'generators': 22189,
+            'configure': 20000, 'inventory': 13000,
+            'build-libbb-1': 22734, 'build-libbb-2': 20269,
+            'build-libbb-3': 22132, 'build-libbb-4': 29606,
+            'build-applets-1': 23997, 'build-applets-2': 23476,
+            'build-applets-3': 22854, 'build-applets-4': 22854,
+            'link-and-list': 5963, 'required-usage': 83,
+        }
+        self.assertEqual(
+            {case: ms for (suite, case), ms in named.items()
+             if suite == 'toolchain' and case.startswith('busybox/')},
+            {f'busybox/{case}': min(60000, ((2 * ms + 9999) // 10000) * 10000)
+             for case, ms in busybox_ms.items()},
+        )
         args = self.driver.args
         args.mode = 'suite'
         args.milestone = 'toolchain/busybox-on-box'
