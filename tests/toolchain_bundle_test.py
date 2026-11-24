@@ -210,7 +210,8 @@ class ToolchainBundleTest(unittest.TestCase):
                    "src/interrupts/breakpoint_entry.asm", "src/arch_impl/x86_64/ap_trampoline.asm")
         objects = ("syscall_entry.o", "timer_entry.o", "breakpoint_entry.o", "ap_trampoline.o")
         receipt = prefix / "kernel-assembly.record"
-        expected = {prefix / name for name in (*sources, *objects)} | {receipt}
+        privileged = ("privileged.s", "privileged.hex")
+        expected = {prefix / name for name in (*sources, *objects, *privileged)} | {receipt}
         self.assertEqual({path.relative_to(tree) for path in (tree / prefix).rglob("*") if path.is_file()},
                          expected)
         fields = dict(line.split("=", 1) for line in (tree / receipt).read_text().splitlines())
@@ -225,6 +226,9 @@ class ToolchainBundleTest(unittest.TestCase):
             self.assertEqual(digest(tree / prefix / name), fields[name], name)
         for name in sources:
             self.assertEqual((tree / prefix / name).read_bytes(), (ROOT / "kernel" / name).read_bytes())
+        for name in privileged:
+            self.assertEqual((tree / prefix / name).read_bytes(),
+                             (WORKSPACE / "corpus/kernel-asm" / name).read_bytes())
         for path in expected | {bas.relative_to(tree)}:
             self.assertEqual(manifest[str(path)], digest(tree / path), path)
 
