@@ -1953,6 +1953,19 @@ watchdog. ARM64 guest acceptance remains pending.
 scripts/boot-interactive.sh --mode suite --suite toolchain --milestone toolchain/sysroot-oracle
 ```
 
+## Hosted Rust runtime
+
+`rust-host` is an opt-in suite. Name it explicitly in `--suite` to select it.
+`userspace/programs/build.sh --arch ARCH --rust-host`
+links the suite and its startup probe with `linker-hosted.ld`. The launcher
+stages both on the selected image's work copy.
+
+`libc-surface/startup-order` spawns `/usr/libexec/breenix/rust-host/startup-probe`.
+The probe returns from main through libc and reports the constructor, thread
+destructor and process exit order over a pipe. The case requires the expected
+sequence and exit status `0`. The probe also checks that `dl_iterate_phdr`
+finds the load, TLS and unwind-index program headers of its executable.
+
 ## Developer SDK
 
 `sdk` measures the Developer SDK effort in `docs/efforts/path.json`: our own applications

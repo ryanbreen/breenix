@@ -1,0 +1,20 @@
+{
+  "id": "rust-host",
+  "title": "Rust host runtime",
+  "area": "Toolchain",
+  "summary": "Checks the runtime surface needed by hosted Rust tools.",
+  "binary": "/sbin/suite-rust-host",
+  "timingSensitive": true,
+  "categories": [
+    {
+      "id": "libc-surface",
+      "title": "Hosted libc surface",
+      "cases": [
+        {
+          "id": "startup-order",
+          "title": "Startup, exit, thread destructors and program headers"
+        }
+      ]
+    }
+  ]
+}

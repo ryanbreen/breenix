@@ -17,6 +17,8 @@
 #   ./userspace/programs/build.sh --arch aarch64   # aarch64
 #   ./userspace/programs/build.sh --hosted-bin NAME [--features FEATURES]
 #     Build a single bin into target/hosted for the selected architecture.
+#   ./userspace/programs/build.sh --rust-host
+#     Build the opt-in suite and startup probe into target/hosted.
 
 set -e
 
@@ -24,13 +26,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 usage() {
-    echo "Usage: $0 [--arch x86_64|aarch64] [--hosted-bin NAME [--features FEATURES]]" >&2
+    echo "Usage: $0 [--arch x86_64|aarch64] [--hosted-bin NAME [--features FEATURES] | --rust-host]" >&2
     exit 2
 }
 
 ARCH="x86_64"
 HOSTED_BIN=""
 HOSTED_FEATURES=()
+RUST_HOST=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --arch)
@@ -42,6 +45,10 @@ while [[ $# -gt 0 ]]; do
             HOSTED_BIN="$2"
             shift 2
             ;;
+        --rust-host)
+            RUST_HOST=1
+            shift
+            ;;
         --features)
             [[ -n "${2:-}" && "$2" != -* ]] || usage
             HOSTED_FEATURES+=(--features "$2")
@@ -52,6 +59,11 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+if [[ "$RUST_HOST" == 1 ]]; then
+    [[ -z "$HOSTED_BIN" && ${#HOSTED_FEATURES[@]} -eq 0 ]] || usage
+    HOSTED_BIN="suite-rust-host"
+    HOSTED_FEATURES=(--features rust-host)
+fi
 if [[ -z "$HOSTED_BIN" && ${#HOSTED_FEATURES[@]} -gt 0 ]]; then
     usage
 fi
@@ -84,11 +96,9 @@ fi
 # These are passed explicitly because cargo's [target.xxx] config sections
 # don't match reliably when --target is a relative path (the path prefix
 # prevents matching against the normalized target name).
-STD_LINKER_FLAG=""
-if [[ -z "$HOSTED_BIN" ]]; then
-    STD_LINKER_FLAG=" -C link-arg=-T$SCRIPT_DIR/linker.ld"
-fi
-STD_RUSTFLAGS="$REMAP_FLAGS -L native=$LIBC_RELEASE_DIR$STD_LINKER_FLAG -C link-arg=--allow-multiple-definition -C default-linker-libraries=no"
+LINK_RUSTFLAGS="$REMAP_FLAGS -L native=$LIBC_RELEASE_DIR"
+STD_RUSTFLAGS="$LINK_RUSTFLAGS -C link-arg=-T$SCRIPT_DIR/linker.ld -C link-arg=--allow-multiple-definition -C default-linker-libraries=no"
+HOSTED_RUSTFLAGS="$LINK_RUSTFLAGS -C link-arg=--allow-multiple-definition -C default-linker-libraries=no"
 
 echo "========================================"
 echo "  STD USERSPACE BUILD (Rust std library)"
@@ -129,11 +139,16 @@ build_rust_programs() (
     export RUSTFLAGS="$STD_RUSTFLAGS -C metadata=breenix_std_$FORK_COMMIT"
 
     if [[ -n "$HOSTED_BIN" ]]; then
+        export RUSTFLAGS="$HOSTED_RUSTFLAGS -C metadata=breenix_std_$FORK_COMMIT"
+        extra_link_flags=()
+        if [[ "$HOSTED_BIN" == suite-rust-host || "$HOSTED_BIN" == rust-host-startup-probe ]]; then
+            extra_link_flags=(-Cforce-unwind-tables=yes)
+        fi
         # Keep hosted ELFs out of the ordinary install pool. cargo rustc
         # passes the arguments after -- to this bin's rustc invocation only.
         cargo rustc --release --target "$TARGET_JSON" --target-dir "$SCRIPT_DIR/target/hosted" \
             "${LEGACY_GRAPHICS_FEATURES[@]}" "${HOSTED_FEATURES[@]}" --bin "$HOSTED_BIN" -- \
-            "-Clink-arg=-T$SCRIPT_DIR/linker-hosted.ld" -Clink-arg=--eh-frame-hdr
+            "-Clink-arg=-T$SCRIPT_DIR/linker-hosted.ld" -Clink-arg=--eh-frame-hdr "${extra_link_flags[@]}"
     else
         cargo build --release --target "$TARGET_JSON" "${LEGACY_GRAPHICS_FEATURES[@]}"
     fi 2>&1 | sed 's/^/  /'
@@ -175,6 +190,11 @@ echo "  libbreenix-libc built successfully"
 if [[ -n "$HOSTED_BIN" ]]; then
     echo "  Building hosted userspace binary $HOSTED_BIN ($ARCH)..."
     build_rust_programs
+    if [[ "$RUST_HOST" == 1 ]]; then
+        HOSTED_BIN="rust-host-startup-probe"
+        echo "  Building hosted userspace binary $HOSTED_BIN ($ARCH)..."
+        build_rust_programs
+    fi
     exit 0
 fi
 
@@ -509,6 +529,7 @@ STD_BINARIES=(
     "suite-users"
     "suite-transfer-fixture"
     "suite-toolchain"
+    "suite-rust-host"
     "bput"
     "users-exec_test"
     "users-login-probe_test"
@@ -594,6 +615,13 @@ for name in $UTILITY_NAMES; do
 done
 
 RELEASE_DIR="$SCRIPT_DIR/target/$TARGET_DIR/release"
+HOSTED_RELEASE_DIR="$SCRIPT_DIR/target/hosted/$TARGET_DIR/release"
+echo "  Building hosted userspace binary suite-rust-host ($ARCH)..."
+(
+    HOSTED_BIN="suite-rust-host"
+    HOSTED_FEATURES=(--features rust-host)
+    build_rust_programs
+)
 INSTALLED=0
 FAILED=0
 
@@ -632,6 +660,9 @@ if [ -d "$TESTS_DIR" ]; then
         fi
 
         SRC="$RELEASE_DIR/$BIN_NAME"
+        if [[ "$BIN_NAME" == suite-rust-host ]]; then
+            SRC="$HOSTED_RELEASE_DIR/$BIN_NAME"
+        fi
         DST="$TESTS_DIR/${ELF_NAME}.elf"
 
         if [ -f "$SRC" ]; then
