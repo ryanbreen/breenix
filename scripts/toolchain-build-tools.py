@@ -178,7 +178,7 @@ def build(arch, work, dev, corpus, milestone=None):
     tools = build_guest_tools(arch, work, dev, clang, cargo, env, rustc_record)
 
     image = import_module("toolchain-image")
-    for tool, alias in image.driver_tool_aliases(milestone):
+    for tool, alias in image.DRIVER_TOOL_ALIASES:
         shutil.copy2(dev / "bin" / tool, dev / "bin" / alias)
     for category in ("c-core", "make", "project"):
         shutil.copytree(WORKSPACE / "corpus" / category, corpus / category)

@@ -27,10 +27,9 @@ BUSYBOX_SCRATCH_BYTES = 64 << 20
 SUITE = Path("sbin/suite-toolchain")
 LIBEXEC = Path("usr/libexec/breenix")
 TOOLS = ("bas", "bld", "bar", "bnm")
-DRIVER_TOOL_ALIASES = (("bas", "as"), ("bld", "ld"))
-BUSYBOX_TOOL_ALIASES = (("bar", "ar"), ("bnm", "nm"))
+DRIVER_TOOL_ALIASES = (("bas", "as"), ("bld", "ld"), ("bar", "ar"), ("bnm", "nm"))
 TOOL_PATHS = {DEV / "bin" / tool for tool in (*TOOLS, "cc", "make")}
-TOOL_PATHS.update(DEV / "bin" / alias for _, alias in DRIVER_TOOL_ALIASES + BUSYBOX_TOOL_ALIASES)
+TOOL_PATHS.update(DEV / "bin" / alias for _, alias in DRIVER_TOOL_ALIASES)
 LINKER_OBJECTS = ("got-main", "got-entry", "archive-value-with-long-name", "tls-template")
 MANIFEST = DEV / "manifest.sha256"
 RECORD = DEV / "build.json"
@@ -148,12 +147,6 @@ def manifest_bytes(tree, files):
     return "".join(f"{digest(tree / path)}  {path.as_posix()}\n" for path in files).encode()
 
 
-def driver_tool_aliases(milestone):
-    if milestone == BUSYBOX_MILESTONE:
-        return DRIVER_TOOL_ALIASES + BUSYBOX_TOOL_ALIASES
-    return DRIVER_TOOL_ALIASES
-
-
 def busybox_inputs():
     vendor = ROOT / "vendor/busybox"
     return {
@@ -198,9 +191,8 @@ def seal(bundle, commit, arch, tool_record, milestone=None):
                 sources[DEV / directory / header.relative_to(headers)] = header
     sources[DEV / "linker.ld"] = ROOT / "userspace/programs/linker.ld"
     required = {SUITE, DEV / "lib/libc.a"} | {DEV / "bin" / tool for tool in TOOLS}
-    aliases = driver_tool_aliases(milestone)
     required |= {DEV / "bin" / tool for tool in ("cc", "make")}
-    required.update(DEV / "bin" / alias for _, alias in aliases)
+    required.update(DEV / "bin" / alias for _, alias in DRIVER_TOOL_ALIASES)
     archive_targets = {
         "interop": "x86_64-breenix-c" if arch == "x86_64" else "aarch64-breenix",
         "brt": f"{arch}-breenix",
@@ -310,7 +302,7 @@ def seal(bundle, commit, arch, tool_record, milestone=None):
                 "rustForkCommit": fork, "rustc": tools["bcc"]["rustc"],
                 "sha256": digest(tree / DEV / path)}:
             raise ValueError(f"{name}: build record differs from the staged archive")
-    for tool, alias in aliases:
+    for tool, alias in DRIVER_TOOL_ALIASES:
         if digest(tree / DEV / "bin" / alias) != tools[tool]["sha256"]:
             raise ValueError(f"{alias}: staged driver tool differs from {tool}")
     (tree / MANIFEST).write_bytes(manifest_bytes(tree, files))

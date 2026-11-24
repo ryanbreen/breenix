@@ -114,7 +114,7 @@ class BusyBoxStagingTest(unittest.TestCase):
 
 
 class ToolchainGuestBuildTest(unittest.TestCase):
-    def test_busybox_bundle_has_executable_archive_and_symbol_tools(self):
+    def test_every_bundle_has_executable_archive_and_symbol_tools(self):
         class ReachedCorpus(Exception):
             pass
 
@@ -140,12 +140,9 @@ class ToolchainGuestBuildTest(unittest.TestCase):
                             builder.build(arch, root / "work", dev, root / image.CORPUS, milestone)
                         for tool, alias in (("bar", "ar"), ("bnm", "nm")):
                             path = bindir / alias
-                            if milestone is None:
-                                self.assertFalse(path.exists(), path)
-                            else:
-                                self.assertTrue(path.is_file(), f"missing bundle executable: {alias}")
-                                self.assertEqual(digest(path), digest(bindir / tool))
-                                self.assertEqual(image.fixture_mode(path.relative_to(root)), 0o755)
+                            self.assertTrue(path.is_file(), f"missing bundle executable: {alias}")
+                            self.assertEqual(digest(path), digest(bindir / tool))
+                            self.assertEqual(image.fixture_mode(path.relative_to(root)), 0o755)
 
     def test_arm_guest_link_inputs_are_keyed_by_content(self):
         script = ROOT / "scripts/toolchain-build-tools.py"
