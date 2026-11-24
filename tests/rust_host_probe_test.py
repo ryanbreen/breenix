@@ -36,7 +36,8 @@ class StartupProbeTest(unittest.TestCase):
                 release = HOSTED / f'{arch}-breenix/release'
                 suite = release / 'suite-rust-host'
                 probe = release / 'rust-host-startup-probe'
-                for elf in (probe, suite):
+                process_probe = release / 'rust-host-process-probe'
+                for elf in (probe, suite, process_probe):
                     self.assertTrue(elf.is_file(), f'missing hosted build output: {elf}')
                     [report] = json.loads(subprocess.check_output([
                         READELF, '--elf-output-style=JSON', '--file-header', '--program-headers',
@@ -63,11 +64,12 @@ class StartupProbeTest(unittest.TestCase):
                     subprocess.run([mke2fs, '-q', '-t', 'ext2', '-F', image, '16M'], check=True, capture_output=True)
                     original = image.read_bytes()
                     for selection in ('', 'time', 'all', 'rust-host-other'):
-                        STAGE.stage(image, selection, suite, probe)
+                        STAGE.stage(image, selection, suite, probe, process_probe)
                         self.assertEqual(image.read_bytes(), original)
-                    STAGE.stage(image, 'time,rust-host', suite, probe)
+                    STAGE.stage(image, 'time,rust-host', suite, probe, process_probe)
                     for path, elf in [('/sbin/suite-rust-host', suite),
-                                      ('/usr/libexec/breenix/rust-host/startup-probe', probe)]:
+                                      ('/usr/libexec/breenix/rust-host/startup-probe', probe),
+                                      ('/usr/libexec/breenix/rust-host/process-probe', process_probe)]:
                         self.assertEqual(subprocess.check_output(
                             [debugfs, '-R', f'cat {path}', image], stderr=subprocess.DEVNULL,
                         ), elf.read_bytes())

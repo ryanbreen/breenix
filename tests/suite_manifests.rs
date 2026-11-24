@@ -2267,6 +2267,9 @@ fn rust_host_manifest_matches_table() {
     assert_eq!(suite.id, manifest.id);
     assert_eq!(manifest.categories.len(), 1);
     assert_eq!(manifest.categories[0].entry.id, "libc-surface");
-    assert_eq!(manifest.categories[0].cases.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), ["startup-order"]);
+    assert_eq!(
+        manifest.categories[0].cases.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+        ["startup-order", "memory-limits", "file-mmap", "process-pipes-locks"],
+    );
     assert_eq!(guest, manifest.categories);
 }
