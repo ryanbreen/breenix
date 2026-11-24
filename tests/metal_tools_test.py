@@ -2115,6 +2115,11 @@ class DriverTest(StateTest):
                  re.findall(r'\("([^"]+)", "([^"]+)", ([\d_]+)\)', table)}
         # Ruling 68 bounds configure and inventory from serial timestamps and
         # reserves two thirds of the observed applet-group time for each half.
+        # Source: boot 20261123T234655Z-metal. Serial seconds: configure started
+        # (oldconfig) at 1795478939 and inventory at 1795478958, so the 20 s and
+        # 13 s figures are bounds with 1 s resolution; build-applets-3 objects
+        # 65-94 took 34.280 s. Each 50 s applet-half allowance exceeds the whole
+        # 34.28 s group, so either half fits even if the split is uneven.
         busybox_ms = {
             'unpack': 6941, 'patch': 4908, 'generators': 22189,
             'configure': 20000, 'inventory': 13000,

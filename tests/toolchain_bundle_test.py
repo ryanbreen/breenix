@@ -285,8 +285,8 @@ class ToolchainBundleTest(unittest.TestCase):
     def arm_bundle_has_cc_and_make(self):
         self.assertEqual(set(self.record["tools"]), {"bas", "bld", "bar", "bnm", "bcc", "bmake"})
         self.assertEqual({path.name for path in (self.dev / "bin").iterdir()},
-                         {"bas", "bld", "bar", "bnm", "cc", "make", "as", "ld"})
-        for tool, alias in (("bas", "as"), ("bld", "ld")):
+                         {"bas", "bld", "bar", "bnm", "cc", "make", "as", "ld", "ar", "nm"})
+        for tool, alias in (("bas", "as"), ("bld", "ld"), ("bar", "ar"), ("bnm", "nm")):
             self.assertEqual(digest(self.dev / "bin" / tool), digest(self.dev / "bin" / alias))
         self.assertEqual(self.record["candidateProducer"], "mac-bcc" if sys.platform == "darwin" else "host-bcc")
 
