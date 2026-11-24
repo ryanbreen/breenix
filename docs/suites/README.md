@@ -1980,10 +1980,11 @@ watchdog. The other libc-surface cases use the 10-second default.
 The three `unwind` cases spawn the hosted `unwind-probe` and require its pipe
 output and successful exit. They check nested catches and destructor order, a
 panic across a C frame compiled with unwind tables, and bitwise floating-point
-round trips through C callbacks. K2's first R240 boot gives each unwind case a
-provisional 60-second watchdog. The 270 seconds of case allowances require a
-338-second DONE budget with 25% reserve, within metal's 420-second suite
-deadline. ARM64 guest unwind and float ABI acceptance remain pending.
+round trips through C callbacks. R240 boot `20261124T160035Z-metal` measured
+50 ms, 1 ms, and 1 ms in that order. Doubling those times and rounding up to
+10 seconds gives the default watchdog for the three cases. The resulting
+120 seconds of case allowances require 150 seconds with 25% reserve, within
+metal's 420-second DONE deadline. ARM64 guest acceptance follows at A5.
 
 `process-pipes-locks` uses a standalone probe that calls `posix_spawn` on
 itself. It checks close-on-exec pipe descriptors, wait statuses for exit 3
