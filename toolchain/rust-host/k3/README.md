@@ -19,7 +19,13 @@ and the pinned build's `lib/compiler_builtins.rlib`. It uses the pinned Rust
 LLVM's `llvm-nm`, checks both architectures and rejects unwinder references.
 A failed build does not claim that its missing archives pass that check.
 
-The recorded builds stop at Ninja's duplicate `libc++abi.a` rule, before
-compilation. CMake's Generic platform converts a shared target to static, so
-no runtime archives or adjacent notices were produced. The coordinator ledger
-has the blocker and the CMake warnings; these records do not claim a build pass.
+The Generic build generated duplicate archive rules: `cxxabi_shared` and
+`cxxabi_static` both claimed `libc++abi.a`; `cxx_shared` and `cxx_static`
+likewise claimed `libc++.a`. The Breenix platform module gives the shared
+targets distinct `.so` names. The script requests only static targets and
+stages only the two named archives.
+
+Both recorded configurations succeed. Both builds stop at an unknown
+`pthread_mutex_t` in libc++'s pthread support. Breenix's `pthread.h` declares
+that type inside its `__BREENIX_POSIX` feature gate. The records also retain
+compiler and CMake warnings. No archives or adjacent notices were produced.

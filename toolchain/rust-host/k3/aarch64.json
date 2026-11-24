@@ -13,7 +13,8 @@
       "<llvm-project>/runtimes",
       "-B",
       "<scratch>/build",
-      "-DCMAKE_SYSTEM_NAME=Generic",
+      "-DCMAKE_SYSTEM_NAME=Breenix",
+      "-DCMAKE_MODULE_PATH=<repo>/toolchain/cmake",
       "-DCMAKE_SYSTEM_PROCESSOR=aarch64",
       "-DCMAKE_BUILD_TYPE=Release",
       "-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY",
@@ -39,7 +40,8 @@
       "-DLIBCXX_ENABLE_SHARED=OFF",
       "-DLIBCXXABI_ENABLE_SHARED=OFF",
       "-DLIBCXX_ENABLE_STATIC=ON",
-      "-DLIBCXXABI_ENABLE_STATIC=ON"
+      "-DLIBCXXABI_ENABLE_STATIC=ON",
+      "-DLIBCXX_ENABLE_STATIC_ABI_LIBRARY=OFF"
     ],
     "exit_status": 0,
     "first_error": null,
@@ -47,11 +49,9 @@
       "CMake Warning (deprecated) at <llvm-project>/cmake/Modules/CMakePolicy.cmake:6 (cmake_policy):",
       "CMake Warning (author) at /opt/homebrew/share/cmake/Modules/GNUInstallDirs.cmake:448 (message):",
       "CMake Warning (policy) at <llvm-project>/llvm/cmake/modules/HandleLLVMOptions.cmake:905 (CHECK_C_SOURCE_COMPILES):",
-      "CMake Warning (author) at <llvm-project>/libcxxabi/src/CMakeLists.txt:197 (add_library):",
-      "CMake Warning (author) at <llvm-project>/libcxx/src/CMakeLists.txt:176 (add_library):",
       "CMake Warning (unused-cli):"
     ],
-    "log_sha256": "37e48581bfb837fa7aa0b82c9169d141027c1909bda0a07fc1a786652ab5bf21"
+    "log_sha256": "2afb7778a4fd1d83f75205e2a06f030e6fefdce981592c2f3fa9c98e3d31b7fe"
   },
   "build": {
     "command": [
@@ -63,13 +63,21 @@
       "--parallel",
       "4",
       "--target",
-      "cxx",
-      "cxxabi"
+      "cxx_static",
+      "cxxabi_static"
     ],
     "exit_status": 1,
-    "first_error": "ninja: error: build.ninja:794: multiple rules generate lib/libc++abi.a",
-    "warnings": [],
-    "log_sha256": "fb21e3ef9b793fb6b3298d65b8722dbea2df6e9d5a0c61bcc45e71281a638c0a"
+    "first_error": "<scratch>/build/include/c++/v1/__thread/support/pthread.h:47:9: error: unknown type name 'pthread_mutex_t'",
+    "warnings": [
+      "<scratch>/build/include/c++/v1/tuple:313:13: warning: builtin __reference_binds_to_temporary is deprecated; use __reference_constructs_from_temporary instead [-Wdeprecated-builtins]",
+      "<scratch>/build/include/c++/v1/tuple:313:13: warning: builtin __reference_binds_to_temporary is deprecated; use __reference_constructs_from_temporary instead [-Wdeprecated-builtins]",
+      "<scratch>/build/include/c++/v1/tuple:313:13: warning: builtin __reference_binds_to_temporary is deprecated; use __reference_constructs_from_temporary instead [-Wdeprecated-builtins]"
+    ],
+    "log_sha256": "1087f4ece558b0dfe4f3399829a868c18053768770cd6d411e3d2421b7439cb4"
   },
-  "archives": {}
+  "archives": {},
+  "generic_collision_targets": [
+    "cxxabi_shared",
+    "cxxabi_static"
+  ]
 }

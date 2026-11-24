@@ -30,7 +30,8 @@ def configure_command(root, llvm, directory, arch):
     flags = f'-nostdlibinc -isystem {root / "libs/libbreenix-libc/include"}'
     triple = f'{arch}-unknown-none'
     return (*BACKGROUND, 'cmake', '-G', 'Ninja', '-S', str(llvm / 'runtimes'), '-B', str(directory),
-            '-DCMAKE_SYSTEM_NAME=Generic', f'-DCMAKE_SYSTEM_PROCESSOR={arch}',
+            '-DCMAKE_SYSTEM_NAME=Breenix', f'-DCMAKE_MODULE_PATH={root / "toolchain/cmake"}',
+            f'-DCMAKE_SYSTEM_PROCESSOR={arch}',
             '-DCMAKE_BUILD_TYPE=Release', '-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY',
             '-DCMAKE_C_COMPILER=/usr/bin/clang', '-DCMAKE_CXX_COMPILER=/usr/bin/clang++',
             '-DCMAKE_ASM_COMPILER=/usr/bin/clang', f'-DCMAKE_C_COMPILER_TARGET={triple}',
@@ -43,7 +44,7 @@ def configure_command(root, llvm, directory, arch):
             '-DLIBCXX_ENABLE_EXCEPTIONS=OFF', '-DLIBCXXABI_ENABLE_EXCEPTIONS=OFF',
             '-DLIBCXXABI_USE_LLVM_UNWINDER=OFF', '-DLIBCXX_ENABLE_SHARED=OFF',
             '-DLIBCXXABI_ENABLE_SHARED=OFF', '-DLIBCXX_ENABLE_STATIC=ON',
-            '-DLIBCXXABI_ENABLE_STATIC=ON')
+            '-DLIBCXXABI_ENABLE_STATIC=ON', '-DLIBCXX_ENABLE_STATIC_ABI_LIBRARY=OFF')
 
 
 def run_stage(name, command, scratch, llvm):
@@ -80,7 +81,7 @@ def main():
     archives = {}
     if configure['exit_status'] == 0:
         built = run_stage('build', (*BACKGROUND, 'cmake', '--build', str(directory), '--parallel', '4',
-                                    '--target', 'cxx', 'cxxabi'), scratch, llvm)
+                                    '--target', 'cxx_static', 'cxxabi_static'), scratch, llvm)
         if built['exit_status'] == 0:
             for name, component in (('libc++.a', 'libcxx'), ('libc++abi.a', 'libcxxabi')):
                 archive, = directory.rglob(name)
@@ -90,7 +91,8 @@ def main():
     verify_llvm(ROOT, llvm)
     record = {'claim-lint:ok': 'claim-lint:ok: compiler target triples, see toolchain/rust-host/k3/README.md',
               'arch': args.arch, 'llvm_project': pin, 'configure': configure,
-              'build': built, 'archives': archives}
+              'build': built, 'archives': archives,
+              'generic_collision_targets': ['cxxabi_shared', 'cxxabi_static']}
     args.record.parent.mkdir(parents=True, exist_ok=True)
     args.record.write_text(json.dumps(record, indent=2) + '\n')
     print(json.dumps(record, indent=2))
