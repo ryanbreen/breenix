@@ -145,3 +145,37 @@ fn lookup_resolves_personality_and_lsda() {
         ErrorKind::UnreadablePointer(0x3000),
     );
 }
+
+#[test]
+fn lsda_relative_bases_and_missing_got() {
+    use crate::cfi::Endian;
+    use crate::ehframe::{ErrorKind, Memory, Section, Sections};
+
+    struct NoMemory;
+    impl Memory for NoMemory {
+        fn read(&self, _: u64, _: usize) -> Option<&[u8]> { None }
+    }
+    // LSB Core 5.0 table 10-6: the LSDA is textrel or datarel.
+    let frame = [
+        16, 0, 0, 0, 0, 0, 0, 0, 1, b'z', b'L', b'R', 0, 1, 0x78, 16,
+        2, 0x2b, 0x1b, 0, 16, 0, 0, 0, 24, 0, 0, 0,
+        0xe4, 0, 0, 0, 4, 0, 0, 0, 4, 0x10, 0, 0, 0,
+    ];
+    let decode = |bytes: &[u8], data_base| {
+        Sections {
+            frame: Section { address: 0x1000, bytes },
+            header: None,
+            text_base: Some(0x4000),
+            data_base,
+            address_size: 8,
+            endian: Endian::Little,
+        }.find_fde(&NoMemory, 0x1100).map(|fde| fde.unwrap().lsda)
+    };
+    assert_eq!(decode(&frame, Some(0x5000)).unwrap(), Some(0x4010));
+    let mut datarel = frame;
+    datarel[17] = 0x3b;
+    assert_eq!(decode(&datarel, Some(0x5000)).unwrap(), Some(0x5010));
+    let error = decode(&datarel, None).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::MissingDataBase);
+    assert_eq!(error.offset, 37);
+}

@@ -16,11 +16,13 @@ INTERFACES = Counter(
     _Unwind_FindEnclosingFunction
     _Unwind_ForcedUnwind
     _Unwind_GetCFA
+    _Unwind_GetDataRelBase
     _Unwind_GetGR
     _Unwind_GetIP
     _Unwind_GetIPInfo
     _Unwind_GetLanguageSpecificData
     _Unwind_GetRegionStart
+    _Unwind_GetTextRelBase
     _Unwind_RaiseException
     _Unwind_Resume
     _Unwind_Resume_or_Rethrow
