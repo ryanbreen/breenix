@@ -378,7 +378,12 @@
     {
       "id": "kernel-asm",
       "title": "The kernel's assembly dialect through our assembler",
-      "cases": []
+      "cases": [
+        {
+          "id": "breakpoint-roundtrip",
+          "title": "A user breakpoint delivers SIGTRAP and resumes after INT3"
+        }
+      ]
     }
   ]
 }

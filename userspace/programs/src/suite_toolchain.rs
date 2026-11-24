@@ -326,6 +326,17 @@ static SUITE: Suite = suite(
                 case("kbuild-host-programs", "Run the newly built Kbuild host generators", kbuild_host_programs),
             ],
         ),
+        category(
+            "kernel-asm",
+            "The kernel's assembly dialect through our assembler",
+            &[
+                case(
+                    "breakpoint-roundtrip",
+                    "A user breakpoint delivers SIGTRAP and resumes after INT3",
+                    breakpoint_roundtrip,
+                ),
+            ],
+        ),
     ],
 );
 
@@ -2020,4 +2031,73 @@ fn kbuild_host_programs() -> CaseResult {
         return Err("native Kbuild generator receipt missing".into());
     }
     Ok(())
+}
+
+#[cfg(target_arch = "x86_64")]
+mod breakpoint {
+    use super::{signal, CaseResult};
+    use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
+
+    const TRAP_BRKPT: i32 = 1;
+    static DELIVERIES: AtomicUsize = AtomicUsize::new(0);
+    static CODE: AtomicI32 = AtomicI32::new(0);
+    static ADDRESS: AtomicUsize = AtomicUsize::new(0);
+
+    // The x86 siginfo_t prefix through si_addr, including ABI padding.
+    #[repr(C)]
+    struct FaultInfo {
+        signo: i32,
+        errno: i32,
+        code: i32,
+        addr: usize,
+    }
+
+    extern "C" fn handler(sig: i32, info: *const FaultInfo, _context: *const u8) {
+        // SAFETY: SA_SIGINFO gives the handler a readable siginfo_t on its stack.
+        if let Some(info) = unsafe { info.as_ref() } {
+            if sig == signal::SIGTRAP && info.signo == sig {
+                CODE.store(info.code, Ordering::Relaxed);
+                ADDRESS.store(info.addr, Ordering::Relaxed);
+                DELIVERIES.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    pub(super) fn roundtrip() -> CaseResult {
+        let action = signal::Sigaction {
+            handler: handler as *const () as u64,
+            flags: signal::SA_SIGINFO | signal::SA_RESTORER,
+            restorer: signal::__restore_rt as *const () as u64,
+            mask: 0,
+        };
+        signal::sigaction(signal::SIGTRAP, Some(&action), None)?;
+        let address: usize;
+        let resumed: usize;
+        // Increment the marker at the instruction where INT3 must resume.
+        unsafe {
+            core::arch::asm!(
+                "lea {address}, [rip + 2f]",
+                "xor {resumed:e}, {resumed:e}",
+                "2: int3",
+                "inc {resumed}",
+                address = out(reg) address,
+                resumed = out(reg) resumed,
+                options(nostack),
+            );
+        }
+        if resumed != 1 || DELIVERIES.load(Ordering::Relaxed) != 1
+            || CODE.load(Ordering::Relaxed) != TRAP_BRKPT
+            || ADDRESS.load(Ordering::Relaxed) != address
+        {
+            return Err("INT3 did not deliver SIGTRAP with TRAP_BRKPT and resume after the breakpoint".into());
+        }
+        Ok(())
+    }
+}
+
+fn breakpoint_roundtrip() -> CaseResult {
+    #[cfg(target_arch = "x86_64")]
+    return breakpoint::roundtrip();
+    #[cfg(not(target_arch = "x86_64"))]
+    Err("x86 kernel assembly requires the x86 target".into())
 }
