@@ -3,7 +3,9 @@ import json
 import os
 import re
 import struct
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -12,6 +14,53 @@ sys.path.insert(0, str(ROOT / 'scripts/rust-host'))
 
 
 class LlvmPortTest(unittest.TestCase):
+    def test_support_patch_is_breenix_only(self):
+        patch = ROOT / 'toolchain/rust-host/k4/patches/llvm-support-breenix.patch'
+        allowed = re.compile(r'llvm/lib/(?:Support/Unix/[^/]+|TargetParser/Host\.cpp)')
+        hunks = re.split(r'(?m)^@@ .* @@[^\n]*\n|^--- ', patch.read_text())
+        current = None
+        count = 0
+        for block in hunks[1:]:
+            if block.startswith('a/'):
+                before, after, *_ = block.splitlines()
+                current = before[2:]
+                self.assertIsNotNone(allowed.fullmatch(current), current)
+                self.assertEqual(after, '+++ b/' + current)
+                continue
+            self.assertIsNotNone(current)
+            inside = False
+            found_branch = False
+            count += 1
+            for line in block.splitlines():
+                if line.startswith('diff --git '):
+                    break
+                self.assertFalse(line.startswith('-'), f'{current}: {line}')
+                if line in ('+#if defined(__breenix__)', '+#elif defined(__breenix__)'):
+                    self.assertFalse(inside, f'{current}: {line}')
+                    inside = True
+                    found_branch = True
+                elif re.match(r'^[ +]#(?:elif|else|endif)\b', line):
+                    if line.startswith('+'):
+                        self.assertTrue(inside, f'{current}: {line}')
+                    inside = False
+                elif line.startswith('+'):
+                    self.assertTrue(inside, f'{current}: {line}')
+                    self.assertFalse(line.startswith('+#'), f'{current}: {line}')
+            self.assertTrue(found_branch, current)
+        self.assertGreater(count, 0)
+
+    def test_support_patch_leaves_pinned_llvm_clean(self):
+        import llvm_port
+
+        llvm = llvm_port.default_llvm().resolve()
+        pin = llvm_port.verify_llvm(ROOT, llvm)
+        with tempfile.TemporaryDirectory(prefix='breenix-llvm-support-') as temp:
+            source = llvm_port.prepare_support_source(llvm, Path(temp))
+            self.assertFalse((source / 'llvm').is_symlink())
+            subprocess.run(['git', 'apply', '--no-index', '--reverse', '--check',
+                            llvm_port.SUPPORT_PATCH], cwd=source, check=True)
+        self.assertEqual(llvm_port.verify_llvm(ROOT, llvm), pin)
+
     def test_llvm_libraries_build_both_arches(self):
         import llvm_port
 
@@ -28,6 +77,10 @@ class LlvmPortTest(unittest.TestCase):
                 self.assertEqual(record['llvm_project'], pin)
                 self.assertEqual(record['build']['exit_status'], 0, record['build']['first_error'])
                 self.assertIsNone(record['build']['first_error'])
+                self.assertEqual(record['pinned_llvm_status'], {'before': '', 'after': ''})
+                self.assertEqual(record['support_patch']['text'], llvm_port.SUPPORT_PATCH.read_text())
+                self.assertEqual(record['support_patch']['sha256'], llvm_port.digest(llvm_port.SUPPORT_PATCH))
+                self.assertEqual(record['support_patch'], checked_in['support_patch'])
                 self.assertEqual(record['archives'], checked_in['archives'])
                 self.assertEqual(record['objects'], checked_in['objects'])
 
