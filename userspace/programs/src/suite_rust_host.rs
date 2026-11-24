@@ -4,9 +4,9 @@
 use breenix_suite::suite::{case, category, suite, CaseError, CaseResult, Suite};
 use libbreenix::{errno::Errno, error::Error, io, memory, process, types::OwnedFd};
 use std::ffi::{c_void, CString};
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::hint::black_box;
-use std::io::{Read, Seek, Write};
+use std::io::Read;
 use std::mem::MaybeUninit;
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::DirBuilderExt;
@@ -311,28 +311,18 @@ impl Drop for Scratch {
 }
 
 fn file_mmap() -> CaseResult {
-    let scratch = Scratch::new("mmap")?;
-    let path = scratch.0.join("rlib-sized");
-    let mut file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .open(&path)
-        .map_err(|err| format!("create mapping fixture: {err}"))?;
-    let mut buffer = vec![0u8; FILE_CHUNK_BYTES];
-    for offset in (0..FILE_BYTES).step_by(FILE_CHUNK_BYTES) {
-        let count = buffer.len().min(FILE_BYTES - offset);
-        for (word, bytes) in buffer[..count].chunks_mut(8).enumerate() {
-            let position = (offset + word * 8) as u64;
-            bytes.copy_from_slice(&position.to_le_bytes()[..bytes.len()]);
-        }
-        file.write_all(&buffer[..count])
-            .map_err(|err| format!("write mapping fixture at {offset}: {err}"))?;
+    let mut file = File::open("/usr/libexec/breenix/rust-host/mmap-fixture")
+        .map_err(|err| format!("open mapping fixture: {err}"))?;
+    let len = file
+        .metadata()
+        .map_err(|err| format!("stat mapping fixture: {err}"))?
+        .len();
+    if len != FILE_BYTES as u64 {
+        return Err(format!("mapping fixture has {len} bytes, expected {FILE_BYTES}").into());
     }
-    file.rewind()
-        .map_err(|err| format!("rewind mapping fixture: {err}"))?;
+    let mut buffer = vec![0u8; FILE_CHUNK_BYTES];
     let mapping = Mapping::private(FILE_BYTES, memory::PROT_READ, 0, file.as_raw_fd())?;
-    // SAFETY: the file was written to the mapped length and is kept open and unchanged.
+    // SAFETY: the fixture has the mapped length and is kept open and unchanged.
     let mapped = unsafe { std::slice::from_raw_parts(mapping.address.cast::<u8>(), mapping.len) };
     for (index, chunk) in mapped.chunks(buffer.len()).enumerate() {
         let offset = index * FILE_CHUNK_BYTES;
