@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Configure pinned LLVM for Breenix using native TableGen."""
+"""Configure and compile pinned LLVM for Breenix using native TableGen."""
 import argparse
 import json
 import os
@@ -12,6 +12,7 @@ from cxx_runtime import (ARCHES, BACKGROUND, CLANGXX, LLVM_BIN, POSIX_FLAG,
                          default_llvm, digest, output, run_stage, verify_llvm)
 
 ROOT = Path(__file__).resolve().parents[2]
+RECORDS = ROOT / 'toolchain/rust-host/k4'
 
 
 def bootstrap_targets(root):
@@ -19,19 +20,76 @@ def bootstrap_targets(root):
     return re.search(r'^#llvm\.targets = "([^"]+)"$', text, re.MULTILINE).group(1)
 
 
+def compile_targets(directory):
+    archives = []
+    objects = []
+    listing = output('ninja', '-C', directory, '-t', 'targets', 'all')
+    for line in listing.splitlines():
+        target, _, rule = line.partition(': ')
+        if (target.startswith('lib/libLLVM') and target.endswith('.a')
+                and 'STATIC_LIBRARY_LINKER' in rule):
+            archives.append(target)
+        elif (target.startswith(('tools/llc/', 'tools/llvm-mc/')) and target.endswith('.o')
+              and 'COMPILER' in rule):
+            objects.append(target)
+    if not archives or any(not any(target.startswith(f'tools/{tool}/') for target in objects)
+                           for tool in ('llc', 'llvm-mc')):
+        raise ValueError('Ninja graph is missing LLVM libraries or tool objects')
+    return sorted(archives), sorted(objects)
+
+
+def compile_llvm(arch, run, llvm, pin, targets):
+    receipt = run / 'record.json'
+    record = json.loads(receipt.read_text())
+    clangxx = {'path': CLANGXX, 'version': output(CLANGXX, '--version').splitlines()[0]}
+    if (record['arch'], record['llvm_project'], record['targets'], record['clang++']) != (
+            arch, pin, targets, clangxx):
+        raise ValueError('u1 configuration has a different architecture, pin, targets or compiler')
+    configure = record['configure']
+    if (configure['exit_status'] or configure['first_error'] is not None
+            or digest(run / 'configure.log') != configure['log_sha256']):
+        raise ValueError('u1 cross configuration did not pass or its log changed')
+
+    directory = run / 'build'
+    archives, objects = compile_targets(directory)
+    expected = json.loads((RECORDS / f'{arch}.json').read_text())
+    allowlist = expected.get('build', {}).get('allowlist', {})
+    command = (*BACKGROUND, 'cmake', '--build', str(directory), '--parallel', '4',
+               '--target', *archives, *objects)
+    stage = run_stage('build', command, run, llvm, timeout=10800, allowlist=allowlist)
+    stage['allowlist'] = allowlist
+    record['build'] = stage
+    record.pop('archives', None)
+    record.pop('objects', None)
+    if stage['exit_status'] == 0:
+        record['archives'] = {name: digest(directory / name) for name in archives}
+        record['objects'] = {name: digest(directory / name) for name in objects}
+    verify_llvm(ROOT, llvm)
+    receipt.write_text(json.dumps(record, indent=2) + '\n')
+    if stage['first_error'] is not None:
+        raise RuntimeError(f"build: {stage['first_error']}")
+    if stage['diagnostics'] != allowlist:
+        raise RuntimeError('build diagnostics differ from the exact per-architecture allowlist')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('arch', choices=ARCHES)
     parser.add_argument('--scratch', type=Path, required=True)
     parser.add_argument('--native-run', type=Path)
-    parser.add_argument('--resume', action='store_true')
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--resume', action='store_true')
+    mode.add_argument('--compile', action='store_true', help='build archives and tool objects in the u1 directory')
     args = parser.parse_args()
     llvm = default_llvm().resolve()
     pin = verify_llvm(ROOT, llvm)
     run = args.scratch.resolve()
-    run.mkdir(parents=True, exist_ok=args.resume)
     targets = bootstrap_targets(ROOT)
-    allowed = json.loads((ROOT / 'toolchain/rust-host/k4/native-allowlist.json').read_text())
+    if args.compile:
+        compile_llvm(args.arch, run, llvm, pin, targets)
+        return
+    run.mkdir(parents=True, exist_ok=args.resume)
+    allowed = json.loads((RECORDS / 'native-allowlist.json').read_text())
     flat = {k: v for category in allowed.values() for k, v in category.items()}
     native = run / 'native'
     common = ('-DLLVM_INCLUDE_TESTS=OFF', '-DLLVM_INCLUDE_BENCHMARKS=OFF',
