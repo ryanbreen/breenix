@@ -1,0 +1,39 @@
+{
+  "prediction": "X0.6: I expect static rustc configuration to be undocumented for all rustc shared libraries.",
+  "prediction_time": "2026-11-24T06:22:54.631400+00:00",
+  "time": "2026-11-24T06:31:37.579232+00:00",
+  "probe_tree_commit": "666252fd61839b9e9b1bc9e777a0c84c5cf3dc6d",
+  "question": "static-rustc",
+  "verdict": "undocumented",
+  "citations": [
+    {
+      "location": "bootstrap.example.toml:139",
+      "text": "# Whether to build LLVM as a dynamically linked library (as opposed to statically linked)."
+    },
+    {
+      "location": "bootstrap.example.toml:809",
+      "text": "# \"thin\" or \"fat\" to apply Thin/Fat LTO to the `rustc_driver` dylib, or \"off\" to disable"
+    },
+    {
+      "location": "bootstrap.example.toml:973",
+      "text": "# Force static or dynamic linkage of the standard library for this target. If"
+    },
+    {
+      "location": "bootstrap.example.toml:974",
+      "text": "# this target is a host for rustc, this will also affect the linkage of the"
+    },
+    {
+      "location": "bootstrap.example.toml:975",
+      "text": "# compiler itself. This is useful for building rustc on targets that normally"
+    },
+    {
+      "location": "bootstrap.example.toml:976",
+      "text": "# only use static libraries. If unset, the target's default linkage is used."
+    },
+    {
+      "location": "bootstrap.example.toml:977",
+      "text": "#crt-static = <platform-specific> (bool)"
+    }
+  ],
+  "assessment": "The bootstrap example documents target crt-static for std and says it affects compiler linkage on a compiler host. It documents static LLVM and the rustc_driver dylib separately. These settings do not document a configuration that eliminates both librustc_driver and libstd shared objects. This is a documentation verdict; X2 still has to inspect the linked artifacts for O4."
+}

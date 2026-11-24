@@ -1,0 +1,30 @@
+{
+  "command": [
+    "git rev-parse <ref>:compiler",
+    "git ls-tree <ref> src/llvm-project",
+    "git diff --quiet 706f244db 666252fd -- compiler src/llvm-project"
+  ],
+  "tools": {
+    "git": {
+      "version": "git version 2.55.0",
+      "sha256": "5f0351f649aa1321345229d5256fc8043517778b134a3b4571ecdc3818f124b2"
+    }
+  },
+  "output": {
+    "trees": {
+      "706f244db": {
+        "compiler": "0bd3f539f25a43b9653e9244d611953115f1482c",
+        "llvm_project": "ed6566573eb21b00a3f87815e14ff766fd56ef42"
+      },
+      "666252fd61839b9e9b1bc9e777a0c84c5cf3dc6d": {
+        "compiler": "fb2afea4e4c3798e49fe6d7c6e3242acb4b1e331",
+        "llvm_project": "ed6566573eb21b00a3f87815e14ff766fd56ef42"
+      }
+    },
+    "diff_status": 1
+  },
+  "verdict": "different",
+  "time": "2026-11-24T04:35:01.938471+00:00",
+  "probe_tree_status": "",
+  "observation": "Tree IDs were read before the ledger line; no prediction is claimed (ruling 76)."
+}

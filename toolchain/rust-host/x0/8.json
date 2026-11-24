@@ -1,0 +1,41 @@
+{
+  "prediction": "X0.8: I expect AArch64 f64 C ABI arguments and results to use vector registers.",
+  "prediction_time": "2026-11-24T06:22:54.631400+00:00",
+  "time": "2026-11-24T06:29:54.744160+00:00",
+  "probe_tree_commit": "666252fd61839b9e9b1bc9e777a0c84c5cf3dc6d",
+  "measurement": {
+    "command": [
+      "taskpolicy",
+      "-b",
+      "rustup",
+      "run",
+      "nightly-2025-06-24",
+      "cargo",
+      "rustc",
+      "--offline",
+      "--release",
+      "--lib",
+      "-Z",
+      "build-std=core",
+      "--target",
+      "<repo>/aarch64-breenix.json",
+      "--target-dir",
+      "target",
+      "--",
+      "--emit=obj"
+    ],
+    "disassemble": [
+      "llvm-objdump",
+      "--disassemble-symbols=x0_float",
+      "--no-show-raw-insn",
+      "<object>"
+    ],
+    "target_sha256": "05bbcb28fb27cd0c942ea9fcd7bf03abdc396f0e5009119a97a7dc5ebe7e0ebd",
+    "source": "#![no_std]\n\n#[no_mangle]\npub extern \"C\" fn x0_float(value: f64) -> f64 {\n    value + value\n}\n",
+    "instructions": [
+      "fadd d0, d0, d0",
+      "ret"
+    ],
+    "verdict": "vector-registers"
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "command": [
+    "taskpolicy",
+    "-b",
+    "nice",
+    "-n",
+    "15",
+    "python3",
+    "x.py",
+    "build",
+    "--stage",
+    "1",
+    "--config",
+    "/tmp/breenix-x0-2.um7PQyMd/bootstrap.toml"
+  ],
+  "environment": {
+    "RUST_TARGET_PATH": "/tmp/breenix-x0-2.um7PQyMd",
+    "CARGO_BUILD_JOBS": "4",
+    "CARGO_HOME": "/tmp/breenix-x0-2.um7PQyMd/cargo",
+    "CARGO_TERM_COLOR": "never",
+    "PYTHONDONTWRITEBYTECODE": "1"
+  },
+  "bootstrap_toml": "[build]\nhost = [\"/tmp/breenix-x0-2.um7PQyMd/x86_64-breenix-hosted.probe.json\"]\ntarget = [\"/tmp/breenix-x0-2.um7PQyMd/x86_64-breenix-hosted.probe.json\"]\nbuild-dir = \"/tmp/breenix-x0-2.um7PQyMd/build\"\njobs = 4\ndocs = false\nsubmodules = false\nlocked-deps = true\n\n[llvm]\ndownload-ci-llvm = false\n\n[rust]\ndeny-warnings = true\n",
+  "time": "2026-11-24T04:54:59.049276+00:00",
+  "prediction_time": "2026-11-24T04:54:59.047205+00:00",
+  "prediction": "I expect the bootstrap invocation to fail at hosted-target selection or for its compiler host lookup to fail before a stage-1 compiler can identify itself. The documented cross-host recipe includes compiler-side registration, and the existing Breenix target entries described in ruling 77 name other targets. An explicit custom-host refusal is route-fails. A tool or dependency error before host selection, or expiration of the 40-minute cap, leaves the question incomplete.",
+  "timeout_seconds": 2400,
+  "timed_out": true,
+  "elapsed_seconds": 2400.044,
+  "exit_status": -9,
+  "probe_tree_commit": "666252fd61839b9e9b1bc9e777a0c84c5cf3dc6d",
+  "probe_tree_status_before": "",
+  "probe_tree_status": "",
+  "bootstrap_log_sha256": "60abfc04bb20aed233974b45ea3bf46af4f45793829a882ded14ba15a5c5cefb",
+  "working_directory": "/tmp/breenix-x0-2.um7PQyMd/rust",
+  "target_sha256": "48a0d3be12c75ba625232d7002ee01075992cae2ba32e47d8778ad07eb1b2dd8",
+  "stage0_snapshot": "beta-2025-05-26 (aarch64-apple-darwin)",
+  "last_completed_step": "Bootstrap executable built and native LLVM CMake configuration generated. Last completed Ninja action for aarch64-apple-darwin LLVM: [2500/3704] Building CXX object lib/Target/ARM/CMakeFiles/LLVMARMCodeGen.dir/ARMBranchTargets.cpp.o",
+  "first_error": "error: Could not read c9eb0652469db42bb1cb84f27615cf466c7c3108",
+  "first_error_context": "Git emitted this before stage-0 downloads. Bootstrap continued through those downloads and built its executable.",
+  "terminal_diagnostic": "The 40-minute deadline expired during the native LLVM build.",
+  "verdict": "incomplete",
+  "assessment": "Bootstrap created the custom target output directory and began building native LLVM. The log has no hosted compiler build or host-identity result.",
+  "warnings": [
+    "CMake Warning (deprecated) at <scratch>/rust/src/llvm-project/cmake/Modules/CMakePolicy.cmake:6 (cmake_policy):"
+  ]
+}
