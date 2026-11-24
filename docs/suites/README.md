@@ -1975,13 +1975,15 @@ reads. The mapping sizes and thread count come from
 [`toolchain/rust-host/x0/9.json`](../../toolchain/rust-host/x0/9.json).
 The comparison took 27.279 seconds in R240 boot `20261124T103128Z-metal`.
 Doubling that time gives 54.558 seconds, which rounds up to the named 60-second
-watchdog. The other cases use the 10-second default.
+watchdog. The other libc-surface cases use the 10-second default.
 
 The three `unwind` cases spawn the hosted `unwind-probe` and require its pipe
 output and successful exit. They check nested catches and destructor order, a
 panic across a C frame compiled with unwind tables, and bitwise floating-point
-round trips through C callbacks. ARM64 guest unwind and float ABI acceptance
-remain pending.
+round trips through C callbacks. K2's first R240 boot gives each unwind case a
+provisional 60-second watchdog. The 270 seconds of case allowances require a
+338-second DONE budget with 25% reserve, within metal's 420-second suite
+deadline. ARM64 guest unwind and float ABI acceptance remain pending.
 
 `process-pipes-locks` uses a standalone probe that calls `posix_spawn` on
 itself. It checks close-on-exec pipe descriptors, wait statuses for exit 3

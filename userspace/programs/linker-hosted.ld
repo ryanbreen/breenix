@@ -31,6 +31,9 @@ SECTIONS {
         /* Static references have relocations resolved by this fixed-address link.
          * Their descriptors must remain read-only, like the tables they name. */
         *(.data.rel.ro .data.rel.ro.*)
+        /* The CIE's indirect personality encoding reads this pointer from
+         * the same read-only load as the unwind tables. */
+        *(.data.DW.ref.rust_eh_personality)
     } :rodata
 
     /* LSB Core 5.0 Table 10-4 and §10.6. Only the index is described

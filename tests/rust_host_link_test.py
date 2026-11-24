@@ -189,9 +189,9 @@ def elf_differences(reference, candidate, readelf):
                 names = sorted({section["Name"]["Name"] for section in left + right})
                 differences.append(f"section layout [{index}] {', '.join(names)}")
 
-    # gABI §3.2: NOBITS occupies no file bytes. Its size and address are
-    # checked above. Compare every other section, including all SHF_ALLOC
-    # bytes, and permit hash changes only in non-allocatable string data.
+    # The section-header comparison covers the size and address of NOBITS,
+    # which has no file payload (gABI §3.2). Hash exceptions apply only to
+    # non-allocatable string data.
     outside_before, outside_after = bytearray(before), bytearray(after)
     for left, right in zip(base_sections, sections):
         name = right["Name"]["Name"]
