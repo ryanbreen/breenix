@@ -51,6 +51,7 @@ def watch(process, serial, mode, suite, idle_exit, gate_timeout, suite_hold, clo
           until_desktop_ready=False, suite_deadlines=None):
     suite_deadlines = suite_deadlines or {}
     suites = suite.split(",")
+    gate_timeout_current = deadline_for_suite(gate_timeout, suite_deadlines, suites, 0)
     progress = BootProgress(serial)
     desktop_stages = []
     if until_desktop_ready:
@@ -97,6 +98,12 @@ def watch(process, serial, mode, suite, idle_exit, gate_timeout, suite_hold, clo
                 clock.observe(text)
                 if mode == "suite" and "," in suite and SEQUENCE["boundaries"](text) > boundaries:
                     boundaries, started = SEQUENCE["boundaries"](text), now
+                    if suite_deadlines:
+                        for line in reversed(SEQUENCE["lines"](text)):
+                            match = re.fullmatch(r"SUITE (\S+) START cases=\d+", line)
+                            if match and match[1] in suites:
+                                gate_timeout_current = suite_deadlines.get(match[1], gate_timeout)
+                                break
                 result = DONE["completion"](text, mode, suite, only)
                 if result is not None:
                     if result[1].startswith("fatal kernel output:"):
@@ -114,9 +121,7 @@ def watch(process, serial, mode, suite, idle_exit, gate_timeout, suite_hold, clo
         elif mode in COMPLETING_MODES and progress.stalled():
             progress.record()
             return "stalled"
-        elif (mode == "suite" or until_desktop_ready) and gate_timeout > 0 and now - started >= deadline_for_suite(
-                gate_timeout, suite_deadlines, suites, max(0, boundaries - 1)):
-            gate_timeout_current = deadline_for_suite(gate_timeout, suite_deadlines, suites, max(0, boundaries - 1))
+        elif (mode == "suite" or until_desktop_ready) and gate_timeout_current > 0 and now - started >= gate_timeout_current:
             expected = "desktop-ready" if until_desktop_ready else "suite DONE"
             print(f"==> No {expected} within {gate_timeout_current:g}s; stopping the VM", flush=True)
             return "deadline"
