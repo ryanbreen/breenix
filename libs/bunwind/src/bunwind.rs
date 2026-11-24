@@ -429,3 +429,5 @@ fn forced_unwind_calls_stop_before_personality_and_at_end() {
         ]
     );
 }
+
+include!("arch_test.rs");
