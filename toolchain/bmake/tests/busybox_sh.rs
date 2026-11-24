@@ -50,3 +50,9 @@ fn phase_refuses_missing_or_altered_predecessor() {
 fn object_group_chain_equals_directory_goal() {
     run("object_group_chain_equals_directory_goal");
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn audit_phases_equal_driver_phases() {
+    run("audit_phases_equal_driver_phases");
+}

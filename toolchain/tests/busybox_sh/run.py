@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import runpy
 import shutil
@@ -227,6 +228,23 @@ def object_group_chain_equals_directory_goal(directory):
     pass_phase(fixture, output, env, "build-applets")
     actual = directory_outputs()
     assert actual == expected, sorted(name for name, digest in expected.items() if actual.get(name) != digest)
+
+
+def audit_phases_equal_driver_phases(directory):
+    arms = []
+    body = DRIVER.read_text().split("run_phase() {", 1)[1].split("\n}\n", 1)[0]
+    for line in body.splitlines():
+        arm = re.match(r"\s+([a-z][a-z0-9-]*)\)(.*)", line)
+        if arm:
+            arms.append((arm.group(1), arm.group(2)))
+    names = [name for name, _ in arms]
+    chain = [
+        name for name, rest in arms
+        if ";" not in rest.strip().removesuffix(";;") and not any(other.startswith(name + "-") for other in names)
+    ]
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    audit = runpy.run_path(str(Path(__file__).resolve().parent / "audit.py"), run_name="audit_phases")
+    assert list(audit["PHASES"]) == chain, (list(audit["PHASES"]), chain)
 
 
 if __name__ == "__main__":
