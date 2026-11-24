@@ -1968,9 +1968,10 @@ finds the load, TLS and unwind-index program headers of its executable.
 
 `memory-limits` raises the soft stack limit to 8 MiB and recurses to 7 MiB on
 the case's main thread. Seven pthreads with 8 MiB stacks touch one byte per
-64 KiB across the 165,164,496-byte anonymous mapping. `file-mmap` compares a
-read-only private mapping of the deterministic 163,067,344-byte fixture with
-sequential reads. The sizes and thread count come from
+64 KiB across the 165,164,496-byte anonymous mapping. The 8 MiB stack sizes and
+7 MiB recursion depth are stress-test inputs. `file-mmap` compares a read-only
+private mapping of the deterministic 163,067,344-byte fixture with sequential
+reads. The mapping sizes and thread count come from
 [`toolchain/rust-host/x0/9.json`](../../toolchain/rust-host/x0/9.json).
 The comparison took 27.279 seconds in R240 boot `20261124T103128Z-metal`.
 Doubling that time gives 54.558 seconds, which rounds up to the named 60-second
