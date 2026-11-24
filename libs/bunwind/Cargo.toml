@@ -1,0 +1,27 @@
+[package]
+name = "bunwind"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[lib]
+crate-type = ["rlib", "staticlib"]
+doctest = false
+
+[profile.dev]
+panic = "abort"
+overflow-checks = true
+
+[profile.release]
+panic = "abort"
+overflow-checks = true
+codegen-units = 1
+incremental = false
+
+[profile.test]
+overflow-checks = true
+
+[profile.bench]
+overflow-checks = true
