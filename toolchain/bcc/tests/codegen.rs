@@ -144,6 +144,62 @@ fn aarch64_assignment_survives_second_return() {
     "]);
 }
 
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn aarch64_setjmp_assignment_survives_second_return_without_attribute() {
+    // N1570 7.13.1.1 and POSIX sigsetjmp and _setjmp return again through
+    // longjmp. Their names are reserved (N1570 7.1.3), so the call returns
+    // twice even when a program erases __attribute__ with a macro, as a
+    // non-GNU configuration header may. The routine below stands in for
+    // the library setjmp and overwrites the caller's inactive stack.
+    aarch64_check_exit(&["--cc-flag=-std=gnu11", "--asm", r"
+        .section .text
+        .extern failure_sink
+        .global setjmp
+        setjmp:
+            adrp x9, saved
+            add x9, x9, :lo12:saved
+            stp x29, x30, [x9]
+            mov x10, sp
+            str x10, [x9, #16]
+            mov w0, #0
+            ret
+        .global resume_context
+        resume_context:
+            adrp x9, failure_sink
+            add x9, x9, :lo12:failure_sink
+            str x9, [sp, #-16]!
+            adrp x9, saved
+            add x9, x9, :lo12:saved
+            ldp x29, x30, [x9]
+            ldr x10, [x9, #16]
+            mov sp, x10
+            mov w0, #3
+            ret
+        .section .bss
+        .balign 8
+        saved:
+            .zero 24
+    ", r"
+        #define __attribute__(x)
+        int setjmp(long *) __attribute__((returns_twice));
+        void resume_context(void);
+        volatile int failure_sink;
+        static volatile int resumed;
+        static long environment[24];
+
+        int main(void) {
+            volatile int value;
+            value = setjmp(environment);
+            if (value == 0 && !resumed) {
+                resumed = 1;
+                resume_context();
+            }
+            return value == 3 && failure_sink == 0 ? 42 : 7;
+        }
+    "]);
+}
+
 #[test]
 fn bcc_has_no_host_float_parse() {
     let mut directories = vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
