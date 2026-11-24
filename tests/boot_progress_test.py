@@ -182,6 +182,17 @@ class ProgressTest(unittest.TestCase):
                 self.assertGreater(limits[0], 10_000)
                 self.assertLess(limits[0], monitor['STALL_SECONDS'] * 1000)
 
+    def test_cxx_runtime_case_allowances(self):
+        runner = (ROOT / 'libs/libbreenix/src/suite.rs').read_text()
+        table = runner.split('pub const NAMED_CASE_ALLOWANCES:', 1)[1].split(';', 1)[0]
+        entries = re.findall(r'\(\s*"cxx-runtime"\s*,\s*"([^"]+)"\s*,\s*([\d_]+)\s*,?\s*\)', table)
+        self.assertEqual(dict((case, int(limit.replace('_', ''))) for case, limit in entries), {
+            'cxx-runtime/static-init-order': 60_000,
+            'cxx-runtime/guarded-static-8-threads': 60_000,
+            'cxx-runtime/containers-and-threads': 60_000,
+        })
+        self.assertEqual(len(entries), 3)
+
     def test_rust_host_case_allowances(self):
         runner = (ROOT / 'libs/libbreenix/src/suite.rs').read_text()
         manifest = json.loads((ROOT / 'docs/suites/rust-host.json').read_text())

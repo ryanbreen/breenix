@@ -1,6 +1,8 @@
 """Verify the artifacts produced by build.sh --cxx-runtime on both targets."""
 
 import json
+import importlib.util
+import tempfile
 import os
 from pathlib import Path
 import re
@@ -15,6 +17,36 @@ MACHINES = {'x86_64': 'EM_X86_64', 'aarch64': 'EM_AARCH64'}
 
 
 class CxxRuntimeProbeTest(unittest.TestCase):
+    def test_probes_staged_only_under_cxx_runtime(self):
+        spec = importlib.util.spec_from_file_location('rust_host_stage', ROOT / 'scripts/rust_host_stage.py')
+        stage = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(stage)
+        debugfs, mke2fs = stage.require_e2fsprogs('debugfs', 'mke2fs')
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            image = root / 'root.img'
+            suite = root / 'suite'
+            suite.write_bytes(b'\x7fELFsuite')
+            probes = []
+            for name in PROBES:
+                probe = root / name
+                probe.write_bytes(b'\x7fELF' + name.encode())
+                probes.append(probe)
+            subprocess.run([mke2fs, '-q', '-t', 'ext2', '-F', image, '16M'], check=True, capture_output=True)
+            original = image.read_bytes()
+            for selection in ('', 'all', 'rust-host', 'cxx-runtime-other'):
+                stage.stage_cxx_runtime(image, selection, suite, probes)
+                self.assertEqual(image.read_bytes(), original)
+            stage.stage_cxx_runtime(image, 'time,cxx-runtime', suite, probes)
+            for path, elf in [('/sbin/suite-cxx-runtime', suite), *[
+                (f'/usr/libexec/breenix/cxx-runtime/{name}', probe)
+                for name, probe in zip(PROBES, probes)
+            ]]:
+                self.assertEqual(subprocess.check_output([debugfs, '-R', f'cat {path}', image],
+                                                        stderr=subprocess.DEVNULL), elf.read_bytes())
+                self.assertIn(b'Mode:  0755', subprocess.check_output(
+                    [debugfs, '-R', f'stat {path}', image], stderr=subprocess.DEVNULL))
+
     def test_probes_are_static_hosted_elfs(self):
         readelf = os.environ.get('LLVM_READELF', LLVM_BIN / 'llvm-readelf')
         nm = os.environ.get('LLVM_NM', LLVM_BIN / 'llvm-nm')
