@@ -632,7 +632,8 @@ pub(crate) fn analyze_with_rounding_math<'a>(
     }
     for function in &mut functions {
         function.noreturn = symbols[function.name].noreturn;
-        function.returns_twice = symbols[function.name].returns_twice;
+        function.returns_twice = symbols[function.name].returns_twice
+            || (function.linkage == Linkage::External && library_returns_twice(function.name));
     }
     for thread in &mut thread_objects.definitions {
         // N1570 6.9.2: a remaining external tentative array with no bound
@@ -998,6 +999,14 @@ fn function<'a>(
         body,
         locals,
     })
+}
+
+/// N1570 7.13.1.1 setjmp and the POSIX sigsetjmp and _setjmp return again
+/// through longjmp. Their external names are reserved (N1570 7.1.3), so a
+/// call to one returns twice even where a configuration macro has erased the
+/// header's returns_twice attribute.
+fn library_returns_twice(name: &str) -> bool {
+    matches!(name, "setjmp" | "_setjmp" | "sigsetjmp")
 }
 
 fn has_prototype(ty: &Type) -> bool {
