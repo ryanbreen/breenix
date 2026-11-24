@@ -98,7 +98,12 @@ fn walk_blocks<'a>(body: &mut [Statement<'a>], pass: &mut impl BlockPass<'a>) {
                 }
                 pass.boundary();
             }
-            Statement::Jump(_) => pass.boundary(),
+            // A "memory" clobber is a compiler barrier. Clear local facts at asm boundaries,
+            // including facts about the output slots.
+            Statement::InlineAsm(_)
+            | Statement::SaveVlaStack(_)
+            | Statement::RestoreVlaStack(_)
+            | Statement::Jump(..) => pass.boundary(),
             Statement::Empty => {}
         }
     }
@@ -113,7 +118,17 @@ impl<'a> BlockPass<'a> for EscapeAnalysis<'_> {
                 self.0[local] = false;
             }
         }
-        children(expr, |child| self.expression(child));
+        if let ExpressionKind::StatementExpression {
+            statements, value, ..
+        } = &mut expr.kind
+        {
+            walk_blocks(statements, self);
+            if let Some(value) = value {
+                self.expression(value);
+            }
+        } else {
+            children(expr, |child| self.expression(child));
+        }
     }
 }
 
@@ -151,6 +166,12 @@ fn children<'a>(expr: &mut Expression<'a>, mut visit: impl FnMut(&mut Expression
             visit(left);
             visit(right);
         }
+        OmittedConditional {
+            value, fallback, ..
+        } => {
+            visit(value);
+            visit(fallback);
+        }
         Conditional { condition, yes, no } => {
             visit(condition);
             visit(yes);
@@ -168,7 +189,15 @@ fn children<'a>(expr: &mut Expression<'a>, mut visit: impl FnMut(&mut Expression
                 visit(&mut argument.expr);
             }
         }
-        Identifier(_) | ThreadLocal(_) | Local(_) | StaticLiteral(_) | Integer(_) | Float(_)
-        | String(_) | FltRounds => {}
+        Identifier(_)
+        | ThreadLocal(_)
+        | Local(_)
+        | StaticLiteral(_)
+        | Integer(_)
+        | Float(_)
+        | String(_)
+        | Unreachable
+        | FltRounds
+        | StatementExpression { .. } => {}
     }
 }

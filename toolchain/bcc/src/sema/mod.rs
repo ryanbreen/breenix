@@ -1,8 +1,8 @@
 //! Typed translation units for the hello subset of N1570.
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
-use crate::parse::{self, Storage};
+use crate::parse::{self, Storage, SymbolAttributes};
 use crate::pp::{self, Diagnostic, Lexeme, Position, Preprocessed, Standard, Target};
 use crate::types::{BitField, Float, Integer, Kind, Record, Type};
 pub use parse::{Binary, Unary};
@@ -13,13 +13,17 @@ mod builtins;
 mod c11;
 mod dump;
 mod float;
+mod inline_asm;
 mod thread;
 mod varargs;
+mod vla;
 
 pub(crate) use body::{canonical, constant_integer};
 pub(super) use c11::{check_static_assertion, type_alignment};
 
 pub use atomic::AtomicOp;
+pub use inline_asm::{AsmRegister, InlineAsm};
+pub(crate) use inline_asm::asm_register;
 pub(crate) use atomic::SEQ_CST;
 pub use thread::{StaticAddress, ThreadData, ThreadInitializer, ThreadObject};
 
@@ -31,6 +35,8 @@ pub struct TranslationUnit<'a> {
     pub static_literals: Vec<StaticLiteral<'a>>,
     pub thread_objects: Vec<ThreadObject<'a>>,
     pub records: Vec<Record<'a>>,
+    pub(crate) symbol_attributes: BTreeMap<&'a str, SymbolAttributes>,
+    pub(crate) aliases: BTreeMap<&'a str, Linkage>,
     rounding_math: bool,
 }
 
@@ -63,6 +69,9 @@ pub struct Function<'a> {
     pub noreturn: bool,
     pub returns_twice: bool,
     pub has_alloca: bool,
+    pub(crate) has_statement_expressions: bool,
+    pub(crate) jump_regions: HashMap<usize, usize>,
+    pub(crate) vla_targets: HashMap<usize, usize>,
     pub body: Option<Vec<Statement<'a>>>,
     pub locals: Vec<Local<'a>>,
 }
@@ -118,7 +127,7 @@ pub enum LocalStorage<'a> {
     ThreadExtern(Linkage),
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Initializer<'a> {
     pub offset: usize,
     pub bit_field: Option<BitField>,
@@ -126,19 +135,19 @@ pub struct Initializer<'a> {
     pub ty: Type,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum InitValue<'a> {
     Expression(Expression<'a>),
     Zero,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ObjectInitializer<'a> {
     pub values: Vec<Initializer<'a>>,
     pub zero_bytes: usize,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum Statement<'a> {
     Block(Vec<Self>),
     Empty,
@@ -147,6 +156,7 @@ pub enum Statement<'a> {
         initializer: ObjectInitializer<'a>,
     },
     Expression(Expression<'a>),
+    InlineAsm(InlineAsm<'a>),
     Return(Option<Expression<'a>>),
     If {
         condition: Expression<'a>,
@@ -164,22 +174,30 @@ pub enum Statement<'a> {
     Switch {
         value: Expression<'a>,
         ty: Type,
-        cases: Vec<(Option<u64>, usize)>,
+        cases: Vec<(Option<CaseRange>, usize)>,
         body: Box<Self>,
         break_to: usize,
     },
     Label(usize, Box<Self>),
-    Jump(usize),
+    Jump(usize, Vec<usize>),
+    SaveVlaStack(usize),
+    RestoreVlaStack(usize),
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
+pub struct CaseRange {
+    pub low: u64,
+    pub high: u64,
+}
+
+#[derive(Clone, Debug)]
 pub struct Expression<'a> {
     pub(crate) site: &'a Lexeme,
     pub kind: ExpressionKind<'a>,
     pub ty: Type,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum ExpressionKind<'a> {
     Identifier(&'a str),
     ThreadLocal(&'a str),
@@ -201,10 +219,20 @@ pub enum ExpressionKind<'a> {
     },
     Comma(Box<Expression<'a>>, Box<Expression<'a>>),
     Cast(Box<Expression<'a>>),
+    StatementExpression {
+        region: usize,
+        statements: Vec<Statement<'a>>,
+        value: Option<Box<Expression<'a>>>,
+    },
     Conditional {
         condition: Box<Expression<'a>>,
         yes: Box<Expression<'a>>,
         no: Box<Expression<'a>>,
+    },
+    OmittedConditional {
+        value: Box<Expression<'a>>,
+        fallback: Box<Expression<'a>>,
+        saved: Box<Expression<'a>>,
     },
     Assignment {
         left: Box<Expression<'a>>,
@@ -230,6 +258,7 @@ pub enum ExpressionKind<'a> {
     },
     VaEnd(Box<Expression<'a>>),
     FltRounds,
+    Unreachable,
     FloatClass {
         operand: Box<Expression<'a>>,
         // GCC §7.2.1 order: FP_NAN, FP_INFINITE, FP_NORMAL, FP_SUBNORMAL, FP_ZERO.
@@ -248,7 +277,7 @@ pub enum ExpressionKind<'a> {
     },
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Argument<'a> {
     pub expr: Expression<'a>,
     /// Type passed after assignment conversion or default argument promotion.
@@ -343,8 +372,13 @@ pub(crate) fn analyze_with_rounding_math<'a>(
     target: Target,
     rounding_math: bool,
 ) -> Result<TranslationUnit<'a>, Diagnostic> {
-    let standard = source.standard;
+    let language = Language {
+        standard: source.standard,
+        alloca_alias: source.standard.is_gnu() && !source.no_builtin_alloca,
+    };
     let mut symbols = HashMap::new();
+    let mut symbol_attributes = BTreeMap::<&str, SymbolAttributes>::new();
+    let mut attribute_sites = HashMap::new();
     let mut functions = Vec::new();
     let mut objects = Vec::new();
     let mut static_objects = Vec::new();
@@ -388,19 +422,31 @@ pub(crate) fn analyze_with_rounding_math<'a>(
                     &symbols,
                     &result,
                     target,
-                    standard,
+                    language,
                     &[],
                     &record_scope,
                     &mut block_externs,
                 );
                 context.static_assertion(assertion)?;
             }
-            parse::Declaration::Function(declaration) => {
+            parse::Declaration::Function(mut declaration) => {
+                let site = declaration.name;
+                let key = site.text.as_ref();
+                let attributes = std::mem::take(&mut declaration.symbol);
+                let alias = attributes.alias.is_some();
+                if attributes != SymbolAttributes::default() {
+                    attribute_sites.insert(key, site);
+                    symbol_attributes.entry(key).or_default().merge(attributes, site)?;
+                }
+                if alias && declaration.body.is_some() {
+                    return Err(site.error("function alias cannot have a body"));
+                }
                 functions.push(function(
                     declaration,
+                    alias,
                     &mut symbols,
                     target,
-                    standard,
+                    language,
                     &record_scope,
                     &mut block_externs,
                 )?);
@@ -409,6 +455,15 @@ pub(crate) fn analyze_with_rounding_math<'a>(
                 let name = variable.name;
                 let key = name.text.as_ref();
                 let previous = symbols.get(key);
+                let alias = variable.symbol.alias.is_some();
+                if variable.symbol != SymbolAttributes::default() {
+                    attribute_sites.insert(key, name);
+                    symbol_attributes.entry(key).or_default()
+                        .merge(std::mem::take(&mut variable.symbol), name)?;
+                }
+                if alias && (variable.initializer.is_some() || variable.storage != Storage::Extern) {
+                    return Err(name.error("object alias requires extern with no initializer"));
+                }
                 let explicit = variable.initializer.is_some();
                 let definition = explicit || variable.storage != Storage::Extern;
                 let alignment = variable.alignment.filter(|&align| align != 0);
@@ -449,7 +504,7 @@ pub(crate) fn analyze_with_rounding_math<'a>(
                         &symbols,
                         &result,
                         target,
-                        standard,
+                        language,
                         &[],
                         &record_scope,
                         &mut block_externs,
@@ -462,7 +517,7 @@ pub(crate) fn analyze_with_rounding_math<'a>(
                         Symbol {
                             ty: variable.ty.clone(),
                             linkage,
-                            defined,
+                            defined: defined || alias || previous.is_some_and(|symbol| symbol.defined),
                             thread_local: true,
                             alignment: alignment.or(previous.and_then(|prior| prior.alignment)),
                             noreturn: false,
@@ -491,7 +546,7 @@ pub(crate) fn analyze_with_rounding_math<'a>(
                         }
                         thread::merge_types(&mut variable.ty, &symbol.ty)
                             .ok_or_else(|| name.error("incompatible redeclaration"))?;
-                        if explicit && symbol.defined {
+                        if (explicit || alias) && symbol.defined {
                             return Err(name.error("object already defined"));
                         }
                     }
@@ -504,7 +559,7 @@ pub(crate) fn analyze_with_rounding_math<'a>(
                             ty: variable.ty.clone(),
                             linkage,
                             thread_local: false,
-                            defined: explicit || previous.is_some_and(|symbol| symbol.defined),
+                            defined: explicit || alias || previous.is_some_and(|symbol| symbol.defined),
                             alignment: alignment.or(previous.and_then(|prior| prior.alignment)),
                             noreturn: false,
                             returns_twice: false,
@@ -516,7 +571,7 @@ pub(crate) fn analyze_with_rounding_math<'a>(
                             &symbols,
                             &result,
                             target,
-                            standard,
+                            language,
                             &[],
                             &record_scope,
                             &mut block_externs,
@@ -549,13 +604,16 @@ pub(crate) fn analyze_with_rounding_math<'a>(
         }
     }
     for (key, site) in tentative {
+        if symbol_attributes.get(key).is_some_and(|attrs| attrs.alias.is_some()) {
+            return Err(site.error("object alias cannot have a tentative definition"));
+        }
         let symbol = symbols.get_mut(key).unwrap();
         if symbol.defined {
             continue;
         }
         let mut ty = symbol.ty.clone();
-        if let Kind::Array(_, count @ 0) = &mut ty.kind {
-            *count = 1;
+        if let Kind::Array(_, count @ None) = &mut ty.kind {
+            *count = Some(1);
         }
         ty.resolve_records(&|id| records[id].definition.as_ref().map(|d| d.layout));
         thread::check_layout(&ty, &site.site)?;
@@ -579,8 +637,8 @@ pub(crate) fn analyze_with_rounding_math<'a>(
     for thread in &mut thread_objects.definitions {
         // N1570 6.9.2: a remaining external tentative array with no bound
         // is completed as a one-element array at the end of the unit.
-        if let Kind::Array(_, count @ 0) = &mut thread.object.ty.kind {
-            *count = 1;
+        if let Kind::Array(_, count @ None) = &mut thread.object.ty.kind {
+            *count = Some(1);
         }
         thread
             .object
@@ -588,6 +646,7 @@ pub(crate) fn analyze_with_rounding_math<'a>(
             .resolve_records(&|id| records[id].definition.as_ref().map(|d| d.layout));
         thread::check_layout(&thread.object.ty, thread.object.site)?;
     }
+    let aliases = validate_symbol_attributes(&symbol_attributes, &attribute_sites, &symbols)?;
     Ok(TranslationUnit {
         functions,
         objects,
@@ -595,8 +654,49 @@ pub(crate) fn analyze_with_rounding_math<'a>(
         static_literals,
         thread_objects: thread_objects.definitions,
         records,
+        symbol_attributes,
+        aliases,
         rounding_math,
     })
+}
+
+// GNU Common Attributes: aliases denote definitions in this translation
+// unit and share the target's type and storage. gABI §§5.2–5.4 supply
+// external linkage for weak binding and non-default visibility.
+fn validate_symbol_attributes<'a>(
+    attributes: &BTreeMap<&'a str, SymbolAttributes>,
+    sites: &HashMap<&str, &Lexeme>,
+    symbols: &HashMap<&str, Symbol>,
+) -> Result<BTreeMap<&'a str, Linkage>, Diagnostic> {
+    let mut aliases = BTreeMap::new();
+    for (&name, attrs) in attributes {
+        let symbol = &symbols[name];
+        let site = sites[name];
+        if symbol.linkage == Linkage::Internal && (attrs.weak || attrs.visibility.is_some()) {
+            return Err(site.error("weak and visibility attributes require external linkage"));
+        }
+        let Some(target) = &attrs.alias else {
+            continue;
+        };
+        if attrs.section.is_some() {
+            return Err(site.error("an alias takes its section from its target"));
+        }
+        let target_symbol = symbols.get(target.as_str()).filter(|symbol| symbol.defined)
+            .ok_or_else(|| site.error(format!("alias target '{target}' is not defined in this translation unit")))?;
+        if symbol.thread_local != target_symbol.thread_local || !symbol.ty.compatible(&target_symbol.ty) {
+            return Err(site.error(format!("alias target '{target}' has an incompatible type")));
+        }
+        let mut current = target.as_str();
+        let mut seen = HashSet::from([name]);
+        while let Some(next) = attributes.get(current).and_then(|attrs| attrs.alias.as_deref()) {
+            if !seen.insert(current) {
+                return Err(site.error("alias cycle"));
+            }
+            current = next;
+        }
+        aliases.insert(name, symbol.linkage);
+    }
+    Ok(aliases)
 }
 
 struct RecordScope<'a, 'r> {
@@ -634,57 +734,129 @@ struct Symbol {
 
 /// Evaluate a layout constant while parsing a record. The parser's record
 /// table already reflects which tags are complete at this point.
-pub(super) fn layout_constant<'a, 't>(
-    expression: parse::Expression<'a>,
+pub(super) struct ParserExpressionScope<'a, 'r> {
     target: Target,
     standard: Standard,
-    records: &[Record<'a>],
-    names: impl Iterator<Item = (&'a str, Option<&'t Type>)>,
-) -> Result<u64, Diagnostic> {
-    let mut symbols = HashMap::new();
-    for (name, ty) in names {
-        if let Some(ty) = ty {
-            symbols.insert(
-                name,
-                Symbol {
-                    ty: ty.clone(),
-                    linkage: Linkage::External,
-                    defined: false,
-                    thread_local: false,
-                    alignment: None,
-                    noreturn: false,
-                    returns_twice: false,
-                },
-            );
-        } else {
-            symbols.remove(name);
+    records: &'r [Record<'a>],
+    symbols: HashMap<&'a str, Symbol>,
+}
+
+impl<'a, 'r> ParserExpressionScope<'a, 'r> {
+    pub(super) fn new<'t>(
+        target: Target,
+        standard: Standard,
+        records: &'r [Record<'a>],
+        names: impl Iterator<Item = (&'a str, Option<&'t Type>)>,
+    ) -> Self {
+        let mut symbols = HashMap::new();
+        for (name, ty) in names {
+            if let Some(ty) = ty {
+                symbols.insert(
+                    name,
+                    Symbol {
+                        ty: ty.clone(),
+                        linkage: Linkage::External,
+                        defined: false,
+                        thread_local: false,
+                        alignment: None,
+                        noreturn: false,
+                        returns_twice: false,
+                    },
+                );
+            } else {
+                symbols.remove(name);
+            }
+        }
+        Self {
+            target,
+            standard,
+            records,
+            symbols,
         }
     }
-    let record_scope = RecordScope {
-        records,
-        token_order: None,
-    };
-    let result = Type::new(Kind::Void);
-    let mut block_externs = HashMap::new();
-    let mut context = FunctionBody::new(
-        &symbols,
-        &result,
-        target,
-        standard,
-        &[],
-        &record_scope,
-        &mut block_externs,
-    );
-    let expr = context.expression(expression)?;
-    body::constant_integer(&expr, target)
+
+    fn with_body<T>(
+        &self,
+        evaluate: impl FnOnce(&mut FunctionBody<'a, '_>) -> Result<T, Diagnostic>,
+    ) -> Result<T, Diagnostic> {
+        let record_scope = RecordScope {
+            records: self.records,
+            token_order: None,
+        };
+        let result = Type::new(Kind::Void);
+        let mut block_externs = HashMap::new();
+        let mut context = FunctionBody::new(
+            &self.symbols,
+            &result,
+            self.target,
+            Language { standard: self.standard, alloca_alias: false },
+            &[],
+            &record_scope,
+            &mut block_externs,
+        );
+        evaluate(&mut context)
+    }
+
+    fn expression(&self, expression: parse::Expression<'a>) -> Result<Expression<'a>, Diagnostic> {
+        self.with_body(|body| body.expression(expression))
+    }
+
+}
+
+// N1570 §6.7.9p22 completes an array at the end of its initializer.
+// Later parser-time constant evaluation (e.g. sizeof in an enum) needs it.
+pub(super) fn complete_initializer_array<'a>(
+    site: &'a Lexeme,
+    mut ty: Type,
+    initializer: parse::Initializer<'a>,
+    scope: ParserExpressionScope<'a, '_>,
+) -> Result<Type, Diagnostic> {
+    scope.with_body(|body| body.object_initializer(site, &mut ty, initializer, false))?;
+    Ok(ty)
+}
+
+pub(super) fn layout_constant<'a>(
+    expression: parse::Expression<'a>,
+    scope: ParserExpressionScope<'a, '_>,
+) -> Result<u64, Diagnostic> {
+    let expr = scope.expression(expression)?;
+    body::constant_integer(&expr, scope.target)
         .ok_or_else(|| expr.site.error("expected an integer constant expression"))
+}
+
+// N1570 §6.7.2.2: each enumerator has an integer constant expression.
+// Preserve the initializer's signedness before selecting the enum type.
+pub(super) fn enumerator_constant<'a>(
+    expression: parse::Expression<'a>,
+    scope: ParserExpressionScope<'a, '_>,
+) -> Result<i128, Diagnostic> {
+    let expr = scope.expression(expression)?;
+    let bits = body::constant_integer(&expr, scope.target)
+        .ok_or_else(|| expr.site.error("expected an integer constant expression"))?;
+    Ok(if matches!(expr.ty.kind, Kind::Integer(ty) if ty.is_signed(scope.target)) {
+        i128::from(bits as i64)
+    } else {
+        i128::from(bits)
+    })
+}
+
+pub(super) fn typeof_expression<'a>(
+    expression: parse::Expression<'a>,
+    scope: ParserExpressionScope<'a, '_>,
+) -> Result<Type, Diagnostic> {
+    let expr = scope.expression(expression)?;
+    if expr.bit_field().is_some() {
+        return Err(expr.site.error("typeof cannot be applied to a bit-field"));
+    }
+    Ok(expr.ty)
 }
 
 fn function<'a>(
     declaration: parse::Function<'a>,
+    alias: bool,
     symbols: &mut HashMap<&'a str, Symbol>,
     target: Target,
-    standard: Standard,
+    language: Language,
     records: &RecordScope<'a, '_>,
     block_externs: &mut HashMap<&'a str, Type>,
 ) -> Result<Function<'a>, Diagnostic> {
@@ -698,6 +870,7 @@ fn function<'a>(
         returns_twice,
         storage,
         body,
+        ..
     } = declaration;
     let defined = body.is_some();
     if defined && matches!(result.kind, Kind::Record(record) if record.layout.is_none()) {
@@ -761,7 +934,7 @@ fn function<'a>(
         {
             return Err(name.error("incompatible redeclaration"));
         }
-        if symbol.defined && defined {
+        if symbol.defined && (defined || alias) {
             return Err(name.error("function already defined"));
         }
     }
@@ -776,32 +949,40 @@ fn function<'a>(
         Symbol {
             ty: visible_type,
             linkage,
-            defined: defined || previous.is_some_and(|s| s.defined),
+            defined: defined || alias || previous.is_some_and(|s| s.defined),
             thread_local: false,
             alignment: None,
             noreturn,
             returns_twice,
         },
     );
-    let (body, locals, has_alloca) = if let Some(statements) = body {
-        let mut context = FunctionBody::new(
-            symbols,
-            &result,
-            target,
-            standard,
-            &params,
-            records,
-            block_externs,
-        );
-        if variadic {
-            context.last_named_parameter = params.len().checked_sub(1);
-        }
-        let body = context.statements(statements)?;
-        context.validate_labels()?;
-        (Some(body), context.locals, context.has_alloca)
-    } else {
-        (None, Vec::new(), false)
-    };
+    let (body, locals, has_alloca, has_statement_expressions, jump_regions, vla_targets) =
+        if let Some(statements) = body {
+            let mut context = FunctionBody::new(
+                symbols,
+                &result,
+                target,
+                language,
+                &params,
+                records,
+                block_externs,
+            );
+            if variadic {
+                context.last_named_parameter = params.len().checked_sub(1);
+            }
+            let body = context.statements(statements)?;
+            context.validate_labels()?;
+            (
+                Some(body),
+                context.locals,
+                context.has_alloca,
+                context.has_statement_expressions,
+                context.jump_regions,
+                context.vla_targets,
+            )
+        } else {
+            (None, Vec::new(), false, false, HashMap::new(), HashMap::new())
+        };
     Ok(Function {
         name: &name.text,
         site: &name.site,
@@ -811,6 +992,9 @@ fn function<'a>(
         noreturn,
         returns_twice,
         has_alloca,
+        has_statement_expressions,
+        jump_regions,
+        vla_targets,
         body,
         locals,
     })
@@ -844,6 +1028,12 @@ fn compatible_function_declaration(a: &Type, a_defined: bool, b: &Type, b_define
             || a_params.len() == b_params.len())
 }
 
+#[derive(Clone, Copy)]
+struct Language {
+    standard: Standard,
+    alloca_alias: bool,
+}
+
 struct FunctionBody<'a, 's> {
     symbols: &'s HashMap<&'a str, Symbol>,
     // Declarations with external linkage must agree even when they occur
@@ -851,6 +1041,8 @@ struct FunctionBody<'a, 's> {
     block_externs: &'s mut HashMap<&'a str, Type>,
     locals: Vec<Local<'a>>,
     has_alloca: bool,
+    alloca_alias: bool,
+    static_initialization: bool,
     // Present only while analyzing file-scope initializers.
     static_literals: Option<(usize, Vec<StaticLiteral<'a>>)>,
     scopes: Vec<HashMap<&'a str, usize>>,
@@ -859,6 +1051,12 @@ struct FunctionBody<'a, 's> {
     exit: Option<usize>,
     repeat: Option<usize>,
     switches: Vec<body::Switch>,
+    statement_regions: Vec<usize>,
+    has_statement_expressions: bool,
+    jump_regions: HashMap<usize, usize>,
+    vla_scopes: Vec<usize>,
+    vla_targets: HashMap<usize, usize>,
+    vla_locals: HashMap<usize, vla::Array>,
     result: &'s Type,
     last_named_parameter: Option<usize>,
     target: Target,
@@ -879,7 +1077,7 @@ impl<'a> FunctionBody<'a, '_> {
             (Some(expr), Kind::Void) => Err(expr.site.error("void function cannot return a value")),
             (Some(expr), _) => {
                 let expr = self.expression(expr)?;
-                if !assignable(self.result, &expr, self.target) {
+                if !assignable(self.result, &expr, self.target, self.standard) {
                     return Err(expr
                         .site
                         .error(format!("cannot return {} as {}", expr.ty, self.result)));
@@ -902,6 +1100,9 @@ impl<'a> FunctionBody<'a, '_> {
                     builtin
                 } else if let Some(id) = self.scopes.iter().rev().find_map(|scope| scope.get(name)) {
                     let local = &self.locals[*id];
+                    if let Some(array) = self.vla_locals.get(id) {
+                        return Ok(array.reference(site, *id, &local.object.ty));
+                    }
                     let kind = match local.storage {
                         LocalStorage::ThreadExtern(_) => ExpressionKind::ThreadLocal(name),
                         LocalStorage::Function(_) => ExpressionKind::Identifier(name),
@@ -921,9 +1122,9 @@ impl<'a> FunctionBody<'a, '_> {
                     (kind, symbol.ty.clone())
                 }
             }
-            Syntax::Enumerator(value) => (
-                ExpressionKind::Integer(value as u64),
-                Type::new(Kind::Integer(Integer::Int)),
+            Syntax::Enumerator(value, integer) => (
+                ExpressionKind::Integer(value),
+                Type::new(Kind::Integer(integer)),
             ),
             Syntax::Number => {
                 if let Some((bits, ty)) = float::literal(&site.text, self.target) {
@@ -1020,13 +1221,25 @@ impl<'a> FunctionBody<'a, '_> {
                 {
                     return Err(site.error(format!("cannot cast {source} to {ty}")));
                 }
-                (ExpressionKind::Cast(Box::new(expr)), ty)
+                let kind = if self.standard.is_gnu() && self.static_initialization
+                    && matches!(ty.kind, Kind::Integer(_))
+                {
+                    builtins::null_record_offset(&expr, self.target)
+                        .map_or_else(|| ExpressionKind::Cast(Box::new(expr)), ExpressionKind::Integer)
+                } else {
+                    ExpressionKind::Cast(Box::new(expr))
+                };
+                (kind, ty)
             }
             Syntax::CompoundLiteral(ty, initializer) => {
                 self.compound_literal(site, ty, *initializer)?
             }
             Syntax::Alignof(ty) => size_constant(type_alignment(&ty, site)?),
             Syntax::Offsetof(ty, path) => size_constant(self.offsetof(site, ty, path)?),
+            Syntax::TypesCompatible(left, right) => (
+                ExpressionKind::Integer(u64::from(left.unqualified().compatible(&right.unqualified()))),
+                Type::new(Kind::Integer(Integer::Int)),
+            ),
             Syntax::Generic(control, associations) => {
                 return self.generic(site, *control, associations)
             }
@@ -1036,7 +1249,17 @@ impl<'a> FunctionBody<'a, '_> {
                 if expr.bit_field().is_some() {
                     return Err(site.error("sizeof cannot be applied to a bit-field"));
                 }
-                sizeof(site, &expr.ty)?
+                if let Some(size) = self.vla_size(&expr) {
+                    (ExpressionKind::Local(size), self.locals[size].object.ty.clone())
+                } else {
+                    sizeof(site, &expr.ty)?
+                }
+            }
+            Syntax::StatementExpression(statements) => {
+                return self.statement_expression(site, statements);
+            }
+            Syntax::OmittedConditional(value, fallback) => {
+                return self.omitted_conditional(site, *value, *fallback);
             }
             Syntax::Conditional(condition, yes, no) => {
                 let condition = self.condition(*condition)?;
@@ -1099,7 +1322,7 @@ impl<'a> FunctionBody<'a, '_> {
                     }
                     Some((op, a, b))
                 } else {
-                    if !assignable(&left.ty, &right, self.target) {
+                    if !assignable(&left.ty, &right, self.target, self.standard) {
                         return Err(right
                             .site
                             .error(format!("cannot assign {} to {}", right.ty, left.ty)));
@@ -1143,7 +1366,10 @@ impl<'a> FunctionBody<'a, '_> {
             }
             Syntax::String(tokens) => {
                 let (element, bytes, count) = string_literal(&tokens, self.target)?;
-                let ty = Type::new(Kind::Array(Box::new(Type::new(Kind::Integer(element))), count));
+                let ty = Type::new(Kind::Array(
+                    Box::new(Type::new(Kind::Integer(element))),
+                    Some(count),
+                ));
                 (ExpressionKind::String(bytes), ty)
             }
             Syntax::VaArg(list, ty) => self.va_arg(site, *list, ty)?,
@@ -1164,7 +1390,17 @@ impl<'a> FunctionBody<'a, '_> {
         close: &Lexeme,
     ) -> Result<(ExpressionKind<'a>, Type), Diagnostic> {
         if matches!(callee.kind, parse::ExpressionKind::Identifier) {
-            if let Some(builtin) = builtins::Builtin::named(&callee.site.text) {
+            let name = callee.site.text.as_ref();
+            // The GNU library spelling uses the same caller-frame operation
+            // as the explicit builtin. A local function pointer can shadow it.
+            if name == "alloca" && self.alloca_alias
+                && self.scopes.iter().rev().find_map(|scope| scope.get(name))
+                    .is_none_or(|id| matches!(self.locals[*id].storage, LocalStorage::Function(_)))
+                && self.symbols.get(name).is_none_or(|symbol| matches!(symbol.ty.kind, Kind::Function { .. }))
+            {
+                return self.builtin(callee.site, builtins::Builtin::Alloca, arguments);
+            }
+            if let Some(builtin) = builtins::Builtin::named(name) {
                 return self.builtin(callee.site, builtin, arguments);
             }
             if let Some(op) = AtomicOp::from_name(&callee.site.text) {
@@ -1208,7 +1444,7 @@ impl<'a> FunctionBody<'a, '_> {
             }
             let expr = self.expression(argument)?;
             let ty = if let Some(parameter) = params.get(index) {
-                if !assignable(parameter, &expr, self.target) {
+                if !assignable(parameter, &expr, self.target, self.standard) {
                     return Err(expr
                         .site
                         .error(format!("cannot pass {} as {parameter}", expr.ty)));
@@ -1345,8 +1581,7 @@ fn binary_types(
 
 fn sizeof<'a>(site: &Lexeme, ty: &Type) -> Result<(ExpressionKind<'a>, Type), Diagnostic> {
     let size = ty
-        .layout()
-        .filter(|layout| layout.size != 0)
+        .complete_layout()
         .ok_or_else(|| site.error("sizeof requires a complete object type"))?
         .size;
     Ok(size_constant(size))
@@ -1440,6 +1675,7 @@ fn compatible_pointer(
                         volatile: a.qualifiers.volatile || b.qualifiers.volatile,
                         atomic: a.qualifiers.atomic && b.qualifiers.atomic,
                         restricted: a.qualifiers.restricted || b.qualifiers.restricted,
+                        may_alias: a.qualifiers.may_alias || b.qualifiers.may_alias,
                     },
                 }
                 .pointer_to(),
@@ -1482,7 +1718,7 @@ fn is_null(expr: &Expression<'_>, target: Target) -> bool {
 }
 
 // N1570 6.5.16.1p1 and 6.3.2.3p3 for assignment and null pointers.
-fn assignable(destination: &Type, expr: &Expression<'_>, target: Target) -> bool {
+fn assignable(destination: &Type, expr: &Expression<'_>, target: Target, standard: Standard) -> bool {
     let converted = expr.converted_type();
     let source = converted.as_ref().unwrap_or(&expr.ty);
     match (&destination.kind, &source.kind) {
@@ -1497,8 +1733,8 @@ fn assignable(destination: &Type, expr: &Expression<'_>, target: Target) -> bool
             }
             to.unqualified_except_atomic()
                 .compatible(&from.unqualified_except_atomic())
-                || (to.kind == Kind::Void && !matches!(from.kind, Kind::Function { .. }))
-                || (from.kind == Kind::Void && !matches!(to.kind, Kind::Function { .. }))
+                || (to.kind == Kind::Void && (standard.is_gnu() || !matches!(from.kind, Kind::Function { .. })))
+                || (from.kind == Kind::Void && (standard.is_gnu() || !matches!(to.kind, Kind::Function { .. })))
         }
         _ => false,
     }

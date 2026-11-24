@@ -5,7 +5,7 @@
 
 mod write;
 
-pub use write::{write_rel, RelSection, RelSymbol};
+pub use write::{write_rel, write_rel_object, RelSection, RelSymbol, RelocatableSection};
 
 use crate::Error;
 

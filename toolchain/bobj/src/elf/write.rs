@@ -1,5 +1,5 @@
 use super::{
-    Header, Rela, SectionHeader, SymbolRecord, ET_REL, SHF_INFO_LINK, SHN_ABS, SHN_COMMON,
+    Header, Rela, SectionHeader, Symbol, SymbolRecord, ET_REL, SHF_INFO_LINK, SHN_ABS, SHN_COMMON,
     SHN_LORESERVE, SHT_NOBITS, SHT_PROGBITS, SHT_RELA, SHT_STRTAB, SHT_SYMTAB, STB_LOCAL,
 };
 use crate::Error;
@@ -17,12 +17,21 @@ pub struct RelSection<'a> {
 
 /// A symbol with a one-based section index or a special SHN_* value.
 pub struct RelSymbol<'a> {
+    pub other: u8,
     pub name: &'a [u8],
     pub section: u16,
     pub kind: u8,
     pub binding: u8,
     pub value: u64,
     pub size: u64,
+}
+
+/// A section in a partial link. References in the header and payload use
+/// final ELF indices. The writer assigns the name and file offset.
+pub struct RelocatableSection<'a> {
+    pub name: &'a [u8],
+    pub header: SectionHeader,
+    pub bytes: &'a [u8],
 }
 
 fn push_string(table: &mut Vec<u8>, prefix: &[u8], name: &[u8]) -> Result<u32, Error> {
@@ -80,10 +89,13 @@ struct SymbolOutput {
     first_non_local: u32,
 }
 
-fn encode_symbols(sections: usize, symbols: &[RelSymbol<'_>]) -> Result<SymbolOutput, Error> {
+fn encode_symbols<'a>(
+    sections: usize,
+    symbols: impl ExactSizeIterator<Item = Symbol<'a>> + Clone,
+) -> Result<SymbolOutput, Error> {
     let count = symbols.len();
     let first_non_local = 1 + symbols
-        .iter()
+        .clone()
         .filter(|symbol| symbol.binding == STB_LOCAL)
         .count();
     let mut strings = vec![0];
@@ -113,7 +125,7 @@ fn encode_symbols(sections: usize, symbols: &[RelSymbol<'_>]) -> Result<SymbolOu
         records[index] = SymbolRecord {
             name: push_string(&mut strings, b"", symbol.name)?,
             info: (symbol.binding << 4) | symbol.kind,
-            other: 0,
+            other: symbol.other,
             section: symbol.section,
             value: symbol.value,
             size: symbol.size,
@@ -146,9 +158,18 @@ pub fn write_rel(
         return Err(Error::new(0, "ELF output table count exceeds bounds"));
     }
     let symtab = (count - 3) as u32;
-    let strtab = symtab + 1;
-    let shstrtab = strtab + 1;
-    let symbols = encode_symbols(sections.len(), symbols)?;
+    let symbols = encode_symbols(
+        sections.len(),
+        symbols.iter().map(|symbol| Symbol {
+            name: symbol.name,
+            binding: symbol.binding,
+            kind: symbol.kind,
+            other: symbol.other,
+            section: symbol.section,
+            value: symbol.value,
+            size: symbol.size,
+        }),
+    )?;
 
     let mut image = vec![0; Header::SIZE];
     let mut headers = Vec::with_capacity(count);
@@ -213,6 +234,64 @@ pub fn write_rel(
         headers.push(header);
     }
 
+    finish(machine, image, headers, names, symbols)
+}
+
+/// Emit ET_REL with caller-laid-out sections, relocations and groups.
+/// The null section and undefined symbol are implicit. The caller orders
+/// locals before non-locals. The symbol table follows the sections.
+pub fn write_rel_object(
+    machine: u16,
+    sections: &[RelocatableSection<'_>],
+    symbols: &[Symbol<'_>],
+) -> Result<Vec<u8>, Error> {
+    let count = sections.len() + 4;
+    if count >= usize::from(SHN_LORESERVE) || symbols.len() >= u32::MAX as usize {
+        return Err(Error::new(0, "ELF output table count exceeds bounds"));
+    }
+    let symbols = encode_symbols(sections.len(), symbols.iter().copied())?;
+    if symbols
+        .indices
+        .iter()
+        .copied()
+        .ne(1..=symbols.indices.len() as u32)
+    {
+        return Err(Error::new(
+            0,
+            "ELF local symbols must precede non-local symbols",
+        ));
+    }
+    let mut image = vec![0; Header::SIZE];
+    let mut headers = Vec::with_capacity(count);
+    headers.push(SectionHeader::default());
+    let mut names = vec![0];
+    for section in sections {
+        let mut header = section.header;
+        if (header.kind == SHT_NOBITS && !section.bytes.is_empty())
+            || (header.kind != SHT_NOBITS && header.size != section.bytes.len() as u64)
+        {
+            return Err(Error::new(
+                image.len(),
+                "ELF section size and payload disagree",
+            ));
+        }
+        header.name = push_string(&mut names, b"", section.name)?;
+        append_section(&mut image, &mut header, section.bytes)?;
+        headers.push(header);
+    }
+    finish(machine, image, headers, names, symbols)
+}
+
+fn finish(
+    machine: u16,
+    mut image: Vec<u8>,
+    mut headers: Vec<SectionHeader>,
+    mut names: Vec<u8>,
+    symbols: SymbolOutput,
+) -> Result<Vec<u8>, Error> {
+    let count = headers.len() + 3;
+    let strtab = (count - 2) as u32;
+    let shstrtab = strtab + 1;
     let symtab_name = push_string(&mut names, b"", b".symtab")?;
     let strtab_name = push_string(&mut names, b"", b".strtab")?;
     let shstrtab_name = push_string(&mut names, b"", b".shstrtab")?;

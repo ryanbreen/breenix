@@ -14,7 +14,7 @@
 #   ./scripts/create_ext2_disk.sh --arch aarch64
 #   ./scripts/create_ext2_disk.sh --arch aarch64 --size 128
 #   ./scripts/create_ext2_disk.sh --stage-from SEED --output WORK_IMAGE --suite ID[,ID...]
-#       [--arch aarch64] [--toolchain-bundle BUNDLE]
+#       [--arch aarch64] [--toolchain-bundle BUNDLE] [--milestone EFFORT/ID]
 #
 # Suite staging makes a separate work image from the ordinary seed and
 # reserves target/ext2*.img and testdata/ext2*.img for the seed builder.
@@ -41,6 +41,7 @@ STAGE_FROM=
 STAGE_OUTPUT=
 STAGE_SUITE=
 TOOLCHAIN_BUNDLE=
+STAGE_MILESTONE=
 while [[ $# -gt 0 ]]; do
     [ "$#" -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; }
     case "$1" in
@@ -48,6 +49,7 @@ while [[ $# -gt 0 ]]; do
         --output) STAGE_OUTPUT="$2"; shift 2 ;;
         --suite) STAGE_SUITE="$2"; shift 2 ;;
         --toolchain-bundle) TOOLCHAIN_BUNDLE="$2"; shift 2 ;;
+        --milestone) STAGE_MILESTONE="$2"; shift 2 ;;
         --arch)
             ARCH="$2"
             shift 2
@@ -74,12 +76,13 @@ if [ -n "$STAGE_FROM" ]; then
         echo "--stage-from needs --output and uses the seed's size" >&2
         exit 2
     }
-    bundle=()
-    [ -z "$TOOLCHAIN_BUNDLE" ] || bundle=(--toolchain-bundle "$TOOLCHAIN_BUNDLE")
+    staging=()
+    [ -z "$TOOLCHAIN_BUNDLE" ] || staging+=(--toolchain-bundle "$TOOLCHAIN_BUNDLE")
+    [ -z "$STAGE_MILESTONE" ] || staging+=(--milestone "$STAGE_MILESTONE")
     exec python3 "$SCRIPT_DIR/toolchain-image.py" stage "$STAGE_FROM" "$STAGE_OUTPUT" \
-        --arch "$ARCH" --suite "$STAGE_SUITE" ${bundle[@]+"${bundle[@]}"}
+        --arch "$ARCH" --suite "$STAGE_SUITE" ${staging[@]+"${staging[@]}"}
 fi
-[ -z "$STAGE_OUTPUT$STAGE_SUITE$TOOLCHAIN_BUNDLE" ] || {
+[ -z "$STAGE_OUTPUT$STAGE_SUITE$TOOLCHAIN_BUNDLE$STAGE_MILESTONE" ] || {
     echo "suite staging options need --stage-from" >&2
     exit 2
 }

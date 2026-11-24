@@ -7,12 +7,14 @@ binaries=$1
 required=$2
 [ -s "$binaries/libc-busybox.elf" ] || { echo "Missing libc BusyBox ELF" >&2; exit 1; }
 [ -s "$binaries/libc-busybox.links" ] || { echo "Missing libc BusyBox applet list" >&2; exit 1; }
+missing=0
 while IFS= read -r name; do
     [ -n "$name" ] || continue
     grep -Fqx "$name" "$binaries/libc-busybox.links" || {
-        echo "Required BusyBox applet not built: $name" >&2; exit 1;
+        echo "Required BusyBox applet not built: $name" >&2; missing=1;
     }
 done < "$required"
+[ "$missing" = 0 ] || exit 1
 # Reject collisions before any image file is written. A later cp would truncate
 # the BusyBox inode shared by the applet hard links.
 for elf in "$binaries"/*.elf; do

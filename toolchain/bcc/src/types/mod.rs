@@ -6,12 +6,24 @@ use crate::pp::{Lexeme, Target};
 mod float;
 pub(crate) use float::{floor_log10_pow2, FloatFormat};
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq)]
 pub struct Qualifiers {
     pub constant: bool,
     pub volatile: bool,
     pub atomic: bool,
     pub restricted: bool,
+    // GNU may_alias affects access through a pointer to this type. It
+    // does not qualify the C type for compatibility or change its layout.
+    pub may_alias: bool,
+}
+
+impl PartialEq for Qualifiers {
+    fn eq(&self, other: &Self) -> bool {
+        self.constant == other.constant
+            && self.volatile == other.volatile
+            && self.atomic == other.atomic
+            && self.restricted == other.restricted
+    }
 }
 
 impl Qualifiers {
@@ -123,6 +135,7 @@ pub struct RecordDefinition<'a> {
     pub members: Vec<Member<'a>>,
     pub(crate) end: Option<&'a Lexeme>,
     pub(crate) has_const_member: bool,
+    pub(crate) may_alias: bool,
 }
 
 impl RecordDefinition<'_> {
@@ -288,7 +301,7 @@ pub enum Kind {
     Void,
     Integer(Integer),
     Pointer(Box<Type>),
-    Array(Box<Type>, usize),
+    Array(Box<Type>, Option<usize>),
     Function {
         result: Box<Type>,
         params: Vec<Type>,
@@ -306,7 +319,9 @@ impl Type {
     }
 
     pub(crate) fn unqualified(&self) -> Self {
-        Self::new(self.kind.clone())
+        let mut ty = Self::new(self.kind.clone());
+        ty.qualifiers.may_alias = self.qualifiers.may_alias;
+        ty
     }
 
     // Atomic and ordinary objects have distinct types (N1570 6.2.6.1p9).
@@ -337,7 +352,7 @@ impl Type {
         match (&self.kind, &other.kind) {
             (Kind::Pointer(a), Kind::Pointer(b)) => a.compatible(b),
             (Kind::Array(a, m), Kind::Array(b, n)) => {
-                (*m == 0 || *n == 0 || m == n) && a.compatible(b)
+                (m.is_none() || n.is_none() || m == n) && a.compatible(b)
             }
             (
                 Kind::Function {
@@ -403,6 +418,7 @@ impl Type {
         } else {
             self.qualifiers.constant |= qualifiers.constant;
             self.qualifiers.volatile |= qualifiers.volatile;
+            self.qualifiers.may_alias |= qualifiers.may_alias;
         }
     }
 
@@ -447,12 +463,19 @@ impl Type {
             Kind::Array(element, count) => {
                 let element = element.layout()?;
                 Some(Layout {
-                    size: element.size.checked_mul(*count)?,
+                    size: element.size.checked_mul(count.unwrap_or(0))?,
                     align: element.align,
                 })
             }
             Kind::Void | Kind::Function { .. } => None,
         }
+    }
+
+    pub(crate) fn complete_layout(&self) -> Option<Layout> {
+        if matches!(self.kind, Kind::Array(_, None)) {
+            return None;
+        }
+        self.layout()
     }
 
     // N1570 6.7.7: render a type name as a specifier and abstract declarator.
@@ -489,7 +512,9 @@ impl Type {
                     pointee.declarator(out, pointer)
                 }
             }
-            Kind::Array(element, len) => element.declarator(out, &format!("{decl}[{len}]")),
+            Kind::Array(element, len) => {
+                element.declarator(out, &format!("{decl}[{}]", len.unwrap_or(0)))
+            }
             Kind::Function {
                 result,
                 params,

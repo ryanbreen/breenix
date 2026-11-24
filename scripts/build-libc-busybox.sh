@@ -1,10 +1,11 @@
 #!/bin/bash
-# Build every configured BusyBox applet against Breenix libc, recording per-applet
-# compile/link results in target/libc-busybox/<arch>/applets.json. Missing applets
-# fail the build. Patches in vendor/busybox/patches/series apply after extraction;
-# every patch is part of the build digest. Outputs are libc-busybox.elf and
+# Build the configured BusyBox applets against Breenix libc, recording per-applet
+# compile/link results in the build's applets.json. Missing applets
+# fail the build. The build digest includes the patches applied after extraction.
+# Outputs are libc-busybox.elf and
 # libc-busybox.links, installed in /bin and /usr/local/libc/bin as hard links.
-# Usage: scripts/build-libc-busybox.sh --arch aarch64|x86_64
+# Usage: scripts/build-libc-busybox.sh --arch aarch64|x86_64 [--workload-reference]
+# --workload-reference writes its build and applet list in target/libc-busybox-reference.
 set -euo pipefail
 export LC_ALL=C
 
@@ -12,16 +13,19 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ARCHIVE="$ROOT/vendor/busybox/busybox-1.37.0.tar.bz2"
 SOURCE_SHA256="3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4"
 FRAGMENT="$ROOT/vendor/busybox/breenix-libc.config"
+IMAGE_TOOLS="$ROOT/vendor/busybox/breenix-image-tools.config"
 PATCHES="$ROOT/vendor/busybox/patches"
 export SOURCE_DATE_EPOCH=1725148800
 export KBUILD_BUILD_TIMESTAMP="2024-09-01 00:00:00 UTC"
 export KBUILD_BUILD_USER=breenix KBUILD_BUILD_HOST=breenix
 
 ARCH=""
+WORKLOAD_REFERENCE=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --arch) ARCH="$2"; shift 2 ;;
-        *) echo "usage: $0 --arch aarch64|x86_64" >&2; exit 2 ;;
+        --workload-reference) WORKLOAD_REFERENCE=1; shift ;;
+        *) echo "usage: $0 --arch aarch64|x86_64 [--workload-reference]" >&2; exit 2 ;;
     esac
 done
 case "$ARCH" in
@@ -38,6 +42,10 @@ esac
 [ -f "$LIBC" ] || { echo "libc-busybox: $LIBC is missing" >&2; exit 1; }
 
 WORK="$ROOT/target/libc-busybox/$ARCH"
+if [ "$WORKLOAD_REFERENCE" = 1 ]; then
+    WORK="$ROOT/target/libc-busybox-reference/$ARCH"
+    OUT="$WORK/out"
+fi
 SRC="$WORK/busybox-1.37.0"
 ELF="$OUT/libc-busybox.elf"
 LINKS="$OUT/libc-busybox.links"
@@ -48,6 +56,7 @@ mkdir -p "$WORK" "$OUT"
 inputs_digest() {
     {
         shasum -a 256 "$LIBC" "$ARCHIVE" "$FRAGMENT" "$CC" "${BASH_SOURCE[0]}" "$ROOT/vendor/busybox/required-applets" "$ROOT/scripts/install-libc-busybox.sh"
+        if [ "$WORKLOAD_REFERENCE" = 0 ]; then shasum -a 256 "$IMAGE_TOOLS"; fi
         find "$PATCHES" -type f | sort | xargs shasum -a 256
         find "$ROOT/libs/libbreenix-libc/include" -type f -name '*.h' | sort | xargs shasum -a 256
         "$TOOLS/clang" --version
@@ -146,7 +155,14 @@ archive_objects() {
 }
 
 echo "  libc-busybox ($ARCH): configuring"
-configure
+if [ "$WORKLOAD_REFERENCE" = 1 ]; then
+    configure
+else
+    # The image runs Kbuild's mkconfigs and usage_compressed scripts. Their
+    # compressor and block-copy commands are build inputs, outside the
+    # pinned configuration the on-box toolchain builds and compares.
+    configure "$IMAGE_TOOLS"
+fi
 echo "  libc-busybox ($ARCH): compiling"
 make "${MAKE_ARGS[@]}" clean > "$WORK/clean.log" 2>&1
 compile_ok=1

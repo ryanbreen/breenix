@@ -21,6 +21,7 @@ class BusyboxBuildTests(unittest.TestCase):
             vendor.mkdir(parents=True)
             (vendor / 'busybox-1.37.0.tar.bz2').symlink_to(ROOT / 'vendor/busybox/busybox-1.37.0.tar.bz2')
             (vendor / 'breenix-libc.config').write_text('CONFIG_CAT=y\nCONFIG_ASH=y\n')
+            shutil.copy(ROOT / 'vendor/busybox/breenix-image-tools.config', vendor)
             (vendor / 'required-applets').write_text('cat\nash\n')
             (vendor / 'patches').mkdir()
             (vendor / 'patches/series').write_text('')
@@ -51,6 +52,8 @@ case "$*" in
   *allnoconfig*) printf 'CONFIG_CAT=y\nCONFIG_ASH=y\n' > .config ;;
   *applets/built-in.o*)
     printf '\177ELFfixture' > coreutils/cat.o
+    printf '\177ELFfixture' > coreutils/dd.o
+    printf '\177ELFfixture' > archival/bzip2.o
     if [ "$COMPILE_FAILS" = 1 ]; then
       echo 'make: *** [shell/ash.o] Error 1' >&2
       exit 1

@@ -28,7 +28,7 @@ use regalloc::{Access, ValueId};
 use thread::ThreadPlace;
 use varargs::VariadicFrame;
 
-pub(super) fn emit(unit: &TranslationUnit<'_>, optimize: bool) -> Result<String, Diagnostic> {
+pub(super) fn emit(unit: &TranslationUnit<'_>, options: super::Options) -> Result<String, Diagnostic> {
     let mut functions = HashMap::new();
     for function in &unit.functions {
         let entry = functions.entry(function.name).or_insert(function);
@@ -37,10 +37,11 @@ pub(super) fn emit(unit: &TranslationUnit<'_>, optimize: bool) -> Result<String,
         }
     }
 
+    let mut custom_data = String::new();
     let mut emitter = Emitter {
         functions,
         records: &unit.records,
-        optimize,
+        optimize: options.optimize,
         scan: regalloc::Scan::default(),
         frame: 0,
         aligned_frame: 0,
@@ -50,12 +51,17 @@ pub(super) fn emit(unit: &TranslationUnit<'_>, optimize: bool) -> Result<String,
         locals: Vec::new(),
         variadic: None,
         flow_labels: HashMap::new(),
+        vla_targets: HashMap::new(),
+        return_context: None,
+        statement_base: None,
+        statement_stack: Vec::new(),
         data: String::new(),
         initialized_data: String::new(),
         object_definitions: unit
             .static_objects
             .iter()
             .map(|def| def.object.name)
+            .chain(unit.aliases.keys().copied())
             .collect(),
         tdata: String::new(),
         tbss: String::new(),
@@ -65,6 +71,7 @@ pub(super) fn emit(unit: &TranslationUnit<'_>, optimize: bool) -> Result<String,
             .thread_objects
             .iter()
             .map(|thread| thread.object.name)
+            .chain(unit.aliases.keys().copied())
             .collect(),
         text: String::from("section .text\n"),
         rodata: String::new(),
@@ -89,36 +96,53 @@ pub(super) fn emit(unit: &TranslationUnit<'_>, optimize: bool) -> Result<String,
         emitter.initialized_data.push_str(&data);
     }
     for definition in &unit.static_objects {
+        let object = &definition.object;
+        let section = unit.symbol_attributes.get(object.name).and_then(|attrs| attrs.section.as_deref());
         let data = emitter.object_definition(
-            &definition.object,
-            definition.object.name,
+            object,
+            object.name,
             definition.linkage,
             definition.initializer.as_ref(),
             false,
         )?;
-        if definition.initializer.is_some() {
+        if let Some(section) = section {
+            super::object_section(&mut custom_data, section, object, false);
+            custom_data.push_str(&data);
+        } else if definition.initializer.is_some() {
             emitter.initialized_data.push_str(&data);
         } else {
             emitter.data.push_str(&data);
         }
     }
     for thread in &unit.thread_objects {
-        emitter.thread_definition(
-            &thread.object,
-            thread.object.name,
-            thread.linkage,
-            thread.initializer.as_ref(),
-        )?;
+        let object = &thread.object;
+        if let Some(section) = unit.symbol_attributes.get(object.name).and_then(|attrs| attrs.section.as_deref()) {
+            super::object_section(&mut custom_data, section, object, true);
+            let data = emitter.object_definition(
+                object, object.name, thread.linkage, thread.initializer.as_ref(), true,
+            )?;
+            custom_data.push_str(&data);
+        } else {
+            emitter.thread_definition(
+                object, object.name, thread.linkage, thread.initializer.as_ref(),
+            )?;
+        }
     }
     for function in &unit.functions {
         if let Some(body) = &function.body {
+            let custom_section = super::function_section(
+                &mut emitter.text, unit, function.name, options.function_sections,
+            );
             emitter.function(function, body)?;
+            if custom_section {
+                emitter.text.push_str("\n.section .text\n");
+            }
         }
     }
-    for name in emitter.externs {
+    for name in &emitter.externs {
         writeln!(emitter.text, "extern {name}").unwrap();
     }
-    for name in emitter.thread_externs {
+    for name in &emitter.thread_externs {
         writeln!(emitter.text, "extern {name}\n.type {name}, @tls").unwrap();
     }
     if !emitter.rodata.is_empty() {
@@ -139,6 +163,8 @@ pub(super) fn emit(unit: &TranslationUnit<'_>, optimize: bool) -> Result<String,
             emitter.text.push_str(&data);
         }
     }
+    emitter.text.push_str(&custom_data);
+    super::emit_symbol_attributes(&mut emitter.text, unit, &emitter.externs, &emitter.thread_externs);
     Ok(emitter.text)
 }
 
@@ -155,6 +181,10 @@ struct Emitter<'unit, 'src> {
     locals: Vec<Slot>,
     variadic: Option<VariadicFrame>,
     flow_labels: HashMap<usize, String>,
+    vla_targets: HashMap<usize, usize>,
+    return_context: Option<(&'unit Function<'src>, String)>,
+    statement_base: Option<Slot>,
+    statement_stack: Vec<(usize, Slot)>,
     data: String,
     initialized_data: String,
     object_definitions: BTreeSet<&'src str>,
@@ -169,10 +199,10 @@ struct Emitter<'unit, 'src> {
     next_label: usize,
 }
 
-impl<'src> Emitter<'_, 'src> {
+impl<'unit, 'src> Emitter<'unit, 'src> {
     fn function(
         &mut self,
-        function: &Function<'src>,
+        function: &'unit Function<'src>,
         body: &[Statement<'src>],
     ) -> Result<(), Diagnostic> {
         let name = function.name;
@@ -212,7 +242,13 @@ impl<'src> Emitter<'_, 'src> {
         } else {
             None
         };
+        self.statement_base = if function.has_statement_expressions && !function.has_alloca {
+            Some(self.frame_slot(Layout { size: 8, align: 8 }, function.site)?)
+        } else {
+            None
+        };
         self.flow_labels.clear();
+        self.vla_targets.clone_from(&function.vla_targets);
         let epilogue = self.label();
         self.text.push('\n');
         if function.linkage == Linkage::External {
@@ -224,7 +260,7 @@ impl<'src> Emitter<'_, 'src> {
         // keep spills above RSP.
         self.text.push_str("    push rbp\n    mov rbp, rsp\n");
         let stack_adjustment = self.text.len();
-        if let Some(base) = &self.alloca_base {
+        if let Some(base) = self.alloca_base.as_ref().or(self.statement_base.as_ref()) {
             writeln!(self.text, "    mov qword {}, rsp", base.memory(0)).unwrap();
         }
 
@@ -338,7 +374,11 @@ impl<'src> Emitter<'_, 'src> {
         for (id, slot) in scalar_parameters {
             self.scan.parameter(self.text.len(), id, slot);
         }
+        if function.has_statement_expressions {
+            self.return_context = Some((function, epilogue.clone()));
+        }
         self.statements(body, result, &epilogue)?;
+        self.return_context = None;
         let callee_saves = if self.optimize {
             std::mem::take(&mut self.scan).render(self, stack_adjustment, function.site)?
         } else {
@@ -497,6 +537,13 @@ impl<'src> Emitter<'_, 'src> {
                 self.converted(right, &expr.ty)?;
             }
             ExpressionKind::Cast(operand) => self.converted(operand, &expr.ty)?,
+            ExpressionKind::StatementExpression {
+                region,
+                statements,
+                value,
+            } => {
+                self.statement_expression(*region, statements, value.as_deref(), expr)?;
+            }
             ExpressionKind::Assignment {
                 left,
                 right,
@@ -512,19 +559,23 @@ impl<'src> Emitter<'_, 'src> {
                 self.update(operand, *increment, *postfix)?;
             }
             ExpressionKind::Conditional { condition, yes, no } => {
-                let otherwise = self.label();
-                let end = self.label();
-                self.jump_if(condition, "jz", &otherwise)?;
-                self.converted(yes, &expr.ty)?;
-                writeln!(self.text, "    jmp {end}\n{otherwise}:").unwrap();
-                self.converted(no, &expr.ty)?;
-                writeln!(self.text, "{end}:").unwrap();
+                self.conditional(condition, yes, no, &expr.ty)?;
+            }
+            ExpressionKind::OmittedConditional {
+                value,
+                fallback,
+                saved,
+            } => {
+                self.assignment(saved, value, None)?;
+                self.convert(&saved.ty, &Type::new(Kind::Void));
+                self.conditional(saved, saved, fallback, &expr.ty)?;
             }
             ExpressionKind::VaStart(list) => self.va_start(list)?,
             ExpressionKind::VaArg(list) => self.va_arg(list, &expr.ty, expr.position())?,
             ExpressionKind::VaCopy { dest, source } => self.va_copy(dest, source)?,
             // AMD64 va_end has no resources to release. Evaluate the operand.
             ExpressionKind::VaEnd(list) => self.value(list)?,
+            ExpressionKind::Unreachable => writeln!(self.text, "    .byte 0x0f, 0x0b").unwrap(),
             ExpressionKind::FltRounds => self.flt_rounds(),
             ExpressionKind::FloatClass { operand, values } => self.float_class(operand, *values)?,
             ExpressionKind::SignBit(operand) => self.float_sign(operand)?,
@@ -540,6 +591,23 @@ impl<'src> Emitter<'_, 'src> {
 
     fn discard(&mut self, expr: &Expression<'src>) -> Result<(), Diagnostic> {
         self.converted(expr, &Type::new(Kind::Void))
+    }
+
+    fn conditional(
+        &mut self,
+        condition: &Expression<'src>,
+        yes: &Expression<'src>,
+        no: &Expression<'src>,
+        ty: &Type,
+    ) -> Result<(), Diagnostic> {
+        let otherwise = self.label();
+        let end = self.label();
+        self.jump_if(condition, "jz", &otherwise)?;
+        self.converted(yes, ty)?;
+        writeln!(self.text, "    jmp {end}\n{otherwise}:").unwrap();
+        self.converted(no, ty)?;
+        writeln!(self.text, "{end}:").unwrap();
+        Ok(())
     }
 
     fn converted(&mut self, expr: &Expression<'src>, dest: &Type) -> Result<(), Diagnostic> {

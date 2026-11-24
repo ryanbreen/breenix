@@ -7,9 +7,9 @@ use libbreenix::{io, signal, types::Fd};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::DirBuilderExt;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -18,6 +18,9 @@ use std::time::{Duration, SystemTime};
 
 #[path = "fixture/ssh_lease.rs"]
 mod ssh_lease;
+
+#[path = "suite_support/busybox_record.rs"]
+mod busybox_record;
 
 const DEV: &str = "opt/breenix-dev/25.2";
 const CORPUS: &str = "usr/share/breenix/toolchain";
@@ -182,6 +185,9 @@ static SUITE: Suite = suite(
                     "A failing shell recipe reports its status and stops the build",
                     make_failure_status,
                 ),
+                case("archive-members", "Make builds and names an archive member", make_archive_members),
+                case("include-remake", "Make remakes and rereads a missing include", make_include_remake),
+                case("recursive-makeflags", "Submake inherits command options and macros", make_recursive_makeflags),
             ],
         ),
         category(
@@ -290,6 +296,36 @@ static SUITE: Suite = suite(
                 case("string-stdlib", "Build string-stdlib and compare each result with the reference", libc_category),
             ],
         ),
+        category(
+            "busybox",
+            "BusyBox rebuilt offline on the box with its required applets",
+            &[
+                case("unpack", "Verify and unpack the pinned BusyBox archive", busybox_phase),
+                case("patch", "Apply the pinned patch series", busybox_phase),
+                case("generators", "Build and run the native Kbuild configuration programs", busybox_phase),
+                case("configure", "Apply the config and generate the applet build inputs", busybox_phase),
+                case("inventory", "Record the pinned Kbuild object goals in recipe order", busybox_phase),
+                case("build-libbb-1", "Build libbb object group 1", busybox_phase),
+                case("build-libbb-2", "Build libbb object group 2", busybox_phase),
+                case("build-libbb-3", "Build libbb object group 3", busybox_phase),
+                case("build-libbb-4", "Build libbb object group 4", busybox_phase),
+                case("build-applets-1", "Build applet object group 1", busybox_phase),
+                case("build-applets-2", "Build applet object group 2", busybox_phase),
+                case("build-applets-3", "Build applet object group 3", busybox_phase),
+                case("build-applets-4", "Build applet object group 4", busybox_phase),
+                case("link-and-list", "Link BusyBox, compare its applets and publish its paths", busybox_link_and_list),
+                case("required-usage", "Run required applets through the newly linked BusyBox", busybox_required_usage),
+            ],
+        ),
+        category(
+            "gnu-workloads",
+            "The GNU C and make extensions BusyBox's build needs",
+            &[
+                case("gnu-c-extensions", "Build and run a program using GNU C extensions", gnu_c_extensions),
+                case("gnu-make-features", "Build and run recipes using GNU make extensions", gnu_make_features),
+                case("kbuild-host-programs", "Run the newly built Kbuild host generators", kbuild_host_programs),
+            ],
+        ),
     ],
 );
 
@@ -297,6 +333,11 @@ fn main() {
     let mut nonce = [0; 16];
     if getrandom_bytes(&mut nonce) == Ok(nonce.len()) {
         let _ = LIBC_NONCE.set(nonce);
+    }
+    // Sequence reset records foreign mounts before the first case and
+    // preserves their contents when exec hands off to libc and utilities.
+    if busybox_fixture().join("busybox.sh").is_file() {
+        let _ = BUSYBOX_SCRATCH.set(busybox_mount());
     }
     SUITE.run()
 }
@@ -555,6 +596,8 @@ fn bundle_command(scratch: &Scratch, tool: &str) -> Command {
         .current_dir(&scratch.0)
         .env_clear()
         .env("PATH", format!("{}:/bin", bin.display()))
+        // The suite supervises the process group that owns the build.
+        .env("BMAKE_INHERIT_PROCESS_GROUP", "1")
         .stdin(Stdio::null());
     command
 }
@@ -1518,16 +1561,31 @@ fn c17_program() -> CaseResult {
 }
 
 fn build_in_group(scratch: &Scratch, command: &mut Command, description: &str) -> CaseResult {
-    let path = scratch.join("build.log");
-    let log = io_at(&path, File::create(&path))?;
-    command.process_group(0).stdout(io_at(&path, log.try_clone())?).stderr(log);
+    build_in_group_at(scratch.join("build.log").as_path(), command, description, false)
+}
+
+fn build_in_group_at(path: &Path, command: &mut Command, description: &str, progress: bool) -> CaseResult {
+    let log = io_at(path, File::create(path))?;
+    let mut reader = BufReader::new(io_at(path, File::open(path))?);
+    let mut line = String::new();
+    command.process_group(0).stdout(io_at(path, log.try_clone())?).stderr(log);
     let mut child = command.spawn().map_err(|error| format!("{description}: {error}"))?;
     loop {
-        if let Some(status) = child.try_wait().map_err(|error| format!("{description}: {error}"))? {
+        let status = child.try_wait().map_err(|error| format!("{description}: {error}"))?;
+        if progress {
+            if let Err(error) = build_progress(&mut reader, &mut line) {
+                if status.is_none() {
+                    let _ = signal::kill(-(child.id() as i32), signal::SIGKILL);
+                    let _ = child.wait();
+                }
+                return Err(format!("{}: reading build progress: {error}", path.display()).into());
+            }
+        }
+        if let Some(status) = status {
             if status.success() {
                 return Ok(());
             }
-            let log = io_at(&path, fs::read_to_string(&path))?;
+            let log = io_at(path, fs::read_to_string(path))?;
             // Make echoes the recipes, so keep the tail containing the tool's diagnostic.
             let tail = log.lines().rev().take(6).collect::<Vec<_>>();
             return Err(format!("{description}: {status}: {}", tail.iter().rev().copied().collect::<Vec<_>>().join(" | ")).into());
@@ -1540,6 +1598,19 @@ fn build_in_group(scratch: &Scratch, command: &mut Command, description: &str) -
         }
         std::thread::sleep(Duration::from_millis(10));
     }
+}
+
+fn build_progress(reader: &mut impl BufRead, line: &mut String) -> std::io::Result<()> {
+    while reader.read_line(line)? > 0 {
+        if !line.ends_with('\n') {
+            break;
+        }
+        if line.starts_with("BUSYBOX_PHASE ") {
+            case_diagnostic(line.trim_end());
+        }
+        line.clear();
+    }
+    Ok(())
 }
 
 fn libc_cases() -> &'static [breenix_suite::suite::Case] {
@@ -1670,4 +1741,283 @@ fn libc_result(scratch: &Scratch, binary: &Path, id: &str) -> Result<String, Cas
         return Err(format!("{} {id}: {status}, invalid result {report:?}", binary.display()).into());
     }
     Ok(verdict.to_string())
+}
+
+fn inline_make_at(scratch: &Scratch, name: &str, recipe: &str) -> CaseResult {
+    let makefile = scratch.join("Makefile");
+    io_at(&makefile, fs::write(&makefile, recipe))?;
+    let mut command = bundle_command(scratch, "make");
+    command.arg("all");
+    build_in_group(scratch, &mut command, name)
+}
+
+fn run_inline_make(name: &str, recipe: &str) -> Result<Scratch, CaseError> {
+    let scratch = Scratch::new(name)?;
+    inline_make_at(&scratch, name, recipe)?;
+    Ok(scratch)
+}
+
+fn make_archive_members() -> CaseResult {
+    let scratch = Scratch::new("archive-members")?;
+    for (name, contents) in [
+        ("member.c", "int member(void) { return 42; }\n"),
+        ("main.c", "int member(void); int main(void) { return member() != 42; }\n"),
+        ("linked.expect", "0\n"),
+    ] {
+        let path = scratch.join(name);
+        io_at(&path, fs::write(&path, contents))?;
+    }
+    inline_make_at(&scratch, "archive-members", concat!(
+        "all: lib.a(member.o)\n",
+        "lib.a(member.o): member.o\n\tar rcs $@ $%\n",
+        "member.o: member.c\n\tcc -c -o $@ member.c\n",
+    ))?;
+    let mut command = bundle_command(&scratch, "cc");
+    command.args(["-o", "linked", "main.c", "lib.a"]);
+    build_in_group(&scratch, &mut command, "link archive member")?;
+    run_expected(&scratch.join("linked"), &scratch.join("linked.expect"))
+}
+
+fn make_include_remake() -> CaseResult {
+    let scratch = run_inline_make("include-remake", concat!(
+        "include generated.mk\n",
+        "all:\n\tprintf '%s\\n' '$(VALUE)' > result\n",
+        "generated.mk:\n\tprintf 'VALUE = remade\\n' > $@\n",
+    ))?;
+    expect_bytes(&scratch.join("result"), b"remade\n")
+}
+
+fn make_recursive_makeflags() -> CaseResult {
+    let scratch = Scratch::new("recursive-makeflags")?;
+    let parent = scratch.join("Makefile");
+    let child = scratch.join("child.mk");
+    io_at(&parent, fs::write(&parent, "all:\n\t$(MAKE) -f child.mk child\n"))?;
+    io_at(&child, fs::write(&child, "child:\n\tprintf '%s\\n' '$(TOKEN)' > result\n"))?;
+    // The child recipe must stay silent under inherited -s and receive TOKEN.
+    let output = command_output(bundle_command(&scratch, "make").args(["-s", "TOKEN=inherited", "all"]))?;
+    if !require_success("recursive make", output)?.is_empty() {
+        return Err("submake echoed a recipe despite inherited -s".into());
+    }
+    expect_bytes(&scratch.join("result"), b"inherited\n")
+}
+
+fn expect_bytes(path: &Path, expected: &[u8]) -> CaseResult {
+    let actual = io_at(path, fs::read(path))?;
+    if actual != expected {
+        return Err(format!("{}: expected {expected:?}, got {actual:?}", path.display()).into());
+    }
+    Ok(())
+}
+
+fn gnu_make_features() -> CaseResult {
+    let scratch = run_inline_make("gnu-make-features", concat!(
+        "names := alpha beta\n",
+        "ifeq ($(words $(names)),2)\n",
+        "all: $(patsubst %,%.out,$(names))\n",
+        "endif\n",
+        "define recipe\n",
+        "$(1).out: | ready\n",
+        "\tprintf '%s\\n' '$(1)' > $$@\n",
+        "endef\n",
+        "$(foreach name,$(names),$(eval $(call recipe,$(name))))\n",
+        "ready:\n\tprintf 'ready\\n' > $@\n",
+    ))?;
+    expect_bytes(&scratch.join("alpha.out"), b"alpha\n")?;
+    expect_bytes(&scratch.join("beta.out"), b"beta\n")?;
+    expect_bytes(&scratch.join("ready"), b"ready\n")
+}
+
+fn gnu_c_extensions() -> CaseResult {
+    let scratch = Scratch::new("gnu-c-extensions")?;
+    let source = scratch.join("gnu.c");
+    let binary = scratch.join("gnu");
+    let expect = scratch.join("gnu.expect");
+    io_at(&source, fs::write(&source, r#"
+#define SUM(first, extra...) sum(first, ## extra, 0)
+static int sum(int a, int b, ...) { return a + b; }
+int main(void) {
+    int n = 6;
+    typeof(n) copied = ({ int doubled = 2 * n; doubled; });
+    __asm__ __volatile__("" : : : "memory");
+    switch (copied) {
+    case 10 ... 12: return SUM(copied, 30) != 42 || SUM(42) != 42;
+    default: return 2;
+    }
+}
+"#))?;
+    io_at(&expect, fs::write(&expect, "0\n"))?;
+    let mut command = bundle_command(&scratch, "cc");
+    command.args(["-std=gnu11", "-O2", "-o"]).arg(&binary).arg(&source);
+    build_in_group(&scratch, &mut command, "compile GNU C fixture")?;
+    run_expected(&binary, &expect)
+}
+
+static BUSYBOX_SCRATCH: OnceLock<Result<(), String>> = OnceLock::new();
+const BUSYBOX_MOUNT: &str = "/mnt/breenix-toolchain";
+const BUSYBOX_RECORD: &str = "/mnt/breenix-toolchain/busybox-under-test";
+
+fn busybox_fixture() -> PathBuf {
+    Path::new("/").join(CORPUS).join("busybox")
+}
+
+fn busybox_run() -> Result<PathBuf, String> {
+    let nonce = LIBC_NONCE.get().ok_or("could not get a toolchain boot nonce")?;
+    Ok(Path::new(BUSYBOX_MOUNT).join(hex(nonce)))
+}
+
+fn busybox_mount() -> Result<(), String> {
+    use libbreenix::fs as sysfs;
+
+    io_at(Path::new(BUSYBOX_MOUNT), fs::create_dir_all(BUSYBOX_MOUNT))?;
+    let mut companions = Vec::new();
+    for disk in io_at(Path::new("/dev"), fs::read_dir("/dev"))? {
+        let disk = io_at(Path::new("/dev"), disk)?;
+        let name = disk.file_name();
+        if name.to_str().and_then(|name| name.strip_prefix("disk"))
+            .and_then(|index| index.parse::<u8>().ok()).is_none()
+        {
+            continue;
+        }
+        let path = disk.path();
+        let device = path.to_str().ok_or("invalid scratch disk path")?;
+        // Probe read-only before binding the selected disk for writes.
+        if unsafe { sysfs::mount(device, BUSYBOX_MOUNT, "breenfs", 1, std::ptr::null()) }.is_err() {
+            continue;
+        }
+        let marker = Path::new(BUSYBOX_MOUNT).join("busybox-scratch");
+        let matches = fs::read(marker).is_ok_and(|bytes| bytes == b"toolchain/busybox-on-box\n");
+        sysfs::umount2(BUSYBOX_MOUNT, 0).map_err(|error| format!("detach {device}: {error}"))?;
+        if matches {
+            companions.push(path);
+        }
+    }
+    let [disk] = companions.as_slice() else {
+        return Err(format!("expected one BusyBox scratch companion, found {companions:?}"));
+    };
+    let device = disk.to_str().ok_or("invalid scratch disk path")?;
+    unsafe { sysfs::mount(device, BUSYBOX_MOUNT, "breenfs", 0, std::ptr::null()) }
+        .map_err(|error| format!("mount {device} at {BUSYBOX_MOUNT}: {error}"))?;
+    Ok(())
+}
+
+fn busybox_driver(phase: &str, run: &Path) -> CaseResult {
+    let fixture = busybox_fixture();
+    let driver = fixture.join("busybox.sh");
+    if !driver.is_file() {
+        return Err(format!("{} is required for toolchain/busybox-on-box", driver.display()).into());
+    }
+    if phase == "unpack" {
+        BUSYBOX_SCRATCH.get().ok_or("BusyBox scratch mount was not prepared")?
+            .as_ref().map_err(Clone::clone)?;
+        io_at(run, fs::create_dir(run))?;
+    }
+    let arch = if cfg!(target_arch = "aarch64") { "aarch64" } else { "x86_64" };
+    let mut command = Command::new("/bin/sh");
+    command
+        .env_clear()
+        .env("BUSYBOX_BUNDLE", Path::new("/").join(DEV))
+        .env("BMAKE_INHERIT_PROCESS_GROUP", "1")
+        .args([driver.as_os_str(), phase.as_ref(), fixture.as_os_str(), run.join("build").as_os_str(), arch.as_ref()])
+        .stdin(Stdio::null());
+    build_in_group_at(&run.join(format!("{phase}.log")), &mut command, phase, true)
+}
+
+fn busybox_phase() -> CaseResult {
+    let name = running_case().and_then(|name| name.strip_prefix("busybox/"))
+        .ok_or("missing BusyBox phase case name")?;
+    busybox_driver(name, &busybox_run()?)
+}
+
+fn applet_list(text: &str) -> Result<BTreeSet<&str>, String> {
+    let mut names = BTreeSet::new();
+    for name in text.lines() {
+        if name.is_empty() || !names.insert(name) {
+            return Err(format!("invalid applet list entry {name:?}"));
+        }
+    }
+    if names.is_empty() {
+        return Err("empty applet list".into());
+    }
+    Ok(names)
+}
+
+fn busybox_link_and_list() -> CaseResult {
+    let run = busybox_run()?;
+    busybox_driver("link-and-list", &run)?;
+    let build = run.join("build");
+    let binary = build.join("busybox.elf");
+    io_at(&binary, fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)))?;
+    let report = build.join("applets.json");
+    let report = serde_json::from_slice::<Value>(&io_at(&report, fs::read(&report))?)
+        .map_err(|error| format!("bad on-box applets.json: {error}"))?;
+    let verdicts = report["applets"].as_object().ok_or("missing per-applet results")?;
+    let reference = busybox_fixture().join("mac-applets.txt");
+    let expected = io_at(&reference, fs::read_to_string(&reference))?;
+    let expected = applet_list(&expected)?;
+    let mut command = Command::new(&binary);
+    command.arg0("busybox").arg("--list").env_clear();
+    let listing = run.join("applets.list");
+    build_in_group_at(&listing, &mut command, "fresh BusyBox --list", false)?;
+    let output = io_at(&listing, fs::read_to_string(&listing))?;
+    let actual = applet_list(&output)?;
+    if actual != expected {
+        return Err(format!("BusyBox applet list: missing {:?}, additional {:?}",
+            expected.difference(&actual).collect::<Vec<_>>(),
+            actual.difference(&expected).collect::<Vec<_>>()).into());
+    }
+    if verdicts.len() != expected.len() || expected.iter().any(|name| {
+        verdicts.get(*name).is_none_or(|row| row["compiles"] != true || row["links"] != true)
+    }) {
+        return Err("on-box applets.json differs from the executable's applet list".into());
+    }
+    let names: Vec<_> = actual.into_iter().collect();
+    busybox_record::publish(Path::new(BUSYBOX_RECORD), &binary, &names)?;
+    Ok(())
+}
+
+fn busybox_required_usage() -> CaseResult {
+    let build = busybox_run()?.join("build");
+    let bin = build.join("bin");
+    let expected = include_str!("../../../vendor/busybox/required-applets");
+    for applet in expected.lines().filter(|line| !line.is_empty() && !line.starts_with('#')) {
+        if !bin.join(applet).is_file() {
+            return Err(format!("built BusyBox is missing required applet {applet}").into());
+        }
+    }
+    let scratch = Scratch::new("busybox-required-usage")?;
+    let mut command = Command::new(bin.join("sh"));
+    command.env_clear().env("PATH", bin)
+        .current_dir(&scratch.0)
+        .args(["-ec", "printf '%s\\n' 'BusyBox 42' > input; awk '{ print $2 }' input; sha256sum input"]);
+    let log = scratch.join("usage.log");
+    build_in_group_at(&log, &mut command, "fresh BusyBox sh and required applets", false)?;
+    let expected = format!("42\n{}  input\n", hex(&sha256(b"BusyBox 42\n")));
+    expect_bytes(&log, expected.as_bytes())
+}
+
+fn kbuild_host_programs() -> CaseResult {
+    let source = busybox_run()?.join("build/busybox-1.37.0");
+    let scratch = Scratch::new("kbuild-host-programs")?;
+    let deps = scratch.join("probe.d");
+    io_at(&deps, fs::write(&deps, "probe.o: probe.c\n"))?;
+    io_at(&scratch.join("probe.c"), fs::write(scratch.join("probe.c"), b"int probe;\n"))?;
+    let output = require_success(
+        "native Kbuild fixdep",
+        command_output(Command::new(source.join("scripts/basic/fixdep"))
+            .current_dir(&scratch.0).args(["probe.d", "probe.o", "cc -c probe.c"]))?,
+    )?;
+    let text = std::str::from_utf8(&output).map_err(|error| error.to_string())?;
+    if !(text.contains("cmd_probe.o := cc -c probe.c") && text.contains("probe.c")) {
+        return Err(format!("unexpected fixdep dependency record {text:?}").into());
+    }
+    let receipt = source.parent().unwrap().join("generators.sha256");
+    for executable in ["scripts/basic/split-include", "scripts/kconfig/conf", "applets/usage", "applets/applet_tables"] {
+        if !source.join(executable).is_file() {
+            return Err(format!("native Kbuild generator {executable} missing").into());
+        }
+    }
+    if !receipt.is_file() {
+        return Err("native Kbuild generator receipt missing".into());
+    }
+    Ok(())
 }

@@ -217,6 +217,7 @@ fn relocatable_writer_layout_and_symbol_order() {
     ];
     let symbols = [
         RelSymbol {
+            other: 0,
             name: b"callee",
             section: 0,
             kind: 2,
@@ -225,6 +226,7 @@ fn relocatable_writer_layout_and_symbol_order() {
             size: 0,
         },
         RelSymbol {
+            other: 0,
             name: b"local",
             section: 1,
             kind: 0,

@@ -141,7 +141,10 @@ impl<'src> Emitter<'_, 'src> {
         }
         let layout = ty.layout().unwrap();
         if layout.size == 0 {
-            return Err(Diagnostic::new(site, "cannot pass an empty AArch64 record"));
+            return Err(Diagnostic::new(
+                site,
+                "empty record argument lowering is deferred to ARM 25.11d2",
+            ));
         }
         let class = match self
             .homogeneous_base(ty)
@@ -164,7 +167,10 @@ impl<'src> Emitter<'_, 'src> {
             Kind::Record(tag) => {
                 let record = &self.records[tag.id];
                 let members = &record.definition.as_ref()?.members;
-                let element = self.homogeneous_base(&members.first()?.ty)?;
+                let members = members
+                    .iter()
+                    .filter(|member| !matches!(member.ty.kind, Kind::Array(_, Some(0))));
+                let element = self.homogeneous_base(&members.clone().next()?.ty)?;
                 let mut span = 0;
                 for member in members {
                     let offset = if record.kind == RecordKind::Struct {

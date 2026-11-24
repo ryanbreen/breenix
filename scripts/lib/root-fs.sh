@@ -17,8 +17,15 @@ root_fs_prepare() {
 
 root_fs_scratch() {
     BREENFS_SCRATCH_ARGS=()
-    if [ "$MODE" = suite ] && [[ ",$SUITE," == *,filesystem,* ]]; then
-        local scratch="${WRITABLE%/*}/breenfs-scratch.img"
+    local scratch
+    if [ "$MODE" = suite ] && [ "${MILESTONE:-}" = toolchain/busybox-on-box ]; then
+        scratch="${WRITABLE%/*}/toolchain-scratch.img"
+    elif [ "$MODE" = suite ] && [[ ",$SUITE," == *,filesystem,* ]]; then
+        scratch="${WRITABLE%/*}/breenfs-scratch.img"
+    else
+        return
+    fi
+    if [ -n "$scratch" ]; then
         # QEMU allocates MMIO downward, so discovery finds scratch after the other fixtures.
         BREENFS_SCRATCH_ARGS=(-device virtio-blk-device,drive=breenfs-scratch
             -drive "if=none,id=breenfs-scratch,format=raw,file=$scratch")

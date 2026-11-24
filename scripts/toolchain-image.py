@@ -18,10 +18,18 @@ from metal_root import require_e2fsprogs
 ROOT = Path(__file__).resolve().parents[1]
 DEV = Path("opt/breenix-dev/25.2")
 CORPUS = Path("usr/share/breenix/toolchain")
+BUSYBOX = CORPUS / "busybox"
+BUSYBOX_MILESTONE = "toolchain/busybox-on-box"
+BUSYBOX_SCRATCH = "toolchain-scratch.img"
+# 25.11d2-driver measured 39,576 KiB. E24's 64 MiB scratch geometry
+# leaves 25,960 KiB for filesystem overhead and guest allocation differences.
+BUSYBOX_SCRATCH_BYTES = 64 << 20
 SUITE = Path("sbin/suite-toolchain")
 LIBEXEC = Path("usr/libexec/breenix")
 TOOLS = ("bas", "bld", "bar", "bnm")
-TOOL_PATHS = {DEV / "bin" / tool for tool in (*TOOLS, "cc", "make", "as", "ld")}
+DRIVER_TOOL_ALIASES = (("bas", "as"), ("bld", "ld"), ("bar", "ar"), ("bnm", "nm"))
+TOOL_PATHS = {DEV / "bin" / tool for tool in (*TOOLS, "cc", "make")}
+TOOL_PATHS.update(DEV / "bin" / alias for _, alias in DRIVER_TOOL_ALIASES)
 LINKER_OBJECTS = ("got-main", "got-entry", "archive-value-with-long-name", "tls-template")
 MANIFEST = DEV / "manifest.sha256"
 RECORD = DEV / "build.json"
@@ -139,7 +147,37 @@ def manifest_bytes(tree, files):
     return "".join(f"{digest(tree / path)}  {path.as_posix()}\n" for path in files).encode()
 
 
-def seal(bundle, commit, arch, tool_record):
+def busybox_inputs():
+    vendor = ROOT / "vendor/busybox"
+    return {
+        BUSYBOX / "busybox.sh": ROOT / "toolchain/corpus/busybox.sh",
+        BUSYBOX / "mac-applets.txt": ROOT / "toolchain/corpus/busybox-mac-applets.txt",
+        **{BUSYBOX / path.relative_to(ROOT): path for path in (
+            vendor / "busybox-1.37.0.tar.bz2", vendor / "breenix-libc.config",
+            *sorted((vendor / "patches").iterdir()),
+        )},
+    }
+
+
+def format_busybox_scratch(path):
+    # Use the same native formatter as breenfs-suite-fixtures.sh (E24 24.20).
+    tools = ROOT / "tools/breenfs"
+    target = tools / "target"
+    subprocess.run(["cargo", "build", "--locked", "--release", "--quiet", "--bin", "breenfs-mkfs",
+                    "--target-dir", str(target)], cwd=tools, check=True)
+    with tempfile.TemporaryDirectory(prefix="busybox-scratch-") as contents:
+        (Path(contents) / "busybox-scratch").write_bytes(b"toolchain/busybox-on-box\n")
+        subprocess.run([str(target / "release/breenfs-mkfs"), "--size",
+                        str(BUSYBOX_SCRATCH_BYTES), "--populate", contents, str(path)], check=True)
+
+
+def busybox_scratch_record(path):
+    if path.is_symlink() or path.stat().st_size != BUSYBOX_SCRATCH_BYTES:
+        raise ValueError("invalid BusyBox scratch image")
+    return {"size": BUSYBOX_SCRATCH_BYTES, "sha256": digest(path)}
+
+
+def seal(bundle, commit, arch, tool_record, milestone=None):
     if not COMMIT.fullmatch(commit):
         raise ValueError("invalid toolchain build commit")
     tree = bundle / "root"
@@ -153,7 +191,8 @@ def seal(bundle, commit, arch, tool_record):
                 sources[DEV / directory / header.relative_to(headers)] = header
     sources[DEV / "linker.ld"] = ROOT / "userspace/programs/linker.ld"
     required = {SUITE, DEV / "lib/libc.a"} | {DEV / "bin" / tool for tool in TOOLS}
-    required |= {DEV / "bin" / tool for tool in ("cc", "make", "as", "ld")}
+    required |= {DEV / "bin" / tool for tool in ("cc", "make")}
+    required.update(DEV / "bin" / alias for _, alias in DRIVER_TOOL_ALIASES)
     archive_targets = {
         "interop": "x86_64-breenix-c" if arch == "x86_64" else "aarch64-breenix",
         "brt": f"{arch}-breenix",
@@ -205,6 +244,11 @@ def seal(bundle, commit, arch, tool_record):
     sources.update({CORPUS / path: source for path, source in c11_inputs(arch).items()})
     sources.update({CORPUS / path: source for path, source in c17_libc_inputs().items()})
     required.update((*libc_references(), CORPUS / "libc-functions.txt"))
+
+    busybox = busybox_inputs() if milestone == BUSYBOX_MILESTONE else {}
+    if {path for path in files if path.is_relative_to(BUSYBOX)} != busybox.keys():
+        raise ValueError("BusyBox inputs differ from the selected fixture file set")
+    sources.update(busybox)
 
     if arch == "x86_64":
         fixtures = corpus / "assembler"
@@ -258,7 +302,7 @@ def seal(bundle, commit, arch, tool_record):
                 "rustForkCommit": fork, "rustc": tools["bcc"]["rustc"],
                 "sha256": digest(tree / DEV / path)}:
             raise ValueError(f"{name}: build record differs from the staged archive")
-    for tool, alias in (("bas", "as"), ("bld", "ld")):
+    for tool, alias in DRIVER_TOOL_ALIASES:
         if digest(tree / DEV / "bin" / alias) != tools[tool]["sha256"]:
             raise ValueError(f"{alias}: staged driver tool differs from {tool}")
     (tree / MANIFEST).write_bytes(manifest_bytes(tree, files))
@@ -266,6 +310,11 @@ def seal(bundle, commit, arch, tool_record):
                        manifestSha256=digest(tree / MANIFEST))
     record_data["candidateProducer"] = "mac-bcc" if sys.platform == "darwin" else "host-bcc"
     record_data.update(archives)
+    if busybox:
+        record_data["busyboxInputs"] = {str(path): digest(tree / path) for path in busybox}
+        scratch = bundle / BUSYBOX_SCRATCH
+        format_busybox_scratch(scratch)
+        record_data["busyboxScratch"] = busybox_scratch_record(scratch)
     record = json.dumps(record_data, indent=2) + "\n"
     (tree / RECORD).write_text(record)
     (bundle / "build.json").write_text(record)
@@ -284,11 +333,20 @@ def fixture_mode(path):
     return 0o755 if path == SUITE or path in TOOL_PATHS or path.suffix == ".elf" else 0o644
 
 
-def install(debugfs, image, bundle, arch, scratch):
+def install(debugfs, image, bundle, arch, scratch, milestone=None):
     tree = bundle / "root"
     files = payload(tree)
     references = libc_references()
     record = json.loads((bundle / "build.json").read_text())
+    busybox = {path for path in files if path.is_relative_to(BUSYBOX)}
+    disk = bundle / BUSYBOX_SCRATCH
+    if milestone == BUSYBOX_MILESTONE:
+        if (busybox != busybox_inputs().keys()
+                or record.get("busyboxInputs") != {str(path): digest(tree / path) for path in busybox}
+                or record.get("busyboxScratch") != busybox_scratch_record(disk)):
+            raise ValueError("BusyBox fixture differs from its build record")
+    elif busybox or "busyboxInputs" in record or "busyboxScratch" in record or disk.exists() or disk.is_symlink():
+        raise ValueError("BusyBox fixture requires toolchain/busybox-on-box")
     if (not COMMIT.fullmatch(record.get("commit", "")) or record.get("arch") != arch
             or not SHA256.fullmatch(record.get("manifestSha256", ""))
             or (tree / RECORD).read_bytes() != (bundle / "build.json").read_bytes()
@@ -332,12 +390,15 @@ def install(debugfs, image, bundle, arch, scratch):
             raise ValueError(f"staged mode differs for /{path}")
 
 
-def stage(base, output, suites, bundle, arch):
+def stage(base, output, suites, bundle, arch, milestone=None):
     seeds = {ROOT / directory / image for directory in ("target", "testdata")
              for image in ("ext2.img", "ext2-aarch64.img")}
     if (base == output or (output.exists() and base.samefile(output))
             or output.resolve() in {seed.resolve() for seed in seeds}):
         raise ValueError("suite staging requires a separate output image")
+    toolchain = "toolchain" in suites.split(",")
+    if milestone == BUSYBOX_MILESTONE and not toolchain:
+        raise ValueError("toolchain/busybox-on-box requires the toolchain suite")
     debugfs, = require_e2fsprogs("debugfs")
     for path in (*PREFIXES, SUITE):
         if stat_path(debugfs, base, path) is not None:
@@ -346,10 +407,10 @@ def stage(base, output, suites, bundle, arch):
         scratch = Path(temporary)
         image = scratch / "image.ext2"
         shutil.copyfile(base, image)
-        if "toolchain" in suites.split(","):
+        if toolchain:
             if bundle is None:
                 raise ValueError("the toolchain suite needs --toolchain-bundle")
-            install(debugfs, image, bundle, arch, scratch)
+            install(debugfs, image, bundle, arch, scratch, milestone)
         image.replace(output)
 
 
@@ -370,12 +431,14 @@ def main():
     finalize.add_argument("commit")
     finalize.add_argument("arch", choices=("x86_64", "aarch64"))
     finalize.add_argument("--tool-record", type=Path, required=True)
+    finalize.add_argument("--milestone")
     copy = commands.add_parser("stage")
     copy.add_argument("base", type=Path)
     copy.add_argument("output", type=Path)
     copy.add_argument("--suite", default="")
     copy.add_argument("--toolchain-bundle", type=Path)
     copy.add_argument("--arch", choices=("x86_64", "aarch64"), required=True)
+    copy.add_argument("--milestone")
     args = parser.parse_args()
     try:
         if args.command == "check-corpus":
@@ -385,9 +448,10 @@ def main():
         elif args.command == "stage-c11":
             stage_c11(args.corpus, args.arch)
         elif args.command == "seal":
-            seal(args.bundle, args.commit, args.arch, args.tool_record)
+            seal(args.bundle, args.commit, args.arch, args.tool_record, args.milestone)
         else:
-            stage(args.base.resolve(strict=True), args.output.absolute(), args.suite, args.toolchain_bundle, args.arch)
+            stage(args.base.resolve(strict=True), args.output.absolute(), args.suite,
+                  args.toolchain_bundle, args.arch, args.milestone)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"toolchain image: {error}\n")
 

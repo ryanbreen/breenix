@@ -1,8 +1,9 @@
 use std::{
     fs::{self, File},
     io::ErrorKind,
+    os::unix::process::CommandExt,
     path::PathBuf,
-    process::{self, Command, Output},
+    process::{self, Command, Output, Stdio},
     sync::atomic::{AtomicUsize, Ordering},
     time::{Duration, UNIX_EPOCH},
 };
@@ -188,6 +189,79 @@ fn macro_precedence_env_e() {
             .unwrap();
         expect_stdout(output, expected);
     }
+}
+
+#[test]
+fn assignment_operators_posix_2024() {
+    let immediate = Project::new(concat!(
+        "INPUT = early\n",
+        "VALUE ::= $(INPUT) $$(INPUT)\n",
+        "INPUT = late\n",
+        "all:\n\t@printf '<%s>\\n' '$(VALUE)'\n",
+    ));
+    let expanded_delayed = Project::new(concat!(
+        "INPUT = early\n",
+        "ESCAPED = $$(INPUT)\n",
+        "VALUE :::= $(INPUT) $(ESCAPED)\n",
+        "INPUT = late\n",
+        "all:\n\t@printf '<%s>\\n' '$(VALUE)'\n",
+    ));
+    let append = Project::new(concat!(
+        "INPUT = early\n",
+        "IMMEDIATE ::= start\n",
+        "DELAYED = start\n",
+        "IMMEDIATE += $(INPUT)\n",
+        "DELAYED += $(INPUT)\n",
+        "BMAKE_TEST_NEW_APPEND += $(INPUT)\n",
+        "INPUT = late\n",
+        "all:\n",
+        "\t@printf '<%s>\\n' '$(IMMEDIATE)' '$(DELAYED)' '$(BMAKE_TEST_NEW_APPEND)'\n",
+    ));
+    let conditional = Project::new(concat!(
+        "INPUT = early\n",
+        "EMPTY =\n",
+        "EMPTY ?= ignored\n",
+        "BMAKE_TEST_NEW_CONDITIONAL ?= $(INPUT)\n",
+        "BMAKE_TEST_NEW_CONDITIONAL ?= ignored\n",
+        "INPUT = late\n",
+        "all:\n\t@printf '<%s>\\n' '$(EMPTY)' '$(BMAKE_TEST_NEW_CONDITIONAL)'\n",
+    ));
+    let shell = Project::new(concat!(
+        "INPUT = early\n",
+        "VALUE != v=$(INPUT); printf ' \\t\\n%s\\n%s\\n\\n' \"$$v\" second; printf x >> calls\n",
+        "FAILED != printf '\\044(INPUT)\\n'; exit 7\n",
+        "INPUT = late\n",
+        "all:\n\t@printf '<%s>\\n' '$(VALUE)' '$(VALUE)' '$(FAILED)'\n",
+    ));
+
+    expect_stdout(immediate.build(), "<early $(INPUT)>\n");
+    expect_stdout(expanded_delayed.build(), "<early $(INPUT)>\n");
+    expect_stdout(
+        append
+            .command()
+            .arg("project.mk")
+            .env_remove("BMAKE_TEST_NEW_APPEND")
+            .output()
+            .unwrap(),
+        "<start early>\n<start late>\n<late>\n",
+    );
+    expect_stdout(
+        conditional
+            .command()
+            .arg("project.mk")
+            .env_remove("BMAKE_TEST_NEW_CONDITIONAL")
+            .output()
+            .unwrap(),
+        "<>\n<late>\n",
+    );
+
+    let output = shell.build();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stdout, b"<early second >\n<early second >\n<late>\n");
+    let diagnostic = String::from_utf8(output.stderr).unwrap();
+    assert!(diagnostic.contains("project.mk:3:"), "{diagnostic}");
+    assert!(diagnostic.contains("exited with status 7"), "{diagnostic}");
+    assert_eq!(fs::read(shell.0.join("calls")).unwrap(), b"x");
 }
 
 #[test]
@@ -545,59 +619,378 @@ fn precious_preserves_an_interrupted_output() {
 }
 
 #[test]
-fn unsupported_25_6c_construct_is_located_error() {
-    for (makefile, line, construct) in [
-        ("all: lib.a(member.o)\n", 1, "lib.a(member.o)"),
-        ("\nlib.a(member.o):\n\t@printf wrong > ran\n", 2, "lib.a(member.o)"),
-        ("X ::= value\nall:\n", 1, "::="),
-        ("X :::= value\nall:\n", 1, ":::="),
-        ("CFLAGS += -O\nall:\n", 1, "+="),
-        ("CC ?= cc\nall:\n", 1, "?="),
-        ("STAMP != touch ran\nall:\n", 1, "!="),
-        ("all: .WAIT\n", 1, ".WAIT"),
-        (".WAIT:\nall:\n", 1, ".WAIT"),
-        ("all:\n.NOTPARALLEL:\n", 2, ".NOTPARALLEL"),
-        ("MAKEFLAGS = -s\nall:\n", 1, "MAKEFLAGS"),
-        ("all:\n\t@printf '%s' '$(MAKEFLAGS)'\n", 2, "MAKEFLAGS"),
-        (
-            "all:\n\t@printf wrong > ran\n-include generated.mk\ngenerated.mk:\n\t@printf wrong > generated.mk\n",
-            3,
-            "generated.mk",
+fn recursive_makeflags_passes_options_and_macros() {
+    let project = Project::new(concat!(
+        "MAKEFLAGS += -s FROM_FILE='file value'\n",
+        "all:\n",
+        "\t@test \"$(MAKEFLAGS)\" = \"$$MAKEFLAGS\"\n",
+        "\t@$(MAKE) -f child.mk\n",
+    ));
+    project.fixture(
+        "child.mk",
+        concat!(
+            "TOKEN = wrong\n",
+            "all: broken independent\n",
+            "broken:\n",
+            "\t@exit 17\n",
+            "independent:\n",
+            "\tprintf '%s\\n' \"$(TOKEN)|$(FROM_FILE)|$$TOKEN\"\n",
         ),
-    ] {
-        let project = Project::new(makefile);
-        let output = project.build();
-        assert_eq!(output.status.code(), Some(2), "{output:?}");
-        let stderr = String::from_utf8(output.stderr).unwrap();
-        assert!(stderr.contains(&format!("project.mk:{line}:")), "{stderr}");
-        assert!(stderr.contains(construct), "{stderr}");
-        assert!(stderr.contains("not supported until 25.6c"), "{stderr}");
-        assert!(!project.0.join("ran").exists());
-        assert!(!project.0.join("generated.mk").exists());
-    }
+        0,
+    );
+    let output = project
+        .command()
+        .env("MAKEFLAGS", "-k TOKEN=environment")
+        .args(["-f", "project.mk", "TOKEN=two words 'quoted'"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("child.mk:4: target 'broken': recipe exited with status 17"),
+        "{stderr}"
+    );
+    assert_eq!(
+        output.stdout,
+        b"two words 'quoted'|file value|two words 'quoted'\n"
+    );
 
-    let project = Project::new("all:\n\t@printf wrong > ran\n");
-    for (arguments, variable, location, construct) in [
-        (&["-j2"][..], None, "<command line>:1:", "-j"),
-        (
-            &["lib.a(member.o)"][..],
-            None,
-            "<command line>:1:",
-            "lib.a(member.o)",
-        ),
-        (&[][..], Some("-k"), "<environment>:1:", "MAKEFLAGS"),
-    ] {
-        let mut command = project.command();
-        command.args(["-f", "project.mk"]).args(arguments);
-        if let Some(value) = variable {
-            command.env("MAKEFLAGS", value);
-        }
-        let output = command.output().unwrap();
-        assert_eq!(output.status.code(), Some(2), "{output:?}");
-        let stderr = String::from_utf8(output.stderr).unwrap();
-        assert!(stderr.contains(location), "{stderr}");
-        assert!(stderr.contains(construct), "{stderr}");
-        assert!(stderr.contains("not supported until 25.6c"), "{stderr}");
-        assert!(!project.0.join("ran").exists());
+    project.fixture(
+        "project.mk",
+        "all:\n\t@printf wrong > parent-ordinary\n\t@printf started > parent-recursive; $(MAKE) -f child.mk\n",
+        0,
+    );
+    project.fixture("child.mk", "all:\n\t@printf wrong > child-ordinary\n", 0);
+    let output = project
+        .command()
+        .env("MAKEFLAGS", "ks")
+        .args(["-n", "-f", "project.mk"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        fs::read_to_string(project.0.join("parent-recursive")).unwrap(),
+        "started"
+    );
+    for name in ["parent-ordinary", "child-ordinary"] {
+        assert!(!project.0.join(name).exists(), "{name}");
     }
+}
+
+#[test]
+fn include_remade_then_reread() {
+    let project = Project::new(concat!(
+        "include generated.mk\n",
+        "$(GOAL):\n\t@printf '%s|%s' '$(VALUE)' '$(STALE)' > $@\n",
+        "generated.mk: source\n\t@cp -p source $@\n",
+    ));
+    project.fixture("generated.mk", "GOAL = old\nSTALE = wrong\n", 0);
+    project.fixture("source", "GOAL = fresh\nVALUE = updated\n", 10);
+    let output = project.build();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        fs::read_to_string(project.0.join("fresh")).unwrap(),
+        "updated|"
+    );
+    assert!(!project.0.join("old").exists());
+    assert_eq!(
+        fs::read_to_string(project.0.join("generated.mk")).unwrap(),
+        "GOAL = fresh\nVALUE = updated\n"
+    );
+
+    let project = Project::new(concat!(
+        "all:\n\t@printf '%s' '$(VALUE)' > all\n",
+        "include generated.mk\n",
+        "generated.mk:\n\t@cp source $@\n",
+    ));
+    project.fixture("source", "VALUE = created\n", 0);
+    let output = project
+        .command()
+        .args(["-n", "-f", "project.mk"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(String::from_utf8(output.stdout)
+        .unwrap()
+        .contains("printf '%s' 'created' > all"));
+    assert_eq!(
+        fs::read_to_string(project.0.join("generated.mk")).unwrap(),
+        "VALUE = created\n"
+    );
+    assert!(!project.0.join("all").exists());
+}
+
+#[test]
+fn archive_member_rebuilt_when_source_newer() {
+    let project = Project::new(concat!(
+        "CC = sh compile.sh\n",
+        "CFLAGS = -DARCHIVE\n",
+        "AR = sh archive.sh\n",
+        "ARFLAGS = -rv\n",
+        "lib.a: lib.a(member.o)\n",
+    ));
+    project.fixture("member.c", "updated source", 10);
+    project.fixture("lib.a", &member_archive(0), 30);
+    project.fixture("rebuilt.a", &member_archive(20), 30);
+    project.fixture(
+        "compile.sh",
+        "test \"$*\" = '-c -DARCHIVE member.c' && cp member.c member.o",
+        0,
+    );
+    project.fixture(
+        "archive.sh",
+        "test \"$*\" = '-rv lib.a member.o' && cmp member.o member.c && cp -p rebuilt.a lib.a",
+        0,
+    );
+
+    expect_stdout(
+        project.build(),
+        "sh compile.sh -c -DARCHIVE member.c\nsh archive.sh -rv lib.a member.o\nrm -f member.o\n",
+    );
+    assert_eq!(
+        fs::read_to_string(project.0.join("lib.a")).unwrap(),
+        member_archive(20)
+    );
+    assert!(!project.0.join("member.o").exists());
+    expect_stdout(project.build(), "");
+}
+
+#[test]
+fn archive_member_time_from_header() {
+    let project = Project::new(concat!(
+        "output: lib.a(member.o)\n",
+        "\t@printf '%s\\n' '$?' > output\n",
+        "lib.a(member.o): trigger\n",
+        "\t@printf '%s\\n' '$@|$%' > names\n",
+    ));
+    project.fixture("output", "old", 10);
+    project.fixture("trigger", "", 0);
+    project.fixture("lib.a", &member_archive(20), 0);
+
+    expect_stdout(project.build(), "");
+    assert_eq!(
+        fs::read_to_string(project.0.join("output")).unwrap(),
+        "lib.a(member.o)\n"
+    );
+    assert!(!project.0.join("names").exists());
+    assert!(!project.0.join("member.o").exists());
+
+    project.fixture("trigger", "", 30);
+    let goal = || {
+        project
+            .command()
+            .args(["-f", "project.mk", "lib.a(member.o)"])
+            .output()
+            .unwrap()
+    };
+    expect_stdout(goal(), "");
+    assert_eq!(
+        fs::read_to_string(project.0.join("names")).unwrap(),
+        "lib.a|member.o\n"
+    );
+
+    let mut corrupt = member_archive(20);
+    corrupt.replace_range(24..36, "invalid     ");
+    project.fixture("lib.a", &corrupt, 0);
+    let output = project.build();
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("project.mk:1:"), "{stderr}");
+    assert!(stderr.contains("lib.a(member.o)"), "{stderr}");
+    assert!(stderr.contains("invalid archive member timestamp"), "{stderr}");
+}
+
+// Common ar header from Solaris ar(3HEAD), with a fixed date and two data bytes.
+fn member_archive(seconds: u64) -> String {
+    let date = 1_700_000_000 + seconds;
+    format!("!<arch>\n{:<16}{date:<12}{:<6}{:<6}{:<8}{:<10}`\nxx", "member.o/", 0, 0, 644, 2)
+}
+
+// Each append is one short record. Files gate the recipes; the clock only
+// sets the deadline for the handshake.
+const RECORD_JOB: &str = r#"
+set -eu
+printf '+ %s\n' "$1" >> jobs.log
+: > "$1.entered"
+deadline=$(($(date +%s) + 5))
+for marker in "$@"; do
+    while [ ! -f "$marker.entered" ]; do
+        [ "$(date +%s)" -lt "$deadline" ] || exit 44
+    done
+done
+printf -- '- %s\n' "$1" >> jobs.log
+: > "$1.done"
+"#;
+
+fn check_jobs(project: &Project, jobs: &[&str], expected_peak: usize) {
+    use std::collections::HashSet;
+
+    let log = fs::read_to_string(project.0.join("jobs.log")).unwrap();
+    let mut active = HashSet::new();
+    let mut seen = HashSet::new();
+    let mut peak = 0;
+    for event in log.lines() {
+        let (kind, job) = event.split_once(' ').unwrap();
+        match kind {
+            "+" => {
+                assert!(seen.insert(job) && active.insert(job), "{log}");
+                peak = peak.max(active.len());
+            }
+            "-" => assert!(active.remove(job), "{log}"),
+            _ => panic!("invalid job event {event}"),
+        }
+    }
+    assert_eq!(seen, jobs.iter().copied().collect(), "{log}");
+    assert!(active.is_empty(), "{log}");
+    assert_eq!(peak, expected_peak, "{log}");
+}
+
+#[test]
+fn j_never_exceeds_tokens_across_submake() {
+    let project = Project::new(concat!(
+        "all: outer recurse\n",
+        "outer:\n\t@/bin/sh record outer nested last\n",
+        "recurse:\n\t@$(MAKE) -f child.mk\n",
+    ));
+    project.fixture("record", RECORD_JOB, 0);
+    project.fixture(
+        "child.mk",
+        concat!(
+            "all: nested more last\n",
+            "nested:\n\t@/bin/sh record nested outer\n",
+            "more:\n\t@/bin/sh record more\n",
+            "last:\n\t@/bin/sh record last\n",
+        ),
+        0,
+    );
+    expect_stdout(
+        project
+            .command()
+            .args(["-j", "2", "-f", "project.mk"])
+            .output()
+            .unwrap(),
+        "",
+    );
+    check_jobs(&project, &["outer", "nested", "more", "last"], 2);
+}
+
+#[test]
+fn wait_orders_prerequisites() {
+    let project = Project::new(concat!(
+        ".WAIT:\n",
+        "all: a b .WAIT right\n",
+        "a:\n\t@/bin/sh record a b\n",
+        "b:\n\t@/bin/sh record b a\n",
+        "right: right-input\n",
+        "right-input:\n\t@test -f a.done && test -f b.done && touch right-input\n",
+    ));
+    project.fixture("record", RECORD_JOB, 0);
+    expect_stdout(
+        project
+            .command()
+            .args(["-j4", "-f", "project.mk"])
+            .output()
+            .unwrap(),
+        "",
+    );
+    assert!(project.0.join("right-input").is_file());
+    check_jobs(&project, &["a", "b"], 2);
+
+    fs::remove_file(project.0.join("a.done")).unwrap();
+    fs::remove_file(project.0.join("b.done")).unwrap();
+    fs::remove_file(project.0.join("jobs.log")).unwrap();
+    // Asking for the right-hand target alone does not select the left-hand group.
+    expect_stdout(
+        project
+            .command()
+            .args(["-j4", "-f", "project.mk", "right"])
+            .output()
+            .unwrap(),
+        "",
+    );
+    assert!(!project.0.join("jobs.log").exists());
+}
+
+#[test]
+fn notparallel_serializes() {
+    let project = Project::new(concat!(
+        ".NOTPARALLEL:\n",
+        "all: first second recurse\n",
+        "first:\n\t@/bin/sh record first\n",
+        "second:\n\t@test -f first.done && /bin/sh record second\n",
+        "recurse:\n\t@test -f second.done && $(MAKE) -f child.mk\n",
+    ));
+    project.fixture("record", RECORD_JOB, 0);
+    project.fixture(
+        "child.mk",
+        concat!(
+            "all: child-a child-b\n",
+            "child-a:\n\t@/bin/sh record child-a child-b\n",
+            "child-b:\n\t@/bin/sh record child-b child-a\n",
+        ),
+        0,
+    );
+    expect_stdout(
+        project
+            .command()
+            .args(["-j2", "-f", "project.mk"])
+            .output()
+            .unwrap(),
+        "",
+    );
+    check_jobs(&project, &["first", "second", "child-a", "child-b"], 2);
+}
+
+#[test]
+fn signal_removes_partial_target() {
+    let project = Project::new(concat!(
+        ".PRECIOUS: keep\n",
+        "partial keep:\n\t@exec /bin/sh interrupt '$@'\n",
+    ));
+    project.fixture(
+        "interrupt",
+        "printf partial > \"$1\"\nkill -TERM \"$PPID\"\n",
+        0,
+    );
+
+    for (target, removed) in [("partial", true), ("keep", false)] {
+        let output = project
+            .command()
+            .args(["-f", "project.mk", target])
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(!output.status.success(), "{target}: {stderr}");
+        assert!(stderr.contains("signal 15"), "{target}: {stderr}");
+        assert_eq!(
+            stderr.contains(&format!("removed interrupted target '{target}'")),
+            removed,
+            "{stderr}",
+        );
+        assert_eq!(project.0.join(target).exists(), !removed);
+        if !removed {
+            assert_eq!(
+                fs::read_to_string(project.0.join(target)).unwrap(),
+                "partial"
+            );
+        }
+    }
+}
+
+#[test]
+fn managed_group_contains_recursive_recipes() {
+    let project = Project::new("all:\n\t@ps -o pgid= -p $$$$\n\t@$(MAKE) -f child.mk\n");
+    project.fixture("child.mk", "all:\n\t@ps -o pgid= -p $$$$\n", 0);
+    let child = project.command()
+        .args(["-j2", "-f", "project.mk"])
+        .env("BMAKE_INHERIT_PROCESS_GROUP", "1")
+        .process_group(0)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .spawn().unwrap();
+    let group = child.id().to_string();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(stdout.split_whitespace().collect::<Vec<_>>(), [group.as_str(); 2]);
 }

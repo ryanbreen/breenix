@@ -10,21 +10,34 @@ use std::collections::HashMap;
 pub struct Graph<'a> {
     nodes: Vec<Node<'a>>,
     indices: HashMap<&'a str, usize>,
+    pub(crate) roots: Vec<usize>,
     default_build_order: Vec<usize>,
 }
 
 #[derive(Debug)]
 pub struct Node<'a> {
     pub(crate) name: &'a str,
+    pub(crate) location: Option<&'a Location>,
     pub(crate) has_rule: bool,
-    prerequisites: Vec<Edge<'a>>,
+    pub(crate) prerequisites: Vec<Edge<'a>>,
     recipe_rule: Option<&'a Rule>,
 }
 
-#[derive(Debug)]
-struct Edge<'a> {
-    target: usize,
+/// Split a library target or prerequisite into its archive and member names.
+pub(crate) fn archive_member(name: &str) -> Option<(&str, &str)> {
+    let (archive, member) = name.strip_suffix(')')?.split_once('(')?;
+    (!archive.is_empty()
+        && !member.is_empty()
+        && !archive.contains(')')
+        && !member.contains(['(', ')']))
+    .then_some((archive, member))
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Edge<'a> {
+    pub(crate) target: Option<usize>,
     location: &'a Location,
+    pub(crate) order_only: bool,
 }
 
 impl<'a> Node<'a> {
@@ -53,22 +66,29 @@ impl<'a> Graph<'a> {
         let mut graph = Self {
             nodes: Vec::new(),
             indices: HashMap::new(),
+            roots: Vec::new(),
             default_build_order: Vec::new(),
         };
         let mut default_target = None;
         for entry in &makefile.entries {
             if let Entry::Rule(rule) = entry {
-                if rule.inference.is_none() && default_target.is_none() {
+                if !rule.inference.as_ref().is_some_and(|rule| rule.implicit)
+                    && default_target.is_none()
+                {
                     default_target = rule.targets.first().map(String::as_str);
                 }
                 graph.add_rule(rule)?;
             }
         }
-        let mut roots: Vec<_> = targets.iter().map(|target| graph.intern(target)).collect();
+        let mut roots: Vec<_> = targets
+            .iter()
+            .map(|target| graph.intern(target, None))
+            .collect();
         if let Some(target) = default_target.filter(|_| roots.is_empty()) {
             roots.push(graph.indices[target]);
         }
         graph.default_build_order = graph.check_cycles(&roots)?;
+        graph.roots = roots;
         Ok(graph)
     }
 
@@ -80,27 +100,64 @@ impl<'a> Graph<'a> {
         Some(self.prerequisites_of(self.node(name)?))
     }
 
-    pub(crate) fn prerequisites_of<'g>(
+    fn prerequisites_of<'g>(&'g self, node: &'g Node<'a>) -> impl Iterator<Item = &'a str> + 'g {
+        self.prerequisite_names(node.prerequisites.iter())
+    }
+
+    pub(crate) fn normal_prerequisites<'g>(
         &'g self,
         node: &'g Node<'a>,
     ) -> impl Iterator<Item = &'a str> + 'g {
-        node.prerequisites
-            .iter()
-            .map(|edge| self.nodes[edge.target].name)
+        self.prerequisite_names(node.prerequisites.iter().filter(|edge| !edge.order_only))
     }
 
-    pub(crate) fn default_build_order(&self) -> impl Iterator<Item = &Node<'a>> {
-        self.default_build_order
-            .iter()
-            .map(|&index| &self.nodes[index])
+    pub(crate) fn order_only_prerequisites(&self, node: &Node<'a>) -> String {
+        if !node.prerequisites.iter().any(|edge| edge.order_only) {
+            return String::new();
+        }
+        let normal: std::collections::HashSet<_> = self.normal_prerequisites(node).collect();
+        let mut seen = std::collections::HashSet::new();
+        self.prerequisite_names(node.prerequisites.iter().filter(|edge| edge.order_only))
+            .filter(|name| !normal.contains(name) && seen.insert(*name))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn prerequisite_names<'g>(
+        &'g self,
+        edges: impl Iterator<Item = &'g Edge<'a>> + 'g,
+    ) -> impl Iterator<Item = &'a str> + 'g {
+        edges.filter_map(|edge| edge.target.map(|target| self.nodes[target].name))
+    }
+
+    pub(crate) fn nodes(&self) -> &[Node<'a>] {
+        &self.nodes
+    }
+
+    pub(crate) fn default_build_order(&self) -> &[usize] {
+        &self.default_build_order
     }
 
     fn add_rule(&mut self, rule: &'a Rule) -> Result<(), Error> {
-        let targets: Vec<_> = rule.targets.iter().map(|name| self.intern(name)).collect();
+        // Derived rules point to the inference recipe, not the reference to
+        // the target. Direct command-line goals have no makefile location.
+        let location =
+            (!rule.inference.as_ref().is_some_and(|rule| rule.implicit)).then_some(&rule.location);
+        let targets: Vec<_> = rule
+            .targets
+            .iter()
+            .map(|name| self.intern(name, location))
+            .collect();
         let prerequisites: Vec<_> = rule
             .prerequisites
             .iter()
-            .map(|name| self.intern(name))
+            .map(|name| (name, false))
+            .chain(rule.order_only.iter().map(|name| (name, true)))
+            .map(|(name, order_only)| Edge {
+                target: (name != ".WAIT").then(|| self.intern(name, location)),
+                location: &rule.location,
+                order_only,
+            })
             .collect();
         for target in targets {
             let node = &mut self.nodes[target];
@@ -117,20 +174,17 @@ impl<'a> Graph<'a> {
                 }
                 node.recipe_rule = Some(rule);
             }
-            node.prerequisites
-                .extend(prerequisites.iter().map(|&target| Edge {
-                    target,
-                    location: &rule.location,
-                }));
+            node.prerequisites.extend(prerequisites.iter().copied());
         }
         Ok(())
     }
 
-    fn intern(&mut self, name: &'a str) -> usize {
+    fn intern(&mut self, name: &'a str, location: Option<&'a Location>) -> usize {
         *self.indices.entry(name).or_insert_with(|| {
             let index = self.nodes.len();
             self.nodes.push(Node {
                 name,
+                location,
                 has_rule: false,
                 prerequisites: Vec::new(),
                 recipe_rule: None,
@@ -163,16 +217,19 @@ impl<'a> Graph<'a> {
                     continue;
                 };
                 *next_edge += 1;
-                match visits[edge.target] {
+                let Some(target) = edge.target else {
+                    continue;
+                };
+                match visits[target] {
                     Visit::Unseen => {
-                        visits[edge.target] = Visit::Active(stack.len());
-                        stack.push((edge.target, 0));
+                        visits[target] = Visit::Active(stack.len());
+                        stack.push((target, 0));
                     }
                     Visit::Active(start) => {
                         let cycle: Vec<_> = stack[start..]
                             .iter()
                             .map(|&(node, _)| self.nodes[node].name)
-                            .chain(std::iter::once(self.nodes[edge.target].name))
+                            .chain(std::iter::once(self.nodes[target].name))
                             .collect();
                         return Err(Error::new(
                             edge.location,

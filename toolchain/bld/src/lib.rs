@@ -1,10 +1,11 @@
 #![forbid(unsafe_code)]
 
-//! Static AMD64 and AArch64 ELF64 links from relocatable objects and common archives.
+//! Static and relocatable ELF64 links from objects and common archives.
 
 mod input;
 mod layout;
 mod object;
+mod relocatable;
 mod relocate;
 mod script;
 
@@ -54,7 +55,7 @@ impl Machine {
     }
 }
 
-const USAGE: &str = "usage: bld -o OUTPUT [-T SCRIPT] [-Map FILE] [--gc-sections]\n\
+const USAGE: &str = "usage: bld -o OUTPUT [-nostdlib] [-r | [-T SCRIPT] [--gc-sections]] [-Map FILE]\n\
        \x20      [--whole-archive | --no-whole-archive | --start-group |\n\
        \x20       --end-group | OBJECT | ARCHIVE] ...";
 
@@ -70,6 +71,7 @@ struct Options {
     map: Option<PathBuf>,
     inputs: Vec<Vec<Input>>,
     gc: bool,
+    relocatable: bool,
 }
 
 impl Options {
@@ -88,6 +90,13 @@ impl Options {
                 // selected symbol, binding and input path as TSV.
                 b"-Map" if options.map.is_none() => options.map.insert(PathBuf::new()),
                 b"-o" | b"-T" | b"--script" | b"-Map" => return Err(USAGE.into()),
+                b"-r" | b"--relocatable" => {
+                    options.relocatable = true;
+                    continue;
+                }
+                // GNU ld 2.45 §2.1 disables implicit library search.
+                // bld opens only the input paths provided on the command line.
+                b"-nostdlib" => continue,
                 b"--gc-sections" => {
                     options.gc = true;
                     continue;
@@ -144,7 +153,10 @@ impl Options {
             return Err(USAGE.into());
         }
         if options.map.as_ref() == Some(&options.output) {
-            return Err("bld: map and executable must have different paths".into());
+            return Err("bld: map and link output must have different paths".into());
+        }
+        if options.relocatable && (options.script.is_some() || options.gc) {
+            return Err("bld: -r cannot be combined with -T or --gc-sections".into());
         }
         Ok(options)
     }
@@ -159,7 +171,7 @@ fn display(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
     String::from_utf8_lossy(bytes)
 }
 
-fn write_map(path: &Path, link: &Link) -> io::Result<()> {
+fn write_map(path: &Path, link: &Link, relocatable: bool) -> io::Result<()> {
     let mut out = BufWriter::new(File::create(path)?);
     let mut globals: Vec<_> = link.globals.iter().collect();
     globals.sort_unstable_by_key(|(name, _)| *name);
@@ -173,7 +185,12 @@ fn write_map(path: &Path, link: &Link) -> io::Result<()> {
         let (input, symbol) = global.origin;
         let object = &link.objects[input];
         let section = usize::from(object.symbols[symbol].section);
-        if object.sections.get(section).is_some_and(|section| !section.live) {
+        if !relocatable
+            && object
+                .sections
+                .get(section)
+                .is_some_and(|section| !section.live)
+        {
             continue;
         }
         out.write_all(name)?;
@@ -187,27 +204,32 @@ fn link(options: Options, source: &mut dyn ReadSource) -> Result<()> {
         Some(path) => Script::parse(&path, &input::read_file(&path, source)?)?,
         None => Script::default(),
     };
-    let mut link = Link::new(script, options.gc);
+    let mut link = Link::new(script, options.gc, options.relocatable);
     for group in options.inputs {
         link.include_group(&group, source)?;
     }
-    link.select_live_sections();
-    link.allocate_common()?;
-    link.allocate_got()?;
-    let mut image = layout::Image::new(&mut link)?;
-    let entry = link.entry_address()?;
-    link.relocate(&mut image)?;
-    image.write_headers(&link, entry);
+    let (bytes, mode, kind) = if options.relocatable {
+        (
+            link.relocatable_object(&options.output)?,
+            0o666,
+            "relocatable object",
+        )
+    } else {
+        link.select_live_sections();
+        link.allocate_common()?;
+        link.allocate_got()?;
+        let mut image = layout::Image::new(&mut link)?;
+        let entry = link.entry_address()?;
+        link.relocate(&mut image)?;
+        image.write_headers(&link, entry);
+        (image.bytes, 0o777, "executable")
+    };
     if let Some(path) = options.map {
-        write_map(&path, &link)
+        write_map(&path, &link, options.relocatable)
             .map_err(|error| format!("{}: cannot write link map: {error}", path.display()))?;
     }
-    input::write_executable(&options.output, &image.bytes).map_err(|error| {
-        format!(
-            "{}: cannot write executable: {error}",
-            options.output.display()
-        )
-    })
+    input::write_output(&options.output, &bytes, mode)
+        .map_err(|error| format!("{}: cannot write {kind}: {error}", options.output.display()))
 }
 
 fn run_with(args: impl IntoIterator<Item = OsString>, source: &mut dyn ReadSource) -> ExitCode {

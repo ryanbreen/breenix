@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Build guest tools and prepare the assembler, linker, C and make fixtures."""
 
+import argparse
+from importlib import import_module
 from importlib.machinery import SourceFileLoader
 from importlib.util import module_from_spec, spec_from_loader
 import json
@@ -166,7 +168,7 @@ def build_guest_tools(arch, work, dev, clang, cargo, env, rustc_record):
     return tools
 
 
-def build(arch, work, dev, corpus):
+def build(arch, work, dev, corpus, milestone=None):
     work.mkdir()
     clang, _ = reference.pinned_tool(
         Path(os.environ["BREENIX_TOOLCHAIN_CLANG"]),
@@ -175,7 +177,8 @@ def build(arch, work, dev, corpus):
     cargo, env, host, rustc_record = cargo_environment()
     tools = build_guest_tools(arch, work, dev, clang, cargo, env, rustc_record)
 
-    for tool, alias in (("bas", "as"), ("bld", "ld")):
+    image = import_module("toolchain-image")
+    for tool, alias in image.DRIVER_TOOL_ALIASES:
         shutil.copy2(dev / "bin" / tool, dev / "bin" / alias)
     for category in ("c-core", "make", "project"):
         shutil.copytree(WORKSPACE / "corpus" / category, corpus / category)
@@ -260,6 +263,12 @@ def build(arch, work, dev, corpus):
 
         build_linker_objects(arch, clang, work, corpus)
 
+    if milestone == image.BUSYBOX_MILESTONE:
+        for path, source in image.busybox_inputs().items():
+            destination = corpus / path.relative_to(image.CORPUS)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, destination)
+
     (work / "tools.json").write_text(json.dumps(tools) + "\n", encoding="utf-8")
 
 
@@ -301,7 +310,14 @@ def build_linker_objects(arch, clang, work, corpus):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("arch", choices=("x86_64", "aarch64"))
+    parser.add_argument("work", type=Path)
+    parser.add_argument("dev", type=Path)
+    parser.add_argument("corpus", type=Path)
+    parser.add_argument("--milestone")
+    args = parser.parse_args()
     try:
-        build(sys.argv[1], *map(Path, sys.argv[2:]))
+        build(args.arch, args.work, args.dev, args.corpus, args.milestone)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         sys.exit(f"toolchain-build-tools: {error}")

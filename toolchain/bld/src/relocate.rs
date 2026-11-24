@@ -38,6 +38,17 @@ fn aarch64_long_branch(kind: u32) -> bool {
     matches!(kind, R_AARCH64_CALL26 | R_AARCH64_JUMP26)
 }
 
+pub(crate) fn amd64_field_width(kind: u32) -> Option<u64> {
+    // AMD64 psABI Table 4.9 and Appendix B.2.
+    Some(match kind {
+        R_NONE => 0,
+        R_64 | R_PC64 | R_TPOFF64 => 8,
+        R_PC32 | R_PLT32 | R_32 | R_32S | R_GOTPCREL | R_GOTPCRELX | R_REX_GOTPCRELX
+        | R_TPOFF32 => 4,
+        _ => return None,
+    })
+}
+
 fn symbol_key(object: usize, index: u32, symbol: &ObjectSymbol) -> SymbolKey {
     if symbol.binding == STB_LOCAL {
         SymbolKey::Local(object, index)
@@ -447,13 +458,10 @@ impl Link {
     ) -> std::result::Result<(), &'static str> {
         // psABI Table 4.9 and Appendix B.2. For statically bound PLT32 L is S;
         // the X forms can use the ordinary GOT slot without relaxation.
-        let width = match rela.kind {
-            R_NONE => return Ok(()),
-            R_64 | R_PC64 | R_TPOFF64 => 8,
-            R_PC32 | R_PLT32 | R_32 | R_32S | R_GOTPCREL | R_GOTPCRELX | R_REX_GOTPCRELX
-            | R_TPOFF32 => 4,
-            _ => return Err("unsupported relocation"),
-        };
+        let width = amd64_field_width(rela.kind).ok_or("unsupported relocation")?;
+        if width == 0 {
+            return Ok(());
+        }
         let field = field_offset(target, rela, width)?;
         let tls = matches!(rela.kind, R_TPOFF32 | R_TPOFF64);
         let symbol_address = self.symbol_address(object, rela.symbol, tls)?.unwrap_or(0);

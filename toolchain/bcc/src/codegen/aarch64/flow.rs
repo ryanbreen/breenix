@@ -83,6 +83,32 @@ impl<'src> Emitter<'_, 'src> {
         Ok(())
     }
 
+    fn inline_asm(&mut self, asm: &crate::sema::InlineAsm<'src>) -> Result<(), Diagnostic> {
+        for (index, operand) in asm.registers.iter().enumerate().filter(|(_, operand)| operand.input) {
+            self.address(&operand.slot)?;
+            let register = crate::sema::asm_register(Target::Aarch64, index, 8);
+            writeln!(self.text, "    ldr {register}, [x0]").unwrap();
+        }
+        writeln!(self.text, "{}", asm.template).unwrap();
+        for (index, operand) in asm.registers.iter().enumerate().filter(|(_, operand)| operand.output) {
+            self.address(&operand.slot)?;
+            let register = crate::sema::asm_register(Target::Aarch64, index, 8);
+            writeln!(self.text, "    str {register}, [x0]").unwrap();
+        }
+        Ok(())
+    }
+
+    fn vla_stack(&mut self, mark: usize, restore: bool) {
+        self.local_address(mark, 0, "x0");
+        let base = self.alloca_base.unwrap();
+        self.offset_address("x9", "x29", -(base as i64));
+        if restore {
+            self.text.push_str("    ldr x10, [x0]\n    mov sp, x10\n    str x10, [x9]\n");
+        } else {
+            self.text.push_str("    ldr x10, [x9]\n    str x10, [x0]\n");
+        }
+    }
+
     fn statement(
         &mut self,
         statement: &Statement<'src>,
@@ -92,6 +118,7 @@ impl<'src> Emitter<'_, 'src> {
         match statement {
             Statement::Block(body) => self.statements(body, result, epilogue)?,
             Statement::Empty => {}
+            Statement::InlineAsm(asm) => self.inline_asm(asm)?,
             Statement::Initialize { local, initializer } => {
                 self.initialize(*local, initializer)?;
             }
@@ -154,9 +181,20 @@ impl<'src> Emitter<'_, 'src> {
                 let mut default = end.clone();
                 for (value, id) in cases {
                     let label = self.flow_label(*id);
-                    if let Some(value) = value {
-                        constant(&mut self.text, "x9", *value);
-                        writeln!(self.text, "    cmp x0, x9\n    b.eq {label}").unwrap();
+                    if let Some(crate::sema::CaseRange { low, high }) = value {
+                        constant(&mut self.text, "x9", *low);
+                        if low == high {
+                            writeln!(self.text, "    cmp x0, x9\n    b.eq {label}").unwrap();
+                        } else {
+                            let next = self.label();
+                            let signed = matches!(ty.kind, Kind::Integer(integer)
+                                if integer.is_signed(Target::Aarch64));
+                            let (below, within) = if signed { ("lt", "le") } else { ("lo", "ls") };
+                            writeln!(self.text, "    cmp x0, x9\n    b.{below} {next}").unwrap();
+                            constant(&mut self.text, "x9", *high);
+                            writeln!(self.text, "    cmp x0, x9\n    b.{within} {label}\n{next}:")
+                                .unwrap();
+                        }
                     } else {
                         default = label;
                     }
@@ -170,12 +208,66 @@ impl<'src> Emitter<'_, 'src> {
                 writeln!(self.text, "{label}:").unwrap();
                 self.statement(body, result, epilogue)?;
             }
-            Statement::Jump(id) => {
+            Statement::SaveVlaStack(mark) => self.vla_stack(*mark, false),
+            Statement::RestoreVlaStack(mark) => self.vla_stack(*mark, true),
+            Statement::Jump(id, scopes) => {
+                let depth = self.vla_targets.get(id).copied().unwrap_or(0);
+                if let Some(&mark) = scopes.get(depth) {
+                    self.vla_stack(mark, true);
+                }
+                self.restore_statement_stack(*id);
                 let label = self.flow_label(*id);
                 writeln!(self.text, "    b {label}").unwrap();
             }
         }
         Ok(())
+    }
+
+    pub(super) fn statement_expression(
+        &mut self,
+        region: usize,
+        statements: &[Statement<'src>],
+        value: Option<&Expression<'src>>,
+        expr: &Expression<'src>,
+    ) -> Result<(), Diagnostic> {
+        // GNU C §6.12.1 permits jumps out of a statement expression.
+        // Record live spill depth separately from the base moved by alloca.
+        let slot = self.frame_slot(Layout { size: 8, align: 8 }, expr.position())?;
+        let base = self.statement_base.unwrap();
+        self.offset_address("x9", "x29", -(base as i64));
+        self.text.push_str("    ldr x10, [x9]\n    mov x11, sp\n    sub x11, x11, x10\n");
+        self.offset_address("x9", "x29", -(slot as i64));
+        self.text.push_str("    str x11, [x9]\n");
+
+        self.statement_stack.push((region, slot));
+        let (function, epilogue) = self.return_context.as_ref().unwrap();
+        let (function, epilogue) = (*function, epilogue.clone());
+        let Kind::Function { result, .. } = &function.ty.kind else { unreachable!() };
+        self.statements(statements, result, &epilogue)?;
+        if let Some(value) = value {
+            self.converted(value, &expr.ty)?;
+        }
+        self.statement_stack.pop();
+        Ok(())
+    }
+
+    fn restore_statement_stack(&mut self, id: usize) {
+        let Some((current, _)) = self.statement_stack.last() else { return };
+        let (function, _) = self.return_context.as_ref().unwrap();
+        let target = function.jump_regions.get(&id);
+        if target == Some(current) {
+            return;
+        }
+
+        let base = self.statement_base.unwrap();
+        self.offset_address("x9", "x29", -(base as i64));
+        self.text.push_str("    ldr x10, [x9]\n");
+        if let Some(target) = target {
+            let (_, slot) = self.statement_stack.iter().find(|(region, _)| region == target).unwrap();
+            self.offset_address("x9", "x29", -(*slot as i64));
+            self.text.push_str("    ldr x11, [x9]\n    add x10, x10, x11\n");
+        }
+        self.text.push_str("    mov sp, x10\n");
     }
 
     fn initialize(
@@ -394,6 +486,18 @@ impl<'src> Emitter<'_, 'src> {
         linkage: Linkage,
         initializer: Option<&ThreadInitializer<'src>>,
     ) -> Result<(), Diagnostic> {
+        let data = self.object_data(object, name, linkage, initializer)?;
+        self.push_object_data(initializer.is_some(), &data);
+        Ok(())
+    }
+
+    pub(super) fn object_data(
+        &mut self,
+        object: &Object<'_>,
+        name: &str,
+        linkage: Linkage,
+        initializer: Option<&ThreadInitializer<'src>>,
+    ) -> Result<String, Diagnostic> {
         check_symbol(name, object.site)?;
         let layout = object.layout().unwrap();
         let mut data = String::new();
@@ -408,12 +512,15 @@ impl<'src> Emitter<'_, 'src> {
         .unwrap();
         self.emit_initializer(&mut data, initializer, layout.size)?;
         writeln!(data, ".size {name}, {}", layout.size).unwrap();
-        if initializer.is_some() {
-            self.data.push_str(&data);
+        Ok(data)
+    }
+
+    pub(super) fn push_object_data(&mut self, initialized: bool, data: &str) {
+        if initialized {
+            self.data.push_str(data);
         } else {
-            self.bss.push_str(&data);
+            self.bss.push_str(data);
         }
-        Ok(())
     }
 
     // N1570 6.6p7,9 and 6.7.9p4: static and TLS initializers both

@@ -2,7 +2,8 @@
 #
 # Rules (plan section 2): no dependency outside this workspace and std, so
 # Cargo.lock holds only path packages (toolchain_workspace::lock_has_only_path_packages);
-# no proc macros and no build.rs; #![forbid(unsafe_code)] in every tool crate;
+# no proc macros or build.rs; forbid unsafe in tools except bmake's signal
+# FFI under E25 ruling 31;
 # overflow checks on in every profile, the shipped one included.
 
 [workspace]

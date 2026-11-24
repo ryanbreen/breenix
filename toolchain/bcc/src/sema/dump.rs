@@ -141,7 +141,7 @@ fn statements(out: &mut impl Write, body: &[Statement<'_>]) -> io::Result<()> {
                 statements(out, std::slice::from_ref(body))?;
             }
             Statement::Label(_, body) => statements(out, std::slice::from_ref(body))?,
-            Statement::Empty | Statement::Return(None) | Statement::Jump(_) => {}
+            Statement::InlineAsm(_) | Statement::Empty | Statement::Return(None) | Statement::Jump(..) | Statement::SaveVlaStack(_) | Statement::RestoreVlaStack(_) => {}
         }
     }
     Ok(())
@@ -172,6 +172,17 @@ fn expression(out: &mut impl Write, expr: &Expression<'_>) -> io::Result<()> {
             expressions(out, initializer)?;
             ("compound-literal", "lvalue")
         }
+        ExpressionKind::StatementExpression {
+            statements: body,
+            value,
+            ..
+        } => {
+            statements(out, body)?;
+            if let Some(value) = value {
+                expression(out, value)?;
+            }
+            ("statement-expression", "rvalue")
+        }
         ExpressionKind::StaticLiteral(_) => ("compound-literal", "lvalue"),
         ExpressionKind::Integer(_) => ("integer-constant", "rvalue"),
         ExpressionKind::Float(_) => ("floating-constant", "rvalue"),
@@ -181,6 +192,7 @@ fn expression(out: &mut impl Write, expr: &Expression<'_>) -> io::Result<()> {
             expression(out, operand)?;
             (expr.site.text.as_ref(), "rvalue")
         }
+        ExpressionKind::Unreachable => ("__builtin_unreachable", "rvalue"),
         ExpressionKind::FltRounds => ("__builtin_flt_rounds", "rvalue"),
         ExpressionKind::Atomic { arguments, .. } => {
             for argument in arguments {
@@ -216,6 +228,13 @@ fn expression(out: &mut impl Write, expr: &Expression<'_>) -> io::Result<()> {
             expression(out, yes)?;
             expression(out, no)?;
             ("conditional", "rvalue")
+        }
+        ExpressionKind::OmittedConditional {
+            value, fallback, ..
+        } => {
+            expression(out, value)?;
+            expression(out, fallback)?;
+            ("omitted-conditional", "rvalue")
         }
         ExpressionKind::Assignment { left, right, .. } => {
             expression(out, left)?;

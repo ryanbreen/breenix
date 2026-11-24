@@ -2092,6 +2092,65 @@ class DriverTest(StateTest):
         self.assertEqual(boot.mode_deadline_seconds(d.args), 300)
         self.assertEqual(boot.ceiling_seconds(d.args), 900)
 
+    def test_busybox_sizing_and_sequence_deadlines(self):
+        args = self.driver.args
+        args.mode = 'suite'
+        args.milestone = 'toolchain/busybox-on-box'
+        args.suite = 'toolchain'
+        self.assertEqual(boot.mode_deadline_seconds(args), 1969)
+        self.assertGreaterEqual(boot.ceiling_seconds(args), 1969 + 420)
+        args.suite = 'toolchain,libc,utilities'
+        self.assertEqual([boot.mode_deadline_seconds(args, name) for name in args.suite.split(',')],
+                         [1969, 3250, 2425])
+        self.assertGreaterEqual(boot.ceiling_seconds(args), 7644 + 420)
+        args.milestone = 'toolchain/c17-libc-suite'
+        self.assertEqual(boot.mode_deadline_seconds(args), 420)
+
+    def test_busybox_sequence_gate_covers_registered_case_allowances(self):
+        root = TOOLS.parents[1]
+        runner = (root / 'libs/libbreenix/src/suite.rs').read_text()
+        default = int(re.search(r'DEFAULT_CASE_LIMIT_MS: u64 = ([\d_]+);', runner)[1])
+        table = runner.split('pub const NAMED_CASE_ALLOWANCES', 1)[1].split('];', 1)[0]
+        named = {(suite, case): int(ms) for suite, case, ms in
+                 re.findall(r'\("([^"]+)", "([^"]+)", ([\d_]+)\)', table)}
+        # Ruling 68 bounds configure and inventory from serial timestamps and
+        # reserves two thirds of the observed applet-group time for each half.
+        # Source: boot 20261123T234655Z-metal. Serial seconds: configure started
+        # (oldconfig) at 1795478939 and inventory at 1795478958, so the 20 s and
+        # 13 s figures are bounds with 1 s resolution; build-applets-3 objects
+        # 65-94 took 34.280 s. Each 50 s applet-half allowance exceeds the whole
+        # 34.28 s group, so either half fits even if the split is uneven.
+        busybox_ms = {
+            'unpack': 6941, 'patch': 4908, 'generators': 22189,
+            'configure': 20000, 'inventory': 13000,
+            'build-libbb-1': 22734, 'build-libbb-2': 20269,
+            'build-libbb-3': 22132, 'build-libbb-4': 29606,
+            'build-applets-1': 23997, 'build-applets-2': 23476,
+            'build-applets-3': 22854, 'build-applets-4': 22854,
+            'link-and-list': 5963, 'required-usage': 83,
+        }
+        self.assertEqual(
+            {case: ms for (suite, case), ms in named.items()
+             if suite == 'toolchain' and case.startswith('busybox/')},
+            {f'busybox/{case}': min(60000, ((2 * ms + 9999) // 10000) * 10000)
+             for case, ms in busybox_ms.items()},
+        )
+        args = self.driver.args
+        args.mode = 'suite'
+        args.milestone = 'toolchain/busybox-on-box'
+        args.suite = 'toolchain,libc,utilities'
+        sequence_ms = 0
+        for suite in boot.suites(args):
+            manifest = json.loads((root / f'docs/suites/{suite}.json').read_text())
+            cases = {f'{category["id"]}/{case["id"]}' for category in manifest['categories']
+                     for case in category['cases']}
+            suite_ms = sum(named.get((suite, case), default) for case in cases)
+            self.assertTrue({case for name, case in named if name == suite} <= cases)
+            sequence_ms += suite_ms
+            minimum_s = (suite_ms * 5 + 3999) // 4000
+            self.assertGreaterEqual(boot.mode_deadline_seconds(args, suite), minimum_s, suite)
+        self.assertGreaterEqual(boot.ceiling_seconds(args), (sequence_ms * 5 + 3999) // 4000)
+
     def test_ui_testing_deadline_ceiling_and_start(self):
         d = self.driver
         d.args.mode, d.args.suite = 'suite', 'ui-testing'
@@ -2501,6 +2560,23 @@ class SetupOriginalsTest(StateTest):
 
 
 class StagingTest(unittest.TestCase):
+    def test_single_attempt_launches_without_a_resume_collector(self):
+        run = load_script('metal-run')
+        suite = 'libc,utilities'
+        for options, processes in (([], ['_build', '_resume']), (['--single-attempt'], ['_build'])):
+            with self.subTest(options=options), tempfile.TemporaryDirectory() as temporary, \
+                 patch.object(run.Path, 'home', return_value=Path(temporary)), \
+                 patch.object(run, 'host_env', return_value={}), \
+                 patch.object(run, 'resolve', return_value='a' * 40), \
+                 patch.object(run, 'resolve_suites', return_value=suite), \
+                 patch.object(run, 'in_metal', return_value=SimpleNamespace(returncode=0, stdout='{}')) as launch, \
+                 patch.object(run.subprocess, 'Popen') as spawn:
+                args = run.argument_parser().parse_args(['boot', '--suite', suite, *options])
+                self.assertEqual(run.boot(args), 0)
+                self.assertEqual(launch.call_count, 1)
+                self.assertIn(suite, launch.call_args.args)
+                self.assertEqual([call.args[0][2] for call in spawn.call_args_list], processes)
+
     def test_screen_known_survives_suite_sequence_handoff(self):
         run = load_script('metal-run')
         args = run.argument_parser().parse_args([

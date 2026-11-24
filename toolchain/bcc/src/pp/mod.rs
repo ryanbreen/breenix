@@ -116,7 +116,7 @@ impl LineContext {
             (_, Kind::Newline, _) => Self::Start,
             (Self::Start, Kind::Punctuator, "#" | "%:") => Self::AfterHash,
             (Self::AfterHash, Kind::Identifier, "include" | "include_next") => Self::Include,
-            (Self::AfterHash, Kind::Identifier, "pragma") => Self::Pragma,
+            (Self::AfterHash, Kind::Identifier, "pragma" | "error" | "warning") => Self::Pragma,
             (Self::Pragma, _, _) => Self::Pragma,
             _ => Self::Body,
         }

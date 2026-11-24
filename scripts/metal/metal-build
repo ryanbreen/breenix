@@ -3,7 +3,7 @@
 
   metal-build --id ID --sha SHA --repo DIR --rust-fork DIR --cache DIR --root DIR --stub DIR
               [--features xhci_fault_inject|block_fence_inject|server_reboot_fault|watchdog_fault_inject|testing|capture_panic_oracle|gt710_core_probe|gt710_clock_probe]
-              [--suite ID[,ID...]]
+              [--suite ID[,ID...]] [--milestone EFFORT/ID]
   metal-build ... --stub-only --tools-profile disk-readback|boot-manager|persistent-export|reclaim-ext2
 
 # claim-lint:ok: #1680 Reviewed tool contract against this function and the host tests in tests/metal_tools_test.py.
@@ -128,6 +128,8 @@ def outer(args):
     inner = [sys.executable, str(Path(__file__).resolve()), '--inner', '--id', args.id, '--sha', args.sha,
              '--repo', args.repo, '--rust-fork', args.rust_fork, '--cache', args.cache, '--root', args.root,
              '--stub', args.stub, '--guard-target', target, '--features', args.features, '--suite', args.suite]
+    if args.milestone:
+        inner += ['--milestone', args.milestone]
     status = subprocess.call([sys.executable, str(HELPER), 'supervise', '--'] + inner,
                              cwd=clone, env=environment)
     print(f'[metal-build] build exit={status} seconds={time.time() - started:.0f}', flush=True)
@@ -172,7 +174,11 @@ def inner(args):
     build_fixtures = 'filesystem' in suites and fixture_builder.is_file()
     transfer = transfer_fixture.selected(args.suite)
     toolchain = 'toolchain' in suites
+    busybox = getattr(args, 'milestone', None) == 'toolchain/busybox-on-box'
+    if busybox and not toolchain:
+        raise ValueError('toolchain/busybox-on-box requires the toolchain suite')
     toolchain_build = None
+    build_companions = build_fixtures or busybox
     root = tmp / 'ext2-staged.img' if 'sdk' in suites or build_fixtures or transfer else seed
     try:
         started = time.time()
@@ -280,15 +286,18 @@ def inner(args):
                     keep_logs(logs, out)
                     print(f'[metal-build] the SDK suite could not stage the root: exit {status}', flush=True)
                     return 1
-            if build_fixtures:
+            if build_companions:
                 started = time.time()
                 log = logs / 'filesystem-fixtures.log'
                 # These builders run natively, including when the other BreenFS
                 # tools are cross-compiled for the Linux service container.
                 env = dict(os.environ, CARGO_TARGET_DIR=str(tmp / 'fixture-target'))
                 with log.open('w') as output:
-                    status = subprocess.call(['bash', str(fixture_builder), str(root), str(out)],
-                                             cwd=clone, env=env, stdout=output, stderr=subprocess.STDOUT)
+                    arguments = ['bash', str(fixture_builder), str(root), str(out)]
+                    if busybox and not build_fixtures:
+                        arguments.append('--toolchain-companions')
+                    status = subprocess.call(arguments, cwd=clone, env=env, stdout=output,
+                                             stderr=subprocess.STDOUT)
                 if not clean_build(status, log, 'filesystem fixtures', logs, out):
                     return 1
                 timings['filesystem_fixtures'] = round(time.time() - started)
@@ -298,19 +307,25 @@ def inner(args):
                 fixture = out / 'toolchain-root.img'
                 script = clone / 'scripts'
                 log = logs / 'toolchain-build.log'
+                # Other milestones use the existing bundle contract, including
+                # when deployed host tools build a commit before this fixture.
+                selection = ['--milestone', args.milestone] if busybox else []
                 with log.open('w') as output:
                     status = subprocess.call([str(script / 'build-toolchain.sh'), '--arch', 'x86_64',
-                                              '--output', str(bundle)], cwd=clone,
+                                              '--output', str(bundle), *selection], cwd=clone,
                                              stdout=output, stderr=subprocess.STDOUT)
                 if not clean_build(status, log, 'reference toolchain bundle', logs, out):
                     return 1
                 subprocess.run([str(script / 'create_ext2_disk.sh'), '--stage-from', str(root),
                                 '--output', str(fixture), '--suite', args.suite,
-                                '--toolchain-bundle', str(bundle)], cwd=clone, check=True)
+                                '--toolchain-bundle', str(bundle), *selection], cwd=clone, check=True)
                 toolchain_build = json.loads((bundle / 'build.json').read_text())
                 if toolchain_build['commit'] != args.sha:
                     raise ValueError('toolchain build record differs from the image commit')
                 toolchain_build['root'] = {'size': fixture.stat().st_size, 'sha256': sha256(fixture)}
+                if busybox:
+                    scratch = bundle / 'toolchain-scratch.img'
+                    scratch.replace(out / scratch.name)
                 timings['toolchain_suite'] = round(time.time() - started)
         finally:
             if not local:
@@ -368,7 +383,7 @@ def inner(args):
         if breenfs_manifest.is_file():
             build['breenfsTools'] = {name: {'size': (out / name).stat().st_size, 'sha256': sha256(out / name)}
                                     for name in breenfs_tools}
-        if build_fixtures:
+        if build_companions:
             build['filesystemFixtures'] = {
                 path.name: {'size': path.stat().st_size, 'sha256': sha256(path)}
                 for path in sorted(out.glob('breenfs-*.img'))
@@ -435,6 +450,7 @@ def main():
     parser.add_argument('--guard-target', default='', help=argparse.SUPPRESS)
     parser.add_argument('--features', choices=tuple(PROFILES), default='',
                         help='build a fault-test or testing kernel; never set for a production boot')
+    parser.add_argument('--milestone', help='stage inputs for the selected suite milestone')
     parser.add_argument('--suite', default='',
                         help="a suite boot's suite id, or ids joined by commas; sdk stages the SDK suite's host results")
     for name in ('--id', '--sha', '--repo', '--rust-fork', '--cache', '--root', '--stub'):

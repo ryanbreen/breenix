@@ -32,7 +32,7 @@ const ARGUMENT_REGISTERS: usize = 8;
 const FRAME_RECORD: usize = 16;
 const STACK_ALIGNMENT: usize = 16;
 
-pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
+pub(super) fn emit(unit: &TranslationUnit<'_>, options: super::Options) -> Result<String, Diagnostic> {
     let mut functions = HashMap::new();
     for function in &unit.functions {
         let entry = functions.entry(function.name).or_insert(function);
@@ -40,6 +40,7 @@ pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
             *entry = function;
         }
     }
+    let mut custom_data = String::new();
     let mut emitter = Emitter {
         functions,
         records: &unit.records,
@@ -48,12 +49,17 @@ pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
         aligned_frame: 0,
         frame_alignment: STACK_ALIGNMENT,
         alloca_base: None,
+        statement_base: None,
+        statement_stack: Vec::new(),
+        return_context: None,
         variadic: None,
         flow_labels: HashMap::new(),
+        vla_targets: HashMap::new(),
         object_definitions: unit
             .static_objects
             .iter()
             .map(|def| def.object.name)
+            .chain(unit.aliases.keys().copied())
             .collect(),
         externs: BTreeSet::new(),
         thread_externs: BTreeSet::new(),
@@ -61,6 +67,7 @@ pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
             .thread_objects
             .iter()
             .map(|thread| thread.object.name)
+            .chain(unit.aliases.keys().copied())
             .collect(),
         text: String::from(".section .text\n"),
         rodata: String::new(),
@@ -84,30 +91,47 @@ pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
         )?;
     }
     for definition in &unit.static_objects {
-        emitter.object_definition(
-            &definition.object,
-            definition.object.name,
-            definition.linkage,
-            definition.initializer.as_ref(),
+        let object = &definition.object;
+        let section = unit.symbol_attributes.get(object.name).and_then(|attrs| attrs.section.as_deref());
+        let data = emitter.object_data(
+            object, object.name, definition.linkage, definition.initializer.as_ref(),
         )?;
+        if let Some(section) = section {
+            super::object_section(&mut custom_data, section, object, false);
+            custom_data.push_str(&data);
+        } else {
+            emitter.push_object_data(definition.initializer.is_some(), &data);
+        }
     }
     for thread in &unit.thread_objects {
-        emitter.thread_definition(
-            &thread.object,
-            thread.object.name,
-            thread.linkage,
-            thread.initializer.as_ref(),
-        )?;
+        let object = &thread.object;
+        if let Some(section) = unit.symbol_attributes.get(object.name).and_then(|attrs| attrs.section.as_deref()) {
+            super::object_section(&mut custom_data, section, object, true);
+            let data = emitter.thread_data(
+                object, object.name, thread.linkage, thread.initializer.as_ref(),
+            )?;
+            custom_data.push_str(&data);
+        } else {
+            emitter.thread_definition(
+                object, object.name, thread.linkage, thread.initializer.as_ref(),
+            )?;
+        }
     }
     for function in &unit.functions {
         if let Some(body) = &function.body {
+            let custom_section = super::function_section(
+                &mut emitter.text, unit, function.name, options.function_sections,
+            );
             emitter.function(function, body)?;
+            if custom_section {
+                emitter.text.push_str("\n.section .text\n");
+            }
         }
     }
-    for name in emitter.externs {
+    for name in &emitter.externs {
         writeln!(emitter.text, ".extern {name}").unwrap();
     }
-    for name in emitter.thread_externs {
+    for name in &emitter.thread_externs {
         writeln!(emitter.text, ".extern {name}\n.type {name}, @tls").unwrap();
     }
     if !emitter.rodata.is_empty() {
@@ -125,6 +149,8 @@ pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
             emitter.text.push_str(&body);
         }
     }
+    emitter.text.push_str(&custom_data);
+    super::emit_symbol_attributes(&mut emitter.text, unit, &emitter.externs, &emitter.thread_externs);
     Ok(emitter.text)
 }
 
@@ -136,8 +162,12 @@ struct Emitter<'unit, 'src> {
     aligned_frame: usize,
     frame_alignment: usize,
     alloca_base: Option<usize>,
+    statement_base: Option<usize>,
+    statement_stack: Vec<(usize, usize)>,
+    return_context: Option<(&'unit Function<'src>, String)>,
     variadic: Option<VariadicFrame>,
     flow_labels: HashMap<usize, String>,
+    vla_targets: HashMap<usize, usize>,
     object_definitions: BTreeSet<&'src str>,
     externs: BTreeSet<&'src str>,
     thread_externs: BTreeSet<&'src str>,
@@ -151,10 +181,10 @@ struct Emitter<'unit, 'src> {
     next_label: usize,
 }
 
-impl<'src> Emitter<'_, 'src> {
+impl<'unit, 'src> Emitter<'unit, 'src> {
     fn function(
         &mut self,
-        function: &Function<'src>,
+        function: &'unit Function<'src>,
         body: &[Statement<'src>],
     ) -> Result<(), Diagnostic> {
         let name = function.name;
@@ -178,12 +208,17 @@ impl<'src> Emitter<'_, 'src> {
         } else {
             None
         };
+        self.statement_base = match (function.has_statement_expressions, self.alloca_base) {
+            (true, None) => Some(self.frame_slot(Layout { size: 8, align: 8 }, function.site)?),
+            (_, base) => base,
+        };
         let indirect_result = if object_result.is_some_and(CallObject::indirect) {
             Some(self.frame_slot(Layout { size: 8, align: 8 }, function.site)?)
         } else {
             None
         };
         self.flow_labels.clear();
+        self.vla_targets.clone_from(&function.vla_targets);
         let epilogue = self.label();
         self.text.push('\n');
         if function.linkage == Linkage::External {
@@ -214,7 +249,9 @@ impl<'src> Emitter<'_, 'src> {
                 }
             }
         }
+        self.return_context = Some((function, epilogue.clone()));
         self.statements(body, result, &epilogue)?;
+        self.return_context = None;
         // Record-valued calls in the body reserve fixed frame slots.
         let tail = self.text.len();
         let frame = self.frame.next_multiple_of(STACK_ALIGNMENT);
@@ -231,7 +268,7 @@ impl<'src> Emitter<'_, 'src> {
             .unwrap();
             self.add_sub_offset("sub", "sp", "x19", self.aligned_frame as u64);
         }
-        if let Some(distance) = self.alloca_base {
+        if let Some(distance) = self.statement_base {
             // Record the bottom of the fixed frame after any x19 realignment.
             self.offset_address("x9", "x29", -(distance as i64));
             self.text.push_str("    mov x10, sp\n    str x10, [x9]\n");
@@ -311,6 +348,9 @@ impl<'src> Emitter<'_, 'src> {
                 self.binary(*op, (left, left_type), (right, right_type), &expr.ty)?;
             }
             ExpressionKind::Cast(operand) => self.converted(operand, &expr.ty)?,
+            ExpressionKind::StatementExpression { region, statements, value } => {
+                self.statement_expression(*region, statements, value.as_deref(), expr)?;
+            }
             ExpressionKind::Assignment {
                 left,
                 right,
@@ -322,18 +362,21 @@ impl<'src> Emitter<'_, 'src> {
                 postfix,
             } => self.update(operand, *increment, *postfix)?,
             ExpressionKind::Conditional { condition, yes, no } => {
-                let otherwise = self.label();
-                let end = self.label();
-                self.jump_if(condition, false, &otherwise)?;
-                self.converted(yes, &expr.ty)?;
-                writeln!(self.text, "    b {end}\n{otherwise}:").unwrap();
-                self.converted(no, &expr.ty)?;
-                writeln!(self.text, "{end}:").unwrap();
+                self.conditional(condition, yes, no, &expr.ty)?;
+            }
+            ExpressionKind::OmittedConditional {
+                value,
+                fallback,
+                saved,
+            } => {
+                self.assignment(saved, value, None)?;
+                self.conditional(saved, saved, fallback, &expr.ty)?;
             }
             ExpressionKind::Comma(left, right) => {
                 self.value(left)?;
                 self.value(right)?;
             }
+            ExpressionKind::Unreachable => writeln!(self.text, "    .long 0xd4200000").unwrap(),
             ExpressionKind::FltRounds => {
                 // DDI 0487 M.b C5.2.8 FPCR.RMode [23:22] is nearest, +infinity,
                 // -infinity, toward 0; N1570 5.2.4.2.2 maps these to 1, 2, 3, 0.
@@ -355,6 +398,23 @@ impl<'src> Emitter<'_, 'src> {
                 self.normalize(&expr.ty);
             }
         }
+        Ok(())
+    }
+
+    fn conditional(
+        &mut self,
+        condition: &Expression<'src>,
+        yes: &Expression<'src>,
+        no: &Expression<'src>,
+        ty: &Type,
+    ) -> Result<(), Diagnostic> {
+        let otherwise = self.label();
+        let end = self.label();
+        self.jump_if(condition, false, &otherwise)?;
+        self.converted(yes, ty)?;
+        writeln!(self.text, "    b {end}\n{otherwise}:").unwrap();
+        self.converted(no, ty)?;
+        writeln!(self.text, "{end}:").unwrap();
         Ok(())
     }
 

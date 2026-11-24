@@ -189,7 +189,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             if self.eat("__extension__").is_some() || self.qualifier(&mut specs.qualifiers) {
                 continue;
             }
-            if token.is("__attribute__") {
+            if matches!(token.text.as_ref(), "__attribute__" | "__attribute") {
                 for (site, attribute) in self.attributes(depth)? {
                     specs.storage.apply_attribute(site, attribute)?;
                 }
@@ -228,9 +228,21 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                         specs.storage.anonymous_record = self.records[record.id].tag.is_none();
                         Some(ty)
                     }
+                    _ if self.is_typeof(token) => {
+                        self.take();
+                        self.expect("(", "expected '(' after typeof")?;
+                        let ty = if self.peek().is_some_and(|token| self.starts_type(token)) {
+                            self.type_name(depth + 1)?
+                        } else {
+                            let expression = self.expression(depth + 1)?;
+                            crate::sema::typeof_expression(expression, self.expression_scope())?
+                        };
+                        self.expect(")", "expected ')' after the typeof operand")?;
+                        Some(ty)
+                    }
                     "enum" => {
                         self.take();
-                        Some(self.enumeration(token)?)
+                        Some(self.enumeration(token, depth)?)
                     }
                     amd64_va_list::NAME => {
                         self.take();
@@ -251,6 +263,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                     specs.qualifiers.volatile |= ty.qualifiers.volatile;
                     specs.qualifiers.atomic |= ty.qualifiers.atomic;
                     specs.qualifiers.restricted |= ty.qualifiers.restricted;
+                    specs.qualifiers.may_alias |= ty.qualifiers.may_alias;
                     specs.named = Some(ty);
                     continue;
                 }
@@ -338,6 +351,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                     members,
                     end: None,
                     has_const_member: false,
+                    may_alias: false,
                 }),
             });
             self.va_list_record = Some(id);
@@ -350,7 +364,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         }));
         match self.target {
             Target::Aarch64 => record,
-            Target::X86_64 => Type::new(TypeKind::Array(Box::new(record), 1)),
+            Target::X86_64 => Type::new(TypeKind::Array(Box::new(record), Some(1))),
         }
     }
 

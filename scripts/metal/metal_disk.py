@@ -126,8 +126,10 @@ def stage(directory, inputs, boot_id, commit, site, build, mode='console', suite
     the_layout = the_layout or metal_persist.layout()
     previous = metal_persist.test_root()
     built_fixtures = build.get('filesystemFixtures')
+    toolchain_scratch = bool(build.get('toolchain', {}).get('busyboxScratch'))
     use_fixtures = (built_fixtures is not None and mode == 'suite'
-                    and 'filesystem' in (suite or '').split(',') and not (case or '').startswith('power-cut/'))
+                    and ('filesystem' in (suite or '').split(',') or toolchain_scratch)
+                    and not (case or '').startswith('power-cut/'))
     if use_fixtures and not the_layout:
         raise ValueError('filesystem fixtures require the disposable test-root partition')
     if not the_layout and not previous:

@@ -302,6 +302,8 @@
         { "id": "tr", "title": "tr a-z A-Z translates a range" },
         { "id": "find", "title": "find . -name '*.txt' finds files in subdirectories" },
         { "id": "tar", "title": "tar creates an archive, extracts it and lists it" },
+        { "id": "bunzip2", "title": "bunzip2 decompresses a fixed bzip2 fixture" },
+        { "id": "patch", "title": "patch applies two hunks and rejects a conflict" },
         { "id": "xargs", "title": "xargs passes standard input as arguments to echo" },
         { "id": "printf", "title": "printf formats %s, %d and %5.2f" },
         { "id": "expr", "title": "expr evaluates 6 * 7" },

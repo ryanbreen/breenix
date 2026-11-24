@@ -2,16 +2,17 @@
 //! POSIX.1-2024's Shell and Utilities volume (XCU) specifies them in its Shell Command
 //! Language chapter and each utility's page.
 //!
-//! Every case runs /bin/sh, or a utility found by its POSIX name through PATH, with the
-//! environment PATH=/bin:/usr/bin and HOME=/tmp, umask 022, every signal at its default
-//! action and none blocked, fixed standard input and fixed files in a scratch directory of
-//! its own under /tmp, and compares the exit status, the exact standard output and whether
+//! Cases default to /bin/sh or a utility found by its POSIX name through PATH. The child
+//! starts with PATH=/bin:/usr/bin, HOME=/tmp, umask 022, default signal actions and an
+//! empty signal mask. A case supplies fixed standard input and files in a private scratch
+//! directory under /tmp. It compares the exit status, the exact standard output and whether
 //! anything was written to standard error with what POSIX specifies. Where POSIX leaves
 //! output layout to the implementation (padding, dates, sizes), the case reads the fields it
 //! needs with the shell rather than comparing the layout. The expected values were checked
 //! against dash and GNU coreutils on Linux, used only as a behaviour oracle. Before it runs
 //! anything, a case checks that each utility it uses is on PATH and fails naming those that
 //! are not.
+//! The under-test record can select a different shell and applet PATH.
 //!
 //! The scripts category runs whole scripts written to files with `sh script.sh`, the way
 //! they run elsewhere.
@@ -32,11 +33,9 @@ use libbreenix::Errno;
 use std::ffi::CString;
 use std::os::unix::fs::PermissionsExt;
 
-/// The shell every `sh` case runs.
-const SH: &str = "/bin/sh";
-/// The search path, also the whole environment with HOME.
-const PATH: &str = "/bin:/usr/bin";
-const ENV: &[&str] = &["PATH=/bin:/usr/bin", "HOME=/tmp"];
+#[path = "suite_support/under_test.rs"]
+pub mod under_test;
+
 /// How much of the case's limit is kept back for killing and reporting a program that hangs.
 const RESERVE_MS: u64 = 1500;
 /// An expected exit status of "any non-zero value", where POSIX specifies only that.
@@ -1334,8 +1333,18 @@ fn proc_getconf_names() -> CaseResult {
 }
 
 fn proc_command_v() -> CaseResult {
+    let paths = under_test::Paths::load_for_fixture(
+        under_test::RECORD.as_ref(), under_test::FIXTURE.as_ref(), under_test::Suite::Utilities,
+    )?;
+    let expected = if paths.selected {
+        let sh = on_path("sh", &paths.path)
+            .ok_or_else(|| format!("{}: sh is not on PATH {}", under_test::RECORD, paths.path))?;
+        format!("{sh}\ncd\nf\nnone\n")
+    } else {
+        String::from("/bin/sh\ncd\nf\nnone\n")
+    };
     sh("command -v sh; command -v cd; f() { :; }; command -v f; command -v nonexistent_zz || echo none")
-        .expect("/bin/sh\ncd\nf\nnone\n", 0, Empty)
+        .expect_with_paths(&paths, &expected, 0, Empty)
 }
 
 fn proc_time() -> CaseResult {
@@ -1814,8 +1823,8 @@ fn remove_tree(path: &std::path::Path) {
 }
 
 /// The executable file `name` names on PATH, if there is one.
-fn on_path(name: &str) -> Option<String> {
-    PATH.split(':').map(|dir| format!("{dir}/{name}")).find(|path| {
+fn on_path(name: &str, path: &str) -> Option<String> {
+    path.split(':').map(|dir| format!("{dir}/{name}")).find(|path| {
         std::fs::metadata(path).map(|m| m.is_file()).unwrap_or(false) && fs::access(path, fs::X_OK).is_ok()
     })
 }
@@ -1825,7 +1834,7 @@ fn on_path(name: &str) -> Option<String> {
 struct Run {
     /// The program's arguments, the first being the name it runs under.
     argv: Vec<&'static str>,
-    /// Run argv by /bin/sh rather than by looking argv[0] up on PATH.
+    /// Run argv with the suite's shell.
     shell: bool,
     dirs: Vec<&'static str>,
     files: Vec<(&'static str, &'static str, u32)>,
@@ -1833,7 +1842,7 @@ struct Run {
     needs: Vec<&'static str>,
 }
 
-/// `sh -c script`, run by /bin/sh.
+/// `sh -c script`, run by the suite's shell.
 fn sh(script: &'static str) -> Run {
     Run { argv: vec!["sh", "-c", script], shell: true, dirs: Vec::new(), files: Vec::new(), input: "", needs: Vec::new() }
 }
@@ -1875,14 +1884,26 @@ impl Run {
     /// Pass when the program exits with `status` (or any non-zero status for NONZERO),
     /// prints exactly `stdout`, and writes to stderr exactly when `stderr` says so.
     fn expect(self, stdout: &str, status: i32, stderr: Stderr) -> CaseResult {
-        let missing: Vec<&str> = self.needs.iter().copied().filter(|name| on_path(name).is_none()).collect();
-        if self.shell && fs::access(SH, fs::X_OK).is_err() {
-            return fail(format!("{SH} is not installed"));
+        let paths = under_test::Paths::load_for_fixture(
+            under_test::RECORD.as_ref(), under_test::FIXTURE.as_ref(), under_test::Suite::Utilities,
+        )?;
+        self.expect_with_paths(&paths, stdout, status, stderr)
+    }
+
+    fn expect_with_paths(self, paths: &under_test::Paths, stdout: &str, status: i32, stderr: Stderr) -> CaseResult {
+        let missing: Vec<&str> = self.needs.iter().copied()
+            .filter(|name| on_path(name, &paths.path).is_none()).collect();
+        if self.shell && !paths.selected && fs::access(&paths.sh, fs::X_OK).is_err() {
+            return fail(format!("{} is not installed", paths.sh));
         }
         if !missing.is_empty() {
-            return fail(format!("not on PATH {PATH}: {}", missing.join(", ")));
+            return fail(format!("not on PATH {}: {}", paths.path, missing.join(", ")));
         }
-        let path = if self.shell { String::from(SH) } else { on_path(self.argv[0]).unwrap_or_default() };
+        let path = if self.shell || (paths.selected && self.argv[0] == "sh") {
+            paths.sh.to_string()
+        } else {
+            on_path(self.argv[0], &paths.path).unwrap_or_default()
+        };
         let scratch = Scratch::new()?;
         for dir in &self.dirs {
             let path = scratch.path(dir);
@@ -1899,7 +1920,8 @@ impl Run {
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(*mode))
                 .map_err(|e| format!("could not set the mode of {path}: {e}"))?;
         }
-        let ran = run(&path, &self.argv, &scratch.dir, self.input.as_bytes())?;
+        let path_env = format!("PATH={}", paths.path);
+        let ran = run(&path, &self.argv, &scratch.dir, self.input.as_bytes(), &[&path_env, "HOME=/tmp"])?;
         let status_ok = match status {
             NONZERO => process::wifexited(ran.status) && process::wexitstatus(ran.status) != 0,
             _ => process::wifexited(ran.status) && process::wexitstatus(ran.status) == status,
@@ -1978,13 +2000,13 @@ fn nonblocking(fd: Fd) {
 /// Run `path` with `argv` in `dir` under umask 022 with default signal actions, feeding it
 /// `input` and collecting its stdout and stderr until it exits, or killing it 1.5 seconds
 /// before the case's limit.
-fn run(path: &str, argv: &[&str], dir: &str, input: &[u8]) -> Result<Ran, CaseError> {
+fn run(path: &str, argv: &[&str], dir: &str, input: &[u8], env: &[&str]) -> Result<Ran, CaseError> {
     let (in_r, in_w) = pipe()?;
     let (out_r, out_w) = pipe()?;
     let (err_r, err_w) = pipe()?;
     let (exec_r, exec_w) = pipe()?;
     let (_argv_owned, argv_ptrs) = cstrings(argv);
-    let (_env_owned, env_ptrs) = cstrings(ENV);
+    let (_env_owned, env_ptrs) = cstrings(env);
     let cpath = CString::new(path).map_err(|_| "program path holds a NUL")?;
     let cdir = CString::new(dir).map_err(|_| "directory path holds a NUL")?;
 

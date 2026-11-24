@@ -15,6 +15,8 @@ fn check(case: &str) {
         .arg(bcc.with_file_name("bld"))
         .arg("--bar")
         .arg(bcc.with_file_name("bar"))
+        .arg("--bmake")
+        .arg(bcc.with_file_name("bmake"))
         .output()
         .expect("run the driver harness");
     assert!(
@@ -33,6 +35,106 @@ fn stages_agree_bytewise() {
 #[test]
 fn unknown_option_rejected() {
     check("unknown_option_rejected");
+}
+
+#[test]
+fn md_writes_make_dependencies() {
+    check("md_writes_make_dependencies");
+}
+
+#[test]
+fn gnu_mode_and_include_flags() {
+    check("gnu_mode_and_include_flags");
+}
+
+#[test]
+fn capital_s_preprocesses_before_assembly() {
+    use bobj::elf::Elf;
+    use std::fs;
+
+    let bcc = Path::new(env!("CARGO_BIN_EXE_bcc"));
+    let root = std::env::temp_dir().join(format!("bcc-capital-s-{}", std::process::id()));
+    fs::create_dir(&root).unwrap();
+    fs::copy(bcc.with_file_name("bas"), root.join("as")).unwrap();
+    fs::write(root.join("constant.h"), "#define VALUE 42\n").unwrap();
+    fs::write(
+        root.join("entry.S"),
+        concat!(
+            "#include \"constant.h\"\n#ifdef BUILD_ENTRY\nsection .text\nglobal entry\n",
+            "entry:\n    mov eax, VALUE\n    ret\n#endif\n",
+        ),
+    )
+    .unwrap();
+
+    let output = Command::new(bcc)
+        .current_dir(&root)
+        .args([
+            "--target=x86_64", "-B", ".", "-c", "-DBUILD_ENTRY", "-Wp,-MD,entry.d", "entry.S",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let bytes = fs::read(root.join("entry.o")).unwrap();
+    let elf = Elf::parse(&bytes).unwrap();
+    let text = (1..elf.section_count())
+        .find(|&index| elf.section_name(index).unwrap() == b".text")
+        .unwrap();
+    assert_eq!(elf.section_data(text).unwrap().unwrap(), [0xb8, 42, 0, 0, 0, 0xc3]);
+    assert_eq!(
+        fs::read_to_string(root.join("entry.d")).unwrap(),
+        "entry.o: entry.S constant.h\n",
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn function_sections_allow_discarding_an_unused_dependency() {
+    use bobj::elf::Elf;
+    use std::fs;
+
+    let bcc = Path::new(env!("CARGO_BIN_EXE_bcc"));
+    let root = std::env::temp_dir().join(format!("bcc-function-sections-{}", std::process::id()));
+    fs::create_dir(&root).unwrap();
+    fs::copy(bcc.with_file_name("bas"), root.join("as")).unwrap();
+    fs::write(
+        root.join("input.c"),
+        concat!(
+            "extern int unavailable(void);\n",
+            "int unused(void) { return unavailable(); }\n",
+            "static int helper(void) { return 42; }\n",
+            "int _start(void) { return helper(); }\n",
+        ),
+    )
+    .unwrap();
+    let run = |tool: &Path, args: &[&str]| {
+        let output = Command::new(tool).current_dir(&root).args(args).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr),
+        );
+    };
+    for target in ["--target=x86_64", "--target=aarch64"] {
+        run(bcc, &[target, "-B", ".", "-ffunction-sections", "-c", "input.c"]);
+        let bytes = fs::read(root.join("input.o")).unwrap();
+        let elf = Elf::parse(&bytes).unwrap();
+        for section in [b".text.unused".as_slice(), b".text.helper", b".text._start"] {
+            assert!(
+                (1..elf.section_count()).any(|index| elf.section_name(index).unwrap() == section),
+                "{target}: missing {}",
+                String::from_utf8_lossy(section)
+            );
+        }
+        run(
+            &bcc.with_file_name("bld"),
+            &["--gc-sections", "-o", "linked.elf", "input.o"],
+        );
+    }
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -179,6 +281,28 @@ fn preprocess_fixture(name: &str, source: &str, args: &[&str]) -> std::process::
         .output();
     std::fs::remove_dir_all(&dir).unwrap();
     output.unwrap()
+}
+
+#[test]
+fn target_endian_macros_select_little_endian() {
+    let include = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../libs/libbreenix-libc/include");
+    let source = r#"
+        #include <endian.h>
+        #if BYTE_ORDER == BIG_ENDIAN || BYTE_ORDER == PDP_ENDIAN || BYTE_ORDER != LITTLE_ENDIAN
+        #error Breenix requires the little-endian branch
+        #endif
+        #if !defined(__BYTE_ORDER__) || !defined(__ORDER_LITTLE_ENDIAN__) || \
+            !defined(__ORDER_BIG_ENDIAN__) || !defined(__ORDER_PDP_ENDIAN__)
+        #error missing predefined byte order macro
+        #endif
+    "#;
+    for target in ["--target=x86_64", "--target=aarch64"] {
+        let output = preprocess_fixture(
+            "endian", source, &[target, "-std=gnu11", "-I", include.to_str().unwrap()],
+        );
+        assert!(output.status.success() && output.stderr.is_empty(), "{target}: {output:?}");
+    }
 }
 
 #[test]

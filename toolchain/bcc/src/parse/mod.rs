@@ -7,7 +7,9 @@ use crate::pp::{Diagnostic, Kind, Lexeme, Location, Position, Preprocessed, Stan
 use crate::types::{amd64_va_list, Integer, Kind as TypeKind, Qualifiers, Record, Type};
 
 mod attribute;
+pub(crate) use attribute::SymbolAttributes;
 mod declaration;
+pub(super) mod inline_asm;
 mod specifiers;
 
 pub(super) const MAX_NESTING: usize = 128;
@@ -23,7 +25,7 @@ pub(super) enum Storage {
     Register,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct DeclStorage {
     class: Storage,
     thread_local: bool,
@@ -33,6 +35,9 @@ struct DeclStorage {
     noreturn: bool,
     inline: bool,
     anonymous_record: bool,
+    may_alias: bool,
+    function_hint: Option<&'static str>,
+    symbol: SymbolAttributes,
 }
 
 #[derive(Debug)]
@@ -43,14 +48,14 @@ pub(super) enum Declaration<'a> {
     Record(Record<'a>),
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(super) struct StaticAssertion<'a> {
     pub site: &'a Lexeme,
     pub expression: Expression<'a>,
     pub message: String,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(super) struct Variable<'a> {
     pub name: &'a Lexeme,
     pub ty: Type,
@@ -58,23 +63,26 @@ pub(super) struct Variable<'a> {
     pub thread_local: bool,
     pub alignment: Option<usize>,
     pub initializer: Option<Initializer<'a>>,
+    pub variable_bound: Option<Expression<'a>>,
+    pub symbol: SymbolAttributes,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(super) enum Initializer<'a> {
     Expression(Expression<'a>),
     List(&'a Lexeme, Vec<InitializerEntry<'a>>),
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(super) struct InitializerEntry<'a> {
     pub designators: Vec<Designator<'a>>,
     pub value: Initializer<'a>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(super) enum Designator<'a> {
     Index(Expression<'a>),
+    Range(Expression<'a>, Expression<'a>),
     Member(&'a Lexeme),
 }
 
@@ -89,6 +97,7 @@ pub(super) struct Function<'a> {
     pub returns_twice: bool,
     pub storage: Storage,
     pub body: Option<Vec<Statement<'a>>>,
+    pub symbol: SymbolAttributes,
 }
 
 #[derive(Debug)]
@@ -98,12 +107,13 @@ pub(super) struct Parameter<'a> {
     pub ty: Type,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(super) enum Statement<'a> {
     Block(Vec<Self>),
     Empty,
     Declaration(Vec<Variable<'a>>),
     StaticAssert(StaticAssertion<'a>),
+    InlineAsm(inline_asm::InlineAsm<'a>),
     Expression(Expression<'a>),
     Return(&'a Lexeme, Option<Expression<'a>>),
     If {
@@ -118,14 +128,19 @@ pub(super) enum Statement<'a> {
         body: Box<Self>,
     },
     Switch(Expression<'a>, Box<Self>),
-    Case(&'a Lexeme, Option<Expression<'a>>, Box<Self>),
+    Case {
+        site: &'a Lexeme,
+        low: Option<Expression<'a>>,
+        high: Option<Expression<'a>>,
+        body: Box<Self>,
+    },
     Label(&'a Lexeme, Box<Self>),
     Goto(&'a Lexeme),
     Break(&'a Lexeme),
     Continue(&'a Lexeme),
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(super) struct Expression<'a> {
     pub site: &'a Lexeme,
     pub kind: ExpressionKind<'a>,
@@ -143,6 +158,7 @@ impl<'a> Expression<'a> {
             | Update { operand: expr, .. }
             | Member { base: expr, .. } => expr.height,
             Binary(_, a, b) | Assignment(_, a, b) | Comma(a, b) => a.height.max(b.height),
+            OmittedConditional(a, b) => a.height.max(b.height),
             Conditional(a, b, c) => a.height.max(b.height).max(c.height),
             Generic(control, associations) => associations
                 .iter()
@@ -153,6 +169,7 @@ impl<'a> Expression<'a> {
                 .iter()
                 .filter_map(|designator| match designator {
                     Designator::Index(index) => Some(index.height),
+                    Designator::Range(low, high) => Some(low.height.max(high.height)),
                     Designator::Member(_) => None,
                 })
                 .max()
@@ -177,10 +194,10 @@ impl<'a> Expression<'a> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(super) enum ExpressionKind<'a> {
     Identifier,
-    Enumerator(i32),
+    Enumerator(u64, Integer),
     Number,
     Character,
     Unary(Unary, Box<Expression<'a>>),
@@ -188,10 +205,13 @@ pub(super) enum ExpressionKind<'a> {
     Comma(Box<Expression<'a>>, Box<Expression<'a>>),
     Cast(Type, Box<Expression<'a>>),
     CompoundLiteral(Type, Box<Initializer<'a>>),
+    StatementExpression(Vec<Statement<'a>>),
+    OmittedConditional(Box<Expression<'a>>, Box<Expression<'a>>),
     SizeofType(Type),
     Alignof(Type),
     Generic(Box<Expression<'a>>, Vec<Association<'a>>),
     Offsetof(Type, Vec<Designator<'a>>),
+    TypesCompatible(Type, Type),
     Sizeof(Box<Expression<'a>>),
     VaArg(Box<Expression<'a>>, Type),
     FltRounds,
@@ -219,7 +239,7 @@ pub(super) enum ExpressionKind<'a> {
     },
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(super) struct Association<'a> {
     pub site: &'a Lexeme,
     pub ty: Option<Type>,
@@ -309,6 +329,8 @@ fn parse_tokens<'a>(
         tags: vec![HashMap::new()],
         records: Vec::new(),
         va_list_record: None,
+        statement_expressions: 0,
+        in_function: false,
     };
     let mut declarations = Vec::new();
     if parser.peek().is_none() {
@@ -333,18 +355,20 @@ struct Parser<'a, 'p, I: Iterator<Item = &'a Lexeme>> {
     tags: Vec<HashMap<&'a str, Tag>>,
     records: Vec<Record<'a>>,
     va_list_record: Option<usize>,
+    statement_expressions: usize,
+    in_function: bool,
 }
 
 #[derive(Clone, Copy)]
 enum Tag {
-    Enum,
+    Enum(Integer),
     Record(usize),
 }
 
 enum Name {
     Ordinary(Type),
     Typedef(Type, bool),
-    Enumerator(i32),
+    Enumerator(u64, Integer),
 }
 
 impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
@@ -394,7 +418,10 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
     }
 
     fn identifier(&mut self) -> Option<&'a Lexeme> {
-        if self.peek().is_some_and(is_identifier) {
+        if self
+            .peek()
+            .is_some_and(|token| is_identifier(token) && !self.is_typeof(token))
+        {
             self.take()
         } else {
             None
@@ -421,31 +448,38 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         result
     }
 
+    fn is_typeof(&self, token: &Lexeme) -> bool {
+        matches!(token.text.as_ref(), "__typeof" | "__typeof__")
+            || self.standard.is_gnu() && token.is("typeof")
+    }
+
     fn starts_type(&self, token: &Lexeme) -> bool {
-        matches!(
-            token.text.as_ref(),
-            "void"
-                | "_Bool"
-                | "char"
-                | "short"
-                | "int"
-                | "long"
-                | "signed"
-                | "unsigned"
-                | "float"
-                | "double"
-                | "_Complex"
-                | "const"
-                | "volatile"
-                | "restrict"
-                | "__restrict"
-                | "__restrict__"
-                | "_Atomic"
-                | "struct"
-                | "union"
-                | "enum"
-                | amd64_va_list::NAME
-        ) || matches!(self.lookup(&token.text), Some(Name::Typedef(..)))
+        self.is_typeof(token)
+            || matches!(
+                token.text.as_ref(),
+                "void"
+                    | "_Bool"
+                    | "char"
+                    | "short"
+                    | "int"
+                    | "long"
+                    | "signed"
+                    | "unsigned"
+                    | "float"
+                    | "double"
+                    | "_Complex"
+                    | "const"
+                    | "volatile"
+                    | "restrict"
+                    | "__restrict"
+                    | "__restrict__"
+                    | "_Atomic"
+                    | "struct"
+                    | "union"
+                    | "enum"
+                    | amd64_va_list::NAME
+            )
+            || matches!(self.lookup(&token.text), Some(Name::Typedef(..)))
     }
 
     fn starts_declaration(&self, token: &Lexeme) -> bool {
@@ -461,6 +495,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                     | "__inline"
                     | "__inline__"
                     | "__attribute__"
+                    | "__attribute"
                     | "_Thread_local"
                     | "_Alignas"
                     | "_Noreturn"
@@ -475,6 +510,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
     fn block_items(&mut self, depth: usize) -> Result<Vec<Statement<'a>>, Diagnostic> {
         let mut statements = Vec::new();
         while self.eat("}").is_none() {
+            let extension = self.extension_markers()?;
             if let Some(site) = self.eat("_Static_assert") {
                 statements.push(Statement::StaticAssert(self.static_assertion(site, depth)?));
             } else if self
@@ -482,11 +518,24 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 .is_some_and(|token| self.starts_declaration(token))
             {
                 statements.push(Statement::Declaration(self.declaration()?));
+            } else if extension {
+                let expression = self.expression(0)?;
+                self.expect(";", "expected ';' after the extension expression")?;
+                statements.push(Statement::Expression(expression));
             } else {
                 statements.push(self.statement(depth)?);
             }
         }
         Ok(statements)
+    }
+
+    fn extension_markers(&mut self) -> Result<bool, Diagnostic> {
+        for count in 0..MAX_NESTING {
+            if self.eat("__extension__").is_none() {
+                return Ok(count != 0);
+            }
+        }
+        Err(self.error("extension marker nesting limit exceeded"))
     }
 
     fn statement(&mut self, depth: usize) -> Result<Statement<'a>, Diagnostic> {
@@ -498,6 +547,9 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         }
         if self.eat(";").is_some() {
             return Ok(Statement::Empty);
+        }
+        if self.peek().is_some_and(|token| self.asm_keyword(token)) {
+            return self.inline_asm(depth).map(Statement::InlineAsm);
         }
         if let Some(keyword) = self.eat("return") {
             return Ok(Statement::Return(keyword, self.optional_expression(";")?));
@@ -545,17 +597,23 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             ));
         }
         if let Some(site) = self.eat("case").or_else(|| self.eat("default")) {
-            let value = if site.is("case") {
+            let low = if site.is("case") {
+                Some(self.conditional(0)?)
+            } else {
+                None
+            };
+            let high = if low.is_some() && self.eat("...").is_some() {
                 Some(self.conditional(0)?)
             } else {
                 None
             };
             self.expect(":", "expected ':' after the case label")?;
-            return Ok(Statement::Case(
+            return Ok(Statement::Case {
                 site,
-                value,
-                Box::new(self.statement(depth + 1)?),
-            ));
+                low,
+                high,
+                body: Box::new(self.statement(depth + 1)?),
+            });
         }
         if self.eat("goto").is_some() {
             let label = self
@@ -575,7 +633,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         let expr = self.expression(0)?;
         if matches!(
             expr.kind,
-            ExpressionKind::Identifier | ExpressionKind::Enumerator(_)
+            ExpressionKind::Identifier | ExpressionKind::Enumerator(..)
         ) && self.eat(":").is_some()
         {
             return Ok(Statement::Label(
@@ -589,6 +647,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
 
     fn for_loop(&mut self, depth: usize) -> Result<Statement<'a>, Diagnostic> {
         self.expect("(", "expected '(' after 'for'")?;
+        let extension = self.extension_markers()?;
         let initial = if self
             .peek()
             .is_some_and(|token| self.starts_declaration(token))
@@ -600,6 +659,10 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                     .error("a for initializer cannot declare a _Thread_local object"));
             }
             Statement::Declaration(variables)
+        } else if extension {
+            let expression = self.expression(0)?;
+            self.expect(";", "expected ';' after the extension expression")?;
+            Statement::Expression(expression)
         } else {
             self.optional_expression(";")?
                 .map_or(Statement::Empty, Statement::Expression)
@@ -684,6 +747,13 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         let Some(site) = self.eat("?") else {
             return Ok(test);
         };
+        if self.eat(":").is_some() {
+            let no = self.conditional(depth + 1)?;
+            return Expression::new(
+                site,
+                ExpressionKind::OmittedConditional(Box::new(test), Box::new(no)),
+            );
+        }
         let yes = self.expression(depth + 1)?;
         self.expect(":", "expected ':' in the conditional expression")?;
         let no = self.conditional(depth + 1)?;
@@ -741,8 +811,11 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             return Expression::new(site, ExpressionKind::Alignof(ty));
         }
         if let Some(site) = self.eat("sizeof") {
-            let kind = if self.eat("(").is_some() {
-                if self.peek().is_some_and(|token| self.starts_type(token)) {
+            let kind = if let Some(open) = self.eat("(") {
+                if self.eat("{").is_some() {
+                    let expression = self.statement_expression(open, depth + 1)?;
+                    ExpressionKind::Sizeof(Box::new(self.postfix(expression, depth + 1)?))
+                } else if self.peek().is_some_and(|token| self.starts_type(token)) {
                     let ty = self.type_name(depth + 1)?;
                     self.expect(")", "expected ')' after the sizeof type")?;
                     if let Some(open) = self.eat("{") {
@@ -780,7 +853,9 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             );
         }
         let callee = if let Some(site) = self.eat("(") {
-            if self.peek().is_some_and(|token| self.starts_type(token)) {
+            if self.eat("{").is_some() {
+                self.statement_expression(site, depth + 1)?
+            } else if self.peek().is_some_and(|token| self.starts_type(token)) {
                 let ty = self.type_name(depth + 1)?;
                 self.expect(")", "expected ')' after the cast type")?;
                 if let Some(open) = self.eat("{") {
@@ -800,6 +875,25 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             self.primary(depth)?
         };
         self.postfix(callee, depth)
+    }
+
+    fn statement_expression(
+        &mut self,
+        site: &'a Lexeme,
+        depth: usize,
+    ) -> Result<Expression<'a>, Diagnostic> {
+        if !self.in_function {
+            return Err(site.error("statement expression is only allowed inside a function"));
+        }
+        if depth >= MAX_NESTING || self.statement_expressions >= MAX_NESTING {
+            return Err(site.error("statement expression nesting limit exceeded"));
+        }
+        self.statement_expressions += 1;
+        let statements = self.block(depth);
+        self.statement_expressions -= 1;
+        let statements = statements?;
+        self.expect(")", "expected ')' after the statement expression")?;
+        Expression::new(site, ExpressionKind::StatementExpression(statements))
     }
 
     fn compound_literal(
@@ -926,6 +1020,15 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 self.expect(")", "expected ')' after generic associations")?;
                 ExpressionKind::Generic(Box::new(control), associations)
             }
+            Kind::Identifier if site.is("__builtin_types_compatible_p") => {
+                self.take();
+                self.expect("(", "expected '(' after __builtin_types_compatible_p")?;
+                let left = self.type_name(depth + 1)?;
+                self.expect(",", "expected ',' between the type names")?;
+                let right = self.type_name(depth + 1)?;
+                self.expect(")", "expected ')' after the type names")?;
+                ExpressionKind::TypesCompatible(left, right)
+            }
             Kind::Identifier if site.is("__builtin_offsetof") => {
                 self.take();
                 self.expect("(", "expected '(' after __builtin_offsetof")?;
@@ -935,7 +1038,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                     .identifier()
                     .ok_or_else(|| self.error("expected a member name"))?;
                 let mut path = vec![Designator::Member(field)];
-                self.designators(&mut path, site, depth + 1)?;
+                self.designators(&mut path, site, depth + 1, false)?;
                 self.expect(")", "expected ')' after the member designator")?;
                 ExpressionKind::Offsetof(ty, path)
             }
@@ -954,10 +1057,10 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 self.expect(")", "__builtin_flt_rounds takes no arguments")?;
                 ExpressionKind::FltRounds
             }
-            Kind::Identifier if is_identifier(site) => {
+            Kind::Identifier if is_identifier(site) && !self.is_typeof(site) => {
                 self.take();
                 match self.lookup(&site.text) {
-                    Some(Name::Enumerator(value)) => ExpressionKind::Enumerator(*value),
+                    Some(Name::Enumerator(value, ty)) => ExpressionKind::Enumerator(*value, *ty),
                     _ => ExpressionKind::Identifier,
                 }
             }
@@ -1043,6 +1146,7 @@ fn is_identifier(token: &Lexeme) -> bool {
                 | amd64_va_list::NAME
                 | "__builtin_va_arg"
                 | "__builtin_offsetof"
+                | "__builtin_types_compatible_p"
                 | "__builtin_flt_rounds"
         )
 }

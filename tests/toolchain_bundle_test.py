@@ -26,7 +26,124 @@ def digest(path):
         return hashlib.file_digest(file, "sha256").hexdigest()
 
 
+class BusyBoxStagingTest(unittest.TestCase):
+    milestone = "toolchain/busybox-on-box"
+    prefix = Path("usr/share/breenix/toolchain/busybox")
+
+    def setUp(self):
+        script = ROOT / "scripts/toolchain-image.py"
+        spec = importlib.util.spec_from_file_location("toolchain_image", script)
+        self.image = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.image)
+        self.mkfs, self.debugfs = self.image.require_e2fsprogs("mke2fs", "debugfs")
+        self.directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.seed = self.directory / "seed.img"
+        subprocess.run([self.mkfs, "-q", "-F", "-t", "ext2", self.seed, "96M"],
+                       check=True, capture_output=True)
+
+    def stage(self, bundle, suites, milestone=None):
+        record = json.loads((bundle / "build.json").read_text())
+        output = self.directory / "staged.img"
+        command = [sys.executable, ROOT / "scripts/toolchain-image.py", "stage",
+                   self.seed, output, "--suite", suites, "--arch", record["arch"],
+                   "--toolchain-bundle", bundle]
+        if milestone is not None:
+            command.extend(["--milestone", milestone])
+        return output, subprocess.run(command, text=True, capture_output=True)
+
+    def test_scratch_image_identifies_busybox_fixture(self):
+        scratch = self.directory / "scratch.img"
+        self.image.format_busybox_scratch(scratch)
+        extract = ROOT / "tools/breenfs/target/release/breenfs-extract"
+        result = subprocess.run([extract, scratch, "cat", "/busybox-scratch"],
+                                capture_output=True, timeout=3)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, b"toolchain/busybox-on-box\n")
+
+    def busybox_inputs_staged_with_digests(self):
+        record = json.loads((self.bundle / "build.json").read_text())
+        vendor = ROOT / "vendor/busybox"
+        sources = {
+            Path("busybox.sh"): WORKSPACE / "corpus/busybox.sh",
+            Path("vendor/busybox/busybox-1.37.0.tar.bz2"): vendor / "busybox-1.37.0.tar.bz2",
+            Path("vendor/busybox/breenix-libc.config"): vendor / "breenix-libc.config",
+            **{Path("vendor/busybox/patches") / path.name: path
+               for path in (vendor / "patches").iterdir()},
+            Path("mac-applets.txt"): ROOT / "target/libc-busybox-reference/x86_64/out/libc-busybox.links",
+        }
+        expected = {str(self.prefix / name): digest(source) for name, source in sources.items()}
+        self.assertEqual(record.get("busyboxInputs"), expected)
+        tree = self.bundle / "root"
+        manifest = dict(line.split("  ", 1)[::-1] for line in
+                        (tree / "opt/breenix-dev/25.2/manifest.sha256").read_text().splitlines())
+        self.assertEqual({str(p.relative_to(tree)) for p in (tree / self.prefix).rglob("*")
+                          if p.is_file()}, expected.keys())
+        for path, sha256 in expected.items():
+            self.assertEqual(digest(tree / path), sha256, path)
+            self.assertEqual(manifest.get(path), sha256, path)
+        scratch = self.bundle / "toolchain-scratch.img"
+        self.assertEqual(scratch.stat().st_size, 64 << 20)
+        self.assertEqual(record.get("busyboxScratch"),
+                         {"size": 64 << 20, "sha256": digest(scratch)})
+        _, result = self.stage(self.bundle, "toolchain,libc,utilities", self.milestone)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def busybox_inputs_absent_unless_selected(self):
+        record = json.loads((self.baseline / "build.json").read_text())
+        self.assertNotIn("busyboxInputs", record)
+        self.assertNotIn("busyboxScratch", record)
+        self.assertFalse((self.baseline / "root" / self.prefix).exists())
+        self.assertFalse((self.baseline / "toolchain-scratch.img").exists())
+        output, result = self.stage(self.baseline, "toolchain", "toolchain/c17-libc-suite")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        with self.subTest(selection="earlier toolchain milestone"):
+            output.unlink()
+            _, result = self.stage(self.bundle, "toolchain", "toolchain/c17-libc-suite")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("BusyBox fixture requires toolchain/busybox-on-box", result.stderr)
+            self.assertFalse(output.exists())
+        with self.subTest(selection="toolchain suite without milestone"):
+            _, result = self.stage(self.bundle, "toolchain")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("BusyBox fixture requires toolchain/busybox-on-box", result.stderr)
+            self.assertFalse(output.exists())
+        with self.subTest(selection="unrelated suite"):
+            output, result = self.stage(self.bundle, "libc,utilities")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(digest(output), digest(self.seed))
+
+
 class ToolchainGuestBuildTest(unittest.TestCase):
+    def test_every_bundle_has_executable_archive_and_symbol_tools(self):
+        class ReachedCorpus(Exception):
+            pass
+
+        with mock.patch.object(sys, "path", [str(ROOT / "scripts"), *sys.path]):
+            builder = importlib.import_module("toolchain-build-tools")
+            image = importlib.import_module("toolchain-image")
+            for arch in ("x86_64", "aarch64"):
+                for milestone in (None, "toolchain/busybox-on-box"):
+                    with self.subTest(arch=arch, milestone=milestone), tempfile.TemporaryDirectory() as temp:
+                        root = Path(temp)
+                        dev = root / image.DEV
+                        bindir = dev / "bin"
+                        bindir.mkdir(parents=True)
+                        for tool in builder.TOOLS:
+                            (bindir / tool).write_bytes(tool.encode())
+                        with (mock.patch.dict(os.environ, BREENIX_TOOLCHAIN_CLANG="/fixture/clang",
+                                              BREENIX_TOOLCHAIN_CLANG_SHA256="a" * 64),
+                              mock.patch.object(builder.reference, "pinned_tool", return_value=([], None)),
+                              mock.patch.object(builder, "cargo_environment", return_value=([], {}, "host", {})),
+                              mock.patch.object(builder, "build_guest_tools", return_value={}),
+                              mock.patch.object(builder.shutil, "copytree", side_effect=ReachedCorpus),
+                              self.assertRaises(ReachedCorpus)):
+                            builder.build(arch, root / "work", dev, root / image.CORPUS, milestone)
+                        for tool, alias in (("bar", "ar"), ("bnm", "nm")):
+                            path = bindir / alias
+                            self.assertTrue(path.is_file(), f"missing bundle executable: {alias}")
+                            self.assertEqual(digest(path), digest(bindir / tool))
+                            self.assertEqual(image.fixture_mode(path.relative_to(root)), 0o755)
+
     def test_arm_guest_link_inputs_are_keyed_by_content(self):
         script = ROOT / "scripts/toolchain-build-tools.py"
         spec = importlib.util.spec_from_file_location("toolchain_build_tools", script)
@@ -168,8 +285,8 @@ class ToolchainBundleTest(unittest.TestCase):
     def arm_bundle_has_cc_and_make(self):
         self.assertEqual(set(self.record["tools"]), {"bas", "bld", "bar", "bnm", "bcc", "bmake"})
         self.assertEqual({path.name for path in (self.dev / "bin").iterdir()},
-                         {"bas", "bld", "bar", "bnm", "cc", "make", "as", "ld"})
-        for tool, alias in (("bas", "as"), ("bld", "ld")):
+                         {"bas", "bld", "bar", "bnm", "cc", "make", "as", "ld", "ar", "nm"})
+        for tool, alias in (("bas", "as"), ("bld", "ld"), ("bar", "ar"), ("bnm", "nm")):
             self.assertEqual(digest(self.dev / "bin" / tool), digest(self.dev / "bin" / alias))
         self.assertEqual(self.record["candidateProducer"], "mac-bcc" if sys.platform == "darwin" else "host-bcc")
 
@@ -551,6 +668,8 @@ if __name__ == "__main__":
     ToolchainBundleTest.bundle = args.bundle
     ToolchainBundleTest.probe = args.probe
     ToolchainBundleTest.baseline = args.baseline
+    BusyBoxStagingTest.bundle = args.bundle
+    BusyBoxStagingTest.baseline = args.baseline
     checks = ["ToolchainBundleTest.tools_built_by_rustc",
               "ToolchainBundleTest.receipts_from_cargo_host_bas",
               "ToolchainBundleTest.c11_inputs_staged",

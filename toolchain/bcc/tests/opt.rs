@@ -57,6 +57,47 @@ fn function<'a>(assembly: &'a str, name: &str) -> &'a str {
 }
 
 #[test]
+fn zero_bitmask_removes_unreachable_branch() {
+    // N1570 6.5.10 and 6.8.4.1. A constant mask disables the branch.
+    let source = Source::new(
+        "zero-bitmask",
+        r"
+extern void unavailable(void);
+extern volatile unsigned input;
+int plain(unsigned features) {
+    if (features & 0u) unavailable();
+    return 42;
+}
+int volatile_read(void) {
+    if (input & 0u) unavailable();
+    return 42;
+}
+",
+    );
+    let assembly = source.assembly("--target=x86_64", &["-O2"]);
+    assert!(!function(&assembly, "plain").contains("unavailable"), "{assembly}");
+    assert!(function(&assembly, "volatile_read").contains("input"), "{assembly}");
+}
+
+#[test]
+fn constant_conditional_discards_unselected_call() {
+    // N1570 6.5.15p4 governs which conditional operand is evaluated.
+    let source = Source::new(
+        "constant-conditional",
+        r"
+extern int unavailable(void);
+int disabled(int flags) { return 0 && flags ? unavailable() : 42; }
+int enabled(void) { return 1 ? 42 : unavailable(); }
+",
+    );
+    let assembly = source.assembly("--target=x86_64", &["-O2"]);
+    for name in ["disabled", "enabled"] {
+        let body = function(&assembly, name);
+        assert!(!body.contains("unavailable") && body.contains("0x2a"), "{body}");
+    }
+}
+
+#[test]
 fn rounding_math_blocks_fp_fold() {
     // N1570 7.6.1 and F.8.2. The flag protects runtime arithmetic even
     // without a pragma, and FENV_ACCESS ON also works on its own.
@@ -280,6 +321,42 @@ int main(void) {
 }
 "],
     );
+}
+
+#[test]
+fn disabled_block_with_internal_goto_is_unreachable() {
+    // N1570 6.8.6.1 permits an entry by goto from outside the block.
+    // N1570 6.8.4.2 permits entry by the enclosing switch.
+    let source = Source::new(
+        "internal-goto",
+        r"
+extern void unavailable(void);
+extern void live(void);
+void internal(int p) {
+    if (0) {
+        if (p) goto repeat;
+        unavailable();
+    repeat:
+        unavailable();
+    }
+}
+void external(void) {
+    goto entry;
+    if (0) { entry: live(); }
+}
+void dispatched(int p) {
+    switch (p) {
+        if (0) { case 42: live(); }
+    }
+}
+",
+    );
+    let assembly = source.assembly("--target=x86_64", &["-O2"]);
+    let internal = function(&assembly, "internal");
+    assert!(!internal.contains("unavailable"), "{internal}");
+    for name in ["external", "dispatched"] {
+        assert!(function(&assembly, name).contains("call live@plt"), "{assembly}");
+    }
 }
 
 #[test]

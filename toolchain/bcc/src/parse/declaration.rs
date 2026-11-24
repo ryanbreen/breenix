@@ -6,7 +6,8 @@ use crate::types::{BitField, BitFieldContainer, Layout, Member, RecordDefinition
 
 enum Modifier<'a> {
     Pointer(Qualifiers),
-    Array(usize),
+    Array(Option<usize>),
+    VariableArray(Expression<'a>),
     Function(Parameters<'a>),
 }
 
@@ -43,7 +44,7 @@ impl<'a> Declarator<'a> {
                     qualifiers: *qualifiers,
                 },
                 Modifier::Array(size) => {
-                    if ty.layout().is_none_or(|layout| layout.size == 0) {
+                    if ty.complete_layout().is_none() {
                         return Err(site.error("array element type is incomplete"));
                     }
                     if contains_flexible_member(&ty, records) {
@@ -56,6 +57,11 @@ impl<'a> Declarator<'a> {
                         return Err(site.error("array size exceeds the target address space"));
                     }
                     ty
+                }
+                Modifier::VariableArray(bound) => {
+                    return Err(bound.site.error(
+                        "variable length is supported only for the outer bound of a block-scope array object",
+                    ));
                 }
                 Modifier::Function(params) => {
                     if matches!(ty.kind, TypeKind::Array(..) | TypeKind::Function { .. }) {
@@ -84,6 +90,9 @@ impl<'a> Declarator<'a> {
 
 impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
     pub(super) fn external(&mut self) -> Result<Vec<Declaration<'a>>, Diagnostic> {
+        if let Some(token) = self.peek().filter(|token| self.asm_keyword(token)) {
+            return Err(token.error("unsupported file-scope asm"));
+        }
         if let Some(site) = self.eat("_Static_assert") {
             return Ok(vec![Declaration::StaticAssert(
                 self.static_assertion(site, 0)?,
@@ -155,7 +164,10 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                         params.items
                     };
                     parser.expect("{", "expected ';' or a function body")?;
-                    let body = parser.block_items(0)?;
+                    parser.in_function = true;
+                    let body = parser.block_items(0);
+                    parser.in_function = false;
+                    let body = body?;
                     Ok((items, body))
                 })?;
                 (items, Some(body))
@@ -170,6 +182,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 returns_twice: storage.returns_twice,
                 storage: storage.class,
                 body,
+                symbol: storage.symbol,
             })]);
         }
         self.variables(base, storage, signed, first)
@@ -196,8 +209,24 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         let mut variables = Vec::new();
         loop {
             let name = declarator.name.unwrap();
+            let variable_bound = match declarator.modifiers.first_mut() {
+                Some(modifier @ Modifier::VariableArray(_)) => {
+                    let Modifier::VariableArray(bound) =
+                        std::mem::replace(modifier, Modifier::Array(None))
+                    else {
+                        unreachable!()
+                    };
+                    if !self.in_function || storage.thread_local
+                        || !matches!(storage.class, Storage::Unspecified | Storage::Auto)
+                    {
+                        return Err(bound.site.error("variable length requires an automatic array object"));
+                    }
+                    Some(bound)
+                }
+                _ => None,
+            };
             let mut ty = declarator.ty(base.clone(), name, &self.records)?;
-            let mut storage = storage;
+            let mut storage = storage.clone();
             for (site, attribute) in self.attributes(0)? {
                 if let Attribute::VectorSize(bytes) = attribute {
                     let TypeKind::Float(element) = ty.kind else {
@@ -211,7 +240,13 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                     storage.apply_attribute(site, attribute)?;
                 }
             }
+            if storage.may_alias {
+                ty.qualifiers.may_alias = true;
+            }
             storage.check(name, &ty)?;
+            if self.in_function && storage.symbol != SymbolAttributes::default() {
+                return Err(name.error("ELF symbol attributes require a file-scope declaration"));
+            }
             if declarator.modifiers.iter().any(|modifier| {
                 matches!(modifier, Modifier::Function(params)
                     if params.identifiers.as_ref().is_some_and(|names| !names.is_empty()))
@@ -232,17 +267,17 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 } else {
                     None
                 };
-                if let Some(initializer) = &initializer {
-                    let mut complete = ty.clone();
-                    if let TypeKind::Array(element, count @ 0) = &mut complete.kind {
-                        if let Some(tokens) = string_initializer(initializer) {
-                            let (literal, _, length) = crate::sema::string_literal(tokens, self.target)?;
-                            if crate::sema::string_initializes(element, literal) {
-                                *count = length;
-                                self.name(name, Name::Ordinary(complete));
-                            }
-                        }
-                    }
+                if variable_bound.is_some() && initializer.is_some() {
+                    return Err(name.error("variable length array cannot be initialized"));
+                }
+                if let (TypeKind::Array(_, None), Some(initializer)) = (&ty.kind, &initializer) {
+                    let complete = crate::sema::complete_initializer_array(
+                        name,
+                        ty.clone(),
+                        initializer.clone(),
+                        self.expression_scope(),
+                    )?;
+                    self.name(name, Name::Ordinary(complete));
                 }
                 let alignment = storage.object_alignment(&ty);
                 variables.push(Variable {
@@ -252,6 +287,8 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                     thread_local: storage.thread_local,
                     alignment,
                     initializer,
+                    variable_bound,
+                    symbol: storage.symbol,
                 });
             }
             if self.eat(",").is_none() {
@@ -280,9 +317,12 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             return Err(site.error("initializer nesting limit exceeded"));
         }
         let mut entries = Vec::new();
+        if self.standard.is_gnu() && self.eat("}").is_some() {
+            return Ok(Initializer::List(site, entries));
+        }
         loop {
             let mut designators = Vec::new();
-            self.designators(&mut designators, site, depth + 1)?;
+            self.designators(&mut designators, site, depth + 1, true)?;
             if !designators.is_empty() {
                 self.expect("=", "expected '=' after the designation")?;
             }
@@ -306,12 +346,18 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         designators: &mut Vec<Designator<'a>>,
         site: &'a Lexeme,
         depth: usize,
+        allow_ranges: bool,
     ) -> Result<(), Diagnostic> {
         loop {
             let designator = if self.eat("[").is_some() {
                 let index = self.conditional(depth)?;
+                let designator = if allow_ranges && self.eat("...").is_some() {
+                    Designator::Range(index, self.conditional(depth)?)
+                } else {
+                    Designator::Index(index)
+                };
                 self.expect("]", "expected ']' after the array designator")?;
-                Designator::Index(index)
+                designator
             } else if self.eat(".").is_some() {
                 Designator::Member(
                     self.identifier()
@@ -384,21 +430,27 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 return Err(self.error("declarator nesting limit exceeded"));
             }
             if self.eat("[").is_some() {
-                let size = if self.eat("]").is_some() {
-                    0
+                let modifier = if self.eat("]").is_some() {
+                    Modifier::Array(None)
                 } else {
-                    // N1570 6.7.6.2 and 6.6: evaluate an integer constant
-                    // expression with the current types, without array decay
-                    // inside sizeof or a runtime VLA bound.
                     let bound = self.conditional(depth + 1)?;
-                    let size = self.layout_constant(bound)?;
                     self.expect("]", "expected ']' after the array bound")?;
-                    usize::try_from(size)
-                        .ok()
-                        .filter(|&size| (1..=isize::MAX as usize).contains(&size))
-                        .ok_or_else(|| self.error("array bound must be positive"))?
+                    match self.layout_constant(bound.clone()) {
+                        Ok(size) => Modifier::Array(Some(
+                            usize::try_from(size)
+                                .ok()
+                                .filter(|&size| {
+                                    size <= isize::MAX as usize && (size != 0 || self.standard.is_gnu())
+                                })
+                                .ok_or_else(|| self.error("array bound must be positive"))?,
+                        )),
+                        Err(_) if self.in_function && self.standard.is_gnu() => {
+                            Modifier::VariableArray(bound)
+                        }
+                        Err(error) => return Err(error),
+                    }
                 };
-                declarator.modifiers.push(Modifier::Array(size));
+                declarator.modifiers.push(modifier);
             } else if self.eat("(").is_some() {
                 // N1570 §6.2.1p4: prototype tags are visible through this
                 // function declarator. A definition carries them into its body.
@@ -451,9 +503,12 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             let start = self
                 .peek()
                 .ok_or_else(|| self.error("expected a parameter type"))?;
-            let (base, storage, _) = self.specifiers_at_depth(true, depth)?;
-            storage.check_parameter(start)?;
+            let (base, mut storage, _) = self.specifiers_at_depth(true, depth)?;
             let declarator = self.declarator(true, depth)?;
+            for (site, attribute) in self.attributes(depth)? {
+                storage.apply_attribute(site, attribute)?;
+            }
+            storage.check_parameter(start)?;
             let ty = declarator.ty(base, start, &self.records)?;
             let name = declarator.name;
             if ty.kind == TypeKind::Void
@@ -587,6 +642,10 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
     }
 
     pub(super) fn layout_constant(&self, expression: Expression<'a>) -> Result<u64, Diagnostic> {
+        crate::sema::layout_constant(expression, self.expression_scope())
+    }
+
+    pub(super) fn expression_scope(&self) -> crate::sema::ParserExpressionScope<'a, '_> {
         let names = self.names.iter().flatten().map(|(&name, entry)| {
             let ty = match entry {
                 Name::Ordinary(ty) => Some(ty),
@@ -594,27 +653,15 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             };
             (name, ty)
         });
-        crate::sema::layout_constant(expression, self.target, self.standard, &self.records, names)
+        crate::sema::ParserExpressionScope::new(self.target, self.standard, &self.records, names)
     }
 
-    fn literal_integer(&mut self) -> Result<(i128, &'a Lexeme), Diagnostic> {
-        let token = self
-            .take()
-            .ok_or_else(|| self.error("expected an integer constant"))?;
-        let value = match self.lookup(&token.text) {
-            Some(Name::Enumerator(value)) => Some(i128::from(*value)),
-            _ => {
-                crate::pp::integer_constant(&token.text).map(|constant| i128::from(constant.value))
-            }
-        };
-        value
-            .map(|value| (value, token))
-            .ok_or_else(|| token.error("expected an integer constant"))
-    }
-
-    pub(super) fn enumeration(&mut self, keyword: &Lexeme) -> Result<Type, Diagnostic> {
+    pub(super) fn enumeration(
+        &mut self,
+        keyword: &Lexeme,
+        depth: usize,
+    ) -> Result<Type, Diagnostic> {
         let tag = self.identifier();
-        let ty = Type::new(TypeKind::Integer(Integer::Int));
         if self.eat("{").is_none() {
             return tag
                 .and_then(|name| {
@@ -623,41 +670,58 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                         .rev()
                         .find_map(|scope| scope.get(name.text.as_ref()))
                 })
-                .filter(|found| matches!(found, Tag::Enum))
-                .map(|_| ty)
+                .and_then(|found| match found {
+                    Tag::Enum(integer) => Some(Type::new(TypeKind::Integer(*integer))),
+                    _ => None,
+                })
                 .ok_or_else(|| keyword.error("unknown enumeration tag"));
         }
         if let Some(tag) = tag {
-            let scope = self.tags.last_mut().unwrap();
-            if scope.contains_key(tag.text.as_ref()) {
+            if self.tags.last().unwrap().contains_key(tag.text.as_ref()) {
                 return Err(tag.error("tag is already declared in this scope"));
             }
-            scope.insert(&tag.text, Tag::Enum);
         }
-        let mut next = Some(0i32);
+        let mut next = 0;
+        let mut min = 0;
+        let mut max = 0;
         loop {
             let name = self
                 .identifier()
                 .ok_or_else(|| self.error("expected an enumerator name"))?;
-            let value = if self.eat("=").is_some() {
-                let negative = self.eat("-").is_some();
-                let (value, site) = self.literal_integer()?;
-                let value = if negative { -value } else { value };
-                i32::try_from(value).map_err(|_| site.error("enumerator must fit in int"))?
+            let (value, value_site) = if self.eat("=").is_some() {
+                let expression = self.conditional(depth + 1)?;
+                let value_site = match &expression.kind {
+                    ExpressionKind::Unary(Unary::Minus, operand) => operand.site,
+                    _ => expression.site,
+                };
+                (crate::sema::enumerator_constant(expression, self.expression_scope())?, value_site)
             } else {
-                next.ok_or_else(|| name.error("enumerator must fit in int"))?
+                (next, name)
             };
+            let integer = enum_integer(value.min(0), value.max(0)).ok_or_else(|| {
+                value_site.error("enumerator value is outside the supported integer range")
+            })?;
+            if !self.standard.is_gnu() && integer != Integer::Int {
+                return Err(value_site.error("enumerator must fit in int"));
+            }
             if self.names.last().unwrap().contains_key(name.text.as_ref()) {
                 return Err(name.error("duplicate enumerator name"));
             }
-            self.name(name, Name::Enumerator(value));
-            next = value.checked_add(1);
+            self.name(name, Name::Enumerator(value as u64, integer));
+            min = min.min(value);
+            max = max.max(value);
+            next = value + 1;
             if self.eat(",").is_none() || self.peek().is_some_and(|t| t.is("}")) {
                 self.expect("}", "expected '}' after the enumerators")?;
                 break;
             }
         }
-        Ok(ty)
+        let integer = enum_integer(min, max)
+            .ok_or_else(|| keyword.error("no integer type can represent all enumerators"))?;
+        if let Some(tag) = tag {
+            self.tags.last_mut().unwrap().insert(&tag.text, Tag::Enum(integer));
+        }
+        Ok(Type::new(TypeKind::Integer(integer)))
     }
 
     pub(super) fn record(&mut self, keyword: &'a Lexeme, depth: usize) -> Result<Type, Diagnostic> {
@@ -723,8 +787,11 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             }
             self.records[id].definition = Some(definition);
         }
-        let layout = self.records[id].definition.as_ref().map(|def| def.layout);
-        Ok(Type::new(TypeKind::Record(RecordType { id, layout })))
+        let definition = self.records[id].definition.as_ref();
+        let layout = definition.map(|def| def.layout);
+        let mut ty = Type::new(TypeKind::Record(RecordType { id, layout }));
+        ty.qualifiers.may_alias = definition.is_some_and(|def| def.may_alias);
+        Ok(ty)
     }
 
     fn record_definition(
@@ -792,6 +859,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                     match attribute {
                         Attribute::Aligned(value) => alignment = alignment.max(value),
                         Attribute::Packed => packed = true,
+                        Attribute::Unused | Attribute::Deprecated => {}
                         _ => return Err(site.error("attribute does not apply to a record member")),
                     }
                 }
@@ -851,14 +919,19 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         attributes.extend(self.attributes(depth)?);
         let mut packed = false;
         let mut alignment = 1;
+        let mut may_alias = false;
         for (site, attribute) in attributes {
             match attribute {
                 Attribute::Aligned(value) => alignment = alignment.max(value),
                 Attribute::Packed => packed = true,
+                Attribute::MayAlias => may_alias = true,
+                Attribute::Unused | Attribute::Deprecated => {}
                 _ => return Err(site.error("attribute does not apply to a record type")),
             }
         }
-        self.layout_record(kind, (packed, alignment), fields, open, end)
+        let mut definition = self.layout_record(kind, (packed, alignment), fields, open, end)?;
+        definition.may_alias = may_alias;
+        Ok(definition)
     }
 
     fn add_anonymous_member_names(
@@ -911,7 +984,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             let packed = packed || member_packed;
             // N1570 §6.7.2.1p3,18: retain the aligned offset but allocate
             // no elements for the flexible tail.
-            let flexible = matches!(ty.kind, TypeKind::Array(_, 0));
+            let flexible = matches!(ty.kind, TypeKind::Array(_, None));
             if flexible
                 && (kind != RecordKind::Struct || members.is_empty() || fields.peek().is_some())
             {
@@ -926,7 +999,6 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             }
             let field = ty
                 .layout()
-                .filter(|field| flexible || field.size != 0)
                 .ok_or_else(|| site.error("record member type is incomplete"))?;
             let start = if kind == RecordKind::Struct {
                 size_bits
@@ -1009,6 +1081,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             members,
             end: Some(end),
             has_const_member,
+            may_alias: false,
         })
     }
 
@@ -1032,19 +1105,6 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
     }
 }
 
-fn string_initializer<'a, 'i>(initializer: &'i Initializer<'a>) -> Option<&'i [&'a Lexeme]> {
-    match initializer {
-        Initializer::Expression(Expression { kind: ExpressionKind::String(tokens), .. }) => Some(tokens),
-        Initializer::List(_, entries) if entries.len() == 1 && entries[0].designators.is_empty() => {
-            match &entries[0].value {
-                Initializer::Expression(Expression { kind: ExpressionKind::String(tokens), .. }) => Some(tokens),
-                _ => None,
-            }
-        }
-        _ => None,
-    }
-}
-
 impl DeclStorage {
     fn require_declarator(self, site: &Lexeme) -> Result<(), Diagnostic> {
         if self.thread_local {
@@ -1056,8 +1116,21 @@ impl DeclStorage {
         Ok(())
     }
 
-    fn check(self, site: &Lexeme, ty: &Type) -> Result<(), Diagnostic> {
+    fn check(&self, site: &Lexeme, ty: &Type) -> Result<(), Diagnostic> {
         let function = matches!(ty.kind, TypeKind::Function { .. });
+        let function_pointer = matches!(&ty.kind, TypeKind::Pointer(inner)
+            if matches!(inner.kind, TypeKind::Function { .. }));
+        if let Some(attribute) = self.function_hint {
+            if !(function || attribute == "format" && function_pointer) {
+                return Err(site.error(format!("{attribute} requires a function declaration")));
+            }
+        }
+        if self.may_alias && function {
+            return Err(site.error("may_alias requires an object type"));
+        }
+        if self.symbol != SymbolAttributes::default() && self.class == Storage::Typedef {
+            return Err(site.error("ELF symbol attributes require a function or object declaration"));
+        }
         if self.thread_local && function {
             return Err(site.error("a function cannot be _Thread_local"));
         }
@@ -1088,7 +1161,7 @@ impl DeclStorage {
         Ok(())
     }
 
-    fn object_alignment(self, ty: &Type) -> Option<usize> {
+    fn object_alignment(&self, ty: &Type) -> Option<usize> {
         if self.gnu_alignment == 0 {
             self.alignment
         } else {
@@ -1097,7 +1170,7 @@ impl DeclStorage {
         }
     }
 
-    fn check_parameter(self, site: &Lexeme) -> Result<(), Diagnostic> {
+    fn check_parameter(&self, site: &Lexeme) -> Result<(), Diagnostic> {
         if self.thread_local {
             return Err(site.error("_Thread_local requires an object declaration"));
         }
@@ -1107,6 +1180,8 @@ impl DeclStorage {
             || self.returns_twice
             || self.noreturn
             || self.inline
+            || self.function_hint.is_some()
+            || self.symbol != SymbolAttributes::default()
         {
             return Err(site.error("invalid declaration specifier for a parameter"));
         }
@@ -1145,7 +1220,7 @@ fn contains_flexible_member(ty: &Type, records: &[Record<'_>]) -> bool {
             if def
                 .members
                 .last()
-                .is_some_and(|last| matches!(last.ty.kind, TypeKind::Array(_, 0)))
+                .is_some_and(|last| matches!(last.ty.kind, TypeKind::Array(_, None)))
             {
                 return true;
             }
@@ -1155,4 +1230,18 @@ fn contains_flexible_member(ty: &Type, records: &[Record<'_>]) -> bool {
         }
     }
     false
+}
+
+fn enum_integer(min: i128, max: i128) -> Option<Integer> {
+    if i32::try_from(min).is_ok() && i32::try_from(max).is_ok() {
+        Some(Integer::Int)
+    } else if min == 0 && u32::try_from(max).is_ok() {
+        Some(Integer::UnsignedInt)
+    } else if i64::try_from(min).is_ok() && i64::try_from(max).is_ok() {
+        Some(Integer::Long)
+    } else if min == 0 && u64::try_from(max).is_ok() {
+        Some(Integer::UnsignedLong)
+    } else {
+        None
+    }
 }

@@ -31,18 +31,38 @@ edition pin whose full publication has no digest recorded here.
 | [GNU C extensions](https://gcc.gnu.org/onlinedocs/gcc-15.2.0/gcc/C-Extensions.html) | GCC 15.2.0 manual, GNU C extensions chapter | `4965dab10bf21e0147e86aa80fca2a92da2c099393f34d0325c913aa3be871f2` |
 | [GNU CPP Diagnostics](https://gcc.gnu.org/onlinedocs/gcc-15.2.0/cpp/Diagnostics.html) | GCC 15.2.0 manual, §5, `#warning` spelling and behavior | `fbd550c2e99d404c1f8184df32389be1011514b1d95cd0e1ff0eb8e47ca6c37e` |
 | [GNU C vector extensions](https://gcc.gnu.org/onlinedocs/gcc-15.2.0/gcc/Vector-Extensions.html) | GCC 15.2.0 manual, §7.8, `vector_size` typedef spelling | `bb7f699ab3937eefe69960c5a6bbe6fae9fb58c02aa534bec65caca4c57942e6` |
-| [GCC Common Predefined Macros](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/cpp/Common-Predefined-Macros.html) | GCC 16.2.0 manual, 2026-08-07, §3.7.2, 37380 bytes. The pin covers predefined type macro names. | `9d68defcfa4ed119d2c5f6386b37d49584d7f5354b334008bbae1a2b7ea74904` |
+| [GCC Common Predefined Macros](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/cpp/Common-Predefined-Macros.html) | GCC 16.2.0 manual, 2026-08-07, §3.7.2, 37380 bytes. Covers predefined type macro names and `__STRICT_ANSI__`. | `9d68defcfa4ed119d2c5f6386b37d49584d7f5354b334008bbae1a2b7ea74904` |
+| [GCC Variadic Macros](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/cpp/Variadic-Macros.html) | GCC 16.2.0 manual, 2026-08-07, §3.6, 9784 bytes. | `ea8d59878d95fd0625789968fcebd3c7fecbd84ab18b4c1ed322b612dcbb3bf6` |
 | [GCC Wrapper Headers](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/cpp/Wrapper-Headers.html) | GCC 16.2.0 manual, 2026-08-07, §2.7, 6361 bytes. The pin covers `#include_next`. | `2070d0294cb6d1436e610e6e59d7735e456c57dbc4610b093fbc1ced833848fb` |
 | [GCC Alternate Keywords](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Alternate-Keywords.html) | GCC 16.2.0 manual, 2026-08-07, §6.12.23, 5255 bytes. The pin covers alternate keywords and `__extension__`. | `e03f023a80ef4e52463455c9434f29df78d8d75d7738dad1b538d9dec4a7e30f` |
+| [GCC Statements and Declarations in Expressions](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Statement-Exprs.html) | GCC 16.2.0 manual, 2026-08-07, §6.12.1, 10580 bytes. Compound statement expressions, trailing values and control flow. | `0c2c44bd6374986edc6ece1431fd4da37db132b5a65c3546992eea13b486b942` |
+| [GCC Referring to a Type with typeof](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Typeof.html) | GCC 16.2.0 manual, 2026-08-07, §6.12.5, 9961 bytes. Type-name and expression operands, including unevaluated fixed types. | `8fe4b4cbe70530b12931eda0b7dafbcb053c15cc5c0b673ea1bc7bdb4c304910` |
+| [GCC Conditionals with Omitted Operands](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Conditionals.html) | GCC 16.2.0 manual, 2026-08-07, §6.12.13, 4373 bytes. Reuse of the tested value without a second evaluation. | `e1d7b3ea98256ef2512083a139054cec83884926711e22e227bfbe2217fb2672` |
+| [GCC Case Ranges](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Case-Ranges.html) | GCC 16.2.0 manual, 2026-08-07, §6.12.14, 4122 bytes. Inclusive integer case ranges. | `b868b9414f530a2cf97c1459487cd5e1d8f75d7acd1e5151e5915c3301b859b9` |
+| [GCC Variable Length](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Variable-Length.html) | GCC 16.2.0 manual, 2026-08-07, §6.2.1, 7074 bytes. | `b7a9571f295795787cfd7c7d014051e81b4113c46c0ddb29558d631e8c92c562` |
+| [GCC Enumeration representation](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Structures-unions-enumerations-and-bit-fields-implementation.html) | GCC 16.2.0 manual, 2026-08-07, §4.10, 6493 bytes. | `d916c4119438ffdbf6a04a610231689fbc7848ad9ee1ea7cd5e3150733fbea40` |
+| [GCC zero-length arrays](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Zero-Length.html) | GCC 16.2.0 manual, 2026-08-07, §6.2.2, 10326 bytes. Size, element alignment and record padding for a `[0]` bound. | `939209609ba8072cb465f22060829649ef183877360092c5a8f7b007a71c7ecd` |
+| [GCC Designated Initializers](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Designated-Inits.html) | GCC 16.2.0 manual, 2026-08-07, §6.2.11, 9175 bytes. Inclusive range designators, evaluation once and override order. | `1aed4f2be02d14e8ccc71244aafa0df3eff08b325ef0c91894c75ccec4fd3d42` |
 | [GCC Library Builtins](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Library-Builtins.html) | GCC 16.2.0 manual, 2026-08-07, §7.1, 42770 bytes. The pin covers explicit memory and string calls and the names of the floating classification and comparison builtins. | `3defeda60e43356ae0b0f30ea0d80c744b92c974cecc5a60a6f4eb49a46b96c1` |
 | [GCC Bit Operation Builtins](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Bit-Operation-Builtins.html) | GCC 16.2.0 manual, 2026-08-07, §7.2.2, 33645 bytes. The pin covers `__builtin_popcountl`. | `d81a8fb713a88f96dd40547e171f74281b6c02794a53056eb72ce18b031a0e58` |
+| [GCC Basic Asm](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Basic-Asm.html) | GCC 16.2.0 manual, 2026-08-07, §6.11.1, 11543 bytes. | `f4f6ff9d8b7f6cfa0bd8e6ead55be987d8517950bd9c8a8dbe80fbabf1719b6a` |
+| [GCC Extended Asm](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Extended-Asm.html) | GCC 16.2.0 manual, 2026-08-07, §6.11.2 and its qualifier, template, operand and clobber subsections, 91255 bytes. | `e90ade05f7d8c9453f71405e83f6f478839699e6047883202d29f647ba0abd7b` |
+| [GCC Simple Constraints](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Simple-Constraints.html) | GCC 16.2.0 manual, 2026-08-07, §6.11.3.1, 17168 bytes. | `224a6ff02ccb3dd24777ce2068083a6f2ac1c528d812ba3d6899ccd3459d4670` |
+| [GCC Constraint Modifiers](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Modifiers.html) | GCC 16.2.0 manual, 2026-08-07, §6.11.3.3, 8925 bytes. | `8ddfc4f214da8368ff1e35257e7582bd2c7ee99d9fe2cfb0a9eb84d0a22c9489` |
+| [GCC Machine Constraints](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Machine-Constraints.html) | GCC 16.2.0 manual, 2026-08-07, §6.11.3.4, AMD64 and AArch64, 89486 bytes. | `140b6125f2329ec39c5e55da950998284f0c78047328a219f5f8e7e47b1ebd72` |
 | [GCC Other Builtins](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Other-Builtins.html) | GCC 16.2.0 manual, 2026-08-07, §7.12, 51552 bytes. The numeric and allocation builtins are documented in their own sections in this edition. | `92e8e5a16b1a305e2fce2b8e2c0b88cacea13231107e524cb55a628d569822f4` |
 | [GCC Floating-Point Format Builtins](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Floating-Point-Format-Builtins.html) | GCC 16.2.0 manual, 2026-08-07, §7.2.1, 25130 bytes. Infinity constants, NaN tags and `__builtin_fpclassify`. | `9fdeb40c0bae754c0c4c9c3de744370ffcd7583ce450aa05ec805e252a0b7ce5` |
 | [GCC Byte-Swapping Builtins](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Byte-Swapping-Builtins.html) | GCC 16.2.0 manual, 2026-08-07, §7.2.3, 5377 bytes. | `e894e257f7a741c62e6c9a85440a8841aa4a9243aba7aca6e824ee6aed033fca` |
 | [GCC Stack Allocation](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Stack-Allocation.html) | GCC 16.2.0 manual, 2026-08-07, §7.3, 10257 bytes. The pin covers `__builtin_alloca`. | `ac4877e6c1263d823ada457b6a06822aee2523ef7da4c91e86308cf97db65a06` |
 | [GCC Offsetof Support](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Offsetof.html) | GCC 16.2.0 manual, 2026-08-07, 4227 bytes. N1570 §7.19 supplies the C constant-expression contract. | `09bcdd2e8175185eddfb97ff5d03431bd37a29e5d88ed002578c3adeb087569d` |
-| [GCC Optimize Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Optimize-Options.html#index-frounding-math) | GCC 16.2.0 manual, 2026-08-07, 216577 bytes. The pin covers `-frounding-math`. | `2accdebdce3192e6efdff6c1cb87dd5ac739085ea8bd4bef96d4863e71cae0f5` |
-| [GCC Common Attributes](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Common-Attributes.html) | GCC 16.2.0 manual, 2026-08-07, 209636 bytes. E25 ruling 37 and 25.10 cover `packed`, `aligned`, `noreturn` and `returns_twice`. | `ab4a0dcc40060e309f2d126d3bbd8a10b2d596084d32371b8642d76b33e0d33f` |
+| [GCC Optimize Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Optimize-Options.html) | GCC 16.2.0 manual, 2026-08-07, 216577 bytes. Covers `-frounding-math` and the listed Kbuild optimization options. | `2accdebdce3192e6efdff6c1cb87dd5ac739085ea8bd4bef96d4863e71cae0f5` |
+| [GCC Preprocessor Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Preprocessor-Options.html) | GCC 16.2.0 manual, 2026-08-07, 42467 bytes, dependency and forced-include options | `1c2878dd4eb6db32e9ecfbe8c314cb698cd70e08a6bdcb2b233b22b3b8c702be` |
+| [GCC C Dialect Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/C-Dialect-Options.html) | GCC 16.2.0 manual, 2026-08-07, 36403 bytes, language modes, builtin suppression and plain char | `23c71c380776e1d128564430afe08290ed4b7a4b6a56fdf1116765de76c1e3ab` |
+| [GCC Warning Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Warning-Options.html) | GCC 16.2.0 manual, 2026-08-07, 290232 bytes, warning switches and negative warning options | `f2551f87050bb7f48c256347c915abd88202872e309e9479ea21892d69f893d3` |
+| [GCC Code Gen Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Code-Gen-Options.html) | GCC 16.2.0 manual, 2026-08-07, 46930 bytes, unwind table options | `163e1cb6c36175ef9bac620811850bc0df34d7f0941be517647536c3c94bb253` |
+| [GCC Directory Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Directory-Options.html) | GCC 16.2.0 manual, 2026-08-07, 21327 bytes, include search | `4b8877054b41d2ca1b02276f5006d8cdffb43c241deb4a1196bfc1111bdecaa5` |
+| [GCC Overall Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Overall-Options.html) | GCC 16.2.0 manual, 2026-08-07, 48576 bytes, compilation stages and output paths | `0cad1ca693e3c992e0f35d890753c9e591d91a21ebeb8f8b65734a5a85b49ad0` |
+| [GCC Common Attributes](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Common-Attributes.html) | GCC 16.2.0 manual, 2026-08-07, 209636 bytes. E25 ruling 37 and 25.10 cover `packed`, `aligned`, `noreturn` and `returns_twice`. 25.11b uses the function, variable and type attributes below. | `ab4a0dcc40060e309f2d126d3bbd8a10b2d596084d32371b8642d76b33e0d33f` |
 | [NASM manual](https://www.nasm.us/xdoc/3.02/nasmdoc.pdf) | NASM 3.02, reserved for 25.12 | `a4d1766c9d640663569bcf93feac0657732fe52017002f1dbc797353f6aed34f` |
 | [GNU ld manual](https://sourceware.org/binutils/docs-2.45/ld.html) | GNU Binutils 2.45, command-line options and linker script syntax | `f219c3b05e197308c5b60fc2d4dbfc302617389ca5c21501de58a90b3d052e06` |
 | [Oracle Solaris `ar(3HEAD)`](https://docs.oracle.com/cd/E86824_01/html/E54772/ar.h-3head.html) | Oracle Solaris 11.3, archive file format | — |
@@ -147,6 +167,20 @@ repeats that search for the archives between `--start-group` and `--end-group`.
 `--no-whole-archive` resets selection to the indexed search. ELF gABI §§5.2
 and 5.5 describe weak binding and common storage.
 
+## Relocatable links
+
+GNU ld 2.45 §2.1 describes `-r` (`--relocatable`). bld applies its usual
+archive search without an entry-point root. It concatenates compatible
+sections by name in input order, honoring alignment and keeping zero-fill
+sections out of the file payload (ELF gABI §§3.3 and 3.8). It keeps retained
+groups separate, remaps their signatures and members, and retains undefined
+symbols and common alignment and size for the next link (§§3.9 and 5.2–5.7).
+Section-relative symbol values and RELA offsets move by their input
+section's placement. The relocation kind and addend travel unchanged
+(§6.1). A partial link uses these section rules without a linker script or
+section garbage collection. Metadata with opaque table references needs
+format-specific remapping and receives a located diagnostic.
+
 ## Static executable layout
 
 `bld -T` accepts the userspace `linker.ld` subset of GNU ld 2.45. It uses
@@ -188,6 +222,29 @@ bcc emits AMD64 and AArch64 assembly for the 25.5 scalar subset. Variadic functi
 definitions and `va_list` operations follow in 25.7b2, and x87 `long double`
 lowering in 25.7b3. AArch64 aggregates, variadics, binary128 and C TLS follow in A4.
 
+## bcc 25.11b Kbuild driver flags
+
+The staged command spellings are recorded by kind in
+[`busybox-c-inventory.json`](busybox-c-inventory.json). bcc accepts the
+listed spellings for this workload and rejects unrecognized options.
+
+| Options | bcc behavior | GCC 16.2.0 option page |
+| --- | --- | --- |
+| `-c`, `-o FILE` | Compile to an object and select the output path. The inventory uses `-fsyntax-only` to replay the front end. | [Overall Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Overall-Options.html) |
+| `-I DIR` | Add a header search directory. | [Directory Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Directory-Options.html#index-I) |
+| `-D NAME[=VALUE]`, `-include FILE` | Process command-line macro options, then forced headers in argument order. Search the working directory first for a forced header, then the configured include paths. | [Preprocessor Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Preprocessor-Options.html#index-include) |
+| `-MD`, `-MF FILE`, `-Wp,-MD,FILE` | Emit one make rule per C input with the source and resolved headers in first-seen order, including forced, transitive and system headers. By default the depfile uses the output stem, or the source basename, with suffix `.d`. An explicit `-MF` overrides the forwarded or default file. With `-E -MD` and no explicit depfile, `-o` names the depfile and preprocessed text goes to stdout. The Kbuild forwarding spelling is the sole supported `-Wp` form. | [Preprocessor Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Preprocessor-Options.html#index-MD). The workload specifies the forwarded CPP operand. |
+| `-std=gnu99`, `-std=gnu11` | Last dialect option wins. GNU modes omit `__STRICT_ANSI__` and set `__STDC_VERSION__` to `199901L` or `201112L`. GNU syntax coverage grows in the construct units. | [C Dialect Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/C-Dialect-Options.html), [Common Predefined Macros](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/cpp/Common-Predefined-Macros.html) |
+| `-Wall`, `-Werror` | Enable bcc's existing unknown-pragma warning and promote emitted warnings to errors, respectively. | [Warning Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Warning-Options.html) |
+| `-Wshadow`, `-Wwrite-strings`, `-Wundef`, `-Wstrict-prototypes`, `-Wunused`, `-Wunused-parameter`, `-Wunused-function`, `-Wunused-value`, `-Wmissing-prototypes`, `-Wmissing-declarations`, `-Wno-format-security`, `-Wdeclaration-after-statement`, `-Wold-style-definition` | No-ops for the staged build. bcc has no corresponding optional warning passes and retains its ordinary C string literal types. | [Warning Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Warning-Options.html) |
+| `-Wno-string-plus-int`, `-Wno-constant-logical-operand` | No-ops for the two warning suppressions in the Clang command records. bcc uses an explicit list for the staged build. | [Warning Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Warning-Options.html), compatibility behavior for unrecognized negative warning options |
+| `-fno-builtin-strlen`, `-fno-builtin-printf` | No-ops. Ordinary calls to these library names already use external symbols. | [C Dialect Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/C-Dialect-Options.html#index-fno-builtin) |
+| `-funsigned-char` | No-op for driver compatibility. Plain `char` retains bcc's target default (signed on AMD64 and unsigned on AArch64). | [C Dialect Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/C-Dialect-Options.html#index-funsigned-char) |
+| `-O2` | Select bcc's existing 25.10 optimization pipeline. | [Optimize Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Optimize-Options.html) |
+| `-ffunction-sections`, `-fno-function-sections` | Place each function in an executable `.text.<name>` section or restore the default `.text` placement. An explicit section attribute takes precedence. | [Optimize Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Optimize-Options.html) |
+| `-Oz`, `-fomit-frame-pointer`, `-fdata-sections`, `-falign-functions=1` | No-ops for driver compatibility. bcc keeps its selected optimization level, frame setup, data layout and function alignment. | [Optimize Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Optimize-Options.html) |
+| `-fno-unwind-tables`, `-fno-asynchronous-unwind-tables` | No-ops. bcc already omits unwind tables. | [Code Gen Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Code-Gen-Options.html) |
+
 ## bcc 25.7 record objects
 
 | Feature | Specification |
@@ -222,15 +279,10 @@ lane operations and intrinsics are outside this subset.
 | Automatic variables | POSIX.1-2024 make, “Internal Macros” and “Inference Rules”. The runner uses the inferred source and stem where applicable and compares prerequisite and target timestamps for `$?`. |
 | Includes and makefile selection | POSIX.1-2024 make, “Include Lines”, “Options” and “Extended Description”. Include paths resolve from the working directory and are read in order. The GNU make manual's “Summary of Options” specifies `-C`. |
 | Graph traversal and freshness | POSIX.1-2024 make, “Extended Description”, “Target Rules” and “Exit Status”. Dependencies are updated in makefile order. Only a strictly newer prerequisite makes an existing file stale. |
-| Suffix inference | POSIX.1-2024 make, “Inference Rules” and “Default Rules”. `.SUFFIXES` appends to or clears the ordered search list. The built-in rules cover `.c`, `.sh`, `.c.o`, `.y.o`, `.l.o`, `.y.c` and `.l.c`. The `.c.a` rule belongs to archive-member inference in 25.6c. XSI/SCCS rules are outside the serial subset. Breenix adds `.s.o` with overrideable `AS` and `ASFLAGS`. |
+| Suffix inference | POSIX.1-2024 make, “Inference Rules” and “Default Rules”. `.SUFFIXES` appends to or clears the ordered search list. The built-in rules cover `.c`, `.sh`, `.c.o`, `.y.o`, `.l.o`, `.y.c` and `.l.c`. The 25.6c `.c.a` rule compiles the member's `.c` source, inserts the object into the archive, then removes the standalone object. XSI/SCCS rules are outside the serial subset. Breenix adds `.s.o` with overrideable `AS` and `ASFLAGS`. |
 | Special targets | POSIX.1-2024 make, “Target Rules”. `.PHONY` opts targets into a rebuild on each invocation, `.DEFAULT` supplies a fallback recipe, and `.IGNORE` and `.SILENT` scope recipe error handling and echo. `.POSIX` declares the serial semantics bmake uses by default. `.PRECIOUS` preserves output when a recipe shell reports an interruption. |
 | Recipe options | POSIX.1-2024 make, “Options”, “Makefile Execution” and “Exit Status”. `-n` prints pending recipes, with the `+` prefix still forcing execution. `-k` skips dependents of failures and attempts independent work before returning 2. `-i` continues after command errors and `-s` suppresses recipe echo. |
-
-The serial runner can observe a signal reported in a recipe's wait status.
-Under E25 ruling 31, 25.6 defers cleanup when a signal stops bmake itself, as
-described in “Asynchronous Events”. A partly written non-precious target can
-be left with a fresh modification time, so a later invocation can treat it as
-up to date.
+| Kbuild source inventory | GNU make 4.4.1 manual §§3.1–3.3 (lines, comments and includes), 4.8 and 4.11 (special targets and static patterns), 5.1 and 5.4.1 (recipes and `.WAIT`), 6.2 and 6.5–6.13 (assignments and variable definition context), 7.2 (conditionals), 8.1–8.15 (functions), 10.5 (implicit patterns) and 12.2.1 (loading). `bmake --inventory -f FILE` reports source occurrences. `scripts/toolchain-kbuild-inventory.py` reads the pinned patch and config digests from the C inventory and runs a separate `-n` probe. |
 
 Ordinary makefiles default to `CC=cc` and empty `CFLAGS` so the built-in C
 rules use the compiler shipped in the bundle. A leading `.POSIX:` selects
@@ -238,10 +290,66 @@ the standard compiler defaults (`c17` and `-O 1`). On Breenix, makefiles that
 declare `.POSIX:` can set `CC=cc` and `CFLAGS=` to use the bundled compiler's
 current language and optimization subset.
 
-25.6c covers archive members and their timestamps, remaking include files,
-recursive `MAKEFLAGS` and `$(MAKE)`, assignment operators `::=`, `:::=`, `+=`,
-`?=` and `!=`, the `.WAIT` barrier, `.NOTPARALLEL`, the `-j` job pool, and
-target cleanup when a signal stops bmake itself.
+25.6c assignment operators follow [POSIX.1-2024 make, “Macros”](https://pubs.opengroup.org/onlinepubs/9799919799.2024edition/utilities/make.html#tag_20_76_13_05).
+`::=` stores an immediately expanded value without rescanning it on use.
+`:::=` expands at assignment time while preserving `$$` and stores a delayed
+macro. `+=` follows the existing macro's flavor or creates a delayed macro when
+the name is undefined. `?=` creates a delayed macro only if the name is undefined.
+`!=` expands the command at assignment time and runs it through `/bin/sh -c`.
+It removes leading whitespace and one trailing newline from stdout, then replaces
+remaining newlines with spaces before storing a delayed macro. A nonzero command
+status produces a located diagnostic while retaining the captured value.
+
+25.6c recursive make follows POSIX.1-2024 make's [Options, Environment Variables,
+and Macros](https://pubs.opengroup.org/onlinepubs/9799919799.2024edition/utilities/make.html).
+bmake reads inherited options before command-line options, and command-line
+macro values take precedence over inherited values. It passes supported flags
+and macro operands through `MAKEFLAGS` to recipes. A makefile assignment to
+`MAKEFLAGS` sets the recipe value. A recipe that expands `MAKE` executes under
+`-n`, and the child receives the dry-run flag.
+
+[Include Lines](https://pubs.opengroup.org/onlinepubs/9799919799.2024edition/utilities/make.html#tag_20_76_13_02)
+allows delayed remaking. bmake reads the rules before updating includes,
+executes include recipes even under `-n`, and rereads the makefiles when an
+include's contents change.
+
+25.6c archive targets and prerequisites follow POSIX.1-2024 make's
+[Libraries, Internal Macros and Default Rules](https://pubs.opengroup.org/onlinepubs/9799919799/utilities/make.html#tag_20_76_13_07).
+For `lib(member.o)`, `$@` is `lib` and `$%` is `member.o`. Freshness uses the
+member's `ar_date` as read by `bobj` from the common archive header. The
+`ar_date` value `0` emitted by deterministic `bar` represents the Unix epoch.
+
+25.6c parallel scheduling follows [POSIX.1-2024 make, “Options” and “Target
+Rules”](https://pubs.opengroup.org/onlinepubs/9799919799.2024edition/utilities/make.html).
+`.WAIT` separates groups in a target's prerequisite list. The scheduler
+requests the next group only after the preceding group succeeds. Another
+dependency path can request the same prerequisite independently. A standalone
+`.WAIT:` has no effect. `.NOTPARALLEL:` gives the local scheduler one slot and
+preserves `-j N` for recursive invocations.
+
+The pool protocol is bmake's design. The top-level invocation creates a
+private temporary directory and includes `BMAKE_JOB_POOL=N:<absolute-directory>`
+as a quoted word in `MAKEFLAGS` beside `-j N`. A recursive bmake with the same
+inherited job count joins that directory. An explicit command-line `-j`
+selects its own limit and pool. Each invocation can run one target using its
+implicit slot, lent by the invoking recipe during a synchronous sub-make.
+Each additional target claims a token by creating one of the directories
+numbered from 1 through N−1. A token stays claimed across successive recipe lines
+for that target and is released on completion or failure. The pool owner
+removes the directory on normal exit or after handled interruption. An
+uncatchable termination can leave claims or the pool directory behind. POSIX leaves multiple asynchronous
+sub-makes from one recipe unspecified.
+
+For signal handling, [POSIX.1-2024 make, “Asynchronous
+Events”](https://pubs.opengroup.org/onlinepubs/9799919799.2024edition/utilities/make.html)
+names HUP, INT, QUIT and TERM. Under E25 ruling 31, a Rust callback records
+the interruption for the scheduler. It stops launching recipes, signals and
+reaps active recipe shells, reports their exit statuses, and removes changed
+targets under the POSIX exceptions for dry runs, directories, `.PHONY` and
+`.PRECIOUS`. Archive member interruption leaves the containing archive in
+place. Recipe shells without terminal input run in their own process group
+so the scheduler can signal the shell and commands in its group. Foreground
+recipes retain terminal access.
 
 ### AMD64 variadic definitions (25.7b2)
 
@@ -407,6 +515,11 @@ and member alignment and packing, and the two function annotations.
 The alternate keywords use the existing C parser rules for `inline` and
 `restrict`, and `__extension__` has no effect on a supported expression.
 
+GCC Common Predefined Macros §3.7.2 also defines the byte-order selectors
+used by Breenix's `endian.h`. bcc sets `__BYTE_ORDER__` to the value of
+`__ORDER_LITTLE_ENDIAN__` for both Breenix targets. The big-endian and
+PDP-endian tags each have distinct values.
+
 Wide string literals use the target's `wchar_t` type and 32-bit Unicode
 code units. N1570 §§6.4.5 and 6.7.9p15 specify concatenation, the terminator
 and array initialization. N1570 §§6.5.3.4, 6.6 and 6.7.6.2 govern
@@ -436,6 +549,12 @@ temporaries and outgoing arguments move below the allocation. The fixed
 frame and the x19-based over-aligned area stay in place. The stack
 adjustment and copy use the A64 forms in Arm DDI 0487 M.b §§C6.2.5,
 C6.2.14, C6.2.213, C6.2.413 and C6.2.455.
+
+In GNU99 and GNU11 mode, a direct call spelled `alloca` uses the same
+caller-frame operation, including when the source declares it itself (E25
+ruling 63, GCC Other Builtins and Stack Allocation). In C11 and C17, or with
+`-fno-builtin` or `-fno-builtin-alloca`, the plain name remains an ordinary
+function call. Explicit `__builtin_alloca` remains available in those modes.
 
 ### Rounding mode and expression grouping (25.10a2)
 
@@ -489,3 +608,127 @@ emitter saves live R8 and R9 values before loading outgoing arguments and
 reloads them after the call. The prologue saves each allocated RBX or
 R12–R14, and the epilogue restores it. R15 remains the aligned-frame
 anchor.
+
+
+### 25.11b GNU declaration attributes
+
+`section`, `weak`, `visibility` and `alias` use the pinned GNU Common
+Attributes page and ELF gABI §§3, 5 and 6. bcc preserves these attributes
+across file-scope redeclarations. bas writes the requested section,
+`STB_WEAK` and `st_other`, and defines aliases at the target's section and
+value with its type and size. A reference to a weak symbol remains
+relocatable so the linker can choose a stronger definition.
+
+`may_alias` permits access through a pointer to an annotated type without
+the N1570 §6.5p7 effective-type restriction. Its layout and C type
+compatibility are unchanged. The optimizer limits value reuse to
+non-escaping local objects and performs no type-based alias analysis.
+
+`used` is satisfied by bcc's existing emission of unreferenced definitions.
+`unused`, `format`, `deprecated` and `warn_unused_result` are recognized
+declaration syntax. bcc has no corresponding use-site warnings today.
+`noinline`, `always_inline`, `const`, `pure`, `malloc` and `cold` are
+recognized function attributes. The current pipeline leaves calls in place
+and performs no attribute-driven inlining, call elimination or cold layout.
+
+### 25.11b GNU preprocessing and builtins
+
+GNU CPP §3.6 specifies named variadic parameters and removal of the
+comma in `, ##args` when the argument is omitted in GNU mode. An
+explicitly empty argument retains the comma. The wrapper-header check
+uses the existing §2.7 search order with both quoted and computed
+header names. `-nostdinc` suppresses implicit bundle include directories
+while preserving explicit include paths, per GCC Directory Options.
+
+GCC Other Builtins §7.12 specifies `__builtin_expect`,
+`__builtin_constant_p`, `__builtin_types_compatible_p` and
+`__builtin_unreachable`. bcc keeps the value and single evaluation of
+the first expect operand and does not use its hint to lay out branches.
+The constant query is resolved during semantic analysis without
+evaluating its operand. The compatibility result compares unqualified
+types. The unreachable expression emits AMD64 UD2 (Intel SDM Vol. 2)
+or AArch64 BRK #0 (Arm DDI 0487 M.b, the BRK instruction).
+
+GCC Numeric Builtins §§7.2.2–7.2.3 specify the widths and results of
+bit counts and byte swaps. Both targets use unsigned C operations to
+lower dynamic counts and swaps, including arguments with side effects.
+The existing offset operation uses the pinned GCC Offsetof Support
+grammar. N1570 §§6.7.2.2 and 6.7.9p22 specify enum constant expressions
+and completion of an array by its initializer.
+
+### 25.11b GNU C inline assembly
+
+The Basic and Extended Asm sections specify literal templates, the
+volatile spelling, numeric operand substitution and the `memory` and
+`cc` clobbers. bcc copies block-scope basic templates verbatim.
+Extended templates represent scalar integer and pointer operands with
+`=r`, `+r`, `r` and a numeric matching input. bcc evaluates operand
+expressions and output addresses once and stages them before emitting the
+template. The selected register bank is call-clobbered per AMD64 psABI
+§3.2.1 and AAPCS64 §6.1.1. The x86 output uses bas's Intel-style dialect;
+AArch64 uses A64 syntax. bas accepts full-line hash comments alongside
+A64's hash-prefixed instruction immediates.
+
+Both optimizers preserve asm statements and invalidate their local facts
+across them. The memory clobber is a compiler barrier and emits no
+processor fence. bcc reports unsupported qualifiers, constraints,
+clobbers and template placeholders at the source site. File-scope asm
+and asm goto are outside this subset.
+
+### 25.11b workload replay
+
+Under N1570 §§6.2.4 and 6.7.6.2 and GCC §6.2.1, automatic
+arrays with a runtime outer bound evaluate the bound once. `sizeof`
+uses the recorded byte count, and control flow restores the dynamic
+stack on scope exit. The GNU modes accept these local arrays with
+fixed-layout elements. Runtime inner bounds, over-alignment, and
+mixing these arrays with function-lifetime stack allocation require
+additional lowering.
+
+GNU enumerators that exceed `int` retain a type wide enough for their
+value on the target LP64 ABI. GNU static initializers can use the integer
+address of a member relative to a null record pointer as an offset
+(N1570 §6.6p10 and the same record layouts used by `__builtin_offsetof`).
+The GNU assignment conversion between `void *` and function pointers
+uses the shared pointer representation, as described by the [GCC
+porting notes](https://gcc.gnu.org/gcc-14/porting_to.html).
+
+The host replay uses the same libc and compiler-support include order
+as the sealed reference. The GNU host dialect exposes Breenix's existing
+declarations for POSIX.1-2024 XSH `popen`, `pclose` and `strdup`.
+
+## bmake 25.11c directives
+
+The GNU make 4.4.1 manual above is the edition 0.77 pin for the following
+sections. The Kbuild inventory records literal directives and assignments
+separately from its dry-run result.
+
+| Feature | GNU make manual section |
+| --- | --- |
+| `-include` and `sinclude` | §§3.3 and 3.5. Both spellings use the existing include-and-remake flow and permit missing optional files. |
+| Order-only prerequisites and phony targets | §§4.3, 4.6 and 10.5.3. Order-only edges participate in scheduling and appear in `$\|`. Normal edges determine freshness and populate `$?`. |
+| Export and unexport | §5.7.2. The directives control the environment of recipe commands, with values expanded in the recipe's variable scope. |
+| `:=`, override and multiline definitions | §§6.2.2, 6.7 and 6.8. `:=` uses the same immediate expansion as POSIX `::=`. |
+| Target-specific assignments | §§6.11 and 6.13. A prerequisite takes its variable scope from the first target that requests it. `private` keeps a binding local to its target. |
+| Conditional directives | §7.2. Each makefile has its own conditional stack. An enclosing inactive branch suppresses nested tests and assignments. |
+
+## bmake 25.11c patterns and text
+
+The GNU make 4.4.1 manual pin covers the following behavior on both guest
+targets.
+
+| Feature | GNU make manual section |
+| --- | --- |
+| Static and implicit pattern rules | §§4.11, 10.5 and 10.8. Static patterns provide per-target prerequisites and stems. Implicit search prefers directly available prerequisites and then the shortest stem. Single-target terminal patterns require available prerequisites. Caller-defined POSIX suffix inference retains precedence when selected by the suffix list. |
+| Automatic variables | §10.5.3. Directory and filename variants apply to individual names in each automatic variable, including the prerequisite lists with and without repeated entries. |
+| Substitution references, text functions and file-name functions | §§4.3.3, 6.3.1 and 8.1–8.3. Percent substitution and filtering share pattern matching. Wildcard matches are sorted by input pattern. Absolute paths normalize lexically and real paths resolve existing filesystem entries. |
+
+## bmake 25.11c control functions
+
+| Feature | GNU make 4.4.1 manual section |
+| --- | --- |
+| `if`, `and`, `or` | §8.4. Expand the selected branch or arguments up to the first result that determines the outcome. |
+| `foreach`, `call`, `value`, `eval` | §§8.6 and 8.8–8.10. Loop variables and positional parameters are temporary. `value` returns the stored text. `eval` expands its operand and reads the result as makefile syntax. |
+| `file` | §8.7. Read a command record, replace it, or append text. Missing input reads as empty. |
+| `origin`, `flavor`, `error`, `warning`, `info`, `shell` | §§8.11–8.14. Variable queries use the current scope. `shell` folds line endings and saves the exit status in `.SHELLSTATUS`. |
+| `MAKECMDGOALS` and recursive flags | §§3.3, 5.7.3, 9.2 and 9.8. Explicit goals populate `MAKECMDGOALS`. Kbuild sub-makes inherit include directories and the flags that disable built-in rules and variables. |

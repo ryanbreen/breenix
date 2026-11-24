@@ -204,7 +204,8 @@ def build(args, repo, cache):
             os.environ.pop(name, None)
         out.mkdir()
         options = argparse.Namespace(id=artifact_id, sha=commit, root=str(cache), stub=str(tools / 'scripts/metal/efi-stub'),
-                                     features=args.features, suite=args.suite or '', guard_target='x86-metal', local=True)
+                                     features=args.features, suite=args.suite or '', milestone=args.milestone,
+                                     guard_target='x86-metal', local=True)
         if helper.inner(options):
             raise ValueError('Mac payload build failed; see retained output logs')
         elapsed = round(time.monotonic() - started, 3)
@@ -241,6 +242,7 @@ def main():
     parser.add_argument('--tools-commit', default='HEAD')
     parser.add_argument('--mode', choices=('default', 'shell', 'probe', 'suite', 'console', 'tests'), default='default')
     parser.add_argument('--suite')
+    parser.add_argument('--milestone')
     parser.add_argument('--transfer-artifact', type=Path, help='include a Mac artifact as a hashed transfer fixture boot input')
     parser.add_argument('--features', default='')
     parser.add_argument('--jobs', type=int, choices=range(1, 5), default=2)

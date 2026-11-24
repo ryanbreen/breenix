@@ -1,5 +1,6 @@
 //! Command-line stages for the Breenix C toolchain.
 
+use std::collections::HashSet;
 use std::env;
 use std::ffi::OsString;
 use std::fs;
@@ -16,8 +17,9 @@ mod native_target;
 pub use native_target::default_target;
 
 const USAGE: &str = "usage: bcc [-E|-S|-c|-fsyntax-only|--dump-types] [-o FILE] \
-    [-I DIR] [-D NAME[=VALUE]] [-U NAME] [-L DIR] [-l NAME] [-B DIR] \
-    [-std=c11|-std=c17] [-O0|-O1|-O2] [-fno-builtin] [-frounding-math] [-Wall] [-Werror] [-w] \
+    [-I DIR] [-nostdinc] [-include FILE] [-D NAME[=VALUE]] [-U NAME] [-L DIR] [-l NAME] [-B DIR] \
+    [-MD [-MF FILE] | -Wp,-MD,FILE] [-std=c11|c17|gnu99|gnu11] \
+    [-O0|-O1|-O2] [-fno-builtin|-fno-builtin-alloca] [-frounding-math] [-Wall] [-Werror] [-w] \
     [--target=x86_64|aarch64] INPUT ...";
 
 type Result<T> = std::result::Result<T, String>;
@@ -37,6 +39,7 @@ enum InputKind {
     C,
     Preprocessed,
     Assembly,
+    AssemblyWithCpp,
     Object,
     Archive,
 }
@@ -49,10 +52,15 @@ enum Input {
 struct Options {
     stage: Stage,
     output: Option<PathBuf>,
+    dependency_file: Option<PathBuf>,
+    forwarded_dependency_file: Option<PathBuf>,
     tools: Option<PathBuf>,
     pp: pp::Options,
+    no_standard_includes: bool,
     rounding_math: bool,
     optimize: bool,
+    function_sections: bool,
+    no_builtin_alloca: bool,
     warnings_as_errors: bool,
     suppress_warnings: bool,
     libraries: Vec<PathBuf>,
@@ -64,6 +72,8 @@ impl Options {
         let mut options = Self {
             stage: Stage::Link,
             output: None,
+            dependency_file: None,
+            forwarded_dependency_file: None,
             tools: None,
             pp: pp::Options {
                 target: if default_target(env::consts::OS, env::consts::ARCH) == "aarch64" {
@@ -73,8 +83,11 @@ impl Options {
                 },
                 ..pp::Options::default()
             },
+            no_standard_includes: false,
             rounding_math: false,
             optimize: false,
+            function_sections: false,
+            no_builtin_alloca: false,
             warnings_as_errors: false,
             suppress_warnings: false,
             libraries: Vec::new(),
@@ -91,6 +104,9 @@ impl Options {
                     Some("c") => InputKind::C,
                     Some("i") => InputKind::Preprocessed,
                     Some("s") => InputKind::Assembly,
+                    // GCC Overall Options describes .S as assembler input
+                    // that runs through the preprocessor before assembly.
+                    Some("S") => InputKind::AssemblyWithCpp,
                     Some("o") => InputKind::Object,
                     Some("a") => InputKind::Archive,
                     _ => return Err(usage(format!("unknown input type '{}'", path.display()))),
@@ -104,14 +120,67 @@ impl Options {
                 Some("--target=aarch64") => options.pp.target = Target::Aarch64,
                 Some("-std=c11") => options.pp.standard = Standard::C11,
                 Some("-std=c17") => options.pp.standard = Standard::C17,
-                // Ordinary library names are already compiled as calls.
-                Some("-fno-builtin") => {}
+                Some("-std=gnu99") => options.pp.standard = Standard::Gnu99,
+                Some("-std=gnu11") => options.pp.standard = Standard::Gnu11,
+                Some("-nostdinc") => options.no_standard_includes = true,
+                Some("-MD") => options.pp.track_includes = true,
+                Some(flag @ ("-MF" | "-include")) => {
+                    let path = args
+                        .next()
+                        .map(|(_, value)| value)
+                        .filter(|value| !value.is_empty())
+                        .ok_or_else(|| usage(format!("{flag} requires a file")))?;
+                    if flag == "-MF" {
+                        options.dependency_file = Some(path.into());
+                    } else {
+                        options.pp.forced_includes.push(path.into());
+                    }
+                }
+                Some(flag) if flag.starts_with("-Wp,-MD,") => {
+                    let path = &flag["-Wp,-MD,".len()..];
+                    if path.is_empty() || path.contains(',') {
+                        return Err(usage("-Wp,-MD,FILE requires exactly one file".into()));
+                    }
+                    options.pp.track_includes = true;
+                    options.forwarded_dependency_file = Some(path.into());
+                }
+                Some("-fno-builtin" | "-fno-builtin-alloca") => options.no_builtin_alloca = true,
+                // These library names are already compiled as calls.
+                Some("-fno-builtin-printf" | "-fno-builtin-strlen") => {}
                 Some("-frounding-math") => options.rounding_math = true,
                 Some("-Wall") => options.pp.warn_unknown_pragmas = true,
                 Some("-Werror") => options.warnings_as_errors = true,
                 Some("-w") => options.suppress_warnings = true,
                 Some("-O0" | "-O1") => options.optimize = false,
                 Some("-O2") => options.optimize = true,
+                Some("-ffunction-sections") => options.function_sections = true,
+                Some("-fno-function-sections") => options.function_sections = false,
+                // Exact spellings from the staged BusyBox command receipts.
+                // The scope and effects of these no-ops are in the spec ledger.
+                Some(
+                    "-Wshadow"
+                    | "-Wwrite-strings"
+                    | "-Wundef"
+                    | "-Wstrict-prototypes"
+                    | "-Wunused"
+                    | "-Wunused-parameter"
+                    | "-Wunused-function"
+                    | "-Wunused-value"
+                    | "-Wmissing-prototypes"
+                    | "-Wmissing-declarations"
+                    | "-Wno-format-security"
+                    | "-Wdeclaration-after-statement"
+                    | "-Wold-style-definition"
+                    | "-Wno-string-plus-int"
+                    | "-Wno-constant-logical-operand"
+                    | "-fomit-frame-pointer"
+                    | "-fdata-sections"
+                    | "-funsigned-char"
+                    | "-falign-functions=1"
+                    | "-fno-unwind-tables"
+                    | "-fno-asynchronous-unwind-tables"
+                    | "-Oz",
+                ) => {}
                 Some("-E" | "-S" | "-c" | "-fsyntax-only" | "--dump-types") => {
                     let mut stage = match arg.to_str() {
                         Some("-E") => Stage::Preprocess,
@@ -173,6 +242,30 @@ impl Options {
         if options.inputs.is_empty() {
             return Err("bcc: expected an input file".into());
         }
+        if options.dependency_file.is_some() && !options.pp.track_includes {
+            return Err("bcc: -MF requires -MD or -Wp,-MD,FILE".into());
+        }
+        if options.pp.track_includes
+            && (options.output.is_some()
+                || options.dependency_file.is_some()
+                || options.forwarded_dependency_file.is_some())
+            && options
+                .inputs
+                .iter()
+                .filter(|input| {
+                    matches!(
+                        input,
+                        Input::File(
+                            _,
+                            InputKind::C | InputKind::Preprocessed | InputKind::AssemblyWithCpp
+                        )
+                    )
+                })
+                .count()
+                > 1
+        {
+            return Err("bcc: a shared dependency output requires one C input".into());
+        }
         if options.stage != Stage::Link {
             if options.output.is_some() && options.inputs.len() != 1 {
                 return Err("bcc: -o with separate compilation requires one input".into());
@@ -181,6 +274,9 @@ impl Options {
                 let valid = match input {
                     Input::File(_, InputKind::C | InputKind::Preprocessed) => true,
                     Input::File(_, InputKind::Assembly) => options.stage == Stage::Object,
+                    Input::File(_, InputKind::AssemblyWithCpp) => {
+                        matches!(options.stage, Stage::Preprocess | Stage::Object)
+                    }
                     _ => false,
                 };
                 if !valid {
@@ -189,6 +285,13 @@ impl Options {
             }
         }
         Ok(options)
+    }
+
+    fn preprocess_output_is_dependency_file(&self) -> bool {
+        self.stage == Stage::Preprocess
+            && self.pp.track_includes
+            && self.dependency_file.is_none()
+            && self.forwarded_dependency_file.is_none()
     }
 }
 
@@ -205,10 +308,12 @@ impl Driver {
             .parent()
             .ok_or("bcc: cannot locate executable directory")?;
         let bundle = bin.parent().ok_or("bcc: cannot locate bundle directory")?;
-        options
-            .pp
-            .system_dirs
-            .extend([bundle.join("include-support"), bundle.join("include")]);
+        if !options.no_standard_includes {
+            options
+                .pp
+                .system_dirs
+                .extend([bundle.join("include-support"), bundle.join("include")]);
+        }
         options.libraries.push(bundle.join("lib"));
         Ok(Self {
             tools: options.tools.take().unwrap_or_else(|| bin.to_path_buf()),
@@ -233,7 +338,7 @@ impl Driver {
             InputKind::Preprocessed => pp::read_preprocessed(path, self.options.pp.standard),
             _ => pp::preprocess_with_warnings(path, &self.options.pp, &mut warn),
         };
-        let input = match input {
+        let mut input = match input {
             Ok(input) if errors.is_empty() => input,
             Ok(_) => return Err(errors.join("\n")),
             Err(error) => {
@@ -241,14 +346,25 @@ impl Driver {
                 return Err(errors.join("\n"));
             }
         };
+        if self.options.pp.track_includes {
+            self.write_dependencies(path, &input.includes)?;
+        }
         let mut bytes = Vec::new();
+        if matches!(kind, InputKind::AssemblyWithCpp) {
+            input
+                .write_assembly(&mut bytes)
+                .map_err(|error| error.to_string())?;
+            return Ok(bytes);
+        }
         if stage == Stage::Preprocess {
             input.write(&mut bytes).map_err(|error| error.to_string())?;
             return Ok(bytes);
         }
         let target = self.options.pp.target;
-        let mut unit = sema::analyze_with_rounding_math(&input, path, target, self.options.rounding_math)
-            .map_err(|error| error.to_string())?;
+        input.no_builtin_alloca = self.options.no_builtin_alloca;
+        let mut unit =
+            sema::analyze_with_rounding_math(&input, path, target, self.options.rounding_math)
+                .map_err(|error| error.to_string())?;
         match stage {
             Stage::Syntax => Ok(bytes),
             Stage::Types => {
@@ -260,11 +376,52 @@ impl Driver {
                 if self.options.optimize {
                     opt::run(&mut unit, target);
                 }
-                codegen::emit_with_options(&unit, target, self.options.optimize)
+                codegen::emit_with_options(&unit, target, codegen::Options {
+                    optimize: self.options.optimize,
+                    function_sections: self.options.function_sections,
+                })
                     .map(String::into_bytes)
                     .map_err(|error| error.to_string())
             }
         }
+    }
+
+    fn write_dependencies(&self, source: &Path, includes: &[PathBuf]) -> Result<()> {
+        let options = &self.options;
+        let output = options.output.as_deref();
+        let default_target = Path::new(source.file_name().unwrap()).with_extension("o");
+        let target = output
+            .filter(|_| options.stage != Stage::Preprocess)
+            .unwrap_or(&default_target);
+        let default_depfile = target.with_extension("d");
+        let depfile = options
+            .dependency_file
+            .as_deref()
+            .or(options.forwarded_dependency_file.as_deref())
+            .or(output.filter(|_| options.preprocess_output_is_dependency_file()))
+            .unwrap_or(&default_depfile);
+        if (output == Some(depfile) && !options.preprocess_output_is_dependency_file())
+            || depfile == source
+            || includes.iter().any(|header| header == depfile)
+        {
+            return Err(format!(
+                "bcc: dependency file '{}' overlaps an input or output",
+                depfile.display()
+            ));
+        }
+
+        let mut rule = String::new();
+        make_path(&mut rule, target)?;
+        rule.push(':');
+        let mut seen = HashSet::new();
+        for path in std::iter::once(source).chain(includes.iter().map(PathBuf::as_path)) {
+            if seen.insert(path) {
+                rule.push(' ');
+                make_path(&mut rule, path)?;
+            }
+        }
+        rule.push('\n');
+        write_output(Some(depfile), rule.as_bytes())
     }
 
     fn object(&self, path: &Path, kind: InputKind, output: &Path, work: &Path) -> Result<()> {
@@ -359,17 +516,58 @@ impl Driver {
                 if stage == Stage::Syntax {
                     continue;
                 }
-                if let Some(path) = output.filter(|path| *path != Path::new("-")) {
-                    write_file(path, &bytes)?;
-                } else {
-                    io::stdout()
-                        .lock()
-                        .write_all(&bytes)
-                        .map_err(|error| format!("bcc: cannot write stdout: {error}"))?;
-                }
+                let output =
+                    output.filter(|_| !self.options.preprocess_output_is_dependency_file());
+                write_output(output, &bytes)?;
             }
         }
         Ok(())
+    }
+}
+
+fn make_path(rule: &mut String, path: &Path) -> Result<()> {
+    let name = path
+        .to_str()
+        .filter(|name| !name.contains(['\n', '\r']))
+        .ok_or_else(|| {
+            format!(
+                "bcc: cannot represent '{}' in a dependency rule",
+                path.display()
+            )
+        })?;
+    let mut backslashes = 0;
+    for ch in name.chars() {
+        if ch == '\\' {
+            backslashes += 1;
+            continue;
+        }
+        let escape = matches!(ch, ' ' | '\t' | '#' | ':');
+        rule.extend(std::iter::repeat_n(
+            '\\',
+            if escape {
+                2 * backslashes + 1
+            } else {
+                backslashes
+            },
+        ));
+        if ch == '$' {
+            rule.push('$');
+        }
+        rule.push(ch);
+        backslashes = 0;
+    }
+    rule.extend(std::iter::repeat_n('\\', 2 * backslashes));
+    Ok(())
+}
+
+fn write_output(path: Option<&Path>, bytes: &[u8]) -> Result<()> {
+    if let Some(path) = path.filter(|path| *path != Path::new("-")) {
+        write_file(path, bytes)
+    } else {
+        io::stdout()
+            .lock()
+            .write_all(bytes)
+            .map_err(|error| format!("bcc: cannot write stdout: {error}"))
     }
 }
 

@@ -122,3 +122,13 @@ fn malformed_input_is_error_not_panic() {
             .starts_with("1:"));
     }
 }
+
+#[test]
+fn standalone_hash_comment_preserves_instruction_bytes() {
+    for target in [bas::Target::X86_64, bas::Target::Aarch64] {
+        let plain = bas::assemble_for(target, b".section .text\nnop\n").unwrap();
+        let commented =
+            bas::assemble_for(target, b".section .text\n  # a comment\n  nop\n").unwrap();
+        assert_eq!(commented, plain);
+    }
+}

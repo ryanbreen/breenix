@@ -1,0 +1,137 @@
+{
+  "inputs": {
+    "archive": "3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4",
+    "series": "5d0e09b0c8dc1da1f1a1f1877d56971dba00f5636995bd54809d8270f5856da4",
+    "config": "c7761f177c6c5b83e54e9050dcdbc1caea41aa6bcefa0a038fcdbdd0d3674d04",
+    "patches": {
+      "diff-normal-format.patch": "29cfd1ddc368de2c2a61bf4ccf2901f69a39189bc92b1a16e6477aa155f991ef",
+      "find-exec-plus-status.patch": "e236ee2e655db034d7cc87d2425607580c92c59ad8d3e8f2e928014c0a0c51e8",
+      "ps-pid-list.patch": "993fe8e971853627ee204708385e0d60814e408a88317906544d011eaf0b2819",
+      "timeout-status.patch": "f902bc7f5dee913ee598f5b063572f9b24622ea4764a2669444f7941a49c2478",
+      "time-posix.patch": "9c41902a8d44cf5d79440cfad4d891f302876f6b424868a99f721c0b1ee16154",
+      "getopt32-dead-usage-flag.patch": "92c7f4d4687bce06de5e31d1464d163c9c9a7a82507d05d8fb222ba522b9f4c0",
+      "sha-drop-sha512-rotate.patch": "d993c4f4847c86107675554245f0f6d2ad0a7c7c5bb46db99a8ba683763f06ad",
+      "list-drop-installer-paths.patch": "656b5604783b43ca795b763ddc7a90d170853eec1c00f1888dadd852840e4f7c",
+      "host-drop-docproc.patch": "0ae2b34beda59f0e1f0d27461d5ab457fa729b9d3ae2a032ddf5094e995341a8",
+      "free-breenix-sysinfo.patch": "c16f3a7a97f30df90d4ccdef5dc73355899f0ede2d7671e1932ff58521df5553"
+    }
+  },
+  "commands": 227,
+  "passed": 225,
+  "by_kind": {
+    "host": {
+      "commands": 9,
+      "passed": 7
+    },
+    "target": {
+      "commands": 218,
+      "passed": 218
+    }
+  },
+  "flags": {
+    "host": [
+      "-D",
+      "-I",
+      "-O2",
+      "-Wall",
+      "-Wp,-MD,FILE",
+      "-Wstrict-prototypes",
+      "-c",
+      "-fomit-frame-pointer",
+      "-o"
+    ],
+    "target": [
+      "-D",
+      "-I",
+      "-Oz",
+      "-Wall",
+      "-Wdeclaration-after-statement",
+      "-Werror",
+      "-Wmissing-declarations",
+      "-Wmissing-prototypes",
+      "-Wno-constant-logical-operand",
+      "-Wno-format-security",
+      "-Wno-string-plus-int",
+      "-Wold-style-definition",
+      "-Wp,-MD,FILE",
+      "-Wshadow",
+      "-Wstrict-prototypes",
+      "-Wundef",
+      "-Wunused",
+      "-Wunused-function",
+      "-Wunused-parameter",
+      "-Wunused-value",
+      "-Wwrite-strings",
+      "-c",
+      "-falign-functions=1",
+      "-fdata-sections",
+      "-ffunction-sections",
+      "-fno-asynchronous-unwind-tables",
+      "-fno-builtin-printf",
+      "-fno-builtin-strlen",
+      "-fno-unwind-tables",
+      "-fomit-frame-pointer",
+      "-funsigned-char",
+      "-include",
+      "-o",
+      "-std=gnu11",
+      "-std=gnu99"
+    ]
+  },
+  "classes": {
+    "statement expression": {
+      "count": 0,
+      "examples": [],
+      "assignment": "25.11b statement expressions"
+    },
+    "typeof": {
+      "count": 0,
+      "examples": [],
+      "assignment": "25.11b typeof"
+    },
+    "attribute": {
+      "count": 0,
+      "examples": [],
+      "assignment": "25.11b attributes"
+    },
+    "builtin": {
+      "count": 0,
+      "examples": [],
+      "assignment": "25.11b builtins"
+    },
+    "GNU preprocessor": {
+      "count": 0,
+      "examples": [],
+      "assignment": "25.11b GNU preprocessing"
+    },
+    "inline asm": {
+      "count": 0,
+      "examples": [],
+      "assignment": "25.11b inline assembly"
+    },
+    "unknown option": {
+      "count": 0,
+      "examples": [],
+      "assignment": "25.11b Kbuild driver options"
+    },
+    "other": {
+      "count": 2,
+      "examples": [
+        {
+          "translation_unit": "scripts/basic/fixdep.c",
+          "kind": "host",
+          "location": "scripts/basic/fixdep.c:207",
+          "diagnostic": "scripts/basic/fixdep.c:207:12: error: undeclared identifier 'alloca'"
+        },
+        {
+          "translation_unit": "scripts/kconfig/zconf.tab.c",
+          "kind": "host",
+          "location": "scripts/kconfig/lex.zconf.c:2245",
+          "diagnostic": "scripts/kconfig/lex.zconf.c:2245:21: error: undeclared identifier 'alloca'"
+        }
+      ],
+      "assignment": "unassigned"
+    }
+  },
+  "scope": "First located bcc diagnostic per failed clang command replay. Replay selects syntax checking, routes dependency files to scratch, and uses the Breenix toolchain and libc headers for target commands. No Mac SDK headers are added. An earlier driver or header failure can mask constructs in the same translation unit. Zero counts mean no first diagnostic of that class was observed."
+}

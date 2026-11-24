@@ -1,0 +1,1 @@
+#define pack(args...) args

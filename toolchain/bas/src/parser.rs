@@ -1,7 +1,10 @@
 //! The byte-oriented source grammar and directives documented in bas/README.md.
 
 use bobj::elf::amd64::{R_32, R_32S, R_64, R_GOTPCREL, R_PLT32, R_TPOFF32};
-use bobj::elf::{STT_FUNC, STT_NOTYPE, STT_OBJECT, STT_TLS};
+use bobj::elf::{
+    SHF_ALLOC, SHF_EXECINSTR, SHF_TLS, SHF_WRITE, SHT_NOBITS, SHT_PROGBITS,
+    STB_GLOBAL, STB_WEAK, STT_FUNC, STT_NOTYPE, STT_OBJECT, STT_TLS,
+};
 
 use crate::aarch64::Relocation;
 use crate::object::{Endpoint, Object};
@@ -268,35 +271,34 @@ impl<'src, 'obj> Parser<'src, 'obj> {
         Ok(digit as u8)
     }
 
+    fn string_byte(&mut self) -> Result<u8> {
+        let byte = self.byte();
+        if byte == 0 {
+            return Err(self.error(self.column, "unterminated string"));
+        }
+        self.column += 1;
+        if byte != b'\\' {
+            return Ok(byte);
+        }
+        let escape = self.byte();
+        self.column += 1;
+        match escape {
+            b'\\' | b'"' => Ok(escape),
+            b'0' => Ok(0),
+            b'n' => Ok(b'\n'),
+            b'r' => Ok(b'\r'),
+            b't' => Ok(b'\t'),
+            b'x' => Ok((self.hex_digit()? << 4) | self.hex_digit()?),
+            _ => Err(self.error(self.column - 1, "unsupported string escape")),
+        }
+    }
+
     fn emit_string(&mut self, terminated: bool) -> Result<()> {
         self.peek();
         let start = self.column;
         self.expect(b'"', "expected a quoted string")?;
         while self.byte() != b'"' {
-            let mut byte = self.byte();
-            if byte == 0 {
-                return Err(self.error(self.column, "unterminated string"));
-            }
-            self.column += 1;
-            if byte == b'\\' {
-                let escape = self.byte();
-                byte = match escape {
-                    b'\\' | b'"' => escape,
-                    b'0' => 0,
-                    b'n' => b'\n',
-                    b'r' => b'\r',
-                    b't' => b'\t',
-                    b'x' => {
-                        self.column += 1;
-                        let high = self.hex_digit()?;
-                        let low = self.hex_digit()?;
-                        self.emit(start, &[(high << 4) | low])?;
-                        continue;
-                    }
-                    _ => return Err(self.error(self.column, "unsupported string escape")),
-                };
-                self.column += 1;
-            }
+            let byte = self.string_byte()?;
             self.emit(start, &[byte])?;
         }
         self.column += 1;
@@ -304,6 +306,46 @@ impl<'src, 'obj> Parser<'src, 'obj> {
             self.emit(start, &[0])?;
         }
         Ok(())
+    }
+
+    fn section(&mut self) -> Result<()> {
+        self.peek();
+        let at = self.location(self.column);
+        let mut quoted_name = Vec::new();
+        let name = if self.take(b'"') {
+            while self.byte() != b'"' {
+                quoted_name.push(self.string_byte()?);
+            }
+            self.column += 1;
+            std::str::from_utf8(&quoted_name).map_err(|_| at.error("section name must be UTF-8"))?
+        } else {
+            self.word().text
+        };
+        if name.is_empty() || name.contains('\0') {
+            return Err(at.error("invalid section name"));
+        }
+        let attributes = if self.take(b',') {
+            let flags = self.word();
+            let flags = match flags.text {
+                "a" => SHF_ALLOC,
+                "ax" => SHF_ALLOC | SHF_EXECINSTR,
+                "aw" => SHF_ALLOC | SHF_WRITE,
+                "awT" => SHF_ALLOC | SHF_WRITE | SHF_TLS,
+                _ => return Err(self.error(flags.column, "unsupported section flags")),
+            };
+            self.expect(b',', "expected ',' before section type")?;
+            self.expect(b'@', "expected '@' before section type")?;
+            let kind = self.word();
+            let kind = match kind.text {
+                "progbits" => SHT_PROGBITS,
+                "nobits" => SHT_NOBITS,
+                _ => return Err(self.error(kind.column, "unsupported section type")),
+            };
+            Some((kind, flags))
+        } else {
+            None
+        };
+        self.object.select_section(name, attributes, at)
     }
 
     fn emit_data_list(&mut self, width: usize) -> Result<()> {
@@ -426,15 +468,34 @@ impl<'src, 'obj> Parser<'src, 'obj> {
     fn directive(&mut self, op: Token<'_>) -> Result<bool> {
         let name = op.text.strip_prefix('.').unwrap_or(op.text);
         match name {
-            "section" => {
-                let section = self.word();
-                self.object
-                    .select_section(section.text, self.location(section.column))?;
+            "section" => self.section()?,
+            "global" | "globl" | "extern" | "weak" => {
+                let symbol = self.word();
+                let index = self.symbol(symbol)?;
+                let binding = &mut self.object.symbols[index].binding;
+                if name == "weak" {
+                    *binding = STB_WEAK;
+                } else if *binding != STB_WEAK {
+                    *binding = STB_GLOBAL;
+                }
             }
-            "global" | "globl" | "extern" => {
-                let name = self.word();
-                let index = self.symbol(name)?;
-                self.object.symbols[index].global = true;
+            "internal" | "hidden" | "protected" => {
+                let symbol = self.word();
+                let index = self.symbol(symbol)?;
+                // ELF gABI table 5.4.
+                self.object.symbols[index].visibility = match name {
+                    "internal" => 1,
+                    "hidden" => 2,
+                    _ => 3,
+                };
+            }
+            "alias" => {
+                let symbol = self.word();
+                let index = self.symbol(symbol)?;
+                self.expect(b',', "expected ',' before alias target")?;
+                let target = self.word();
+                let target = self.symbol(target)?;
+                self.object.define_alias(index, target, self.location(symbol.column))?;
             }
             "db" | "byte" => self.emit_data_list(1)?,
             "dw" | "word" => self.emit_data_list(2)?,
@@ -460,6 +521,10 @@ impl<'src, 'obj> Parser<'src, 'obj> {
     }
 
     pub(crate) fn assemble_line(&mut self) -> Result<()> {
+        // A standalone hash comment, without affecting A64 #immediates.
+        if self.peek() == b'#' {
+            return Ok(());
+        }
         while !self.at_end() {
             let op = self.word();
             if self.take(b':') {
