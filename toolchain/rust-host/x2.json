@@ -1,0 +1,74 @@
+{
+  "target": "x86_64-breenix-hosted",
+  "result": "deferred",
+  "deferred_to": "K5 first unit",
+  "prediction": "Bootstrap will accept the hosted target and the build-host llvm-config pointing to K4's Breenix LLVM archives. I expect stage-1 hosted sysroot or compiler construction to stop before linking rustc_driver, because X0 reached hosted std with unresolved inputs and K5's Mac twin build has not produced the driver. If it reaches the link, the ELF will supply the relocation, TLS and undefined-symbol inventories.",
+  "prediction_time": "2026-11-25T03:53:10.576542Z",
+  "started": "2026-11-25T04:00:58Z",
+  "time": "2026-11-25T04:12:58.062403+00:00",
+  "command": [
+    "taskpolicy",
+    "-b",
+    "nice",
+    "-n",
+    "15",
+    "python3",
+    "x.py",
+    "build",
+    "--stage",
+    "1",
+    "compiler/rustc",
+    "--config",
+    "<x2>/bootstrap.toml",
+    "--verbose"
+  ],
+  "working_directory": "<x2>/rust",
+  "bootstrap_toml": "[build]\nbuild = \"aarch64-apple-darwin\"\nhost = [\"aarch64-apple-darwin\", \"<repo>/x86_64-breenix-hosted.json\"]\ntarget = [\"<repo>/x86_64-breenix.json\", \"<repo>/x86_64-breenix-hosted.json\"]\nbuild-dir = \"<x2>/build\"\nrustfmt = \"<x2>/build/aarch64-apple-darwin/rustfmt/bin/rustfmt\"\njobs = 4\ndocs = false\nsubmodules = false\nlocked-deps = true\n\n[llvm]\ndownload-ci-llvm = false\nlink-shared = false\n\n[rust]\ndownload-rustc = false\ndeny-warnings = false\nlld = false\nllvm-tools = false\n\n[target.aarch64-apple-darwin]\nllvm-config = \"<cache>/k4/x86_64/native-llc/bin/llvm-config\"\nllvm-filecheck = \"/opt/homebrew/opt/llvm@20/bin/FileCheck\"\nllvm-has-rust-patches = true\n\n[target.\"<repo>/x86_64-breenix-hosted.json\"]\nllvm-config = \"<x2>/breenix-llvm/bin/llvm-config\"\nllvm-filecheck = \"/opt/homebrew/opt/llvm@20/bin/FileCheck\"\nllvm-has-rust-patches = true\nllvm-libunwind = \"no\"\ncc = \"<x2>/breenix-cc\"\ncxx = \"<x2>/breenix-cxx\"\nlinker = \"<x2>/x86_64-breenix-hosted-link\"\n\n[target.\"<repo>/x86_64-breenix.json\"]\ncc = \"<x2>/breenix-cc\"\nlinker = \"<x2>/x86_64-breenix-link\"\n",
+  "environment": {
+    "CARGO_BUILD_JOBS": "4",
+    "CARGO_HOME": "<x2>/cargo",
+    "CARGO_NET_OFFLINE": "true",
+    "RUST_TARGET_PATH": "<repo>"
+  },
+  "rust_commit": "a763a7dd70cc6bc97736aca5eabaf867b36477bf",
+  "compiler_tree": "fb2afea4e4c3798e49fe6d7c6e3242acb4b1e331",
+  "llvm_commit": "ed6566573eb21b00a3f87815e14ff766fd56ef42",
+  "pinned_status_before": {
+    "compiler": "",
+    "llvm_project": ""
+  },
+  "pinned_status_after": {
+    "compiler": "",
+    "llvm_project": ""
+  },
+  "llvm_config": {
+    "version": "20.1.7",
+    "path": "<x2>/breenix-llvm/bin/llvm-config",
+    "libdir": "<cache>/k4/x86_64/build/lib",
+    "bootstrap_queries": [
+      [
+        "--version"
+      ],
+      [
+        "--version"
+      ]
+    ],
+    "mac_targets": [
+      "AArch64",
+      "X86"
+    ]
+  },
+  "last_completed_step": "Built the stage-1 Mac compiler with LLVM 20.1.7. Bootstrap selected the Mac stage-0 sysroot and invoked the hosted llvm-config with --version before launching hosted Cargo.",
+  "first_error": "error: cannot produce dylib for `rustc_driver v0.0.0 (<x2>/rust/compiler/rustc_driver)` as the target `x86_64-breenix-hosted` does not support these crate types",
+  "exit_status": 101,
+  "exit_status_for": "Cargo building stage-1 hosted compiler artifacts",
+  "earlier_nonfatal_diagnostics": [
+    "error: Could not read c9eb0652469db42bb1cb84f27615cf466c7c3108",
+    "fatal: Failed to traverse parents of commit d6e82857e5ddf7106532c9234181abbcc43c7a37"
+  ],
+  "mac_llvm_build_warnings": {
+    "<llvm-project>/llvm/include/llvm/IR/ConstantFolder.h:31:16: warning: virtual method 'anchor' is inside a 'final' class and can never be overridden [-Wunnecessary-virtual-specifier]": 5
+  },
+  "log_sha256": "fd70262a6fdf35d988b4936d9d3212aef5d6399051fdd3907a2b2c67d5474b4d",
+  "evidence_directory": "fx/evidence/e25-k4-x2.128PEvFv"
+}
