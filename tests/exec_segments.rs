@@ -324,3 +324,98 @@ fn eof_inside_advertised_segment_is_eio() {
         Err(Errno(EIO))
     );
 }
+
+/// The image the old exec built from its whole-file copy: each PT_LOAD page
+/// zero-filled when first mapped, then each segment's file bytes copied to its p_vaddr in
+/// program-header order.
+fn whole_file_image(data: &[u8]) -> std::collections::BTreeMap<u64, Vec<u8>> {
+    let u16_at = |at: usize| u16::from_le_bytes(data[at..at + 2].try_into().unwrap()) as usize;
+    let u64_at = |at: usize| u64::from_le_bytes(data[at..at + 8].try_into().unwrap());
+    let mut pages = std::collections::BTreeMap::new();
+    let phoff = u64_at(32) as usize;
+    for index in 0..u16_at(56) {
+        let ph = phoff + index * PHDR;
+        let (offset, vaddr) = (u64_at(ph + 8) as usize, u64_at(ph + 16));
+        let (filesz, memsz) = (u64_at(ph + 32) as usize, u64_at(ph + 40));
+        if u32::from_le_bytes(data[ph..ph + 4].try_into().unwrap()) != 1 || memsz == 0 {
+            continue;
+        }
+        for page in ((vaddr & !4095)..vaddr + memsz).step_by(4096) {
+            pages.entry(page).or_insert_with(|| vec![0u8; 4096]);
+        }
+        let mut done = 0;
+        while done < filesz {
+            let address = vaddr + done as u64;
+            let at = (address & 4095) as usize;
+            let count = (4096 - at).min(filesz - done);
+            pages.get_mut(&(address & !4095)).unwrap()[at..at + count]
+                .copy_from_slice(&data[offset + done..offset + done + count]);
+            done += count;
+        }
+    }
+    pages
+}
+
+/// The image the chunked loader builds by reading the file, bounded reads only.
+fn chunked_image(path: &std::path::Path, machine: u16, user_end: u64)
+    -> std::collections::BTreeMap<u64, Vec<u8>>
+{
+    use std::os::unix::fs::FileExt;
+    let file = std::fs::File::open(path).unwrap();
+    let size = file.metadata().unwrap().len();
+    let mut read = |offset: u64, bytes: &mut [u8]| {
+        assert!(bytes.len() <= CHUNK, "{}: a {}-byte read", path.display(), bytes.len());
+        file.read_exact_at(bytes, offset).map_err(|_| Errno(EIO))
+    };
+    let mut header = [0; ELF_HEADER];
+    read(0, &mut header).unwrap();
+    let headers = exec_elf::Headers::read(&header, size, machine, user_end, &mut read)
+        .unwrap_or_else(|errno| panic!("{}: refused with {errno:?}", path.display()));
+    let mut pages: std::collections::BTreeMap<u64, Box<[u8; 4096]>> = Default::default();
+    // SAFETY: each page is a distinct boxed frame, zeroed when first handed
+    // out, and the boxes do not move while the map grows.
+    unsafe {
+        headers.load_segments(
+            &mut read,
+            |address, _| Ok(pages.entry(address).or_insert_with(|| Box::new([0; 4096])).as_mut_ptr()),
+            |_, _| {},
+        ).unwrap();
+    }
+    pages.into_iter().map(|(address, page)| (address, page.to_vec())).collect()
+}
+
+#[test]
+fn staged_programs_load_the_same_bytes_as_the_whole_file_copy() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("userspace/programs/target");
+    for (arch, machine, user_end) in [("x86_64", 62, 0x8000_0000_0000), ("aarch64", 183, 0x0001_0000_0000_0000)] {
+        let release = root.join(format!("{arch}-breenix/release"));
+        let mut programs: Vec<_> = std::fs::read_dir(&release)
+            .unwrap_or_else(|_| panic!("{} is missing: build userspace for {arch} first", release.display()))
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                let mut header = [0; 20];
+                path.is_file() && std::fs::File::open(path)
+                    .and_then(|mut file| std::io::Read::read_exact(&mut file, &mut header)).is_ok()
+                    && header[..4] == *b"\x7fELF" && header[16] == 2
+                    && u16::from_le_bytes([header[18], header[19]]) == machine
+            })
+            .collect();
+        assert!(!programs.is_empty(), "{}: no {arch} executables", release.display());
+        let ordinary = programs.len();
+        // llc is larger than the x86 kernel heap; llvm-mc is the control.
+        for tool in ["llc", "llvm-mc"] {
+            let path = root.join("llvm").join(arch).join(tool);
+            assert!(path.is_file(), "{} is missing: build the LLVM tools first", path.display());
+            programs.push(path);
+        }
+        for path in &programs {
+            let data = std::fs::read(path).unwrap();
+            assert!(
+                chunked_image(path, machine, user_end) == whole_file_image(&data),
+                "{}: loaded segment bytes differ from the whole-file copy",
+                path.display()
+            );
+        }
+        println!("{arch}: {ordinary} programs, llc and llvm-mc load identically");
+    }
+}
