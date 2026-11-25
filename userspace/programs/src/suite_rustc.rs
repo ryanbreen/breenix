@@ -10,6 +10,9 @@ use std::io::Read;
 use std::os::fd::FromRawFd;
 use std::ptr::{null, null_mut};
 
+#[path = "suite_rustc/command_status.rs"]
+mod command_status;
+
 static SUITE: Suite = suite("rustc", "Rust compiler", &[category("rustc", "Rust compiler", &[
     case("identity-and-sysroot", "Compiler identity and sysroot", identity_and_sysroot),
     case("hello-object-equals-mac", "Hello object equals Mac", hello_object_equals_mac),
@@ -83,7 +86,9 @@ fn run(path: &str, args: &[String], capture: bool) -> Result<(i32, Vec<u8>), Cas
         }
     }
     read_result.map_err(fail)?;
-    if !process::wifexited(status) { return Err(fail(format!("{path}: abnormal status {status:#x}"))); }
+    if !process::wifexited(status) {
+        return Err(fail(command_status::abnormal_status(path, status, &output)));
+    }
     Ok((process::wexitstatus(status), output))
 }
 
