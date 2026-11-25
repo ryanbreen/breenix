@@ -1,0 +1,67 @@
+{
+  "llvm_project_commit": "ed6566573eb21b00a3f87815e14ff766fd56ef42",
+  "prior_attempts": {
+    "first_attempt": {
+      "start": "2026-11-24T21:00:12-05:00",
+      "start_basis": "original log creation time, approximate",
+      "end": "approximately 2026-11-24T21:30:12-05:00",
+      "elapsed_seconds": 1800,
+      "elapsed_basis": "prior agent reported approximately 1800 seconds",
+      "last_ninja_step": "1956/2391 HexagonBitSimplify.cpp.o"
+    },
+    "resume": {
+      "start": "2026-11-24T21:37:32-05:00",
+      "end": "2026-11-24T21:38:11-05:00",
+      "end_basis": "log modification time",
+      "elapsed_seconds_approx": 39,
+      "last_ninja_step": "39/435 HexagonSplitConst32AndConst64.cpp.o",
+      "exit_status": 1,
+      "failure": "HexagonRDFOpt.cpp.o: macOS libc++ __tree no matching conversion for __lazy_synth_three_way_comparator",
+      "pid": 15670,
+      "log": "ninja.log"
+    },
+    "cumulative_seconds_approx": 1839
+  },
+  "reference_build": {
+    "ruling": 100,
+    "reason": "The Mac SDK headers reject HexagonRDFOpt.cpp; the reference only needs corpus targets.",
+    "targets_to_build": [
+      "X86",
+      "AArch64"
+    ],
+    "box_targets": "unchanged; see x86_64.json",
+    "source": "unpatched pinned llvm-project",
+    "build_directory": "<cache>/k4/x86_64/native-llc",
+    "tablegen": "<cache>/k4/x86_64/native/bin/llvm-tblgen",
+    "configure_options": [
+      "-DCMAKE_BUILD_TYPE=Release",
+      "-DLLVM_INCLUDE_TESTS=OFF",
+      "-DLLVM_INCLUDE_BENCHMARKS=OFF",
+      "-DLLVM_ENABLE_ZLIB=OFF",
+      "-DLLVM_ENABLE_ZSTD=OFF",
+      "-DLLVM_ENABLE_LIBXML2=OFF",
+      "-DLLVM_ENABLE_TERMINFO=OFF",
+      "-DLLVM_TARGETS_TO_BUILD=X86;AArch64",
+      "-DLLVM_TABLEGEN=<cache>/k4/x86_64/native/bin/llvm-tblgen"
+    ],
+    "build_command": [
+      "taskpolicy",
+      "-b",
+      "ninja",
+      "-C",
+      "<cache>/k4/x86_64/native-llc",
+      "-j",
+      "4",
+      "llc"
+    ],
+    "started_utc": "2026-11-25T02:46:34Z",
+    "ended_utc": "2026-11-25T03:07:31Z",
+    "elapsed_seconds": 1257,
+    "last_ninja_step": "1691/1691 Linking CXX executable bin/llc",
+    "exit_status": 0,
+    "log_sha256": "7b519f9109bbf4db6bdde90f6038166f0d05561eeb5844a77bc2c9a12b040b71",
+    "pinned_source_status_before": "clean",
+    "pinned_source_status_after": "clean"
+  },
+  "cumulative_elapsed_seconds_approx": 3096
+}

@@ -1,0 +1,89 @@
+{
+  "producer": {
+    "path": "<cache>/k4/x86_64/native-llc/bin/llc",
+    "sha256": "a49e193d78a21556c0b4f88149698507f284367f13b7086c02d2b440ac6f66c7",
+    "llvm_project_commit": "ed6566573eb21b00a3f87815e14ff766fd56ef42",
+    "version": "LLVM version 20.1.7",
+    "targets_to_build": [
+      "X86",
+      "AArch64"
+    ]
+  },
+  "objects": [
+    {
+      "input": "arithmetic.ll",
+      "arguments": [
+        "-mtriple=x86_64-unknown-elf",
+        "-O2",
+        "-filetype=obj",
+        "-relocation-model=static",
+        "<input>",
+        "-o",
+        "<output>"
+      ],
+      "sha256": "29d1006332a37608d72c0b22f22add7e9e1ffad8e8bc94a322933c0ce9c39d4f",
+      "elapsed_seconds": 0.06314
+    },
+    {
+      "input": "hello.ll",
+      "arguments": [
+        "-mtriple=x86_64-unknown-elf",
+        "-O2",
+        "-filetype=obj",
+        "-relocation-model=static",
+        "<input>",
+        "-o",
+        "<output>"
+      ],
+      "sha256": "5a0c91fca2d3305fcfc6aa4a9a38b188e15355547e70a2ae16a044736facd31b",
+      "elapsed_seconds": 0.008581
+    },
+    {
+      "input": "libc-call.ll",
+      "arguments": [
+        "-mtriple=x86_64-unknown-elf",
+        "-O2",
+        "-filetype=obj",
+        "-relocation-model=static",
+        "<input>",
+        "-o",
+        "<output>"
+      ],
+      "sha256": "c24e751b0053e745e49f6a828432b991ac6cde3e68e50d650095a37c22e7c133",
+      "elapsed_seconds": 0.006933
+    },
+    {
+      "input": "loop.ll",
+      "arguments": [
+        "-mtriple=x86_64-unknown-elf",
+        "-O2",
+        "-filetype=obj",
+        "-relocation-model=static",
+        "<input>",
+        "-o",
+        "<output>"
+      ],
+      "sha256": "20d3acdb6625ee92e7c20e3cb32a8df7b246ebf1cbfdd35935032bd3597bed03",
+      "elapsed_seconds": 0.012905
+    },
+    {
+      "input": "struct.ll",
+      "arguments": [
+        "-mtriple=x86_64-unknown-elf",
+        "-O2",
+        "-filetype=obj",
+        "-relocation-model=static",
+        "<input>",
+        "-o",
+        "<output>"
+      ],
+      "sha256": "c30334f91360e790bee3760f872559578e5e3d908259876a8c11f2d67eee772a",
+      "elapsed_seconds": 0.007767
+    }
+  ],
+  "program": {
+    "input": "hello.ll",
+    "stdout": "Hello from llc!\n",
+    "exit_status": 0
+  }
+}

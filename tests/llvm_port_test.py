@@ -20,7 +20,7 @@ class LlvmPortTest(unittest.TestCase):
         manifest = json.loads((corpus / 'expect.json').read_text())
         llc = Path(os.environ.get(
             'BREENIX_MAC_LLC',
-            Path.home() / 'Library/Caches/breenix-e25/k4/x86_64/native/bin/llc'))
+            Path.home() / 'Library/Caches/breenix-e25/k4/x86_64/native-llc/bin/llc'))
         self.assertEqual(hashlib.sha256(llc.read_bytes()).hexdigest(),
                          manifest['producer']['sha256'])
         entries = manifest['objects']
