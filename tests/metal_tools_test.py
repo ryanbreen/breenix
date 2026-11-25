@@ -2795,7 +2795,7 @@ class BuildSlotTest(unittest.TestCase):
             def call(command, **options):
                 order.append(command)
                 if command[-1:] == ['--dynamic']:
-                    pinned_libc = options.get('env', {}).get('BREENIX_KD_LIBC_INPUT')
+                    pinned_libc = (options.get('env') or build.os.environ).get('BREENIX_KD_LIBC_INPUT')
                     order.append(('dynamic-libc-input', pinned_libc))
                     kd = clone / 'userspace/programs/target/kd'
                     kd.mkdir(parents=True)

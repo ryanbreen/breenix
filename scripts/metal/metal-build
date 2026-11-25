@@ -365,6 +365,8 @@ def inner(args):
                 log = logs / 'rustc-build.log'
                 build_script = str(clone / 'userspace/programs/build.sh')
                 kd = Path(os.environ.get('BREENIX_KD_BUILD_DIR', clone / 'userspace/programs/target/kd'))
+                cache = Path(os.environ.get('BREENIX_RUSTC_PORT_BUILDS', clone / 'build/rustc-port'))
+                pinned_libc = cache / 'hosted/lib/libc.so'
                 with log.open('w') as output:
                     status = subprocess.call([build_script, '--arch', 'x86_64', '--hosted-bin',
                                               'suite-rustc', '--features', 'rustc'],
@@ -378,16 +380,16 @@ def inner(args):
                 if not clean_build(status, log, 'rustc suite and compiler', logs, out):
                     return 1
                 if not dynamic:
-                    cache = Path(os.environ.get('BREENIX_RUSTC_PORT_BUILDS', clone / 'build/rustc-port'))
-                    shutil.copyfile(cache / 'hosted/lib/libc.so', kd / 'libc.so')
+                    shutil.copyfile(pinned_libc, kd / 'libc.so')
                 timings['rustc_suite'] = round(time.time() - started)
             if dynamic:
                 started = time.time()
                 build_script = str(clone / 'userspace/programs/build.sh')
                 log = logs / 'dynamic-build.log'
+                env = dict(os.environ, BREENIX_KD_LIBC_INPUT=str(pinned_libc)) if rustc_suite else None
                 with log.open('w') as output:
                     status = subprocess.call([build_script, '--arch', 'x86_64', '--dynamic'],
-                                             cwd=clone, stdout=output, stderr=subprocess.STDOUT)
+                                             cwd=clone, env=env, stdout=output, stderr=subprocess.STDOUT)
                 if not clean_build(status, log, 'dynamic suite, interpreter and fixtures', logs, out):
                     return 1
                 timings['dynamic_suite'] = round(time.time() - started)

@@ -196,6 +196,10 @@ if [[ "$DYNAMIC" == 1 ]]; then
     BREENIX_KD_BUILD_DIR="$(cd "$kd_dir" && pwd)"
     export BREENIX_KD_BUILD_DIR
     "$SCRIPT_DIR/build.sh" --arch x86_64 --kd-libc
+    # A combined K5 image links the probes against the compiler's recorded DSO.
+    if [[ -n "${BREENIX_KD_LIBC_INPUT:-}" ]]; then
+        cp "$BREENIX_KD_LIBC_INPUT" "$BREENIX_KD_BUILD_DIR/libc.so"
+    fi
     "$SCRIPT_DIR/build.sh" --arch x86_64 --kd-loader
     "$SCRIPT_DIR/build.sh" --arch x86_64 --hosted-bin suite-dynamic --features dynamic
     cp "$SCRIPT_DIR/target/hosted/$TARGET_DIR-hosted/release/suite-dynamic" "$BREENIX_KD_BUILD_DIR/"
