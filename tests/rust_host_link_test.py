@@ -115,6 +115,9 @@ def hosted_targets():
         expected = json.loads(source.read_text())
         expected["panic-strategy"] = "unwind"
         expected["eh-frame-header"] = True
+        if arch == "x86_64":
+            # Ruling 103(2); see hosted_spec_citations in toolchain/rust-host/x2.json.
+            expected["dynamic-linking"] = True
         target = ROOT / f"{arch}-breenix-hosted.json"
         require(target.exists(), f"missing hosted target {target}")
         require(json.loads(target.read_text()) == expected, f"{target}: hosted target fields differ")
