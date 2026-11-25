@@ -20,4 +20,13 @@ mod tests {
         assert_eq!(replace(&word,0x10000,0xc00),2|0x400);
         assert_eq!(word.load(Ordering::Acquire),2);
     }
+
+    #[test]
+    fn dup3_flags_exclude_only_close_on_fork_descriptors_from_fork() {
+        let descriptor = from_open_flags(0x0208_0000 | 2);
+        assert_eq!(descriptor, 3);
+        assert!(!inherited_on_fork(descriptor));
+        assert!(inherited_on_fork(from_open_flags(0x0008_0000)));
+        assert!(inherited_on_fork(from_open_flags(0)));
+    }
 }
