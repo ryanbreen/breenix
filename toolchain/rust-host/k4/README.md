@@ -26,6 +26,12 @@ The build record includes the full patch, its digest, and the pinned checkout
 status before and after compilation. The C++ flags enable Breenix's existing
 `wait4` and `usleep` declarations with `_DEFAULT_SOURCE`.
 
+Each u2 cross build produced 180 static LLVM archives and four `llc` and
+`llvm-mc` objects. The records include the SHA-256 of each output and the
+exact third-party warning texts and counts. Both builds completed within
+the 10,800-second build budget. The archive and diagnostics checks read the
+retained outputs and logs directly.
+
 ## Ordinary userspace parity
 
 Ruling 98's comparison against `1ee08df8` matched 229 of 231 x86-64
