@@ -62,6 +62,8 @@ pub struct Object<'a> {
     plt: Option<Bytes<'a>>,
     #[cfg(feature = "interpreter")]
     soname: Option<LinkString<'a>>,
+    #[cfg(feature = "interpreter")]
+    interpreter_name: Option<&'a core::ffi::CStr>,
     pub(crate) runpath: Option<LinkString<'a>>,
     pub(crate) preinit: Option<Span>,
     pub(crate) init: Option<Span>,
@@ -226,14 +228,30 @@ impl<'a> Object<'a> {
     /// Read an AMD64 ELF file through its program headers. `name` is the
     /// caller's canonical absolute pathname for dependency search and errors.
     pub fn parse(name: &'a [u8], file: &'a [u8], bias: u64) -> Result<Self, Error<'a>> {
-        let image = Image::parse(
+        Self::from_image(Image::parse(
             Bytes {
                 name,
                 data: file,
                 offset: 0,
             },
             bias,
-        )?;
+        )?)
+    }
+
+    /// Parse the initial executable from the kernel's mapped program headers
+    /// and PT_LOAD bytes. `snapshot` retains immutable copies of the metadata.
+    ///
+    /// # Safety
+    /// The readable, file-backed PT_LOADs in `headers` must be mapped at their
+    /// biased addresses and remain readable while this function runs.
+    pub unsafe fn from_mapped(
+        name: &'a [u8], headers: &[u8], bias: u64, entry: u64, snapshot: crate::elf::Snapshot,
+    ) -> Result<Self, Error<'a>> {
+        // SAFETY: the caller provides the intact mapped PT_LOADs.
+        Self::from_image(unsafe { Image::from_mapped(name, headers, bias, entry, snapshot)? })
+    }
+
+    fn from_image(image: Image<'a>) -> Result<Self, Error<'a>> {
         let mut dynamic = None;
         let mut relro = None;
         let mut tls = None;
@@ -257,15 +275,15 @@ impl<'a> Object<'a> {
                         align: align.try_into().map_err(|_| error())?,
                     };
                     if template.file_size != 0 {
-                        let bytes = image.file_at(
+                        let offset = image.file_offset(
                             segment.address,
                             segment.file_size,
                             segment.header_offset,
                         )?;
-                        if bytes.offset != segment.offset {
+                        if offset != segment.offset {
                             return Err(error());
                         }
-                        // file_at validated the range in a readable PT_LOAD.
+                        // file_offset validated the range in a readable PT_LOAD.
                         template.image = (image.bias + segment.address) as *const u8;
                     }
                     tls = Some(template);
@@ -356,6 +374,8 @@ impl<'a> Object<'a> {
             plt,
             #[cfg(feature = "interpreter")]
             soname,
+            #[cfg(feature = "interpreter")]
+            interpreter_name: image.interpreter_name(),
             runpath,
             preinit: tags.array(image, DT_PREINIT_ARRAY, DT_PREINIT_ARRAYSZ)?,
             init: tags.array(image, DT_INIT_ARRAY, DT_INIT_ARRAYSZ)?,
@@ -484,7 +504,7 @@ impl<'a> Object<'a> {
 
     #[cfg(feature = "interpreter")]
     pub(crate) fn interpreter_name(self) -> Option<&'a core::ffi::CStr> {
-        self.image.interpreter_name()
+        self.interpreter_name
     }
 
     #[cfg(feature = "interpreter")]

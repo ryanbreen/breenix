@@ -23,6 +23,8 @@ const EM_X86_64: u16 = 62;
 const PT_LOAD: u32 = 1;
 const PT_INTERP: u32 = 3;
 const PT_PHDR: u32 = 6;
+// OS-specific auxv entry supplies the bias even without a PT_PHDR segment.
+const AT_BREENIX_LOAD_BIAS: u64 = 0x6000_0000;
 // The pathname resolver accepts fewer than 4096 bytes, excluding the NUL.
 const INTERP_PATH_MAX: u64 = 4096;
 
@@ -228,6 +230,7 @@ impl Headers {
                 let start = region.start.max(self.segments_end());
                 let bias = image.bias_in(start..region.end)?;
                 plan.interpreter_bias = Some(bias);
+                plan.program_bias = self.program_bias.unwrap_or(0);
                 plan.initial_pc = image.entry + bias;
             }
             _ => return Err(bad()),
@@ -442,6 +445,7 @@ pub(crate) struct ExecPlan {
     phentsize: u16,
     program_entry: u64,
     interpreter_bias: Option<u64>,
+    program_bias: u64,
     initial_pc: u64,
 }
 
@@ -459,6 +463,7 @@ impl ExecPlan {
             phentsize,
             program_entry: entry,
             interpreter_bias: None,
+            program_bias: 0,
             initial_pc: entry,
         }
     }
@@ -472,7 +477,7 @@ impl ExecPlan {
     }
 
     pub(crate) fn auxv_size(&self) -> usize {
-        Self::STATIC_AUXV_SIZE + usize::from(self.interpreter_bias().is_some()) * Self::PAIR_SIZE
+        Self::STATIC_AUXV_SIZE + usize::from(self.interpreter_bias().is_some()) * 2 * Self::PAIR_SIZE
     }
 
     pub(crate) fn auxv(
@@ -496,8 +501,12 @@ impl ExecPlan {
             (23, secure),      // AT_SECURE
             (0, 0),            // AT_NULL
         ];
+        let program_bias = self.program_bias;
         prefix.into_iter()
-            .chain(self.interpreter_bias().map(|bias| (7, bias))) // AT_BASE
+            .chain(self.interpreter_bias().into_iter().flat_map(move |bias| [
+                (7, bias), // AT_BASE
+                (AT_BREENIX_LOAD_BIAS, program_bias),
+            ]))
             .chain(suffix)
     }
 }

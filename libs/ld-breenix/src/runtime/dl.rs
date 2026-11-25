@@ -17,7 +17,7 @@ const GLOBAL_HANDLE: usize = OBJECTS + 1;
 #[derive(Clone, Copy)]
 pub(super) struct Entry {
     pub object: Object<'static>,
-    pub identity: (u64, u64),
+    pub identity: Option<(u64, u64)>,
     info: ObjectInfo,
     dependencies: [u8; OBJECTS],
     dependency_count: usize,
@@ -269,7 +269,7 @@ impl Registry {
                 // SAFETY: the FileSet owns these names, file views and load
                 // mappings and is kept resident below.
                 object: unsafe { core::mem::transmute::<Object<'_>, Object<'static>>(object) },
-                identity,
+                identity: Some(identity),
                 info,
                 dependencies,
                 dependency_count,
@@ -446,7 +446,6 @@ static RUNTIME: DlRuntime = DlRuntime {
 pub(super) unsafe fn publish_initial(
     scope: &Scope<'_, '_>,
     files: &FileSet<'_>,
-    root_identity: (u64, u64),
     page: u64,
     interpreter_info: ObjectInfo,
 ) -> &'static DlRuntime {
@@ -463,11 +462,11 @@ pub(super) unsafe fn publish_initial(
             0
         };
         let identity = if index == 0 {
-            root_identity
+            None
         } else {
-            files
+            Some(files
                 .identity(object)
-                .unwrap_or_else(|| fail("missing initial DSO identity"))
+                .unwrap_or_else(|| fail("missing initial DSO identity")))
         };
         let info = object.info(module).unwrap_or_else(|error| fail(error));
         let (dependencies, dependency_count) = dependencies(scope, index, &slots);

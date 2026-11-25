@@ -4469,8 +4469,8 @@ impl ProcessManager {
         let exec_vmas = image_source.take_exec_vmas();
         let mut user_stack_size = crate::syscall::exec::stack_size(argv, envp)?;
         if interpreter_plan.is_some() {
-            // The interpreter adds AT_BASE. Reserve a page so the extra
-            // pair fits even when the static layout fills its last page.
+            // Reserve a page for the interpreter's extra auxiliary entries,
+            // even when the static layout fills its last page.
             user_stack_size += 4096;
         }
         let cmdline = super::process::cmdline_of(argv)?;

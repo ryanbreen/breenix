@@ -22,11 +22,15 @@ const PATH_MAX: usize = 4096;
 const OBJECTS: usize = MAX_TLS_MODULES;
 const DEPENDENCIES: usize = 128;
 const PF_X: u32 = 1;
+const AT_BREENIX_LOAD_BIAS: usize = 0x6000_0000;
 
 struct Auxv {
     entry: u64,
     page: u64,
     base: u64,
+    phdr: usize,
+    phnum: usize,
+    program_bias: u64,
 }
 
 impl Auxv {
@@ -46,26 +50,38 @@ impl Auxv {
             entry: 0,
             page: 0,
             base: 0,
+            phdr: 0,
+            phnum: 0,
+            program_bias: 0,
         };
+        let mut phent = 0;
+        let mut program_bias = None;
         // SAFETY: the kernel's auxv is AT_NULL-terminated.
         while unsafe { cursor.read() } != 0 {
             // SAFETY: each non-null tag begins a two-word entry.
             let pair = unsafe { cursor.cast::<[usize; 2]>().read() };
             match pair {
+                [3, phdr] => auxv.phdr = phdr,          // AT_PHDR
+                [4, size] => phent = size,              // AT_PHENT
+                [5, count] => auxv.phnum = count,      // AT_PHNUM
                 [6, page] => auxv.page = page as u64,    // AT_PAGESZ
                 [7, base] => auxv.base = base as u64,    // AT_BASE
                 [9, entry] => auxv.entry = entry as u64, // AT_ENTRY
                 [23, secure] if secure != 0 => {
                     return Err("secure exec requires a trusted library search")
                 }
+                [AT_BREENIX_LOAD_BIAS, bias] => program_bias = Some(bias as u64),
                 _ => {}
             }
             // SAFETY: a non-null pair is followed by another entry.
             cursor = unsafe { cursor.add(2) };
         }
-        if auxv.entry == 0 || auxv.base == 0 || !auxv.page.is_power_of_two() {
+        if auxv.entry == 0 || auxv.base == 0 || !auxv.page.is_power_of_two()
+            || auxv.phdr == 0 || phent != 56 || !(1..=0xfffe).contains(&auxv.phnum)
+        {
             return Err("invalid exec auxiliary vector");
         }
+        auxv.program_bias = program_bias.ok_or("missing executable load bias")?;
         Ok(auxv)
     }
 }
@@ -109,6 +125,21 @@ impl Drop for Mapping {
     fn drop(&mut self) {
         let _ = munmap(self.address, self.len);
     }
+}
+
+fn snapshot(bytes: &[u8]) -> Option<&'static [u8]> {
+    if bytes.is_empty() {
+        return Some(&[]);
+    }
+    let mapping = Mapping::anonymous(bytes.len(), PROT_READ | PROT_WRITE).ok()?;
+    // SAFETY: this private mapping is separate from the executable, survives
+    // process startup, and is exposed only as immutable metadata.
+    let copy = unsafe {
+        ptr::copy_nonoverlapping(bytes.as_ptr(), mapping.address, bytes.len());
+        slice::from_raw_parts(mapping.address, mapping.len)
+    };
+    core::mem::forget(mapping);
+    Some(copy)
 }
 
 struct OpenFile(Fd);
@@ -189,7 +220,7 @@ impl FileSet<'_> {
         };
         let stat = fs::fstat(fd.0).map_err(|error| syscall(main, "fstat", error))?;
         let identity = (stat.st_dev, stat.st_ino);
-        if let Some(entry) = resident.iter().find(|entry| entry.identity == identity) {
+        if let Some(entry) = resident.iter().find(|entry| entry.identity == Some(identity)) {
             return Ok(Some(entry.object));
         }
         if let Some(existing) = self
@@ -390,20 +421,13 @@ fn relocate_and_initialize(stack: *const usize, auxv: &Auxv) {
     }
     let name_map = Mapping::name(&path[..len]).unwrap_or_else(|error| fail(error));
     let name = name_map.path();
-    let program = OpenFile::open(name).unwrap_or_else(|error| fail(error));
-    let stat = fs::fstat(program.0).unwrap_or_else(|error| fail(error));
-    let view = program.view(stat).unwrap_or_else(|error| fail(error));
-    let file = Bytes {
-        name,
-        data: view.bytes(),
-        offset: 0,
-    };
-    let link_entry = file.u64(24).unwrap_or_else(|error| fail(error));
-    let bias = auxv
-        .entry
-        .checked_sub(link_entry)
-        .unwrap_or_else(|| fail("invalid executable bias"));
-    let root = Object::parse(name, file.data, bias).unwrap_or_else(|error| fail(error));
+    // SAFETY: exec validated and mapped the entire PHDR table and its loads.
+    // The pathname above is only for display and $ORIGIN dependency search.
+    let root = unsafe {
+        let headers = slice::from_raw_parts(auxv.phdr as *const u8, auxv.phnum * 56);
+        Object::from_mapped(name, headers, auxv.program_bias, auxv.entry, snapshot)
+    }
+    .unwrap_or_else(|error| fail(error));
     let interpreter =
         describe_interpreter(auxv, root.interpreter_name().unwrap_or(c"ld-breenix.so"));
     let mut objects = [root; OBJECTS];
@@ -434,13 +458,7 @@ fn relocate_and_initialize(stack: *const usize, auxv: &Auxv) {
     // SAFETY: after successful startup we keep these files and mapped loads
     // resident. During failure fail() terminates the process.
     let dl = unsafe {
-        dl::publish_initial(
-            &scope,
-            &files,
-            (stat.st_dev, stat.st_ino),
-            auxv.page,
-            interpreter,
-        )
+        dl::publish_initial(&scope, &files, auxv.page, interpreter)
     };
     initialize_libc(stack, scope.objects(), dl);
     let mut state = [InitState::default(); OBJECTS];
@@ -449,7 +467,6 @@ fn relocate_and_initialize(stack: *const usize, auxv: &Auxv) {
         .unwrap_or_else(|error| fail(error));
     core::mem::forget(files);
     core::mem::forget(name_map);
-    core::mem::forget(view);
 }
 
 fn run_initializers(range: core::ops::Range<u64>) {

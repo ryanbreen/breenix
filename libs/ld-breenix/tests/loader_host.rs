@@ -160,6 +160,63 @@ fn fixtures() -> &'static [Fixture; 4] {
 }
 
 #[test]
+fn executable_relocates_from_mapped_metadata() {
+    let [root, outer, inner, _] = fixtures();
+    let mut mapped = vec![0u8; 0x10000];
+    let mut disk = root.file.clone();
+    let get = |offset| u64::from_le_bytes(root.file[offset..offset + 8].try_into().unwrap());
+    let phoff = get(32) as usize;
+    let phnum = u16::from_le_bytes(root.file[56..58].try_into().unwrap()) as usize;
+    let mut phdr = None;
+    for offset in (phoff..phoff + phnum * 56).step_by(56) {
+        if root.file[offset..offset + 4] == 1u32.to_le_bytes() {
+            let src = get(offset + 8) as usize;
+            let dst = get(offset + 16) as usize;
+            let len = get(offset + 32) as usize;
+            mapped[dst..dst + len].copy_from_slice(&disk[src..src + len]);
+            if src <= phoff && phoff + phnum * 56 <= src + len {
+                phdr = Some(dst + phoff - src);
+            }
+        }
+    }
+    // The pathname's current file has different dynamic metadata. The loader's
+    // exec input consists only of the original PHDRs and load segments.
+    disk[root.file_offset("DYNAMIC")..].fill(0);
+    let bias = mapped.as_mut_ptr() as u64;
+    let phdr = phdr.unwrap();
+    let snapshot = |bytes: &[u8]| -> Option<&'static [u8]> {
+        Some(Box::leak(bytes.to_vec().into_boxed_slice()))
+    };
+    // SAFETY: the fixture's PT_LOAD ranges point into `mapped`.
+    let main = unsafe {
+        Object::from_mapped(
+            NAMES[0],
+            &mapped[phdr..phdr + phnum * 56],
+            bias,
+            bias + get(24),
+            snapshot,
+        )
+    }
+    .unwrap();
+    mapped.fill(0);
+    assert!(Object::parse(NAMES[0], &disk, bias).is_err());
+    let scope = [
+        main,
+        Object::parse(NAMES[1], &outer.file, BIASES[1]).unwrap(),
+        Object::parse(NAMES[2], &inner.file, BIASES[2]).unwrap(),
+    ];
+    let mut patches = Vec::new();
+    main.relocate(&scope, |patch| patches.push(patch)).unwrap();
+    let from_file = Object::parse(NAMES[0], &root.file, bias).unwrap();
+    let mut expected = Vec::new();
+    from_file
+        .relocate(&[from_file, scope[1], scope[2]], |patch| expected.push(patch))
+        .unwrap();
+    assert!(!expected.is_empty());
+    assert_eq!(patches, expected);
+}
+
+#[test]
 fn dtpmod64_gets_module_id() {
     let fixtures = fixtures();
     let root = Object::parse(NAMES[0], &fixtures[0].file, BIASES[0]).unwrap();

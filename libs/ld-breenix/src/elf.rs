@@ -71,8 +71,18 @@ impl<'a> Bytes<'a> {
 pub(crate) struct Image<'a> {
     pub file: Bytes<'a>,
     headers: Bytes<'a>,
+    mapped: Option<Mapped>,
     pub bias: u64,
     pub shared: bool,
+}
+
+pub(crate) type Snapshot = fn(&[u8]) -> Option<&'static [u8]>;
+
+#[derive(Debug, Clone, Copy)]
+struct Mapped {
+    #[cfg(feature = "interpreter")]
+    phdr: u64,
+    snapshot: Snapshot,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -120,31 +130,71 @@ impl<'a> Image<'a> {
         let mut image = Self {
             file,
             headers,
+            mapped: None,
             bias,
             shared: kind == 3,
         };
-        for segment in image.segments() {
+        image.validate_loads()?;
+        Ok(image)
+    }
+
+    /// The kernel mapped the PT_LOADs and supplied their bias and PHDR table.
+    /// SAFETY: the file-backed PT_LOADs must be mapped at their biased addresses.
+    pub unsafe fn from_mapped(
+        name: &'a [u8], headers: &[u8], bias: u64, entry: u64, snapshot: Snapshot,
+    ) -> Result<Self, Error<'a>> {
+        let file = Bytes { name, data: &[], offset: 0 };
+        if headers.is_empty() || headers.len() as u64 % PROGRAM_HEADER_SIZE != 0 {
+            return Err(file.error(ErrorKind::InvalidProgramHeader));
+        }
+        let mut image = Self {
+            file,
+            headers: Bytes {
+                data: snapshot(headers).ok_or_else(|| file.error(ErrorKind::Capacity))?,
+                ..file
+            },
+            mapped: Some(Mapped {
+                #[cfg(feature = "interpreter")]
+                phdr: headers.as_ptr() as u64,
+                snapshot,
+            }),
+            bias,
+            shared: false,
+        };
+        image.validate_loads()?;
+        let link_entry = entry.checked_sub(bias)
+            .ok_or_else(|| file.error(ErrorKind::InvalidProgramHeader))?;
+        image.address(link_entry, 1, 1, 0)?;
+        Ok(image)
+    }
+
+    fn validate_loads(&mut self) -> Result<(), Error<'a>> {
+        for segment in self.segments() {
             let segment = segment?;
             match segment.kind {
                 PT_LOAD => {
                     if segment.file_size > segment.mem_size
                         || segment
                             .address
-                            .checked_add(bias)
+                            .checked_add(self.bias)
                             .and_then(|start| start.checked_add(segment.mem_size))
                             .is_none()
                     {
                         return Err(
-                            image.at(segment.header_offset, ErrorKind::InvalidProgramHeader)
+                            self.at(segment.header_offset, ErrorKind::InvalidProgramHeader)
                         );
                     }
-                    file.slice(segment.offset, segment.file_size)?;
+                    if self.mapped.is_none() {
+                        self.file.slice(segment.offset, segment.file_size)?;
+                    } else if segment.offset.checked_add(segment.file_size).is_none() {
+                        return Err(self.at(segment.header_offset, ErrorKind::InvalidProgramHeader));
+                    }
                 }
-                PT_INTERP => image.shared = false,
+                PT_INTERP => self.shared = false,
                 _ => {}
             }
         }
-        Ok(image)
+        Ok(())
     }
 
     pub fn segments(self) -> impl Iterator<Item = Result<Segment, Error<'a>>> {
@@ -174,15 +224,34 @@ impl<'a> Image<'a> {
 
     /// Translate an ELF virtual address through a readable, file-backed PT_LOAD.
     pub fn file_at(self, address: u64, size: u64, source: u64) -> Result<Bytes<'a>, Error<'a>> {
+        let offset = self.file_offset(address, size, source)?;
+        match self.mapped {
+            Some(mapped) => self.snapshot_at(mapped, self.bias + address, offset, size),
+            None => self.file.slice(offset, size),
+        }
+    }
+
+    pub fn file_offset(self, address: u64, size: u64, source: u64) -> Result<u64, Error<'a>> {
         for segment in self.segments() {
             let segment = segment?;
             if segment.kind == PT_LOAD && segment.flags & PF_R != 0 {
                 if let Some(delta) = segment.contains(address, size, segment.file_size) {
-                    return self.file.slice(segment.offset + delta, size);
+                    return Ok(segment.offset + delta);
                 }
             }
         }
         Err(self.at(source, ErrorKind::Bounds))
+    }
+
+    fn snapshot_at(self, mapped: Mapped, address: u64, offset: u64, size: u64) -> Result<Bytes<'a>, Error<'a>> {
+        let size = usize::try_from(size).ok().filter(|&len| len <= isize::MAX as usize)
+            .ok_or_else(|| self.at(offset, ErrorKind::Bounds))?;
+        // SAFETY: the caller of from_mapped supplied the live image. The
+        // caller of snapshot_at checked this span against a readable PT_LOAD.
+        // Keep a copy because later relocations can write to the load.
+        let source = unsafe { core::slice::from_raw_parts(address as *const u8, size) };
+        let data = (mapped.snapshot)(source).ok_or_else(|| self.at(offset, ErrorKind::Capacity))?;
+        Ok(Bytes { data, offset, ..self.file })
     }
 
     /// Validate an in-memory span, including the zero-filled PT_LOAD tail.
@@ -212,7 +281,13 @@ impl<'a> Image<'a> {
             .segments()
             .filter_map(Result::ok)
             .find(|header| header.kind == PT_INTERP)?;
-        let bytes = self.file.slice(header.offset, header.file_size).ok()?;
+        let bytes = match self.mapped {
+            Some(mapped) => {
+                let address = self.runtime_offset(header.offset, header.file_size)?;
+                self.snapshot_at(mapped, address, header.offset, header.file_size).ok()?
+            }
+            None => self.file.slice(header.offset, header.file_size).ok()?,
+        };
         core::ffi::CStr::from_bytes_with_nul(bytes.data).ok()
     }
 
@@ -229,6 +304,9 @@ impl<'a> Image<'a> {
     #[cfg(feature = "interpreter")]
     pub fn program_headers(self) -> (*const core::ffi::c_void, usize) {
         let size = self.headers.data.len();
+        if let Some(mapped) = self.mapped {
+            return (mapped.phdr as *const _, size / PROGRAM_HEADER_SIZE as usize);
+        }
         let address = self
             .runtime_offset(self.headers.offset, size as u64)
             .map_or(self.headers.data.as_ptr(), |address| address as *const u8);

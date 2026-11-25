@@ -101,6 +101,7 @@ fn interp_handoff_auxv() {
             (4, 56),
             (6, PAGE),
             (7, bias),
+            (0x6000_0000, 0),
             (25, RANDOM),
             (11, 1000),
             (12, 1001),
@@ -123,6 +124,22 @@ fn interp_handoff_auxv() {
     put(&mut program, 64 + 32, &(PATH.len() as u64).to_le_bytes());
     put(&mut program, 18, &183u16.to_le_bytes());
     assert!(matches!(read(&program, 183), Err(Errno(ENOEXEC))));
+}
+
+#[test]
+fn pie_handoff_supplies_bias_without_pt_phdr() {
+    let program = elf(3, INTERP_BASE, INTERP_ENTRY, Some(PATH));
+    let interpreter = read(&elf(3, INTERP_BASE, INTERP_ENTRY, None), 62).unwrap();
+    let headers = read(&program, 62).unwrap()
+        .position_program(PROGRAM_BASE..PROGRAM_BASE + 0x10000).unwrap();
+    let plan = headers.exec_plan(Some((&interpreter, PROGRAM_BASE..PROGRAM_BASE + 0x10000)))
+        .unwrap();
+    let auxv: std::collections::BTreeMap<_, _> = plan.auxv(RANDOM, IDS).collect();
+    let bias = PROGRAM_BASE - INTERP_BASE;
+    assert_eq!(auxv[&0x6000_0000], bias);
+    assert_eq!(auxv[&3], bias + INTERP_BASE + 64);
+    assert_eq!(auxv[&9], bias + INTERP_ENTRY);
+    assert_eq!(plan.auxv_size(), auxv.len() * 16);
 }
 
 #[test]
