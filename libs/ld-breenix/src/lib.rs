@@ -1,17 +1,51 @@
 #![no_std]
 #![deny(unsafe_op_in_unsafe_fn)]
 
-// API scaffold for the check-first commit.
-use core::ops::Range;
+//! Slice-based ELF64 dynamic linking for the Breenix interpreter.
+
+mod elf;
+mod object;
+mod scope;
+
+pub use object::{Object, Patch};
+pub use scope::{Dependency, InitArray, InitKind, InitState, Scope};
+
+use core::ffi::{c_char, c_void};
+use core::fmt;
+
+/// Shared LP64 record for the interpreter and libc. See the crate README.
+#[repr(C)]
+pub struct LoadedObject {
+    pub name: *const c_char,
+    pub bias: u64,
+    pub phdr: *const c_void,
+    pub phnum: usize,
+    pub dynamic: *const c_void,
+    pub tls_module_id: usize,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorKind {
-    MissingDynamic,
     Bounds,
-    UnsupportedRelocation(u32),
+    UnsupportedElf,
+    InvalidProgramHeader,
+    MissingDynamic,
+    InvalidDynamic,
+    UnsupportedDynamic(u64),
+    InvalidString,
+    InvalidHash,
+    InvalidSymbol,
     UndefinedSymbol,
+    UnsupportedRelocation(u32),
+    InvalidRelocation,
+    UnsupportedSubstitution,
+    MissingDependency,
+    InvalidDependency,
+    Capacity,
 }
 
+/// A diagnostic at a file offset in the named object. Detail, when present,
+/// is the unresolved symbol, dependency, or substitution as raw bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Error<'a> {
     pub object: &'a [u8],
@@ -20,90 +54,21 @@ pub struct Error<'a> {
     pub detail: &'a [u8],
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct Object<'a> {
-    name: &'a [u8],
-}
-
-impl<'a> Object<'a> {
-    pub fn parse(name: &'a [u8], _file: &'a [u8], _bias: u64) -> Result<Self, Error<'a>> {
-        Err(Error {
-            object: name,
-            offset: 0,
-            kind: ErrorKind::MissingDynamic,
-            detail: b"",
-        })
-    }
-
-    pub fn name(self) -> &'a [u8] {
-        self.name
-    }
-
-    pub fn relocate(self, _scope: &[Self], _write: impl FnMut(Patch)) -> Result<(), Error<'a>> {
+impl fmt::Display for Error<'_> {
+    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write_bytes(out, self.object)?;
+        write!(out, "+{:#x}: {:?}", self.offset, self.kind)?;
+        if !self.detail.is_empty() {
+            out.write_str(": ")?;
+            write_bytes(out, self.detail)?;
+        }
         Ok(())
     }
-
-    pub fn relro(self) -> Option<Range<u64>> {
-        None
-    }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub struct Patch {
-    pub address: u64,
-    pub value: u64,
-}
-
-#[derive(Clone, Copy, Default)]
-pub struct Dependency {
-    _from: usize,
-    _to: usize,
-}
-
-#[derive(Clone, Copy, Default)]
-pub struct InitState {
-    _next: usize,
-    _parent: Option<usize>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InitKind {
-    Preinit,
-    Init,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub struct InitArray {
-    pub object: usize,
-    pub kind: InitKind,
-    pub range: Range<u64>,
-}
-
-pub struct Scope<'a, 's> {
-    objects: &'s [Object<'a>],
-}
-
-impl<'a, 's> Scope<'a, 's> {
-    pub fn load(
-        root: Object<'a>,
-        objects: &'s mut [Object<'a>],
-        _edges: &'s mut [Dependency],
-        _path: &mut [u8],
-        _open: impl FnMut(&[u8]) -> Result<Option<Object<'a>>, Error<'a>>,
-    ) -> Result<Self, Error<'a>> {
-        objects.fill(root);
-        Ok(Self { objects })
-    }
-
-    pub fn objects(&self) -> &[Object<'a>] {
-        self.objects
-    }
-
-    pub fn initializers(
-        &self,
-        _state: &mut [InitState],
-        _emit: impl FnMut(InitArray),
-    ) -> Result<(), Error<'a>> {
-        Ok(())
+fn write_bytes(out: &mut fmt::Formatter<'_>, bytes: &[u8]) -> fmt::Result {
+    match core::str::from_utf8(bytes) {
+        Ok(text) => out.write_str(text),
+        Err(_) => write!(out, "{bytes:?}"),
     }
 }
