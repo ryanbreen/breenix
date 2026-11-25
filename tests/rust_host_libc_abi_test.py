@@ -28,6 +28,7 @@ SIGNATURES = {
     'getentropy': ('int', 'void *, size_t'),
     'ioctl': ('int', 'int, unsigned long, ...'),
     'mknodat': ('int', 'int, const char *, mode_t, dev_t'),
+    'msync': ('int', 'void *, size_t, int'),
     'posix_fadvise': ('int', 'int, off_t, off_t, int'),
     'posix_fallocate': ('int', 'int, off_t, off_t'),
     'preadv': ('ssize_t', 'int, const struct iovec *, int, off_t'),
@@ -53,10 +54,10 @@ def rust_type(name):
 def check(arch, deps, rustc, clang):
     clines = ['#define _GNU_SOURCE 1']
     for header in ('stddef.h', 'limits.h', 'fcntl.h', 'dirent.h', 'unistd.h', 'sys/file.h',
-                   'sys/ioctl.h', 'sys/stat.h', 'sys/statfs.h', 'sys/statvfs.h', 'sys/uio.h',
+                   'sys/ioctl.h', 'sys/mman.h', 'sys/stat.h', 'sys/statfs.h', 'sys/statvfs.h', 'sys/uio.h',
                    'sys/sysmacros.h'):
         clines.append(f'#include <{header}>')
-    rlines = ['#![no_std]', 'extern crate libc;']
+    rlines = ['#![no_std]', '#![feature(rustc_private)]', 'extern crate libc;']
     for name, (result, args) in SIGNATURES.items():
         clines.append(f'_Static_assert(__builtin_types_compatible_p(__typeof__(&{name}), '
                       f'{result} (*)({args})), "{name}");')
