@@ -1,0 +1,241 @@
+use ld_breenix::{Dependency, ErrorKind, InitKind, InitState, Object, Patch, Scope};
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::path::PathBuf;
+use std::process::Command;
+use std::sync::OnceLock;
+
+const NAMES: [&[u8]; 3] = [
+    b"/fixture/fixture",
+    b"/fixture/lib/libouter.so",
+    b"/fixture/lib/private/libinner.so",
+];
+const FILES: [&str; 3] = ["fixture", "lib/libouter.so", "lib/private/libinner.so"];
+const BIASES: [u64; 3] = [0x4000_0000, 0x5000_0000, 0x6000_0000];
+
+struct Fixture {
+    file: Vec<u8>,
+    readelf: String,
+    symbols: BTreeMap<String, u64>,
+}
+
+fn hex(text: &str) -> u64 {
+    u64::from_str_radix(text.trim_start_matches("0x"), 16).unwrap()
+}
+
+impl Fixture {
+    fn file_offset(&self, segment: &str) -> usize {
+        let mut fields = self
+            .readelf
+            .lines()
+            .find_map(|line| line.trim_start().strip_prefix(segment))
+            .unwrap()
+            .split_whitespace();
+        hex(fields.next().unwrap()) as usize
+    }
+
+    fn relro(&self, bias: u64) -> std::ops::Range<u64> {
+        let fields: Vec<_> = self
+            .readelf
+            .lines()
+            .find(|line| line.trim_start().starts_with("GNU_RELRO "))
+            .unwrap()
+            .split_whitespace()
+            .collect();
+        let start = bias + hex(fields[2]);
+        start..start + hex(fields[5])
+    }
+
+    fn first_rela(&self) -> usize {
+        let heading = self
+            .readelf
+            .lines()
+            .find(|line| line.starts_with("Relocation section '.rela.dyn'"))
+            .unwrap();
+        hex(heading.split_whitespace().nth(5).unwrap()) as usize
+    }
+}
+
+fn fixtures() -> &'static [Fixture; 3] {
+    static FIXTURES: OnceLock<[Fixture; 3]> = OnceLock::new();
+    FIXTURES.get_or_init(|| {
+        let script =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/dynamic/build.sh");
+        let temp = Command::new("mktemp").arg("-d").output().unwrap();
+        assert!(temp.status.success(), "{temp:?}");
+        struct Scratch(PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                fs::remove_dir_all(&self.0).expect("remove the fixture directory");
+            }
+        }
+        let temp = Scratch(PathBuf::from(
+            std::str::from_utf8(&temp.stdout).unwrap().trim(),
+        ));
+        let result = Command::new(script).arg(&temp.0).output().unwrap();
+        assert!(result.status.success(), "{result:?}");
+        FILES.map(|name| Fixture {
+            file: fs::read(temp.0.join(name)).unwrap(),
+            readelf: fs::read_to_string(temp.0.join(format!("{name}.readelf"))).unwrap(),
+            symbols: fs::read_to_string(temp.0.join(format!("{name}.nm")))
+                .unwrap()
+                .lines()
+                .map(|line| {
+                    let mut fields = line.split_whitespace();
+                    let symbol = fields.next().unwrap().to_owned();
+                    (symbol, hex(fields.nth(1).unwrap()))
+                })
+                .collect(),
+        })
+    })
+}
+
+#[test]
+fn two_dso_fixture_resolves_every_value() {
+    let fixtures = fixtures();
+    let objects = std::array::from_fn::<_, 3, _>(|i| {
+        Object::parse(NAMES[i], &fixtures[i].file, BIASES[i]).unwrap()
+    });
+    let mut queue = [objects[0]; 3];
+    let mut edges = [Dependency::default(); 3];
+    let mut path = [0; 128];
+    let mut attempts = Vec::new();
+    let scope = Scope::load(objects[0], &mut queue, &mut edges, &mut path, |path| {
+        attempts.push(path.to_vec());
+        Ok(objects[1..]
+            .iter()
+            .rev()
+            .copied()
+            .find(|obj| obj.name() == path))
+    })
+    .unwrap();
+    assert_eq!(
+        attempts,
+        [
+            b"/fixture/missing/libouter.so".as_slice(),
+            NAMES[1],
+            NAMES[2]
+        ]
+    );
+    assert_eq!(
+        scope
+            .objects()
+            .iter()
+            .map(|obj| obj.name())
+            .collect::<Vec<_>>(),
+        NAMES
+    );
+
+    let mut seen_kinds = BTreeSet::new();
+    let mut relocated = [const { BTreeMap::new() }; 3];
+    for (i, obj) in scope.objects().iter().enumerate() {
+        let mut expected = BTreeMap::new();
+        for line in fixtures[i].readelf.lines() {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            let Some(kind) = fields.get(2).filter(|kind| kind.starts_with("R_X86_64_")) else {
+                continue;
+            };
+            seen_kinds.insert(*kind);
+            let address = BIASES[i] + hex(fields[0]);
+            let value = match *kind {
+                "R_X86_64_RELATIVE" => BIASES[i] + hex(fields[3]),
+                "R_X86_64_64" | "R_X86_64_GLOB_DAT" | "R_X86_64_JUMP_SLOT" => {
+                    // The fixture's global definitions have default visibility.
+                    // llvm-nm supplies each candidate's link-time symbol value.
+                    let symbol = fields[4];
+                    let resolved = fixtures
+                        .iter()
+                        .zip(BIASES)
+                        .find_map(|(file, bias)| file.symbols.get(symbol).map(|value| bias + value))
+                        .unwrap_or_else(|| {
+                            assert_eq!(symbol, "missing_weak");
+                            0
+                        });
+                    if *kind == "R_X86_64_64" {
+                        assert_eq!(fields[5], "+");
+                        resolved + hex(fields[6])
+                    } else {
+                        resolved
+                    }
+                }
+                _ => panic!("unexpected fixture relocation {kind}"),
+            };
+            assert!(expected.insert(address, value).is_none());
+        }
+        assert!(!expected.is_empty());
+        obj.relocate(scope.objects(), |Patch { address, value }| {
+            assert!(relocated[i].insert(address, value).is_none());
+        })
+        .unwrap();
+        assert_eq!(relocated[i], expected, "{:?}", FILES[i]);
+        assert_eq!(obj.relro(), Some(fixtures[i].relro(BIASES[i])));
+    }
+    assert_eq!(
+        seen_kinds,
+        BTreeSet::from([
+            "R_X86_64_64",
+            "R_X86_64_GLOB_DAT",
+            "R_X86_64_JUMP_SLOT",
+            "R_X86_64_RELATIVE",
+        ])
+    );
+
+    let mut observed = Vec::new();
+    scope
+        .initializers(&mut [InitState::default(); 3], |array| {
+            for slot in array.range.step_by(8) {
+                observed.push((array.object, array.kind, relocated[array.object][&slot]));
+            }
+        })
+        .unwrap();
+    let at = |i: usize, name: &str| BIASES[i] + fixtures[i].symbols[name];
+    assert_eq!(
+        observed,
+        [
+            (0, InitKind::Preinit, at(0, "preinit_first")),
+            (0, InitKind::Preinit, at(0, "preinit_second")),
+            (2, InitKind::Init, at(2, "inner_init")),
+            (1, InitKind::Init, at(1, "outer_init")),
+            (0, InitKind::Init, at(0, "main_init")),
+        ]
+    );
+}
+
+#[test]
+fn relocate_is_error_not_panic() {
+    let fixtures = fixtures();
+    let outer = Object::parse(NAMES[1], &fixtures[1].file, BIASES[1]).unwrap();
+    let missing = outer.relocate(&[outer], |_| {}).unwrap_err();
+    assert_eq!(missing.kind, ErrorKind::UndefinedSymbol);
+    assert_eq!(missing.object, NAMES[1]);
+    assert_eq!(missing.detail, b"inner_data");
+    assert_eq!(missing.offset, fixtures[1].first_rela() as u64 + 24);
+
+    let fixture = &fixtures[0];
+    let truncated = &fixture.file[..fixture.file_offset("DYNAMIC ") + 7];
+    assert_eq!(
+        Object::parse(NAMES[0], truncated, BIASES[0])
+            .unwrap_err()
+            .kind,
+        ErrorKind::Bounds
+    );
+
+    let offset = fixture.first_rela();
+    let mut corrupt = fixture.file.clone();
+    corrupt[offset + 8..offset + 12].copy_from_slice(&u32::MAX.to_le_bytes());
+    let obj = Object::parse(NAMES[0], &corrupt, BIASES[0]).unwrap();
+    let bad_type = obj
+        .relocate(&[obj], |_| panic!("invalid first write"))
+        .unwrap_err();
+    assert_eq!(bad_type.offset, offset as u64);
+    assert_eq!(bad_type.kind, ErrorKind::UnsupportedRelocation(u32::MAX));
+
+    corrupt[offset + 8..offset + 12].copy_from_slice(&8u32.to_le_bytes());
+    corrupt[offset..offset + 8].copy_from_slice(&u64::MAX.to_le_bytes());
+    let obj = Object::parse(NAMES[0], &corrupt, BIASES[0]).unwrap();
+    let bad_slot = obj
+        .relocate(&[obj], |_| panic!("out-of-bounds first write"))
+        .unwrap_err();
+    assert_eq!(bad_slot.offset, offset as u64);
+    assert_eq!(bad_slot.kind, ErrorKind::Bounds);
+}

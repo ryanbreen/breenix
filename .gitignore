@@ -30,6 +30,9 @@ rust-os-gdb
 
 # Ignore most of libs directory (except libraries we maintain)
 libs/*
+!libs/ld-breenix/
+!libs/ld-breenix/Cargo.lock
+/libs/ld-breenix/target/
 !libs/bunwind/
 !libs/bunwind/Cargo.lock
 /libs/bunwind/target/
