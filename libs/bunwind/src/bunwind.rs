@@ -187,6 +187,12 @@ impl Chain {
     /// `pushed` names a region whose call site has pushed that many argument
     /// bytes, described by DW_CFA_GNU_args_size (LSB Core 5.0 §10.5.2).
     fn with_pushed_arguments(handler: bool, pushed: Option<(u64, u8)>) -> Self {
+        let instructions = pushed.map(|(region, bytes)| (region, [0x2e, bytes]));
+        Self::with_instructions(handler, instructions.as_ref().map(|(r, i)| (*r, &i[..])))
+    }
+
+    /// Append `instructions` to the FDE of the named region.
+    fn with_instructions(handler: bool, extra: Option<(u64, &[u8])>) -> Self {
         // DWARF 5 Table 7.29 and LSB Core 5.0 §10.6. A single CIE
         // describes a frame with CFA = R1 + 8 and the return PC at CFA - 8.
         fn record(section: &mut Vec<u8>, body: &[u8]) {
@@ -207,8 +213,8 @@ impl Chain {
             fde.extend(0x100u64.to_le_bytes());
             fde.push(8);
             fde.extend((region + 0x4000).to_le_bytes());
-            if let Some((_, bytes)) = pushed.filter(|&(pushed, _)| pushed == region) {
-                fde.extend([0x2e, bytes]); // DW_CFA_GNU_args_size, ULEB128 operand
+            if let Some((_, instructions)) = extra.filter(|&(target, _)| target == region) {
+                fde.extend(instructions);
             }
             record(&mut eh_frame, &fde);
         }
@@ -378,6 +384,36 @@ fn gnu_args_size_pops_pushed_arguments_at_landing_pad() {
             Personality(REGIONS[1], A::CLEANUP_PHASE),
         ]
     );
+}
+
+/// A fatal unwind reports the phase, the last PC it looked up and why that
+/// lookup stopped, so an aborting process leaves the frame on stderr.
+#[test]
+fn fatal_unwind_reports_the_frame_that_stopped_it() {
+    use crate::report::{failure_line, Recorded};
+
+    let unsupported = [0x3f];
+    let chain = Chain::with_instructions(true, Some((REGIONS[1], &unsupported)));
+    let recorded = Recorded::new(&chain);
+    let mut exception = Exception::new(EXCEPTION_CLASS, None);
+    let result = raise_exception(&recorded, Chain::start(), &mut exception);
+    assert_eq!(result, Err(ReasonCode::FatalPhase1Error));
+    let line = failure_line(ReasonCode::FatalPhase1Error, recorded.last(), None);
+    assert_eq!(
+        core::str::from_utf8(line.as_bytes()).unwrap(),
+        "bunwind: fatal phase 1 unwind error after pc 0x11ff: CFI Fde+0: UnknownOpcode(63)\n"
+    );
+    let placed = failure_line(
+        ReasonCode::FatalPhase2Error,
+        Some((0x7000_1234, crate::report::Outcome::NoFrame)),
+        Some((b"/lib/libc.so", 0x7000_0000)),
+    );
+    assert_eq!(
+        core::str::from_utf8(placed.as_bytes()).unwrap(),
+        "bunwind: fatal phase 2 unwind error after pc 0x70001234: no FDE covers this pc \
+         in /lib/libc.so at offset 0x1234\n"
+    );
+    take_events();
 }
 
 #[test]
