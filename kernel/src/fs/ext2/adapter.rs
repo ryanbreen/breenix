@@ -805,18 +805,30 @@ impl FileSystem for Ext2Adapter {
         &self, node: &VNode, offset: u64, len: u64, clear_setid: bool,
     ) -> Result<(), Errno> {
         let ino = ext2::ino32(node.ino)?;
-        let mut guard = write_mount(self.mount)
-            .map_err(errno)?
-            .wait_for_inode(ino)
-            .map_err(errno)?;
-        let fs = guard.as_mut().ok_or(Errno(EIO))?;
+        let acquire = || write_mount(self.mount).and_then(|guard| guard.wait_for_inode(ino)).map_err(errno);
+        let mut guard = acquire()?;
+        let fs = guard.as_ref().ok_or(Errno(EIO))?;
         let handle = self.pin_node(fs, node)?;
-        fs.ensure_writable().map_err(errno)?;
-        let ino = handle.verify(fs).map_err(errno)?;
-        fs.allocate_file_range_disk(ino, offset, len, clear_setid).map_err(errno)?;
-        let inode = fs.read_inode(ino).map_err(errno)?;
-        node.map.transition(inode.size());
-        refresh(node, &inode)
+        let mut allocation = ext2::write::Preallocation::new(fs, offset, len).map_err(errno)?;
+        loop {
+            if crate::task::thread::current_kill_pending() {
+                return Err(Errno(EINTR));
+            }
+            let fs = guard.as_mut().ok_or(Errno(EIO))?;
+            fs.ensure_writable().map_err(errno)?;
+            let ino = handle.verify(fs).map_err(errno)?;
+            let epoch = handle.object.size_epoch.load(Ordering::Acquire);
+            if allocation.advance(fs, ino, epoch, clear_setid).map_err(errno)? {
+                let inode = fs.read_inode(ino).map_err(errno)?;
+                node.map.transition(inode.size());
+                return refresh(node, &inode);
+            }
+            drop(guard);
+            // Give other mount users a turn at the same boundary at which
+            // a pending kill can end this syscall.
+            ext2::writeback::pause(1_000_000);
+            guard = acquire()?;
+        }
     }
 
     fn resize(

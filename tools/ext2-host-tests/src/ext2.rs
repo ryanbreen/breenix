@@ -550,7 +550,10 @@ pub(crate) mod reclaim_checks {
         let free = fs.statfs().free_blocks;
         let start = BLOCK - 1;
         let len = 2 * BLOCK;
-        fs.allocate_file_range_disk(1, start, len, false).unwrap();
+        // A failed extending write may have reached the device past EOF.
+        data.lock().unwrap()[20 * 4096 + 4..21 * 4096].fill(0x5a);
+        let mut allocation = write::Preallocation::new(&fs, start, len).unwrap();
+        assert!(allocation.advance(&mut fs, 1, 0, false).unwrap());
         let inode = fs.read_inode(1).unwrap();
         assert_eq!(inode.size(), start + len);
         assert_eq!(fs.statfs().free_blocks, free - 2);
@@ -562,6 +565,40 @@ pub(crate) mod reclaim_checks {
         fs.superblock.s_free_blocks_count = 0;
         assert_eq!(fs.write_file_range(1, 2 * BLOCK + 5, b"new").unwrap(), 3);
         assert_eq!(fs.read_inode(1).unwrap().size(), start + len);
+    }
+
+    #[test]
+    fn fallocate_yields_with_old_eof_and_rechecks_after_truncate() {
+        const BLOCK: u64 = 4096;
+        let (mut fs, data, _, _) = two_orphans();
+        data.lock().unwrap()[3 * 4096..3 * 4096 + 3].copy_from_slice(&[0xff, 0xff, 0x3f]);
+        fs.block_groups[0].bg_free_blocks_count = 490;
+        fs.superblock.s_free_blocks_count = 490;
+        let mut inode = fs.read_inode(1).unwrap();
+        inode.i_block[0] = 20;
+        inode.i_block[1] = 0;
+        inode.i_size = 1;
+        fs.write_inode(1, &inode).unwrap();
+        data.lock().unwrap()[20 * 4096..21 * 4096].fill(0x5a);
+        let free = fs.statfs().free_blocks;
+        let end = 24 * BLOCK;
+        let mut allocation = write::Preallocation::new(&fs, 0, end).unwrap();
+
+        assert!(!allocation.advance(&mut fs, 1, 0, false).unwrap());
+        let batch = fs.read_inode(1).unwrap();
+        assert_eq!(batch.size(), 1, "an interrupted batch must preserve EOF");
+        assert!(fs.statfs().free_blocks < free, "the batch must make progress");
+        assert!(fs.statfs().free_blocks > free - 24, "one batch must leave work to do");
+
+        // Model a truncate between mount-guard acquisitions, followed by retry.
+        let mut reclaim = fs.resize_file_disk(1, 0, false).unwrap().unwrap();
+        reclaim.stage(&fs, 1, &mut 128).ok().unwrap();
+        fs.sync().unwrap();
+        assert!(reclaim.finish(&mut fs, 1, &mut 128).ok().unwrap());
+        while !allocation.advance(&mut fs, 1, 1, false).unwrap() {}
+        let inode = fs.read_inode(1).unwrap();
+        assert_eq!(inode.size(), end);
+        assert_eq!(fs.statfs().free_blocks, free - 24);
     }
 
     #[test]
