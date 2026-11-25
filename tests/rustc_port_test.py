@@ -153,6 +153,72 @@ class RustcPort(unittest.TestCase):
             self.assertLessEqual(citation['line'], len(lines))
             self.assertEqual(lines[citation['line'] - 1], citation['quote'])
 
+    def test_x2_one_process_state(self):
+        stage = Path(os.environ.get('BREENIX_X2_STAGE', Path.home() /
+                                    'Library/Caches/breenix-e25/kd/x2/stage1'))
+        llvm = Path(os.environ.get('BREENIX_X2_LLVM', '/opt/homebrew/opt/llvm@20/bin'))
+        drivers = sorted((stage / 'lib').glob('librustc_driver-*.so'))
+        self.assertEqual(len(drivers), 1, drivers)
+        executable = stage / 'bin/rustc'
+        driver, = drivers
+        libc = stage / 'lib/libc.so'
+
+        def inspect(tool, path, *args):
+            return subprocess.check_output([llvm / tool, *args, path], text=True, timeout=30)
+
+        def definitions(path, *args):
+            # POSIX format puts the symbol name before the type, value and size.
+            # In demangled output the name itself may contain spaces.
+            return [tuple(line.rsplit(maxsplit=3)[:2]) for line in
+                    inspect('llvm-nm', path, '--defined-only', '--format=posix', *args).splitlines()]
+
+        paths = (executable, driver, libc)
+        # Inspect the known-bad executable and driver even when no libc.so exists.
+        symbols = {path: definitions(path) for path in paths if path.is_file()}
+
+        def owners(pattern):
+            return [path.name for path, names in symbols.items() for name, _ in names
+                    if re.fullmatch(pattern, name)]
+
+        self.assertEqual(owners('_start'), ['rustc'])
+        self.assertIn(libc, symbols, 'X2 is missing its shared libc')
+        for name in ('environ', 'stdin', 'stdout', 'stderr', 'optarg', 'optind',
+                     'opterr', 'optopt', '__cxa_atexit', 'getauxval'):
+            self.assertEqual(owners(name), ['libc.so'], name)
+        for name in ('AUXV', 'PROCESS', 'RUNTIME_READY', 'EARLY_ERRNO', 'TLS_IMAGE',
+                     'STACK_CACHE', 'AT_EXIT'):
+            self.assertEqual(owners(r'_ZN1c.*' + str(len(name)) + name +
+                                    r'17h[0-9a-f]+E(?:\..*)?'), ['libc.so'], name)
+
+        for path, expected in ((executable, {driver.name, libc.name}),
+                               (driver, {libc.name}), (libc, set())):
+            dynamic = inspect('llvm-readelf', path, '--file-header', '--dynamic-table')
+            self.assertEqual(set(re.findall(r'\(NEEDED\).*\[(.+)\]', dynamic)), expected, path)
+            if path == libc:
+                self.assertRegex(dynamic, r'Type:\s+DYN\b')
+                self.assertEqual(re.findall(r'\(SONAME\).*\[(.+)\]', dynamic), ['libc.so'])
+
+        for path in (executable, driver):
+            link_map = (stage / 'maps' / (path.name + '.map')).read_text()
+            self.assertNotRegex(link_map, r'\blibc\.a\(')
+            self.assertNotRegex(link_map, r'\blibc\.a:')
+            self.assertFalse([name for name, _ in symbols[path] if name.startswith('_ZN1c')])
+            if path == driver:
+                self.assertNotRegex(link_map, r'\bbreenix-crt\.o\b')
+
+        runtime_data = {}
+        for path in paths:
+            for name, kind in definitions(path, '--demangle'):
+                if kind.upper() not in {'B', 'D', 'G', 'S', 'V'}:
+                    continue
+                name = re.sub(r'(?:\.llvm\.[0-9]+|::h[0-9a-f]{16})$', '', name)
+                if (name.startswith(('std::', 'alloc::', 'bunwind::', 'c::stdlib::',
+                                     'std::__', '__cxxabiv1::', '__rust', '__unw',
+                                     '_Unwind_', '__cxa_'))):
+                    runtime_data.setdefault(name, set()).add(path.name)
+        duplicates = {name: sorted(files) for name, files in runtime_data.items() if len(files) > 1}
+        self.assertEqual(duplicates, {})
+
     def test_x2_driver_linked_inventory(self):
         path = RECORDS.parent / 'x2.json'
         self.assertTrue(path.is_file(), 'X2 rustc driver link result has not been recorded')
