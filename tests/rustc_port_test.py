@@ -1,6 +1,7 @@
 import datetime
 import hashlib
 import json
+import mmap
 import os
 import re
 import shutil
@@ -29,6 +30,35 @@ def git(*args, tree=TREE):
 
 
 class RustcPort(unittest.TestCase):
+    def test_twin_rlibs_match_twin_compiler(self):
+        cache = Path.home() / 'Library/Caches/breenix-e25/k5/twin'
+        mac_rustc = Path(os.environ.get('BREENIX_K5_MAC_RUSTC', cache / 'mac/bin/rustc'))
+        sysroot = Path(os.environ.get('BREENIX_K5_SYSROOT', cache / 'sysroot'))
+        verbose = subprocess.check_output([mac_rustc, '-vV'], text=True, timeout=5)
+        banner, *fields = verbose.splitlines()
+        version = dict(line.split(': ', 1) for line in fields)
+        targets = ('x86_64-breenix', 'x86_64-breenix-hosted')
+        for target in targets:
+            archives = sorted((sysroot / 'lib/rustlib' / target / 'lib').glob('*.rlib'))
+            for crate in ('core', 'alloc', 'std'):
+                self.assertEqual(sum(path.name.startswith(f'lib{crate}-') for path in archives),
+                                 1, target)
+            for archive in archives:
+                with self.subTest(target=target, archive=archive.name):
+                    result = subprocess.run([mac_rustc, '-Zls=root', archive],
+                                            capture_output=True, text=True, timeout=5, check=True)
+                    self.assertEqual(result.stderr, '', f'{archive.name} must match {banner}')
+                    self.assertIn(f'triple {target}', result.stdout.splitlines())
+
+        commit = version['commit-hash']
+        self.assertRegex(commit, r'^[0-9a-f]{40}$')
+        self.assertIn(f"{version['release']} ({commit[:9]} ", banner)
+        hosted = Path(os.environ.get('BREENIX_K5_HOSTED', cache / 'hosted'))
+        driver, = (hosted / 'lib').glob('librustc_driver-*.so')
+        with driver.open('rb') as binary, mmap.mmap(binary.fileno(), 0, access=mmap.ACCESS_READ) as data:
+            for value in (version['release'], commit, targets[1]):
+                self.assertNotEqual(data.find(value.encode()), -1, f'hosted rustc identity field: {value}')
+
     def test_rustix_patch_is_breenix_only(self):
         patch = RUSTIX_PATCH.read_text()
         records = re.split(r'(?m)^diff --git ', patch)[1:]
