@@ -101,15 +101,12 @@ impl BlockDevice for MountDevice {
 
     fn read_blocks(&self, start: u64, count: usize, buf: &mut [u8]) -> Result<(), BlockError> {
         cache_kernel::assert_io_context();
-        let bytes = self.span(start, count, buf.len())?;
-        if self.cache.is_none() {
-            return self.inner.read_blocks(start, count, buf);
+        self.span(start, count, buf.len())?;
+        match self.cache {
+            Some(cache) if count != 0 => cache.read_blocks(self.inner.as_ref(), start, count, buf),
+            Some(_) => Ok(()),
+            None => self.inner.read_blocks(start, count, buf),
         }
-        let size = self.inner.block_size();
-        for (i, chunk) in buf[..bytes].chunks_exact_mut(size).enumerate() {
-            self.read_block(start + i as u64, chunk)?;
-        }
-        Ok(())
     }
 
     fn write_block(&self, block: u64, buf: &[u8]) -> Result<(), BlockError> {
