@@ -219,7 +219,9 @@ def mode_deadline_seconds(args, suite=None):
             deadlines = {'toolchain': 1969, 'libc': 3250, 'utilities': 2425}
             if name in deadlines:
                 return deadlines[name]
-        base = {'breengel': 900, 'window-manager': 1800, 'ui-testing': 1800}.get(name, MODE_DEADLINE_SECONDS['suite'])
+        # llvm: six 60 s provisional case allowances plus 25% (E25 rulings 66 and 81).
+        base = {'breengel': 900, 'window-manager': 1800, 'ui-testing': 1800,
+                'llvm': 450}.get(name, MODE_DEADLINE_SECONDS['suite'])
         return base + (intent_manifest.counts().get(name, 0) if getattr(args, 'screen_proof', False) else 0)
     return MODE_DEADLINE_SECONDS[args.mode]
 

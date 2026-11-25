@@ -561,7 +561,11 @@ pub const ARM_BUSYBOX_CASE_ALLOWANCES: &[(&str, &str, u64)] = &[
 /// the workload plus the 1.5 s collection reserve, rounded up.
 pub const NAMED_CASE_ALLOWANCES: &[(&str, &str, u64)] = &[
     // Provisional K4 allowances until the first R240 measurement.
-    ("llvm", "llvm/llc-objects-equal-mac", 60_000),
+    ("llvm", "llvm/llc-arithmetic-equals-mac", 60_000),
+    ("llvm", "llvm/llc-hello-equals-mac", 60_000),
+    ("llvm", "llvm/llc-libc-call-equals-mac", 60_000),
+    ("llvm", "llvm/llc-loop-equals-mac", 60_000),
+    ("llvm", "llvm/llc-struct-equals-mac", 60_000),
     ("llvm", "llvm/llc-object-runs", 60_000),
     // The shipped catalog measured 2.2 s on the R240. 60 s bounds a slow network
     // probe while staying inside the 120 s stall watchdog.

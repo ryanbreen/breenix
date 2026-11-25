@@ -12,7 +12,11 @@ use std::path::Path;
 use std::ptr::{null, null_mut};
 
 static SUITE: Suite = suite("llvm", "LLVM", &[category("llvm", "LLVM", &[
-    case("llc-objects-equal-mac", "LLC objects equal Mac", objects_equal),
+    case("llc-arithmetic-equals-mac", "LLC arithmetic object equals Mac", arithmetic_equals_mac),
+    case("llc-hello-equals-mac", "LLC hello object equals Mac", hello_equals_mac),
+    case("llc-libc-call-equals-mac", "LLC libc call object equals Mac", libc_call_equals_mac),
+    case("llc-loop-equals-mac", "LLC loop object equals Mac", loop_equals_mac),
+    case("llc-struct-equals-mac", "LLC struct object equals Mac", struct_equals_mac),
     case("llc-object-runs", "LLC object runs", object_runs),
 ])]);
 
@@ -96,21 +100,27 @@ fn compile(entry: &Value, output: &str) -> CaseResult {
     Ok(())
 }
 fn temp(name: &str) -> String { format!("/tmp/llvm-{}-{name}", std::process::id()) }
-fn objects_equal() -> CaseResult {
+/// Compile one corpus object with the box's llc (one llc run per case) and
+/// compare it with the Mac llc's object.
+fn object_equals(name: &str) -> CaseResult {
     let expectations = expectations()?;
     let objects = expectations["objects"].as_array().ok_or_else(|| fail("missing objects"))?;
-    if objects.is_empty() { return Err(fail("empty corpus")); }
+    let entry = objects.iter().find(|entry| entry["input"].as_str() == Some(name))
+        .ok_or_else(|| fail(format!("missing corpus object {name}")))?;
     let output = temp("object.o");
-    for entry in objects {
-        let _ = fs::remove_file(&output);
-        compile(entry, &output)?;
-        let bytes = fs::read(&output).map_err(fail)?;
-        let actual: String = sha256(&bytes).iter().map(|b| format!("{b:02x}")).collect();
-        if entry["sha256"].as_str() != Some(actual.as_str()) { return Err(fail(format!("object digest mismatch: {}", entry["input"]))); }
-    }
+    let _ = fs::remove_file(&output);
+    compile(entry, &output)?;
+    let bytes = fs::read(&output).map_err(fail)?;
+    let actual: String = sha256(&bytes).iter().map(|b| format!("{b:02x}")).collect();
+    if entry["sha256"].as_str() != Some(actual.as_str()) { return Err(fail(format!("object digest mismatch: {name}"))); }
     fs::remove_file(output).map_err(fail)?;
     Ok(())
 }
+fn arithmetic_equals_mac() -> CaseResult { object_equals("arithmetic.ll") }
+fn hello_equals_mac() -> CaseResult { object_equals("hello.ll") }
+fn libc_call_equals_mac() -> CaseResult { object_equals("libc-call.ll") }
+fn loop_equals_mac() -> CaseResult { object_equals("loop.ll") }
+fn struct_equals_mac() -> CaseResult { object_equals("struct.ll") }
 fn object_runs() -> CaseResult {
     let expectations = expectations()?;
     let program = &expectations["program"];
