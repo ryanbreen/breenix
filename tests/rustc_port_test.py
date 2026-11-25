@@ -1,7 +1,12 @@
 import datetime
+import hashlib
 import json
+import os
+import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import tomllib
 import unittest
 from pathlib import Path
@@ -11,6 +16,7 @@ RECORDS = ROOT / 'toolchain/rust-host/x0'
 TREE = Path.home() / 'fun/code/rust.worktrees/x0-666252fd'
 BASE = '706f244db'
 PIN = '666252fd61839b9e9b1bc9e777a0c84c5cf3dc6d'
+RUSTIX_PATCH = RECORDS.parent / 'k5/patches/rustix-1.0.7-breenix.patch'
 
 
 def git(*args, tree=TREE):
@@ -19,6 +25,53 @@ def git(*args, tree=TREE):
 
 
 class RustcPort(unittest.TestCase):
+    def test_rustix_patch_is_breenix_only(self):
+        patch = RUSTIX_PATCH.read_text()
+        records = re.split(r'(?m)^diff --git ', patch)[1:]
+        self.assertTrue(records)
+        for record in records:
+            header = record.splitlines()[0]
+            match = re.fullmatch(r'a/(src/[\w/]+\.rs) b/\1', header)
+            self.assertIsNotNone(match, header)
+            path = match[1]
+            self.assertNotIn('tests', Path(path).parts)
+            self.assertIn(f'\n--- a/{path}\n+++ b/{path}\n', record)
+            hunks = re.split(r'(?m)^@@ .* @@[^\n]*\n', record)[1:]
+            self.assertTrue(hunks, path)
+            for hunk in hunks:
+                self.assertFalse(any(line.startswith('-') for line in hunk.splitlines()), path)
+                added = [line[1:].strip() for line in hunk.splitlines() if line.startswith('+')]
+                self.assertTrue(added, path)
+                while added:
+                    guard = added.pop(0)
+                    if guard == '#[cfg(target_os = "breenix")]':
+                        self.assertTrue(added, path)
+                        self.assertRegex(added.pop(0), r'^type \w+ = [\w:]+;$')
+                    else:
+                        self.assertEqual(guard, '#[cfg_attr(target_os = "breenix", cfg(any()))]')
+
+    def test_rustix_patch_preserves_registry_copy(self):
+        self.assertTrue(RUSTIX_PATCH.is_file(), 'rustix port patch is missing')
+        cargo = Path(os.environ.get('BREENIX_X2_CARGO_HOME', Path.home() /
+                                    'Library/Caches/breenix-e25/k5/x2b/cargo'))
+        sources = list(cargo.glob('registry/src/*/rustix-1.0.7'))
+        self.assertEqual(len(sources), 1, sources)
+        source = sources[0].resolve()
+
+        def snapshot(tree):
+            return {path.relative_to(tree): hashlib.sha256(path.read_bytes()).hexdigest()
+                    for path in tree.rglob('*') if path.is_file()}
+
+        before = snapshot(source)
+        self.assertTrue(before)
+        with tempfile.TemporaryDirectory(prefix='breenix-x2-rustix-') as directory:
+            local = Path(directory) / source.name
+            shutil.copytree(source, local)
+            subprocess.run(['git', 'apply', '--no-index', RUSTIX_PATCH], cwd=local,
+                           check=True, timeout=15)
+            self.assertNotEqual(snapshot(local), before)
+        self.assertEqual(snapshot(source), before)
+
     def test_x2_static_route_answered_with_citations(self):
         record = json.loads((RECORDS.parent / 'x2.json').read_text())
         route = record['static_route']
