@@ -206,6 +206,67 @@ impl<'a> Image<'a> {
         Err(self.at(source, ErrorKind::Bounds))
     }
 
+    #[cfg(feature = "interpreter")]
+    pub fn interpreter_name(self) -> Option<&'a core::ffi::CStr> {
+        let header = self
+            .segments()
+            .filter_map(Result::ok)
+            .find(|header| header.kind == PT_INTERP)?;
+        let bytes = self.file.slice(header.offset, header.file_size).ok()?;
+        core::ffi::CStr::from_bytes_with_nul(bytes.data).ok()
+    }
+
+    #[cfg(feature = "interpreter")]
+    pub fn runtime_offset(self, offset: u64, size: u64) -> Option<u64> {
+        self.segments().filter_map(Result::ok).find_map(|segment| {
+            let displacement = offset.checked_sub(segment.offset)?;
+            let remaining = segment.file_size.checked_sub(displacement)?;
+            (segment.kind == PT_LOAD && segment.flags & PF_R != 0 && size <= remaining)
+                .then(|| self.bias + segment.address + displacement)
+        })
+    }
+
+    #[cfg(feature = "interpreter")]
+    pub fn program_headers(self) -> (*const core::ffi::c_void, usize) {
+        let size = self.headers.data.len();
+        let address = self
+            .runtime_offset(self.headers.offset, size as u64)
+            .map_or(self.headers.data.as_ptr(), |address| address as *const u8);
+        (address.cast(), size / PROGRAM_HEADER_SIZE as usize)
+    }
+
+    // gABI §3: find a named, allocated section when section headers are present.
+    #[cfg(feature = "interpreter")]
+    pub fn section_base(self, name: &[u8]) -> Option<u64> {
+        let file = self.file;
+        let table = file.u64(40).ok()?;
+        let count = u64::from(file.u16(60).ok()?);
+        let names = u64::from(file.u16(62).ok()?);
+        if table == 0 || file.u16(58).ok()? != 64 || names >= count {
+            return None;
+        }
+        let sections = file.slice(table, count * 64).ok()?;
+        let strings = sections.slice(names * 64, 64).ok()?;
+        let strings = file
+            .slice(strings.u64(24).ok()?, strings.u64(32).ok()?)
+            .ok()?;
+        (0..count).find_map(|index| {
+            let section = sections.slice(index * 64, 64).ok()?;
+            let flags = section.u64(8).ok()?;
+            let offset = section.u32(0).ok()? as usize;
+            let tail = strings.data.get(offset..)?;
+            if flags & 2 == 0 || !tail.strip_prefix(name)?.starts_with(&[0]) {
+                return None;
+            }
+            let size = section.u64(32).ok()?;
+            if size == 0 {
+                return None;
+            }
+            self.address(section.u64(16).ok()?, size, PF_R, section.offset)
+                .ok()
+        })
+    }
+
     pub fn at(self, offset: u64, kind: ErrorKind) -> Error<'a> {
         Error {
             offset,

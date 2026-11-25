@@ -6,6 +6,8 @@ use crate::{Error, ErrorKind};
 
 const DT_NEEDED: u64 = 1;
 const DT_PLTRELSZ: u64 = 2;
+
+const DT_SONAME: u64 = 14;
 const DT_HASH: u64 = 4;
 const DT_STRTAB: u64 = 5;
 const DT_SYMTAB: u64 = 6;
@@ -58,6 +60,8 @@ pub struct Object<'a> {
     chains: u64,
     rela: Option<Bytes<'a>>,
     plt: Option<Bytes<'a>>,
+    #[cfg(feature = "interpreter")]
+    soname: Option<LinkString<'a>>,
     pub(crate) runpath: Option<LinkString<'a>>,
     pub(crate) preinit: Option<Span>,
     pub(crate) init: Option<Span>,
@@ -133,6 +137,7 @@ impl<'a> Tags<'a> {
             if matches!(
                 kind,
                 DT_PLTRELSZ
+                    | DT_SONAME
                     | DT_HASH
                     | DT_STRTAB
                     | DT_SYMTAB
@@ -308,6 +313,11 @@ impl<'a> Object<'a> {
         let strtab = tags.require(DT_STRTAB)?;
         let strings = image.file_at(strtab.value, tags.require(DT_STRSZ)?.value, strtab.offset)?;
         let runpath = runpath.map(|entry| string(strings, entry)).transpose()?;
+        #[cfg(feature = "interpreter")]
+        let soname = tags
+            .get(DT_SONAME)
+            .map(|entry| string(strings, entry))
+            .transpose()?;
 
         let hash_tag = tags.require(DT_HASH)?;
         let hash_header = image.file_at(hash_tag.value, 8, hash_tag.offset)?;
@@ -344,6 +354,8 @@ impl<'a> Object<'a> {
             chains,
             rela,
             plt,
+            #[cfg(feature = "interpreter")]
+            soname,
             runpath,
             preinit: tags.array(image, DT_PREINIT_ARRAY, DT_PREINIT_ARRAYSZ)?,
             init: tags.array(image, DT_INIT_ARRAY, DT_INIT_ARRAYSZ)?,
@@ -457,6 +469,86 @@ impl<'a> Object<'a> {
         Err(self.at(self.hash.offset + link, ErrorKind::InvalidHash))
     }
 
+    /// Search an already ordered scope, stopping at its first definition.
+    pub fn lookup_scope(
+        objects: impl IntoIterator<Item = Self>,
+        name: &[u8],
+    ) -> Result<Option<u64>, Error<'a>> {
+        for object in objects {
+            if let Some(address) = object.lookup(name)? {
+                return Ok(Some(address));
+            }
+        }
+        Ok(None)
+    }
+
+    #[cfg(feature = "interpreter")]
+    pub(crate) fn interpreter_name(self) -> Option<&'a core::ffi::CStr> {
+        self.image.interpreter_name()
+    }
+
+    #[cfg(feature = "interpreter")]
+    pub(crate) fn matches_name(self, name: &[u8]) -> bool {
+        self.name() == name
+            || (!name.contains(&b'/')
+                && (self.soname.is_some_and(|soname| soname.bytes == name)
+                    || self.name().rsplit(|&byte| byte == b'/').next() == Some(name)))
+    }
+
+    #[cfg(feature = "interpreter")]
+    pub(crate) fn info(self, module: usize) -> Result<crate::dl_abi::ObjectInfo, Error<'a>> {
+        use crate::dl_abi::{LoadedObject, ObjectInfo};
+        let (phdr, phnum) = self.image.program_headers();
+        let dynamic = self
+            .image
+            .runtime_offset(self.dynamic.offset, DYN_SIZE)
+            .ok_or_else(|| self.dynamic.error(ErrorKind::InvalidDynamic))?;
+        let text_base = self.image.section_base(b".text").unwrap_or(0);
+        let got_base = self.image.section_base(b".got").unwrap_or(0);
+        Ok(ObjectInfo {
+            object: LoadedObject {
+                name: self.name().as_ptr().cast(),
+                bias: self.bias(),
+                phdr,
+                phnum,
+                dynamic: dynamic as *const _,
+                tls_module_id: module,
+            },
+            text_base,
+            got_base,
+        })
+    }
+
+    #[cfg(feature = "interpreter")]
+    pub(crate) fn address_info(self, address: u64) -> Option<crate::dl_abi::DlInfo> {
+        let offset = address.checked_sub(self.bias())?;
+        self.image.address(offset, 1, 0, 0).ok()?;
+        let base = self
+            .image
+            .segments()
+            .filter_map(Result::ok)
+            .find(|segment| segment.kind == crate::elf::PT_LOAD)?
+            .address
+            + self.bias();
+        let nearest = (1..self.chains)
+            .filter_map(|index| {
+                let symbol = self.symbol(index).ok()?;
+                let value = self.symbol_address(symbol).ok()?;
+                (value >= base
+                    && value <= address
+                    && !symbol.name.is_empty()
+                    && symbol.section != SHN_ABS)
+                    .then_some((symbol.name, value))
+            })
+            .max_by_key(|&(_, value)| value);
+        Some(crate::dl_abi::DlInfo {
+            dli_fname: self.name().as_ptr().cast(),
+            dli_fbase: base as *mut _,
+            dli_sname: nearest.map_or(core::ptr::null(), |(name, _)| name.as_ptr().cast()),
+            dli_saddr: nearest.map_or(core::ptr::null_mut(), |(_, value)| value as *mut _),
+        })
+    }
+
     fn resolve(self, scope: &[Self], index: u64, offset: u64) -> Result<u64, Error<'a>> {
         if index == 0 {
             return Ok(0);
@@ -474,12 +566,8 @@ impl<'a> Object<'a> {
             if symbol.section != SHN_UNDEF {
                 return self.symbol_address(symbol);
             }
-        } else {
-            for object in scope {
-                if let Some(address) = object.lookup(symbol.name)? {
-                    return Ok(address);
-                }
-            }
+        } else if let Some(address) = Self::lookup_scope(scope.iter().copied(), symbol.name)? {
+            return Ok(address);
         }
         if symbol.section == SHN_UNDEF && symbol.binding == STB_WEAK {
             return Ok(0);
@@ -493,7 +581,21 @@ impl<'a> Object<'a> {
     /// Calculate stores from immutable file bytes for eager relocation.
     /// Discard the pending load on error. Stores emitted before the error
     /// may already have been applied to the pending image by the caller.
-    pub fn relocate(self, scope: &[Self], mut write: impl FnMut(Patch)) -> Result<(), Error<'a>> {
+    pub fn relocate(self, scope: &[Self], write: impl FnMut(Patch)) -> Result<(), Error<'a>> {
+        let module = scope
+            .iter()
+            .filter(|object| object.tls.is_some())
+            .position(|object| object.name() == self.name() && object.bias() == self.bias())
+            .map_or(0, |slot| slot + 1);
+        self.relocate_with_module(scope, module, write)
+    }
+
+    pub(crate) fn relocate_with_module(
+        self,
+        scope: &[Self],
+        module: usize,
+        mut write: impl FnMut(Patch),
+    ) -> Result<(), Error<'a>> {
         for table in [self.rela, self.plt].into_iter().flatten() {
             for pos in (0..table.data.len() as u64).step_by(RELA_SIZE as usize) {
                 let entry = table.slice(pos, RELA_SIZE)?;
@@ -516,14 +618,10 @@ impl<'a> Object<'a> {
                     }
                     // AMD64 psABI §4.4.1: the local-dynamic GOT pair names
                     // this object's module and has a 0 offset.
-                    R_X86_64_DTPMOD64 if index == 0 && addend == 0 => scope
-                        .iter()
-                        .filter(|object| object.tls.is_some())
-                        .position(|object| {
-                            object.name() == self.name() && object.bias() == self.bias()
-                        })
-                        .map(|slot| slot as u64 + 1)
-                        .ok_or_else(|| entry.error(ErrorKind::InvalidRelocation))?,
+                    R_X86_64_DTPMOD64 if index == 0 && addend == 0 && module != 0 => module as u64,
+                    R_X86_64_DTPMOD64 if index == 0 && addend == 0 => {
+                        return Err(entry.error(ErrorKind::InvalidRelocation))
+                    }
                     kind => return Err(entry.error(ErrorKind::UnsupportedRelocation(kind))),
                 };
                 write(Patch { address, value });

@@ -19,11 +19,18 @@ def select_hosted_tls(crate):
     enabled = '#[cfg(all(feature = "hosted-rustc", target_arch = "x86_64"))]'
     root = crate / 'src/lib.rs'
     line = '\nmod entropy;\n'
-    replace_line(root, line, f'{line}\n{enabled}\nmod tls_module;\n')
+    replace_line(root, line, f'{line}\n{enabled}\nmod tls_module;\n\n{enabled}\nmod dl_abi;\n')
     pthread = crate / 'src/pthread.rs'
+    replace_line(
+        pthread, '\npub(crate) fn static_tls_data()',
+        '\n#[cfg(not(all(feature = "hosted-rustc", target_arch = "x86_64")))]\n'
+        'pub(crate) fn static_tls_data()',
+    )
     for line, addition in (
-        ('\nmod spin;\n', 'mod hosted_tls;'),
+        ('\nmod spin;\n', 'pub(crate) mod hosted_tls;'),
         ('\n    reads: *mut ReadBlock,\n', '    dtv: hosted_tls::Dtv,'),
+        ('\n    reads: *mut ReadBlock,\n', "    dl_error: core::cell::Cell<Option<&'static core::ffi::CStr>>,"),
+        ('\n            reads: null_mut(),\n', '            dl_error: core::cell::Cell::new(None),'),
         ('\n            reads: null_mut(),\n', '            dtv: hosted_tls::Dtv::new(),'),
         ('\n        unsafe { run_thread_exit(|| take_cxa_destructor(p), || destructors(p)) };\n',
          '        unsafe { (*p).dtv = hosted_tls::Dtv::new() };'),
@@ -49,6 +56,9 @@ def prepare(source, build):
                  '\n#[path = "crt_shared.rs"]\nmod crt;\n')
     replace_line(crate / 'src/lifecycle.rs', '\npub(crate) unsafe fn run_main<T>(',
                  '\n#[cfg(not(feature = "hosted-rustc"))]\npub(crate) unsafe fn run_main<T>(')
+    replace_line(crate / 'src/lib.rs', '\nmod link;\n',
+                 '\n#[cfg_attr(all(feature = "hosted-rustc", target_arch = "x86_64"), '
+                 'path = "link_hosted.rs")]\nmod link;\n')
     select_hosted_tls(crate)
     print(crate / 'Cargo.toml')
 

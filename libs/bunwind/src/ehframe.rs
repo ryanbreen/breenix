@@ -34,6 +34,11 @@ pub struct Sections<'a> {
 pub trait Memory {
     /// Return the mapped bytes at `address` if the entire span is readable.
     fn read(&self, address: u64, size: usize) -> Option<&[u8]>;
+
+    /// Read a relocated pointer by value when its slot cannot be borrowed.
+    fn read_indirect(&self, address: u64, size: usize, endian: Endian) -> Option<u64> {
+        cfi::uint(&mut self.read(address, size)?, size, endian).ok()
+    }
 }
 
 /// Supplies the sections for the image containing a PC. The guest source can
@@ -51,7 +56,7 @@ pub fn find_fde(source: &(impl FrameSource + ?Sized), pc: u64) -> Result<Option<
 }
 
 /// Decode the index's .eh_frame pointer before the loader knows its bounds.
-#[cfg(target_os = "breenix")]
+#[cfg(any(test, target_os = "breenix"))]
 pub(crate) fn frame_address(
     header: Section<'_>,
     memory: &impl Memory,
@@ -399,9 +404,9 @@ fn decode_pointer(
     if !encoding.indirect {
         return Ok(address);
     }
-    let error = field.error(ErrorKind::UnreadablePointer(address));
-    let mut bytes = memory.read(address, width).ok_or(error)?;
-    cfi::uint(&mut bytes, width, field.endian).map_err(|_| error)
+    memory
+        .read_indirect(address, width, field.endian)
+        .ok_or_else(|| field.error(ErrorKind::UnreadablePointer(address)))
 }
 
 /// Fields shared by the frame description entries referencing this CIE.

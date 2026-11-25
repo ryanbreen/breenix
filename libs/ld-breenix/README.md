@@ -49,9 +49,9 @@ symbol versioning, `DT_INIT`, text relocations, symbolic lookup, and legacy
 RPATH without RUNPATH are outside this unit. Shared loads occupy distinct
 virtual pages and GNU_RELRO ends on a page boundary. Secure exec needs a
 trusted library search policy. The u4 X2 inventory has only local-dynamic
-TLS, in the driver. Dynamic shutdown and the dl* interfaces are later KD
-work. ARM64 builds the shared Rust code. Its kernel
-exec half, X2 relocation and TLS inventory, backend, and KD acceptance remain
+TLS, in the driver. ELF finalizer arrays are outside this loader profile.
+ARM64 builds the shared Rust code. Its kernel interpreter handoff, X2
+inventory, dynamic relocation and TLS backend, and KD acceptance remain
 pending.
 
 ELF gABI §7 describes program loading, and §§8.4–8.6 cover dependency
@@ -77,6 +77,33 @@ them while the object is live.
 | 32 | `dynamic` | `const void *` | Runtime pointer to the `Elf64_Dyn` array, ending in `DT_NULL` |
 | 40 | `tls_module_id` | `size_t` | Nonzero TLS module ID when assigned, `0` otherwise |
 
+## Hosted dynamic runtime
+
+Hosted libc forwards `dlopen`, `dlsym` and `dlclose` to the resident
+interpreter. Opening a known name or file identity shares its handle.
+New groups use the same dependency search, relocation, RELRO and initializer
+paths as the startup group. Both `RTLD_NOW` and `RTLD_LAZY` relocate
+eagerly. Global lookup follows load order. Lookup through an object handle
+starts with that object and walks its dependencies breadth-first.
+`dlclose` releases a handle reference, and the handle becomes invalid
+after the final reference is released. The loader retains successful mappings until
+process exit, including relocated TLS templates and unwind metadata.
+`dlerror` consumes the calling thread's pending error.
+
+`dl_iterate_phdr` reports the executable, interpreter, and dependency and
+`dlopen` groups. Its `dlpi_addr` is the object's load bias. The optional
+Breenix extension appends two LP64 fields after the LSB record, with the
+mapped start of `.text` and `.got`, or 0 when the section base is unavailable.
+Bunwind selects the record by the frame's PC, then reads that object's
+`PT_GNU_EH_FRAME`. Static hosted links keep their linker-defined bases.
+`dladdr` reports the containing object and the nearest runtime symbol
+within it.
+
+[POSIX.1-2024 dlopen and lookup ordering](https://pubs.opengroup.org/onlinepubs/9799919799/functions/dlopen.html),
+[POSIX.1-2024 dlclose](https://pubs.opengroup.org/onlinepubs/9799919799/functions/dlclose.html),
+[POSIX.1-2024 dlerror](https://pubs.opengroup.org/onlinepubs/9799919799/functions/dlerror.html),
+[LSB Core 5.0, Generic Part §14.17](https://refspecs.linuxfoundation.org/LSB_5.0.0/LSB-Core-generic/LSB-Core-generic.pdf).
+
 ## Host oracle
 
 Build the interpreter and hosted libc with `userspace/programs/build.sh
@@ -95,7 +122,10 @@ The fixture ELFs do not execute. Set `BREENIX_TOOLCHAIN_CLANG`,
 
 The hosted shared libc and its separate executable CRT are built with
 `userspace/programs/build.sh --kd-libc`. The recipe selects shared startup
-in a build-local copy of libc and links its cleaned PIC archive with
-`ld.lld -shared`. The dynamic suite's staging step
+and the dynamic APIs in a build-local copy of libc and links its cleaned
+PIC archive with `ld.lld -shared`. Build the x86-64 archive with
+`userspace/programs/build.sh --arch x86_64 --bunwind` before relinking X2.
+The X2 driver link uses that archive and defines its hidden layout symbols
+at its own section starts. The dynamic suite's staging step
 checks the bytes read back from `/lib/ld-breenix.so` and `/lib/libc.so`
 and returns their digests for the image build record.

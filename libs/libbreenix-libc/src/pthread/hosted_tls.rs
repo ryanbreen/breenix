@@ -63,9 +63,13 @@ impl Drop for Dtv {
 }
 
 #[cfg(not(test))]
+pub(crate) use runtime::{replace_dl_error, tls_data};
+
+#[cfg(not(test))]
 mod runtime {
     use super::super::{descriptor_from_tp, RUNTIME_READY};
     use super::{TlsIndex, TlsModule, MAX_TLS_MODULES};
+    use core::ffi::{c_void, CStr};
     use core::mem::MaybeUninit;
     use core::ptr;
     use core::sync::atomic::{
@@ -77,19 +81,15 @@ mod runtime {
         [MaybeUninit::uninit(); MAX_TLS_MODULES];
     static MODULE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-    /// The interpreter calls this once, before libc startup and constructors.
-    /// The template images belong to the relocated, permanently mapped load set.
+    /// The interpreter appends templates in TLS module ID order, before
+    /// publishing the corresponding objects under the loader lock.
     #[no_mangle]
     pub unsafe extern "C" fn __breenix_libc_register_tls(
         modules: *const TlsModule,
         count: usize,
     ) -> i32 {
-        if count == 0
-            || count > MAX_TLS_MODULES
-            || modules.is_null()
-            || MODULE_COUNT.load(Acquire) != 0
-            || RUNTIME_READY.load(Acquire)
-        {
+        let start = MODULE_COUNT.load(Acquire);
+        if count == 0 || count > MAX_TLS_MODULES - start || modules.is_null() {
             return crate::EINVAL;
         }
         // SAFETY: the interpreter supplies count initialized records.
@@ -102,11 +102,47 @@ mod runtime {
         }) {
             return crate::EINVAL;
         }
-        let table = ptr::addr_of_mut!(MODULES).cast::<TlsModule>();
-        // SAFETY: the interpreter is the sole writer before publication.
+        // SAFETY: count fits in the uninitialized suffix after start.
+        let table = unsafe { ptr::addr_of_mut!(MODULES).cast::<TlsModule>().add(start) };
+        // SAFETY: the interpreter is the sole writer to this unpublished suffix.
         unsafe { ptr::copy_nonoverlapping(modules, table, count) };
-        MODULE_COUNT.store(count, Release);
+        MODULE_COUNT.store(start + count, Release);
         0
+    }
+
+    pub(crate) fn tls_data(module: usize) -> *mut c_void {
+        let Some(index) = module.checked_sub(1) else {
+            return ptr::null_mut();
+        };
+        if !RUNTIME_READY.load(Acquire) {
+            return ptr::null_mut();
+        }
+        // SAFETY: each initialized thread has its own libc descriptor.
+        let thread = unsafe { descriptor_from_tp() };
+        if thread.is_null() {
+            return ptr::null_mut();
+        }
+        // SAFETY: only this thread accesses its DTV slots.
+        let dtv = unsafe { &(*thread).dtv };
+        dtv.blocks
+            .get(index)
+            .copied()
+            .unwrap_or(ptr::null_mut())
+            .cast()
+    }
+
+    pub(crate) fn replace_dl_error(message: Option<&'static CStr>) -> Option<&'static CStr> {
+        if !RUNTIME_READY.load(Acquire) {
+            return None;
+        }
+        // SAFETY: the thread owns its descriptor and its error slot.
+        let thread = unsafe { descriptor_from_tp() };
+        if thread.is_null() {
+            return None;
+        }
+        // SAFETY: only this thread accesses the error cell.
+        let error = unsafe { &(*thread).dl_error };
+        error.replace(message)
     }
 
     #[no_mangle]

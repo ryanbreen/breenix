@@ -170,6 +170,7 @@ if [[ "$KD_LOADER" == 1 ]]; then
         -Z build-std=core,compiler_builtins -Z build-std-features=compiler-builtins-mem \
         --features interpreter --bin ld-breenix -- \
         -Clink-arg=-shared -Clink-arg=-Bsymbolic -Clink-arg=--no-undefined \
+        "-Clink-arg=-T$PROJECT_ROOT/scripts/rust-host/kd-bases.ld" \
         -Clink-arg=--fatal-warnings -Clink-arg=--entry=_start -Clink-arg=-soname=ld-breenix.so
     cp "$kd_dir/loader/$TARGET_DIR-hosted/release/ld-breenix" "$kd_dir/ld-breenix.so"
     exit 0

@@ -14,19 +14,11 @@ pub mod tls_module;
 pub use object::{Object, Patch};
 pub use scope::{Dependency, InitArray, InitKind, InitState, Scope};
 
-use core::ffi::{c_char, c_void};
-use core::fmt;
+#[path = "../../libbreenix-libc/src/dl_abi.rs"]
+pub mod dl_abi;
+pub use dl_abi::LoadedObject;
 
-/// Shared LP64 record for the interpreter and libc. See the crate README.
-#[repr(C)]
-pub struct LoadedObject {
-    pub name: *const c_char,
-    pub bias: u64,
-    pub phdr: *const c_void,
-    pub phnum: usize,
-    pub dynamic: *const c_void,
-    pub tls_module_id: usize,
-}
+use core::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorKind {

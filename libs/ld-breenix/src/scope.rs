@@ -105,6 +105,35 @@ impl<'a, 's> Scope<'a, 's> {
         self.objects
     }
 
+    #[cfg(feature = "interpreter")]
+    pub(crate) fn dependencies(&self, from: usize) -> impl Iterator<Item = usize> + '_ {
+        self.edges
+            .iter()
+            .filter(move |edge| edge.from == from)
+            .map(|edge| edge.to)
+    }
+
+    #[cfg(feature = "interpreter")]
+    pub(crate) fn open_name(
+        requester: Object<'a>,
+        name: &'a [u8],
+        path: &mut [u8],
+        mut open: impl FnMut(&[u8]) -> Result<Option<Object<'a>>, Error<'a>>,
+    ) -> Result<Object<'a>, Error<'a>> {
+        if name.contains(&b'/') {
+            return open(name)?.ok_or_else(|| requester.at(0, ErrorKind::MissingDependency));
+        }
+        find_needed(
+            requester,
+            LinkString {
+                bytes: name,
+                offset: 0,
+            },
+            path,
+            open,
+        )
+    }
+
     /// Emit the executable's PREINIT_ARRAY, then INIT_ARRAYs in dependency
     /// order. Walk each array from its lowest slot to its highest slot.
     /// Each object is visited once. Back edges in cycles are ignored.
@@ -118,7 +147,7 @@ impl<'a, 's> Scope<'a, 's> {
             .get_mut(..self.objects.len())
             .ok_or_else(|| root.at(0, ErrorKind::Capacity))?;
         state.fill(InitState::default());
-        if let Some(preinit) = root.preinit {
+        if let Some(preinit) = root.preinit.filter(|_| !root.is_shared()) {
             emit(InitArray {
                 object: 0,
                 kind: InitKind::Preinit,

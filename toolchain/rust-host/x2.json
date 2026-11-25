@@ -1299,8 +1299,8 @@
   "artifacts": {
     "librustc_driver": {
       "name": "librustc_driver-2e1bf4637bebadba.so",
-      "size": 262526040,
-      "sha256": "c018a32f90702b369f225abf99200e23decd5cde61b9fd2301f358ef538fe206",
+      "size": 262526584,
+      "sha256": "5c171c8849da5e892c4ca5ff7f5f3720ef4056c4e0782f1e1e5a21023d83a578",
       "inventory": {
         "dynamic_relocations": [
           "R_X86_64_64",
@@ -1314,9 +1314,7 @@
         ],
         "undefined_symbols": [
           "_Exit",
-          "__breenix_got_start",
           "__breenix_mb_cur_max",
-          "__breenix_text_start",
           "__cxa_atexit",
           "__errno_location",
           "__tls_get_addr",
@@ -1656,7 +1654,7 @@
       "dynamic_relocation_counts": {
         "R_X86_64_64": 4489,
         "R_X86_64_DTPMOD64": 1,
-        "R_X86_64_GLOB_DAT": 1179,
+        "R_X86_64_GLOB_DAT": 1177,
         "R_X86_64_JUMP_SLOT": 10583,
         "R_X86_64_RELATIVE": 276213
       },
@@ -1669,7 +1667,7 @@
           "--dyn-relocations",
           "--wide"
         ],
-        "sha256": "568208a44421c848663e82074b7a8609a5cb9f8e6c224fa232914f52485e9ccb"
+        "sha256": "0bd6acee58052aca2fa117317776c4ee300f0ac8b0d62ccfb922b01c5e7f7ea2"
       },
       "nm": {
         "args": [
@@ -1677,9 +1675,9 @@
           "--undefined-only",
           "--format=posix"
         ],
-        "sha256": "67b867da67cc525bbd7f0880cbedc7b44da9700bab0bfb6725cc72a49b32f6aa"
+        "sha256": "6317adba79964635d7cb7f7994a529fbd02e9edded79b116358b249a2e1e4f52"
       },
-      "dynamic_export_evidence_sha256": "ba1f07f5b9ddc0c66d26a11a709b2108c48a0548e2507685d0993a9f95e6a6c8",
+      "dynamic_export_evidence_sha256": "376d77726b387c6d7cf20344cb6f8b5986b40d2e1ead468628be167f18404c99",
       "elf_type": "ET_DYN",
       "pt_tls": {
         "file_size": 0,
@@ -1694,15 +1692,7 @@
         "librustc_driver-2e1bf4637bebadba.so"
       ],
       "defined_dynamic_symbols_count": 19840,
-      "strong_undefined_after_scope": [
-        "__breenix_got_start",
-        "__breenix_text_start",
-        "dladdr",
-        "dlclose",
-        "dlerror",
-        "dlopen",
-        "dlsym"
-      ]
+      "strong_undefined_after_scope": []
     },
     "rustc": {
       "name": "rustc",
@@ -1760,8 +1750,8 @@
     },
     "libc": {
       "name": "libc.so",
-      "size": 1397544,
-      "sha256": "2afcf0c874e0eee6444b185b3c1789bd78ae3d5911803655b5e5bfe265aca18a",
+      "size": 1425832,
+      "sha256": "901053448643754db4c834d3af23f4759337c12483359d5d39bc90d3bbd86992",
       "inventory": {
         "dynamic_relocations": [
           "R_X86_64_GLOB_DAT",
@@ -1775,8 +1765,8 @@
       },
       "dynamic_relocation_counts": {
         "R_X86_64_GLOB_DAT": 12,
-        "R_X86_64_JUMP_SLOT": 123,
-        "R_X86_64_RELATIVE": 1024
+        "R_X86_64_JUMP_SLOT": 96,
+        "R_X86_64_RELATIVE": 1023
       },
       "undefined_weak": [],
       "readelf": {
@@ -1787,7 +1777,7 @@
           "--dyn-relocations",
           "--wide"
         ],
-        "sha256": "7399869a52cc9bd039b9314af5ef6b1903f38a0eb7d53317f1ac6ce4930d6485"
+        "sha256": "a5c7df8dcd3356f02ae9bd3998cf2527fd7b44d2f727b18434e47f998809faf2"
       },
       "nm": {
         "args": [
@@ -1797,13 +1787,13 @@
         ],
         "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
       },
-      "dynamic_export_evidence_sha256": "64d24552645f4772e2d632dd5228760588611fa514e8540941b166573691fe9e",
+      "dynamic_export_evidence_sha256": "b944758a980bec627cfbfd272600d4738080ed59235678f13e52b320776c032c",
       "elf_type": "ET_DYN",
       "dt_runpath": [],
       "dt_soname": [
         "libc.so"
       ],
-      "defined_dynamic_symbols_count": 1190,
+      "defined_dynamic_symbols_count": 1196,
       "strong_undefined_after_scope": []
     }
   },
@@ -1822,10 +1812,8 @@
       "_Exit",
       "_RNvCscNTCD2TqieA_17rustc_driver_impl4main",
       "_ZN3std2rt19lang_start_internal17hf08a2b16c43806d9E",
-      "__breenix_got_start",
       "__breenix_libc_init",
       "__breenix_mb_cur_max",
-      "__breenix_text_start",
       "__cxa_atexit",
       "__errno_location",
       "__tls_get_addr",
@@ -2611,5 +2599,140 @@
       "dlopen",
       "dlsym"
     ]
+  },
+  "kd_u7": {
+    "check_first": [
+      "d2461964",
+      "a9d99df1"
+    ],
+    "artifact_location": "userspace/programs/target/kd-u7/stage",
+    "bootstrap": {
+      "budget_seconds": 8100,
+      "started": "2026-11-25T16:45:43.340923+00:00",
+      "exit_status": 0,
+      "time": "2026-11-25T16:45:50.763393+00:00",
+      "wall_seconds": 7.423
+    },
+    "bootstrap_log_sha256": "4b7570eb7a47eaf057a5050b1b8dde0bdac087f61c6372826f3bbd470c5811ef",
+    "bunwind_link_archive_sha256": "99dcf7632155b856ffe893bf2d4e67cc6eb025385a475b37620973384a73c132",
+    "original_strong_import_providers": {
+      "__breenix_got_start": {
+        "symbol": "__breenix_got_start",
+        "object": "librustc_driver-2e1bf4637bebadba.so",
+        "section": ".got",
+        "binding": "object-local"
+      },
+      "__breenix_text_start": {
+        "symbol": "__breenix_text_start",
+        "object": "librustc_driver-2e1bf4637bebadba.so",
+        "section": ".text",
+        "binding": "object-local"
+      },
+      "__tls_get_addr": {
+        "symbol": "__tls_get_addr",
+        "object": "libc.so",
+        "binding": "dynamic"
+      },
+      "dladdr": {
+        "symbol": "dladdr",
+        "object": "libc.so",
+        "binding": "dynamic"
+      },
+      "dlclose": {
+        "symbol": "dlclose",
+        "object": "libc.so",
+        "binding": "dynamic"
+      },
+      "dlerror": {
+        "symbol": "dlerror",
+        "object": "libc.so",
+        "binding": "dynamic"
+      },
+      "dlopen": {
+        "symbol": "dlopen",
+        "object": "libc.so",
+        "binding": "dynamic"
+      },
+      "dlsym": {
+        "symbol": "dlsym",
+        "object": "libc.so",
+        "binding": "dynamic"
+      },
+      "dup3": {
+        "symbol": "dup3",
+        "object": "libc.so",
+        "binding": "dynamic"
+      },
+      "errno_location": {
+        "symbol": "__errno_location",
+        "object": "libc.so",
+        "binding": "dynamic"
+      },
+      "faccessat": {
+        "symbol": "faccessat",
+        "object": "libc.so",
+        "binding": "dynamic"
+      },
+      "fstatat": {
+        "symbol": "fstatat",
+        "object": "libc.so",
+        "binding": "dynamic"
+      },
+      "getrusage": {
+        "symbol": "getrusage",
+        "object": "libc.so",
+        "binding": "dynamic"
+      },
+      "mkdirat": {
+        "symbol": "mkdirat",
+        "object": "libc.so",
+        "binding": "dynamic"
+      },
+      "msync": {
+        "symbol": "msync",
+        "object": "libc.so",
+        "binding": "dynamic"
+      },
+      "posix_fadvise": {
+        "symbol": "posix_fadvise",
+        "object": "libc.so",
+        "binding": "dynamic"
+      },
+      "posix_fallocate": {
+        "symbol": "posix_fallocate",
+        "object": "libc.so",
+        "binding": "dynamic"
+      },
+      "posix_madvise": {
+        "symbol": "posix_madvise",
+        "object": "libc.so",
+        "binding": "dynamic"
+      },
+      "preadv": {
+        "symbol": "preadv",
+        "object": "libc.so",
+        "binding": "dynamic"
+      },
+      "pwritev": {
+        "symbol": "pwritev",
+        "object": "libc.so",
+        "binding": "dynamic"
+      },
+      "readlinkat": {
+        "symbol": "readlinkat",
+        "object": "libc.so",
+        "binding": "dynamic"
+      },
+      "symlinkat": {
+        "symbol": "symlinkat",
+        "object": "libc.so",
+        "binding": "dynamic"
+      },
+      "sync": {
+        "symbol": "sync",
+        "object": "libc.so",
+        "binding": "dynamic"
+      }
+    }
   }
 }

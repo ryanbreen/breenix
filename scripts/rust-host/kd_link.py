@@ -6,6 +6,32 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
+
+
+def prepare_bunwind(inputs, lld):
+    root = Path(__file__).resolve().parents[2]
+    source = (root / 'userspace/programs/target/hosted/bunwind'
+              / 'x86_64-breenix-hosted/release/libbunwind.a')
+    tools = Path(lld).parent.parent
+    ar, nm, objcopy = (tools / name for name in ('llvm-ar', 'llvm-nm', 'llvm-objcopy'))
+    members = subprocess.check_output([ar, 't', source], text=True).splitlines()
+    bunwind, = (name for name in members if name.startswith('bunwind-'))
+    core, = (name for name in members if name.startswith('core-'))
+    # Use the hosted compiler's builtins and panic runtime. Keep bunwind's
+    # own stand-alone panic handler private to its object.
+    with tempfile.TemporaryDirectory(dir=inputs) as scratch:
+        subprocess.run([ar, 'x', source, bunwind, core], cwd=scratch, check=True)
+        symbols = subprocess.check_output(
+            [nm, '--defined-only', '--format=posix', bunwind], cwd=scratch, text=True,
+        )
+        panic, = (line.split()[0] for line in symbols.splitlines()
+                  if line.split()[0].endswith('rust_begin_unwind'))
+        subprocess.run([objcopy, '--localize-symbol', panic, bunwind], cwd=scratch, check=True)
+        subprocess.run([ar, 'crs', 'libbunwind.a', bunwind, core], cwd=scratch, check=True)
+        output = inputs / 'libbunwind.a'
+        (Path(scratch) / output.name).replace(output)
+    return output
 
 
 def main(args):
@@ -52,10 +78,11 @@ def main(args):
             Path(__file__).resolve().parents[2] / 'toolchain/rust-host/k5/getrandom.rs',
             '-o', inputs / 'getrandom.o',
         ], check=True, env={key: value for key, value in os.environ.items() if key != 'CARGO_MAKEFLAGS'})
-        link.extend((inputs / 'hosted_dso_handle.o', inputs / 'getrandom.o',
+        link.extend(('-T', Path(__file__).with_name('kd-bases.ld'),
+                     inputs / 'hosted_dso_handle.o', inputs / 'getrandom.o',
                      runtime / 'dynamic-libs/libblake3_sse2_sse41_avx2_assembly.a',
                      runtime / 'cxx-pic/lib/libc++.a', runtime / 'cxx-pic/lib/libc++abi.a',
-                     runtime / 'dynamic-libs/libbunwind.a'))
+                     prepare_bunwind(inputs, lld)))
         map_name = output.name
     else:
         link.extend((inputs / 'breenix-crt.o', '--allow-shlib-undefined',

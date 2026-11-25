@@ -1,6 +1,9 @@
 //! Map the AMD64 initial load set using the Breenix syscall ABI and ELF gABI §§7–8.
 
-use crate::elf::{Bytes, Image, Segment, PF_R, PF_W, PT_GNU_RELRO, PT_LOAD};
+mod dl;
+
+use crate::dl_abi::{LoadedObject, ObjectInfo};
+use crate::elf::{Bytes, Image, Segment, PF_R, PF_W, PT_DYNAMIC, PT_GNU_RELRO, PT_LOAD};
 use crate::tls_module::{TlsModule, MAX_TLS_MODULES};
 use crate::{Dependency, Error, ErrorKind, InitState, Object, Scope};
 use core::cell::OnceCell;
@@ -89,6 +92,17 @@ impl Mapping {
         // SAFETY: the read-only file view or initialized name remains mapped for this borrow.
         unsafe { slice::from_raw_parts(self.address, self.len) }
     }
+
+    fn name(path: &[u8]) -> Result<Self, SysError> {
+        let mapping = Self::anonymous(path.len() + 1, PROT_READ | PROT_WRITE)?;
+        // SAFETY: a new anonymous mapping is zero-filled and has room for the path and NUL.
+        unsafe { ptr::copy_nonoverlapping(path.as_ptr(), mapping.address, path.len()) };
+        Ok(mapping)
+    }
+
+    fn path(&self) -> &[u8] {
+        &self.bytes()[..self.len - 1]
+    }
 }
 
 impl Drop for Mapping {
@@ -140,11 +154,12 @@ struct DependencyFile {
     name: Mapping,
     view: Mapping,
     bias: u64,
+    _loads: Mapping,
 }
 
 impl DependencyFile {
     fn object(&self) -> Result<Object<'_>, Error<'_>> {
-        Object::parse(self.name.bytes(), self.view.bytes(), self.bias)
+        Object::parse(self.name.path(), self.view.bytes(), self.bias)
     }
 }
 
@@ -155,12 +170,18 @@ struct FileSet<'a> {
 }
 
 impl FileSet<'_> {
-    fn open(&self, path: &[u8]) -> Result<Option<Object<'_>>, Error<'_>> {
+    fn open(&self, path: &[u8], resident: &[dl::Entry]) -> Result<Option<Object<'_>>, Error<'_>> {
         let main = Bytes {
             name: self.main_path,
             data: b"",
             offset: 0,
         };
+        if let Some(entry) = resident
+            .iter()
+            .find(|entry| entry.object.matches_name(path))
+        {
+            return Ok(Some(entry.object));
+        }
         let fd = match OpenFile::open(path) {
             Ok(fd) => fd,
             Err(SysError::Os(Errno::ENOENT | Errno::ENOTDIR)) => return Ok(None),
@@ -168,6 +189,9 @@ impl FileSet<'_> {
         };
         let stat = fs::fstat(fd.0).map_err(|error| syscall(main, "fstat", error))?;
         let identity = (stat.st_dev, stat.st_ino);
+        if let Some(entry) = resident.iter().find(|entry| entry.identity == identity) {
+            return Ok(Some(entry.object));
+        }
         if let Some(existing) = self
             .loaded
             .iter()
@@ -205,18 +229,41 @@ impl FileSet<'_> {
             }) => return Ok(None),
             Err(error) => return Err(stable(error)),
         };
-        let name = Mapping::anonymous(path.len(), PROT_READ | PROT_WRITE)
-            .map_err(|error| syscall(main, "mmap object name", error))?;
-        // SAFETY: the fresh name mapping is writable and disjoint from the search buffer.
-        unsafe { ptr::copy_nonoverlapping(path.as_ptr(), name.address, path.len()) };
-        let bias = map_loads(image, &fd, self.page).map_err(stable)?;
+        let mut absolute = [0u8; PATH_MAX];
+        let path = if path.starts_with(b"/") {
+            path
+        } else {
+            let len =
+                process::getcwd(&mut absolute).map_err(|error| syscall(main, "getcwd", error))?;
+            let end = len
+                .checked_add(path.len())
+                .filter(|&end| end < PATH_MAX)
+                .ok_or_else(|| main.error(ErrorKind::Capacity))?;
+            let slash = len
+                .checked_sub(1)
+                .ok_or_else(|| main.error(ErrorKind::InvalidDependency))?;
+            absolute[slash] = b'/';
+            absolute[len..end].copy_from_slice(path);
+            &absolute[..end]
+        };
+        let name = Mapping::name(path).map_err(|error| syscall(main, "mmap object name", error))?;
+        let (bias, loads) = map_loads(image, &fd, self.page).map_err(stable)?;
         let object = slot.get_or_init(|| DependencyFile {
             identity,
             name,
             view,
             bias,
+            _loads: loads,
         });
         object.object().map(Some)
+    }
+
+    fn identity(&self, object: Object<'_>) -> Option<(u64, u64)> {
+        self.loaded
+            .iter()
+            .filter_map(OnceCell::get)
+            .find(|file| file.name.path() == object.name() && file.bias == object.bias())
+            .map(|file| file.identity)
     }
 }
 
@@ -231,7 +278,7 @@ fn align_up(value: u64, alignment: u64) -> Option<u64> {
         .map(|top| top & !(alignment - 1))
 }
 
-fn map_loads<'a>(image: Image<'a>, fd: &OpenFile, page: u64) -> Result<u64, Error<'a>> {
+fn map_loads<'a>(image: Image<'a>, fd: &OpenFile, page: u64) -> Result<(u64, Mapping), Error<'a>> {
     let mask = page - 1;
     let bad = || image.file.error(ErrorKind::InvalidProgramHeader);
     let mut first = u64::MAX;
@@ -273,9 +320,7 @@ fn map_loads<'a>(image: Image<'a>, fd: &OpenFile, page: u64) -> Result<u64, Erro
             map_segment(image.file, ph, fd, bias, page)?;
         }
     }
-    // The loaded objects must remain mapped after the interpreter hands off.
-    core::mem::forget(reservation);
-    Ok(bias)
+    Ok((bias, reservation))
 }
 
 fn map_segment<'a>(
@@ -343,11 +388,11 @@ fn relocate_and_initialize(stack: *const usize, auxv: &Auxv) {
     if len == 0 || len >= path.len() || path[0] != b'/' {
         fail("invalid executable path");
     }
-    let name = &path[..len];
+    let name_map = Mapping::name(&path[..len]).unwrap_or_else(|error| fail(error));
+    let name = name_map.path();
     let program = OpenFile::open(name).unwrap_or_else(|error| fail(error));
-    let view = fs::fstat(program.0)
-        .and_then(|stat| program.view(stat))
-        .unwrap_or_else(|error| fail(error));
+    let stat = fs::fstat(program.0).unwrap_or_else(|error| fail(error));
+    let view = program.view(stat).unwrap_or_else(|error| fail(error));
     let file = Bytes {
         name,
         data: view.bytes(),
@@ -359,6 +404,8 @@ fn relocate_and_initialize(stack: *const usize, auxv: &Auxv) {
         .checked_sub(link_entry)
         .unwrap_or_else(|| fail("invalid executable bias"));
     let root = Object::parse(name, file.data, bias).unwrap_or_else(|error| fail(error));
+    let interpreter =
+        describe_interpreter(auxv, root.interpreter_name().unwrap_or(c"ld-breenix.so"));
     let mut objects = [root; OBJECTS];
     let mut edges = [Dependency::default(); DEPENDENCIES];
     let mut candidate = [0u8; PATH_MAX];
@@ -368,7 +415,7 @@ fn relocate_and_initialize(stack: *const usize, auxv: &Auxv) {
         loaded: [const { OnceCell::new() }; OBJECTS - 1],
     };
     let scope = Scope::load(root, &mut objects, &mut edges, &mut candidate, |path| {
-        files.open(path)
+        files.open(path, &[])
     })
     .unwrap_or_else(|error| fail(error));
     for object in scope.objects() {
@@ -381,26 +428,46 @@ fn relocate_and_initialize(stack: *const usize, auxv: &Auxv) {
     }
     for object in scope.objects() {
         if let Some(range) = object.relro() {
-            protect_relro(range.start, range.end, auxv.page);
+            protect_relro(range.start, range.end, auxv.page).unwrap_or_else(|error| fail(error));
         }
     }
-    initialize_libc(stack, scope.objects());
+    // SAFETY: after successful startup we keep these files and mapped loads
+    // resident. During failure fail() terminates the process.
+    let dl = unsafe {
+        dl::publish_initial(
+            &scope,
+            &files,
+            (stat.st_dev, stat.st_ino),
+            auxv.page,
+            interpreter,
+        )
+    };
+    initialize_libc(stack, scope.objects(), dl);
     let mut state = [InitState::default(); OBJECTS];
     scope
-        .initializers(&mut state, |array| {
-            for slot in array.range.step_by(8) {
-                // SAFETY: this slot lies in an in-memory init array validated by Object::parse.
-                let address = unsafe { (slot as *const usize).read_unaligned() };
-                // SAFETY: ELF init arrays contain callable AMD64 ABI function pointers.
-                let initialize: unsafe extern "C" fn() = unsafe { core::mem::transmute(address) };
-                // SAFETY: relocation completes before Scope::initializers invokes this callback.
-                unsafe { initialize() };
-            }
-        })
+        .initializers(&mut state, |array| run_initializers(array.range))
         .unwrap_or_else(|error| fail(error));
+    core::mem::forget(files);
+    core::mem::forget(name_map);
+    core::mem::forget(view);
 }
 
-fn initialize_libc(stack: *const usize, objects: &[Object<'_>]) {
+fn run_initializers(range: core::ops::Range<u64>) {
+    for slot in range.step_by(8) {
+        // SAFETY: this slot lies in an INIT_ARRAY validated and relocated by the loader.
+        let address = unsafe { (slot as *const usize).read_unaligned() };
+        // SAFETY: the gABI INIT_ARRAY holds AMD64 ABI function pointers.
+        let initialize: unsafe extern "C" fn() = unsafe { core::mem::transmute(address) };
+        // SAFETY: the object's relocations have completed before initialization.
+        unsafe { initialize() };
+    }
+}
+
+fn initialize_libc(
+    stack: *const usize,
+    objects: &[Object<'_>],
+    runtime: &'static crate::dl_abi::DlRuntime,
+) {
     let mut modules = [TlsModule::default(); MAX_TLS_MODULES];
     let mut count = 0;
     for module in objects.iter().filter_map(|object| object.tls_module()) {
@@ -424,6 +491,13 @@ fn initialize_libc(stack: *const usize, objects: &[Object<'_>]) {
             fail("Breenix libc rejected TLS templates");
         }
     }
+    if let Some(address) = lookup(b"__breenix_libc_register_dl") {
+        // SAFETY: this export of the shared libc accepts the private loader table.
+        let register: unsafe extern "C" fn(*const crate::dl_abi::DlRuntime) =
+            unsafe { core::mem::transmute(address as usize) };
+        // SAFETY: the table is immutable and resident in the interpreter.
+        unsafe { register(runtime) };
+    }
     if let Some(address) = lookup(b"__breenix_libc_init") {
         // SAFETY: this export of the shared Breenix libc has this startup ABI.
         let initialize: unsafe extern "C" fn(*const usize) =
@@ -435,21 +509,20 @@ fn initialize_libc(stack: *const usize, objects: &[Object<'_>]) {
     }
 }
 
-fn protect_relro(start: u64, end: u64, page: u64) {
+fn protect_relro(start: u64, end: u64, page: u64) -> Result<(), SysError> {
     let start = start & !(page - 1);
     if end % page != 0 || end <= start {
-        fail("invalid GNU_RELRO page range");
+        return Err(Errno::EINVAL.into());
     }
     mprotect(start as *mut u8, (end - start) as usize, PROT_READ)
-        .unwrap_or_else(|error| fail(error));
 }
 
-fn protect_interpreter(auxv: &Auxv) {
+fn describe_interpreter(auxv: &Auxv, name: &core::ffi::CStr) -> ObjectInfo {
     let base = auxv.base as *const u8;
     // SAFETY: AT_BASE addresses the interpreter's ELF header in its first load.
     let header = unsafe { slice::from_raw_parts(base, 64) };
     let file = Bytes {
-        name: b"ld-breenix.so",
+        name: name.to_bytes(),
         data: header,
         offset: 0,
     };
@@ -458,17 +531,39 @@ fn protect_interpreter(auxv: &Auxv) {
     // SAFETY: that load also contains the interpreter's program headers.
     let table =
         unsafe { slice::from_raw_parts(base.wrapping_add(phoff as usize), phnum as usize * 56) };
+    let mut dynamic = ptr::null();
     for (index, data) in table.chunks_exact(56).enumerate() {
         let header = Bytes {
             data,
             offset: phoff + index as u64 * 56,
             ..file
         };
-        if header.u32(0).unwrap_or_else(|error| fail(error)) == PT_GNU_RELRO {
-            let start = auxv.base + header.u64(16).unwrap_or_else(|error| fail(error));
-            let end = start + header.u64(40).unwrap_or_else(|error| fail(error));
-            protect_relro(start, end, auxv.page);
+        let kind = header.u32(0).unwrap_or_else(|error| fail(error));
+        let load = auxv.base + header.u64(16).unwrap_or_else(|error| fail(error));
+        match kind {
+            PT_GNU_RELRO => {
+                let end = load + header.u64(40).unwrap_or_else(|error| fail(error));
+                protect_relro(load, end, auxv.page).unwrap_or_else(|error| fail(error));
+            }
+            PT_DYNAMIC => dynamic = load as *const _,
+            _ => {}
         }
+    }
+    extern "C" {
+        static __breenix_text_start: u8;
+        static __breenix_got_start: u8;
+    }
+    ObjectInfo {
+        object: LoadedObject {
+            name: name.as_ptr(),
+            bias: auxv.base,
+            phdr: table.as_ptr().cast(),
+            phnum: usize::from(phnum),
+            dynamic,
+            tls_module_id: 0,
+        },
+        text_base: ptr::addr_of!(__breenix_text_start).expose_provenance() as u64,
+        got_base: ptr::addr_of!(__breenix_got_start).expose_provenance() as u64,
     }
 }
 
@@ -479,7 +574,6 @@ fn protect_interpreter(auxv: &Auxv) {
 pub unsafe extern "C" fn start(stack: *const usize) -> ! {
     // SAFETY: the naked entry forwards the unchanged initial stack.
     let auxv = unsafe { Auxv::read(stack) }.unwrap_or_else(|error| fail(error));
-    protect_interpreter(&auxv);
     relocate_and_initialize(stack, &auxv);
     // SAFETY: AT_ENTRY names the loaded executable's entry. Restore its initial
     // stack and clear the psABI's optional termination callback register.

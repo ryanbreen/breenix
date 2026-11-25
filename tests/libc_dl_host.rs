@@ -1,7 +1,7 @@
 //! Run with rustc --edition=2021 --test tests/libc_dl_host.rs.
 
 #[path = "../libs/libbreenix-libc/src/dl_abi.rs"]
-mod dl_abi;
+pub mod dl_abi;
 #[path = "../libs/libbreenix-libc/src/link_hosted.rs"]
 mod link_hosted;
 
