@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Configure and compile pinned LLVM for Breenix using native TableGen."""
+"""Configure, compile and link pinned LLVM for Breenix."""
 import argparse
 import json
 import os
@@ -120,6 +120,62 @@ def compile_llvm(arch, run, llvm, pin, targets):
         raise RuntimeError('build diagnostics differ from the exact per-architecture allowlist')
 
 
+def tool_inputs(directory, tool, record):
+    query = output('ninja', '-C', directory, '-t', 'query', f'bin/{tool}')
+    inputs, _, _ = query.partition('\n  outputs:')
+    objects = []
+    archives = []
+    seen = set()
+    for edge in inputs.splitlines()[2:]:
+        name = edge.strip()
+        if name.startswith('|| '):
+            continue  # Order-only dependency, such as generated headers.
+        name = name.removeprefix('| ')
+        if name in seen:
+            continue  # The linker group already resolves circular references.
+        seen.add(name)
+        path = directory / name
+        if name.startswith(f'tools/{tool}/') and name in record['objects']:
+            objects.append(path)
+            expected = record['objects'][name]
+        elif name.startswith('lib/libLLVM') and name in record['archives']:
+            archives.append(path)
+            expected = record['archives'][name]
+        else:
+            raise ValueError(f'{tool}: unrecorded LLVM link input: {name}')
+        if digest(path) != expected:
+            raise ValueError(f'{path}: digest differs from LLVM build record')
+    if not objects or not archives:
+        raise ValueError(f'{tool}: Ninja link edge has no LLVM objects or archives')
+    return objects, archives
+
+
+def link_tools(arch, scratch, directory, linker, runtime, libc, builtins):
+    record = json.loads((directory.parent / 'record.json').read_text())
+    if record['arch'] != arch or record['build']['exit_status'] != 0:
+        raise ValueError(f'{directory}: missing successful LLVM build for {arch}')
+    providers = [runtime / 'lib/libc++.a', runtime / 'lib/libc++abi.a', libc, builtins]
+    script = Path('userspace/programs/linker-hosted.ld')
+    for tool in ('llc', 'llvm-mc'):
+        objects, archives = tool_inputs(directory, tool, record)
+        link_map = scratch / f'{tool}.map'
+        command = [linker, '-static', '--gc-sections', '--eh-frame-hdr', '--no-dependent-libraries',
+                   '--fatal-warnings', '-T', script, f'-Map={link_map}', '-o', scratch / tool,
+                   *objects, '--start-group', *archives, *providers, '--end-group']
+        print(f'Linking hosted {tool} ({arch})', flush=True)
+        result = subprocess.run(command, cwd=ROOT)
+        if result.returncode:
+            raise SystemExit(result.returncode)
+        if arch == 'x86_64':
+            # AMD64 psABI §10.3: the static link relaxes GD/LD TLS to local-exec.
+            # LLD can leave the now-unreferenced resolver in .symtab. A live
+            # strong reference would have failed the link above.
+            subprocess.run([LLVM_BIN / 'llvm-objcopy', '--strip-unneeded-symbol=__tls_get_addr',
+                            scratch / tool], check=True)
+        with link_map.open('a') as stream:
+            stream.write(f'\nLinker script: {script}\n')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('arch', choices=ARCHES)
@@ -128,7 +184,12 @@ def main():
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--resume', action='store_true')
     mode.add_argument('--compile', action='store_true', help='build archives and tool objects in the u1 directory')
+    mode.add_argument('--link', type=Path, nargs=5, metavar=('BUILD', 'LLD', 'RUNTIME', 'LIBC', 'BUILTINS'),
+                      help='link hosted llc and llvm-mc from the K4 build and K3 runtime')
     args = parser.parse_args()
+    if args.link:
+        link_tools(args.arch, args.scratch.resolve(), *(path.resolve() for path in args.link))
+        return
     llvm = default_llvm().resolve()
     pin = verify_llvm(ROOT, llvm)
     run = args.scratch.resolve()

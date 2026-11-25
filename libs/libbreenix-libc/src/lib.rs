@@ -2291,3 +2291,6 @@ pub unsafe extern "C" fn _Unwind_Backtrace(
 pub unsafe extern "C" fn _Unwind_GetIP(_context: *mut u8) -> usize {
     0
 }
+
+#[cfg(feature = "hosted-llvm")]
+mod llvm_host;

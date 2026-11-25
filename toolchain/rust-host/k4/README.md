@@ -32,6 +32,22 @@ exact third-party warning texts and counts. Both builds completed within
 the 10,800-second build budget. The archive and diagnostics checks read the
 retained outputs and logs directly.
 
+## Hosted executable links
+
+With the K3 and K4 build directories in `BREENIX_CXX_RUNTIME_BUILDS` and
+`BREENIX_LLVM_PORT_BUILDS`, run `userspace/programs/build.sh --arch ARCH --llvm`.
+The mode links `llc` and `llvm-mc` and writes their maps in
+`userspace/programs/target/llvm/ARCH`. It takes the LLVM objects and archives
+from each tool's Ninja link edge and checks their digests against the K4 build
+record. The runtime inputs are the localized K3 `libc++.a` and `libc++abi.a`,
+the hosted C-ABI `libc.a` and the pinned `compiler_builtins` selected by Cargo.
+
+The `hosted-llvm` libc build exports `getrusage` and `posix_madvise` over
+existing Breenix syscalls. POSIX `DONTNEED` uses the ordinary range validation
+to preserve the caller's memory contents. On x86-64, LLD can retain an unused
+`__tls_get_addr` symbol table entry after relaxing TLS references to local-exec.
+The build removes that unneeded entry after a successful static link.
+
 ## Ordinary userspace parity
 
 Ruling 98's comparison against `1ee08df8` matched 229 of 231 x86-64
@@ -46,5 +62,5 @@ K3's `strftime_l` export regrouped libc codegen units, moving `_start`
 and `realpath`. The control in `fx/evidence/e25-k4-u2-r95-parity.Oh3dwkIZ/`
 omitted only that export and restored the allocated bytes, layouts,
 program headers and entry points. K4's later x86 acceptance includes
-`ipc` and `rust-std` alongside `llvm` and `cxx-runtime`. ARM64 still
-needs its hosted LLVM executable links and guest cases.
+`ipc` and `rust-std` alongside `llvm` and `cxx-runtime`. ARM64 guest cases
+remain for the catch-up.

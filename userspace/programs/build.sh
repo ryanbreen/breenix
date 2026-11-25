@@ -13,6 +13,8 @@
 #                              (default: <repo>/rust-fork/library)
 #   BREENIX_CXX_RUNTIME_BUILDS  Parent of the per-arch K3 runtime builds
 #                              (default: <repo>/build/cxx-runtime)
+#   BREENIX_LLVM_PORT_BUILDS    Parent of the per-arch K4 LLVM builds
+#                              (default: <repo>/build/llvm-port)
 #
 # Usage:
 #   ./userspace/programs/build.sh                  # x86_64 (default)
@@ -25,6 +27,8 @@
 #     Build libbunwind.a into target/hosted/bunwind/<target>/release.
 #   ./userspace/programs/build.sh --arch x86_64|aarch64 --cxx-runtime
 #     Link C++ probes into target/cxx-runtime/<arch>.
+#   ./userspace/programs/build.sh --arch x86_64|aarch64 --llvm
+#     Link llc and llvm-mc into target/llvm/<arch>.
 
 set -e
 
@@ -32,7 +36,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 usage() {
-    echo "Usage: $0 [--arch x86_64|aarch64] [--hosted-bin NAME [--features FEATURES] | --rust-host | --bunwind | --cxx-runtime]" >&2
+    echo "Usage: $0 [--arch x86_64|aarch64] [--hosted-bin NAME [--features FEATURES] | --rust-host | --bunwind | --cxx-runtime | --llvm]" >&2
     exit 2
 }
 
@@ -42,6 +46,7 @@ HOSTED_FEATURES=()
 RUST_HOST=0
 BUNWIND=0
 CXX_RUNTIME=0
+LLVM=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --arch)
@@ -65,6 +70,10 @@ while [[ $# -gt 0 ]]; do
             CXX_RUNTIME=1
             shift
             ;;
+        --llvm)
+            LLVM=1
+            shift
+            ;;
         --features)
             [[ -n "${2:-}" && "$2" != -* ]] || usage
             HOSTED_FEATURES+=(--features "$2")
@@ -75,9 +84,10 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
-if [[ "$CXX_RUNTIME" == 1 ]]; then
+if [[ "$CXX_RUNTIME" == 1 || "$LLVM" == 1 ]]; then
     [[ "$ARCH" == x86_64 || "$ARCH" == aarch64 ]] || usage
     [[ "$BUNWIND" == 0 && "$RUST_HOST" == 0 && -z "$HOSTED_BIN" && ${#HOSTED_FEATURES[@]} -eq 0 ]] || usage
+    [[ "$CXX_RUNTIME" != "$LLVM" ]] || usage
 fi
 if [[ "$BUNWIND" == 1 ]]; then
     [[ "$ARCH" == x86_64 || "$ARCH" == aarch64 ]] || usage
@@ -137,7 +147,7 @@ if [[ "$ARCH" == x86_64 ]]; then
     HOSTED_LIBC_RELEASE_DIR="$PROJECT_ROOT/libs/libbreenix-libc/target/x86_64-breenix-c/release"
 fi
 
-if [[ "$CXX_RUNTIME" == 1 ]]; then
+if [[ "$CXX_RUNTIME" == 1 || "$LLVM" == 1 ]]; then
     runtime_build="${BREENIX_CXX_RUNTIME_BUILDS:-$PROJECT_ROOT/build/cxx-runtime}/$ARCH/build"
     if [[ ! -f "$runtime_build/lib/libc++.a" || ! -f "$runtime_build/lib/libc++abi.a" ]]; then
         echo "Missing K3 archives in $runtime_build/lib; see toolchain/rust-host/k3/README.md" >&2
@@ -151,22 +161,32 @@ if [[ "$CXX_RUNTIME" == 1 ]]; then
     lld="$sysroot/lib/rustlib/$host/bin/gcc-ld/ld.lld"
     [[ -x "$lld" ]] || { echo "Missing stage-0 ld.lld at $lld" >&2; exit 1; }
 
-    probe_dir="$SCRIPT_DIR/target/cxx-runtime/$ARCH"
-    mkdir -p "$probe_dir"
-    scratch="$(mktemp -d "$probe_dir/.build.XXXXXX")"
+    mode=cxx-runtime
+    if [[ "$LLVM" == 1 ]]; then
+        mode=llvm
+    fi
+    out_dir="$SCRIPT_DIR/target/$mode/$ARCH"
+    mkdir -p "$out_dir"
+    scratch="$(mktemp -d "$out_dir/.build.XXXXXX")"
     trap 'rm -f "$scratch"/*; rmdir "$scratch"' EXIT
     libc_target="$PROJECT_ROOT/$TARGET_DIR.json"
-    arch_flags=(-mno-outline-atomics)
     if [[ "$ARCH" == x86_64 ]]; then
         libc_target="$PROJECT_ROOT/x86_64-breenix-c.json"
-        arch_flags=(-mno-red-zone)
+    fi
+    libc="$HOSTED_LIBC_RELEASE_DIR/libc.a"
+    libc_options=()
+    if [[ "$LLVM" == 1 ]]; then
+        # Keep the feature-enabled archive separate from ordinary libc builds.
+        libc_dir="$out_dir/.libc"
+        libc_options=(--target-dir "$libc_dir" --features hosted-llvm)
+        libc="$libc_dir/$(basename "$libc_target" .json)/release/libc.a"
     fi
 
-    echo "Building C-ABI libc and compiler_builtins for C++ probes ($ARCH)"
+    echo "Building C-ABI libc and compiler_builtins for $mode ($ARCH)"
     (
         cd "$PROJECT_ROOT/libs/libbreenix-libc"
         unset CARGO_ENCODED_RUSTFLAGS __CARGO_TESTS_ONLY_SRC_ROOT
-        RUSTFLAGS="$REMAP_FLAGS -D warnings" cargo build --release --target "$libc_target" \
+        RUSTFLAGS="$REMAP_FLAGS -D warnings" cargo build --release --target "$libc_target" "${libc_options[@]}" \
             --message-format=json-render-diagnostics > "$scratch/cargo.jsonl"
     )
     # Use the artifact Cargo selected for this build, even with older rlibs in deps/.
@@ -186,11 +206,24 @@ with open(sys.argv[1]) as messages:
 print(artifact)
 PY
 )"
-    libc="$HOSTED_LIBC_RELEASE_DIR/libc.a"
     libc_tools="$("$PROJECT_ROOT/scripts/breenix-cc" --arch "$ARCH" --tool-dir)"
     python3 "$PROJECT_ROOT/scripts/libc-clean-archive.py" --archive "$libc" --tool-dir "$libc_tools"
 
     linker_script=userspace/programs/linker-hosted.ld
+    if [[ "$LLVM" == 1 ]]; then
+        llvm_build="${BREENIX_LLVM_PORT_BUILDS:-$PROJECT_ROOT/build/llvm-port}/$ARCH/build"
+        python3 "$PROJECT_ROOT/scripts/rust-host/llvm_port.py" "$ARCH" --scratch "$scratch" \
+            --link "$llvm_build" "$lld" "$runtime_build" "$libc" "$builtins"
+        for tool in llc llvm-mc; do
+            mv "$scratch/$tool" "$scratch/$tool.map" "$out_dir/"
+        done
+        exit 0
+    fi
+
+    arch_flags=(-mno-outline-atomics)
+    if [[ "$ARCH" == x86_64 ]]; then
+        arch_flags=(-mno-red-zone)
+    fi
     workload="$PROJECT_ROOT/scripts/workload-cxx"
     sources="$SCRIPT_DIR/cxx"
     probes=(static-init-order guarded-static containers-threads)
@@ -215,7 +248,7 @@ PY
         printf '\nLinker script: %s\n' "$linker_script" >> "$map"
     done
     for probe in "${probes[@]}"; do
-        mv "$scratch/$probe" "$scratch/$probe.map" "$probe_dir/"
+        mv "$scratch/$probe" "$scratch/$probe.map" "$out_dir/"
     done
     exit 0
 fi
