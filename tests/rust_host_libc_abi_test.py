@@ -11,8 +11,8 @@ ROOT = Path(__file__).resolve().parents[1]
 LIBC = ROOT / 'libs/libbreenix-libc/include'
 NAMES = '''FIONREAD LOCK_SH LOCK_EX LOCK_NB LOCK_UN ST_RDONLY ST_NOSUID
 POSIX_FADV_NORMAL POSIX_FADV_RANDOM POSIX_FADV_SEQUENTIAL POSIX_FADV_WILLNEED
-POSIX_FADV_DONTNEED POSIX_FADV_NOREUSE GETENTROPY_MAX _SC_ARG_MAX
-SIGEV_SIGNAL SIGEV_NONE SIGEV_THREAD SIGEV_THREAD_ID'''.split()
+POSIX_FADV_DONTNEED POSIX_FADV_NOREUSE GETENTROPY_MAX _SC_ARG_MAX O_NDELAY PATH_MAX
+SIGEV_SIGNAL SIGEV_NONE SIGEV_THREAD SIGEV_THREAD_ID SIG_BLOCK SIG_UNBLOCK SIG_SETMASK'''.split()
 LAYOUTS = {
     'fsid_t': ['__val'],
     'statfs': '''f_type f_bsize f_blocks f_bfree f_bavail f_files f_ffree f_fsid
@@ -38,6 +38,7 @@ SIGNATURES = {
     'statfs': ('int', 'const char *, struct statfs *'),
     'getentropy': ('int', 'void *, size_t'),
     'ioctl': ('int', 'int, unsigned long, ...'),
+    'mkfifoat': ('int', 'int, const char *, mode_t'),
     'mknodat': ('int', 'int, const char *, mode_t, dev_t'),
     'msync': ('int', 'void *, size_t, int'),
     'posix_fadvise': ('int', 'int, off_t, off_t, int'),
@@ -120,8 +121,14 @@ def check(arch, deps, rustc, clang):
         assert len(expected) == len(cvalues), c
         # rustc lowers this named byte array to an LLVM c-string, clang to i64s.
         encoded = re.search(r'c"([^"]*)"', rust)[1]
-        raw = bytes(int(token[1:], 16) if token.startswith('\\') else ord(token)
-                    for token in re.findall(r'\\[0-9A-Fa-f]{2}|.', encoded))
+        def byte(token):
+            if len(token) == 3:
+                return int(token[1:], 16)
+            return ord(token[-1])
+
+        tokens = re.findall(r'\\[0-9A-Fa-f]{2}|\\\\|[^\\]', encoded)
+        assert ''.join(tokens) == encoded, rust
+        raw = bytes(map(byte, tokens))
         actual = [int.from_bytes(raw[i:i + 8], 'little') for i in range(0, len(raw), 8)]
         assert len(actual) == len(expected), rust
         for name, got, want in zip(cvalues, actual, expected):
