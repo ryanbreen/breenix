@@ -7,6 +7,7 @@ use std::ffi::CStr;
 use std::ptr::null;
 
 const PROBE: &CStr = c"/usr/libexec/breenix/dynamic/dynamic-probe";
+const PANIC_PROBE: &CStr = c"/usr/libexec/breenix/dynamic/dynamic-panic-probe";
 const MISSING_INTERP: &CStr = c"/usr/libexec/breenix/dynamic/missing-interp";
 
 static SUITE: Suite = suite(
@@ -31,6 +32,11 @@ static SUITE: Suite = suite(
                 "X2 relocation values and independent zeroed TLS",
                 dso_relocs_and_tls,
             ),
+            case(
+                "panic-across-dso",
+                "Rust panic crosses a loaded DSO and runs its cleanup",
+                panic_across_dso,
+            ),
         ],
     )],
 );
@@ -39,14 +45,18 @@ fn main() {
     SUITE.run()
 }
 
-fn run_probe(mode: &CStr) -> CaseResult {
+fn run_probe(probe: &CStr, mode: Option<&CStr>) -> CaseResult {
     match process::fork()? {
         process::ForkResult::Child => {
-            let argv = [PROBE.as_ptr().cast(), mode.as_ptr().cast(), null()];
+            let argv = [
+                probe.as_ptr().cast(),
+                mode.map_or(null(), |arg| arg.as_ptr().cast()),
+                null(),
+            ];
             let error =
-                process::execve(PROBE.to_bytes_with_nul(), argv.as_ptr(), [null()].as_ptr())
+                process::execve(probe.to_bytes_with_nul(), argv.as_ptr(), [null()].as_ptr())
                     .unwrap_err();
-            eprintln!("dynamic-probe execve: {error}");
+            eprintln!("{probe:?} execve: {error}");
             process::exit(126);
         }
         process::ForkResult::Parent(pid) => {
@@ -63,14 +73,14 @@ fn run_probe(mode: &CStr) -> CaseResult {
             if process::wifexited(status) && process::wexitstatus(status) == 0 {
                 Ok(())
             } else {
-                fail(format!("dynamic-probe {:?} wait status {status:#x}", mode))
+                fail(format!("{probe:?} {mode:?} wait status {status:#x}"))
             }
         }
     }
 }
 
 fn interp_runs_program() -> CaseResult {
-    run_probe(c"auxv")
+    run_probe(PROBE, Some(c"auxv"))
 }
 
 fn missing_interp_fails() -> CaseResult {
@@ -107,5 +117,9 @@ fn missing_interp_fails() -> CaseResult {
 }
 
 fn dso_relocs_and_tls() -> CaseResult {
-    run_probe(c"relocs")
+    run_probe(PROBE, Some(c"relocs"))
+}
+
+fn panic_across_dso() -> CaseResult {
+    run_probe(PANIC_PROBE, None)
 }

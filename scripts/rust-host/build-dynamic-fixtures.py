@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Cross-link and inspect the x86-64 hosted dynamic suite fixtures."""
 
+import os
 from pathlib import Path
 import re
 import subprocess
 import sys
 import tempfile
+
+from kd_link import prepare_bunwind
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCES = ROOT / 'toolchain/rust-host/kd'
@@ -40,7 +43,52 @@ def require(condition, artifact, problem):
         raise ValueError(f'{artifact.name}: {problem}')
 
 
-def build(output, rust_tools, cc):
+def build_panic_probe(output, work, lld, readobj, libc, library):
+    # Link bunwind exactly as the hosted compiler's driver does.
+    prepare_bunwind(output, lld)
+    soname = 'libkd-panic.so'
+    dso = work / soname
+    probe = work / 'dynamic-panic-probe'
+    thrower = work / 'throw.o'
+    env = dict(os.environ, __CARGO_TESTS_ONLY_SRC_ROOT=str(library),
+               RUSTFLAGS='-D warnings -C relocation-model=pic -C default-linker-libraries=no',
+               CARGO_PROFILE_RELEASE_PANIC='unwind')
+    env.pop('CARGO_ENCODED_RUSTFLAGS', None)
+    cargo = [
+        'cargo', 'rustc', '--locked', '--release', '-Z', 'build-std=std,panic_unwind',
+        '--manifest-path', SOURCES / 'panic-probe/Cargo.toml',
+        '--target', ROOT / 'x86_64-breenix-hosted.json',
+        '--target-dir', output / 'panic-probe',
+    ]
+    subprocess.run([*cargo, '--lib', '--', f'--emit=obj={thrower}'], env=env, check=True)
+    # Leave the DSO's Rust runtime references to be resolved by the executable.
+    subprocess.run([
+        lld, '-shared', '--eh-frame-hdr', '--hash-style=sysv', '--fatal-warnings',
+        '-z', 'now', '-z', 'relro', '-soname', soname, '-o', dso, thrower,
+    ], check=True)
+    args = [
+        f'-Map={work / "panic.map"}', '--hash-style=sysv', '--fatal-warnings',
+        '--eh-frame-hdr', '--export-dynamic', '--no-allow-shlib-undefined',
+        '--image-base=0x40000000', f'--dynamic-linker={INTERPRETER}', '-rpath=$ORIGIN',
+        '-znow', '-zrelro', f'-T{ROOT / "scripts/rust-host/kd-bases.ld"}',
+        output / 'breenix-crt.o', dso, libc, '-o', probe,
+    ]
+    subprocess.run([
+        *cargo, '--bin', probe.name, '--', '-L', f'native={output}',
+        *(f'-Clink-arg={arg}' for arg in args),
+    ], env=env, check=True)
+
+    for artifact, dependencies, interp in (
+        (dso, [], None),
+        (probe, ['libc.so', soname], INTERPRETER),
+    ):
+        report = inspect(readobj, artifact, dependencies, interp)
+        require(re.search(r'^\s+GNU_EH_FRAME\s', report, re.MULTILINE),
+                artifact, 'missing PT_GNU_EH_FRAME')
+    return dso, probe
+
+
+def build(output, rust_tools, cc, library):
     lld = rust_tools / 'gcc-ld/ld.lld'
     readobj = rust_tools / 'llvm-readobj'
     libc = output / 'libc.so'
@@ -89,9 +137,10 @@ def build(output, rust_tools, cc):
                         ('64', 'DTPMOD64', 'GLOB_DAT', 'JUMP_SLOT', 'RELATIVE')}
             require(observed == expected, probe, f'expected the X2 relocation kinds, saw {sorted(observed)}')
 
-        for name in (soname, 'dynamic-probe', 'missing-interp'):
-            (work / name).replace(output / name)
+        panic_fixtures = build_panic_probe(output, work, lld, readobj, libc, library)
+        for fixture in (dso, work / 'dynamic-probe', work / 'missing-interp', *panic_fixtures):
+            fixture.replace(output / fixture.name)
 
 
 if __name__ == '__main__':
-    build(Path(sys.argv[1]).resolve(), Path(sys.argv[2]), Path(sys.argv[3]))
+    build(*(Path(arg).resolve() for arg in sys.argv[1:]))

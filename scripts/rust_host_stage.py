@@ -140,7 +140,8 @@ def stage_dynamic(image, selection, arch, artifacts):
     entries = [('/sbin/suite-dynamic', artifacts / 'suite-dynamic', '0755')]
     entries.extend((f'/lib/{name}', artifacts / name, '0755') for name in ('ld-breenix.so', 'libc.so'))
     entries.extend((f'{prefix}/{name}', artifacts / name, '0755')
-                   for name in ('dynamic-probe', 'missing-interp', 'libkd-probe.so'))
+                   for name in ('dynamic-probe', 'missing-interp', 'libkd-probe.so',
+                                'dynamic-panic-probe', 'libkd-panic.so'))
     return stage_files(image, ['/lib', prefix], entries)
 
 

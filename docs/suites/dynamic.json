@@ -12,7 +12,8 @@
       "cases": [
         {"id": "interp-runs-program", "title": "Interpreter enters a two-DSO program with its auxv"},
         {"id": "missing-interp-fails", "title": "Missing interpreter returns ENOENT in the caller"},
-        {"id": "dso-relocs-and-tls", "title": "X2 relocation values and independent zeroed TLS"}
+        {"id": "dso-relocs-and-tls", "title": "X2 relocation values and independent zeroed TLS"},
+        {"id": "panic-across-dso", "title": "Rust panic crosses a loaded DSO and runs its cleanup"}
       ]
     }
   ]

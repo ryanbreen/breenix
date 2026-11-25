@@ -206,8 +206,11 @@ if [[ "$DYNAMIC" == 1 ]]; then
     cd "$SCRIPT_DIR"
     rust_tools="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin"
     clang="${BREENIX_CC_CLANG:-$("$PROJECT_ROOT/scripts/breenix-cc" --arch x86_64 --tool-dir)/clang}"
+    # The panic probe links bunwind as the hosted compiler's driver does.
+    "$SCRIPT_DIR/build.sh" --arch x86_64 --bunwind
     python3 "$PROJECT_ROOT/scripts/rust-host/build-dynamic-fixtures.py" \
-        "$BREENIX_KD_BUILD_DIR" "$rust_tools" "$clang"
+        "$BREENIX_KD_BUILD_DIR" "$rust_tools" "$clang" \
+        "$("$PROJECT_ROOT/scripts/rust-fork.sh" hosted-library)"
     exit 0
 fi
 if [[ "$KD_LOADER" == 1 ]]; then
