@@ -1,4 +1,5 @@
 """Checks for the pinned LLVM cross build."""
+import hashlib
 import json
 import os
 import re
@@ -14,6 +15,30 @@ sys.path.insert(0, str(ROOT / 'scripts/rust-host'))
 
 
 class LlvmPortTest(unittest.TestCase):
+    def test_corpus_objects_match_mac_llc(self):
+        corpus = ROOT / 'toolchain/rust-host/k4/corpus'
+        manifest = json.loads((corpus / 'expect.json').read_text())
+        llc = Path(os.environ.get(
+            'BREENIX_MAC_LLC',
+            Path.home() / 'Library/Caches/breenix-e25/k4/x86_64/native/bin/llc'))
+        self.assertEqual(hashlib.sha256(llc.read_bytes()).hexdigest(),
+                         manifest['producer']['sha256'])
+        entries = manifest['objects']
+        self.assertGreaterEqual(len(entries), 4)
+        self.assertLessEqual(len(entries), 6)
+        self.assertEqual({p.name for p in corpus.glob('*.ll')},
+                         {entry['input'] for entry in entries})
+        with tempfile.TemporaryDirectory(prefix='breenix-llc-corpus-') as temp:
+            for entry in entries:
+                with self.subTest(input=entry['input']):
+                    output = Path(temp) / (entry['input'] + '.o')
+                    args = [str(corpus / entry['input']) if arg == '<input>' else
+                            str(output) if arg == '<output>' else arg
+                            for arg in entry['arguments']]
+                    subprocess.run([str(llc), *args], check=True, timeout=10)
+                    self.assertEqual(hashlib.sha256(output.read_bytes()).hexdigest(),
+                                     entry['sha256'])
+
     def test_llc_is_static_breenix_elf(self):
         from cxx_runtime import LLVM_BIN
 
