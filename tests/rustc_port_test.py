@@ -93,6 +93,9 @@ class RustcPort(unittest.TestCase):
                           'a/src/unistd.rs b/src/unistd.rs'])
         for path in ('src/errno.rs', 'src/sys/signal.rs', 'src/unistd.rs'):
             self.assertIn(f'\n--- a/{path}\n+++ b/{path}\n', patch)
+        unistd = patch.split('diff --git a/src/unistd.rs b/src/unistd.rs\n')[1]
+        self.assertEqual(re.findall(r'(?m)^\+    target_os = "breenix",$', unistd),
+                         ['+    target_os = "breenix",'] * 2)
         for hunk in re.split(r'(?m)^@@ .* @@[^\n]*\n', patch)[1:]:
             removed = re.findall(r'(?m)^-(?!-- )(.*)$', hunk)
             added = re.findall(r'(?m)^\+(?!\+\+ )(.*)$', hunk)
