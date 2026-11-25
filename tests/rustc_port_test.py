@@ -101,13 +101,13 @@ class RustcPort(unittest.TestCase):
             added = re.findall(r'(?m)^\+(?!\+\+ )(.*)$', hunk)
             for line in added.copy():
                 if line.strip() in ('target_os = "breenix",',
-                                    '#[derive(Clone, Debug)]'):
+                                    '#[cfg_attr(target_os = "breenix", derive(Clone, Debug))]'):
                     added.remove(line)
             for line in added:
                 self.assertIn('target_os = "breenix"', line)
             normalized = [line.replace(', target_os = "breenix"', '')
                           .replace('#[cfg_attr(not(target_os = "breenix"), derive(',
-                                   '#[derive(Clone, Debug, ')
+                                   '#[derive(')
                           .replace('PartialEq))]', 'PartialEq)]') for line in added]
             self.assertEqual(removed, normalized)
         self.assert_patch_preserves_registry_copy(NIX_PATCH, 'nix-0.30.1')
