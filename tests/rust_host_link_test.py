@@ -12,6 +12,7 @@ candidate builds with existing_links_load_identical.
 
 import argparse
 from collections import Counter
+import filecmp
 import hashlib
 import json
 import os
@@ -333,13 +334,22 @@ def existing_links_load_identical(arch, baseline, baseline_release, readelf, can
           f"({len(expected)} bins, {exact} byte-identical, baseline {receipt['commit']})")
 
 
+def ordinary_libc_archive_identical(arch, baseline, archive):
+    check = f"ordinary_libc_archive_identical ({arch})"
+    require(filecmp.cmp(baseline, archive, shallow=False),
+            f"{check}: {archive} differs from {baseline}")
+    print(f"{check}: PASS ({archive})")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("check", choices=["hosted_targets", "hosted_unwind_link", "hosted_link_layout", "existing_links_load_identical", "record_baseline"])
+    parser.add_argument("check", choices=["hosted_targets", "hosted_unwind_link", "hosted_link_layout",
+                                          "existing_links_load_identical", "ordinary_libc_archive_identical",
+                                          "record_baseline"])
     parser.add_argument("--arch", choices=ARCHES, required=True)
     parser.add_argument("--readelf", default=os.environ.get("LLVM_READELF", "llvm-readelf"))
     parser.add_argument("--elf", type=Path, help="inspect an already linked probe, such as the parent control")
-    parser.add_argument("--baseline", type=Path, help="path to digests captured after building the parent")
+    parser.add_argument("--baseline", type=Path, help="parent build digests or ordinary libc archive")
     parser.add_argument("--baseline-release", type=Path, help="original release directory for nonidentical ELFs")
     parser.add_argument("--candidate-release", type=Path, help="retained ordinary release directory")
     parser.add_argument("--base-ref", default="HEAD", help="source revision for record_baseline")
@@ -357,6 +367,10 @@ def main():
         hosted_unwind_link(args.arch, args.readelf, args.nm, args.elf, args.link_map, args.archive)
     elif args.check == "hosted_link_layout":
         hosted_link_layout(args.arch, args.readelf, args.elf)
+    elif args.check == "ordinary_libc_archive_identical":
+        if args.baseline is None or args.archive is None:
+            parser.error("--baseline and --archive are required")
+        ordinary_libc_archive_identical(args.arch, args.baseline, args.archive)
     else:
         if args.baseline is None:
             parser.error("--baseline is required for this check")
