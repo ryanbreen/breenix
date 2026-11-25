@@ -186,7 +186,12 @@ class ProgressTest(unittest.TestCase):
         runner = (ROOT / 'libs/libbreenix/src/suite.rs').read_text()
         table = runner.split('pub const NAMED_CASE_ALLOWANCES:', 1)[1].split(';', 1)[0]
         entries = re.findall(r'\(\s*"llvm"\s*,\s*"([^"]+)"\s*,\s*([\d_]+)\s*,?\s*\)', table)
-        self.assertEqual(entries, [('llvm/llc-objects-equal-mac', '60_000'),
+        # Provisional U32 ceilings until the R240 measures each case (ruling 81).
+        self.assertEqual(entries, [('llvm/llc-arithmetic-equals-mac', '60_000'),
+                                   ('llvm/llc-hello-equals-mac', '60_000'),
+                                   ('llvm/llc-libc-call-equals-mac', '60_000'),
+                                   ('llvm/llc-loop-equals-mac', '60_000'),
+                                   ('llvm/llc-struct-equals-mac', '60_000'),
                                    ('llvm/llc-object-runs', '60_000')])
 
     def test_cxx_runtime_case_allowances(self):

@@ -2124,6 +2124,20 @@ class DriverTest(StateTest):
         args.milestone = 'toolchain/c17-libc-suite'
         self.assertEqual(boot.mode_deadline_seconds(args), 420)
 
+    def test_llvm_deadline_covers_case_allowances_plus_a_quarter(self):
+        root = TOOLS.parents[1]
+        runner = (root / 'libs/libbreenix/src/suite.rs').read_text()
+        table = runner.split('pub const NAMED_CASE_ALLOWANCES:', 1)[1].split(';', 1)[0]
+        allowances = [int(limit.replace('_', '')) for limit in
+                      re.findall(r'\(\s*"llvm"\s*,\s*"[^"]+"\s*,\s*([\d_]+)\s*,?\s*\)', table)]
+        self.assertEqual(len(allowances), 6)
+        args = self.driver.args
+        args.mode = 'suite'
+        args.suite = 'llvm'
+        self.assertGreaterEqual(boot.mode_deadline_seconds(args) * 1000 * 4, sum(allowances) * 5)
+        args.suite = 'cxx-runtime'
+        self.assertEqual(boot.mode_deadline_seconds(args), 420)
+
     def test_busybox_sequence_gate_covers_registered_case_allowances(self):
         root = TOOLS.parents[1]
         runner = (root / 'libs/libbreenix/src/suite.rs').read_text()
