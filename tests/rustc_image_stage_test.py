@@ -41,7 +41,7 @@ class RustcImageStageTest(unittest.TestCase):
             suite = write(root / 'suite-rustc', b'\x7fELFsuite')
             compiler = write(artifacts / 'rustc', b'\x7fELFcompiler')
             driver = write(artifacts / 'librustc_driver-abcd.so', b'\x7fELF')
-            # 264 MB driver plus all sysroot bytes must fit, with ext2 metadata headroom.
+            # 264 MB driver plus sysroot bytes must fit, with ext2 metadata headroom.
             with driver.open('ab') as stream:
                 stream.truncate(264_000_000)
             loader = write(kd / 'ld-breenix.so', b'\x7fELFloader')

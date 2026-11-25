@@ -204,6 +204,9 @@ def inner(args):
     dynamic = 'dynamic' in suites
     cxx_runtime = 'cxx-runtime' in suites
     llvm = 'llvm' in suites
+    rustc_suite = 'rustc' in suites
+    if rustc_suite and sys.platform != 'darwin':
+        raise ValueError('rustc requires a Mac prebuilt image and BREENIX_RUSTC_PORT_BUILDS')
     if llvm and sys.platform != 'darwin':
         raise ValueError('llvm requires a Mac prebuilt image and BREENIX_LLVM_BUILDS')
     if cxx_runtime and sys.platform != 'darwin':
@@ -217,7 +220,7 @@ def inner(args):
     kernel_image = None
     staged_files = {}
     build_companions = build_fixtures or busybox
-    hosted = rust_host or cxx_runtime or llvm or dynamic
+    hosted = rust_host or cxx_runtime or llvm or dynamic or rustc_suite
     root = tmp / 'ext2-staged.img' if 'sdk' in suites or build_fixtures or transfer or hosted else seed
     try:
         started = time.time()
@@ -357,6 +360,27 @@ def inner(args):
                 if not clean_build(status, log, 'LLVM suite and tools', logs, out):
                     return 1
                 timings['llvm_suite'] = round(time.time() - started)
+            if rustc_suite:
+                started = time.time()
+                log = logs / 'rustc-build.log'
+                build_script = str(clone / 'userspace/programs/build.sh')
+                kd = Path(os.environ.get('BREENIX_KD_BUILD_DIR', clone / 'userspace/programs/target/kd'))
+                with log.open('w') as output:
+                    status = subprocess.call([build_script, '--arch', 'x86_64', '--hosted-bin',
+                                              'suite-rustc', '--features', 'rustc'],
+                                             cwd=clone, stdout=output, stderr=subprocess.STDOUT)
+                    if status == 0:
+                        status = subprocess.call([build_script, '--arch', 'x86_64', '--rustc'],
+                                                 cwd=clone, stdout=output, stderr=subprocess.STDOUT)
+                    if status == 0 and not dynamic:
+                        status = subprocess.call([build_script, '--arch', 'x86_64', '--kd-loader'],
+                                                 cwd=clone, stdout=output, stderr=subprocess.STDOUT)
+                if not clean_build(status, log, 'rustc suite and compiler', logs, out):
+                    return 1
+                if not dynamic:
+                    cache = Path(os.environ.get('BREENIX_RUSTC_PORT_BUILDS', clone / 'build/rustc-port'))
+                    shutil.copyfile(cache / 'hosted/lib/libc.so', kd / 'libc.so')
+                timings['rustc_suite'] = round(time.time() - started)
             if dynamic:
                 started = time.time()
                 build_script = str(clone / 'userspace/programs/build.sh')
@@ -367,6 +391,10 @@ def inner(args):
                 if not clean_build(status, log, 'dynamic suite, interpreter and fixtures', logs, out):
                     return 1
                 timings['dynamic_suite'] = round(time.time() - started)
+            if rustc_suite:
+                kd = Path(os.environ.get('BREENIX_KD_BUILD_DIR', clone / 'userspace/programs/target/kd'))
+                (kd / 'build.json').write_text(json.dumps({name: sha256(kd / name)
+                    for name in ('ld-breenix.so', 'libc.so')}))
             if hosted:
                 started = time.time()
                 record = subprocess.check_output([sys.executable, str(clone / 'scripts/rust_host_stage.py'),
