@@ -8,7 +8,6 @@ import subprocess
 
 X2_LIBC_NAMES = {
     "dup3",
-    "errno_location",
     "faccessat",
     "fstatat",
     "getrusage",
