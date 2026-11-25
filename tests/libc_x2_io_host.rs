@@ -174,6 +174,28 @@ mod libc_host {
     }
 
     #[test]
+    fn posix_fadvise_passes_the_range_and_returns_errors_directly() {
+        let number = if cfg!(target_arch = "x86_64") { 221 } else { 223 };
+        setup(number, [5, 8192, 0, 3], 0);
+        assert_eq!(unsafe { hosted_io::posix_fadvise(5, 8192, 0, 3) }, 0);
+        observed(71);
+        setup(number, [5, 8192, 0, 3], -29);
+        assert_eq!(unsafe { hosted_io::posix_fadvise(5, 8192, 0, 3) }, 29);
+        observed(71);
+    }
+
+    #[test]
+    fn posix_fallocate_passes_the_range_and_returns_errors_directly() {
+        let number = if cfg!(target_arch = "x86_64") { 285 } else { 47 };
+        setup(number, [5, 0, 8192, 4096], 0);
+        assert_eq!(unsafe { hosted_io::posix_fallocate(5, 8192, 4096) }, 0);
+        observed(71);
+        setup(number, [5, 0, 8192, 4096], -28);
+        assert_eq!(unsafe { hosted_io::posix_fallocate(5, 8192, 4096) }, 28);
+        observed(71);
+    }
+
+    #[test]
     fn readlinkat_returns_bytes_and_never_adds_a_terminator() {
         let mut bytes = [0xccu8; 5];
         let buffer = bytes.as_mut_ptr();

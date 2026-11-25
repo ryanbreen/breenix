@@ -530,6 +530,29 @@ pub(crate) mod reclaim_checks {
     }
 
     #[test]
+    fn fallocate_reserves_holes_without_replacing_file_bytes() {
+        const BLOCK: u64 = 4096;
+        let (mut fs, data, _, _) = two_orphans();
+        fs.write_inode(1, &Ext2Inode::new_regular_file(0o600, 0, 0)).unwrap();
+        fs.write_file_range(1, BLOCK, b"keep").unwrap();
+        let free = fs.statfs().free_blocks;
+        let start = BLOCK - 1;
+        let len = 2 * BLOCK;
+        fs.allocate_file_range_disk(1, start, len, false).unwrap();
+        let inode = fs.read_inode(1).unwrap();
+        assert_eq!(inode.size(), start + len);
+        assert_eq!(fs.statfs().free_blocks, free - 2);
+        assert_eq!(fs.read_file_range(&inode, start, 6).unwrap(), b"\0keep\0");
+        assert_eq!(fs.read_file_range(&inode, 2 * BLOCK, 1).unwrap(), b"\0");
+        // A write into the formerly sparse block still succeeds on a full disk.
+        data.lock().unwrap()[3 * 4096..4 * 4096].fill(0xff);
+        fs.block_groups[0].bg_free_blocks_count = 0;
+        fs.superblock.s_free_blocks_count = 0;
+        assert_eq!(fs.write_file_range(1, 2 * BLOCK + 5, b"new").unwrap(), 3);
+        assert_eq!(fs.read_inode(1).unwrap().size(), start + len);
+    }
+
+    #[test]
     fn pending_orphans_release_exhausted_space_for_the_next_allocation() {
         let (mut fs, data, _, _) = two_orphans();
         data.lock().unwrap()[3 * 4096..4 * 4096].fill(0xff);
