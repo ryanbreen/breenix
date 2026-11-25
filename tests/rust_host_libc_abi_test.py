@@ -32,6 +32,7 @@ SIGNATURES = {
     'posix_fadvise': ('int', 'int, off_t, off_t, int'),
     'posix_fallocate': ('int', 'int, off_t, off_t'),
     'preadv': ('ssize_t', 'int, const struct iovec *, int, off_t'),
+    'pthread_atfork': ('int', 'void (*)(void), void (*)(void), void (*)(void)'),
     'pwritev': ('ssize_t', 'int, const struct iovec *, int, off_t'),
     'seekdir': ('void', 'DIR *, long'),
     'sync': ('void', 'void'),
@@ -43,17 +44,18 @@ RUST_TYPES = {
     'struct statfs *': '*mut libc::statfs', 'DIR *': '*mut libc::DIR',
     'const struct iovec *': '*const libc::iovec',
     'const struct timespec *': '*const libc::timespec',
+    'void (*)(void)': 'Option<unsafe extern "C" fn()>',
 }
 
 
 def rust_type(name):
     mapped = RUST_TYPES.get(name, name)
-    return mapped if mapped.startswith('*') else f'libc::{mapped}'
+    return mapped if mapped.startswith(('*', 'Option<')) else f'libc::{mapped}'
 
 
 def check(arch, deps, rustc, clang):
     clines = ['#define _GNU_SOURCE 1']
-    for header in ('stddef.h', 'limits.h', 'fcntl.h', 'dirent.h', 'unistd.h', 'sys/file.h',
+    for header in ('stddef.h', 'limits.h', 'fcntl.h', 'dirent.h', 'pthread.h', 'unistd.h', 'sys/file.h',
                    'sys/ioctl.h', 'sys/mman.h', 'sys/stat.h', 'sys/statfs.h', 'sys/statvfs.h', 'sys/uio.h',
                    'sys/sysmacros.h'):
         clines.append(f'#include <{header}>')
