@@ -49,6 +49,8 @@ impl ProgramHeader {
 }
 
 type ReadAt<'a> = dyn FnMut(u64, &mut [u8]) -> Result<(), Errno> + 'a;
+#[cfg(any(test, target_arch = "x86_64"))]
+pub(crate) type ReadInterpreter<'a> = dyn FnMut(u64, &mut ReadAt<'_>) -> Result<ExecPlan, Errno> + 'a;
 
 /// A validated ELF64 executable's header facts and program header table.
 pub(crate) struct Headers {
@@ -60,6 +62,7 @@ pub(crate) struct Headers {
     first_page: u64,
     segments_end: u64,
     load_align: u64,
+    program_bias: Option<u64>,
     image_size: u64,
     data_size: u64,
     #[cfg(all(not(test), target_arch = "aarch64"))]
@@ -188,6 +191,7 @@ impl Headers {
             first_page,
             segments_end: (max_end + PAGE as u64 - 1) & !(PAGE as u64 - 1),
             load_align,
+            program_bias: None,
             image_size,
             data_size,
             #[cfg(all(not(test), target_arch = "aarch64"))]
@@ -200,37 +204,97 @@ impl Headers {
         self.interpreter_path.as_deref()
     }
 
-    /// Plan an ET_EXEC handoff. If it names an interpreter, the caller supplies
-    /// its ET_DYN headers and a user address range reserved for its mappings.
+    /// Plan the handoff. For an interpreted program, the caller supplies the
+    /// ET_DYN interpreter headers and the address range for its mappings.
     pub(crate) fn exec_plan(
         &self,
         interpreter: Option<(&Self, Range<u64>)>,
     ) -> Result<ExecPlan, Errno> {
         let bad = || Errno(ENOEXEC);
-        if self.kind != ET_EXEC {
-            return Err(bad());
-        }
-        let mut plan = ExecPlan::static_image(
-            self.phdr_vaddr, (self.table.len() / PHDR) as u16, PHDR as u16, self.entry,
-        );
+        let mut plan = self.program_plan()?;
         match (self.interpreter_path(), interpreter) {
             (None, None) => {}
             (Some(_), Some((image, region))) if image.kind == ET_DYN && image.interpreter_path().is_none() => {
                 // Place the interpreter above the program's last load.
                 // Align the bias itself to preserve each PT_LOAD's alignment.
-                let start = region.start.max(self.segments_end);
-                let mask = image.load_align - 1;
-                let bias = start.saturating_sub(image.first_page)
-                    .checked_add(mask).ok_or_else(bad)? & !mask;
-                bias.checked_add(image.segments_end)
-                    .filter(|&end| end <= region.end)
-                    .ok_or_else(bad)?;
+                let start = region.start.max(self.segments_end());
+                let bias = image.bias_in(start..region.end)?;
                 plan.interpreter_bias = Some(bias);
                 plan.initial_pc = image.entry + bias;
             }
             _ => return Err(bad()),
         }
         Ok(plan)
+    }
+
+    fn program_plan(&self) -> Result<ExecPlan, Errno> {
+        if self.kind != ET_EXEC && self.program_bias.is_none() {
+            return Err(Errno(ENOEXEC));
+        }
+        let bias = self.program_bias.unwrap_or(0);
+        Ok(ExecPlan::static_image(
+            self.phdr_vaddr + bias, (self.table.len() / PHDR) as u16, PHDR as u16, self.entry + bias,
+        ))
+    }
+
+    fn bias_in(&self, region: Range<u64>) -> Result<u64, Errno> {
+        let bad = || Errno(ENOEXEC);
+        let mask = self.load_align - 1;
+        let bias = region.start.saturating_sub(self.first_page)
+            .checked_add(mask).ok_or_else(bad)? & !mask;
+        bias.checked_add(self.segments_end)
+            .filter(|&end| end <= region.end)
+            .ok_or_else(bad)?;
+        Ok(bias)
+    }
+
+    #[cfg(any(test, target_arch = "x86_64"))]
+    pub(crate) fn position_program(mut self, region: Range<u64>) -> Result<Self, Errno> {
+        if self.kind == ET_DYN && self.interpreter_path().is_some() {
+            self.program_bias = Some(self.bias_in(region)?);
+        }
+        Ok(self)
+    }
+
+    fn segments_end(&self) -> u64 {
+        self.segments_end + self.program_bias.unwrap_or(0)
+    }
+
+    /// Put the named interpreter into the program's unpublished table. The
+    /// table is dropped if opening, validating or reading the interpreter fails.
+    ///
+    /// # Safety
+    /// `map_page` must return a writable page owned by `table`, as required
+    /// by `load_segments`. `open` must retain the interpreter's file lease
+    /// across the callback.
+    #[cfg(any(test, target_arch = "x86_64"))]
+    pub(crate) unsafe fn load_interpreter<T>(
+        &self,
+        mut table: T,
+        region: Range<u64>,
+        open: impl FnOnce(&[u8], &mut ReadInterpreter<'_>) -> Result<ExecPlan, Errno>,
+        mut map_page: impl FnMut(&mut T, u64, u32) -> Result<*mut u8, Errno>,
+    ) -> Result<(T, ExecPlan), Errno> {
+        let path = self.interpreter_path().ok_or(Errno(ENOEXEC))?;
+        let plan = open(path, &mut |size, read| {
+            let mut header = [0; ELF_HEADER];
+            let prefix = size.min(ELF_HEADER as u64) as usize;
+            read(0, &mut header[..prefix])?;
+            let interpreter = Self::read(&header[..prefix], size, EM_X86_64, region.end, read)?;
+            let plan = self.exec_plan(Some((&interpreter, region.clone())))?;
+            let bias = plan.interpreter_bias().ok_or(Errno(ENOEXEC))?;
+            // SAFETY: map_page supplies the pages owned by table. exec_plan
+            // bounds the biased loads and places them above the program.
+            unsafe {
+                interpreter.load_segments(
+                    read,
+                    |address, flags| map_page(&mut table, address + bias, flags),
+                    |_, _| {},
+                )?;
+            }
+            Ok(plan)
+        })?;
+        Ok((table, plan))
     }
 
     /// The entry point, program header address, heap start, image size and
@@ -253,11 +317,12 @@ impl Headers {
         mut map_page: impl FnMut(u64, u32) -> Result<*mut u8, Errno>,
         mut sync: impl FnMut(*mut u8, usize),
     ) -> Result<(), Errno> {
+        let bias = self.program_bias.unwrap_or(0);
         for ph in self.table.chunks_exact(PHDR).map(ProgramHeader::parse) {
             if ph.kind != PT_LOAD || ph.memsz == 0 {
                 continue;
             }
-            let begin = ph.address;
+            let begin = ph.address + bias;
             let file_end = begin + ph.filesz;
             let memory_end = begin + ph.memsz;
             let first = begin & !(PAGE as u64 - 1);
@@ -319,6 +384,7 @@ fn read_interpreter_path(
 
 /// The program metadata on the initial stack and the PC it starts at. Under
 /// AMD64 psABI §3.4, the auxv still describes the program on interpreter entry.
+#[derive(Clone, Copy)]
 pub(crate) struct ExecPlan {
     phdr_vaddr: u64,
     phnum: u16,
@@ -433,6 +499,8 @@ pub enum Purpose {
 pub struct MappedElf {
     table: UnpublishedPageTable,
     elf: arch::LoadedElf,
+    #[cfg(target_arch = "x86_64")]
+    interpreter_plan: Option<ExecPlan>,
     /// The file's length, reported as the process's code size.
     pub file_len: u64,
 }
@@ -444,16 +512,26 @@ impl MappedElf {
         file_len: u64,
         read: &mut ReadAt<'_>,
         purpose: Purpose,
-    ) -> Result<Self, Errno> {
+    ) -> Result<(Self, Option<Headers>), Errno> {
         #[cfg(target_arch = "x86_64")]
         let machine = arch::EM_X86_64;
         #[cfg(target_arch = "aarch64")]
         let machine = arch::EM_AARCH64;
         let headers = Headers::read(header, file_len, machine,
             crate::memory::layout::USER_STACK_REGION_END, read)?;
-        // This path maps a single file. Interpreter lookup and mapping must
-        // supply its headers to the plan before publishing a dynamic image.
-        let plan = headers.exec_plan(None)?;
+        let needs_interpreter = purpose == Purpose::Exec && headers.interpreter_path().is_some();
+        #[cfg(target_arch = "x86_64")]
+        let headers = if needs_interpreter {
+            use crate::memory::layout::{USERSPACE_BASE, USERSPACE_CODE_DATA_END};
+            headers.position_program(USERSPACE_BASE..USERSPACE_CODE_DATA_END)?
+        } else {
+            headers
+        };
+        let plan = if needs_interpreter {
+            headers.program_plan()?
+        } else {
+            headers.exec_plan(None)?
+        };
         // Reserve the Box before allocating a root, so ENOMEM cannot strand it.
         let mut table = alloc::boxed::Box::try_new(core::mem::MaybeUninit::<ProcessPageTable>::uninit())
             .map_err(|_| Errno(ENOMEM))?;
@@ -483,14 +561,44 @@ impl MappedElf {
             stack_top: x86_64::VirtAddr::zero(),
             #[cfg(target_arch = "aarch64")]
             load_base: headers.load_base,
-            segments_end: headers.segments_end,
+            segments_end: headers.segments_end(),
             image_size: headers.image_size,
             data_size: headers.data_size,
             phdr_vaddr: plan.phdr_vaddr,
             phnum: plan.phnum,
             phentsize: plan.phentsize,
         };
-        Ok(Self { table, elf, file_len })
+        let image = Self {
+            table,
+            elf,
+            #[cfg(target_arch = "x86_64")]
+            interpreter_plan: None,
+            file_len,
+        };
+        Ok((image, needs_interpreter.then_some(headers)))
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn with_interpreter(
+        mut self,
+        program: &Headers,
+        open: impl FnOnce(&[u8], &mut ReadInterpreter<'_>) -> Result<ExecPlan, Errno>,
+    ) -> Result<Self, Errno> {
+        use crate::memory::layout::{MMAP_REGION_END, MMAP_REGION_START};
+        // SAFETY: arch::map_image_page returns the table's own direct-map
+        // pages, and the VFS opener pins the file through its reads.
+        let (table, plan) = unsafe {
+            program.load_interpreter(
+                self.table,
+                MMAP_REGION_START..MMAP_REGION_END,
+                open,
+                |table, address, flags| arch::map_image_page(table.as_mut(), address, flags).map_err(Errno),
+            )?
+        };
+        self.table = table;
+        self.elf.entry_point = x86_64::VirtAddr::new(plan.initial_pc());
+        self.interpreter_plan = Some(plan);
+        Ok(self)
     }
 }
 
@@ -579,6 +687,14 @@ pub enum ProcessImage<'a> {
 
 #[cfg(not(test))]
 impl<'a> ProcessImage<'a> {
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn interpreter_plan(&self) -> Option<ExecPlan> {
+        match self {
+            Self::Mapped(image) => image.interpreter_plan,
+            Self::Bytes(_) | Self::Owned(_) => None,
+        }
+    }
+
     /// The image's file length, for ARM's process-creation diagnostics.
     #[cfg(target_arch = "aarch64")]
     pub(crate) fn len(&self) -> usize {
