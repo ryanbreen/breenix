@@ -7,6 +7,8 @@ extern crate alloc;
 mod exec;
 #[path = "../kernel/src/exec_elf.rs"]
 mod exec_elf;
+#[path = "../userspace/programs/src/padded_elf.rs"]
+mod padded_elf;
 
 /// Heap bytes this thread holds, and the most it has held since `begin`.
 mod heap {
@@ -356,15 +358,18 @@ fn whole_file_image(data: &[u8]) -> std::collections::BTreeMap<u64, Vec<u8>> {
     pages
 }
 
-/// The image the chunked loader builds by reading the file, bounded reads only.
+/// The image the chunked loader builds by reading the file, bounded reads only,
+/// and the number of file bytes it read.
 fn chunked_image(path: &std::path::Path, machine: u16, user_end: u64)
-    -> std::collections::BTreeMap<u64, Vec<u8>>
+    -> (std::collections::BTreeMap<u64, Vec<u8>>, usize)
 {
     use std::os::unix::fs::FileExt;
     let file = std::fs::File::open(path).unwrap();
     let size = file.metadata().unwrap().len();
+    let mut total = 0;
     let mut read = |offset: u64, bytes: &mut [u8]| {
         assert!(bytes.len() <= CHUNK, "{}: a {}-byte read", path.display(), bytes.len());
+        total += bytes.len();
         file.read_exact_at(bytes, offset).map_err(|_| Errno(EIO))
     };
     let mut header = [0; ELF_HEADER];
@@ -381,7 +386,8 @@ fn chunked_image(path: &std::path::Path, machine: u16, user_end: u64)
             |_, _| {},
         ).unwrap();
     }
-    pages.into_iter().map(|(address, page)| (address, page.to_vec())).collect()
+    drop(read);
+    (pages.into_iter().map(|(address, page)| (address, page.to_vec())).collect(), total)
 }
 
 #[test]
@@ -411,11 +417,41 @@ fn staged_programs_load_the_same_bytes_as_the_whole_file_copy() {
         for path in &programs {
             let data = std::fs::read(path).unwrap();
             assert!(
-                chunked_image(path, machine, user_end) == whole_file_image(&data),
+                chunked_image(path, machine, user_end).0 == whole_file_image(&data),
                 "{}: loaded segment bytes differ from the whole-file copy",
                 path.display()
             );
         }
         println!("{arch}: {ordinary} programs, llc and llvm-mc load identically");
     }
+}
+
+/// The processes suite's kill-heap case pads its exec helper with zeros so the
+/// exec lasts long enough to be killed inside. exec reads only PT_LOAD bytes,
+/// so the padding must be a PT_LOAD of its own: the patched helper loads its
+/// program unchanged and reads its padding through the same bounded reads.
+#[test]
+fn padded_exec_helper_reads_its_padding() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let helper = root.join("userspace/programs/target/aarch64-breenix/release/processes-exec_test");
+    let image = std::fs::read(&helper)
+        .unwrap_or_else(|_| panic!("{} is missing: build aarch64 userspace first", helper.display()));
+    let size = 1 << 20;
+    assert!(image.len() * 2 <= size);
+    let mut padded = image.clone();
+    padded.resize(size, 0);
+    let (offset, header) = padded_elf::padding_load(&image, size as u64).unwrap();
+    let offset = offset as usize;
+    padded[offset..offset + PHDR].copy_from_slice(&header);
+    let path = std::env::temp_dir().join(format!("breenix-padded-helper-{}", std::process::id()));
+    std::fs::write(&path, &padded).unwrap();
+    let (pages, read) = chunked_image(&path, 183, 0x0001_0000_0000_0000);
+    std::fs::remove_file(&path).unwrap();
+    assert!(pages == whole_file_image(&padded), "the patched helper does not load as its whole-file copy");
+    for (address, page) in whole_file_image(&image) {
+        assert_eq!(pages[&address], page, "program page {address:#x} changed");
+    }
+    let padding = size - ((image.len() + 4095) & !4095);
+    let (_, program) = chunked_image(&helper, 183, 0x0001_0000_0000_0000);
+    assert_eq!(read, program + padding, "exec read {read} bytes of a {size}-byte padded helper");
 }
