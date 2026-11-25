@@ -1,0 +1,7 @@
+{
+    global: *;
+    local:
+        _ZN*;
+        _R*;
+        _Unwind_*;
+};

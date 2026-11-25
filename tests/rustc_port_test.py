@@ -251,11 +251,15 @@ class RustcPort(unittest.TestCase):
         inventory = record['inventory']
         self.assertEqual(set(inventory), fields)
         artifacts = record['artifacts']
-        self.assertEqual(set(artifacts), {'librustc_driver', 'rustc'})
+        self.assertEqual(set(artifacts), {'librustc_driver', 'rustc', 'libc'})
         driver = artifacts['librustc_driver']
         executable = artifacts['rustc']
+        libc = artifacts['libc']
         self.assertRegex(driver['name'], r'^librustc_driver(?:-[0-9a-f]+)?\.so$')
         self.assertEqual(executable['name'], 'rustc')
+        self.assertEqual(libc['name'], 'libc.so')
+        self.assertEqual(libc['elf_type'], 'ET_DYN')
+        self.assertEqual(libc['dt_soname'], ['libc.so'])
         for artifact in artifacts.values():
             self.assertRegex(artifact['sha256'], r'^[0-9a-f]{64}$')
             self.assertEqual(set(artifact['inventory']), fields)
@@ -264,11 +268,15 @@ class RustcPort(unittest.TestCase):
                 self.assertTrue(all(isinstance(name, str) and name.strip() for name in names))
                 self.assertEqual(names, sorted(set(names)))
         for field, names in inventory.items():
-            self.assertEqual(names, sorted(set(driver['inventory'][field]) |
-                                           set(executable['inventory'][field])))
+            self.assertEqual(names, sorted({name for artifact in artifacts.values()
+                                            for name in artifact['inventory'][field]}))
         if record['static_route']['answer'] == 'none':
-            self.assertIn(driver['name'], executable['inventory']['dt_needed'])
+            self.assertEqual(set(executable['inventory']['dt_needed']),
+                             {driver['name'], libc['name']})
+            self.assertEqual(driver['inventory']['dt_needed'], [libc['name']])
             self.assertEqual(driver['inventory']['pt_interp'], [])
+            self.assertEqual(libc['inventory']['dt_needed'], [])
+            self.assertEqual(libc['inventory']['pt_interp'], [])
             self.assertEqual(len(executable['inventory']['pt_interp']), 1)
             self.assertTrue(executable['inventory']['pt_interp'][0].startswith('/'))
             self.assertTrue(inventory['dynamic_relocations'])

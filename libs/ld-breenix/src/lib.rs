@@ -5,6 +5,8 @@
 
 mod elf;
 mod object;
+#[cfg(feature = "interpreter")]
+pub mod runtime;
 mod scope;
 
 pub use object::{Object, Patch};
@@ -42,6 +44,7 @@ pub enum ErrorKind {
     MissingDependency,
     InvalidDependency,
     Capacity,
+    SystemCall(&'static str, i32),
 }
 
 /// A diagnostic at a file offset in the named object. Detail, when present,

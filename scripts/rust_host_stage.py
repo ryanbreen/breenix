@@ -5,6 +5,7 @@ import argparse
 from array import array
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -130,6 +131,15 @@ def stage_llvm(image, selection, suite, artifacts, corpus, linker):
     return stage_files(image, [prefix, f'{prefix}/bin', f'{prefix}/lib', f'{prefix}/corpus'], entries)
 
 
+def stage_dynamic(image, selection, arch, artifacts):
+    if 'dynamic' not in selection.split(','):
+        return {}
+    if arch != 'x86_64':
+        raise ValueError('the dynamic interpreter is only built for x86-64')
+    entries = [(f'/lib/{name}', artifacts / name, '0755') for name in ('ld-breenix.so', 'libc.so')]
+    return stage_files(image, ['/lib'], entries)
+
+
 def stage_files(image, directories, entries):
     expected = {}
     total_size = 0
@@ -182,6 +192,10 @@ def main():
     staged.update(stage_llvm(args.image, args.suite, release / 'suite-llvm',
                              PROGRAMS / 'target/llvm' / args.arch,
                              ROOT / 'toolchain/rust-host/k4/corpus', PROGRAMS / 'linker.ld'))
+    staged.update(stage_dynamic(
+        args.image, args.suite, args.arch,
+        Path(os.environ.get('BREENIX_KD_BUILD_DIR', PROGRAMS / 'target/kd')),
+    ))
     stage(args.image, args.suite, release / 'suite-rust-host',
           release / 'rust-host-startup-probe', release / 'rust-host-process-probe',
           release / 'rust-host-unwind-probe')

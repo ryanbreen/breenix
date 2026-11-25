@@ -115,6 +115,8 @@ pub(crate) enum ReapOutcome {
 pub(crate) struct PreparedExecImage {
     new_page_table: crate::memory::process_memory::UnpublishedPageTable,
     loaded_elf: crate::elf::LoadedElf,
+    #[cfg(target_arch = "x86_64")]
+    exec_vmas: Vec<crate::memory::vma::Vma>,
     program_name: Option<String>,
     exe_path: Option<alloc::sync::Arc<Vec<u8>>>,
     cmdline: alloc::sync::Arc<Vec<u8>>,
@@ -4462,8 +4464,9 @@ impl ProcessManager {
             .map(alloc::sync::Arc::try_new)
             .transpose()
             .map_err(|_| "exec allocation failed")?;
-        let image_source = image_source.into();
+        let mut image_source = image_source.into();
         let interpreter_plan = image_source.interpreter_plan();
+        let exec_vmas = image_source.take_exec_vmas();
         let mut user_stack_size = crate::syscall::exec::stack_size(argv, envp)?;
         if interpreter_plan.is_some() {
             // The interpreter adds AT_BASE. Reserve a page so the extra
@@ -4542,6 +4545,7 @@ impl ProcessManager {
         Ok(PreparedExecImage {
             new_page_table,
             loaded_elf,
+            exec_vmas,
             program_name,
             exe_path,
             cmdline,
@@ -4642,6 +4646,8 @@ impl ProcessManager {
         let PreparedExecImage {
             new_page_table,
             loaded_elf,
+            #[cfg(target_arch = "x86_64")]
+            exec_vmas,
             program_name,
             exe_path,
             cmdline,
@@ -4708,6 +4714,13 @@ impl ProcessManager {
         process.clear_child_tid = None;
         process.signals.drop_timer_signals();
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
+        #[cfg(target_arch = "x86_64")]
+        if exec_vmas.is_empty() {
+            process.vmas.clear();
+        } else {
+            process.vmas = exec_vmas;
+        }
+        #[cfg(target_arch = "aarch64")]
         process.vmas.clear();
         process.mmap_gaps = None;
         process.memory_locks.clear();

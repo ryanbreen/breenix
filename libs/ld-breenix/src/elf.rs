@@ -83,6 +83,8 @@ pub(crate) struct Segment {
     pub address: u64,
     pub file_size: u64,
     pub mem_size: u64,
+    #[cfg(feature = "interpreter")]
+    pub align: u64,
 }
 
 impl Segment {
@@ -165,6 +167,8 @@ impl<'a> Image<'a> {
                     address: header.u64(16)?,
                     file_size: header.u64(32)?,
                     mem_size: header.u64(40)?,
+                    #[cfg(feature = "interpreter")]
+                    align: header.u64(48)?,
                 })
             })
     }

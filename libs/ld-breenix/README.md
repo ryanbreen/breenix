@@ -1,9 +1,8 @@
-# Breenix dynamic loader core
+# Breenix dynamic loader
 
-The KD u3 crate is a dependency-free Rust library for little-endian AMD64
-dynamic ELFs. It borrows file bytes and caller-owned scratch space. The
-interpreter will provide process mappings, file access, TLS, and control
-transfer. This crate has no unsafe blocks.
+The loader core reads little-endian AMD64 dynamic ELFs using borrowed file
+bytes and caller-owned scratch space. The interpreter binary adds the Breenix
+syscall and startup code through the interpreter feature.
 
 ## ELF input and startup
 
@@ -35,14 +34,16 @@ transfer. This crate has no unsafe blocks.
   executable's `PREINIT_ARRAY`, then `INIT_ARRAY` ranges in dependency-first
   order, ending with the executable. Walk each range in ascending address
   order. Cycles skip back edges. `Object::relro` gives the biased, half-open
-  byte range from `PT_GNU_RELRO`. The interpreter controls page rounding
-  and applies the corresponding protections after the initializer sequence.
+  byte range from `PT_GNU_RELRO`. The interpreter applies page protections
+  after relocation and before running constructors.
 
 The input profile uses RELA and SysV hash tables. Other relocation types,
 symbol versioning, `DT_INIT`, text relocations, symbolic lookup, and legacy
-RPATH without RUNPATH are outside this unit. TLS relocations and runtime
-entry are later KD units. ARM64 builds the shared Rust code. Its kernel exec
-half, X2 relocation and TLS inventory, backend, and KD acceptance remain
+RPATH without RUNPATH are outside this unit. Shared loads occupy distinct
+virtual pages and GNU_RELRO ends on a page boundary. Secure exec needs a
+trusted library search policy. TLS relocations, dynamic shutdown and the dl*
+interfaces are later KD work. ARM64 builds the shared Rust code. Its kernel
+exec half, X2 relocation and TLS inventory, backend, and KD acceptance remain
 pending.
 
 ELF gABI §7 describes program loading, and §§8.4–8.6 cover dependency
@@ -70,11 +71,21 @@ them while the object is live.
 
 ## Host oracle
 
-Run `cargo test --manifest-path libs/ld-breenix/Cargo.toml --test loader_host`
-at the repository root. The committed fixture script uses clang and
+Build the interpreter with `userspace/programs/build.sh --kd-loader`. Run
+`cargo test --manifest-path libs/ld-breenix/Cargo.toml --test loader_host`
+at the repository root. When using a separate `BREENIX_KD_BUILD_DIR`, point
+`BREENIX_LD_BREENIX` at its `ld-breenix.so` for the binary check. The
+committed fixture script uses clang and
 `ld.lld -shared` to build the DSOs. The test reads the relocation records and
 symbol addresses from `llvm-readelf` and `llvm-nm`, applies the psABI
 formulas, and compares the complete address-to-value map for each object.
 The fixture ELFs do not execute. Set `BREENIX_TOOLCHAIN_CLANG`,
 `BREENIX_TOOLCHAIN_LLD`, `BREENIX_TOOLCHAIN_READELF`, and
 `BREENIX_TOOLCHAIN_NM` to use tools outside PATH.
+
+The hosted shared libc and its separate executable CRT are built with
+`userspace/programs/build.sh --kd-libc`. The recipe selects shared startup
+in a build-local copy of libc and links its cleaned PIC archive with
+`ld.lld -shared`. The dynamic suite's staging step
+checks the bytes read back from `/lib/ld-breenix.so` and `/lib/libc.so`
+and returns their digests for the image build record.
