@@ -1,7 +1,7 @@
 //! Exercise the hosted Rust compiler and staged twin sysroot.
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use breenix_suite::suite::{case, category, suite, CaseError, CaseResult, Suite};
+use breenix_suite::suite::{case, case_diagnostic, category, suite, CaseError, CaseResult, Suite};
 use libbreenix::{crypto::sha256::sha256, errno::Errno, error::Error, io, process, types::OwnedFd};
 use serde_json::Value;
 use std::ffi::{c_void, CString};
@@ -87,7 +87,11 @@ fn run(path: &str, args: &[String], capture: bool) -> Result<(i32, Vec<u8>), Cas
     }
     read_result.map_err(fail)?;
     if !process::wifexited(status) {
-        return Err(fail(command_status::abnormal_status(path, status, &output)));
+        let failure = command_status::abnormal_status(path, status, &output);
+        if let Some(line) = failure.lines().next() {
+            case_diagnostic(&format!("rustc compiler: {line}"));
+        }
+        return Err(fail(failure));
     }
     Ok((process::wexitstatus(status), output))
 }

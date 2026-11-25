@@ -1,9 +1,13 @@
 pub(crate) fn abnormal_status(path: &str, status: i32, output: &[u8]) -> String {
     let output = String::from_utf8_lossy(output);
-    match output.trim() {
+    let message = match output.trim() {
         "" => format!("{path}: abnormal status {status:#x}"),
         diagnostic => format!("{path}: abnormal status {status:#x}: {diagnostic}"),
+    };
+    if let Some(unwind) = output.lines().find(|line| line.starts_with("bunwind: fatal phase ")) {
+        return format!("abnormal status {status:#x}: {unwind}\n{message}");
     }
+    message
 }
 
 #[cfg(test)]
