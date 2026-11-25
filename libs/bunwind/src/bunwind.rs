@@ -433,3 +433,33 @@ fn forced_unwind_calls_stop_before_personality_and_at_end() {
 }
 
 include!("arch_test.rs");
+
+#[test]
+fn bases_per_loaded_object() {
+    use crate::ehframe::FrameSource;
+    use crate::loaded::{LoadedImage, PhdrInfo, ProgramHeader};
+
+    let (root, driver) = ([0u8; 64], [0u8; 64]);
+    let mut driver = driver;
+    // LSB .eh_frame_hdr: v1, PC-relative signed 4-byte pointer to .eh_frame,
+    // omitted FDE count and search table.
+    driver[32..40].copy_from_slice(&[1, 0x1b, 0xff, 0xff, 12, 0, 0, 0]);
+    let headers = [
+        ProgramHeader::fixture(1, 5, 0, 16),
+        ProgramHeader::fixture(1, 4, 32, 32),
+        ProgramHeader::fixture(0x6474_e550, 4, 32, 8),
+    ];
+    let program = PhdrInfo::fixture(root.as_ptr() as u64, &headers, 8, 56);
+    let dso = PhdrInfo::fixture(driver.as_ptr() as u64, &headers, 4, 60);
+    let pc = driver.as_ptr() as u64 + 7;
+    let image = [&program, &dso]
+        .into_iter()
+        .find_map(|info| unsafe { LoadedImage::for_pc(pc, info, core::mem::size_of_val(info)) })
+        .expect("find the driver even though the executable has an unwind index");
+    let sections = image.sections_for_pc(pc).unwrap();
+    let base = driver.as_ptr() as u64;
+    assert_eq!(sections.header.unwrap().address, base + 32);
+    assert_eq!(sections.frame.address, base + 48);
+    assert_eq!(sections.text_base, Some(base + 4));
+    assert_eq!(sections.data_base, Some(base + 60));
+}

@@ -364,3 +364,26 @@ fn relocate_is_error_not_panic() {
     assert_eq!(bad_slot.offset, offset as u64);
     assert_eq!(bad_slot.kind, ErrorKind::Bounds);
 }
+
+mod libc_host {
+    use super::*;
+
+    #[test]
+    fn dlsym_follows_scope_order() {
+        // The executable and outer DSO both define choice. Both DSOs
+        // define dso_choice. The expected addresses come from llvm-nm.
+        let files = fixtures();
+        let objects: [Object<'_>; 3] =
+            core::array::from_fn(|i| Object::parse(NAMES[i], &files[i].file, BIASES[i]).unwrap());
+        let at = |i: usize, symbol: &str| BIASES[i] + files[i].symbols[symbol];
+        let lookup = |order: &[usize], symbol: &[u8]| {
+            Object::lookup_scope(order.iter().map(|&i| objects[i]), symbol).unwrap()
+        };
+
+        assert_eq!(lookup(&[0, 1, 2], b"choice"), Some(at(0, "choice")));
+        assert_eq!(lookup(&[0, 1, 2], b"dso_choice"), Some(at(1, "dso_choice")));
+        assert_eq!(lookup(&[1, 2], b"choice"), Some(at(1, "choice")));
+        assert_eq!(lookup(&[2, 1], b"dso_choice"), Some(at(2, "dso_choice")));
+        assert_eq!(lookup(&[1, 2], b"missing_weak"), None);
+    }
+}
