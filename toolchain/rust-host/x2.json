@@ -4,7 +4,7 @@
   "prediction": "With dynamic-linking enabled, the documented bootstrap route will get past the rustc_driver dylib crate-type rejection. If retained K1–K4 inputs satisfy the dynamic links, llvm-readelf and llvm-nm will expose rustc’s interpreter and its dependency on librustc_driver, plus relocations, TLS and undefined symbols for both ELFs. Budget 10800 seconds for the stage-1 build, with four jobs under taskpolicy.",
   "prediction_time": "2026-11-25T07:49:10.795360+00:00",
   "started": "2026-11-25T07:49:47.756699+00:00",
-  "time": "2026-11-25T08:19:05.285649+00:00",
+  "time": "2026-11-25T09:10:50.673131+00:00",
   "command": [
     "taskpolicy",
     "-b",
@@ -18,17 +18,20 @@
     "1",
     "compiler/rustc",
     "--config",
-    "<x2>/bootstrap.toml",
+    "<x2>/r104/bootstrap.toml",
     "--verbose"
   ],
   "working_directory": "<pinned-rust>",
-  "bootstrap_toml": "change-id = 142379\n[build]\ncargo = '<x2>/nightly-stage0/bin/cargo'\nrustc = '<x2>/nightly-stage0/bin/rustc'\nbuild = \"aarch64-apple-darwin\"\nhost = [\"aarch64-apple-darwin\", \"<repo>/x86_64-breenix-hosted.json\"]\ntarget = [\"<repo>/x86_64-breenix.json\", \"<repo>/x86_64-breenix-hosted.json\"]\nbuild-dir = \"<x2>/build\"\nrustfmt = \"<x2>/build/aarch64-apple-darwin/rustfmt/bin/rustfmt\"\njobs = 4\ndocs = false\nsubmodules = false\nlocked-deps = true\n\n[llvm]\ndownload-ci-llvm = false\nlink-shared = false\n\n[rust]\ndownload-rustc = false\ndeny-warnings = false\nlld = false\nllvm-tools = false\n\n[target.aarch64-apple-darwin]\nllvm-config = \"<x2>/mac-llvm-config\"\nllvm-filecheck = \"/opt/homebrew/opt/llvm@20/bin/FileCheck\"\nllvm-has-rust-patches = true\n\n[target.\"<repo>/x86_64-breenix-hosted.json\"]\nllvm-config = \"<x2>/breenix-llvm/bin/llvm-config\"\nllvm-filecheck = \"/opt/homebrew/opt/llvm@20/bin/FileCheck\"\nllvm-has-rust-patches = true\nllvm-libunwind = \"no\"\ncc = \"<x2>/breenix-cc\"\ncxx = \"<x2>/breenix-cxx\"\nlinker = \"<x2>/x86_64-breenix-hosted-link\"\n\n[target.\"<repo>/x86_64-breenix.json\"]\ncc = \"<x2>/breenix-cc\"\nlinker = \"<x2>/x86_64-breenix-link\"\n",
+  "bootstrap_toml": "change-id = 142379\n[build]\ncargo = '<x2>/r104/compiler-cargo'\nrustc = '<x2>/nightly-stage0/bin/rustc'\nbuild = \"aarch64-apple-darwin\"\nhost = [\"aarch64-apple-darwin\", \"<repo>/x86_64-breenix-hosted.json\"]\ntarget = [\"<repo>/x86_64-breenix.json\", \"<repo>/x86_64-breenix-hosted.json\"]\nbuild-dir = \"<x2>/build\"\nrustfmt = \"<x2>/build/aarch64-apple-darwin/rustfmt/bin/rustfmt\"\njobs = 4\ndocs = false\nsubmodules = false\nlocked-deps = true\n\n[llvm]\ndownload-ci-llvm = false\nlink-shared = false\n\n[rust]\ndownload-rustc = false\ndeny-warnings = false\nlld = false\nllvm-tools = false\n\n[target.aarch64-apple-darwin]\nllvm-config = \"<x2>/mac-llvm-config\"\nllvm-filecheck = \"/opt/homebrew/opt/llvm@20/bin/FileCheck\"\nllvm-has-rust-patches = true\n\n[target.\"<repo>/x86_64-breenix-hosted.json\"]\nllvm-config = \"<x2>/breenix-llvm/bin/llvm-config\"\nllvm-filecheck = \"/opt/homebrew/opt/llvm@20/bin/FileCheck\"\nllvm-has-rust-patches = true\nllvm-libunwind = \"no\"\ncc = \"<x2>/breenix-cc\"\ncxx = \"<x2>/breenix-cxx\"\nlinker = \"<x2>/x86_64-breenix-hosted-link\"\n\n[target.\"<repo>/x86_64-breenix.json\"]\ncc = \"<x2>/breenix-cc\"\nlinker = \"<x2>/x86_64-breenix-link\"\n",
   "environment": {
     "CARGO_BUILD_JOBS": "4",
     "CARGO_HOME": "<x2>/cargo",
     "CARGO_NET_OFFLINE": "true",
     "RUST_TARGET_PATH": "<repo>",
-    "MAGIC_EXTRA_RUSTFLAGS": "-Lall=<x2>/nightly-stage0-std-out/x86_64-breenix-hosted/release/deps"
+    "MAGIC_EXTRA_RUSTFLAGS": "-Lall=<x2>/nightly-stage0-std-out/x86_64-breenix-hosted/release/deps",
+    "X2_CONFIG_ROOT": "<x2>/r104",
+    "X2_PINNED_RUST": "<pinned-rust>",
+    "X2_STAGE0_CARGO": "<x2>/nightly-stage0/bin/cargo"
   },
   "rust_commit": "a763a7dd70cc6bc97736aca5eabaf867b36477bf",
   "compiler_tree": "fb2afea4e4c3798e49fe6d7c6e3242acb4b1e331",
@@ -211,25 +214,196 @@
       "wall_seconds": 4.387,
       "log_sha256": "cae25119641898a798f51afbe4a33d110db90449be7af72e8a79709f87c468af",
       "summary": "The hosted compiler build resolved the sysroot with -L all and reached the registry libc build."
+    },
+    "r104_lockfile_update": {
+      "budget_seconds": 55,
+      "started": "2026-11-25T08:57:04.998034+00:00",
+      "exit_status": 0,
+      "time": "2026-11-25T08:57:06.613687+00:00",
+      "wall_seconds": 1.616,
+      "log_sha256": "6f6aafd6a5cc51a3239421d5dac6dddbedb573e1e472c66debdb741cedaee6b1",
+      "summary": "Cargo resolved the local bindings at version 0.2.174."
+    },
+    "r104_bootstrap_lockfile_scope": {
+      "budget_seconds": 9401,
+      "started": "2026-11-25T08:57:31.583453+00:00",
+      "exit_status": 1,
+      "time": "2026-11-25T08:57:31.991353+00:00",
+      "wall_seconds": 0.408,
+      "log_sha256": "a47c8a0b4902863ad1894b78a0da75af8bbafd21f6d8b7e7fdfa11d441f0e013",
+      "summary": "The bootstrap helper received the compiler lockfile and Cargo rejected it under --locked."
+    },
+    "r104_native_libc_patch": {
+      "budget_seconds": 9400,
+      "started": "2026-11-25T08:57:49.310984+00:00",
+      "exit_status": 1,
+      "time": "2026-11-25T08:58:19.467539+00:00",
+      "wall_seconds": 30.156,
+      "log_sha256": "f9de41286c2854e809cb3d26d674c3f747be094189016ade7ffed69a222fd579",
+      "summary": "Applying the Breenix libc patch to the Mac leg produced three rustix type mismatches. The next invocation scoped the patch to the hosted target."
+    },
+    "r104_hosted_libc_patch": {
+      "budget_seconds": 9369,
+      "started": "2026-11-25T08:58:49.212054+00:00",
+      "exit_status": 1,
+      "time": "2026-11-25T09:09:39.215493+00:00",
+      "wall_seconds": 650.004,
+      "log_sha256": "203e494a44f6a95da495740e39c083df426a8779ebbf8011c0c8634ca13bd49f",
+      "summary": "The Mac compiler built. Hosted Cargo compiled the Breenix bindings and then reported the unsupported default getrandom backend."
+    },
+    "r104_hosted_custom_getrandom": {
+      "budget_seconds": 8718,
+      "started": "2026-11-25T09:10:40.723156+00:00",
+      "exit_status": 1,
+      "time": "2026-11-25T09:10:50.673131+00:00",
+      "wall_seconds": 9.95,
+      "log_sha256": "dad3f5fc09f384939ca89550e23751dcba02e2045b6110662406611f5d5327d2",
+      "summary": "The custom backend passed getrandom compilation. Hosted rustix failed before either ELF link."
     }
   },
-  "last_completed_step": "Built the Mac compiler and the x86-64 hosted nightly sysroot. Bootstrap proceeded into hosted compiler dependencies and before either ELF link, registry libc failed to compile.",
-  "first_error": "error[E0412]: cannot find type `time_t` in this scope",
+  "last_completed_step": "Built the Mac compiler. Hosted Cargo compiled the Breenix libc bindings and getrandom with its custom backend, then stopped during rustix compilation.",
+  "first_error": "error[E0425]: cannot find function `seekdir` in module `c`",
   "failure": {
-    "crate": "libc",
-    "version": "0.2.174",
-    "source": "crates.io",
-    "compiler_errors": 176,
-    "disposition": "O5 approval requested for the existing Breenix libc bindings as a Cargo patch in the compiler workspace."
+    "crate": "rustix",
+    "version": "1.0.7",
+    "compiler_errors": 43,
+    "first_error_location": "rustix-1.0.7/src/backend/libc/fs/dir.rs:152:21",
+    "missing_libc_names": [
+      "FALLOC_FL_COLLAPSE_RANGE",
+      "FALLOC_FL_INSERT_RANGE",
+      "FALLOC_FL_KEEP_SIZE",
+      "FALLOC_FL_NO_HIDE_STALE",
+      "FALLOC_FL_PUNCH_HOLE",
+      "FALLOC_FL_UNSHARE_RANGE",
+      "FALLOC_FL_ZERO_RANGE",
+      "FIONREAD",
+      "LOCK_EX",
+      "LOCK_NB",
+      "LOCK_SH",
+      "LOCK_UN",
+      "POSIX_FADV_DONTNEED",
+      "POSIX_FADV_NOREUSE",
+      "POSIX_FADV_NORMAL",
+      "POSIX_FADV_RANDOM",
+      "POSIX_FADV_SEQUENTIAL",
+      "POSIX_FADV_WILLNEED",
+      "ST_NOSUID",
+      "ST_RDONLY",
+      "dup3",
+      "faccessat",
+      "fsid_t",
+      "fstatfs",
+      "major",
+      "makedev",
+      "minor",
+      "mknodat",
+      "posix_fadvise",
+      "posix_fallocate",
+      "preadv",
+      "pwritev",
+      "seekdir",
+      "statfs",
+      "sync",
+      "utimensat"
+    ],
+    "route_error": "error[E0412]: cannot find type `_Opcode` in this scope",
+    "route_error_location": "rustix-1.0.7/src/ioctl/mod.rs:289:19",
+    "route_reference": "https://docs.rs/crate/rustix/1.0.7",
+    "dependent": "tempfile 3.20.0",
+    "disposition": "The build already selected the documented libc backend. _Opcode is an unresolved Rust type in rustix, independently of the missing libc names. An O5 ruling is needed for a source-blind dependency replacement.",
+    "warnings": {
+      "libc_warning_count": 278,
+      "summary": "The bootstrap invocation exposed dead-code and unreachable-pub diagnostics in the patched libc build."
+    }
   },
   "exit_status": 1,
   "exit_status_for": "Bootstrap (hosted Cargo exit 101)",
-  "log_sha256": "cae25119641898a798f51afbe4a33d110db90449be7af72e8a79709f87c468af",
-  "evidence_directory": "fx/evidence/e25-k5-x2b.C2IOadzL",
+  "log_sha256": "dad3f5fc09f384939ca89550e23751dcba02e2045b6110662406611f5d5327d2",
+  "evidence_directory": "fx/evidence/e25-k5-x2b-r104.YgkCxDAC",
   "prior_k4_attempt": {
     "result": "deferred",
     "first_error": "error: cannot produce dylib for `rustc_driver v0.0.0 (<x2>/rust/compiler/rustc_driver)` as the target `x86_64-breenix-hosted` does not support these crate types",
     "log_sha256": "fd70262a6fdf35d988b4936d9d3212aef5d6399051fdd3907a2b2c67d5474b4d",
     "evidence_directory": "fx/evidence/e25-k4-x2.128PEvFv"
+  },
+  "prior_line_578_failure": {
+    "first_error": "error[E0412]: cannot find type `time_t` in this scope",
+    "failure": {
+      "crate": "libc",
+      "version": "0.2.174",
+      "source": "crates.io",
+      "compiler_errors": 176,
+      "disposition": "O5 approval requested for the existing Breenix libc bindings as a Cargo patch in the compiler workspace."
+    },
+    "evidence_directory": "fx/evidence/e25-k5-x2b.C2IOadzL"
+  },
+  "ruling_104": {
+    "bindings": {
+      "path": "libs/libc",
+      "breenix_checkout": "2d318b24657c41231f3aded57a95df328a355315",
+      "last_changed_commit": "2569df82e6a4daae449de65755b0f9a572e03bfe",
+      "tree": "c607984dc6af9e3c7fec2561579134d2b3a4d6ad",
+      "version": "0.2.174",
+      "hosted_std_resolution": {
+        "workspace": "<pinned-rust>/library/Cargo.toml",
+        "patch_path": "../../libs/libc",
+        "stage0_cargo_path": "<x2>/nightly-stage0/lib/rustlib/src/libs/libc",
+        "evidence_log_sha256": "aeef4f1b9896ce17acffb6793889955f60ca947388edc88fd08ff079d7f973d3"
+      }
+    },
+    "cargo_configuration": {
+      "path": "<x2>/r104/libc-patch.toml",
+      "toml": "[patch.crates-io]\nlibc = { path = \"<x2>/nightly-stage0/lib/rustlib/src/libs/libc\" }\n",
+      "scope": "compiler/rustc manifest, x86_64-breenix-hosted target",
+      "cargo_wrapper": "#!/bin/sh\nset -eu\nif [ \"${1-}\" = build ]; then\n    compiler=false\n    hosted=false\n    for arg do\n        case \"$arg\" in\n            \"$X2_PINNED_RUST/compiler/rustc/Cargo.toml\") compiler=true ;;\n            \"$RUST_TARGET_PATH/x86_64-breenix-hosted.json\") hosted=true ;;\n        esac\n    done\n    if \"$compiler\" && \"$hosted\"; then\n        export RUSTFLAGS=\"${RUSTFLAGS-} --cfg=getrandom_backend=\\\"custom\\\"\"\n        exec \"$X2_STAGE0_CARGO\" \"$@\" -Z unstable-options --config \"$X2_CONFIG_ROOT/libc-patch.toml\" --lockfile-path \"$X2_CONFIG_ROOT/Cargo.lock\"\n    fi\nfi\nexec \"$X2_STAGE0_CARGO\" \"$@\"\n",
+      "references": [
+        "https://doc.rust-lang.org/cargo/reference/overriding-dependencies.html#the-patch-section",
+        "https://doc.rust-lang.org/nightly/cargo/reference/unstable.html#lockfile-path",
+        "https://docs.rs/getrandom/0.3.3/getrandom/#custom-backend"
+      ]
+    },
+    "lockfile": {
+      "path": "<x2>/r104/Cargo.lock",
+      "original_sha256": "47e4d2ad5e3b87fba150a3cee11a6c657d5d7648be075588e7f3aa9d8a8e847c",
+      "local_sha256": "178673333e5246955cbb8fd7eb39a5e2281a0ccec743ba3d28f303d4ee8cd856",
+      "update_args": [
+        "update",
+        "-Z",
+        "unstable-options",
+        "--lockfile-path",
+        "<x2>/r104/Cargo.lock",
+        "-p",
+        "libc",
+        "--precise",
+        "0.2.174",
+        "--offline"
+      ],
+      "diff": "--- <pinned-rust>/Cargo.lock\n+++ <x2>/r104/Cargo.lock\n@@ -2046,8 +2046,6 @@\n [[package]]\n name = \"libc\"\n version = \"0.2.174\"\n-source = \"registry+https://github.com/rust-lang/crates.io-index\"\n-checksum = \"1171693293099992e19cddea4e8b849964e9846f4acee11b3948bcc337be8776\"\n \n [[package]]\n name = \"libdbus-sys\"\n"
+    },
+    "fork_status_before": "",
+    "fork_status_after": "",
+    "sysroot_fork_status_after": "",
+    "ordinary_link_parity": {
+      "baseline": "a806d93000d1a3a236f46bce4bf94fa12ce8967c",
+      "check": "existing_links_load_identical",
+      "x86_64_byte_identical": 231,
+      "aarch64_byte_identical": 230
+    },
+    "hosted_loadable_differences": {
+      "x86_64": {
+        "executables": [
+          "hosted_link_probe",
+          "rust-host-process-probe",
+          "rust-host-startup-probe",
+          "rust-host-unwind-probe",
+          "suite-rust-host"
+        ],
+        "cause": "The dynamic-linking target field changes the Rust crate hashes and moves text symbols. Ruling 104(3) records the controlled comparison."
+      },
+      "aarch64": {
+        "executables": []
+      },
+      "evidence": "hosted-parity.json"
+    }
   }
 }
