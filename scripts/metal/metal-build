@@ -21,6 +21,8 @@ way. The container runs on the host's shared CPUs, outside the x86 gate VM, so n
 testing kernel), and removes the clone. Every build also writes manager.efi, the boot manager the same crate builds
 (docs/metal/README.md, "Boot manager and persistent install"). `--stub-only` builds only the deployed EFI applications,
 for a cold readback or a boot manager probe, under a metal-build slot without a kernel or userspace build.
+For `--suite llvm`, the Mac prebuilt builder takes the K4 cross-builds from BREENIX_LLVM_BUILDS and the K3
+runtime from BREENIX_CXX_RUNTIME_BUILDS. `build.json` names the staged fixture digests by guest path.
 Exit 0 on success; 3 when the guard refuses the commit.
 """
 import argparse
@@ -200,6 +202,9 @@ def inner(args):
     toolchain = 'toolchain' in suites
     rust_host = 'rust-host' in suites
     cxx_runtime = 'cxx-runtime' in suites
+    llvm = 'llvm' in suites
+    if llvm and sys.platform != 'darwin':
+        raise ValueError('llvm requires a Mac prebuilt image and BREENIX_LLVM_BUILDS')
     if cxx_runtime and sys.platform != 'darwin':
         raise ValueError('cxx-runtime requires a Mac prebuilt image and BREENIX_CXX_RUNTIME_BUILDS')
     milestone = getattr(args, 'milestone', None)
@@ -209,8 +214,10 @@ def inner(args):
         raise ValueError(f'{milestone} requires the toolchain suite')
     toolchain_build = None
     kernel_image = None
+    staged_files = {}
     build_companions = build_fixtures or busybox
-    root = tmp / 'ext2-staged.img' if 'sdk' in suites or build_fixtures or transfer or rust_host or cxx_runtime else seed
+    hosted = rust_host or cxx_runtime or llvm
+    root = tmp / 'ext2-staged.img' if 'sdk' in suites or build_fixtures or transfer or hosted else seed
     try:
         started = time.time()
         if not local:
@@ -318,9 +325,6 @@ def inner(args):
                                              cwd=clone, stdout=output, stderr=subprocess.STDOUT)
                 if not clean_build(status, log, 'hosted Rust suite and probes', logs, out):
                     return 1
-                subprocess.run([sys.executable, str(clone / 'scripts/rust_host_stage.py'),
-                                '--arch', 'x86_64', '--image', str(root), '--suite', 'rust-host'],
-                               cwd=clone, check=True)
                 timings['rust_host_suite'] = round(time.time() - started)
             if cxx_runtime:
                 started = time.time()
@@ -334,9 +338,32 @@ def inner(args):
                                                   '--cxx-runtime'], cwd=clone, stdout=output, stderr=subprocess.STDOUT)
                 if not clean_build(status, log, 'C++ runtime suite and probes', logs, out):
                     return 1
-                subprocess.run([sys.executable, str(clone / 'scripts/rust_host_stage.py'), '--arch', 'x86_64',
-                                '--image', str(root), '--suite', 'cxx-runtime'], cwd=clone, check=True)
                 timings['cxx_runtime_suite'] = round(time.time() - started)
+            if llvm:
+                started = time.time()
+                log = logs / 'llvm-build.log'
+                build_script = str(clone / 'userspace/programs/build.sh')
+                env = dict(os.environ)
+                if llvm_builds := env.get('BREENIX_LLVM_BUILDS'):
+                    env['BREENIX_LLVM_PORT_BUILDS'] = llvm_builds
+                with log.open('w') as output:
+                    status = subprocess.call([build_script, '--arch', 'x86_64', '--hosted-bin',
+                                              'suite-llvm', '--features', 'llvm'],
+                                             cwd=clone, stdout=output, stderr=subprocess.STDOUT)
+                    if status == 0:
+                        status = subprocess.call([build_script, '--arch', 'x86_64', '--llvm'],
+                                                 cwd=clone, env=env, stdout=output, stderr=subprocess.STDOUT)
+                if not clean_build(status, log, 'LLVM suite and tools', logs, out):
+                    return 1
+                timings['llvm_suite'] = round(time.time() - started)
+            if hosted:
+                started = time.time()
+                record = subprocess.check_output([sys.executable, str(clone / 'scripts/rust_host_stage.py'),
+                                                  '--arch', 'x86_64', '--image', str(root), '--suite', args.suite],
+                                                 cwd=clone, text=True)
+                if record:
+                    staged_files = json.loads(record)
+                timings['hosted_suite_staging'] = round(time.time() - started)
             if 'sdk' in suites:
                 started = time.time()
                 log = logs / 'sdk-suite.log'
@@ -450,6 +477,8 @@ def inner(args):
                  'ext2': {'size': (out / 'ext2.img').stat().st_size, 'sha256': sha256(out / 'ext2.img')}}
         if toolchain_build is not None:
             build['toolchain'] = toolchain_build
+        if staged_files:
+            build['stagedFiles'] = staged_files
         if kernel_assembly:
             build['kernelAssembly'] = toolchain_build['kernelAssembly']
         if (out / 'test-binaries.img').is_file():

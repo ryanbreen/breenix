@@ -4,6 +4,7 @@
 import argparse
 from array import array
 import hashlib
+import json
 from pathlib import Path
 import re
 import subprocess
@@ -13,7 +14,8 @@ import tempfile
 sys.path.insert(0, str(Path(__file__).resolve().parent / 'metal'))
 from metal_root import require_e2fsprogs
 
-PROGRAMS = Path(__file__).resolve().parents[1] / 'userspace/programs'
+ROOT = Path(__file__).resolve().parents[1]
+PROGRAMS = ROOT / 'userspace/programs'
 SUITE_PATH = '/sbin/suite-rust-host'
 PROBE_PATH = '/usr/libexec/breenix/rust-host/startup-probe'
 UNWIND_PROBE_PATH = '/usr/libexec/breenix/rust-host/unwind-probe'
@@ -98,34 +100,74 @@ CXX_PROBES = ('static-init-order', 'guarded-static', 'containers-threads')
 
 def stage_cxx_runtime(image, selection, suite, probes):
     if 'cxx-runtime' not in selection.split(','):
-        return
+        return {}
     if len(probes) != len(CXX_PROBES):
         raise ValueError('expected all three C++ probes')
-    entries = [('/sbin/suite-cxx-runtime', suite)] + [
-        (f'/usr/libexec/breenix/cxx-runtime/{name}', probe)
+    prefix = '/usr/libexec/breenix/cxx-runtime'
+    entries = [('/sbin/suite-cxx-runtime', suite, '0755')] + [
+        (f'{prefix}/{name}', probe, '0755')
         for name, probe in zip(CXX_PROBES, probes)
     ]
-    for _, elf in entries:
-        if elf.read_bytes()[:4] != b'\x7fELF':
-            raise ValueError(f'C++ suite binary is not an ELF: {elf}')
+    return stage_files(image, [prefix], entries)
+
+
+def stage_llvm(image, selection, suite, artifacts, corpus, linker):
+    if 'llvm' not in selection.split(','):
+        return {}
+    prefix = '/usr/libexec/breenix/llvm'
+    manifest = corpus / 'expect.json'
+    inputs = sorted(corpus.glob('*.ll'))
+    if not inputs or {path.name for path in inputs} != {
+        entry['input'] for entry in json.loads(manifest.read_text())['objects']
+    }:
+        raise ValueError('LLVM corpus files differ from expect.json')
+    entries = [('/sbin/suite-llvm', suite, '0755')]
+    entries.extend((f'{prefix}/bin/{name}', artifacts / name, '0755')
+                   for name in ('llc', 'llvm-mc', 'bld'))
+    entries.extend([(f'{prefix}/lib/libc.a', artifacts / 'libc.a', '0444'),
+                    (f'{prefix}/linker.ld', linker, '0444')])
+    entries.extend((f'{prefix}/corpus/{path.name}', path, '0444') for path in [manifest, *inputs])
+    return stage_files(image, [prefix, f'{prefix}/bin', f'{prefix}/lib', f'{prefix}/corpus'], entries)
+
+
+def stage_files(image, directories, entries):
+    expected = {}
+    total_size = 0
+    for path, source, mode in entries:
+        with source.open('rb') as stream:
+            if mode == '0755' and stream.read(4) != b'\x7fELF':
+                raise ValueError(f'suite binary is not an ELF: {source}')
+            stream.seek(0)
+            expected[path] = hashlib.file_digest(stream, 'sha256').hexdigest()
+        total_size += source.stat().st_size
     debugfs, resize2fs = require_e2fsprogs('debugfs', 'resize2fs')
     with image.open('r+b') as disk:
-        disk.truncate(image.stat().st_size + sum(elf.stat().st_size for _, elf in entries) * 2 + 16 * 1024 * 1024)
+        disk.truncate(image.stat().st_size + total_size * 2 + 16 * 1024 * 1024)
     subprocess.run([resize2fs, image], check=True, capture_output=True)
-    with tempfile.TemporaryDirectory(prefix='cxx-runtime-stage-') as temporary:
+    with tempfile.TemporaryDirectory(prefix='hosted-suite-stage-') as temporary:
         commands = Path(temporary) / 'commands'
-        commands.write_text('mkdir /sbin\nmkdir /usr\nmkdir /usr/libexec\nmkdir /usr/libexec/breenix\n'
-                            'mkdir /usr/libexec/breenix/cxx-runtime\n' +
-                            ''.join(f'rm {path}\nwrite "{elf.resolve()}" {path}\n'
-                                    f'set_inode_field {path} mode 0100755\n'
-                                    f'set_inode_field {path} uid 0\nset_inode_field {path} gid 0\n'
-                                    for path, elf in entries))
+        parents = ['/sbin', '/usr', '/usr/libexec', '/usr/libexec/breenix']
+        commands.write_text(
+            ''.join(f'mkdir {path}\n' for path in parents + directories)
+            + ''.join(f'rm {path}\nwrite "{source.resolve()}" {path}\n'
+                      f'set_inode_field {path} mode 010{mode}\n'
+                      f'set_inode_field {path} uid 0\nset_inode_field {path} gid 0\n'
+                      for path, source, mode in entries)
+        )
         subprocess.run([debugfs, '-w', '-f', commands, image], check=True, capture_output=True)
-    for path, elf in entries:
-        data = subprocess.check_output([debugfs, '-R', f'cat {path}', image], stderr=subprocess.DEVNULL)
-        stat = subprocess.check_output([debugfs, '-R', f'stat {path}', image], stderr=subprocess.DEVNULL)
-        if data != elf.read_bytes() or b'Mode:  0755' not in stat or not re.search(rb'User:\s+0\s+Group:\s+0', stat):
-            raise ValueError(f'C++ staging readback differs for {path}')
+    # debugfs can exit successfully even when one of its commands failed.
+    for path, _, mode in entries:
+        with subprocess.Popen([debugfs, '-R', f'cat {path}', image], stdout=subprocess.PIPE,
+                              stderr=subprocess.DEVNULL) as copied:
+            actual = hashlib.file_digest(copied.stdout, 'sha256').hexdigest()
+            if copied.wait() != 0 or actual != expected[path]:
+                raise ValueError(f'staging readback differs for {path}')
+        stat = subprocess.check_output([debugfs, '-R', f'stat {path}', image],
+                                       stderr=subprocess.DEVNULL, text=True)
+        if (f'Type: regular    Mode:  {mode}' not in stat
+                or not re.search(r'User:\s+0\s+Group:\s+0', stat)):
+            raise ValueError(f'staging metadata differs for {path}')
+    return expected
 
 
 def main():
@@ -135,11 +177,16 @@ def main():
     parser.add_argument('--image', type=Path, required=True)
     args = parser.parse_args()
     release = PROGRAMS / f'target/hosted/{args.arch}-breenix-hosted/release'
-    stage_cxx_runtime(args.image, args.suite, release / 'suite-cxx-runtime',
-                      [PROGRAMS / 'target/cxx-runtime' / args.arch / name for name in CXX_PROBES])
+    staged = stage_cxx_runtime(args.image, args.suite, release / 'suite-cxx-runtime',
+                               [PROGRAMS / 'target/cxx-runtime' / args.arch / name for name in CXX_PROBES])
+    staged.update(stage_llvm(args.image, args.suite, release / 'suite-llvm',
+                             PROGRAMS / 'target/llvm' / args.arch,
+                             ROOT / 'toolchain/rust-host/k4/corpus', PROGRAMS / 'linker.ld'))
     stage(args.image, args.suite, release / 'suite-rust-host',
           release / 'rust-host-startup-probe', release / 'rust-host-process-probe',
           release / 'rust-host-unwind-probe')
+    if staged:
+        print(json.dumps(staged, sort_keys=True))
 
 
 if __name__ == '__main__':

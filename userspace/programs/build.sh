@@ -147,6 +147,16 @@ if [[ "$ARCH" == x86_64 ]]; then
     HOSTED_LIBC_RELEASE_DIR="$PROJECT_ROOT/libs/libbreenix-libc/target/x86_64-breenix-c/release"
 fi
 
+# Cargo's build-std freshness checks can miss edits in an external sysroot.
+# Include its verified commit in compiler metadata so a pin change rebuilds std.
+fork_commit() {
+    if [ -f "$1/../.rust-fork-snapshot.json" ]; then
+        python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["commit"])' "$1/../.rust-fork-snapshot.json"
+    else
+        git -C "$1/.." rev-parse HEAD
+    fi
+}
+
 if [[ "$CXX_RUNTIME" == 1 || "$LLVM" == 1 ]]; then
     runtime_build="${BREENIX_CXX_RUNTIME_BUILDS:-$PROJECT_ROOT/build/cxx-runtime}/$ARCH/build"
     if [[ ! -f "$runtime_build/lib/libc++.a" || ! -f "$runtime_build/lib/libc++abi.a" ]]; then
@@ -214,9 +224,37 @@ PY
         llvm_build="${BREENIX_LLVM_PORT_BUILDS:-$PROJECT_ROOT/build/llvm-port}/$ARCH/build"
         python3 "$PROJECT_ROOT/scripts/rust-host/llvm_port.py" "$ARCH" --scratch "$scratch" \
             --link "$llvm_build" "$lld" "$runtime_build" "$libc" "$builtins"
-        for tool in llc llvm-mc; do
-            mv "$scratch/$tool" "$scratch/$tool.map" "$out_dir/"
-        done
+
+        # bld is a regular Rust guest tool. Its x86 build needs the soft-float
+        # archive, while the LLVM-produced object uses the C-ABI archive.
+        bld_libc_dir="$(dirname "$libc")"
+        if [[ "$ARCH" == x86_64 ]]; then
+            bld_libc_dir="$libc_dir/$TARGET_DIR/release"
+            (
+                cd "$PROJECT_ROOT/libs/libbreenix-libc"
+                unset CARGO_ENCODED_RUSTFLAGS __CARGO_TESTS_ONLY_SRC_ROOT
+                RUSTFLAGS="$REMAP_FLAGS -D warnings" cargo build --release \
+                    --target "$PROJECT_ROOT/$TARGET_DIR.json" --target-dir "$libc_dir"
+            )
+            python3 "$PROJECT_ROOT/scripts/libc-clean-archive.py" \
+                --archive "$bld_libc_dir/libc.a" --tool-dir "$libc_tools"
+        fi
+        "$PROJECT_ROOT/scripts/rust-fork.sh" verify
+        bld_std="${BREENIX_RUST_FORK_LIBRARY:-$PROJECT_ROOT/rust-fork/library}"
+        bld_fork="$(fork_commit "$bld_std")"
+        (
+            cd "$PROJECT_ROOT/toolchain"
+            unset CARGO_ENCODED_RUSTFLAGS
+            export __CARGO_TESTS_ONLY_SRC_ROOT="$bld_std"
+            export RUSTFLAGS="$REMAP_FLAGS -D warnings -L native=$bld_libc_dir -C link-arg=-T$SCRIPT_DIR/linker.ld -C link-arg=--allow-multiple-definition -C default-linker-libraries=no -C metadata=breenix_std_$bld_fork"
+            cargo build --locked --release -p bld --bin bld \
+                -Z build-std=std,panic_abort -Z build-std-features=compiler-builtins-mem \
+                --target "$PROJECT_ROOT/$TARGET_DIR.json" --target-dir "$out_dir/.tools"
+        )
+        cp "$out_dir/.tools/$TARGET_DIR/release/bld" "$scratch/bld"
+        cp "$libc" "$scratch/libc.a"
+        mv "$scratch/llc" "$scratch/llc.map" "$scratch/llvm-mc" "$scratch/llvm-mc.map" \
+            "$scratch/bld" "$scratch/libc.a" "$out_dir/"
         exit 0
     fi
 
@@ -284,16 +322,6 @@ if [[ "$ARCH" == "x86_64" ]]; then
 fi
 
 RUST_FORK_LIBRARY="${BREENIX_RUST_FORK_LIBRARY:-$PROJECT_ROOT/rust-fork/library}"
-
-# Cargo's build-std freshness checks can miss edits in an external sysroot.
-# Include its verified commit in compiler metadata so a pin change rebuilds std.
-fork_commit() {
-    if [ -f "$1/../.rust-fork-snapshot.json" ]; then
-        python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["commit"])' "$1/../.rust-fork-snapshot.json"
-    else
-        git -C "$1/.." rev-parse HEAD
-    fi
-}
 
 build_rust_programs() (
     set -o pipefail

@@ -17,7 +17,6 @@ static SUITE: Suite = suite("llvm", "LLVM", &[category("llvm", "LLVM", &[
 ])]);
 
 const FIXTURE: &str = "/usr/libexec/breenix/llvm";
-const DEV: &str = "/opt/breenix-dev/25.2";
 
 #[repr(C)]
 struct FileActions { head: *mut c_void, tail: *mut c_void }
@@ -123,8 +122,8 @@ fn object_runs() -> CaseResult {
     let _ = fs::remove_file(&object);
     let _ = fs::remove_file(&executable);
     compile(entry, &object)?;
-    let args = vec!["--gc-sections".into(), "-T".into(), format!("{DEV}/linker.ld"), "-o".into(), executable.clone(), object.clone(), format!("{DEV}/lib/libc.a")];
-    let (status, _) = run(&format!("{DEV}/bin/ld"), &args, false)?;
+    let args = vec!["--gc-sections".into(), "-T".into(), format!("{FIXTURE}/linker.ld"), "-o".into(), executable.clone(), object.clone(), format!("{FIXTURE}/lib/libc.a")];
+    let (status, _) = run(&format!("{FIXTURE}/bin/bld"), &args, false)?;
     if status != 0 { return Err(fail(format!("bld: exit {status}"))); }
     let (status, output) = run(&executable, &[], true)?;
     let expected_status = program["exit_status"].as_i64().ok_or_else(|| fail("missing status"))?;
