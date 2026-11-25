@@ -14,6 +14,59 @@ sys.path.insert(0, str(ROOT / 'scripts/rust-host'))
 
 
 class LlvmPortTest(unittest.TestCase):
+    def test_llc_is_static_breenix_elf(self):
+        from cxx_runtime import LLVM_BIN
+
+        readelf = os.environ.get('LLVM_READELF', str(LLVM_BIN / 'llvm-readelf'))
+        nm = os.environ.get('LLVM_NM', str(LLVM_BIN / 'llvm-nm'))
+        for arch, machine in (('x86_64', 62), ('aarch64', 183)):
+            for tool in ('llc', 'llvm-mc'):
+                with self.subTest(arch=arch, tool=tool):
+                    elf = ROOT / 'userspace/programs/target/llvm' / arch / tool
+                    self.assertTrue(elf.is_file(), f'missing hosted ELF: {elf}')
+                    [report] = json.loads(subprocess.check_output([
+                        readelf, '--elf-output-style=JSON', '--file-header', '--sections',
+                        '--program-headers', '--symbols', elf,
+                    ], timeout=10))
+                    # ELF gABI: ELFCLASS64, ELFDATA2LSB, ET_EXEC, and the target e_machine.
+                    header = report['ElfHeader']
+                    self.assertEqual(header['Ident']['Class']['Value'], 2)
+                    self.assertEqual(header['Ident']['DataEncoding']['Value'], 1)
+                    self.assertEqual(header['Type'], 'Executable (0x2)')
+                    self.assertEqual(header['Machine']['Value'], machine)
+                    segments = [row['ProgramHeader'] for row in report['ProgramHeaders']]
+                    self.assertNotIn(3, [segment['Type']['Value'] for segment in segments])
+                    self.assertTrue(any(segment['Type']['Value'] == 1 and segment['Offset'] == 0
+                                        and segment['VirtualAddress'] == 0x40000000
+                                        and segment['Flags']['Value'] == 5 for segment in segments))
+                    self.assertIn(0x6474E550, [segment['Type']['Value'] for segment in segments])
+                    dynamic = subprocess.check_output([readelf, '--dynamic-table', elf],
+                                                      text=True, timeout=10)
+                    self.assertNotIn('(NEEDED)', dynamic)
+                    self.assertEqual(subprocess.check_output([nm, '--undefined-only', elf],
+                                                             text=True, timeout=10), '')
+
+                    sections = {row['Section']['Name']['Name']: row['Section']
+                                for row in report['Sections']}
+                    symbols = {row['Symbol']['Name']['Name']: row['Symbol']
+                               for row in report['Symbols']}
+                    self.assertEqual(symbols['_start']['Value'], header['Entry'])
+                    self.assertIn('__breenix_init_array_start', symbols)
+                    if '__lcxx_override' in sections:
+                        self.assertIn('__start___lcxx_override', symbols)
+                        self.assertIn('__stop___lcxx_override', symbols)
+                    # Ruling 89 and GNU ld manual §3.6.4.5: a synthesized
+                    # bound must be defined in its output section at its edge.
+                    for name, symbol in symbols.items():
+                        bound = re.fullmatch(r'__(start|stop)_([a-zA-Z_][a-zA-Z0-9_]*)', name)
+                        if bound:
+                            edge, section_name = bound.groups()
+                            self.assertIn(section_name, sections, name)
+                            section = sections[section_name]
+                            self.assertEqual(symbol['Section']['Value'], section['Index'], name)
+                            expected = section['Address'] + (section['Size'] if edge == 'stop' else 0)
+                            self.assertEqual(symbol['Value'], expected, name)
+
     def test_support_patch_is_breenix_only(self):
         patch = ROOT / 'toolchain/rust-host/k4/patches/llvm-support-breenix.patch'
         allowed = re.compile(r'llvm/lib/(?:Support/Unix/[^/]+|TargetParser/Host\.cpp)')
