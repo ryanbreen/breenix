@@ -15,6 +15,9 @@
 #                              (default: <repo>/build/cxx-runtime)
 #   BREENIX_LLVM_PORT_BUILDS    Parent of the per-arch K4 LLVM builds
 #                              (default: <repo>/build/llvm-port)
+#   BREENIX_RUSTC_PORT_BUILDS   K5 twin cache with hosted/{bin,lib,maps}
+#                              (default: <repo>/build/rustc-port)
+#                              hosted/lib includes the KD libc.so used to link.
 #
 # Usage:
 #   ./userspace/programs/build.sh                  # x86_64 (default)
@@ -29,6 +32,8 @@
 #     Link C++ probes into target/cxx-runtime/<arch>.
 #   ./userspace/programs/build.sh --arch x86_64|aarch64 --llvm
 #     Link llc and llvm-mc into target/llvm/<arch>.
+#   ./userspace/programs/build.sh --rustc
+#     Stage the linked K5 twin compiler and maps into target/rustc/x86_64.
 #   ./userspace/programs/build.sh --kd-libc
 #     Link the x86-64 hosted compiler's libc.so and executable CRT.
 #   ./userspace/programs/build.sh --dynamic
@@ -42,7 +47,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 usage() {
-    echo "Usage: $0 [--arch x86_64|aarch64] [--hosted-bin NAME [--features FEATURES] | --rust-host | --bunwind | --cxx-runtime | --llvm | --dynamic | --kd-libc | --kd-loader]" >&2
+    echo "Usage: $0 [--arch x86_64|aarch64] [--hosted-bin NAME [--features FEATURES] | --rust-host | --bunwind | --cxx-runtime | --llvm | --rustc | --dynamic | --kd-libc | --kd-loader]" >&2
     exit 2
 }
 
@@ -53,6 +58,7 @@ RUST_HOST=0
 BUNWIND=0
 CXX_RUNTIME=0
 LLVM=0
+RUSTC_PORT=0
 DYNAMIC=0
 KD_LIBC=0
 KD_LOADER=0
@@ -83,6 +89,10 @@ while [[ $# -gt 0 ]]; do
             LLVM=1
             shift
             ;;
+        --rustc)
+            RUSTC_PORT=1
+            shift
+            ;;
         --dynamic)
             DYNAMIC=1
             shift
@@ -105,6 +115,14 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+if [[ "$RUSTC_PORT" == 1 ]]; then
+    [[ "$ARCH" == x86_64 && "$DYNAMIC" == 0 && "$KD_LIBC" == 0 && "$KD_LOADER" == 0 &&
+       "$CXX_RUNTIME" == 0 && "$LLVM" == 0 && "$BUNWIND" == 0 &&
+       "$RUST_HOST" == 0 && -z "$HOSTED_BIN" && ${#HOSTED_FEATURES[@]} -eq 0 ]] || usage
+    builds="${BREENIX_RUSTC_PORT_BUILDS:-$PROJECT_ROOT/build/rustc-port}"
+    exec python3 "$PROJECT_ROOT/scripts/rust-host/rustc_port.py" --cache "$builds" \
+        --stage-hosted "$SCRIPT_DIR/target/rustc/$ARCH"
+fi
 if [[ "$DYNAMIC" == 1 ]]; then
     [[ "$ARCH" == x86_64 && "$KD_LIBC" == 0 && "$KD_LOADER" == 0 &&
        "$CXX_RUNTIME" == 0 && "$LLVM" == 0 && "$BUNWIND" == 0 &&

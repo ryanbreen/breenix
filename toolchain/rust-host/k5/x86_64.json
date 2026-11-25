@@ -55,8 +55,8 @@
     }
   },
   "mac_rustc_sha256": "b3e90b74fd944e6812a0e4a23ad89f98cdc4887c17faf82e8f6e767300be10d6",
-  "hosted_rustc_sha256": "727bce3feb9d1543bc7b22776ad348ee5041a2004b72a4d24b6e7a5ecdd5ac79",
-  "hosted_driver_sha256": "2ccab1fe75537cf8242801bc1a9e844bfb5ef54071496e014192c936a3ccea96",
+  "hosted_rustc_sha256": "993e2776feeaf2012fe90e297bd01711e4334e041cf72c898990baa2572a6c7f",
+  "hosted_driver_sha256": "8b6256ed48d69c021c11fdf4208d42b828d614d2786bb0cb6fe4556038a944b6",
   "sysroot": {
     "rustc_version": "rustc 1.90.0-dev (a763a7dd7 2026-11-24)",
     "commit_hash": "a763a7dd70cc6bc97736aca5eabaf867b36477bf",
@@ -101,6 +101,14 @@
       "lib/rustlib/x86_64-breenix-hosted/lib/libstd-f32a85bea434ce93.rlib": "640554a945e4204f3c467b9e1b0c1b951e5c493c19b6bd838ab6f63feef4224f",
       "lib/rustlib/x86_64-breenix-hosted/lib/libstd_detect-accf65cf3a95f3f6.rlib": "06a1902d76b81c11fdd0d8924b2569a39f9cf9ac46ba484ba7ba2b30b8a4a961",
       "lib/rustlib/x86_64-breenix-hosted/lib/libunwind-bb964b5abebcc773.rlib": "4cb72b3080571a61185001a5efce54c123798d26189444884795079c6e05c98e"
+    }
+  },
+  "hosted_link": {
+    "driver": "librustc_driver-2e1bf4637bebadba.so",
+    "libc_sha256": "d81da46633acbcf0c9ca33e976d9861fa607fc32e5736c042aa7a2b0d6a4fa35",
+    "maps_sha256": {
+      "rustc.map": "7dc2e550dc417d6a2e5ee37e0eed91508de129662388a13995d2bb2488a18646",
+      "librustc_driver-2e1bf4637bebadba.so.map": "670ea63b68f3d03f79745ece08b8121d4ab71c1cc123f3776ee3776581c0a6cb"
     }
   }
 }
