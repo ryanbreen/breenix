@@ -412,7 +412,7 @@ mod exec_interp {
 
     impl Table<'_> {
         fn map_page(&mut self, addr: u64, flags: u32) -> Result<*mut u8, Errno> {
-            assert_eq!(flags, 5);
+            assert_eq!(flags, if addr == PROGRAM + 4096 { 6 } else { 5 });
             let mut page = Box::new([0; 4096]);
             let ptr = page.as_mut_ptr();
             assert!(self.pages.insert(addr, page).is_none(), "overlapping images");
@@ -429,7 +429,7 @@ mod exec_interp {
     fn prepare<'a>(
         fs: &FakeVfs,
         dropped_pages: &'a Cell<usize>,
-    ) -> Result<(Table<'a>, exec_elf::ExecPlan), Errno> {
+    ) -> Result<(Table<'a>, exec_elf::ExecPlan, Vec<exec_elf::ImageRegion>), Errno> {
         let mut table = Table { pages: BTreeMap::new(), dropped_pages };
         let cred = Credentials::kernel();
         let (program, _) = exec::read_image(
@@ -472,7 +472,7 @@ mod exec_interp {
         ] {
             let fs = FakeVfs { program: elf(2, PROGRAM, true, 0xc3), interpreter };
             let dropped_pages = Cell::new(0);
-            let result = prepare(&fs, &dropped_pages).map(|(mut pending, _)| {
+            let result = prepare(&fs, &dropped_pages).map(|(mut pending, _, _)| {
                 running = core::mem::take(&mut pending.pages);
             });
             assert_eq!(result, Err(Errno(expected)));
@@ -490,7 +490,7 @@ mod exec_interp {
                 interpreter: Ok(elf(3, INTERP, false, 0xcc)),
             };
             let dropped_pages = Cell::new(0);
-            let (table, plan) = prepare(&fs, &dropped_pages).unwrap();
+            let (table, plan, _) = prepare(&fs, &dropped_pages).unwrap();
             let bias = REGION - INTERP;
             assert_eq!(plan.interpreter_bias(), Some(bias));
             assert_eq!(plan.initial_pc(), bias + INTERP + ENTRY as u64);
@@ -502,6 +502,30 @@ mod exec_interp {
             assert_eq!(auxv[&9], PROGRAM + ENTRY as u64); // AT_ENTRY
             assert_eq!(auxv[&3], PROGRAM + ELF_HEADER as u64); // AT_PHDR
         }
+    }
+
+    #[test]
+    fn interp_publishes_biased_load_ranges_for_mprotect() {
+        let mut program = elf(3, 0, true, 0xc3);
+        program.resize(8192, 0);
+        program[56..58].copy_from_slice(&3u16.to_le_bytes());
+        let start = ELF_HEADER + 2 * PHDR;
+        program[start..start + 4].copy_from_slice(&1u32.to_le_bytes()); // PT_LOAD
+        program[start + 4..start + 8].copy_from_slice(&6u32.to_le_bytes()); // PF_R | PF_W
+        for (offset, value) in [(8, 4096u64), (16, 4096), (32, 16), (40, 32), (48, 4096)] {
+            program[start + offset..start + offset + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        let fs = FakeVfs { program, interpreter: Ok(elf(3, INTERP, false, 0xcc)) };
+        let dropped_pages = Cell::new(0);
+        let (table, _, regions) = prepare(&fs, &dropped_pages).unwrap();
+        let spans = regions.iter().map(|span| (span.start, span.end, span.flags))
+            .collect::<Vec<_>>();
+        assert_eq!(spans, [
+            (PROGRAM, PROGRAM + 4096, 5),
+            (PROGRAM + 4096, PROGRAM + 8192, 6),
+            (REGION, REGION + 4096, 5),
+        ]);
+        assert_eq!(table.pages.keys().copied().collect::<Vec<_>>(), [PROGRAM, PROGRAM + 4096, REGION]);
     }
 }
 
