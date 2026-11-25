@@ -34,6 +34,7 @@ typedef __breenix_mode_t mode_t;
 #endif
 #define O_NOATIME 01000000
 #define O_CLOEXEC 02000000
+#define O_CLOFORK 0200000000
 #define O_SYNC 04010000
 #define O_RSYNC O_SYNC
 #define O_PATH 010000000
@@ -55,6 +56,7 @@ typedef __breenix_mode_t mode_t;
 #define F_DUPFD_CLOEXEC 1030
 
 #define FD_CLOEXEC 1
+#define FD_CLOFORK 2
 
 #define F_RDLCK 0
 #define F_WRLCK 1

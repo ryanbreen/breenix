@@ -1,7 +1,12 @@
 import datetime
+import hashlib
 import json
+import os
+import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import tomllib
 import unittest
 from pathlib import Path
@@ -11,6 +16,11 @@ RECORDS = ROOT / 'toolchain/rust-host/x0'
 TREE = Path.home() / 'fun/code/rust.worktrees/x0-666252fd'
 BASE = '706f244db'
 PIN = '666252fd61839b9e9b1bc9e777a0c84c5cf3dc6d'
+RUSTIX_PATCH = RECORDS.parent / 'k5/patches/rustix-1.0.7-breenix.patch'
+GETRANDOM_PATCH = RECORDS.parent / 'k5/patches/getrandom-0.2.16-breenix.patch'
+LIBLOADING_PATCH = RECORDS.parent / 'k5/patches/libloading-0.8.8-breenix.patch'
+NIX_PATCH = RECORDS.parent / 'k5/patches/nix-0.30.1-breenix.patch'
+ERRNO_PATCH = RECORDS.parent / 'k5/patches/errno-0.3.12-breenix.patch'
 
 
 def git(*args, tree=TREE):
@@ -19,10 +29,236 @@ def git(*args, tree=TREE):
 
 
 class RustcPort(unittest.TestCase):
-    def test_x2_inventory_recorded(self):
+    def test_rustix_patch_is_breenix_only(self):
+        patch = RUSTIX_PATCH.read_text()
+        records = re.split(r'(?m)^diff --git ', patch)[1:]
+        self.assertTrue(records)
+        for record in records:
+            header = record.splitlines()[0]
+            match = re.fullmatch(r'a/(src/[\w/]+\.rs) b/\1', header)
+            self.assertIsNotNone(match, header)
+            path = match[1]
+            self.assertNotIn('tests', Path(path).parts)
+            self.assertIn(f'\n--- a/{path}\n+++ b/{path}\n', record)
+            hunks = re.split(r'(?m)^@@ .* @@[^\n]*\n', record)[1:]
+            self.assertTrue(hunks, path)
+            for hunk in hunks:
+                self.assertFalse(any(line.startswith('-') for line in hunk.splitlines()), path)
+                added = '\n'.join(line[1:] for line in hunk.splitlines() if line.startswith('+'))
+                self.assertIsNotNone(re.fullmatch(
+                    r'#\[cfg\(target_os = "breenix"\)\]\n(?:'
+                    r'type \w+ = [\w:]+;|'
+                    r'bitflags! \{\n(?:    [^\n]+\n)+\}'
+                    r'\n#\[cfg_attr\(target_os = "breenix", cfg\(any\(\)\)\)\])', added), path)
+
+    def test_rustix_patch_preserves_registry_copy(self):
+        self.assert_patch_preserves_registry_copy(RUSTIX_PATCH, 'rustix-1.0.7')
+
+    def test_getrandom_02_patch_is_breenix_only(self):
+        patch = GETRANDOM_PATCH.read_text()
+        headers = re.findall(r'(?m)^diff --git (.*)$', patch)
+        self.assertEqual(headers, ['a/src/lib.rs b/src/lib.rs',
+                                   'a/src/util_libc.rs b/src/util_libc.rs'])
+        self.assertFalse(re.search(r'(?m)^-(?!-- )', patch))
+        self.assertEqual(re.findall(r'(?m)^\+(?!\+\+ )(.*)$', patch), [
+            '    } else if #[cfg(target_os = "breenix")] {',
+            '        mod util_libc;',
+            '        #[path = "getentropy.rs"] mod imp;',
+            '    } else if #[cfg(target_os = "breenix")] {',
+            '        use libc::__errno_location as errno_location;',
+        ])
+        self.assert_patch_preserves_registry_copy(GETRANDOM_PATCH, 'getrandom-0.2.16')
+
+    def test_libloading_patch_matches_breenix_dlfcn(self):
+        patch = LIBLOADING_PATCH.read_text()
+        source = 'src/os/unix/consts.rs'
+        self.assertEqual(re.findall(r'(?m)^diff --git (.*)$', patch), [f'a/{source} b/{source}'])
+        self.assertIn(f'\n--- a/{source}\n+++ b/{source}\n', patch)
+        self.assertFalse(re.search(r'(?m)^-(?!-- )', patch))
+        header = (ROOT / 'libs/libbreenix-libc/include/dlfcn.h').read_text()
+        values = dict(re.findall(r'(?m)^#define (RTLD_\w+) (\S+)$', header))
+        hunks = re.split(r'(?m)^@@ .* @@[^\n]*\n', patch)[1:]
+        self.assertEqual(len(hunks), 4)
+        for name, hunk in zip(('RTLD_LAZY', 'RTLD_NOW', 'RTLD_GLOBAL', 'RTLD_LOCAL'), hunks):
+            self.assertEqual(hunk.splitlines(), [
+                '+        } else if #[cfg(target_os = "breenix")] {',
+                f'+            pub(super) const {name}: c_int = {values[name]};',
+            ])
+        self.assert_patch_preserves_registry_copy(LIBLOADING_PATCH, 'libloading-0.8.8')
+
+    def test_nix_patch_is_breenix_only(self):
+        patch = NIX_PATCH.read_text()
+        self.assertEqual(re.findall(r'(?m)^diff --git (.*)$', patch),
+                         ['a/src/errno.rs b/src/errno.rs',
+                          'a/src/sys/signal.rs b/src/sys/signal.rs',
+                          'a/src/unistd.rs b/src/unistd.rs'])
+        for path in ('src/errno.rs', 'src/sys/signal.rs', 'src/unistd.rs'):
+            self.assertIn(f'\n--- a/{path}\n+++ b/{path}\n', patch)
+        unistd = patch.split('diff --git a/src/unistd.rs b/src/unistd.rs\n')[1]
+        self.assertEqual(re.findall(r'(?m)^\+    target_os = "breenix",$', unistd),
+                         ['+    target_os = "breenix",'] * 2)
+        for hunk in re.split(r'(?m)^@@ .* @@[^\n]*\n', patch)[1:]:
+            removed = re.findall(r'(?m)^-(?!-- )(.*)$', hunk)
+            added = re.findall(r'(?m)^\+(?!\+\+ )(.*)$', hunk)
+            for line in added.copy():
+                if line.strip() in ('target_os = "breenix",',
+                                    '#[cfg_attr(target_os = "breenix", derive(Clone, Debug))]'):
+                    added.remove(line)
+            for line in added:
+                self.assertIn('target_os = "breenix"', line)
+            normalized = [line.replace(', target_os = "breenix"', '')
+                          .replace('#[cfg_attr(not(target_os = "breenix"), derive(',
+                                   '#[derive(')
+                          .replace('PartialEq))]', 'PartialEq)]') for line in added]
+            self.assertEqual(removed, normalized)
+        self.assert_patch_preserves_registry_copy(NIX_PATCH, 'nix-0.30.1')
+
+    def test_errno_patch_is_breenix_only(self):
+        patch = ERRNO_PATCH.read_text()
+        self.assertEqual(re.findall(r'(?m)^diff --git (.*)$', patch),
+                         ['a/src/unix.rs b/src/unix.rs'])
+        self.assertIn('\n--- a/src/unix.rs\n+++ b/src/unix.rs\n', patch)
+        self.assertFalse(re.search(r'(?m)^-(?!-- )', patch))
+        self.assertEqual(re.findall(r'(?m)^\+(?!\+\+ )(.*)$', patch), [
+            '    #[cfg_attr(target_os = "breenix", link_name = "__errno_location")]',
+        ])
+
+    def test_errno_patch_preserves_registry_copy(self):
+        self.assert_patch_preserves_registry_copy(ERRNO_PATCH, 'errno-0.3.12')
+
+    def test_x2_driver_uses_breenix_errno_location(self):
+        stage = Path(os.environ.get('BREENIX_X2_STAGE', Path.home() /
+                                    'Library/Caches/breenix-e25/kd/x2/stage1'))
+        llvm = Path(os.environ.get('BREENIX_X2_LLVM', '/opt/homebrew/opt/llvm@20/bin'))
+        driver, = (stage / 'lib').glob('librustc_driver-*.so')
+
+        def symbols(elf):
+            output = subprocess.check_output(
+                [llvm / 'llvm-nm', '-D', '--format=posix', elf], text=True, timeout=30)
+            return {name: kind for name, kind, *_ in map(str.split, output.splitlines())
+                    if name in ('errno_location', '__errno_location')}
+
+        imports = symbols(driver)
+        exports = symbols(stage / 'lib/libc.so')
+        self.assertNotIn('errno_location', imports)
+        self.assertNotIn('errno_location', exports)
+        self.assertEqual(imports.get('__errno_location'), 'U')
+        self.assertEqual(exports.get('__errno_location'), 'T')
+
+    def assert_patch_preserves_registry_copy(self, patch, crate):
+        self.assertTrue(patch.is_file(), f'{crate} port patch is missing')
+        cargo = Path(os.environ.get('BREENIX_X2_CARGO_HOME', Path.home() /
+                                    'Library/Caches/breenix-e25/k5/x2b/cargo'))
+        sources = list(cargo.glob(f'registry/src/*/{crate}'))
+        self.assertEqual(len(sources), 1, sources)
+        source = sources[0].resolve()
+
+        def snapshot(tree):
+            return {path.relative_to(tree): hashlib.sha256(path.read_bytes()).hexdigest()
+                    for path in tree.rglob('*') if path.is_file()}
+
+        before = snapshot(source)
+        self.assertTrue(before)
+        with tempfile.TemporaryDirectory(prefix='breenix-x2-patch-') as directory:
+            local = Path(directory) / source.name
+            shutil.copytree(source, local)
+            subprocess.run(['git', 'apply', '--no-index', '--unidiff-zero', patch], cwd=local,
+                           check=True, timeout=15)
+            self.assertNotEqual(snapshot(local), before)
+        self.assertEqual(snapshot(source), before)
+
+    def test_x2_static_route_answered_with_citations(self):
+        record = json.loads((RECORDS.parent / 'x2.json').read_text())
+        route = record['static_route']
+        self.assertIn(route['answer'], ('documented', 'none'))
+        self.assertTrue(route['citations'])
+        pin = tomllib.loads((ROOT / 'rust-fork.toml').read_text())['hosted']['commit']
+        for citation in route['citations']:
+            self.assertEqual(set(citation), {'file', 'line', 'quote'})
+            self.assertTrue(citation['file'] == 'bootstrap.example.toml' or
+                            citation['file'].startswith('src/doc/rustc-dev-guide/') or
+                            citation['file'].startswith('src/doc/rustc/'))
+            self.assertIs(type(citation['line']), int)
+            self.assertGreater(citation['line'], 0)
+            self.assertTrue(citation['quote'].strip())
+            contents = git('show', f"{pin}:{citation['file']}", tree=ROOT / 'rust-fork')
+            lines = contents.splitlines()
+            self.assertLessEqual(citation['line'], len(lines))
+            self.assertEqual(lines[citation['line'] - 1], citation['quote'])
+
+    def test_x2_one_process_state(self):
+        stage = Path(os.environ.get('BREENIX_X2_STAGE', Path.home() /
+                                    'Library/Caches/breenix-e25/kd/x2/stage1'))
+        llvm = Path(os.environ.get('BREENIX_X2_LLVM', '/opt/homebrew/opt/llvm@20/bin'))
+        drivers = sorted((stage / 'lib').glob('librustc_driver-*.so'))
+        self.assertEqual(len(drivers), 1, drivers)
+        executable = stage / 'bin/rustc'
+        driver, = drivers
+        libc = stage / 'lib/libc.so'
+
+        def inspect(tool, path, *args):
+            return subprocess.check_output([llvm / tool, *args, path], text=True, timeout=30)
+
+        def definitions(path, *args):
+            # POSIX format puts the symbol name before the type, value and size.
+            # In demangled output the name itself may contain spaces.
+            return [tuple(line.rsplit(maxsplit=3)[:2]) for line in
+                    inspect('llvm-nm', path, '--defined-only', '--format=posix', *args).splitlines()]
+
+        paths = (executable, driver, libc)
+        # Inspect the known-bad executable and driver even when no libc.so exists.
+        symbols = {path: definitions(path) for path in paths if path.is_file()}
+
+        def owners(pattern):
+            return [path.name for path, names in symbols.items() for name, _ in names
+                    if re.fullmatch(pattern, name)]
+
+        self.assertEqual(owners('_start'), ['rustc'])
+        self.assertIn(libc, symbols, 'X2 is missing its shared libc')
+        for name in ('environ', 'stdin', 'stdout', 'stderr', 'optarg', 'optind',
+                     'opterr', 'optopt', '__cxa_atexit', 'getauxval'):
+            self.assertEqual(owners(name), ['libc.so'], name)
+        for name in ('AUXV', 'PROCESS', 'RUNTIME_READY', 'EARLY_ERRNO', 'TLS_IMAGE',
+                     'STACK_CACHE', 'AT_EXIT'):
+            self.assertEqual(owners(r'_ZN1c.*' + str(len(name)) + name +
+                                    r'17h[0-9a-f]+E(?:\..*)?'), ['libc.so'], name)
+
+        for path, expected in ((executable, {driver.name, libc.name}),
+                               (driver, {libc.name}), (libc, set())):
+            dynamic = inspect('llvm-readelf', path, '--file-header', '--dynamic-table')
+            self.assertEqual(set(re.findall(r'\(NEEDED\).*\[(.+)\]', dynamic)), expected, path)
+            if path == libc:
+                self.assertRegex(dynamic, r'Type:\s+DYN\b')
+                self.assertEqual(re.findall(r'\(SONAME\).*\[(.+)\]', dynamic), ['libc.so'])
+
+        for path in (executable, driver):
+            link_map = (stage / 'maps' / (path.name + '.map')).read_text()
+            self.assertNotRegex(link_map, r'\blibc\.a\(')
+            self.assertNotRegex(link_map, r'\blibc\.a:')
+            self.assertFalse([name for name, _ in symbols[path] if name.startswith('_ZN1c')])
+            if path == driver:
+                self.assertNotRegex(link_map, r'\bbreenix-crt\.o\b')
+
+        runtime_data = {}
+        for path in paths:
+            for name, kind in definitions(path, '--demangle'):
+                if kind.upper() not in {'B', 'D', 'G', 'S', 'V'}:
+                    continue
+                name = re.sub(r'(?:\.llvm\.[0-9]+|::h[0-9a-f]{16})$', '', name)
+                if (name.startswith(('std::', 'alloc::', 'bunwind::', 'c::stdlib::',
+                                     'std::__', '__cxxabiv1::', '__rust', '__unw',
+                                     '_Unwind_', '__cxa_'))):
+                    runtime_data.setdefault(name, set()).add(path.name)
+        duplicates = {name: sorted(files) for name, files in runtime_data.items() if len(files) > 1}
+        self.assertEqual(duplicates, {})
+
+    def test_x2_driver_linked_inventory(self):
         path = RECORDS.parent / 'x2.json'
         self.assertTrue(path.is_file(), 'X2 rustc driver link result has not been recorded')
         record = json.loads(path.read_text())
+        errno_port = record['ruling_108']['patch']
+        self.assertEqual(errno_port['sha256'], hashlib.sha256(ERRNO_PATCH.read_bytes()).hexdigest())
+        self.assertEqual(errno_port['text'], ERRNO_PATCH.read_text())
         self.assertTrue(record['prediction'].strip())
         self.assertLess(datetime.datetime.fromisoformat(record['prediction_time']),
                         datetime.datetime.fromisoformat(record['time']))
@@ -31,6 +267,8 @@ class RustcPort(unittest.TestCase):
         self.assertEqual(command[:2], ['taskpolicy', '-b'])
         self.assertIn('--config', command)
         self.assertIn('compiler/rustc', command)
+        self.assertEqual(record['result'], 'linked')
+        self.assertEqual(record['exit_status'], 0)
 
         pin = tomllib.loads((ROOT / 'rust-fork.toml').read_text())['hosted']['commit']
         self.assertEqual(record['rust_commit'], pin)
@@ -45,22 +283,41 @@ class RustcPort(unittest.TestCase):
             self.assertEqual(record[field], {'compiler': '', 'llvm_project': ''})
         self.assertRegex(record['log_sha256'], r'^[0-9a-f]{64}$')
 
-        fields = {'dynamic_relocations', 'tls_models', 'undefined_symbols'}
-        if record['result'] == 'linked':
-            self.assertEqual(record['exit_status'], 0)
-            self.assertEqual(set(record['inventory']), fields)
-            for names in record['inventory'].values():
+        fields = {'dynamic_relocations', 'tls_models', 'undefined_symbols', 'dt_needed', 'pt_interp'}
+        inventory = record['inventory']
+        self.assertEqual(set(inventory), fields)
+        artifacts = record['artifacts']
+        self.assertEqual(set(artifacts), {'librustc_driver', 'rustc', 'libc'})
+        driver = artifacts['librustc_driver']
+        executable = artifacts['rustc']
+        libc = artifacts['libc']
+        self.assertRegex(driver['name'], r'^librustc_driver(?:-[0-9a-f]+)?\.so$')
+        self.assertNotIn('errno_location', driver['inventory']['undefined_symbols'])
+        self.assertIn('__errno_location', driver['inventory']['undefined_symbols'])
+        self.assertEqual(executable['name'], 'rustc')
+        self.assertEqual(libc['name'], 'libc.so')
+        self.assertEqual(libc['elf_type'], 'ET_DYN')
+        self.assertEqual(libc['dt_soname'], ['libc.so'])
+        for artifact in artifacts.values():
+            self.assertRegex(artifact['sha256'], r'^[0-9a-f]{64}$')
+            self.assertEqual(set(artifact['inventory']), fields)
+            for names in artifact['inventory'].values():
                 self.assertIsInstance(names, list)
                 self.assertTrue(all(isinstance(name, str) and name.strip() for name in names))
                 self.assertEqual(names, sorted(set(names)))
-        else:
-            self.assertEqual(record['result'], 'deferred')
-            self.assertIs(type(record['exit_status']), int)
-            self.assertNotEqual(record['exit_status'], 0)
-            self.assertEqual(record['deferred_to'], 'K5 first unit')
-            self.assertTrue(record['last_completed_step'].strip())
-            self.assertTrue(record['first_error'].strip())
-            self.assertNotIn('inventory', record)
+        for field, names in inventory.items():
+            self.assertEqual(names, sorted({name for artifact in artifacts.values()
+                                            for name in artifact['inventory'][field]}))
+        if record['static_route']['answer'] == 'none':
+            self.assertEqual(set(executable['inventory']['dt_needed']),
+                             {driver['name'], libc['name']})
+            self.assertEqual(driver['inventory']['dt_needed'], [libc['name']])
+            self.assertEqual(driver['inventory']['pt_interp'], [])
+            self.assertEqual(libc['inventory']['dt_needed'], [])
+            self.assertEqual(libc['inventory']['pt_interp'], [])
+            self.assertEqual(len(executable['inventory']['pt_interp']), 1)
+            self.assertTrue(executable['inventory']['pt_interp'][0].startswith('/'))
+            self.assertTrue(inventory['dynamic_relocations'])
 
     def test_libcxx_runtime_inventory_recorded(self):
         record = self.x0_record(5)

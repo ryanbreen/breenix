@@ -1,11 +1,10 @@
 {
   "target": "x86_64-breenix-hosted",
-  "result": "deferred",
-  "deferred_to": "K5 first unit",
-  "prediction": "Bootstrap will accept the hosted target and the build-host llvm-config pointing to K4's Breenix LLVM archives. I expect stage-1 hosted sysroot or compiler construction to stop before linking rustc_driver, because X0 reached hosted std with unresolved inputs and K5's Mac twin build has not produced the driver. If it reaches the link, the ELF will supply the relocation, TLS and undefined-symbol inventories.",
-  "prediction_time": "2026-11-25T03:53:10.576542Z",
-  "started": "2026-11-25T04:00:58Z",
-  "time": "2026-11-25T04:12:58.062403+00:00",
+  "result": "linked",
+  "prediction": "With dynamic-linking enabled, the documented bootstrap route will get past the rustc_driver dylib crate-type rejection. If retained K1\u2013K4 inputs satisfy the dynamic links, llvm-readelf and llvm-nm will expose rustc\u2019s interpreter and its dependency on librustc_driver, plus relocations, TLS and undefined symbols for both ELFs. Budget 10800 seconds for the stage-1 build, with four jobs under taskpolicy.",
+  "prediction_time": "2026-11-25T07:49:10.795360+00:00",
+  "started": "2026-11-25T11:26:19.716690+00:00",
+  "time": "2026-11-25T11:26:40.531492+00:00",
   "command": [
     "taskpolicy",
     "-b",
@@ -19,16 +18,22 @@
     "1",
     "compiler/rustc",
     "--config",
-    "<x2>/bootstrap.toml",
+    "<x2>/r105/bootstrap.toml",
     "--verbose"
   ],
-  "working_directory": "<x2>/rust",
-  "bootstrap_toml": "[build]\nbuild = \"aarch64-apple-darwin\"\nhost = [\"aarch64-apple-darwin\", \"<repo>/x86_64-breenix-hosted.json\"]\ntarget = [\"<repo>/x86_64-breenix.json\", \"<repo>/x86_64-breenix-hosted.json\"]\nbuild-dir = \"<x2>/build\"\nrustfmt = \"<x2>/build/aarch64-apple-darwin/rustfmt/bin/rustfmt\"\njobs = 4\ndocs = false\nsubmodules = false\nlocked-deps = true\n\n[llvm]\ndownload-ci-llvm = false\nlink-shared = false\n\n[rust]\ndownload-rustc = false\ndeny-warnings = false\nlld = false\nllvm-tools = false\n\n[target.aarch64-apple-darwin]\nllvm-config = \"<cache>/k4/x86_64/native-llc/bin/llvm-config\"\nllvm-filecheck = \"/opt/homebrew/opt/llvm@20/bin/FileCheck\"\nllvm-has-rust-patches = true\n\n[target.\"<repo>/x86_64-breenix-hosted.json\"]\nllvm-config = \"<x2>/breenix-llvm/bin/llvm-config\"\nllvm-filecheck = \"/opt/homebrew/opt/llvm@20/bin/FileCheck\"\nllvm-has-rust-patches = true\nllvm-libunwind = \"no\"\ncc = \"<x2>/breenix-cc\"\ncxx = \"<x2>/breenix-cxx\"\nlinker = \"<x2>/x86_64-breenix-hosted-link\"\n\n[target.\"<repo>/x86_64-breenix.json\"]\ncc = \"<x2>/breenix-cc\"\nlinker = \"<x2>/x86_64-breenix-link\"\n",
+  "working_directory": "<pinned-rust>",
+  "bootstrap_toml": "change-id = 142379\n[build]\ncargo = '<x2>/r105/compiler-cargo'\nrustc = '<x2>/nightly-stage0/bin/rustc'\nbuild = \"aarch64-apple-darwin\"\nhost = [\"aarch64-apple-darwin\", \"<repo>/x86_64-breenix-hosted.json\"]\ntarget = [\"<repo>/x86_64-breenix.json\", \"<repo>/x86_64-breenix-hosted.json\"]\nbuild-dir = \"<x2>/build\"\nrustfmt = \"<x2>/build/aarch64-apple-darwin/rustfmt/bin/rustfmt\"\njobs = 4\ndocs = false\nsubmodules = false\nlocked-deps = true\n\n[llvm]\ndownload-ci-llvm = false\nlink-shared = false\nuse-libcxx = true\n\n[rust]\ndownload-rustc = false\ndeny-warnings = false\nlld = false\nllvm-tools = false\n\n[target.aarch64-apple-darwin]\nllvm-config = \"<x2>/mac-llvm-config\"\nllvm-filecheck = \"/opt/homebrew/opt/llvm@20/bin/FileCheck\"\nllvm-has-rust-patches = true\n\n[target.\"<repo>/x86_64-breenix-hosted.json\"]\nllvm-config = \"<x2>/breenix-llvm/bin/llvm-config\"\nllvm-filecheck = \"/opt/homebrew/opt/llvm@20/bin/FileCheck\"\nllvm-has-rust-patches = true\nllvm-libunwind = \"no\"\ncc = \"<x2>/breenix-cc\"\ncxx = \"<x2>/r105/breenix-cxx\"\nar = \"<x2>/r105/breenix-ar\"\nranlib = \"/opt/homebrew/opt/llvm@20/bin/llvm-ranlib\"\nlinker = \"<x2>/r105/x86_64-breenix-hosted-link\"\n\n[target.\"<repo>/x86_64-breenix.json\"]\ncc = \"<x2>/breenix-cc\"\nlinker = \"<x2>/x86_64-breenix-link\"\n",
   "environment": {
     "CARGO_BUILD_JOBS": "4",
     "CARGO_HOME": "<x2>/cargo",
     "CARGO_NET_OFFLINE": "true",
-    "RUST_TARGET_PATH": "<repo>"
+    "RUST_TARGET_PATH": "<repo>",
+    "MAGIC_EXTRA_RUSTFLAGS": "-Lall=<x2>/r105/sysroots-nix-abi/x86_64-breenix-hosted/release/deps",
+    "X2_CONFIG_ROOT": "<x2>/r105",
+    "X2_PINNED_RUST": "<pinned-rust>",
+    "X2_STAGE0_CARGO": "<x2>/nightly-stage0/bin/cargo",
+    "X2_RUSTC": "<x2>/nightly-stage0/bin/rustc",
+    "X2_SYSROOT_DEPS": "<x2>/r105/sysroots-nix-abi/x86_64-breenix-hosted/release/deps"
   },
   "rust_commit": "a763a7dd70cc6bc97736aca5eabaf867b36477bf",
   "compiler_tree": "fb2afea4e4c3798e49fe6d7c6e3242acb4b1e331",
@@ -41,6 +46,83 @@
     "compiler": "",
     "llvm_project": ""
   },
+  "static_route": {
+    "answer": "none",
+    "citations": [
+      {
+        "file": "bootstrap.example.toml",
+        "line": 139,
+        "quote": "# Whether to build LLVM as a dynamically linked library (as opposed to statically linked)."
+      },
+      {
+        "file": "bootstrap.example.toml",
+        "line": 809,
+        "quote": "# \"thin\" or \"fat\" to apply Thin/Fat LTO to the `rustc_driver` dylib, or \"off\" to disable"
+      },
+      {
+        "file": "bootstrap.example.toml",
+        "line": 973,
+        "quote": "# Force static or dynamic linkage of the standard library for this target. If"
+      },
+      {
+        "file": "bootstrap.example.toml",
+        "line": 974,
+        "quote": "# this target is a host for rustc, this will also affect the linkage of the"
+      },
+      {
+        "file": "bootstrap.example.toml",
+        "line": 975,
+        "quote": "# compiler itself. This is useful for building rustc on targets that normally"
+      },
+      {
+        "file": "bootstrap.example.toml",
+        "line": 976,
+        "quote": "# only use static libraries. If unset, the target's default linkage is used."
+      },
+      {
+        "file": "src/doc/rustc-dev-guide/src/building/bootstrapping/what-bootstrapping-does.md",
+        "line": 294,
+        "quote": "librustc_driver-4f0cc9f50e53f0ba.so  libtracing_attributes-e4be92c35ab2a33b.so"
+      },
+      {
+        "file": "src/doc/rustc/src/targets/custom.md",
+        "line": 4,
+        "quote": "\"custom target specification\" to define a target. These target specification files"
+      },
+      {
+        "file": "src/doc/rustc/src/targets/custom.md",
+        "line": 5,
+        "quote": "are JSON. To see the JSON for the host target, you can run:"
+      }
+    ]
+  },
+  "hosted_spec_citations": {
+    "dynamic-linking": {
+      "file": "src/doc/rustc/src/targets/custom.md",
+      "line": 11,
+      "quote": "To see it for a different target, add the `--target` flag:",
+      "example_command": "rustc +nightly-2025-06-24 -Z unstable-options --target=x86_64-unknown-linux-gnu --print target-spec-json",
+      "example_field": true
+    }
+  },
+  "dylib_probe": {
+    "command": "rustc +nightly-2025-06-24 -Z unstable-options --target <target.json> --print supported-crate-types",
+    "before": [
+      "bin",
+      "lib",
+      "rlib",
+      "staticlib"
+    ],
+    "after": [
+      "bin",
+      "cdylib",
+      "dylib",
+      "lib",
+      "proc-macro",
+      "rlib",
+      "staticlib"
+    ]
+  },
   "llvm_config": {
     "version": "20.1.7",
     "path": "<x2>/breenix-llvm/bin/llvm-config",
@@ -51,24 +133,2606 @@
       ],
       [
         "--version"
+      ],
+      [
+        "--version"
+      ],
+      [
+        "--version"
+      ],
+      [
+        "--version"
+      ],
+      [
+        "--version"
       ]
     ],
     "mac_targets": [
       "AArch64",
       "X86"
+    ],
+    "mac_source_header_path": "The Mac wrapper redirects llvm-config's former source include path to <pinned-rust>/src/llvm-project/llvm/include."
+  },
+  "stages": {
+    "bootstrap": {
+      "budget_seconds": 10800,
+      "started": "2026-11-25T07:49:47.756699+00:00",
+      "exit_status": 1,
+      "time": "2026-11-25T07:55:06.220885+00:00",
+      "wall_seconds": 318.462,
+      "log_sha256": "6304080e1d2a77d562e054eb515db6fc84022a0961e6ce877f9f95427ff93395",
+      "summary": "The reused Mac llvm-config reported a header path in a removed K4 checkout."
+    },
+    "bootstrap_beta_retry": {
+      "budget_seconds": 10481,
+      "started": "2026-11-25T07:56:03.582162+00:00",
+      "exit_status": 1,
+      "time": "2026-11-25T08:02:54.808603+00:00",
+      "wall_seconds": 411.224,
+      "log_sha256": "78d66a65b46a454c81dd00a9b2ea0be0bf039cc06b0304412d8d954e950e3549",
+      "summary": "Mac stage-1 compiler built. Hosted Cargo passed the dylib crate-type rejection and failed with E0463 (missing core)."
+    },
+    "bootstrap_stage0_std": {
+      "budget_seconds": 10070,
+      "started": "2026-11-25T08:04:11.474956+00:00",
+      "exit_status": 0,
+      "time": "2026-11-25T08:04:26.674982+00:00",
+      "wall_seconds": 15.2,
+      "log_sha256": "ac62b86696c503718b7d7e97fceac1f4899efb342c46d8a4a1e5cb6e5dcc33af",
+      "summary": "The documented bootstrap library/std command exited successfully and left the hosted stage-0 target libdir empty."
+    },
+    "beta_cargo_sysroot": {
+      "budget_seconds": 10055,
+      "started": "2026-11-25T08:06:02.380326+00:00",
+      "exit_status": 101,
+      "time": "2026-11-25T08:06:06.444686+00:00",
+      "wall_seconds": 4.064,
+      "log_sha256": "f29e261bec18fc382ea3bdbf4843928ecc9734bcf9d46aa3bcd5041aaf836e89",
+      "summary": "The beta stage-0 compiler rejected the pinned core's built-in macros and language items."
+    },
+    "nightly_cargo_sysroot": {
+      "budget_seconds": 10050,
+      "started": "2026-11-25T08:06:59.143602+00:00",
+      "exit_status": 0,
+      "time": "2026-11-25T08:07:21.112554+00:00",
+      "wall_seconds": 21.969,
+      "log_sha256": "aeef4f1b9896ce17acffb6793889955f60ca947388edc88fd08ff079d7f973d3",
+      "summary": "The project-pinned nightly built the hosted std and panic_unwind from the fork library workspace."
+    },
+    "bootstrap_nightly": {
+      "budget_seconds": 10028,
+      "started": "2026-11-25T08:07:57.589738+00:00",
+      "exit_status": 1,
+      "time": "2026-11-25T08:18:23.922324+00:00",
+      "wall_seconds": 626.328,
+      "log_sha256": "531431fd868df8adb93c7e8c6eac3638524e2eeec15df7f30ea688793fb2edb1",
+      "summary": "Mac stage-1 compiler built. Hosted Cargo did not resolve the sysroot crates through -L dependency."
+    },
+    "bootstrap_nightly_retry": {
+      "budget_seconds": 9401,
+      "started": "2026-11-25T08:19:00.898802+00:00",
+      "exit_status": 1,
+      "time": "2026-11-25T08:19:05.285649+00:00",
+      "wall_seconds": 4.387,
+      "log_sha256": "cae25119641898a798f51afbe4a33d110db90449be7af72e8a79709f87c468af",
+      "summary": "The hosted compiler build resolved the sysroot with -L all and reached the registry libc build."
+    },
+    "r104_lockfile_update": {
+      "budget_seconds": 55,
+      "started": "2026-11-25T08:57:04.998034+00:00",
+      "exit_status": 0,
+      "time": "2026-11-25T08:57:06.613687+00:00",
+      "wall_seconds": 1.616,
+      "log_sha256": "6f6aafd6a5cc51a3239421d5dac6dddbedb573e1e472c66debdb741cedaee6b1",
+      "summary": "Cargo resolved the local bindings at version 0.2.174."
+    },
+    "r104_bootstrap_lockfile_scope": {
+      "budget_seconds": 9401,
+      "started": "2026-11-25T08:57:31.583453+00:00",
+      "exit_status": 1,
+      "time": "2026-11-25T08:57:31.991353+00:00",
+      "wall_seconds": 0.408,
+      "log_sha256": "a47c8a0b4902863ad1894b78a0da75af8bbafd21f6d8b7e7fdfa11d441f0e013",
+      "summary": "The bootstrap helper received the compiler lockfile and Cargo rejected it under --locked."
+    },
+    "r104_native_libc_patch": {
+      "budget_seconds": 9400,
+      "started": "2026-11-25T08:57:49.310984+00:00",
+      "exit_status": 1,
+      "time": "2026-11-25T08:58:19.467539+00:00",
+      "wall_seconds": 30.156,
+      "log_sha256": "f9de41286c2854e809cb3d26d674c3f747be094189016ade7ffed69a222fd579",
+      "summary": "Applying the Breenix libc patch to the Mac leg produced three rustix type mismatches. The next invocation scoped the patch to the hosted target."
+    },
+    "r104_hosted_libc_patch": {
+      "budget_seconds": 9369,
+      "started": "2026-11-25T08:58:49.212054+00:00",
+      "exit_status": 1,
+      "time": "2026-11-25T09:09:39.215493+00:00",
+      "wall_seconds": 650.004,
+      "log_sha256": "203e494a44f6a95da495740e39c083df426a8779ebbf8011c0c8634ca13bd49f",
+      "summary": "The Mac compiler built. Hosted Cargo compiled the Breenix bindings and then reported the unsupported default getrandom backend."
+    },
+    "r104_hosted_custom_getrandom": {
+      "budget_seconds": 8718,
+      "started": "2026-11-25T09:10:40.723156+00:00",
+      "exit_status": 1,
+      "time": "2026-11-25T09:10:50.673131+00:00",
+      "wall_seconds": 9.95,
+      "log_sha256": "dad3f5fc09f384939ca89550e23751dcba02e2045b6110662406611f5d5327d2",
+      "summary": "The custom backend passed getrandom compilation. Hosted rustix failed before either ELF link."
+    }
+  },
+  "last_completed_step": "Cross-linked both X2 hosted compiler ELFs and inspected their dynamic interfaces.",
+  "first_error": null,
+  "exit_status": 0,
+  "exit_status_for": "Bootstrap (stage 1 hosted compiler build)",
+  "log_sha256": "25a5872d2d9cb4d8304a70a3ba13ab076341a7fd325559059daea32bfd2f6377",
+  "evidence_directory": "e25-k5-x2b-r105.7B5EzKXo",
+  "prior_k4_attempt": {
+    "result": "deferred",
+    "first_error": "error: cannot produce dylib for `rustc_driver v0.0.0 (<x2>/rust/compiler/rustc_driver)` as the target `x86_64-breenix-hosted` does not support these crate types",
+    "log_sha256": "fd70262a6fdf35d988b4936d9d3212aef5d6399051fdd3907a2b2c67d5474b4d",
+    "evidence_directory": "fx/evidence/e25-k4-x2.128PEvFv"
+  },
+  "prior_line_578_failure": {
+    "first_error": "error[E0412]: cannot find type `time_t` in this scope",
+    "failure": {
+      "crate": "libc",
+      "version": "0.2.174",
+      "source": "crates.io",
+      "compiler_errors": 176,
+      "disposition": "O5 approval requested for the existing Breenix libc bindings as a Cargo patch in the compiler workspace."
+    },
+    "evidence_directory": "fx/evidence/e25-k5-x2b.C2IOadzL"
+  },
+  "ruling_104": {
+    "bindings": {
+      "path": "libs/libc",
+      "breenix_checkout": "2d318b24657c41231f3aded57a95df328a355315",
+      "last_changed_commit": "2569df82e6a4daae449de65755b0f9a572e03bfe",
+      "tree": "c607984dc6af9e3c7fec2561579134d2b3a4d6ad",
+      "version": "0.2.174",
+      "hosted_std_resolution": {
+        "workspace": "<pinned-rust>/library/Cargo.toml",
+        "patch_path": "../../libs/libc",
+        "stage0_cargo_path": "<x2>/nightly-stage0/lib/rustlib/src/libs/libc",
+        "evidence_log_sha256": "aeef4f1b9896ce17acffb6793889955f60ca947388edc88fd08ff079d7f973d3"
+      }
+    },
+    "cargo_configuration": {
+      "path": "<x2>/r104/libc-patch.toml",
+      "toml": "[patch.crates-io]\nlibc = { path = \"<x2>/nightly-stage0/lib/rustlib/src/libs/libc\" }\n",
+      "scope": "compiler/rustc manifest, x86_64-breenix-hosted target",
+      "cargo_wrapper": "#!/bin/sh\nset -eu\nif [ \"${1-}\" = build ]; then\n    compiler=false\n    hosted=false\n    for arg do\n        case \"$arg\" in\n            \"$X2_PINNED_RUST/compiler/rustc/Cargo.toml\") compiler=true ;;\n            \"$RUST_TARGET_PATH/x86_64-breenix-hosted.json\") hosted=true ;;\n        esac\n    done\n    if \"$compiler\" && \"$hosted\"; then\n        export RUSTFLAGS=\"${RUSTFLAGS-} --cfg=getrandom_backend=\\\"custom\\\"\"\n        exec \"$X2_STAGE0_CARGO\" \"$@\" -Z unstable-options --config \"$X2_CONFIG_ROOT/libc-patch.toml\" --lockfile-path \"$X2_CONFIG_ROOT/Cargo.lock\"\n    fi\nfi\nexec \"$X2_STAGE0_CARGO\" \"$@\"\n",
+      "references": [
+        "https://doc.rust-lang.org/cargo/reference/overriding-dependencies.html#the-patch-section",
+        "https://doc.rust-lang.org/nightly/cargo/reference/unstable.html#lockfile-path",
+        "https://docs.rs/getrandom/0.3.3/getrandom/#custom-backend"
+      ]
+    },
+    "lockfile": {
+      "path": "<x2>/r104/Cargo.lock",
+      "original_sha256": "47e4d2ad5e3b87fba150a3cee11a6c657d5d7648be075588e7f3aa9d8a8e847c",
+      "local_sha256": "178673333e5246955cbb8fd7eb39a5e2281a0ccec743ba3d28f303d4ee8cd856",
+      "update_args": [
+        "update",
+        "-Z",
+        "unstable-options",
+        "--lockfile-path",
+        "<x2>/r104/Cargo.lock",
+        "-p",
+        "libc",
+        "--precise",
+        "0.2.174",
+        "--offline"
+      ],
+      "diff": "--- <pinned-rust>/Cargo.lock\n+++ <x2>/r104/Cargo.lock\n@@ -2046,8 +2046,6 @@\n [[package]]\n name = \"libc\"\n version = \"0.2.174\"\n-source = \"registry+https://github.com/rust-lang/crates.io-index\"\n-checksum = \"1171693293099992e19cddea4e8b849964e9846f4acee11b3948bcc337be8776\"\n \n [[package]]\n name = \"libdbus-sys\"\n"
+    },
+    "fork_status_before": "",
+    "fork_status_after": "",
+    "sysroot_fork_status_after": "",
+    "ordinary_link_parity": {
+      "baseline": "a806d93000d1a3a236f46bce4bf94fa12ce8967c",
+      "check": "existing_links_load_identical",
+      "x86_64_byte_identical": 231,
+      "aarch64_byte_identical": 230
+    },
+    "hosted_loadable_differences": {
+      "x86_64": {
+        "executables": [
+          "hosted_link_probe",
+          "rust-host-process-probe",
+          "rust-host-startup-probe",
+          "rust-host-unwind-probe",
+          "suite-rust-host"
+        ],
+        "cause": "The dynamic-linking target field changes the Rust crate hashes and moves text symbols. Ruling 104(3) records the controlled comparison."
+      },
+      "aarch64": {
+        "executables": []
+      },
+      "evidence": "hosted-parity.json"
+    }
+  },
+  "r104_result": {
+    "result": "blocked",
+    "first_error": "error[E0425]: cannot find function `seekdir` in module `c`",
+    "failure": {
+      "crate": "rustix",
+      "version": "1.0.7",
+      "compiler_errors": 43,
+      "first_error_location": "rustix-1.0.7/src/backend/libc/fs/dir.rs:152:21",
+      "missing_libc_names": [
+        "FALLOC_FL_COLLAPSE_RANGE",
+        "FALLOC_FL_INSERT_RANGE",
+        "FALLOC_FL_KEEP_SIZE",
+        "FALLOC_FL_NO_HIDE_STALE",
+        "FALLOC_FL_PUNCH_HOLE",
+        "FALLOC_FL_UNSHARE_RANGE",
+        "FALLOC_FL_ZERO_RANGE",
+        "FIONREAD",
+        "LOCK_EX",
+        "LOCK_NB",
+        "LOCK_SH",
+        "LOCK_UN",
+        "POSIX_FADV_DONTNEED",
+        "POSIX_FADV_NOREUSE",
+        "POSIX_FADV_NORMAL",
+        "POSIX_FADV_RANDOM",
+        "POSIX_FADV_SEQUENTIAL",
+        "POSIX_FADV_WILLNEED",
+        "ST_NOSUID",
+        "ST_RDONLY",
+        "dup3",
+        "faccessat",
+        "fsid_t",
+        "fstatfs",
+        "major",
+        "makedev",
+        "minor",
+        "mknodat",
+        "posix_fadvise",
+        "posix_fallocate",
+        "preadv",
+        "pwritev",
+        "seekdir",
+        "statfs",
+        "sync",
+        "utimensat"
+      ],
+      "route_error": "error[E0412]: cannot find type `_Opcode` in this scope",
+      "route_error_location": "rustix-1.0.7/src/ioctl/mod.rs:289:19",
+      "route_reference": "https://docs.rs/crate/rustix/1.0.7",
+      "dependent": "tempfile 3.20.0",
+      "disposition": "The build already selected the documented libc backend. _Opcode is an unresolved Rust type in rustix, independently of the missing libc names. An O5 ruling is needed for a source-blind dependency replacement.",
+      "warnings": {
+        "libc_warning_count": 278,
+        "summary": "The bootstrap invocation exposed dead-code and unreachable-pub diagnostics in the patched libc build."
+      }
+    },
+    "exit_status": 1,
+    "log_sha256": "dad3f5fc09f384939ca89550e23751dcba02e2045b6110662406611f5d5327d2"
+  },
+  "ruling_105": {
+    "patches": {
+      "getrandom-0.2.16-breenix.patch": {
+        "sha256": "86a5cc0dc2c71ac2fea0a1e0588f4c3343ba593aa6477bd85a01ef34fd48b638",
+        "text": "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -240,0 +241,3 @@\n+    } else if #[cfg(target_os = \"breenix\")] {\n+        mod util_libc;\n+        #[path = \"getentropy.rs\"] mod imp;\ndiff --git a/src/util_libc.rs b/src/util_libc.rs\n--- a/src/util_libc.rs\n+++ b/src/util_libc.rs\n@@ -13,0 +14,2 @@\n+    } else if #[cfg(target_os = \"breenix\")] {\n+        use libc::__errno_location as errno_location;\n",
+        "path": "toolchain/rust-host/k5/patches/getrandom-0.2.16-breenix.patch"
+      },
+      "libloading-0.8.8-breenix.patch": {
+        "sha256": "5879b405d0261b48da4b79100d86d0f95f5fdf2fb6ca0c071994f23a30f87d56",
+        "text": "diff --git a/src/os/unix/consts.rs b/src/os/unix/consts.rs\n--- a/src/os/unix/consts.rs\n+++ b/src/os/unix/consts.rs\n@@ -93,0 +94,2 @@\n+        } else if #[cfg(target_os = \"breenix\")] {\n+            pub(super) const RTLD_LAZY: c_int = 1;\n@@ -135,0 +138,2 @@\n+        } else if #[cfg(target_os = \"breenix\")] {\n+            pub(super) const RTLD_NOW: c_int = 2;\n@@ -186,0 +191,2 @@\n+        } else if #[cfg(target_os = \"breenix\")] {\n+            pub(super) const RTLD_GLOBAL: c_int = 0x100;\n@@ -232,0 +239,2 @@\n+        } else if #[cfg(target_os = \"breenix\")] {\n+            pub(super) const RTLD_LOCAL: c_int = 0;\n",
+        "path": "toolchain/rust-host/k5/patches/libloading-0.8.8-breenix.patch"
+      },
+      "nix-0.30.1-breenix.patch": {
+        "sha256": "2694d4cda35bc16d8ab11fd31220f62093f660772052b64e14baf6f23f6a0d39",
+        "text": "diff --git a/src/errno.rs b/src/errno.rs\n--- a/src/errno.rs\n+++ b/src/errno.rs\n@@ -32,0 +33 @@\n+                        target_os = \"breenix\",\n@@ -277,0 +279 @@\n+            target_os = \"breenix\",\n@@ -287,0 +290 @@\n+            target_os = \"breenix\",\n@@ -297,0 +301 @@\n+            target_os = \"breenix\",\n@@ -307,0 +312 @@\n+            target_os = \"breenix\",\n@@ -317,0 +323 @@\n+            target_os = \"breenix\",\n@@ -327,0 +334 @@\n+            target_os = \"breenix\",\n@@ -337,0 +345 @@\n+            target_os = \"breenix\",\n@@ -347,0 +356 @@\n+            target_os = \"breenix\",\n@@ -357,0 +367 @@\n+            target_os = \"breenix\",\n@@ -366,0 +377 @@\n+            target_os = \"breenix\",\n@@ -375,0 +387 @@\n+            target_os = \"breenix\",\n@@ -384,0 +397 @@\n+            target_os = \"breenix\",\n@@ -393,0 +407 @@\n+            target_os = \"breenix\",\n@@ -402,0 +417 @@\n+            target_os = \"breenix\",\n@@ -411,0 +427 @@\n+            target_os = \"breenix\",\n@@ -420,0 +437 @@\n+            target_os = \"breenix\",\n@@ -430,0 +448 @@\n+            target_os = \"breenix\",\n@@ -440,0 +459 @@\n+            target_os = \"breenix\",\n@@ -450,0 +470 @@\n+            target_os = \"breenix\",\n@@ -460,0 +481 @@\n+            target_os = \"breenix\",\n@@ -469,0 +491 @@\n+            target_os = \"breenix\",\n@@ -478,0 +501 @@\n+            target_os = \"breenix\",\n@@ -488,0 +512 @@\n+            target_os = \"breenix\",\n@@ -497,0 +522 @@\n+            target_os = \"breenix\",\n@@ -506,0 +532 @@\n+            target_os = \"breenix\",\n@@ -515,0 +542 @@\n+            target_os = \"breenix\",\n@@ -524,0 +552 @@\n+            target_os = \"breenix\",\n@@ -534,0 +563 @@\n+            target_os = \"breenix\",\n@@ -543,0 +573 @@\n+            target_os = \"breenix\",\n@@ -551,0 +582 @@\n+            target_os = \"breenix\",\n@@ -563,0 +595 @@\n+            target_os = \"breenix\",\n@@ -574,0 +607 @@\n+            target_os = \"breenix\",\n@@ -583,0 +617 @@\n+            target_os = \"breenix\",\n@@ -592,0 +627 @@\n+            target_os = \"breenix\",\n@@ -601,0 +637 @@\n+            target_os = \"breenix\",\n@@ -610,0 +647 @@\n+            target_os = \"breenix\",\n@@ -619,0 +657 @@\n+            target_os = \"breenix\",\n@@ -628,0 +667 @@\n+            target_os = \"breenix\",\n@@ -637,0 +677 @@\n+            target_os = \"breenix\",\n@@ -647,0 +688 @@\n+            target_os = \"breenix\",\n@@ -658,0 +700 @@\n+            target_os = \"breenix\",\n@@ -667,0 +710 @@\n+            target_os = \"breenix\",\n@@ -676,0 +720 @@\n+            target_os = \"breenix\",\n@@ -685,0 +730 @@\n+            target_os = \"breenix\",\n@@ -695,0 +741 @@\n+            target_os = \"breenix\",\n@@ -704,0 +751 @@\n+            target_os = \"breenix\",\n@@ -711,0 +759 @@\n+            target_os = \"breenix\",\n@@ -718,0 +767 @@\n+            target_os = \"breenix\",\n@@ -725,0 +775 @@\n+            target_os = \"breenix\",\n@@ -732,0 +783 @@\n+            target_os = \"breenix\",\n@@ -739,0 +791 @@\n+            target_os = \"breenix\",\n@@ -747,0 +800 @@\n+            target_os = \"breenix\",\n@@ -757,0 +811 @@\n+            target_os = \"breenix\",\n@@ -765,0 +820 @@\n+            target_os = \"breenix\",\n@@ -775,0 +831 @@\n+            target_os = \"breenix\",\n@@ -782,0 +839 @@\n+            target_os = \"breenix\",\n@@ -789,0 +847 @@\n+            target_os = \"breenix\",\n@@ -796,0 +855 @@\n+            target_os = \"breenix\",\n@@ -803,0 +863 @@\n+            target_os = \"breenix\",\n@@ -816,0 +877 @@\n+            target_os = \"breenix\",\n@@ -828,0 +890 @@\n+            target_os = \"breenix\",\n@@ -835,0 +898 @@\n+            target_os = \"breenix\",\n@@ -1090 +1153 @@\n-#[cfg(any(linux_android, target_os = \"fuchsia\", target_os = \"emscripten\"))]\n+#[cfg(any(linux_android, target_os = \"breenix\", target_os = \"fuchsia\", target_os = \"emscripten\"))]\ndiff --git a/src/sys/signal.rs b/src/sys/signal.rs\n--- a/src/sys/signal.rs\n+++ b/src/sys/signal.rs\n@@ -64 +64 @@\n-        #[cfg(all(any(linux_android, target_os = \"emscripten\",\n+        #[cfg(all(any(linux_android, target_os = \"breenix\", target_os = \"emscripten\",\n@@ -100 +100 @@\n-        #[cfg(any(linux_android, target_os = \"emscripten\",\n+        #[cfg(any(linux_android, target_os = \"breenix\", target_os = \"emscripten\",\n@@ -106 +106 @@\n-        #[cfg(not(any(linux_android, target_os = \"emscripten\",\n+        #[cfg(not(any(linux_android, target_os = \"breenix\", target_os = \"emscripten\",\n@@ -111 +111 @@\n-        #[cfg(not(any(linux_android, target_os = \"emscripten\",\n+        #[cfg(not(any(linux_android, target_os = \"breenix\", target_os = \"emscripten\",\n@@ -143,0 +144 @@\n+                    target_os = \"breenix\",\n@@ -172,0 +174 @@\n+                target_os = \"breenix\",\n@@ -179,0 +182 @@\n+                target_os = \"breenix\",\n@@ -187,0 +191 @@\n+                target_os = \"breenix\",\n@@ -228,0 +233 @@\n+                    target_os = \"breenix\",\n@@ -257,0 +263 @@\n+                target_os = \"breenix\",\n@@ -265,0 +272 @@\n+                target_os = \"breenix\",\n@@ -273,0 +281 @@\n+                target_os = \"breenix\",\n@@ -321 +329 @@\n-    any(linux_android, target_os = \"emscripten\", target_os = \"fuchsia\"),\n+    any(linux_android, target_os = \"breenix\", target_os = \"emscripten\", target_os = \"fuchsia\"),\n@@ -339 +347 @@\n-    any(linux_android, target_os = \"emscripten\", target_os = \"fuchsia\"),\n+    any(linux_android, target_os = \"breenix\", target_os = \"emscripten\", target_os = \"fuchsia\"),\n@@ -373,0 +382 @@\n+    target_os = \"breenix\",\n@@ -1295 +1304,2 @@\n-    #[derive(Clone, Debug, Eq, Hash, PartialEq)]\n+    #[cfg_attr(target_os = \"breenix\", derive(Clone, Debug))]\n+    #[cfg_attr(not(target_os = \"breenix\"), derive(Clone, Debug, Eq, Hash, PartialEq))]\ndiff --git a/src/unistd.rs b/src/unistd.rs\n--- a/src/unistd.rs\n+++ b/src/unistd.rs\n@@ -19,0 +20 @@\n+    target_os = \"breenix\",\n@@ -1498,0 +1500 @@\n+    target_os = \"breenix\",\n",
+        "path": "toolchain/rust-host/k5/patches/nix-0.30.1-breenix.patch"
+      },
+      "rustix-1.0.7-breenix.patch": {
+        "sha256": "0c9882335ba0fac40b9f349b2c5cd2d1bf122546866e0bb15bf17c710f0a9e90",
+        "text": "diff --git a/src/ioctl/mod.rs b/src/ioctl/mod.rs\n--- a/src/ioctl/mod.rs\n+++ b/src/ioctl/mod.rs\n@@ -290,0 +291,2 @@\n+#[cfg(target_os = \"breenix\")]\n+type _Opcode = c::c_ulong;\ndiff --git a/src/backend/libc/fs/types.rs b/src/backend/libc/fs/types.rs\n--- a/src/backend/libc/fs/types.rs\n+++ b/src/backend/libc/fs/types.rs\n@@ -744,0 +745,10 @@\n+#[cfg(target_os = \"breenix\")]\n+bitflags! {\n+    /// POSIX file allocation uses the empty mode.\n+    #[repr(transparent)]\n+    #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]\n+    pub struct FallocateFlags: u32 {\n+        const _ = !0;\n+    }\n+}\n+#[cfg_attr(target_os = \"breenix\", cfg(any()))]\n",
+        "path": "toolchain/rust-host/k5/patches/rustix-1.0.7-breenix.patch"
+      }
+    },
+    "patch_application": [
+      "copy registry crate to build-local directory",
+      "git apply --no-index --unidiff-zero <patch>"
+    ],
+    "third_party_licenses": {
+      "rustix 1.0.7": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "getrandom 0.2.16": "MIT OR Apache-2.0",
+      "libloading 0.8.8": "ISC",
+      "nix 0.30.1": "MIT"
+    },
+    "registry_copy_checks": [
+      "test_rustix_patch_preserves_registry_copy",
+      "test_getrandom_02_patch_is_breenix_only",
+      "test_libloading_patch_matches_breenix_dlfcn",
+      "test_nix_patch_is_breenix_only"
+    ],
+    "bindings": {
+      "path": "<repo>/libs/libc",
+      "breenix_module_sha256": "02e845d46e7ae614cdb78012a91f7d90df6ebea789387c46361bbee459f1c5b6",
+      "version": "0.2.174",
+      "abi_arches": [
+        "aarch64",
+        "x86_64"
+      ],
+      "abi_test": "tests/rust_host_libc_abi_test.py",
+      "headers": [
+        {
+          "path": "libs/libbreenix-libc/include/sys/file.h",
+          "specification": "LSB Core Generic 5.0 \u00a714.4.69 <sys/file.h>",
+          "step": "25.8e X2"
+        },
+        {
+          "path": "libs/libbreenix-libc/include/limits.h",
+          "specification": "POSIX.1-2024 <limits.h>, GETENTROPY_MAX",
+          "step": "25.8e X2"
+        }
+      ],
+      "allocation_flags": "The seven FALLOC_FL_* extensions have no Breenix ABI. The rustix port exposes the POSIX empty-mode interface."
+    },
+    "cargo_patch_config": {
+      "sha256": "ef060567714fb00d07e8dc569337901ca9f40958f9828b3568e1ac59da8b3a8d",
+      "text": "[patch.crates-io]\nlibc = { path = \"<x2>/nightly-stage0/lib/rustlib/src/libs/libc\" }\nrustix = { path = \"<x2>/r105/rustix-1.0.7\" }\ngetrandom_02 = { package = \"getrandom\", path = \"<x2>/r105/getrandom-0.2.16\" }\nlibloading = { path = \"<x2>/r105/libloading-0.8.8\" }\nnix = { path = \"<x2>/r105/nix-0.30.1\" }\n"
+    },
+    "cargo_wrapper": {
+      "sha256": "b6328b93d3313e3b93a16948716a8056323d65d22cd408f57df6203b58fd6238",
+      "text": "#!/bin/sh\nset -eu\nif [ \"${1-}\" = build ]; then\n    compiler=false\n    hosted=false\n    for arg do\n        case \"$arg\" in\n            \"$X2_PINNED_RUST/compiler/rustc/Cargo.toml\") compiler=true ;;\n            \"$RUST_TARGET_PATH/x86_64-breenix-hosted.json\") hosted=true ;;\n        esac\n    done\n    if \"$compiler\" && \"$hosted\"; then\n        export RUSTFLAGS=\"${RUSTFLAGS-} --cfg=getrandom_backend=\\\"custom\\\"\"\n        exec \"$X2_STAGE0_CARGO\" \"$@\" -Z unstable-options --config \"$X2_CONFIG_ROOT/libc-patch.toml\" --lockfile-path \"$X2_CONFIG_ROOT/Cargo.lock\"\n    fi\nfi\nexec \"$X2_STAGE0_CARGO\" \"$@\"\n"
+    },
+    "launch_wrapper": {
+      "sha256": "277db863b8921010b936545ac1c9ebb9d5851894213680efb2701ca9f735dd3c",
+      "text": "#!/bin/bash\nset -eu\nexport CARGO_BUILD_JOBS=4 CARGO_NET_OFFLINE=true\nexport CARGO_HOME=\"$X/cargo\" RUST_TARGET_PATH=\"$REPO\"\nexport X2_CONFIG_ROOT=\"$X/r105\" X2_STAGE0_CARGO=\"$X/nightly-stage0/bin/cargo\" X2_RUSTC=\"$X/nightly-stage0/bin/rustc\"\nexport X2_PINNED_RUST=\"$(cd \"$X/../../k4/x2.fwu4iGSi/rust\" && pwd -P)\"\nexport X2_SYSROOT_DEPS=\"$X/r105/sysroots-nix-abi/x86_64-breenix-hosted/release/deps\"\nexport MAGIC_EXTRA_RUSTFLAGS=\"-Lall=$X2_SYSROOT_DEPS\"\ncd \"$X2_PINNED_RUST\"\nexec python3 \"$X/run-stage.py\" \"$X/r105/$1\" \"$2\" taskpolicy -b nice -n 15 python3 x.py build --stage 1 compiler/rustc --config \"$X/r105/bootstrap.toml\" --verbose\n"
+    },
+    "lockfile": {
+      "original_sha256": "47e4d2ad5e3b87fba150a3cee11a6c657d5d7648be075588e7f3aa9d8a8e847c",
+      "local_sha256": "3f01023fd98fd8f99550ce235cc8409829268678f0098f6fae33666ea37e6cad",
+      "diff": "--- <pinned-rust>/Cargo.lock\n+++ <x2>/r105/Cargo.lock\n@@ -1426,8 +1426,6 @@\n [[package]]\n name = \"getrandom\"\n version = \"0.2.16\"\n-source = \"registry+https://github.com/rust-lang/crates.io-index\"\n-checksum = \"335ff9f135e4384c8150d6f27c6daed433577f86b4750418338c01a1a2528592\"\n dependencies = [\n  \"cfg-if\",\n  \"libc\",\n@@ -2046,8 +2044,6 @@\n [[package]]\n name = \"libc\"\n version = \"0.2.174\"\n-source = \"registry+https://github.com/rust-lang/crates.io-index\"\n-checksum = \"1171693293099992e19cddea4e8b849964e9846f4acee11b3948bcc337be8776\"\n \n [[package]]\n name = \"libdbus-sys\"\n@@ -2081,8 +2077,6 @@\n [[package]]\n name = \"libloading\"\n version = \"0.8.8\"\n-source = \"registry+https://github.com/rust-lang/crates.io-index\"\n-checksum = \"07033963ba89ebaf1584d767badaa2e8fcec21aedea6b8c0346d487d49c28667\"\n dependencies = [\n  \"cfg-if\",\n  \"windows-targets 0.53.2\",\n@@ -2341,8 +2335,6 @@\n [[package]]\n name = \"nix\"\n version = \"0.30.1\"\n-source = \"registry+https://github.com/rust-lang/crates.io-index\"\n-checksum = \"74523f3a35e05aba87a1d978330aef40f67b0304ac79c1c00b294c9830543db6\"\n dependencies = [\n  \"bitflags\",\n  \"cfg-if\",\n@@ -4772,8 +4764,6 @@\n [[package]]\n name = \"rustix\"\n version = \"1.0.7\"\n-source = \"registry+https://github.com/rust-lang/crates.io-index\"\n-checksum = \"c71e83d6afe7ff64890ec6b71d6a69bb8a610ab78ce364b3352876bb4c801266\"\n dependencies = [\n  \"bitflags\",\n  \"errno\",\n"
+    },
+    "getrandom_03_provider": {
+      "source": "toolchain/rust-host/k5/getrandom.rs",
+      "sha256": "83c1c5dfb6e5b31009abdf231d8cf008308ab4c267b8f1be9002dbcddd7a9b91",
+      "api": "https://docs.rs/getrandom/0.3.3/getrandom/#custom-backend",
+      "symbol": "__getrandom_v03_custom",
+      "entropy_source": "POSIX.1-2024 getentropy over the Breenix kernel getrandom path",
+      "libc_feature": "hosted-rustc",
+      "object_sha256": "518909b7905ec2c9737bdaec318f2b0dfc759fda43602c5c5c69540f4b52eb0a"
+    },
+    "link_wrappers": [
+      {
+        "sha256": "a4d63b525c03aea72775bcea7f31f4378fd7814520bc52c3eb41e60d7496b855",
+        "text": "#!/usr/bin/env python3\nimport os\nfrom pathlib import Path\nimport sys\n\nargs = sys.argv[1:]\nif args[:2] == ['-flavor', 'gnu']:\n    args = args[2:]\nld_args = []\nfor arg in args:\n    if arg.startswith('-Wl,'):\n        ld_args.extend(arg[4:].split(','))\n    else:\n        ld_args.append(arg)\nlinker = Path(__file__).with_name('x86_64-breenix-hosted-link-inner')\nos.execv(linker, [str(linker), *ld_args])\n"
+      },
+      {
+        "sha256": "6abbd47bbd5a2f1ac587f38dca87f9cc512bc5a62f9737b6a134a61f5b5a2ef8",
+        "text": "#!/bin/sh\nset -eu\noutput=\nprevious=\nshared=false\nfor arg do\n    if [ \"$previous\" = -o ]; then output=\"$arg\"; fi\n    case \"$arg\" in\n        --shared|-shared) shared=true ;;\n        */libgetrandom-*.rlib)\n            name=${arg##*/}\n            dep=\"${arg%/*}/${name#lib}\"\n            if grep -q '/getrandom-0\\.3\\.3/src/' \"${dep%.rlib}.d\"; then\n                getrandom=\"$arg\"\n            fi\n            ;;\n    esac\n    previous=\"$arg\"\ndone\ncase \"$output\" in\n    */librustc_driver*.so)\n        if \"$shared\"; then\n            : \"${getrandom:?rustc_driver must link getrandom 0.3.3}\"\n            \"$X2_RUSTC\" --edition=2021 --crate-type=lib --emit=obj -Dwarnings -Copt-level=2 \\\n                -Crelocation-model=pic --target \"$RUST_TARGET_PATH/x86_64-breenix-hosted.json\" \\\n                -L \"all=$X2_SYSROOT_DEPS\" -L \"dependency=${getrandom%/*}\" \\\n                --extern \"getrandom=$getrandom\" \"$RUST_TARGET_PATH/toolchain/rust-host/k5/getrandom.rs\" \\\n                -o \"$X2_CONFIG_ROOT/getrandom.o\"\n            set -- \"$@\" \"$X2_CONFIG_ROOT/getrandom.o\" \"$X2_CONFIG_ROOT/dynamic-libs/libblake3_sse2_sse41_avx2_assembly.a\"\n        fi\n        ;;\nesac\nfor arg do\n  case \"$arg\" in\n    -shared|--shared) exec <home>/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/gcc-ld/ld.lld \"$@\" --no-dependent-libraries -L <x2>/r105/cxx-pic/lib <x2>/r105/cxx-pic/lib/libc++.a <x2>/r105/cxx-pic/lib/libc++abi.a -L <x2>/r105/dynamic-libs -lbunwind -lc ;;\n  esac\ndone\nfor arg do\n  case \"$arg\" in\n    *librustc_driver*.so|*rustc_driver-*) exec <home>/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/gcc-ld/ld.lld \"$@\" --no-dependent-libraries -L <x2>/r105/cxx-pic/lib <x2>/r105/cxx-pic/lib/libc++.a <x2>/r105/cxx-pic/lib/libc++abi.a -L <x2>/r105/dynamic-libs -lbunwind -lc --allow-shlib-undefined --dynamic-linker=/lib/ld-breenix.so ;;\n  esac\ndone\nexec <home>/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/gcc-ld/ld.lld \"$@\" -static -T <repo>/userspace/programs/linker-hosted.ld --no-dependent-libraries --allow-multiple-definition -L <cache>/k4/u2-runtime.GqHLqmB9/x86_64/build/lib <cache>/k4/u2-runtime.GqHLqmB9/x86_64/build/lib/libc++.a <cache>/k4/u2-runtime.GqHLqmB9/x86_64/build/lib/libc++abi.a -L <cache>/k4/u2-parity.ADVvtpBb/base-x86_64-program-target/hosted/bunwind/x86_64-breenix-hosted/release -lbunwind -L <x2>/r105/runtime/x86_64-breenix-c/release -lc\n"
+      },
+      {
+        "sha256": "f7c51148ad7815ea256425735ce5429c678e2fee002cae447e9138c868468a7d",
+        "text": "#!/bin/sh\nexec /usr/bin/clang++ --no-default-config --target=x86_64-unknown-none -nostdlibinc -nostdinc++ -isystem <cache>/k4/u2-runtime.GqHLqmB9/x86_64/build/include/c++/v1 -isystem <repo>/libs/libbreenix-libc/include -D_POSIX_C_SOURCE=200809L -D__breenix__=1 -D_DEFAULT_SOURCE \"$@\"\n"
+      },
+      {
+        "sha256": "cff949f07aa23b941ce4ed2fe9568d3bdceaec45cc71768cf0ba324006d50cb6",
+        "text": "#!/bin/sh\nexec /opt/homebrew/opt/llvm@20/bin/llvm-ar --format=gnu \"$@\"\n"
+      }
+    ],
+    "bootstrap_configuration_citations": [
+      {
+        "file": "bootstrap.example.toml",
+        "line": 162,
+        "option": "llvm.use-libcxx"
+      },
+      {
+        "file": "bootstrap.example.toml",
+        "line": 901,
+        "option": "target.<triple>.ar"
+      },
+      {
+        "file": "bootstrap.example.toml",
+        "line": 905,
+        "option": "target.<triple>.ranlib"
+      }
+    ],
+    "archive_preparation": {
+      "blake3_sha256": "b1beb65d03c16a4daad83473d7bc1a94c1b9d94be41e7596070c0394334b207d",
+      "blake3_procedure": "LLVM ar --format=gnu rcs over the three ELF assembly objects in the hosted BLAKE3 build output; append the archive to the driver link because the cached rlib bundled an empty Apple ar archive.",
+      "libc_sha256": "262c0a44c670f1acf3e3acd82397c4a3aec7cf5e7ce3dbfb8c43fe2fd3ed9ef6",
+      "bunwind_sha256": "3008d0dcaa6339087f98554bc713983ac03b78674266d6e0c5ad244bc900a15d",
+      "procedure": "A link-local copy of PIC libc localizes the two static unwind stubs and moves the CRT pointer table and the hidden self-relative __dso_handle to .data.rel.ro with LLVM objcopy. The bunwind link archive retains its own and core objects, localizes its panic handler and uses the hosted sysroot compiler builtins."
+    },
+    "hosted_rustc_pic_libc": {
+      "feature": "hosted-rustc",
+      "build_wrapper": {
+        "sha256": "662275f1bcc815e3b091805426ee788d83f497258f0d2b8e0f42360bf19c068d",
+        "text": "#!/bin/bash\nset -euo pipefail\nexport CARGO_BUILD_JOBS=4 CARGO_NET_OFFLINE=true\nexport CARGO_HOME=\"$X/cargo\"\ncd \"$REPO/libs/libbreenix-libc\"\nfor target in x86_64-breenix-c aarch64-breenix; do\n    printf 'Building hosted rustc PIC libc for %s\\n' \"$target\"\n    RUSTFLAGS='-D warnings -C relocation-model=pic' cargo build --release --offline --locked \\\n        --features hosted-rustc -Z build-std=core,compiler_builtins \\\n        -Z build-std-features=compiler-builtins-mem --target \"$REPO/$target.json\" \\\n        --target-dir \"$X/r105/runtime\"\ndone\n"
+      },
+      "preparation_wrapper": {
+        "sha256": "8fa28e94881090834e2962963f9f9758c55e882395be681ff90ec7a711e4893c",
+        "text": "from collections import defaultdict\nfrom pathlib import Path\nimport re\nimport shutil\nimport subprocess\nimport sys\nimport tempfile\n\nraw, archive = map(Path,sys.argv[1:])\nllvm = Path('/opt/homebrew/opt/llvm@20/bin')\noperations = {\n    '_Unwind_Backtrace': ['--localize-symbol=_Unwind_Backtrace'],\n    '_Unwind_GetIP': ['--localize-symbol=_Unwind_GetIP'],\n    '__breenix_array_bounds': ['--rename-section',\n        '.rodata.breenix_array_bounds=.data.rel.ro.breenix_array_bounds,alloc,load,data,contents'],\n    '__dso_handle': ['--rename-section',\n        '.rodata.breenix_dso_handle=.data.rel.ro.breenix_dso_handle,alloc,load,data,contents'],\n}\nmembers = defaultdict(list)\nlisting = subprocess.check_output([llvm/'llvm-nm','--print-file-name','--defined-only','-g',raw],\n                                  text=True,stderr=subprocess.DEVNULL)\nfor symbol,args in operations.items():\n    matches = re.findall(r'(?m)^.+?:([^:\\n]+): [0-9a-f]+ [A-Z] '+re.escape(symbol)+r'$',listing)\n    assert len(matches) == 1,(symbol,matches)\n    members[matches[0]].extend(args)\nshutil.copyfile(raw,archive)\nwith tempfile.TemporaryDirectory(prefix='libc-relro-',dir=archive.parent) as temp:\n    root=Path(temp)\n    for member,args in members.items():\n        original = root / 'before.o'\n        with original.open('wb') as dest:\n            subprocess.run([llvm/'llvm-ar','p',raw,member],stdout=dest,check=True)\n        subprocess.run([llvm/'llvm-objcopy',*args,original,root/member],check=True)\n        subprocess.run([llvm/'llvm-ar','rcs',archive,root/member],check=True)\n        print(member,*args)\n"
+      },
+      "build": {
+        "budget_seconds": 1800,
+        "started": "2026-11-25T11:05:44.471289+00:00",
+        "exit_status": 0,
+        "time": "2026-11-25T11:05:56.576865+00:00",
+        "wall_seconds": 12.106,
+        "log_sha256": "27b326862ad32e329221077a70784eb554689445a895da75c8940c6fb9919ed7"
+      },
+      "raw_archives": {
+        "aarch64-breenix": "8f159be1dbb4bd6f2e9219919f9c3f28c68af79244c75eb5182c772b3bbeb7f8",
+        "x86_64-breenix-c": "9d70a6c31e58f04ce70c6a5de18cd0e1b2ac4821b11ad93a218b5c59c414c2bd"
+      }
+    },
+    "pic_cxx_runtime": {
+      "llvm_commit": "ed6566573eb21b00a3f87815e14ff766fd56ef42",
+      "commands": {
+        "configure": [
+          "taskpolicy",
+          "-b",
+          "cmake",
+          "-G",
+          "Ninja",
+          "-S",
+          "<x2>/r105/cxx-pic-source/runtimes",
+          "-B",
+          "<x2>/r105/cxx-pic",
+          "-DCMAKE_SYSTEM_NAME=Breenix",
+          "-DCMAKE_MODULE_PATH=<repo>/toolchain/cmake",
+          "-DCMAKE_SYSTEM_PROCESSOR=x86_64",
+          "-DCMAKE_BUILD_TYPE=Release",
+          "-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY",
+          "-DCMAKE_C_COMPILER=/usr/bin/clang",
+          "-DCMAKE_CXX_COMPILER=/usr/bin/clang++",
+          "-DCMAKE_AR=/opt/homebrew/opt/llvm/bin/llvm-ar",
+          "-DCMAKE_RANLIB=/opt/homebrew/opt/llvm/bin/llvm-ranlib",
+          "-DCMAKE_ASM_COMPILER=/usr/bin/clang",
+          "-DCMAKE_C_COMPILER_TARGET=x86_64-unknown-none",
+          "-DCMAKE_CXX_COMPILER_TARGET=x86_64-unknown-none",
+          "-DCMAKE_ASM_COMPILER_TARGET=x86_64-unknown-none",
+          "-DCMAKE_C_FLAGS=-nostdlibinc -isystem <repo>/libs/libbreenix-libc/include -D_POSIX_C_SOURCE=200809L -D__breenix__=1",
+          "-DCMAKE_CXX_FLAGS=-nostdlibinc -isystem <repo>/libs/libbreenix-libc/include -D_POSIX_C_SOURCE=200809L -D__breenix__=1",
+          "-DLLVM_ENABLE_RUNTIMES=libcxx;libcxxabi",
+          "-DLLVM_INCLUDE_TESTS=OFF",
+          "-DLIBCXX_CXX_ABI=libcxxabi",
+          "-DLIBCXX_ENABLE_LOCALIZATION=ON",
+          "-DLIBCXX_ENABLE_FILESYSTEM=OFF",
+          "-DLIBCXX_ENABLE_THREADS=ON",
+          "-DTHREADS_PREFER_PTHREAD_FLAG=ON",
+          "-DLIBCXX_HAS_PTHREAD_API=ON",
+          "-DLIBCXXABI_HAS_PTHREAD_API=ON",
+          "-DLIBCXX_ENABLE_EXCEPTIONS=OFF",
+          "-DLIBCXXABI_ENABLE_EXCEPTIONS=OFF",
+          "-DLIBCXXABI_USE_LLVM_UNWINDER=OFF",
+          "-DLIBCXX_ENABLE_SHARED=OFF",
+          "-DLIBCXXABI_ENABLE_SHARED=OFF",
+          "-DLIBCXX_ENABLE_STATIC=ON",
+          "-DLIBCXXABI_ENABLE_STATIC=ON",
+          "-DLIBCXX_ENABLE_STATIC_ABI_LIBRARY=OFF",
+          "-DCMAKE_POSITION_INDEPENDENT_CODE=ON"
+        ],
+        "build": [
+          "taskpolicy",
+          "-b",
+          "cmake",
+          "--build",
+          "<x2>/r105/cxx-pic",
+          "--parallel",
+          "4",
+          "--target",
+          "cxx_static",
+          "cxxabi_static"
+        ]
+      },
+      "recreated_source_links": {
+        "llvm_commit": "ed6566573eb21b00a3f87815e14ff766fd56ef42",
+        "rewired": [
+          {
+            "path": "CODE_OF_CONDUCT.md",
+            "llvm_path": "CODE_OF_CONDUCT.md"
+          },
+          {
+            "path": "compiler-rt",
+            "llvm_path": "compiler-rt"
+          },
+          {
+            "path": "libc",
+            "llvm_path": "libc"
+          },
+          {
+            "path": "clang-tools-extra",
+            "llvm_path": "clang-tools-extra"
+          },
+          {
+            "path": "llvm-libgcc",
+            "llvm_path": "llvm-libgcc"
+          },
+          {
+            "path": "clang",
+            "llvm_path": "clang"
+          },
+          {
+            "path": "lld",
+            "llvm_path": "lld"
+          },
+          {
+            "path": "flang",
+            "llvm_path": "flang"
+          },
+          {
+            "path": "cmake",
+            "llvm_path": "cmake"
+          },
+          {
+            "path": "bolt",
+            "llvm_path": "bolt"
+          },
+          {
+            "path": "lldb",
+            "llvm_path": "lldb"
+          },
+          {
+            "path": "pyproject.toml",
+            "llvm_path": "pyproject.toml"
+          },
+          {
+            "path": "llvm",
+            "llvm_path": "llvm"
+          },
+          {
+            "path": "utils",
+            "llvm_path": "utils"
+          },
+          {
+            "path": "mlir",
+            "llvm_path": "mlir"
+          },
+          {
+            "path": "README.md",
+            "llvm_path": "README.md"
+          },
+          {
+            "path": "libcxxabi",
+            "llvm_path": "libcxxabi"
+          },
+          {
+            "path": "CONTRIBUTING.md",
+            "llvm_path": "CONTRIBUTING.md"
+          },
+          {
+            "path": "libunwind",
+            "llvm_path": "libunwind"
+          },
+          {
+            "path": "libclc",
+            "llvm_path": "libclc"
+          },
+          {
+            "path": "cross-project-tests",
+            "llvm_path": "cross-project-tests"
+          },
+          {
+            "path": "third-party",
+            "llvm_path": "third-party"
+          },
+          {
+            "path": "LICENSE.TXT",
+            "llvm_path": "LICENSE.TXT"
+          },
+          {
+            "path": "polly",
+            "llvm_path": "polly"
+          },
+          {
+            "path": "pstl",
+            "llvm_path": "pstl"
+          },
+          {
+            "path": "SECURITY.md",
+            "llvm_path": "SECURITY.md"
+          },
+          {
+            "path": "openmp",
+            "llvm_path": "openmp"
+          },
+          {
+            "path": "offload",
+            "llvm_path": "offload"
+          }
+        ]
+      },
+      "staged_breenix_locale_header": "__locale_dir/locale_base_api/breenix.h",
+      "configure": {
+        "budget_seconds": 1800,
+        "started": "2026-11-25T10:42:35.315652+00:00",
+        "exit_status": 0,
+        "time": "2026-11-25T10:42:50.319316+00:00",
+        "wall_seconds": 15.004,
+        "log_sha256": "5c27397f5c09302077ab5543df2758b59ba84b40782f32a5c133cb3e4567ded4"
+      },
+      "build": {
+        "budget_seconds": 1800,
+        "started": "2026-11-25T10:43:27.217211+00:00",
+        "exit_status": 0,
+        "time": "2026-11-25T10:43:35.472310+00:00",
+        "wall_seconds": 8.255,
+        "log_sha256": "00155dc1aa45604ba33aebad468a352e1e94c666ce33ee44ea368a88c92d0b8d"
+      },
+      "archives": {
+        "libc++.a": "3e5be3f81a08afbfd9f39a6d9418d92080e9db4f1ee2d8a8eefe559493736a05",
+        "libc++abi.a": "d4384b601a3136fdcb4b31a974b45d79dc5046287eac542a54f6bbb854e7da53"
+      },
+      "new_warning_messages": []
+    },
+    "builds": {
+      "bootstrap-archives": {
+        "budget_seconds": 8664,
+        "started": "2026-11-25T09:32:35.807278+00:00",
+        "exit_status": 1,
+        "time": "2026-11-25T09:32:43.401573+00:00",
+        "wall_seconds": 7.594,
+        "log_sha256": "d18d01e22b009c8045a267086ae5a6832bead353f8c7b3b7246df45ed9ef429f"
+      },
+      "bootstrap-arg-max": {
+        "budget_seconds": 8008,
+        "started": "2026-11-25T09:53:39.426080+00:00",
+        "exit_status": 1,
+        "time": "2026-11-25T09:55:34.874192+00:00",
+        "wall_seconds": 115.448,
+        "log_sha256": "ad77f34f1db3dba45c14f53d6a71268c1c695d4f751d047a87944bff0cc4794a"
+      },
+      "bootstrap-atfork": {
+        "budget_seconds": 8445,
+        "started": "2026-11-25T09:41:48.229760+00:00",
+        "exit_status": 1,
+        "time": "2026-11-25T09:42:02.304634+00:00",
+        "wall_seconds": 14.075,
+        "log_sha256": "b6fbea8ccad41b55b7508a2a5dc7b9014a05a7576b28f172b14dc7b674134de2"
+      },
+      "bootstrap-cxx-order": {
+        "budget_seconds": 8267,
+        "started": "2026-11-25T09:48:32.702507+00:00",
+        "exit_status": 1,
+        "time": "2026-11-25T09:52:51.995539+00:00",
+        "wall_seconds": 259.292,
+        "log_sha256": "9b72373a3acacf0db60066990aadcf47c661368f29d3247556fd794990cf20af"
+      },
+      "bootstrap-elf-ar": {
+        "budget_seconds": 6620,
+        "started": "2026-11-25T10:30:48.972623+00:00",
+        "exit_status": 1,
+        "time": "2026-11-25T10:40:30.012868+00:00",
+        "wall_seconds": 581.037,
+        "log_sha256": "f0953e98bad061efc63a1b8f019ae77290f7a4e264099f537bc380fae2f6cc33"
+      },
+      "bootstrap-final": {
+        "budget_seconds": 6017,
+        "started": "2026-11-25T11:26:19.716690+00:00",
+        "exit_status": 0,
+        "time": "2026-11-25T11:26:40.531492+00:00",
+        "wall_seconds": 20.815,
+        "log_sha256": "25a5872d2d9cb4d8304a70a3ba13ab076341a7fd325559059daea32bfd2f6377"
+      },
+      "bootstrap-fresh-hosted": {
+        "budget_seconds": 8638,
+        "started": "2026-11-25T09:36:23.018439+00:00",
+        "exit_status": 1,
+        "time": "2026-11-25T09:39:00.056887+00:00",
+        "wall_seconds": 157.038,
+        "log_sha256": "d8f33561dfeac38ed74ed40c6b3754292e5122852a7a2bbb631e195397306a0c"
+      },
+      "bootstrap-getrandom02": {
+        "budget_seconds": 8480,
+        "started": "2026-11-25T09:40:29.033454+00:00",
+        "exit_status": 1,
+        "time": "2026-11-25T09:41:03.012207+00:00",
+        "wall_seconds": 33.979,
+        "log_sha256": "0d1912d9dd00c5f4aada29e7a5062ab3a9c7d715a6f4fd9228133c5726bc85f8"
+      },
+      "bootstrap-hosted-rustc": {
+        "budget_seconds": 6028,
+        "started": "2026-11-25T11:06:24.680111+00:00",
+        "exit_status": 0,
+        "time": "2026-11-25T11:06:36.032042+00:00",
+        "wall_seconds": 11.352,
+        "log_sha256": "e1c288368ffca6ce43957e437e39c1b14dde79f07fad1a48535037c87a8b5158"
+      },
+      "bootstrap-ld-args": {
+        "budget_seconds": 8674,
+        "started": "2026-11-25T09:31:07.228898+00:00",
+        "exit_status": 1,
+        "time": "2026-11-25T09:31:12.882379+00:00",
+        "wall_seconds": 5.653,
+        "log_sha256": "e672b1e624c0f7d276f961707d5213d2987f9b4c5d59cffe4088ff27726f207a"
+      },
+      "bootstrap-libcxx": {
+        "budget_seconds": 6741,
+        "started": "2026-11-25T10:27:16.916048+00:00",
+        "exit_status": 1,
+        "time": "2026-11-25T10:29:17.532283+00:00",
+        "wall_seconds": 120.616,
+        "log_sha256": "b1978998d64ef70dcf45f76c4e2cf21456f04be757c1f5ee2ed1555c3ef24126"
+      },
+      "bootstrap-libloading": {
+        "budget_seconds": 8430,
+        "started": "2026-11-25T09:43:31.146131+00:00",
+        "exit_status": 1,
+        "time": "2026-11-25T09:46:50.851275+00:00",
+        "wall_seconds": 199.704,
+        "log_sha256": "a6bf1de07c7e916eed38f8cec0785e3f7591c8bce7926133ae5e2ae73b5f983d"
+      },
+      "bootstrap-msync": {
+        "budget_seconds": 8643,
+        "started": "2026-11-25T09:35:46.366290+00:00",
+        "exit_status": 1,
+        "time": "2026-11-25T09:35:50.945684+00:00",
+        "wall_seconds": 4.579,
+        "log_sha256": "1420212f2dbdd6a884fa947a33b105754c84815661e49beb137bd811204c85de"
+      },
+      "bootstrap-nix-abi-clean": {
+        "budget_seconds": 7404,
+        "started": "2026-11-25T10:13:27.881808+00:00",
+        "exit_status": 1,
+        "time": "2026-11-25T10:23:37.217033+00:00",
+        "wall_seconds": 609.332,
+        "log_sha256": "49f8014813a26debf5e27f4909c70fb833670d297fe7bcdb122b8b163596b6c2"
+      },
+      "bootstrap-nix-abi": {
+        "budget_seconds": 7408,
+        "started": "2026-11-25T10:13:01.196131+00:00",
+        "exit_status": 1,
+        "time": "2026-11-25T10:13:05.756842+00:00",
+        "wall_seconds": 4.561,
+        "log_sha256": "a56c4b28dd03c13aece96263795c76b6a082fd0fc3a07725a35f48c42dcbb561"
+      },
+      "bootstrap-nix": {
+        "budget_seconds": 7892,
+        "started": "2026-11-25T10:03:00.328674+00:00",
+        "exit_status": 1,
+        "time": "2026-11-25T10:11:04.124244+00:00",
+        "wall_seconds": 483.794,
+        "log_sha256": "1d986621e6c13e46958b5aa217267a093833593b9c6bd53d49432bd1503c006f"
+      },
+      "bootstrap-oflag": {
+        "budget_seconds": 6773,
+        "started": "2026-11-25T10:25:30.031775+00:00",
+        "exit_status": 1,
+        "time": "2026-11-25T10:25:55.174308+00:00",
+        "wall_seconds": 25.142,
+        "log_sha256": "fc61ee71bfd23abf7e7a749999c6200048289670d2560057cbfae406262d3d6b"
+      },
+      "bootstrap-pic": {
+        "budget_seconds": 6039,
+        "started": "2026-11-25T10:44:02.133384+00:00",
+        "exit_status": 0,
+        "time": "2026-11-25T10:44:12.789237+00:00",
+        "wall_seconds": 10.656,
+        "log_sha256": "372caafccfb328ef7a9cabdc450a4eb7abde0044f2623eba0894bb969c91137a"
+      },
+      "bootstrap-pipe2": {
+        "budget_seconds": 6795,
+        "started": "2026-11-25T10:24:35.363080+00:00",
+        "exit_status": 1,
+        "time": "2026-11-25T10:24:57.120916+00:00",
+        "wall_seconds": 21.758,
+        "log_sha256": "72a495abd48f9cce4df1edf001fe54ca173c6f42c7597f1428e627fbf15d2f33"
+      },
+      "bootstrap-provider": {
+        "budget_seconds": 6748,
+        "started": "2026-11-25T10:26:24.029012+00:00",
+        "exit_status": 1,
+        "time": "2026-11-25T10:26:30.887962+00:00",
+        "wall_seconds": 6.859,
+        "log_sha256": "c4be631631c1624f046d9ff392b6bbf1094abd4dece7607f84bd442cef481bc6"
+      },
+      "bootstrap-relro": {
+        "budget_seconds": 8656,
+        "started": "2026-11-25T09:33:12.756737+00:00",
+        "exit_status": 1,
+        "time": "2026-11-25T09:33:25.410968+00:00",
+        "wall_seconds": 12.654,
+        "log_sha256": "cef9421d53db2c4f336c8d3be68058c0c27e682e59b2ba61afe815955dddf4dc"
+      },
+      "bootstrap-retry": {
+        "budget_seconds": 8680,
+        "started": "2026-11-25T09:30:12.449410+00:00",
+        "exit_status": 1,
+        "time": "2026-11-25T09:30:17.987574+00:00",
+        "wall_seconds": 5.538,
+        "log_sha256": "20b6b9df9aad24d76020c42b134a52dce4b3a52c25b5b3c4957549a94557f65f"
+      },
+      "bootstrap": {
+        "budget_seconds": 8690,
+        "started": "2026-11-25T09:28:55.354967+00:00",
+        "exit_status": 1,
+        "time": "2026-11-25T09:29:05.068571+00:00",
+        "wall_seconds": 9.714,
+        "log_sha256": "60e3b8173db88eb71bd9013afddc0cbfc5b4ffd15a26b2e86061bc65a8eac559"
+      }
+    },
+    "hosted_sysroot": {
+      "budget_seconds": 2500,
+      "started": "2026-11-25T10:11:56.082081+00:00",
+      "exit_status": 0,
+      "time": "2026-11-25T10:12:41.223853+00:00",
+      "wall_seconds": 45.142,
+      "log_sha256": "0ecc269842d0bbc703cce632fc787d9956664e8b564777a4f0af11d9fa21bb31"
+    },
+    "pic_libc_and_initial_sysroots": {
+      "budget_seconds": 750,
+      "started": "2026-11-25T09:26:52.158713+00:00",
+      "exit_status": 0,
+      "time": "2026-11-25T09:28:22.119306+00:00",
+      "wall_seconds": 89.96,
+      "log_sha256": "763a8fb53e33f80472b8bac6842222560a17b0c5f672812295f8d26f4679805f"
+    },
+    "diagnostics": {
+      "warning: `getrandom` (lib) generated 16 warnings (run `cargo fix --lib -p getrandom` to apply 15 suggestions)": 1,
+      "warning: `libc` (lib) generated 278 warnings (run `cargo fix --lib -p libc` to apply 140 suggestions)": 1,
+      "warning: `libloading` (lib) generated 19 warnings (run `cargo fix --lib -p libloading` to apply 9 suggestions)": 1,
+      "warning: `nix` (lib) generated 9 warnings": 1,
+      "warning: `rustix` (lib) generated 26 warnings (run `cargo fix --lib -p rustix` to apply 23 suggestions)": 1,
+      "warning: constant `DT_BLK` is never used": 1,
+      "warning: constant `DT_CHR` is never used": 1,
+      "warning: constant `DT_DIR` is never used": 1,
+      "warning: constant `DT_FIFO` is never used": 1,
+      "warning: constant `DT_LNK` is never used": 1,
+      "warning: constant `DT_REG` is never used": 1,
+      "warning: constant `DT_SOCK` is never used": 1,
+      "warning: constant `DT_UNKNOWN` is never used": 1,
+      "warning: constant `FD_CLOEXEC` is never used": 1,
+      "warning: constant `IPPROTO_ICMP` is never used": 1,
+      "warning: constant `IPPROTO_IPV6` is never used": 1,
+      "warning: constant `IPPROTO_IP` is never used": 1,
+      "warning: constant `IPPROTO_TCP` is never used": 1,
+      "warning: constant `IPPROTO_UDP` is never used": 1,
+      "warning: constant `SIG_DFL` is never used": 1,
+      "warning: constant `SIG_ERR` is never used": 1,
+      "warning: constant `SIG_IGN` is never used": 1,
+      "warning: constant `STDERR_FILENO` is never used": 1,
+      "warning: constant `STDIN_FILENO` is never used": 1,
+      "warning: constant `STDOUT_FILENO` is never used": 1,
+      "warning: constant `S_ISGID` is never used": 1,
+      "warning: constant `S_ISUID` is never used": 1,
+      "warning: constant `S_ISVTX` is never used": 1,
+      "warning: function `abort` is never used": 1,
+      "warning: function `accept` is never used": 1,
+      "warning: function `access` is never used": 1,
+      "warning: function `chdir` is never used": 1,
+      "warning: function `chmod` is never used": 1,
+      "warning: function `chown` is never used": 1,
+      "warning: function `close` is never used": 1,
+      "warning: function `connect` is never used": 1,
+      "warning: function `dup2` is never used": 1,
+      "warning: function `dup` is never used": 1,
+      "warning: function `execve` is never used": 1,
+      "warning: function `exit` is never used": 1,
+      "warning: function `fchmod` is never used": 1,
+      "warning: function `fchown` is never used": 1,
+      "warning: function `fcntl` is never used": 1,
+      "warning: function `fork` is never used": 1,
+      "warning: function `free` is never used": 1,
+      "warning: function `fstat` is never used": 1,
+      "warning: function `fsync` is never used": 1,
+      "warning: function `ftruncate` is never used": 1,
+      "warning: function `getcwd` is never used": 1,
+      "warning: function `getegid` is never used": 1,
+      "warning: function `getenv` is never used": 1,
+      "warning: function `geteuid` is never used": 1,
+      "warning: function `getgid` is never used": 1,
+      "warning: function `getpeername` is never used": 1,
+      "warning: function `getpid` is never used": 1,
+      "warning: function `getppid` is never used": 1,
+      "warning: function `getsockname` is never used": 1,
+      "warning: function `getsockopt` is never used": 1,
+      "warning: function `getuid` is never used": 1,
+      "warning: function `isatty` is never used": 1,
+      "warning: function `kill` is never used": 1,
+      "warning: function `link` is never used": 1,
+      "warning: function `listen` is never used": 1,
+      "warning: function `lseek` is never used": 1,
+      "warning: function `lstat` is never used": 1,
+      "warning: function `malloc` is never used": 1,
+      "warning: function `memcmp` is never used": 1,
+      "warning: function `mkdir` is never used": 1,
+      "warning: function `mmap` is never used": 1,
+      "warning: function `munmap` is never used": 1,
+      "warning: function `nanosleep` is never used": 1,
+      "warning: function `open` is never used": 1,
+      "warning: function `openat` is never used": 1,
+      "warning: function `pipe` is never used": 1,
+      "warning: function `poll` is never used": 1,
+      "warning: function `posix_memalign` is never used": 1,
+      "warning: function `pthread_attr_destroy` is never used": 1,
+      "warning: function `pthread_attr_getstacksize` is never used": 1,
+      "warning: function `pthread_attr_init` is never used": 1,
+      "warning: function `pthread_attr_setdetachstate` is never used": 1,
+      "warning: function `pthread_attr_setstacksize` is never used": 1,
+      "warning: function `pthread_cond_broadcast` is never used": 1,
+      "warning: function `pthread_cond_destroy` is never used": 1,
+      "warning: function `pthread_cond_init` is never used": 1,
+      "warning: function `pthread_cond_signal` is never used": 1,
+      "warning: function `pthread_cond_timedwait` is never used": 1,
+      "warning: function `pthread_cond_wait` is never used": 1,
+      "warning: function `pthread_condattr_destroy` is never used": 1,
+      "warning: function `pthread_condattr_init` is never used": 1,
+      "warning: function `pthread_detach` is never used": 1,
+      "warning: function `pthread_equal` is never used": 1,
+      "warning: function `pthread_exit` is never used": 1,
+      "warning: function `pthread_getspecific` is never used": 1,
+      "warning: function `pthread_join` is never used": 1,
+      "warning: function `pthread_key_create` is never used": 1,
+      "warning: function `pthread_key_delete` is never used": 1,
+      "warning: function `pthread_mutex_destroy` is never used": 1,
+      "warning: function `pthread_mutex_init` is never used": 1,
+      "warning: function `pthread_mutex_lock` is never used": 1,
+      "warning: function `pthread_mutex_trylock` is never used": 1,
+      "warning: function `pthread_mutex_unlock` is never used": 1,
+      "warning: function `pthread_mutexattr_destroy` is never used": 1,
+      "warning: function `pthread_mutexattr_init` is never used": 1,
+      "warning: function `pthread_mutexattr_settype` is never used": 1,
+      "warning: function `pthread_rwlock_destroy` is never used": 1,
+      "warning: function `pthread_rwlock_init` is never used": 1,
+      "warning: function `pthread_rwlock_rdlock` is never used": 1,
+      "warning: function `pthread_rwlock_tryrdlock` is never used": 1,
+      "warning: function `pthread_rwlock_trywrlock` is never used": 1,
+      "warning: function `pthread_rwlock_unlock` is never used": 1,
+      "warning: function `pthread_rwlock_wrlock` is never used": 1,
+      "warning: function `pthread_self` is never used": 1,
+      "warning: function `pthread_setspecific` is never used": 1,
+      "warning: function `raise` is never used": 1,
+      "warning: function `read` is never used": 1,
+      "warning: function `readlink` is never used": 1,
+      "warning: function `realloc` is never used": 1,
+      "warning: function `recv` is never used": 1,
+      "warning: function `rename` is never used": 1,
+      "warning: function `rmdir` is never used": 1,
+      "warning: function `sched_yield` is never used": 1,
+      "warning: function `select` is never used": 1,
+      "warning: function `send` is never used": 1,
+      "warning: function `sendto` is never used": 1,
+      "warning: function `setenv` is never used": 1,
+      "warning: function `setsockopt` is never used": 1,
+      "warning: function `shutdown` is never used": 1,
+      "warning: function `sigaction` is never used": 1,
+      "warning: function `signal` is never used": 1,
+      "warning: function `sigprocmask` is never used": 1,
+      "warning: function `socket` is never used": 1,
+      "warning: function `socketpair` is never used": 1,
+      "warning: function `stat` is never used": 1,
+      "warning: function `strlen` is never used": 1,
+      "warning: function `symlink` is never used": 1,
+      "warning: function `sysconf` is never used": 1,
+      "warning: function `unlink` is never used": 1,
+      "warning: function `unsetenv` is never used": 1,
+      "warning: function `utimes` is never used": 1,
+      "warning: function `waitpid` is never used": 1,
+      "warning: function `write` is never used": 1,
+      "warning: function pointer comparisons do not produce meaningful results since their addresses are not guaranteed to be unique": 2,
+      "warning: hidden lifetime parameters in types are deprecated": 15,
+      "warning: lifetime flowing from input to output with different syntax can be confusing": 1,
+      "warning: outlives requirements can be inferred": 1,
+      "warning: struct `in6_addr` is never constructed": 1,
+      "warning: struct `rlimit` is never constructed": 1,
+      "warning: unreachable `pub` item": 156,
+      "warning[E0133]: call to unsafe function `backend::io::syscalls::close` is unsafe and requires unsafe block": 1,
+      "warning[E0133]: call to unsafe function `backend::io::syscalls::ioctl_readonly` is unsafe and requires unsafe block": 1,
+      "warning[E0133]: call to unsafe function `backend::io::syscalls::ioctl` is unsafe and requires unsafe block": 2,
+      "warning[E0133]: call to unsafe function `ioctl::Ioctl::output_from_ptr` is unsafe and requires unsafe block": 1,
+      "warning[E0133]: call to unsafe function `ioctl::_ioctl_readonly` is unsafe and requires unsafe block": 1,
+      "warning[E0133]: call to unsafe function `ioctl::_ioctl` is unsafe and requires unsafe block": 1,
+      "warning[E0133]: call to unsafe function `libc::__errno_location` is unsafe and requires unsafe block": 1,
+      "warning[E0133]: call to unsafe function `libc::close` is unsafe and requires unsafe block": 1,
+      "warning[E0133]: call to unsafe function `libc::dlsym` is unsafe and requires unsafe block": 1,
+      "warning[E0133]: call to unsafe function `libc::ioctl` is unsafe and requires unsafe block": 1,
+      "warning[E0133]: call to unsafe function `libc::open` is unsafe and requires unsafe block": 1,
+      "warning[E0133]: call to unsafe function `libc::pread` is unsafe and requires unsafe block": 1,
+      "warning[E0133]: call to unsafe function `libc::read` is unsafe and requires unsafe block": 1,
+      "warning[E0133]: call to unsafe function `libc::readlinkat` is unsafe and requires unsafe block": 1,
+      "warning[E0133]: call to unsafe function `os::unix::Library::get_impl` is unsafe and requires unsafe block": 2,
+      "warning[E0133]: call to unsafe function `os::unix::Library::get` is unsafe and requires unsafe block": 1,
+      "warning[E0133]: call to unsafe function `os::unix::Library::new` is unsafe and requires unsafe block": 1,
+      "warning[E0133]: call to unsafe function `os::unix::Library::open` is unsafe and requires unsafe block": 1,
+      "warning[E0133]: call to unsafe function `os::unix::dlerror` is unsafe and requires unsafe block": 1,
+      "warning[E0133]: call to unsafe function `os::unix::dlopen` is unsafe and requires unsafe block": 1,
+      "warning[E0133]: call to unsafe function `os::unix::dlsym` is unsafe and requires unsafe block": 1,
+      "warning[E0133]: call to unsafe function `safe::Symbol::<'lib, T>::from_raw` is unsafe and requires unsafe block": 1,
+      "warning[E0133]: call to unsafe function `std::mem::transmute_copy` is unsafe and requires unsafe block": 1,
+      "warning[E0133]: call to unsafe function `std::os::fd::FromRawFd::from_raw_fd` is unsafe and requires unsafe block": 1,
+      "warning[E0133]: call to unsafe function `std::ptr::mut_ptr::<impl *mut T>::read` is unsafe and requires unsafe block": 1,
+      "warning[E0133]: call to unsafe function `std::slice::from_raw_parts_mut` is unsafe and requires unsafe block": 3,
+      "warning[E0133]: call to unsafe function `std::vec::Vec::<T, A>::set_len` is unsafe and requires unsafe block": 1,
+      "warning[E0133]: call to unsafe function `weak::fetch` is unsafe and requires unsafe block": 1,
+      "warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block": 3
+    },
+    "history_probe_diagnostics": [
+      "error: Could not read c9eb0652469db42bb1cb84f27615cf466c7c3108",
+      "fatal: Failed to traverse parents of commit d6e82857e5ddf7106532c9234181abbcc43c7a37"
+    ],
+    "abi_pipe2_logs_sha256": {
+      "aarch64": "5d4a78124a6f9e84b75d6987fc3bffd4583dc7415164e7086c647a79ec282dfb",
+      "x86_64": "b2932a68a73b5beea39194d4fdbec8f2298d8329f7a55d36318ecd7764bbedfa"
+    },
+    "evidence_directory": "e25-k5-x2b-r105.7B5EzKXo",
+    "fork_status_before": "",
+    "fork_status_after": "",
+    "sysroot_fork_status_after": "",
+    "libc_layout_controls": {
+      "baseline": "a806d93000d1a3a236f46bce4bf94fa12ce8967c",
+      "original_ordinary_loadable_differences": {
+        "aarch64": 230,
+        "x86_64": 231
+      },
+      "cause": "Compiling getentropy into the default archive regrouped libc codegen units. For x86-64 true_test, _start moved from cgu.04 to cgu.10 and the program entry moved from 0x400126b4 to 0x40013680.",
+      "decision": "Build getentropy into the hosted-rustc libc archive for X2. The two true_test controls pass ruling 98 with only permitted non-loadable symbol metadata differences."
+    },
+    "ordinary_link_parity": {
+      "baseline": "a806d93000d1a3a236f46bce4bf94fa12ce8967c",
+      "std_metadata_seed": "a763a7dd70cc6bc97736aca5eabaf867b36477bf",
+      "comparator": "tests/rust_host_link_test.py existing_links_load_identical",
+      "results": {
+        "aarch64": {
+          "bins": 230,
+          "loadable_bytes_match": 230,
+          "whole_file_hashes_match": 0,
+          "comparator_log_sha256": "90b4c8f59086656b65b2f6925585ee49f6d3be6ddb9c36f83ca8a450efef5a08"
+        },
+        "x86_64": {
+          "bins": 231,
+          "loadable_bytes_match": 231,
+          "whole_file_hashes_match": 0,
+          "comparator_log_sha256": "7c1fbe3a814053a5407f61945290d7edd3428a600389979178441706412662ca"
+        }
+      }
+    },
+    "hosted_loadable_differences": {
+      "checked_per_arch": {
+        "x86_64": 11,
+        "aarch64": 11
+      },
+      "x86_64": {
+        "suite-rust-host": [
+          "ELF header or entry point",
+          "segment layout",
+          "section layout [1] .text",
+          "section layout [2] .rodata",
+          "section layout [3] .eh_frame_hdr",
+          "section layout [4] .eh_frame",
+          "section layout [5] .gcc_except_table",
+          "section layout [13] .symtab",
+          ".text",
+          ".rodata",
+          ".eh_frame_hdr",
+          ".eh_frame",
+          ".gcc_except_table",
+          ".data",
+          ".got",
+          ".symtab",
+          ".strtab"
+        ],
+        "rust-host-startup-probe": [
+          "segment layout",
+          "section layout [2] .rodata",
+          "section layout [3] .eh_frame_hdr",
+          "section layout [4] .eh_frame",
+          "section layout [5] .gcc_except_table",
+          ".text",
+          ".rodata",
+          ".eh_frame_hdr",
+          ".eh_frame",
+          ".gcc_except_table",
+          ".data",
+          ".got",
+          ".symtab",
+          ".strtab"
+        ],
+        "rust-host-process-probe": [
+          ".text",
+          ".rodata",
+          ".eh_frame_hdr",
+          ".eh_frame",
+          ".gcc_except_table",
+          ".data",
+          ".got",
+          ".symtab",
+          ".strtab"
+        ],
+        "rust-host-unwind-probe": [
+          "segment layout",
+          "section layout [2] .rodata",
+          "section layout [3] .eh_frame_hdr",
+          "section layout [4] .eh_frame",
+          "section layout [5] .gcc_except_table",
+          ".text",
+          ".rodata",
+          ".eh_frame_hdr",
+          ".eh_frame",
+          ".gcc_except_table",
+          ".data",
+          ".got",
+          ".symtab",
+          ".strtab"
+        ],
+        "hosted_link_probe": [
+          "segment layout",
+          "section layout [2] .rodata",
+          "section layout [3] .eh_frame_hdr",
+          "section layout [4] .eh_frame",
+          ".text",
+          ".rodata",
+          ".eh_frame_hdr",
+          ".eh_frame",
+          ".gcc_except_table",
+          ".data",
+          ".got",
+          ".symtab",
+          ".strtab"
+        ]
+      },
+      "aarch64": {},
+      "x86_64_cause": "The hosted target dynamic-linking field changes crate hashes and text placement. Each changed ELF matches the ruling 104(3) target-field-only candidate under the ruling 98 comparator.",
+      "artifact_comparison_sha256": "0af34e4ccfa2fd5cc37df4bc7aec42419f2b0bf1a88e6c797fa3378763d5fbbb",
+      "target_field_control_sha256": "b45916229e65ab2a6586ff43910a1063771ec1985430ecea6b29b05ec607493c"
+    },
+    "parity_build": {
+      "budget_seconds": 2500,
+      "started": "2026-11-25T11:06:52.210182+00:00",
+      "exit_status": 0,
+      "time": "2026-11-25T11:25:54.623767+00:00",
+      "wall_seconds": 1142.407
+    },
+    "bootstrap_warning_origins": {
+      "warning_locations": {
+        "getrandom-0.2.16": 16,
+        "libloading-0.8.8": 19,
+        "nix-0.30.1": 9,
+        "rustix-1.0.7": 26,
+        "unchanged build dependency": 278
+      },
+      "warnings_on_added_source_lines": [],
+      "unlocated_warnings": []
+    }
+  },
+  "artifacts": {
+    "librustc_driver": {
+      "name": "librustc_driver-2e1bf4637bebadba.so",
+      "size": 262526584,
+      "sha256": "5c171c8849da5e892c4ca5ff7f5f3720ef4056c4e0782f1e1e5a21023d83a578",
+      "inventory": {
+        "dynamic_relocations": [
+          "R_X86_64_64",
+          "R_X86_64_DTPMOD64",
+          "R_X86_64_GLOB_DAT",
+          "R_X86_64_JUMP_SLOT",
+          "R_X86_64_RELATIVE"
+        ],
+        "tls_models": [
+          "local-dynamic"
+        ],
+        "undefined_symbols": [
+          "_Exit",
+          "__breenix_mb_cur_max",
+          "__cxa_atexit",
+          "__errno_location",
+          "__tls_get_addr",
+          "_exit",
+          "abort",
+          "accept4",
+          "access",
+          "acos",
+          "alarm",
+          "aligned_alloc",
+          "asin",
+          "atan",
+          "atan2",
+          "atoi",
+          "bind",
+          "btowc",
+          "calloc",
+          "ceil",
+          "ceilf",
+          "chdir",
+          "chmod",
+          "chown",
+          "chroot",
+          "clock_gettime",
+          "close",
+          "closedir",
+          "connect",
+          "cos",
+          "cosh",
+          "dirfd",
+          "dl_iterate_phdr",
+          "dladdr",
+          "dlclose",
+          "dlerror",
+          "dlopen",
+          "dlsym",
+          "dup",
+          "dup2",
+          "dup3",
+          "environ",
+          "erf",
+          "execv",
+          "execve",
+          "execvp",
+          "exit",
+          "exp",
+          "exp2",
+          "faccessat",
+          "fchmod",
+          "fchmodat",
+          "fchown",
+          "fchownat",
+          "fcntl",
+          "fdatasync",
+          "fdopendir",
+          "feclearexcept",
+          "fetestexcept",
+          "fflush",
+          "flock",
+          "floor",
+          "fma",
+          "fmaf",
+          "fmod",
+          "fork",
+          "fputc",
+          "fputwc",
+          "free",
+          "freeaddrinfo",
+          "freelocale",
+          "fstat",
+          "fstatat",
+          "fstatfs",
+          "fstatvfs",
+          "fsync",
+          "ftruncate",
+          "futimens",
+          "fwrite",
+          "gai_strerror",
+          "getaddrinfo",
+          "getc",
+          "getcwd",
+          "getentropy",
+          "getenv",
+          "getpeername",
+          "getpid",
+          "getppid",
+          "getpwnam_r",
+          "getpwuid_r",
+          "getrandom",
+          "getrlimit",
+          "getrusage",
+          "getsockname",
+          "getsockopt",
+          "getuid",
+          "getwc",
+          "gmtime_r",
+          "ioctl",
+          "isalnum",
+          "isalpha",
+          "isatty",
+          "isblank",
+          "isdigit_l",
+          "islower",
+          "islower_l",
+          "isupper",
+          "isupper_l",
+          "iswalpha_l",
+          "iswblank_l",
+          "iswcntrl_l",
+          "iswdigit_l",
+          "iswlower_l",
+          "iswprint_l",
+          "iswpunct_l",
+          "iswspace_l",
+          "iswupper_l",
+          "iswxdigit_l",
+          "isxdigit",
+          "isxdigit_l",
+          "kill",
+          "lchown",
+          "link",
+          "linkat",
+          "listen",
+          "localeconv",
+          "localtime_r",
+          "log",
+          "log10",
+          "log1p",
+          "log2",
+          "log2f",
+          "logb",
+          "longjmp",
+          "lseek",
+          "lstat",
+          "malloc",
+          "mbrlen",
+          "mbrtowc",
+          "mbsnrtowcs",
+          "mbsrtowcs",
+          "mbtowc",
+          "memchr",
+          "mkdir",
+          "mkdirat",
+          "mkfifo",
+          "mknodat",
+          "mmap",
+          "modf",
+          "mprotect",
+          "msync",
+          "munmap",
+          "nanosleep",
+          "newlocale",
+          "open",
+          "openat",
+          "opendir",
+          "pipe",
+          "pipe2",
+          "poll",
+          "posix_fadvise",
+          "posix_fallocate",
+          "posix_madvise",
+          "posix_memalign",
+          "posix_spawn",
+          "posix_spawn_file_actions_adddup2",
+          "posix_spawn_file_actions_addopen",
+          "posix_spawn_file_actions_destroy",
+          "posix_spawn_file_actions_init",
+          "pow",
+          "pread",
+          "preadv",
+          "printf",
+          "pthread_atfork",
+          "pthread_attr_destroy",
+          "pthread_attr_init",
+          "pthread_attr_setstacksize",
+          "pthread_cond_broadcast",
+          "pthread_cond_destroy",
+          "pthread_cond_init",
+          "pthread_cond_signal",
+          "pthread_cond_timedwait",
+          "pthread_cond_wait",
+          "pthread_condattr_destroy",
+          "pthread_condattr_init",
+          "pthread_condattr_setclock",
+          "pthread_create",
+          "pthread_detach",
+          "pthread_getspecific",
+          "pthread_join",
+          "pthread_key_create",
+          "pthread_key_delete",
+          "pthread_kill",
+          "pthread_mutex_destroy",
+          "pthread_mutex_init",
+          "pthread_mutex_lock",
+          "pthread_mutex_trylock",
+          "pthread_mutex_unlock",
+          "pthread_mutexattr_destroy",
+          "pthread_mutexattr_init",
+          "pthread_mutexattr_settype",
+          "pthread_self",
+          "pthread_setname_np",
+          "pthread_setspecific",
+          "pthread_sigmask",
+          "putchar",
+          "pwrite",
+          "pwritev",
+          "qsort",
+          "raise",
+          "rand",
+          "read",
+          "readdir",
+          "readdir_r",
+          "readlink",
+          "readlinkat",
+          "readv",
+          "realloc",
+          "realpath",
+          "recv",
+          "recvfrom",
+          "remove",
+          "rename",
+          "renameat",
+          "rint",
+          "rmdir",
+          "round",
+          "sched_getaffinity",
+          "sched_yield",
+          "send",
+          "sendto",
+          "setenv",
+          "setgid",
+          "setgroups",
+          "setjmp",
+          "setlocale",
+          "setpgid",
+          "setrlimit",
+          "setsid",
+          "setsockopt",
+          "setuid",
+          "shutdown",
+          "sigaction",
+          "sigaddset",
+          "sigaltstack",
+          "sigdelset",
+          "sigemptyset",
+          "sigfillset",
+          "sigismember",
+          "signal",
+          "sigprocmask",
+          "sigwait",
+          "sin",
+          "sinh",
+          "snprintf",
+          "socket",
+          "socketpair",
+          "sqrt",
+          "srand",
+          "sscanf",
+          "stat",
+          "statvfs",
+          "stderr",
+          "stdin",
+          "stdout",
+          "strchr",
+          "strcmp",
+          "strcoll_l",
+          "strdup",
+          "strerror_r",
+          "strftime",
+          "strftime_l",
+          "strncmp",
+          "strncpy",
+          "strsignal",
+          "strtod",
+          "strtof",
+          "strtol",
+          "strtold",
+          "strtoll",
+          "strtoul",
+          "strtoull",
+          "strxfrm_l",
+          "swprintf",
+          "symlink",
+          "symlinkat",
+          "sync",
+          "sysconf",
+          "tan",
+          "tanh",
+          "time",
+          "tolower",
+          "tolower_l",
+          "toupper",
+          "toupper_l",
+          "towlower_l",
+          "towupper_l",
+          "trunc",
+          "umask",
+          "uname",
+          "ungetc",
+          "ungetwc",
+          "unlink",
+          "unlinkat",
+          "unsetenv",
+          "uselocale",
+          "usleep",
+          "utimensat",
+          "vasprintf",
+          "vfprintf",
+          "vsnprintf",
+          "vsscanf",
+          "wait",
+          "wait4",
+          "waitpid",
+          "wcrtomb",
+          "wcscoll_l",
+          "wcslen",
+          "wcsnrtombs",
+          "wcstod",
+          "wcstof",
+          "wcstol",
+          "wcstold",
+          "wcstoll",
+          "wcstoul",
+          "wcstoull",
+          "wcsxfrm_l",
+          "wctob",
+          "wmemchr",
+          "wmemcmp",
+          "write",
+          "writev"
+        ],
+        "dt_needed": [
+          "libc.so"
+        ],
+        "pt_interp": []
+      },
+      "dynamic_relocation_counts": {
+        "R_X86_64_64": 4489,
+        "R_X86_64_DTPMOD64": 1,
+        "R_X86_64_GLOB_DAT": 1177,
+        "R_X86_64_JUMP_SLOT": 10583,
+        "R_X86_64_RELATIVE": 276213
+      },
+      "undefined_weak": [],
+      "readelf": {
+        "args": [
+          "--file-header",
+          "--program-headers",
+          "--dynamic-table",
+          "--dyn-relocations",
+          "--wide"
+        ],
+        "sha256": "0bd6acee58052aca2fa117317776c4ee300f0ac8b0d62ccfb922b01c5e7f7ea2"
+      },
+      "nm": {
+        "args": [
+          "--dynamic",
+          "--undefined-only",
+          "--format=posix"
+        ],
+        "sha256": "6317adba79964635d7cb7f7994a529fbd02e9edded79b116358b249a2e1e4f52"
+      },
+      "dynamic_export_evidence_sha256": "376d77726b387c6d7cf20344cb6f8b5986b40d2e1ead468628be167f18404c99",
+      "elf_type": "ET_DYN",
+      "pt_tls": {
+        "file_size": 0,
+        "memory_size": 48,
+        "alignment": 8
+      },
+      "init_array_entries": 618,
+      "dt_runpath": [
+        "$ORIGIN/../lib:$ORIGIN/../lib:/lib"
+      ],
+      "dt_soname": [
+        "librustc_driver-2e1bf4637bebadba.so"
+      ],
+      "defined_dynamic_symbols_count": 19840,
+      "strong_undefined_after_scope": []
+    },
+    "rustc": {
+      "name": "rustc",
+      "size": 4152,
+      "sha256": "727bce3feb9d1543bc7b22776ad348ee5041a2004b72a4d24b6e7a5ecdd5ac79",
+      "inventory": {
+        "dynamic_relocations": [
+          "R_X86_64_JUMP_SLOT"
+        ],
+        "tls_models": [],
+        "undefined_symbols": [
+          "_RNvCscNTCD2TqieA_17rustc_driver_impl4main",
+          "_ZN3std2rt19lang_start_internal17hf08a2b16c43806d9E",
+          "__breenix_libc_init",
+          "exit"
+        ],
+        "dt_needed": [
+          "libc.so",
+          "librustc_driver-2e1bf4637bebadba.so"
+        ],
+        "pt_interp": [
+          "/lib/ld-breenix.so"
+        ]
+      },
+      "dynamic_relocation_counts": {
+        "R_X86_64_JUMP_SLOT": 4
+      },
+      "undefined_weak": [],
+      "readelf": {
+        "args": [
+          "--file-header",
+          "--program-headers",
+          "--dynamic-table",
+          "--dyn-relocations",
+          "--wide"
+        ],
+        "sha256": "cb24279734affe924c2474aa9855e47f9dd4d8d2d7a594a5a1d9c40cfbd75d5e"
+      },
+      "nm": {
+        "args": [
+          "--dynamic",
+          "--undefined-only",
+          "--format=posix"
+        ],
+        "sha256": "a9ecfb63f7e1c4c859b294149a3a4a56cad8f20ddcd400e7fae4d0a5c63bbce3"
+      },
+      "dynamic_export_evidence_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "elf_type": "ET_EXEC",
+      "dt_runpath": [
+        "$ORIGIN/../lib:$ORIGIN/../lib:/lib"
+      ],
+      "dt_soname": [],
+      "defined_dynamic_symbols_count": 0,
+      "strong_undefined_after_scope": []
+    },
+    "libc": {
+      "name": "libc.so",
+      "size": 1425832,
+      "sha256": "901053448643754db4c834d3af23f4759337c12483359d5d39bc90d3bbd86992",
+      "inventory": {
+        "dynamic_relocations": [
+          "R_X86_64_GLOB_DAT",
+          "R_X86_64_JUMP_SLOT",
+          "R_X86_64_RELATIVE"
+        ],
+        "tls_models": [],
+        "undefined_symbols": [],
+        "dt_needed": [],
+        "pt_interp": []
+      },
+      "dynamic_relocation_counts": {
+        "R_X86_64_GLOB_DAT": 12,
+        "R_X86_64_JUMP_SLOT": 96,
+        "R_X86_64_RELATIVE": 1023
+      },
+      "undefined_weak": [],
+      "readelf": {
+        "args": [
+          "--file-header",
+          "--program-headers",
+          "--dynamic-table",
+          "--dyn-relocations",
+          "--wide"
+        ],
+        "sha256": "a5c7df8dcd3356f02ae9bd3998cf2527fd7b44d2f727b18434e47f998809faf2"
+      },
+      "nm": {
+        "args": [
+          "--dynamic",
+          "--undefined-only",
+          "--format=posix"
+        ],
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "dynamic_export_evidence_sha256": "b944758a980bec627cfbfd272600d4738080ed59235678f13e52b320776c032c",
+      "elf_type": "ET_DYN",
+      "dt_runpath": [],
+      "dt_soname": [
+        "libc.so"
+      ],
+      "defined_dynamic_symbols_count": 1196,
+      "strong_undefined_after_scope": []
+    }
+  },
+  "inventory": {
+    "dynamic_relocations": [
+      "R_X86_64_64",
+      "R_X86_64_DTPMOD64",
+      "R_X86_64_GLOB_DAT",
+      "R_X86_64_JUMP_SLOT",
+      "R_X86_64_RELATIVE"
+    ],
+    "tls_models": [
+      "local-dynamic"
+    ],
+    "undefined_symbols": [
+      "_Exit",
+      "_RNvCscNTCD2TqieA_17rustc_driver_impl4main",
+      "_ZN3std2rt19lang_start_internal17hf08a2b16c43806d9E",
+      "__breenix_libc_init",
+      "__breenix_mb_cur_max",
+      "__cxa_atexit",
+      "__errno_location",
+      "__tls_get_addr",
+      "_exit",
+      "abort",
+      "accept4",
+      "access",
+      "acos",
+      "alarm",
+      "aligned_alloc",
+      "asin",
+      "atan",
+      "atan2",
+      "atoi",
+      "bind",
+      "btowc",
+      "calloc",
+      "ceil",
+      "ceilf",
+      "chdir",
+      "chmod",
+      "chown",
+      "chroot",
+      "clock_gettime",
+      "close",
+      "closedir",
+      "connect",
+      "cos",
+      "cosh",
+      "dirfd",
+      "dl_iterate_phdr",
+      "dladdr",
+      "dlclose",
+      "dlerror",
+      "dlopen",
+      "dlsym",
+      "dup",
+      "dup2",
+      "dup3",
+      "environ",
+      "erf",
+      "execv",
+      "execve",
+      "execvp",
+      "exit",
+      "exp",
+      "exp2",
+      "faccessat",
+      "fchmod",
+      "fchmodat",
+      "fchown",
+      "fchownat",
+      "fcntl",
+      "fdatasync",
+      "fdopendir",
+      "feclearexcept",
+      "fetestexcept",
+      "fflush",
+      "flock",
+      "floor",
+      "fma",
+      "fmaf",
+      "fmod",
+      "fork",
+      "fputc",
+      "fputwc",
+      "free",
+      "freeaddrinfo",
+      "freelocale",
+      "fstat",
+      "fstatat",
+      "fstatfs",
+      "fstatvfs",
+      "fsync",
+      "ftruncate",
+      "futimens",
+      "fwrite",
+      "gai_strerror",
+      "getaddrinfo",
+      "getc",
+      "getcwd",
+      "getentropy",
+      "getenv",
+      "getpeername",
+      "getpid",
+      "getppid",
+      "getpwnam_r",
+      "getpwuid_r",
+      "getrandom",
+      "getrlimit",
+      "getrusage",
+      "getsockname",
+      "getsockopt",
+      "getuid",
+      "getwc",
+      "gmtime_r",
+      "ioctl",
+      "isalnum",
+      "isalpha",
+      "isatty",
+      "isblank",
+      "isdigit_l",
+      "islower",
+      "islower_l",
+      "isupper",
+      "isupper_l",
+      "iswalpha_l",
+      "iswblank_l",
+      "iswcntrl_l",
+      "iswdigit_l",
+      "iswlower_l",
+      "iswprint_l",
+      "iswpunct_l",
+      "iswspace_l",
+      "iswupper_l",
+      "iswxdigit_l",
+      "isxdigit",
+      "isxdigit_l",
+      "kill",
+      "lchown",
+      "link",
+      "linkat",
+      "listen",
+      "localeconv",
+      "localtime_r",
+      "log",
+      "log10",
+      "log1p",
+      "log2",
+      "log2f",
+      "logb",
+      "longjmp",
+      "lseek",
+      "lstat",
+      "malloc",
+      "mbrlen",
+      "mbrtowc",
+      "mbsnrtowcs",
+      "mbsrtowcs",
+      "mbtowc",
+      "memchr",
+      "mkdir",
+      "mkdirat",
+      "mkfifo",
+      "mknodat",
+      "mmap",
+      "modf",
+      "mprotect",
+      "msync",
+      "munmap",
+      "nanosleep",
+      "newlocale",
+      "open",
+      "openat",
+      "opendir",
+      "pipe",
+      "pipe2",
+      "poll",
+      "posix_fadvise",
+      "posix_fallocate",
+      "posix_madvise",
+      "posix_memalign",
+      "posix_spawn",
+      "posix_spawn_file_actions_adddup2",
+      "posix_spawn_file_actions_addopen",
+      "posix_spawn_file_actions_destroy",
+      "posix_spawn_file_actions_init",
+      "pow",
+      "pread",
+      "preadv",
+      "printf",
+      "pthread_atfork",
+      "pthread_attr_destroy",
+      "pthread_attr_init",
+      "pthread_attr_setstacksize",
+      "pthread_cond_broadcast",
+      "pthread_cond_destroy",
+      "pthread_cond_init",
+      "pthread_cond_signal",
+      "pthread_cond_timedwait",
+      "pthread_cond_wait",
+      "pthread_condattr_destroy",
+      "pthread_condattr_init",
+      "pthread_condattr_setclock",
+      "pthread_create",
+      "pthread_detach",
+      "pthread_getspecific",
+      "pthread_join",
+      "pthread_key_create",
+      "pthread_key_delete",
+      "pthread_kill",
+      "pthread_mutex_destroy",
+      "pthread_mutex_init",
+      "pthread_mutex_lock",
+      "pthread_mutex_trylock",
+      "pthread_mutex_unlock",
+      "pthread_mutexattr_destroy",
+      "pthread_mutexattr_init",
+      "pthread_mutexattr_settype",
+      "pthread_self",
+      "pthread_setname_np",
+      "pthread_setspecific",
+      "pthread_sigmask",
+      "putchar",
+      "pwrite",
+      "pwritev",
+      "qsort",
+      "raise",
+      "rand",
+      "read",
+      "readdir",
+      "readdir_r",
+      "readlink",
+      "readlinkat",
+      "readv",
+      "realloc",
+      "realpath",
+      "recv",
+      "recvfrom",
+      "remove",
+      "rename",
+      "renameat",
+      "rint",
+      "rmdir",
+      "round",
+      "sched_getaffinity",
+      "sched_yield",
+      "send",
+      "sendto",
+      "setenv",
+      "setgid",
+      "setgroups",
+      "setjmp",
+      "setlocale",
+      "setpgid",
+      "setrlimit",
+      "setsid",
+      "setsockopt",
+      "setuid",
+      "shutdown",
+      "sigaction",
+      "sigaddset",
+      "sigaltstack",
+      "sigdelset",
+      "sigemptyset",
+      "sigfillset",
+      "sigismember",
+      "signal",
+      "sigprocmask",
+      "sigwait",
+      "sin",
+      "sinh",
+      "snprintf",
+      "socket",
+      "socketpair",
+      "sqrt",
+      "srand",
+      "sscanf",
+      "stat",
+      "statvfs",
+      "stderr",
+      "stdin",
+      "stdout",
+      "strchr",
+      "strcmp",
+      "strcoll_l",
+      "strdup",
+      "strerror_r",
+      "strftime",
+      "strftime_l",
+      "strncmp",
+      "strncpy",
+      "strsignal",
+      "strtod",
+      "strtof",
+      "strtol",
+      "strtold",
+      "strtoll",
+      "strtoul",
+      "strtoull",
+      "strxfrm_l",
+      "swprintf",
+      "symlink",
+      "symlinkat",
+      "sync",
+      "sysconf",
+      "tan",
+      "tanh",
+      "time",
+      "tolower",
+      "tolower_l",
+      "toupper",
+      "toupper_l",
+      "towlower_l",
+      "towupper_l",
+      "trunc",
+      "umask",
+      "uname",
+      "ungetc",
+      "ungetwc",
+      "unlink",
+      "unlinkat",
+      "unsetenv",
+      "uselocale",
+      "usleep",
+      "utimensat",
+      "vasprintf",
+      "vfprintf",
+      "vsnprintf",
+      "vsscanf",
+      "wait",
+      "wait4",
+      "waitpid",
+      "wcrtomb",
+      "wcscoll_l",
+      "wcslen",
+      "wcsnrtombs",
+      "wcstod",
+      "wcstof",
+      "wcstol",
+      "wcstold",
+      "wcstoll",
+      "wcstoul",
+      "wcstoull",
+      "wcsxfrm_l",
+      "wctob",
+      "wmemchr",
+      "wmemcmp",
+      "write",
+      "writev"
+    ],
+    "dt_needed": [
+      "libc.so",
+      "librustc_driver-2e1bf4637bebadba.so"
+    ],
+    "pt_interp": [
+      "/lib/ld-breenix.so"
     ]
   },
-  "last_completed_step": "Built the stage-1 Mac compiler with LLVM 20.1.7. Bootstrap selected the Mac stage-0 sysroot and invoked the hosted llvm-config with --version before launching hosted Cargo.",
-  "first_error": "error: cannot produce dylib for `rustc_driver v0.0.0 (<x2>/rust/compiler/rustc_driver)` as the target `x86_64-breenix-hosted` does not support these crate types",
-  "exit_status": 101,
-  "exit_status_for": "Cargo building stage-1 hosted compiler artifacts",
-  "earlier_nonfatal_diagnostics": [
-    "error: Could not read c9eb0652469db42bb1cb84f27615cf466c7c3108",
-    "fatal: Failed to traverse parents of commit d6e82857e5ddf7106532c9234181abbcc43c7a37"
+  "kd_proposal": [
+    {
+      "unit": "Kernel interpreter handoff",
+      "scope": "Both kernel ELF loaders. The measured x86-64 rustc is ET_EXEC with PT_INTERP /lib/ld-breenix.so. Map an ET_DYN interpreter at its own bias, build the ELF auxiliary vector from plan 5.4 and transfer to the interpreter. Check the missing-interpreter rollback before guest acceptance."
+    },
+    {
+      "unit": "Rust loader mapping, symbol lookup and relocations",
+      "scope": "Load librustc_driver-87725a013a97c44d.so (262534640 bytes) and libc.so with eager relocations and GNU_RELRO protections, then walk the initialization arrays in dependency order."
+    },
+    {
+      "unit": "Hosted TLS",
+      "scope": "Set up executable and shared-object TLS for the recorded load set. The driver has a 48-byte zero-initialized PT_TLS at alignment 8 and one local-dynamic R_X86_64_DTPMOD64 slot. The executable and libc.so carry no PT_TLS. Cross-link ARM64 before choosing its TLS models."
+    },
+    {
+      "unit": "Dynamic runtime and libc closure",
+      "scope": "Implement dladdr, dlclose, dlerror, dlopen and dlsym. Resolve the two Breenix layout symbols in the dynamic link contract and the remaining 15 libc symbols against existing implementations or dedicated libc work. Honor weak references and preserve DSO identity and unwind semantics."
+    },
+    {
+      "unit": "Dynamic acceptance",
+      "scope": "Run interp-runs-program, missing-interp-fails and dso-relocs-and-tls after their host checks. ARM64 still needs its own driver cross-link and inventory, architecture-specific relocation/TLS coverage and KD acceptance."
+    }
   ],
-  "mac_llvm_build_warnings": {
-    "<llvm-project>/llvm/include/llvm/IR/ConstantFolder.h:31:16: warning: virtual method 'anchor' is inside a 'final' class and can never be overridden [-Wunnecessary-virtual-specifier]": 5
+  "artifact_location": "<kd>/x2/stage1",
+  "arm64_remaining": "ARM64 still needs the kernel interpreter handoff, a hosted driver cross-link and ELF inventory, architecture-specific relocation and TLS coverage, and KD acceptance before dynamic K5 cases.",
+  "ruling_107": {
+    "previous_record": "2f09f2140d098b76233cd5999cc5346010fc2249",
+    "check_first": "01428769",
+    "one_process_state": "pass",
+    "libc_stage_path": "/lib/libc.so",
+    "libc_build": {
+      "command": [
+        "taskpolicy",
+        "-b",
+        "userspace/programs/build.sh",
+        "--kd-libc"
+      ],
+      "stage": {
+        "budget_seconds": 1800,
+        "started": "2026-11-25T13:47:17.560699+00:00",
+        "exit_status": 0,
+        "time": "2026-11-25T13:47:39.339232+00:00",
+        "wall_seconds": 21.778
+      },
+      "log_sha256": "1979b9c06a889ce4544d629d7b11bd4381f24c95241cb55d5d868d63a90523f4"
+    },
+    "bootstrap": {
+      "command": [
+        "taskpolicy",
+        "-b",
+        "nice",
+        "-n",
+        "15",
+        "python3",
+        "x.py",
+        "build",
+        "--stage",
+        "1",
+        "compiler/rustc",
+        "--config",
+        "<kd>/x2/bootstrap.toml",
+        "--verbose"
+      ],
+      "config_changes_from_ruling_105": {
+        "build_dir": "<kd>/x2/build",
+        "hosted_linker": "<repo>/scripts/rust-host/kd_link.py"
+      },
+      "stages": {
+        "first": {
+          "budget_seconds": 10800,
+          "started": "2026-11-25T12:47:11.090404+00:00",
+          "exit_status": 1,
+          "time": "2026-11-25T13:13:06.754257+00:00",
+          "wall_seconds": 1555.648
+        },
+        "final": {
+          "budget_seconds": 9244,
+          "started": "2026-11-25T13:13:53.001039+00:00",
+          "exit_status": 0,
+          "time": "2026-11-25T13:14:06.097414+00:00",
+          "wall_seconds": 13.096
+        },
+        "clean": {
+          "budget_seconds": 9230,
+          "started": "2026-11-25T13:15:44.147177+00:00",
+          "exit_status": 0,
+          "time": "2026-11-25T13:15:56.353439+00:00",
+          "wall_seconds": 12.206
+        },
+        "isolated_libc": {
+          "budget_seconds": 9217,
+          "started": "2026-11-25T13:47:59.651129+00:00",
+          "exit_status": 0,
+          "time": "2026-11-25T13:48:08.691376+00:00",
+          "wall_seconds": 9.04
+        }
+      },
+      "last_log_sha256": "f8c04360c4ec71a6354e10ec7277f1934e0254f899949ede0586d23f31b229e0",
+      "fork_compiler_status_before": "",
+      "fork_compiler_status_after": "",
+      "fork_llvm_status_before": "",
+      "fork_llvm_status_after": "",
+      "linker_environment": {
+        "BREENIX_KD_BUILD_DIR": "<kd>/runtime",
+        "BREENIX_X2_STAGE": "<kd>/x2/stage1",
+        "BREENIX_X2_RUNTIME": "<x2>/r105",
+        "BREENIX_X2_FALLBACK_LINKER": "<x2>/r105/x86_64-breenix-hosted-link",
+        "BREENIX_X2_LLD": "<nightly-rustlib>/bin/gcc-ld/ld.lld"
+      }
+    },
+    "link_map_sha256": {
+      "librustc_driver-87725a013a97c44d.so.map": "8bc68306f0398a80dc9ee72169c01dc47be571168823ae3ade67e4143db09cad",
+      "rustc.map": "fbd28959b3ea1dbcdfa76199ee9258ecfd4220cc85d006523308ad60434fbba7"
+    },
+    "former_strong_undefined_providers": {
+      "__breenix_got_start": [],
+      "__breenix_text_start": [],
+      "__tls_get_addr": [],
+      "dladdr": [],
+      "dlclose": [],
+      "dlerror": [],
+      "dlopen": [],
+      "dlsym": [],
+      "dup3": [],
+      "errno_location": [],
+      "faccessat": [],
+      "fstatat": [],
+      "getrusage": [],
+      "mkdirat": [],
+      "msync": [],
+      "posix_fadvise": [],
+      "posix_fallocate": [],
+      "posix_madvise": [],
+      "preadv": [],
+      "pwritev": [],
+      "readlinkat": [],
+      "symlinkat": [],
+      "sync": []
+    },
+    "interpreter": {
+      "command": [
+        "taskpolicy",
+        "-b",
+        "userspace/programs/build.sh",
+        "--kd-loader"
+      ],
+      "stage": {
+        "budget_seconds": 1800,
+        "started": "2026-11-25T13:17:50.132096+00:00",
+        "exit_status": 0,
+        "time": "2026-11-25T13:18:06.956498+00:00",
+        "wall_seconds": 16.824
+      },
+      "check_first": "b562b6c7",
+      "elf_type": "ET_DYN",
+      "entry": "0x2d710",
+      "dynamic_relocations": {
+        "R_X86_64_RELATIVE": 822
+      },
+      "undefined_symbols": [],
+      "dt_needed": [],
+      "pt_interp": [],
+      "readelf_sha256": "e79be417efdfb08b93ef1ff1a46dd1f02bba65b46c1bb5003311c48f98c9e98f",
+      "stagedFiles": {
+        "/lib/ld-breenix.so": "ed9ca7f533577015cc709fc7c90b64aa99e084fb21cf46f1561cde6964e778b0",
+        "/lib/libc.so": "125ecf82ada23ed25a8add1c2fa1f62bc1f0810ce12dd776645b2fe1526f3617"
+      }
+    },
+    "process_state_owners": {
+      "_start": {
+        "elf": "rustc",
+        "symbol": "_start",
+        "value": "0x4000152c"
+      },
+      "environ": {
+        "elf": "libc.so",
+        "symbol": "environ",
+        "value": "0x11b260"
+      },
+      "stdin": {
+        "elf": "libc.so",
+        "symbol": "stdin",
+        "value": "0x115e10"
+      },
+      "stdout": {
+        "elf": "libc.so",
+        "symbol": "stdout",
+        "value": "0x115e08"
+      },
+      "stderr": {
+        "elf": "libc.so",
+        "symbol": "stderr",
+        "value": "0x112ba8"
+      },
+      "optarg": {
+        "elf": "libc.so",
+        "symbol": "optarg",
+        "value": "0x11b1e0"
+      },
+      "opterr": {
+        "elf": "libc.so",
+        "symbol": "opterr",
+        "value": "0x112b5c"
+      },
+      "optind": {
+        "elf": "libc.so",
+        "symbol": "optind",
+        "value": "0x112b58"
+      },
+      "optopt": {
+        "elf": "libc.so",
+        "symbol": "optopt",
+        "value": "0x112b60"
+      },
+      "getauxval": {
+        "elf": "libc.so",
+        "symbol": "getauxval",
+        "value": "0xb45b0"
+      },
+      "__cxa_atexit": {
+        "elf": "libc.so",
+        "symbol": "__cxa_atexit",
+        "value": "0x70eb0"
+      },
+      "AUXV": {
+        "elf": "libc.so",
+        "symbol": "_ZN1c3crt4AUXV17h85a5bba847414522E.0.llvm.5411613945653986608",
+        "value": "0x11c4b0"
+      },
+      "PROCESS": {
+        "elf": "libc.so",
+        "symbol": "_ZN1c7pthread7PROCESS17he45e26e352637c5aE.0.llvm.8334423814288054827",
+        "value": "0x11aa18"
+      },
+      "RUNTIME_READY": {
+        "elf": "libc.so",
+        "symbol": "_ZN1c7pthread13RUNTIME_READY17hcd42a9a6d3b162baE",
+        "value": "0x11ad58"
+      },
+      "EARLY_ERRNO": {
+        "elf": "libc.so",
+        "symbol": "_ZN1c7pthread11EARLY_ERRNO17h720ef2c8e788c81aE.llvm.8334423814288054827",
+        "value": "0x11aa1c"
+      },
+      "TLS_IMAGE": {
+        "elf": "libc.so",
+        "symbol": "_ZN1c7pthread9TLS_IMAGE17h6c85a3d4a054e623E.0",
+        "value": "0x11aa28"
+      },
+      "STACK_CACHE": {
+        "elf": "libc.so",
+        "symbol": "_ZN1c7pthread11STACK_CACHE17hecc29af47190aad9E",
+        "value": "0x11aa40"
+      },
+      "AT_EXIT": {
+        "elf": "libc.so",
+        "symbol": "_ZN1c6stdlib4exit7AT_EXIT17h4625207f9eff87c1E",
+        "value": "0x11c4a0"
+      }
+    },
+    "one_process_state_stage": {
+      "budget_seconds": 60,
+      "started": "2026-11-25T13:48:30.459769+00:00",
+      "exit_status": 0,
+      "time": "2026-11-25T13:48:46.791950+00:00",
+      "wall_seconds": 16.332
+    }
   },
-  "log_sha256": "fd70262a6fdf35d988b4936d9d3212aef5d6399051fdd3907a2b2c67d5474b4d",
-  "evidence_directory": "fx/evidence/e25-k4-x2.128PEvFv"
+  "ruling_108": {
+    "check_first": "85232977",
+    "referencing_crate": "errno 0.3.12",
+    "license": "MIT OR Apache-2.0",
+    "extern_abi": "C int *__errno_location(void), returning the calling thread errno address",
+    "patch": {
+      "file": "toolchain/rust-host/k5/patches/errno-0.3.12-breenix.patch",
+      "sha256": "5886496e46476c493770c8a784031bb250526cfd3985d0f20d189b4d90136c71",
+      "text": "diff --git a/src/unix.rs b/src/unix.rs\n--- a/src/unix.rs\n+++ b/src/unix.rs\n@@ -100,0 +101 @@\n+    #[cfg_attr(target_os = \"breenix\", link_name = \"__errno_location\")]\n"
+    },
+    "cargo_patch_config": "[patch.crates-io]\nerrno = { path = \"<kd-u6>/patches/errno-0.3.12\" }\n",
+    "lockfile": {
+      "previous_sha256": "3f01023fd98fd8f99550ce235cc8409829268678f0098f6fae33666ea37e6cad",
+      "local_sha256": "3ad08c97bad1ba8dd686a8bf8ecf29caa6d0894f30476b57ee5fa79468f8d6b9",
+      "diff": "--- ruling-105/Cargo.lock\n+++ ruling-108/Cargo.lock\n@@ -1143,8 +1143,6 @@\n [[package]]\n name = \"errno\"\n version = \"0.3.12\"\n-source = \"registry+https://github.com/rust-lang/crates.io-index\"\n-checksum = \"cea14ef9355e3beab063703aa9dab15afd25f0667c341310c1e5274bb1d0da18\"\n dependencies = [\n  \"libc\",\n  \"windows-sys 0.59.0\",\n"
+    },
+    "fork_status_before": "",
+    "fork_status_after": "",
+    "registry_snapshot_before_sha256": "03a282c9c18e239736fd9494e40236b1d18d4f5f030b74a9b49d98b85791256d",
+    "registry_snapshot_after_sha256": "03a282c9c18e239736fd9494e40236b1d18d4f5f030b74a9b49d98b85791256d",
+    "registry_diagnostics_also_present_without_port": [
+      {
+        "diagnostic": "hidden lifetime parameters in types are deprecated",
+        "file": "lib.rs",
+        "line": 46,
+        "count": 1
+      },
+      {
+        "diagnostic": "hidden lifetime parameters in types are deprecated",
+        "file": "lib.rs",
+        "line": 57,
+        "count": 1
+      },
+      {
+        "diagnostic": "unreachable `pub` item",
+        "file": "unix.rs",
+        "line": 27,
+        "count": 1
+      },
+      {
+        "diagnostic": "unreachable `pub` item",
+        "file": "unix.rs",
+        "line": 50,
+        "count": 1
+      },
+      {
+        "diagnostic": "unreachable `pub` item",
+        "file": "unix.rs",
+        "line": 52,
+        "count": 1
+      },
+      {
+        "diagnostic": "unreachable `pub` item",
+        "file": "unix.rs",
+        "line": 56,
+        "count": 1
+      }
+    ],
+    "bootstrap": {
+      "command": [
+        "taskpolicy",
+        "-b",
+        "nice",
+        "-n",
+        "15",
+        "python3",
+        "x.py",
+        "build",
+        "--stage",
+        "1",
+        "compiler/rustc",
+        "--config",
+        "<kd>/x2/bootstrap.toml",
+        "--verbose"
+      ],
+      "config_root": "<kd-u6>/patches",
+      "port": {
+        "budget_seconds": 9217,
+        "started": "2026-11-25T15:07:20.477785+00:00",
+        "exit_status": 0,
+        "time": "2026-11-25T15:24:55.544505+00:00",
+        "wall_seconds": 1055.056,
+        "log_sha256": "71ae0e6aa333252d0e2b707781e5cf54bf1174cc342df5ff3ce1138bd31a7ff8"
+      },
+      "final_link": {
+        "budget_seconds": 8100,
+        "started": "2026-11-25T15:59:04.799665+00:00",
+        "exit_status": 0,
+        "time": "2026-11-25T16:01:27.104270+00:00",
+        "wall_seconds": 142.303,
+        "log_sha256": "7247ef58ffb7f23ab601752139839b1d82f45cd76f20d9547efdeb29c0911751"
+      }
+    },
+    "libc_build": {
+      "budget_seconds": 1800,
+      "started": "2026-11-25T15:58:21.887684+00:00",
+      "exit_status": 0,
+      "time": "2026-11-25T15:58:41.615352+00:00",
+      "wall_seconds": 19.727,
+      "log_sha256": "7848a0b343b5e738046360b543edff3e08d1a7f6a46ed65069eb204736a9c9b1"
+    },
+    "link_map_sha256": {
+      "librustc_driver-2e1bf4637bebadba.so.map": "0bd0aecac4d6663bfefab7f81bd4ba60d23c004d4f7baf799ca1aa504a90f261",
+      "rustc.map": "bb93b5debc6378c257cf55ce04d96a6ec267b46e685c52c4a908249bb1bd57c5"
+    },
+    "driver_undefined_delta": {
+      "removed": [
+        "errno_location"
+      ],
+      "added": [],
+      "replacement": {
+        "__errno_location": "libc.so"
+      }
+    },
+    "one_process_state": "pass",
+    "original_strong_undefined_providers": {
+      "__breenix_got_start": [],
+      "__breenix_text_start": [],
+      "__tls_get_addr": [
+        "libc.so"
+      ],
+      "dladdr": [],
+      "dlclose": [],
+      "dlerror": [],
+      "dlopen": [],
+      "dlsym": [],
+      "dup3": [
+        "libc.so"
+      ],
+      "errno_location": [],
+      "faccessat": [
+        "libc.so"
+      ],
+      "fstatat": [
+        "libc.so"
+      ],
+      "getrusage": [
+        "libc.so"
+      ],
+      "mkdirat": [
+        "libc.so"
+      ],
+      "msync": [
+        "libc.so"
+      ],
+      "posix_fadvise": [
+        "libc.so"
+      ],
+      "posix_fallocate": [
+        "libc.so"
+      ],
+      "posix_madvise": [
+        "libc.so"
+      ],
+      "preadv": [
+        "libc.so"
+      ],
+      "pwritev": [
+        "libc.so"
+      ],
+      "readlinkat": [
+        "libc.so"
+      ],
+      "symlinkat": [
+        "libc.so"
+      ],
+      "sync": [
+        "libc.so"
+      ]
+    },
+    "remaining_strong_undefined": [
+      "__breenix_got_start",
+      "__breenix_text_start",
+      "dladdr",
+      "dlclose",
+      "dlerror",
+      "dlopen",
+      "dlsym"
+    ]
+  },
+  "kd_u7": {
+    "check_first": [
+      "d2461964",
+      "a9d99df1"
+    ],
+    "artifact_location": "userspace/programs/target/kd-u7/stage",
+    "bootstrap": {
+      "budget_seconds": 8100,
+      "started": "2026-11-25T16:45:43.340923+00:00",
+      "exit_status": 0,
+      "time": "2026-11-25T16:45:50.763393+00:00",
+      "wall_seconds": 7.423
+    },
+    "bootstrap_log_sha256": "4b7570eb7a47eaf057a5050b1b8dde0bdac087f61c6372826f3bbd470c5811ef",
+    "bunwind_link_archive_sha256": "99dcf7632155b856ffe893bf2d4e67cc6eb025385a475b37620973384a73c132",
+    "original_strong_import_providers": {
+      "__breenix_got_start": {
+        "symbol": "__breenix_got_start",
+        "object": "librustc_driver-2e1bf4637bebadba.so",
+        "section": ".got",
+        "binding": "object-local"
+      },
+      "__breenix_text_start": {
+        "symbol": "__breenix_text_start",
+        "object": "librustc_driver-2e1bf4637bebadba.so",
+        "section": ".text",
+        "binding": "object-local"
+      },
+      "__tls_get_addr": {
+        "symbol": "__tls_get_addr",
+        "object": "libc.so",
+        "binding": "dynamic"
+      },
+      "dladdr": {
+        "symbol": "dladdr",
+        "object": "libc.so",
+        "binding": "dynamic"
+      },
+      "dlclose": {
+        "symbol": "dlclose",
+        "object": "libc.so",
+        "binding": "dynamic"
+      },
+      "dlerror": {
+        "symbol": "dlerror",
+        "object": "libc.so",
+        "binding": "dynamic"
+      },
+      "dlopen": {
+        "symbol": "dlopen",
+        "object": "libc.so",
+        "binding": "dynamic"
+      },
+      "dlsym": {
+        "symbol": "dlsym",
+        "object": "libc.so",
+        "binding": "dynamic"
+      },
+      "dup3": {
+        "symbol": "dup3",
+        "object": "libc.so",
+        "binding": "dynamic"
+      },
+      "errno_location": {
+        "symbol": "__errno_location",
+        "object": "libc.so",
+        "binding": "dynamic"
+      },
+      "faccessat": {
+        "symbol": "faccessat",
+        "object": "libc.so",
+        "binding": "dynamic"
+      },
+      "fstatat": {
+        "symbol": "fstatat",
+        "object": "libc.so",
+        "binding": "dynamic"
+      },
+      "getrusage": {
+        "symbol": "getrusage",
+        "object": "libc.so",
+        "binding": "dynamic"
+      },
+      "mkdirat": {
+        "symbol": "mkdirat",
+        "object": "libc.so",
+        "binding": "dynamic"
+      },
+      "msync": {
+        "symbol": "msync",
+        "object": "libc.so",
+        "binding": "dynamic"
+      },
+      "posix_fadvise": {
+        "symbol": "posix_fadvise",
+        "object": "libc.so",
+        "binding": "dynamic"
+      },
+      "posix_fallocate": {
+        "symbol": "posix_fallocate",
+        "object": "libc.so",
+        "binding": "dynamic"
+      },
+      "posix_madvise": {
+        "symbol": "posix_madvise",
+        "object": "libc.so",
+        "binding": "dynamic"
+      },
+      "preadv": {
+        "symbol": "preadv",
+        "object": "libc.so",
+        "binding": "dynamic"
+      },
+      "pwritev": {
+        "symbol": "pwritev",
+        "object": "libc.so",
+        "binding": "dynamic"
+      },
+      "readlinkat": {
+        "symbol": "readlinkat",
+        "object": "libc.so",
+        "binding": "dynamic"
+      },
+      "symlinkat": {
+        "symbol": "symlinkat",
+        "object": "libc.so",
+        "binding": "dynamic"
+      },
+      "sync": {
+        "symbol": "sync",
+        "object": "libc.so",
+        "binding": "dynamic"
+      }
+    }
+  }
 }

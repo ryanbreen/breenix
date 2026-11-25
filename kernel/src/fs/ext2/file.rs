@@ -819,7 +819,7 @@ pub(super) fn write_file_range_tracked<B: BlockDevice + ?Sized>(
     offset: u64,
     data: &[u8],
 ) -> Result<bool, BlockError> {
-    write_file_range_batched(device, inode, superblock, block_groups, offset, data, false)
+    write_file_range_batched(device, inode, superblock, block_groups, offset, RangeData::Write(data), false)
 }
 
 /// Mapped writeback may visit a still-writable page more than once. Compare
@@ -834,24 +834,43 @@ pub fn write_mapped_file_range<B: BlockDevice + ?Sized>(
     offset: u64,
     data: &[u8],
 ) -> Result<bool, BlockError> {
-    write_file_range_batched(device, inode, superblock, block_groups, offset, data, true)
+    write_file_range_batched(device, inode, superblock, block_groups, offset, RangeData::Write(data), true)
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum RangeData<'a> {
+    Write(&'a [u8]),
+    Preallocate { len: u64, extend: bool },
+}
+
+impl RangeData<'_> {
+    pub(super) fn len(self) -> u64 {
+        match self {
+            Self::Write(data) => data.len() as u64,
+            Self::Preallocate { len, .. } => len,
+        }
+    }
+
+    pub(super) fn extends_file(self) -> bool {
+        !matches!(self, Self::Preallocate { extend: false, .. })
+    }
 }
 
 /// Allocation and indirect-pointer changes share a bounded, operation-local
 /// metadata batch. Data goes directly to the backend. Publish the metadata on
 /// both success and partial failure before the caller publishes the inode.
-fn write_file_range_batched<B: BlockDevice + ?Sized>(
+pub(super) fn write_file_range_batched<B: BlockDevice + ?Sized>(
     device: &B,
     inode: &mut Ext2Inode,
     superblock: &Ext2Superblock,
     block_groups: &mut [super::Ext2BlockGroupDesc],
     offset: u64,
-    data: &[u8],
+    range: RangeData<'_>,
     mapped_writeback: bool,
 ) -> Result<bool, BlockError> {
-    if data.is_empty() { return Ok(false); }
+    if range.len() == 0 { return Ok(false); }
     let metadata = MetadataBatch::new(device, superblock, block_groups)?;
-    let result = write_file_range_impl(&metadata, device, inode, superblock, block_groups, offset, data, mapped_writeback);
+    let result = write_file_range_impl(&metadata, device, inode, superblock, block_groups, offset, range, mapped_writeback);
     metadata.publish()?;
     result
 }
@@ -863,17 +882,13 @@ fn write_file_range_impl<B: BlockDevice + ?Sized, D: BlockDevice + ?Sized>(
     superblock: &Ext2Superblock,
     block_groups: &mut [super::Ext2BlockGroupDesc],
     offset: u64,
-    data: &[u8],
+    range: RangeData<'_>,
     mapped_writeback: bool,
 ) -> Result<bool, BlockError> {
-    if data.is_empty() {
-        return Ok(false);
-    }
-
     let block_size = superblock.block_size();
     let start_block = (offset / block_size as u64) as u32;
     let offset_in_first_block = (offset % block_size as u64) as usize;
-    let end_offset = offset + data.len() as u64;
+    let end_offset = offset + range.len();
     let end_block = ((end_offset + block_size as u64 - 1) / block_size as u64) as u32;
 
     let mut data_pos = 0usize;
@@ -902,6 +917,9 @@ fn write_file_range_impl<B: BlockDevice + ?Sized, D: BlockDevice + ?Sized>(
                 return Err(e);
             }
         };
+        if !allocated && matches!(range, RangeData::Preallocate { .. }) {
+            continue;
+        }
 
         // Calculate which bytes in this block to write
         let block_offset = logical_block as u64 * block_size as u64;
@@ -933,18 +951,16 @@ fn write_file_range_impl<B: BlockDevice + ?Sized, D: BlockDevice + ?Sized>(
             }
         }
 
-        if !allocated
-            && block_buf[start_in_block..end_in_block] == data[data_pos..data_pos + bytes_to_write]
-        {
+        if let RangeData::Write(data) = range {
+            let input = &data[data_pos..data_pos + bytes_to_write];
             data_pos += bytes_to_write;
-            continue;
+            let output = &mut block_buf[start_in_block..end_in_block];
+            if !allocated && *output == *input {
+                continue;
+            }
+            output.copy_from_slice(input);
         }
         changed = true;
-
-        // Copy data into block buffer
-        block_buf[start_in_block..end_in_block]
-            .copy_from_slice(&data[data_pos..data_pos + bytes_to_write]);
-        data_pos += bytes_to_write;
 
         // Write the block back
         if let Err(e) =
@@ -991,7 +1007,11 @@ fn write_file_range_impl<B: BlockDevice + ?Sized, D: BlockDevice + ?Sized>(
 
     // Update inode size if we extended the file
     let current_size = inode.size();
-    if end_offset > current_size {
+    let extended = range.extends_file() && end_offset > current_size;
+    if extended {
+        if matches!(range, RangeData::Preallocate { .. }) {
+            zero_file_tail(device, data_device, inode, superblock, current_size)?;
+        }
         changed = true;
         // Update i_size (lower 32 bits)
         unsafe {
@@ -1002,7 +1022,15 @@ fn write_file_range_impl<B: BlockDevice + ?Sized, D: BlockDevice + ?Sized>(
     }
 
     // Update modification and change timestamps
-    if !mapped_writeback || changed { inode.update_timestamps(false, true, true); }
+    match range {
+        RangeData::Write(_) if !mapped_writeback || changed => {
+            inode.update_timestamps(false, true, true);
+        }
+        RangeData::Preallocate { .. } if changed => {
+            inode.update_timestamps(false, extended, true);
+        }
+        _ => {}
+    }
 
     Ok(changed)
 }
@@ -1188,25 +1216,32 @@ pub fn resize_file<B: BlockDevice + ?Sized>(
     length: u64,
 ) -> Result<(), BlockError> {
     let old_size = inode.size();
-    let block_size = superblock.block_size();
-    let boundary = core::cmp::min(old_size, length);
-    let tail = (boundary % block_size as u64) as usize;
-    if old_size != length && tail != 0 {
-        if let Some(block) = get_block_num(
-            device,
-            inode,
-            superblock,
-            (boundary / block_size as u64) as u32,
-        )? {
-            let mut buf = [0u8; 4096];
-            read_ext2_block(device, block, block_size, &mut buf[..block_size])?;
-            buf[tail..block_size].fill(0);
-            write_ext2_block(device, block, block_size, &buf[..block_size])?;
-        }
+    if old_size != length {
+        zero_file_tail(device, device, inode, superblock, old_size.min(length))?;
     }
     inode.i_size = length as u32;
     inode.i_dir_acl = (length >> 32) as u32;
     inode.update_timestamps(false, true, true);
+    Ok(())
+}
+
+fn zero_file_tail<B: BlockDevice + ?Sized, D: BlockDevice + ?Sized>(
+    device: &B,
+    data_device: &D,
+    inode: &Ext2Inode,
+    superblock: &Ext2Superblock,
+    boundary: u64,
+) -> Result<(), BlockError> {
+    let block_size = superblock.block_size();
+    let tail = (boundary % block_size as u64) as usize;
+    if tail != 0 {
+        if let Some(block) = get_block_num(device, inode, superblock, (boundary / block_size as u64) as u32)? {
+            let mut buf = [0u8; 4096];
+            read_ext2_block(data_device, block, block_size, &mut buf[..block_size])?;
+            buf[tail..block_size].fill(0);
+            write_ext2_block(data_device, block, block_size, &buf[..block_size])?;
+        }
+    }
     Ok(())
 }
 

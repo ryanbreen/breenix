@@ -88,12 +88,16 @@ mod fs {
             ) -> Result<ExecIdentity, i32> {
                 Ok(ExecIdentity)
             }
+            pub fn may(&self, attrs: super::vfs::InodeAttrs, wanted: u32) -> bool {
+                u32::from(attrs.mode & 7) & wanted == wanted
+            }
         }
     }
     pub mod vfs {
         use super::errno::Errno;
         #[derive(Default)]
         pub struct MountFlags;
+        #[derive(Clone, Copy)]
         pub struct InodeAttrs {
             pub mode: u16,
         }
@@ -217,6 +221,7 @@ fn load(
         MountFlags::default(),
         &Credentials::kernel(),
         killed,
+        false,
         |size, read| {
             let mut header = [0; exec_elf::ELF_HEADER];
             let prefix = size.min(header.len() as u64) as usize;
@@ -325,6 +330,203 @@ fn eof_inside_advertised_segment_is_eio() {
         load(&fs, &VNode::file(), || false, |_, _| {}),
         Err(Errno(EIO))
     );
+}
+
+mod exec_interp {
+    use super::*;
+    use std::{cell::Cell, collections::BTreeMap};
+    use syscall_errno::{EACCES, ENOENT, ENOEXEC};
+
+    const PROGRAM: u64 = 0x4000_0000;
+    const INTERP: u64 = 0x1000;
+    const REGION: u64 = 0x7000_0000_0000;
+    const ENTRY: usize = 0x300;
+    const PATH: &[u8] = b"/lib/ld-breenix.so";
+
+    fn elf(kind: u16, base: u64, interp: bool, byte: u8) -> Vec<u8> {
+        let mut bytes = header(4096, 4096).to_vec();
+        bytes.resize(4096, 0);
+        bytes[16..18].copy_from_slice(&kind.to_le_bytes());
+        bytes[24..32].copy_from_slice(&(base + ENTRY as u64).to_le_bytes());
+        bytes[80..88].copy_from_slice(&base.to_le_bytes());
+        if interp {
+            bytes[56..58].copy_from_slice(&2u16.to_le_bytes());
+            bytes.copy_within(ELF_HEADER..ELF_HEADER + PHDR, ELF_HEADER + PHDR);
+            bytes[ELF_HEADER..ELF_HEADER + PHDR].fill(0);
+            bytes[64..68].copy_from_slice(&3u32.to_le_bytes()); // PT_INTERP
+            bytes[72..80].copy_from_slice(&0x200u64.to_le_bytes());
+            bytes[96..104].copy_from_slice(&(PATH.len() as u64 + 1).to_le_bytes());
+            bytes[0x200..0x200 + PATH.len()].copy_from_slice(PATH);
+        }
+        bytes[ENTRY] = byte;
+        bytes
+    }
+
+    struct FakeVfs {
+        program: Vec<u8>,
+        interpreter: Result<Vec<u8>, i32>,
+    }
+
+    impl FakeVfs {
+        fn bytes(&self, ino: u64) -> Result<&[u8], Errno> {
+            match ino {
+                1 => Ok(&self.program),
+                2 => self.interpreter.as_deref().map_err(|&errno| Errno(errno)),
+                _ => panic!("unexpected inode {ino}"),
+            }
+        }
+    }
+
+    impl FileSystem for FakeVfs {
+        fn getattr(&self, ino: u64) -> Result<NodeAttrs, Errno> {
+            Ok(NodeAttrs {
+                kind: NodeKind::Regular,
+                attrs: InodeAttrs {
+                    mode: if ino == 2 && matches!(self.interpreter, Err(EACCES)) {
+                        0o111
+                    } else {
+                        0o755
+                    },
+                },
+                size: match self.bytes(ino) {
+                    Ok(bytes) => bytes.len() as u64,
+                    Err(Errno(EACCES)) => 4096,
+                    Err(err) => return Err(err),
+                },
+            })
+        }
+
+        fn read(&self, node: &VNode, offset: u64, dst: &mut [u8]) -> Result<usize, Errno> {
+            assert!(node.ino != 2 || !matches!(self.interpreter, Err(EACCES)), "read denied");
+            let src = &self.bytes(node.ino)?[offset as usize..];
+            let len = dst.len().min(src.len());
+            dst[..len].copy_from_slice(&src[..len]);
+            Ok(len)
+        }
+    }
+
+    struct Table<'a> {
+        pages: BTreeMap<u64, Box<[u8; 4096]>>,
+        dropped_pages: &'a Cell<usize>,
+    }
+
+    impl Table<'_> {
+        fn map_page(&mut self, addr: u64, flags: u32) -> Result<*mut u8, Errno> {
+            assert_eq!(flags, if addr == PROGRAM + 4096 { 6 } else { 5 });
+            let mut page = Box::new([0; 4096]);
+            let ptr = page.as_mut_ptr();
+            assert!(self.pages.insert(addr, page).is_none(), "overlapping images");
+            Ok(ptr)
+        }
+    }
+
+    impl Drop for Table<'_> {
+        fn drop(&mut self) {
+            self.dropped_pages.set(self.pages.len());
+        }
+    }
+
+    fn prepare<'a>(
+        fs: &FakeVfs,
+        dropped_pages: &'a Cell<usize>,
+    ) -> Result<(Table<'a>, exec_elf::ExecPlan, Vec<exec_elf::ImageRegion>), Errno> {
+        let mut table = Table { pages: BTreeMap::new(), dropped_pages };
+        let cred = Credentials::kernel();
+        let (program, _) = exec::read_image(
+            fs, &VNode::file(), MountFlags::default(), &cred, || false, false,
+            |size, read| {
+                let mut prefix = [0; ELF_HEADER];
+                read(0, &mut prefix)?;
+                let program = exec_elf::Headers::read(&prefix, size, 62, USER_END, read)?
+                    .position_program(PROGRAM..0x8000_0000)?;
+                // SAFETY: the table owns the zeroed, stable pages returned by map_page.
+                unsafe { program.load_segments(read, |addr, flags| table.map_page(addr, flags), |_, _| {})? };
+                Ok(program)
+            },
+        )?;
+        // SAFETY: map_page gives the loader stable pages owned by the unpublished table.
+        unsafe {
+            program.load_interpreter(
+                table,
+                REGION..REGION + 0x10000,
+                |path, consume| {
+                    assert_eq!(path, PATH);
+                    let node = VNode { ino: 2, map: fs::vfs::Map };
+                    exec::read_image(fs, &node, MountFlags::default(), &cred, || false, true, consume)
+                        .map(|(plan, _)| plan)
+                },
+                Table::map_page,
+            )
+        }
+    }
+
+    #[test]
+    fn missing_interp_leaves_old_image() {
+        let mut running = BTreeMap::from([(PROGRAM, Box::new([0x5a; 4096]))]);
+        let old_page = running[&PROGRAM].as_ptr();
+        for (interpreter, expected) in [
+            (Err(ENOENT), ENOENT),
+            (Err(EACCES), EACCES),
+            (Ok(elf(2, INTERP, false, 0xcc)), ENOEXEC),
+            (Ok(elf(3, INTERP, true, 0xcc)), ENOEXEC),
+        ] {
+            let fs = FakeVfs { program: elf(2, PROGRAM, true, 0xc3), interpreter };
+            let dropped_pages = Cell::new(0);
+            let result = prepare(&fs, &dropped_pages).map(|(mut pending, _, _)| {
+                running = core::mem::take(&mut pending.pages);
+            });
+            assert_eq!(result, Err(Errno(expected)));
+            assert_eq!(dropped_pages.get(), 1, "discard the unpublished program page");
+            assert_eq!(running[&PROGRAM].as_ptr(), old_page);
+            assert_eq!(running[&PROGRAM][ENTRY], 0x5a);
+        }
+    }
+
+    #[test]
+    fn interp_maps_into_same_table() {
+        for (kind, link_address) in [(2, PROGRAM), (3, 0)] {
+            let fs = FakeVfs {
+                program: elf(kind, link_address, true, 0xc3),
+                interpreter: Ok(elf(3, INTERP, false, 0xcc)),
+            };
+            let dropped_pages = Cell::new(0);
+            let (table, plan, _) = prepare(&fs, &dropped_pages).unwrap();
+            let bias = REGION - INTERP;
+            assert_eq!(plan.interpreter_bias(), Some(bias));
+            assert_eq!(plan.initial_pc(), bias + INTERP + ENTRY as u64);
+            assert_eq!(table.pages.keys().copied().collect::<Vec<_>>(), [PROGRAM, REGION]);
+            assert_eq!(table.pages[&PROGRAM][ENTRY], 0xc3);
+            assert_eq!(table.pages[&(bias + INTERP)][ENTRY], 0xcc);
+            assert_eq!(dropped_pages.get(), 0);
+            let auxv = plan.auxv(0, [0; 5]).collect::<BTreeMap<_, _>>();
+            assert_eq!(auxv[&9], PROGRAM + ENTRY as u64); // AT_ENTRY
+            assert_eq!(auxv[&3], PROGRAM + ELF_HEADER as u64); // AT_PHDR
+        }
+    }
+
+    #[test]
+    fn interp_publishes_biased_load_ranges_for_mprotect() {
+        let mut program = elf(3, 0, true, 0xc3);
+        program.resize(8192, 0);
+        program[56..58].copy_from_slice(&3u16.to_le_bytes());
+        let start = ELF_HEADER + 2 * PHDR;
+        program[start..start + 4].copy_from_slice(&1u32.to_le_bytes()); // PT_LOAD
+        program[start + 4..start + 8].copy_from_slice(&6u32.to_le_bytes()); // PF_R | PF_W
+        for (offset, value) in [(8, 4096u64), (16, 4096), (32, 16), (40, 32), (48, 4096)] {
+            program[start + offset..start + offset + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        let fs = FakeVfs { program, interpreter: Ok(elf(3, INTERP, false, 0xcc)) };
+        let dropped_pages = Cell::new(0);
+        let (table, _, regions) = prepare(&fs, &dropped_pages).unwrap();
+        let spans = regions.iter().map(|span| (span.start, span.end, span.flags))
+            .collect::<Vec<_>>();
+        assert_eq!(spans, [
+            (PROGRAM, PROGRAM + 4096, 5),
+            (PROGRAM + 4096, PROGRAM + 8192, 6),
+            (REGION, REGION + 4096, 5),
+        ]);
+        assert_eq!(table.pages.keys().copied().collect::<Vec<_>>(), [PROGRAM, PROGRAM + 4096, REGION]);
+    }
 }
 
 /// The image the old exec built from its whole-file copy: each PT_LOAD page

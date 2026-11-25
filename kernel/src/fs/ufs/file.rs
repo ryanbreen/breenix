@@ -238,11 +238,7 @@ impl UfsFile {
                     .checked_add(total)
                     .filter(|n| *n <= i64::MAX as u64)
                     .ok_or(EOVERFLOW as u64)?;
-                let mut payload = [0; 20];
-                payload[..8].copy_from_slice(&self.handle.to_le_bytes());
-                payload[8..16].copy_from_slice(&at.to_le_bytes());
-                payload[16..].copy_from_slice(&(len as u32).to_le_bytes());
-                let bytes = path::request(self.mount, Op::Read, self.node, &payload)?;
+                let bytes = self.read_chunk(at, len)?;
                 transfer.complete(bytes.len()).map_err(|_| EIO as u64)?;
                 userptr::write_user_bytes(
                     buf.checked_add(total).ok_or(EFAULT as u64)?,
@@ -257,6 +253,46 @@ impl UfsFile {
             }
         }
         Ok(total)
+    }
+
+    fn read_chunk(&self, offset: u64, len: usize) -> Result<Vec<u8>, u64> {
+        let mut payload = [0; 20];
+        payload[..8].copy_from_slice(&self.handle.to_le_bytes());
+        payload[8..16].copy_from_slice(&offset.to_le_bytes());
+        payload[16..].copy_from_slice(&(len as u32).to_le_bytes());
+        path::request(self.mount, Op::Read, self.node, &payload)
+    }
+
+    /// Keep a positioned vector transfer within one daemon request.
+    pub(crate) fn preadv_once(&self, offset: u64, count: usize) -> Result<Vec<u8>, u64> {
+        if self.directory {
+            return Err(EISDIR as u64);
+        }
+        let length = count.min(ufs_abi::MAX_DATA);
+        let bytes = self.read_chunk(offset, length)?;
+        if bytes.len() > length {
+            return Err(EIO as u64);
+        }
+        Ok(bytes)
+    }
+
+    pub(crate) fn pwritev_once(
+        &self, offset: u64, count: usize, gather: impl FnOnce(usize) -> Result<Vec<u8>, u64>,
+    ) -> Result<u64, u64> {
+        if self.directory {
+            return Err(EISDIR as u64);
+        }
+        let limit = crate::syscall::resource::current_fsize();
+        let length = match crate::syscall::resource::write_length(offset, count.min(MAX_WRITE), limit) {
+            Ok(length) => length,
+            Err(error) => {
+                crate::syscall::resource::signal_fsize();
+                return Err(error);
+            }
+        };
+        let bytes = gather(length)?;
+        let _mutation = self.mutation.enter()?;
+        self.transfer_write(&bytes, offset)
     }
 
     fn transfer_write(&self, bytes: &[u8], offset: u64) -> Result<u64, u64> {

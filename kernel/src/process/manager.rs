@@ -18,6 +18,7 @@ use super::{Process, ProcessId};
 use super::process::select_child_reaper;
 #[cfg(target_arch = "x86_64")]
 use crate::elf;
+use crate::exec_elf::ExecPlan;
 use crate::memory::process_memory::ProcessPageTable;
 use crate::task::thread::Thread;
 
@@ -114,6 +115,8 @@ pub(crate) enum ReapOutcome {
 pub(crate) struct PreparedExecImage {
     new_page_table: crate::memory::process_memory::UnpublishedPageTable,
     loaded_elf: crate::elf::LoadedElf,
+    #[cfg(target_arch = "x86_64")]
+    exec_vmas: Vec<crate::memory::vma::Vma>,
     program_name: Option<String>,
     exe_path: Option<alloc::sync::Arc<Vec<u8>>>,
     cmdline: alloc::sync::Arc<Vec<u8>>,
@@ -754,10 +757,12 @@ impl ProcessManager {
             stack_top.as_u64(),
             &[],
             &[],
-            loaded_elf.phdr_vaddr,
-            loaded_elf.phnum,
-            loaded_elf.phentsize,
-            loaded_elf.entry_point.as_u64(),
+            ExecPlan::static_image(
+                loaded_elf.phdr_vaddr,
+                loaded_elf.phnum,
+                loaded_elf.phentsize,
+                loaded_elf.entry_point.as_u64(),
+            ),
             &process.cred,
         )?;
 
@@ -963,10 +968,12 @@ impl ProcessManager {
                 stack_top.as_u64(),
                 argv,
                 &default_env,
-                loaded_elf.phdr_vaddr,
-                loaded_elf.phnum,
-                loaded_elf.phentsize,
-                loaded_elf.entry_point.as_u64(),
+                ExecPlan::static_image(
+                    loaded_elf.phdr_vaddr,
+                    loaded_elf.phnum,
+                    loaded_elf.phentsize,
+                    loaded_elf.entry_point.as_u64(),
+                ),
                 &process.cred,
             )?
         } else {
@@ -1204,10 +1211,12 @@ impl ProcessManager {
             user_stack_top,
             &[],
             &[],
-            loaded_elf.phdr_vaddr,
-            loaded_elf.phnum,
-            loaded_elf.phentsize,
-            loaded_elf.entry_point,
+            ExecPlan::static_image(
+                loaded_elf.phdr_vaddr,
+                loaded_elf.phnum,
+                loaded_elf.phentsize,
+                loaded_elf.entry_point,
+            ),
             &process.cred,
         )?);
 
@@ -1424,10 +1433,12 @@ impl ProcessManager {
                 user_stack_top,
                 argv,
                 &default_env,
-                loaded_elf.phdr_vaddr,
-                loaded_elf.phnum,
-                loaded_elf.phentsize,
-                loaded_elf.entry_point,
+                ExecPlan::static_image(
+                    loaded_elf.phdr_vaddr,
+                    loaded_elf.phnum,
+                    loaded_elf.phentsize,
+                    loaded_elf.entry_point,
+                ),
                 &process.cred,
             )?
         } else {
@@ -4144,10 +4155,12 @@ impl ProcessManager {
             USER_STACK_TOP,
             &[],
             &[],
-            loaded_elf.phdr_vaddr,
-            loaded_elf.phnum,
-            loaded_elf.phentsize,
-            new_entry_point,
+            ExecPlan::static_image(
+                loaded_elf.phdr_vaddr,
+                loaded_elf.phnum,
+                loaded_elf.phentsize,
+                new_entry_point,
+            ),
             &self.processes.live_row(&pid).ok_or("Process not found")?.cred,
         )?;
 
@@ -4451,7 +4464,15 @@ impl ProcessManager {
             .map(alloc::sync::Arc::try_new)
             .transpose()
             .map_err(|_| "exec allocation failed")?;
-        let user_stack_size = crate::syscall::exec::stack_size(argv, envp)?;
+        let mut image_source = image_source.into();
+        let interpreter_plan = image_source.interpreter_plan();
+        let exec_vmas = image_source.take_exec_vmas();
+        let mut user_stack_size = crate::syscall::exec::stack_size(argv, envp)?;
+        if interpreter_plan.is_some() {
+            // Reserve a page for the interpreter's extra auxiliary entries,
+            // even when the static layout fills its last page.
+            user_stack_size += 4096;
+        }
         let cmdline = super::process::cmdline_of(argv)?;
         let program_name = program_name
             .map(crate::syscall::exec::copy_string)
@@ -4460,7 +4481,7 @@ impl ProcessManager {
         // Load the ELF binary into the new page table. A filesystem image
         // arrives already read into a table cleared by clear_exec_table.
         log::debug!("exec_process_with_argv: Loading ELF into new page table...");
-        let (mut new_page_table, loaded_elf) = match image_source.into().into_loaded(pid.as_u64()) {
+        let (mut new_page_table, loaded_elf) = match image_source.into_loaded(pid.as_u64()) {
             crate::exec_elf::Loaded::Mapped(new_page_table, loaded_elf, _) => (new_page_table, loaded_elf),
             crate::exec_elf::Loaded::Bytes(elf_data) => {
                 // Reserve the Box before allocating a root, so ENOMEM cannot strand it.
@@ -4497,7 +4518,7 @@ impl ProcessManager {
             stack_top,
         )?;
 
-        // Set up argc/argv/envp/auxv on the stack following Linux ABI
+        // Set up argc/argv/envp/auxv on the stack following the AMD64 psABI.
         // We need to write to the new stack pages that we just mapped
         // Since the new page table is not active yet, we need to translate addresses
         // and write via the physical frames
@@ -4507,10 +4528,12 @@ impl ProcessManager {
             USER_STACK_TOP,
             argv,
             envp,
-            loaded_elf.phdr_vaddr,
-            loaded_elf.phnum,
-            loaded_elf.phentsize,
-            loaded_elf.entry_point.as_u64(),
+            interpreter_plan.unwrap_or_else(|| ExecPlan::static_image(
+                loaded_elf.phdr_vaddr,
+                loaded_elf.phnum,
+                loaded_elf.phentsize,
+                loaded_elf.entry_point.as_u64(),
+            )),
             &cred,
         )?;
 
@@ -4522,6 +4545,7 @@ impl ProcessManager {
         Ok(PreparedExecImage {
             new_page_table,
             loaded_elf,
+            exec_vmas,
             program_name,
             exe_path,
             cmdline,
@@ -4622,6 +4646,8 @@ impl ProcessManager {
         let PreparedExecImage {
             new_page_table,
             loaded_elf,
+            #[cfg(target_arch = "x86_64")]
+            exec_vmas,
             program_name,
             exe_path,
             cmdline,
@@ -4688,6 +4714,13 @@ impl ProcessManager {
         process.clear_child_tid = None;
         process.signals.drop_timer_signals();
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
+        #[cfg(target_arch = "x86_64")]
+        if exec_vmas.is_empty() {
+            process.vmas.clear();
+        } else {
+            process.vmas = exec_vmas;
+        }
+        #[cfg(target_arch = "aarch64")]
         process.vmas.clear();
         process.mmap_gaps = None;
         process.memory_locks.clear();
@@ -4933,10 +4966,12 @@ impl ProcessManager {
             user_stack_top,
             argv,
             envp,
-            loaded_elf.phdr_vaddr,
-            loaded_elf.phnum,
-            loaded_elf.phentsize,
-            loaded_elf.entry_point,
+            ExecPlan::static_image(
+                loaded_elf.phdr_vaddr,
+                loaded_elf.phnum,
+                loaded_elf.phentsize,
+                loaded_elf.entry_point,
+            ),
             &cred,
         )?;
 
@@ -5606,11 +5641,20 @@ impl ProcessManager {
         Ok((new_entry_point, sched_commit))
     }
 
+    /// Where `setup_argv_on_stack` writes the argument strings, NUL-separated
+    /// and contiguous, for a stack whose top is `stack_top`: their start
+    /// address and length, which /proc/[pid]/cmdline reads.
+    fn argv_area(stack_top: u64, argv: &[&[u8]], envp: &[&[u8]]) -> (u64, u64) {
+        let stored = |s: &&[u8]| if s.last() == Some(&0) { s.len() } else { s.len() + 1 };
+        let args: usize = argv.iter().map(stored).sum();
+        let total = args + envp.iter().map(stored).sum::<usize>();
+        // Below the 16 AT_RANDOM bytes, 8-byte aligned.
+        (((stack_top - 16) - total as u64) & !7, args as u64)
+    }
+
     /// Set up argc/argv/envp/auxv on the stack for a new process
     ///
-    /// This function writes the full Linux ABI initial stack structure including
-    /// argc, argv pointers, envp pointers, and auxiliary vector entries needed by
-    /// musl libc.
+    /// Writes the initial stack described by the process ABI.
     ///
     /// Stack layout (high to low addresses):
     ///
@@ -5625,6 +5669,7 @@ impl ProcessManager {
     ///   AT_EUID (12, euid)                // effective user ID
     ///   AT_UID (11, uid)                  // real user ID
     ///   AT_RANDOM (25, ptr_to_random)     // pointer to 16 random bytes
+    ///   AT_BASE (7, bias)                 // interpreter images only
     ///   AT_PAGESZ (6, 4096)              // page size
     ///   AT_PHENT (4, phentsize)           // size of program header entry
     ///   AT_PHNUM (5, phnum)              // number of program headers
@@ -5644,34 +5689,18 @@ impl ProcessManager {
     /// - page_table: The process's page table (for translating virtual to physical addresses)
     /// - stack_top: The top of the stack (highest address)
     /// - argv: Array of argument strings (each must be null-terminated)
-    /// - phdr_vaddr: Virtual address of program headers in memory
-    /// - phnum: Number of program headers
-    /// - phentsize: Size of each program header entry
-    /// - entry_point: Program entry point address
+    /// - envp: Array of environment strings
+    /// - plan: Program metadata for the auxiliary vector
     /// - cred: The identity the program runs with. A C library reads AT_SECURE
     ///   (or compares the IDs) to decide whether to start in secure mode.
     ///
     /// Returns: The initial RSP value (pointing to argc)
-    /// Where `setup_argv_on_stack` writes the argument strings, NUL-separated
-    /// and contiguous, for a stack whose top is `stack_top`: their start
-    /// address and length, which /proc/[pid]/cmdline reads.
-    fn argv_area(stack_top: u64, argv: &[&[u8]], envp: &[&[u8]]) -> (u64, u64) {
-        let stored = |s: &&[u8]| if s.last() == Some(&0) { s.len() } else { s.len() + 1 };
-        let args: usize = argv.iter().map(stored).sum();
-        let total = args + envp.iter().map(stored).sum::<usize>();
-        // Below the 16 AT_RANDOM bytes, 8-byte aligned.
-        (((stack_top - 16) - total as u64) & !7, args as u64)
-    }
-
     fn setup_argv_on_stack(
         page_table: &crate::memory::process_memory::ProcessPageTable,
         stack_top: u64,
         argv: &[&[u8]],
         envp: &[&[u8]],
-        phdr_vaddr: u64,
-        phnum: u16,
-        phentsize: u16,
-        entry_point: u64,
+        plan: ExecPlan,
         cred: &super::credentials::ProcessCredentials,
     ) -> Result<u64, &'static str> {
         let argc = argv.len();
@@ -5754,19 +5783,6 @@ impl ProcessManager {
 
         // --- Phase 2: Build the pointer/value section below the strings ---
 
-        // Auxiliary vector entries (each is two u64 values: type, value)
-        // AT_ENTRY, AT_PHDR, AT_PHNUM, AT_PHENT, AT_PAGESZ, AT_RANDOM, AT_UID,
-        // AT_EUID, AT_GID, AT_EGID, AT_SECURE, AT_NULL = 12 entries = 24 u64s
-        let identity = [
-            (11, cred.uid as u64),      // AT_UID
-            (12, cred.euid as u64),     // AT_EUID
-            (13, cred.gid as u64),      // AT_GID
-            (14, cred.egid as u64),     // AT_EGID
-            (23, cred.secure() as u64), // AT_SECURE
-        ];
-        let auxv_count = 7 + identity.len();
-        let auxv_space = auxv_count * 2 * 8; // entries * 2 u64s * 8 bytes
-
         // envp: envp.len() pointers + NULL terminator
         let envp_space = (envp.len() + 1) * 8;
 
@@ -5776,7 +5792,7 @@ impl ProcessManager {
         // argc: 1 u64
         let argc_space = 8;
 
-        let total_ptr_space = argc_space + argv_space + envp_space + auxv_space;
+        let total_ptr_space = argc_space + argv_space + envp_space + plan.auxv_size();
 
         // Position the pointer area below the string area
         let mut ptr_area = string_area_start - total_ptr_space as u64;
@@ -5812,64 +5828,26 @@ impl ProcessManager {
         Self::write_u64_to_stack(page_table, write_pos, 0)?;
         write_pos += 8;
 
-        // 6. Write auxiliary vector entries
-        // AT_ENTRY (9) - program entry point
-        Self::write_u64_to_stack(page_table, write_pos, 9)?; // AT_ENTRY
-        write_pos += 8;
-        Self::write_u64_to_stack(page_table, write_pos, entry_point)?;
-        write_pos += 8;
-
-        // AT_PHDR (3) - address of program headers
-        Self::write_u64_to_stack(page_table, write_pos, 3)?; // AT_PHDR
-        write_pos += 8;
-        Self::write_u64_to_stack(page_table, write_pos, phdr_vaddr)?;
-        write_pos += 8;
-
-        // AT_PHNUM (5) - number of program headers
-        Self::write_u64_to_stack(page_table, write_pos, 5)?; // AT_PHNUM
-        write_pos += 8;
-        Self::write_u64_to_stack(page_table, write_pos, phnum as u64)?;
-        write_pos += 8;
-
-        // AT_PHENT (4) - size of each program header entry
-        Self::write_u64_to_stack(page_table, write_pos, 4)?; // AT_PHENT
-        write_pos += 8;
-        Self::write_u64_to_stack(page_table, write_pos, phentsize as u64)?;
-        write_pos += 8;
-
-        // AT_PAGESZ (6) - page size
-        Self::write_u64_to_stack(page_table, write_pos, 6)?; // AT_PAGESZ
-        write_pos += 8;
-        Self::write_u64_to_stack(page_table, write_pos, 4096)?;
-        write_pos += 8;
-
-        // AT_RANDOM (25) - pointer to 16 random bytes
-        Self::write_u64_to_stack(page_table, write_pos, 25)?; // AT_RANDOM
-        write_pos += 8;
-        Self::write_u64_to_stack(page_table, write_pos, random_addr)?;
-        write_pos += 8;
-
-        // AT_UID, AT_EUID, AT_GID, AT_EGID, AT_SECURE - the program's identity
-        for (key, value) in identity {
+        // 6. Write auxiliary vector entries, including the terminator.
+        let identity = [
+            u64::from(cred.uid),
+            u64::from(cred.euid),
+            u64::from(cred.gid),
+            u64::from(cred.egid),
+            u64::from(cred.secure()),
+        ];
+        for (key, value) in plan.auxv(random_addr, identity) {
             Self::write_u64_to_stack(page_table, write_pos, key)?;
             write_pos += 8;
             Self::write_u64_to_stack(page_table, write_pos, value)?;
             write_pos += 8;
         }
 
-        // AT_NULL (0) - terminator
-        Self::write_u64_to_stack(page_table, write_pos, 0)?; // AT_NULL
-        write_pos += 8;
-        Self::write_u64_to_stack(page_table, write_pos, 0)?;
-
         log::debug!(
-            "setup_argv_on_stack: argc={}, RSP={:#x}, argv[0] at {:#x}, auxv with phdr={:#x} phnum={} entry={:#x}",
+            "setup_argv_on_stack: argc={}, RSP={:#x}, argv[0] at {:#x}",
             argc,
             rsp,
-            if !string_addresses.is_empty() { string_addresses[0] } else { 0 },
-            phdr_vaddr,
-            phnum,
-            entry_point,
+            string_addresses.first().copied().unwrap_or(0),
         );
 
         Ok(rsp)

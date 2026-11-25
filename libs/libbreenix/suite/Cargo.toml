@@ -7,6 +7,9 @@ license = "PolyForm-Noncommercial-1.0.0"
 
 [workspace]
 
+[features]
+dynamic = []
+
 # Keep the existing harness source paths so the structural guards continue to
 # inspect the same implementation. The userspace programs package depends on this
 # harness, so Cargo feature unification enables libbreenix suite auditing there.

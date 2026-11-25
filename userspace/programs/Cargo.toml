@@ -14,6 +14,7 @@ hosted-link-probe = []
 rust-host = []
 cxx-runtime = []
 llvm = []
+dynamic = ["breenix-suite/dynamic"]
 
 [dependencies]
 libcollab = { path = "../../libs/libcollab", features = ["net"] }
@@ -1028,3 +1029,8 @@ required-features = ["cxx-runtime"]
 name = "suite-llvm"
 path = "src/suite_llvm.rs"
 required-features = ["llvm"]
+
+[[bin]]
+name = "suite-dynamic"
+path = "src/suite_dynamic.rs"
+required-features = ["dynamic"]

@@ -19,8 +19,52 @@ pub fn load_image(
     killed: impl Fn() -> bool,
     purpose: Purpose,
 ) -> Result<(Image, ExecIdentity, alloc::vec::Vec<u8>), Errno> {
+    let ((image, interpreter), identity, path) = with_image(
+        path.as_ref(), cred, &killed, false, |size, read| {
+            let mut header = [0; crate::exec_elf::ELF_HEADER];
+            let prefix = size.min(header.len() as u64) as usize;
+            read(0, &mut header[..prefix])?;
+            if purpose == Purpose::Exec && header[..prefix].starts_with(b"#!") {
+                let line = crate::exec_elf::read_shebang(&header[2..prefix], size, read)?;
+                Ok((Image::Script(line), None))
+            } else {
+                let (elf, interpreter) = MappedElf::load(&header[..prefix], size, read, purpose)?;
+                Ok((Image::Elf(elf), interpreter))
+            }
+        },
+    )?;
+    // Resolve the interpreter after the first lease is released. In
+    // particular, a pathname can resolve back to the same inode.
+    #[cfg(target_arch = "x86_64")]
+    let image = match (image, interpreter) {
+        (Image::Elf(elf), Some(program)) => {
+            Image::Elf(elf.with_interpreter(&program, |interp, consume| {
+                // An exec that confers an identity cannot use the caller's
+                // working directory to pick the code running under that identity.
+                if identity.any() && !interp.starts_with(b"/") {
+                    return Err(Errno(EACCES));
+                }
+                // The program supplies the path and set-ID identity.
+                with_image(interp, cred, &killed, true, consume).map(|(plan, _, _)| plan)
+            })?)
+        }
+        (image, _) => image,
+    };
+    #[cfg(target_arch = "aarch64")]
+    debug_assert!(interpreter.is_none());
+    Ok((image, identity, path))
+}
+
+#[cfg(not(test))]
+fn with_image<T>(
+    path: &[u8],
+    cred: &Credentials,
+    killed: impl Fn() -> bool,
+    require_read: bool,
+    consume: impl FnOnce(u64, &mut dyn FnMut(u64, &mut [u8]) -> Result<(), Errno>) -> Result<T, Errno>,
+) -> Result<(T, ExecIdentity, alloc::vec::Vec<u8>), Errno> {
     trace(b'1');
-    let resolved = crate::fs::namei::resolve_bytes(path.as_ref(), true).map_err(|errno| {
+    let resolved = crate::fs::namei::resolve_bytes(path, true).map_err(|errno| {
         trace(b'!');
         Errno(errno as i32)
     })?;
@@ -55,16 +99,7 @@ pub fn load_image(
     let _image = fs.mapping_io(&node)?;
     let _bindings = node.map.block_mapping_bindings().map_err(Errno)?;
     let flags = super::mount::flags_at(&resolved.path);
-    let (image, identity) = read_image(fs.as_ref(), &node, flags, cred, killed, |size, read| {
-        let mut header = [0; crate::exec_elf::ELF_HEADER];
-        let prefix = size.min(header.len() as u64) as usize;
-        read(0, &mut header[..prefix])?;
-        if purpose == Purpose::Exec && header[..prefix].starts_with(b"#!") {
-            crate::exec_elf::read_shebang(&header[2..prefix], size, read).map(Image::Script)
-        } else {
-            MappedElf::load(&header[..prefix], size, read, purpose).map(Image::Elf)
-        }
-    })?;
+    let (image, identity) = read_image(fs.as_ref(), &node, flags, cred, killed, require_read, consume)?;
     Ok((image, identity, resolved.path))
 }
 
@@ -87,6 +122,7 @@ pub(crate) fn read_image<T>(
     flags: MountFlags,
     cred: &Credentials,
     killed: impl Fn() -> bool,
+    require_read: bool,
     consume: impl FnOnce(u64, &mut dyn FnMut(u64, &mut [u8]) -> Result<(), Errno>) -> Result<T, Errno>,
 ) -> Result<(T, ExecIdentity), Errno> {
     let attrs = fs.getattr(node.ino).map_err(|errno| {
@@ -94,6 +130,9 @@ pub(crate) fn read_image<T>(
         errno
     })?;
     image_kind(attrs.kind)?;
+    if require_read && !cred.may(attrs.attrs, 4) {
+        return Err(Errno(EACCES));
+    }
     let mut execution = attrs.attrs;
     // Shared write authority (even currently read-only) or dirty cache pages
     // can alter the copied bytes without a filesystem mutation. They confer

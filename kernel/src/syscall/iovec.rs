@@ -1,23 +1,12 @@
-//! Vectored I/O syscalls: readv and writev
-//!
-//! These syscalls read/write data from/to multiple buffers in a single call.
-//! Required by musl libc for stdio operations.
+//! Vectored I/O, including explicit-offset transfers on regular files.
 
+use alloc::vec::Vec;
 use super::errno;
 use super::handlers;
-use super::userptr::copy_from_user;
+use super::iovec_range::{positioned_offset, snapshot_vectors, vector_prefix, IoVec, UIO_MAXIOV};
+use super::userptr::{copy_from_user, read_user_bytes, write_user_prefix};
 use super::SyscallResult;
-
-/// Maximum number of iovec entries per call (matches Linux UIO_MAXIOV)
-const UIO_MAXIOV: u64 = 1024;
-
-/// iovec structure matching Linux ABI
-#[repr(C)]
-#[derive(Copy, Clone)]
-struct IoVec {
-    iov_base: u64,
-    iov_len: u64,
-}
+use crate::ipc::FdKind;
 
 /// writev(fd, iov, iovcnt) - Write data from multiple buffers
 ///
@@ -27,32 +16,12 @@ pub fn sys_writev(fd: u64, iov_ptr: u64, iovcnt: u64) -> SyscallResult {
     if iovcnt == 0 {
         return SyscallResult::Ok(0);
     }
-    if iovcnt > UIO_MAXIOV {
-        return SyscallResult::Err(errno::EINVAL as u64);
-    }
-    if iov_ptr == 0 {
-        return SyscallResult::Err(errno::EFAULT as u64);
-    }
-
     // Snapshot the vector metadata once so the atomicity decision and copies
     // describe the same request even if another userspace thread edits it.
-    let mut vectors = alloc::vec::Vec::new();
-    if vectors.try_reserve_exact(iovcnt as usize).is_err() { return SyscallResult::Err(errno::ENOMEM as u64); }
-    let mut length = 0u64;
-    for i in 0..iovcnt {
-        let Some(address) = iov_ptr.checked_add(i * core::mem::size_of::<IoVec>() as u64) else {
-            return SyscallResult::Err(errno::EFAULT as u64);
-        };
-        let vector: IoVec = match copy_from_user(address as *const IoVec) {
-            Ok(vector) => vector,
-            Err(error) => return SyscallResult::Err(error),
-        };
-        length = match length.checked_add(vector.iov_len) {
-            Some(length) if length <= isize::MAX as u64 => length,
-            _ => return SyscallResult::Err(errno::EINVAL as u64),
-        };
-        vectors.push(vector);
-    }
+    let (vectors, length) = match user_vectors(iov_ptr, iovcnt) {
+        Ok((vectors, length)) => (vectors, length as u64),
+        Err(error) => return SyscallResult::Err(error),
+    };
     if length > 0 && length <= crate::ipc::pipe::PIPE_BUF as u64 {
         // Hold only an owned endpoint snapshot across user copies and waiting.
         let endpoint = crate::task::scheduler::current_thread_id().and_then(|tid| {
@@ -120,6 +89,101 @@ pub fn sys_writev(fd: u64, iov_ptr: u64, iovcnt: u64) -> SyscallResult {
         }
     }
     SyscallResult::Ok(total)
+}
+
+fn user_vectors(ptr: u64, count: u64) -> Result<(Vec<IoVec>, usize), u64> {
+    snapshot_vectors(ptr, count, |addr| copy_from_user(addr as *const IoVec))
+}
+
+fn gather(vectors: &[IoVec], len: usize) -> Result<Vec<u8>, u64> {
+    let mut data = Vec::new();
+    data.try_reserve_exact(len).map_err(|_| errno::ENOMEM as u64)?;
+    data.resize(len, 0);
+    for (addr, span) in vector_prefix(vectors, len) {
+        let output = &mut data[span];
+        read_user_bytes(output.as_mut_ptr(), addr, output.len())?;
+    }
+    Ok(data)
+}
+
+fn scatter(vectors: &[IoVec], data: &[u8]) -> Result<u64, u64> {
+    for (addr, span) in vector_prefix(vectors, data.len()) {
+        let bytes = &data[span.clone()];
+        let copied = write_user_prefix(addr, bytes.as_ptr(), bytes.len());
+        if copied < bytes.len() {
+            let total = span.start + copied;
+            return if total == 0 { Err(errno::EFAULT as u64) } else { Ok(total as u64) };
+        }
+    }
+    Ok(data.len() as u64)
+}
+
+pub fn sys_preadv(fd: i32, ptr: u64, count: i32, offset: i64) -> SyscallResult {
+    positioned_result(transfer_at(fd, ptr, count, offset, false))
+}
+
+pub fn sys_pwritev(fd: i32, ptr: u64, count: i32, offset: i64) -> SyscallResult {
+    positioned_result(transfer_at(fd, ptr, count, offset, true))
+}
+
+fn positioned_result(result: Result<u64, u64>) -> SyscallResult {
+    match result {
+        Ok(count) => SyscallResult::Ok(count),
+        Err(error) => SyscallResult::Err(error),
+    }
+}
+
+fn transfer_at(fd: i32, ptr: u64, count: i32, offset: i64, write: bool) -> Result<u64, u64> {
+    let offset = positioned_offset(offset, count)?;
+    let entry = super::metadata::descriptor_entry(fd)?;
+    let open = match &entry.kind {
+        FdKind::RegularFile(file) => {
+            let file = file.lock();
+            Some((file.open.fs.clone(), file.open.node.clone()))
+        }
+        _ => None,
+    };
+    let userspace = match &entry.kind {
+        FdKind::Ipc(object) => object.as_any().downcast_ref::<crate::fs::ufs::file::UfsFile>(),
+        _ => None,
+    };
+    if open.is_none() && userspace.is_none() {
+        return Err(match entry.kind {
+            FdKind::Directory(_) | FdKind::ProcfsDirectory { .. } => errno::EISDIR,
+            _ => errno::ESPIPE,
+        } as u64);
+    }
+    if (write && !entry.writable()) || (!write && !entry.readable()) {
+        return Err(errno::EBADF as u64);
+    }
+    let (vectors, len) = user_vectors(ptr, count as u64)?;
+    if len == 0 {
+        return Ok(0);
+    }
+    if let Some(file) = userspace {
+        return if write {
+            file.pwritev_once(offset, len, |allowed| gather(&vectors, allowed))
+        } else {
+            scatter(&vectors, &file.preadv_once(offset, len)?)
+        };
+    }
+    let (fs, node) = open.expect("regular file selected above");
+    // The backend sees one contiguous explicit-offset operation, even when
+    // userspace supplied several buffers or opened the file with O_APPEND.
+    if write {
+        let cred = crate::fs::permissions::Credentials::current(false)?;
+        handlers::write_positional_file(
+            fs.as_ref(),
+            &node,
+            offset,
+            len,
+            super::resource::current_fsize(),
+            !cred.privileged(),
+            |allowed| gather(&vectors, allowed),
+        )
+    } else {
+        scatter(&vectors, &handlers::read_positional_file(fs.as_ref(), &node, offset, len)?)
+    }
 }
 
 /// readv(fd, iov, iovcnt) - Read data into multiple buffers

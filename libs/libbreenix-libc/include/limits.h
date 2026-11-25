@@ -39,6 +39,7 @@
 #define PTHREAD_DESTRUCTOR_ITERATIONS 4
 #define PTHREAD_STACK_MIN 16384
 #define FILESIZEBITS 64
+#define GETENTROPY_MAX 256
 
 /* Utility limits. */
 #define BC_BASE_MAX 99

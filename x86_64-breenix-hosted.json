@@ -10,6 +10,7 @@
     "unix"
   ],
   "executables": true,
+  "dynamic-linking": true,
   "linker-flavor": "ld.lld",
   "linker": "rust-lld",
   "panic-strategy": "unwind",

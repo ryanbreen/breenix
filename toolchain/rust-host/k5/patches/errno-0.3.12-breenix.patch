@@ -1,0 +1,5 @@
+diff --git a/src/unix.rs b/src/unix.rs
+--- a/src/unix.rs
++++ b/src/unix.rs
+@@ -100,0 +101 @@
++    #[cfg_attr(target_os = "breenix", link_name = "__errno_location")]

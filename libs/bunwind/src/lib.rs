@@ -5,7 +5,7 @@
 mod abi;
 #[cfg(any(test, target_os = "breenix"))]
 mod arch;
-#[cfg(target_os = "breenix")]
+#[cfg(any(test, target_os = "breenix"))]
 mod loaded;
 
 pub mod cfi;

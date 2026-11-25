@@ -9,7 +9,7 @@ use core::{mem, ptr};
 use crate::arch::{self, NativeContext, RegisterContext, REGISTER_COUNT};
 use crate::ehframe;
 use crate::level1::{self, Actions, Continuation, Exception, Frame, FrameSource, ReasonCode};
-use crate::loaded::LoadedImage;
+use crate::loaded::LoadedObjects;
 
 type ExceptionState = Exception<REGISTER_COUNT>;
 type Cleanup = unsafe extern "C" fn(c_int, *mut UnwindException);
@@ -34,7 +34,6 @@ pub(crate) struct UnwindException {
 }
 
 struct Runtime {
-    image: Option<LoadedImage>,
     exception: *mut UnwindException,
 }
 
@@ -42,13 +41,10 @@ impl FrameSource<REGISTER_COUNT> for Runtime {
     type Error = level1::LookupError;
 
     fn find_frame(&self, pc: u64) -> Result<Option<Frame<'_, REGISTER_COUNT>>, Self::Error> {
-        let Some(image) = &self.image else {
-            return Ok(None);
-        };
         let defaults = arch::initial_rules();
         // Caller-owned workspace for nested DW_CFA_remember_state rules.
         let mut saved = [defaults; 8];
-        Frame::lookup(image, pc, defaults, &mut saved)
+        Frame::lookup(&LoadedObjects, pc, defaults, &mut saved)
     }
 
     fn stack_pointer_register(&self) -> u64 {
@@ -84,15 +80,11 @@ impl FrameSource<REGISTER_COUNT> for Runtime {
         exception: &mut ExceptionState,
         context: &mut NativeContext,
     ) -> ReasonCode {
-        if !self
-            .image
-            .as_ref()
-            .is_some_and(|image| image.is_code(address))
-        {
+        if !LoadedObjects::is_code(address) {
             return ReasonCode::FatalPhase2Error;
         }
-        // SAFETY: The CIE in the trusted executable identifies a function
-        // with the Level I personality signature in an executable load.
+        // SAFETY: the trusted CIE identifies an ABI personality in an
+        // executable load of a resident object.
         let call = unsafe { mem::transmute::<usize, Personality>(address as usize) };
         // SAFETY: the opaque context is live for the call and the ABI caller
         // supplied the original exception object.
@@ -222,10 +214,7 @@ unsafe extern "C" fn raise(
     if exception.is_null() {
         return ReasonCode::FatalPhase1Error;
     }
-    let runtime = Runtime {
-        image: LoadedImage::discover(),
-        exception,
-    };
+    let runtime = Runtime { exception };
     // SAFETY: the ABI entry requires the original live exception header.
     let mut state = unsafe { runtime.exception_state() };
     // SAFETY: the two private words belong to this new invocation.
@@ -244,10 +233,7 @@ unsafe extern "C" fn forced_unwind(
     let Some(stop) = stop.filter(|_| !exception.is_null()) else {
         return ReasonCode::FatalPhase2Error;
     };
-    let runtime = Runtime {
-        image: LoadedImage::discover(),
-        exception,
-    };
+    let runtime = Runtime { exception };
     let forced = ForcedCall {
         exception,
         stop,
@@ -273,10 +259,7 @@ unsafe extern "C" fn resume(captured: &RegisterContext, exception: *mut UnwindEx
     if exception.is_null() {
         crate::abort();
     }
-    let runtime = Runtime {
-        image: LoadedImage::discover(),
-        exception,
-    };
+    let runtime = Runtime { exception };
     // SAFETY: the caller is the cleanup pad for this live exception object.
     let mut state = unsafe { runtime.exception_state() };
     // SAFETY: the previous phase 2 transfer stored its continuation here.
@@ -335,7 +318,6 @@ extern "C" fn backtrace(
         return ReasonCode::FatalPhase1Error;
     };
     let runtime = Runtime {
-        image: LoadedImage::discover(),
         exception: ptr::null_mut(),
     };
     level1::backtrace(&runtime, captured.cursor(), |context| {
@@ -372,13 +354,12 @@ pub(crate) unsafe extern "C" fn _Unwind_DeleteException(exception: *mut UnwindEx
 
 #[no_mangle]
 pub(crate) extern "C" fn _Unwind_FindEnclosingFunction(ip: *mut c_void) -> *mut c_void {
-    LoadedImage::discover()
-        .and_then(|image| {
-            ehframe::find_fde(&image, ip.expose_provenance() as u64)
-                .ok()?
-                .map(|fde| ptr::with_exposed_provenance_mut(fde.pc_range.start as usize))
+    ehframe::find_fde(&LoadedObjects, ip.expose_provenance() as u64)
+        .ok()
+        .flatten()
+        .map_or(ptr::null_mut(), |fde| {
+            ptr::with_exposed_provenance_mut(fde.pc_range.start as usize)
         })
-        .unwrap_or(ptr::null_mut())
 }
 
 #[no_mangle]

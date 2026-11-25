@@ -1,0 +1,13 @@
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -240,0 +241,3 @@
++    } else if #[cfg(target_os = "breenix")] {
++        mod util_libc;
++        #[path = "getentropy.rs"] mod imp;
+diff --git a/src/util_libc.rs b/src/util_libc.rs
+--- a/src/util_libc.rs
++++ b/src/util_libc.rs
+@@ -13,0 +14,2 @@
++    } else if #[cfg(target_os = "breenix")] {
++        use libc::__errno_location as errno_location;

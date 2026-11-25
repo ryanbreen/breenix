@@ -67,7 +67,48 @@ extern_ty! {
     pub enum timezone {}
 }
 
+s_no_extra_traits! {
+    // Breenix <signal.h> uses the POSIX sigval union and a notification union.
+    pub struct sigevent {
+        pub sigev_value: crate::sigval,
+        pub sigev_signo: c_int,
+        pub sigev_notify: c_int,
+        pub __notify: sigevent_notify,
+    }
+
+    pub union sigevent_notify {
+        pub thread: sigevent_thread,
+        pub thread_id: c_int,
+        pub __storage: [c_uchar; 48],
+    }
+
+    pub struct sigevent_thread {
+        pub function: Option<unsafe extern "C" fn(crate::sigval)>,
+        pub attributes: *mut pthread_attr_t,
+    }
+}
+
 s! {
+    // Breenix <sys/statfs.h>, matching the kernel's filesystem-statistics ABI.
+    pub struct fsid_t {
+        pub __val: [c_int; 2],
+    }
+
+    pub struct statfs {
+        pub f_type: c_long,
+        pub f_bsize: c_long,
+        pub f_blocks: fsblkcnt_t,
+        pub f_bfree: fsblkcnt_t,
+        pub f_bavail: fsblkcnt_t,
+        pub f_files: fsfilcnt_t,
+        pub f_ffree: fsfilcnt_t,
+        pub f_fsid: fsid_t,
+        pub f_namelen: c_long,
+        pub f_frsize: c_long,
+        pub f_flags: c_long,
+        pub f_spare: [c_long; 4],
+    }
+
     pub struct utsname {
         pub sysname: [c_char; 65],
         pub nodename: [c_char; 65],
@@ -506,6 +547,7 @@ pub const O_NOCTTY: c_int = 0o400;
 pub const O_TRUNC: c_int = 0o1000;
 pub const O_APPEND: c_int = 0o2000;
 pub const O_NONBLOCK: c_int = 0o4000;
+pub const O_NDELAY: c_int = O_NONBLOCK;
 pub const O_SYNC: c_int = 0o4010000;
 pub const O_ASYNC: c_int = 0o20000;
 // The Linux values of O_DIRECTORY and O_NOFOLLOW differ by architecture, and the
@@ -712,6 +754,15 @@ pub const SIGWINCH: c_int = 28;
 pub const SIGIO: c_int = 29;
 pub const SIGPWR: c_int = 30;
 pub const SIGSYS: c_int = 31;
+
+pub const SIG_BLOCK: c_int = 0;
+pub const SIG_UNBLOCK: c_int = 1;
+pub const SIG_SETMASK: c_int = 2;
+
+pub const SIGEV_SIGNAL: c_int = 0;
+pub const SIGEV_NONE: c_int = 1;
+pub const SIGEV_THREAD: c_int = 2;
+pub const SIGEV_THREAD_ID: c_int = 4;
 
 pub const SIG_DFL: crate::sighandler_t = 0;
 pub const SIG_IGN: crate::sighandler_t = 1;
@@ -970,9 +1021,43 @@ pub const WCONTINUED: c_int = 8;
 
 // TIOCGWINSZ for terminal size queries
 pub const TIOCGWINSZ: Ioctl = 0x5413;
+pub const FIONREAD: Ioctl = 0x541b;
 pub const FIONBIO: Ioctl = 0x5421;
 
+// Breenix <sys/file.h> and POSIX.1-2024 <sys/statvfs.h>, <fcntl.h>, <limits.h>.
+pub const LOCK_SH: c_int = 1;
+pub const LOCK_EX: c_int = 2;
+pub const LOCK_NB: c_int = 4;
+pub const LOCK_UN: c_int = 8;
+pub const ST_RDONLY: c_ulong = 1;
+pub const ST_NOSUID: c_ulong = 2;
+pub const POSIX_FADV_NORMAL: c_int = 0;
+pub const POSIX_FADV_RANDOM: c_int = 1;
+pub const POSIX_FADV_SEQUENTIAL: c_int = 2;
+pub const POSIX_FADV_WILLNEED: c_int = 3;
+pub const POSIX_FADV_DONTNEED: c_int = 4;
+pub const POSIX_FADV_NOREUSE: c_int = 5;
+pub const GETENTROPY_MAX: size_t = 256;
+
+// Breenix <sys/sysmacros.h>, matching the kernel's 32-bit device encoding.
+pub const fn major(dev: dev_t) -> c_uint {
+    ((dev >> 8) & 0xfff) as c_uint
+}
+
+pub const fn minor(dev: dev_t) -> c_uint {
+    ((dev & 0xff) | ((dev >> 12) & 0xfff00)) as c_uint
+}
+
+pub const fn makedev(major: c_uint, minor: c_uint) -> dev_t {
+    (((major & 0xfff) as dev_t) << 8)
+        | ((minor & 0xff) as dev_t)
+        | (((minor & 0xfff00) as dev_t) << 12)
+}
+
 // sysconf constants
+// POSIX.1-2024 <unistd.h>, using Breenix's sysconf selectors.
+pub const _SC_ARG_MAX: c_int = 0;
+pub const PATH_MAX: c_int = 4096;
 pub const _SC_PAGESIZE: c_int = 30;
 pub const _SC_PAGE_SIZE: c_int = _SC_PAGESIZE;
 pub const _SC_NPROCESSORS_ONLN: c_int = 84;
@@ -1162,6 +1247,37 @@ unsafe extern "C" {
     pub fn close(fd: c_int) -> c_int;
     pub fn dup(oldfd: c_int) -> c_int;
     pub fn dup2(oldfd: c_int, newfd: c_int) -> c_int;
+    // POSIX.1-2024 <unistd.h>, <fcntl.h>, <sys/stat.h>, and <dirent.h>.
+    pub fn dup3(oldfd: c_int, newfd: c_int, flags: c_int) -> c_int;
+    pub fn faccessat(dirfd: c_int, path: *const c_char, mode: c_int, flags: c_int) -> c_int;
+    pub fn getentropy(buf: *mut c_void, len: size_t) -> c_int;
+    pub fn mknodat(dirfd: c_int, path: *const c_char, mode: mode_t, dev: dev_t) -> c_int;
+    pub fn mkfifoat(dirfd: c_int, path: *const c_char, mode: mode_t) -> c_int;
+    // POSIX.1-2024 <sys/mman.h>.
+    pub fn msync(addr: *mut c_void, len: size_t, flags: c_int) -> c_int;
+    pub fn posix_fadvise(fd: c_int, offset: off_t, len: off_t, advice: c_int) -> c_int;
+    pub fn posix_fallocate(fd: c_int, offset: off_t, len: off_t) -> c_int;
+    // POSIX.1-2024 <pthread.h> permits a null callback in any position.
+    pub fn pthread_atfork(
+        prepare: Option<unsafe extern "C" fn()>,
+        parent: Option<unsafe extern "C" fn()>,
+        child: Option<unsafe extern "C" fn()>,
+    ) -> c_int;
+    pub fn seekdir(dir: *mut crate::DIR, offset: c_long);
+    pub fn sync();
+    pub fn utimensat(
+        dirfd: c_int,
+        path: *const c_char,
+        times: *const crate::timespec,
+        flags: c_int,
+    ) -> c_int;
+
+    // Breenix <sys/statfs.h> and the positioned vector I/O extension in <sys/uio.h>.
+    pub fn statfs(path: *const c_char, buf: *mut statfs) -> c_int;
+    pub fn fstatfs(fd: c_int, buf: *mut statfs) -> c_int;
+    pub fn preadv(fd: c_int, iov: *const crate::iovec, iovcnt: c_int, offset: off_t) -> ssize_t;
+    pub fn pwritev(fd: c_int, iov: *const crate::iovec, iovcnt: c_int, offset: off_t) -> ssize_t;
+
     pub fn pipe(pipefd: *mut c_int) -> c_int;
     pub fn pipe2(pipefd: *mut c_int, flags: c_int) -> c_int;
 

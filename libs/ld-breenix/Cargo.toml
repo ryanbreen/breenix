@@ -1,0 +1,26 @@
+[package]
+name = "ld-breenix"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+libbreenix = { path = "../libbreenix", default-features = false, optional = true }
+
+[features]
+interpreter = ["dep:libbreenix"]
+
+[[bin]]
+name = "ld-breenix"
+path = "src/entry.rs"
+required-features = ["interpreter"]
+test = false
+bench = false
+
+[profile.release]
+panic = "abort"
+overflow-checks = true
+codegen-units = 1
+incremental = false

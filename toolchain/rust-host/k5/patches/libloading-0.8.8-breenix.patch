@@ -1,0 +1,15 @@
+diff --git a/src/os/unix/consts.rs b/src/os/unix/consts.rs
+--- a/src/os/unix/consts.rs
++++ b/src/os/unix/consts.rs
+@@ -93,0 +94,2 @@
++        } else if #[cfg(target_os = "breenix")] {
++            pub(super) const RTLD_LAZY: c_int = 1;
+@@ -135,0 +138,2 @@
++        } else if #[cfg(target_os = "breenix")] {
++            pub(super) const RTLD_NOW: c_int = 2;
+@@ -186,0 +191,2 @@
++        } else if #[cfg(target_os = "breenix")] {
++            pub(super) const RTLD_GLOBAL: c_int = 0x100;
+@@ -232,0 +239,2 @@
++        } else if #[cfg(target_os = "breenix")] {
++            pub(super) const RTLD_LOCAL: c_int = 0;

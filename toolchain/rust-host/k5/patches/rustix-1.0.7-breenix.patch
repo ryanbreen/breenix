@@ -1,0 +1,20 @@
+diff --git a/src/ioctl/mod.rs b/src/ioctl/mod.rs
+--- a/src/ioctl/mod.rs
++++ b/src/ioctl/mod.rs
+@@ -290,0 +291,2 @@
++#[cfg(target_os = "breenix")]
++type _Opcode = c::c_ulong;
+diff --git a/src/backend/libc/fs/types.rs b/src/backend/libc/fs/types.rs
+--- a/src/backend/libc/fs/types.rs
++++ b/src/backend/libc/fs/types.rs
+@@ -744,0 +745,10 @@
++#[cfg(target_os = "breenix")]
++bitflags! {
++    /// POSIX file allocation uses the empty mode.
++    #[repr(transparent)]
++    #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
++    pub struct FallocateFlags: u32 {
++        const _ = !0;
++    }
++}
++#[cfg_attr(target_os = "breenix", cfg(any()))]

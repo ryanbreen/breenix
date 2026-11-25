@@ -882,7 +882,8 @@ fn describe(categories: &[Category]) -> String {
 fn suite_manifests_match_their_binaries() {
     let root = repo_root();
     let bins = cargo_bins(&fs::read_to_string(root.join("userspace/programs/Cargo.toml")).unwrap());
-    let binaries = std_binaries(&fs::read_to_string(root.join("userspace/programs/build.sh")).unwrap());
+    let build = fs::read_to_string(root.join("userspace/programs/build.sh")).unwrap();
+    let binaries = std_binaries(&build);
     assert!(!binaries.is_empty(), "no STD_BINARIES=( ... ) array in userspace/programs/build.sh");
     let mut errors = Vec::new();
     let mut manifest_ids = HashSet::new();
@@ -940,7 +941,14 @@ fn suite_manifests_match_their_binaries() {
             ));
         }
         let entry = format!("suite-{id}");
-        if !binaries.iter().any(|listed| *listed == entry || *listed == format!("{entry}:{entry}")) {
+        let ordinary = binaries.iter()
+            .any(|listed| *listed == entry || *listed == format!("{entry}:{entry}"));
+        if id == "dynamic" {
+            let hosted = r#""$SCRIPT_DIR/build.sh" --arch x86_64 --hosted-bin suite-dynamic --features dynamic"#;
+            if ordinary || !build.lines().any(|line| line.trim() == hosted) {
+                errors.push(format!("{id}: {entry} must use the opt-in hosted build in userspace/programs/build.sh"));
+            }
+        } else if !ordinary {
             errors.push(format!("{id}: \"{entry}\" is not in STD_BINARIES in userspace/programs/build.sh"));
         }
 

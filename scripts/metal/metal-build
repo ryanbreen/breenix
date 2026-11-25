@@ -201,6 +201,7 @@ def inner(args):
     transfer = transfer_fixture.selected(args.suite)
     toolchain = 'toolchain' in suites
     rust_host = 'rust-host' in suites
+    dynamic = 'dynamic' in suites
     cxx_runtime = 'cxx-runtime' in suites
     llvm = 'llvm' in suites
     if llvm and sys.platform != 'darwin':
@@ -216,7 +217,7 @@ def inner(args):
     kernel_image = None
     staged_files = {}
     build_companions = build_fixtures or busybox
-    hosted = rust_host or cxx_runtime or llvm
+    hosted = rust_host or cxx_runtime or llvm or dynamic
     root = tmp / 'ext2-staged.img' if 'sdk' in suites or build_fixtures or transfer or hosted else seed
     try:
         started = time.time()
@@ -356,6 +357,16 @@ def inner(args):
                 if not clean_build(status, log, 'LLVM suite and tools', logs, out):
                     return 1
                 timings['llvm_suite'] = round(time.time() - started)
+            if dynamic:
+                started = time.time()
+                build_script = str(clone / 'userspace/programs/build.sh')
+                log = logs / 'dynamic-build.log'
+                with log.open('w') as output:
+                    status = subprocess.call([build_script, '--arch', 'x86_64', '--dynamic'],
+                                             cwd=clone, stdout=output, stderr=subprocess.STDOUT)
+                if not clean_build(status, log, 'dynamic suite, interpreter and fixtures', logs, out):
+                    return 1
+                timings['dynamic_suite'] = round(time.time() - started)
             if hosted:
                 started = time.time()
                 record = subprocess.check_output([sys.executable, str(clone / 'scripts/rust_host_stage.py'),

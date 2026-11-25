@@ -1,0 +1,182 @@
+diff --git a/src/errno.rs b/src/errno.rs
+--- a/src/errno.rs
++++ b/src/errno.rs
+@@ -32,0 +33 @@
++                        target_os = "breenix",
+@@ -277,0 +279 @@
++            target_os = "breenix",
+@@ -287,0 +290 @@
++            target_os = "breenix",
+@@ -297,0 +301 @@
++            target_os = "breenix",
+@@ -307,0 +312 @@
++            target_os = "breenix",
+@@ -317,0 +323 @@
++            target_os = "breenix",
+@@ -327,0 +334 @@
++            target_os = "breenix",
+@@ -337,0 +345 @@
++            target_os = "breenix",
+@@ -347,0 +356 @@
++            target_os = "breenix",
+@@ -357,0 +367 @@
++            target_os = "breenix",
+@@ -366,0 +377 @@
++            target_os = "breenix",
+@@ -375,0 +387 @@
++            target_os = "breenix",
+@@ -384,0 +397 @@
++            target_os = "breenix",
+@@ -393,0 +407 @@
++            target_os = "breenix",
+@@ -402,0 +417 @@
++            target_os = "breenix",
+@@ -411,0 +427 @@
++            target_os = "breenix",
+@@ -420,0 +437 @@
++            target_os = "breenix",
+@@ -430,0 +448 @@
++            target_os = "breenix",
+@@ -440,0 +459 @@
++            target_os = "breenix",
+@@ -450,0 +470 @@
++            target_os = "breenix",
+@@ -460,0 +481 @@
++            target_os = "breenix",
+@@ -469,0 +491 @@
++            target_os = "breenix",
+@@ -478,0 +501 @@
++            target_os = "breenix",
+@@ -488,0 +512 @@
++            target_os = "breenix",
+@@ -497,0 +522 @@
++            target_os = "breenix",
+@@ -506,0 +532 @@
++            target_os = "breenix",
+@@ -515,0 +542 @@
++            target_os = "breenix",
+@@ -524,0 +552 @@
++            target_os = "breenix",
+@@ -534,0 +563 @@
++            target_os = "breenix",
+@@ -543,0 +573 @@
++            target_os = "breenix",
+@@ -551,0 +582 @@
++            target_os = "breenix",
+@@ -563,0 +595 @@
++            target_os = "breenix",
+@@ -574,0 +607 @@
++            target_os = "breenix",
+@@ -583,0 +617 @@
++            target_os = "breenix",
+@@ -592,0 +627 @@
++            target_os = "breenix",
+@@ -601,0 +637 @@
++            target_os = "breenix",
+@@ -610,0 +647 @@
++            target_os = "breenix",
+@@ -619,0 +657 @@
++            target_os = "breenix",
+@@ -628,0 +667 @@
++            target_os = "breenix",
+@@ -637,0 +677 @@
++            target_os = "breenix",
+@@ -647,0 +688 @@
++            target_os = "breenix",
+@@ -658,0 +700 @@
++            target_os = "breenix",
+@@ -667,0 +710 @@
++            target_os = "breenix",
+@@ -676,0 +720 @@
++            target_os = "breenix",
+@@ -685,0 +730 @@
++            target_os = "breenix",
+@@ -695,0 +741 @@
++            target_os = "breenix",
+@@ -704,0 +751 @@
++            target_os = "breenix",
+@@ -711,0 +759 @@
++            target_os = "breenix",
+@@ -718,0 +767 @@
++            target_os = "breenix",
+@@ -725,0 +775 @@
++            target_os = "breenix",
+@@ -732,0 +783 @@
++            target_os = "breenix",
+@@ -739,0 +791 @@
++            target_os = "breenix",
+@@ -747,0 +800 @@
++            target_os = "breenix",
+@@ -757,0 +811 @@
++            target_os = "breenix",
+@@ -765,0 +820 @@
++            target_os = "breenix",
+@@ -775,0 +831 @@
++            target_os = "breenix",
+@@ -782,0 +839 @@
++            target_os = "breenix",
+@@ -789,0 +847 @@
++            target_os = "breenix",
+@@ -796,0 +855 @@
++            target_os = "breenix",
+@@ -803,0 +863 @@
++            target_os = "breenix",
+@@ -816,0 +877 @@
++            target_os = "breenix",
+@@ -828,0 +890 @@
++            target_os = "breenix",
+@@ -835,0 +898 @@
++            target_os = "breenix",
+@@ -1090 +1153 @@
+-#[cfg(any(linux_android, target_os = "fuchsia", target_os = "emscripten"))]
++#[cfg(any(linux_android, target_os = "breenix", target_os = "fuchsia", target_os = "emscripten"))]
+diff --git a/src/sys/signal.rs b/src/sys/signal.rs
+--- a/src/sys/signal.rs
++++ b/src/sys/signal.rs
+@@ -64 +64 @@
+-        #[cfg(all(any(linux_android, target_os = "emscripten",
++        #[cfg(all(any(linux_android, target_os = "breenix", target_os = "emscripten",
+@@ -100 +100 @@
+-        #[cfg(any(linux_android, target_os = "emscripten",
++        #[cfg(any(linux_android, target_os = "breenix", target_os = "emscripten",
+@@ -106 +106 @@
+-        #[cfg(not(any(linux_android, target_os = "emscripten",
++        #[cfg(not(any(linux_android, target_os = "breenix", target_os = "emscripten",
+@@ -111 +111 @@
+-        #[cfg(not(any(linux_android, target_os = "emscripten",
++        #[cfg(not(any(linux_android, target_os = "breenix", target_os = "emscripten",
+@@ -143,0 +144 @@
++                    target_os = "breenix",
+@@ -172,0 +174 @@
++                target_os = "breenix",
+@@ -179,0 +182 @@
++                target_os = "breenix",
+@@ -187,0 +191 @@
++                target_os = "breenix",
+@@ -228,0 +233 @@
++                    target_os = "breenix",
+@@ -257,0 +263 @@
++                target_os = "breenix",
+@@ -265,0 +272 @@
++                target_os = "breenix",
+@@ -273,0 +281 @@
++                target_os = "breenix",
+@@ -321 +329 @@
+-    any(linux_android, target_os = "emscripten", target_os = "fuchsia"),
++    any(linux_android, target_os = "breenix", target_os = "emscripten", target_os = "fuchsia"),
+@@ -339 +347 @@
+-    any(linux_android, target_os = "emscripten", target_os = "fuchsia"),
++    any(linux_android, target_os = "breenix", target_os = "emscripten", target_os = "fuchsia"),
+@@ -373,0 +382 @@
++    target_os = "breenix",
+@@ -1295 +1304,2 @@
+-    #[derive(Clone, Debug, Eq, Hash, PartialEq)]
++    #[cfg_attr(target_os = "breenix", derive(Clone, Debug))]
++    #[cfg_attr(not(target_os = "breenix"), derive(Clone, Debug, Eq, Hash, PartialEq))]
+diff --git a/src/unistd.rs b/src/unistd.rs
+--- a/src/unistd.rs
++++ b/src/unistd.rs
+@@ -19,0 +20 @@
++    target_os = "breenix",
+@@ -1498,0 +1500 @@
++    target_os = "breenix",

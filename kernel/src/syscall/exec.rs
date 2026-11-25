@@ -427,7 +427,7 @@ fn validate_elf(data: &[u8]) -> Result<(), u64> {
     }
 }
 
-/// Map enough initial stack for the full strings, pointers, unchanged auxv,
+/// Map enough initial stack for the full strings, pointers, static-image auxv,
 /// alignment and 64 KiB of runtime stack below them.
 pub(crate) fn stack_size(argv: &[&[u8]], envp: &[&[u8]]) -> Result<usize, &'static str> {
     let mut size = (argv.len() + envp.len())
@@ -440,6 +440,7 @@ pub(crate) fn stack_size(argv: &[&[u8]], envp: &[&[u8]]) -> Result<usize, &'stat
     if size > ARG_MAX {
         return Err("exec arguments too large");
     }
-    // argc, two NULL pointers, twelve auxv pairs, AT_RANDOM, and alignment.
-    Ok((size + 8 * 27 + 16 + 23 + 64 * 1024 + 4095) & !4095)
+    // argc, two NULL pointers, auxv, AT_RANDOM bytes, and alignment.
+    let metadata = 3 * 8 + crate::exec_elf::ExecPlan::STATIC_AUXV_SIZE + 16 + 23;
+    Ok((size + metadata + 64 * 1024 + 4095) & !4095)
 }
