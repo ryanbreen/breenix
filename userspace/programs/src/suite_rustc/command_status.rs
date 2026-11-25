@@ -1,5 +1,9 @@
-pub(crate) fn abnormal_status(path: &str, status: i32, _: &[u8]) -> String {
-    format!("{path}: abnormal status {status:#x}")
+pub(crate) fn abnormal_status(path: &str, status: i32, output: &[u8]) -> String {
+    let output = String::from_utf8_lossy(output);
+    match output.trim() {
+        "" => format!("{path}: abnormal status {status:#x}"),
+        diagnostic => format!("{path}: abnormal status {status:#x}: {diagnostic}"),
+    }
 }
 
 #[cfg(test)]
