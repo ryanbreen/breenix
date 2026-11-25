@@ -2134,9 +2134,9 @@ class DriverTest(StateTest):
         args = self.driver.args
         args.mode = 'suite'
         args.suite = 'llvm'
-        self.assertGreaterEqual(boot.mode_deadline_seconds(args) * 1000 * 4, sum(allowances) * 5)
-        args.suite = 'cxx-runtime'
+        # The sized allowances fit the ordinary suite deadline, as other suites do.
         self.assertEqual(boot.mode_deadline_seconds(args), 420)
+        self.assertGreaterEqual(boot.mode_deadline_seconds(args) * 1000 * 4, sum(allowances) * 5)
 
     def test_busybox_sequence_gate_covers_registered_case_allowances(self):
         root = TOOLS.parents[1]
