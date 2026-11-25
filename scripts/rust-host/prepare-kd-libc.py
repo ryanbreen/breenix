@@ -18,8 +18,9 @@ def select_hosted_tls(crate):
     # ordinary crate would also move call-site locations encoded in libc.a.
     enabled = '#[cfg(all(feature = "hosted-rustc", target_arch = "x86_64"))]'
     root = crate / 'src/lib.rs'
-    line = '\nmod entropy;\n'
-    replace_line(root, line, f'{line}\n{enabled}\nmod tls_module;\n\n{enabled}\nmod dl_abi;\n')
+    with root.open('a') as source:
+        source.write('\n#[cfg(feature = "hosted-rustc")]\nmod entropy;\n'
+                     f'\n{enabled}\nmod tls_module;\n\n{enabled}\nmod dl_abi;\n')
     pthread = crate / 'src/pthread.rs'
     replace_line(
         pthread, '\npub(crate) fn static_tls_data()',
@@ -52,6 +53,8 @@ def prepare(source, build):
         link.symlink_to(source.parent / name, target_is_directory=True)
 
     # The default Rust crate keeps the ordinary CRT and its static lifecycle.
+    replace_line(crate / 'Cargo.toml', '\nhosted-llvm = []\n',
+                 '\nhosted-llvm = []\nhosted-rustc = []\n')
     replace_line(crate / 'src/lib.rs', '\nmod crt;\n',
                  '\n#[path = "crt_shared.rs"]\nmod crt;\n')
     replace_line(crate / 'src/lifecycle.rs', '\npub(crate) unsafe fn run_main<T>(',
