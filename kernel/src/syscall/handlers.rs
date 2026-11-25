@@ -2667,37 +2667,36 @@ pub fn sys_set_tid_address(tidptr: u64) -> SyscallResult {
 pub fn sys_dup2(old_fd: u64, new_fd: u64) -> SyscallResult {
     // The descriptors are 32-bit (`unsigned int`) in the syscall ABI; the
     // register's upper half is not part of the argument.
-    dup_to(old_fd as u32, new_fd as u32, false)
+    dup_to(old_fd as u32, new_fd as u32, 0)
 }
 
 /// sys_dup3 - dup2 with flags
 ///
-/// dup3(old_fd, new_fd, flags) is dup2 except that `flags` may hold only
-/// O_CLOEXEC, which sets FD_CLOEXEC on new_fd, and old_fd == new_fd is EINVAL
-/// rather than a no-op.
+/// The new descriptor takes its close-on-exec and close-on-fork state from
+/// flags. Equal descriptor numbers are invalid.
 ///
 /// Returns: new_fd on success, negative error code on failure
 pub fn sys_dup3(old_fd: u64, new_fd: u64, flags: u64) -> SyscallResult {
-    use crate::ipc::fd::status_flags::O_CLOEXEC;
+    use crate::ipc::fd::status_flags::{O_CLOEXEC, O_CLOFORK};
 
     // The ABI types are `unsigned int` descriptors and an `int` flags word.
     // Take the 32-bit values before any check, so an upper register half can
     // neither hide old_fd == new_fd nor count as an unknown flag.
     let (old_fd, new_fd, flags) = (old_fd as u32, new_fd as u32, flags as u32);
-    if flags & !O_CLOEXEC != 0 || old_fd == new_fd {
+    if flags & !(O_CLOEXEC | O_CLOFORK) != 0 || old_fd == new_fd {
         return SyscallResult::Err(super::errno::EINVAL as u64);
     }
-    dup_to(old_fd, new_fd, flags & O_CLOEXEC != 0)
+    dup_to(old_fd, new_fd, crate::ipc::fd_flags::from_open_flags(flags))
 }
 
 /// Shared body of dup2 and dup3: duplicate old_fd onto new_fd, closing what
-/// new_fd held, with FD_CLOEXEC on new_fd set only when `set_cloexec`.
-fn dup_to(old_fd: u32, new_fd: u32, set_cloexec: bool) -> SyscallResult {
+/// new_fd held and assigning the new entry's descriptor flags.
+fn dup_to(old_fd: u32, new_fd: u32, descriptor_flags: u32) -> SyscallResult {
     log::debug!(
-        "sys_dup2: old_fd={}, new_fd={}, cloexec={}",
+        "sys_dup2: old_fd={}, new_fd={}, descriptor_flags={}",
         old_fd,
         new_fd,
-        set_cloexec
+        descriptor_flags
     );
 
     // Get current thread to find process
@@ -2729,7 +2728,7 @@ fn dup_to(old_fd: u32, new_fd: u32, set_cloexec: bool) -> SyscallResult {
     let close_pid = crate::ipc::object::close_owner(process.id, process.thread_group_id);
     let duplicated = process
         .fd_table
-        .dup2(old_fd as i32, new_fd as i32, set_cloexec);
+        .dup2(old_fd as i32, new_fd as i32, descriptor_flags);
     let lock_owner = process.lock_owner.id();
     drop(manager_guard);
     match duplicated {
@@ -3934,25 +3933,34 @@ pub fn sys_pread64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRes
     };
 
     // The process lock and IRQ mask are released before backend I/O.
-    let file_offset = offset as u64;
-    let attrs = match fs.getattr(node.ino) {
-        Ok(attrs) => attrs,
-        Err(error) => return SyscallResult::Err(error.into()),
+    let data = match read_positional_file(fs.as_ref(), &node, offset as u64, count as usize) {
+        Ok(data) => data,
+        Err(error) => return SyscallResult::Err(error),
     };
-    let to_read = count.min(attrs.size.saturating_sub(file_offset)) as usize;
-    let mut data = Vec::new();
-    if data.try_reserve_exact(to_read).is_err() {
-        return SyscallResult::Err(super::errno::ENOMEM as u64);
-    }
-    data.resize(to_read, 0);
-    let bytes_read = match fs.read(&node, file_offset, &mut data) {
-        Ok(bytes) => bytes,
-        Err(error) => return SyscallResult::Err(error.into()),
-    };
-    if bytes_read > 0 && copy_to_user(buf_ptr, data.as_ptr() as u64, bytes_read).is_err() {
+    if !data.is_empty() && copy_to_user(buf_ptr, data.as_ptr() as u64, data.len()).is_err() {
         return SyscallResult::Err(super::errno::EFAULT as u64);
     }
-    SyscallResult::Ok(bytes_read as u64)
+    SyscallResult::Ok(data.len() as u64)
+}
+
+/// Read from the inode without accessing the open description's cursor.
+pub(super) fn read_positional_file(
+    fs: &dyn crate::fs::vfs::FileSystem,
+    node: &crate::fs::vfs::VNode,
+    offset: u64,
+    count: usize,
+) -> Result<Vec<u8>, u64> {
+    let attrs = fs.getattr(node.ino).map_err(u64::from)?;
+    let length = (count as u64).min(attrs.size.saturating_sub(offset)) as usize;
+    let mut data = Vec::new();
+    data.try_reserve_exact(length).map_err(|_| super::errno::ENOMEM as u64)?;
+    data.resize(length, 0);
+    let bytes = fs.read(node, offset, &mut data).map_err(u64::from)?;
+    if bytes > data.len() {
+        return Err(super::errno::EIO as u64);
+    }
+    data.truncate(bytes);
+    Ok(data)
 }
 
 /// pwrite64 - Write to file at given offset without changing file position
@@ -4025,35 +4033,45 @@ pub fn sys_pwrite64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRe
         Err(e) => return SyscallResult::Err(e),
     };
 
-    let length = match super::resource::write_length(offset as u64, count as usize, size_limit) {
+    match write_positional_file(
+        fs.as_ref(), &node, offset as u64, count as usize, size_limit, unprivileged,
+        |length| copy_from_user(buf_ptr, length).map_err(|_| super::errno::EFAULT as u64),
+    ) {
+        Ok(bytes) => SyscallResult::Ok(bytes),
+        Err(errno) => SyscallResult::Err(errno),
+    }
+}
+
+/// Write one range without using O_APPEND or changing the description's cursor.
+pub(super) fn write_positional_file(
+    fs: &dyn crate::fs::vfs::FileSystem,
+    node: &crate::fs::vfs::VNode,
+    offset: u64,
+    count: usize,
+    size_limit: u64,
+    unprivileged: bool,
+    gather: impl FnOnce(usize) -> Result<Vec<u8>, u64>,
+) -> Result<u64, u64> {
+    let length = match super::resource::write_length(offset, count, size_limit) {
         Ok(length) => length,
         Err(error) => {
             super::resource::signal_fsize();
-            return SyscallResult::Err(error);
+            return Err(error);
         }
     };
-    // Read only the bytes the resource limit permits after releasing PM.
-    let data = match copy_from_user(buf_ptr, length) {
-        Ok(d) => d,
-        Err(_) => return SyscallResult::Err(super::errno::EFAULT as u64),
-    };
-
-    // Native pwrite keeps its explicit offset even when O_APPEND is set and
-    // leaves the description's position unchanged.
+    let data = gather(length)?;
     let req = crate::fs::vfs::WriteReq {
-        at: crate::fs::vfs::WriteAt::Offset(offset as u64),
+        at: crate::fs::vfs::WriteAt::Offset(offset),
         limit: size_limit,
         clear_setid: unprivileged,
     };
-    match fs.write(&node, req, &data) {
-        Ok(written) => {
-            SyscallResult::Ok(written.bytes as u64)
-        }
+    match fs.write(node, req, &data) {
+        Ok(written) => Ok(written.bytes as u64),
         Err(error) => {
             if matches!(error, crate::fs::vfs::WriteError::FileSizeLimit) {
                 super::resource::signal_fsize();
             }
-            SyscallResult::Err(error.errno().into())
+            Err(error.errno().into())
         }
     }
 }

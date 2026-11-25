@@ -21,8 +21,7 @@ pub const STDERR: i32 = 2;
 
 /// File descriptor flags (for F_GETFD/F_SETFD)
 pub mod flags {
-    /// Close-on-exec flag (used by fcntl F_SETFD)
-    pub const FD_CLOEXEC: u32 = 1;
+    pub use super::super::fd_flags::FD_CLOEXEC;
 }
 
 /// File status flags (for F_GETFL/F_SETFL and open/pipe2)
@@ -39,8 +38,7 @@ pub mod status_flags {
     pub const O_NONBLOCK: u32 = 0x800; // 2048
     /// Append mode (writes always append)
     pub const O_APPEND: u32 = 0x400; // 1024
-    /// Close-on-exec (used in open/pipe2, but stored as FD_CLOEXEC)
-    pub const O_CLOEXEC: u32 = 0x80000; // 524288
+    pub use super::super::fd_flags::{O_CLOEXEC, O_CLOFORK};
 }
 
 /// fcntl command constants
@@ -214,7 +212,7 @@ impl Drop for OpenFileDescription {
 pub struct FileDescriptor {
     /// What kind of file this descriptor refers to
     pub kind: FdKind,
-    /// File descriptor flags (FD_CLOEXEC) - per-fd, not inherited on dup
+    /// File descriptor flags (FD_CLOEXEC and FD_CLOFORK), private to this entry.
     pub flags: u32,
     /// The open file description, including access mode, file status flags,
     /// and flock ownership. Cloning the entry shares this state.
@@ -310,11 +308,9 @@ impl FileDescriptor {
     }
 
     /// Create the descriptor for a new open file description from an open(2)
-    /// flags word: its access mode and status flags, and FD_CLOEXEC from
-    /// O_CLOEXEC. ENOMEM, rather than a panic, when the description cannot be
-    /// allocated.
+    /// flags word. An allocation failure returns ENOMEM.
     pub fn try_opened(kind: FdKind, open_flags: u32) -> Result<Self, u64> {
-        let flags = if open_flags & status_flags::O_CLOEXEC != 0 { flags::FD_CLOEXEC } else { 0 };
+        let flags = super::fd_flags::from_open_flags(open_flags);
         let word = (open_flags & status_flags::O_ACCMODE) | (open_flags & SETTABLE_STATUS_FLAGS);
         Ok(Self {
             kind,
@@ -574,14 +570,18 @@ impl Default for FdTable {
 }
 
 impl Clone for FdTable {
-    /// A copy of the table, as fork gives a child: its descriptors refer to
-    /// the same open file descriptions.
+    /// Make a private copy of the complete table for unshare.
     fn clone(&self) -> Self {
         Self::from_inner((**self).clone())
     }
 }
 
 impl FdTable {
+    /// Copy the descriptors a child inherits, retaining their open descriptions.
+    pub fn clone_for_fork(&self) -> Self {
+        Self::from_inner(self.copy_entries(true))
+    }
+
     fn from_inner(inner: FdTableInner) -> Self {
         Self {
             shared: Arc::new(SharedFdTable {
@@ -729,14 +729,23 @@ pub struct FdTableInner {
 
 impl Clone for FdTableInner {
     fn clone(&self) -> Self {
+        self.copy_entries(false)
+    }
+}
+
+impl FdTableInner {
+    fn copy_entries(&self, for_fork: bool) -> Self {
         // CRITICAL: No logging here - this runs during fork() with potential timer interrupts
         // Logging can cause deadlock if timer fires while holding logger lock
-        let cloned_fds = self.fds.clone();
+        let mut cloned_fds = self.fds.clone();
 
-        // Increment reference counts for all cloned fds that need it
-        for fd_opt in cloned_fds.iter() {
-            if let Some(fd_entry) = fd_opt {
-                add_reference(&fd_entry.kind);
+        for slot in cloned_fds.iter_mut() {
+            if let Some(entry) = slot {
+                if for_fork && !super::fd_flags::inherited_on_fork(entry.flags) {
+                    *slot = None;
+                } else {
+                    add_reference(&entry.kind);
+                }
             }
         }
 
@@ -747,9 +756,7 @@ impl Clone for FdTableInner {
             reserved: alloc::vec::Vec::new(),
         }
     }
-}
 
-impl FdTableInner {
     /// Lowering a limit leaves already open descriptors usable.
     pub fn set_limit(&mut self, limit: u64) {
         self.allocation_limit = limit.min(MAX_FDS as u64) as usize;
@@ -945,13 +952,12 @@ impl FdTableInner {
 
     /// Duplicate a file descriptor to a specific slot
     /// Used for dup2() and dup3(). The new descriptor shares the open file
-    /// description; its FD_CLOEXEC is set only when `set_cloexec` (dup3's
-    /// O_CLOEXEC), never copied from `old_fd`.
+    /// description and gets the supplied descriptor flags.
     pub fn dup2(
         &mut self,
         old_fd: i32,
         new_fd: i32,
-        set_cloexec: bool,
+        descriptor_flags: u32,
     ) -> Result<(i32, Option<FileDescriptor>), i32> {
         if old_fd < 0 || old_fd as usize >= self.fds.len() {
             return Err(9); // EBADF
@@ -982,7 +988,7 @@ impl FdTableInner {
 
         self.fds.grow(new_fd as usize + 1)?;
         let mut fd_entry = self.fds[old_fd as usize].clone().ok_or(9)?;
-        fd_entry.flags = if set_cloexec { flags::FD_CLOEXEC } else { 0 };
+        fd_entry.flags = descriptor_flags;
 
         // Extract the overwritten descriptor under PM. Its caller closes it
         // after releasing PM, after the replacement reference is established.

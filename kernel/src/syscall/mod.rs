@@ -52,6 +52,7 @@ pub mod handlers;
 pub mod resource;
 pub mod ioctl;
 pub mod iovec;
+mod iovec_range;
 pub mod metadata;
 pub(crate) mod at_path;
 mod multiplex;
@@ -966,6 +967,23 @@ const FLOCK_SYSCALL_NUMBER: u64 = 73;
 #[cfg(target_arch = "aarch64")]
 const FLOCK_SYSCALL_NUMBER: u64 = 32;
 
+#[cfg(target_arch = "x86_64")]
+const FADVISE_SYSCALL_NUMBER: u64 = 221;
+#[cfg(target_arch = "aarch64")]
+const FADVISE_SYSCALL_NUMBER: u64 = 223;
+#[cfg(target_arch = "x86_64")]
+const FALLOCATE_SYSCALL_NUMBER: u64 = 285;
+#[cfg(target_arch = "aarch64")]
+const FALLOCATE_SYSCALL_NUMBER: u64 = 47;
+#[cfg(target_arch = "x86_64")]
+const PREADV_SYSCALL_NUMBER: u64 = 295;
+#[cfg(target_arch = "aarch64")]
+const PREADV_SYSCALL_NUMBER: u64 = 69;
+#[cfg(target_arch = "x86_64")]
+const PWRITEV_SYSCALL_NUMBER: u64 = 296;
+#[cfg(target_arch = "aarch64")]
+const PWRITEV_SYSCALL_NUMBER: u64 = 70;
+
 pub fn dispatch_numbered(number: u64, a: [u64; 6]) -> Option<SyscallResult> {
     if let Some(r) = ipc::dispatch(number, a) {
         return Some(r);
@@ -976,6 +994,13 @@ pub fn dispatch_numbered(number: u64, a: [u64; 6]) -> Option<SyscallResult> {
     }
     Some(match number {
         436 => close_range::sys_close_range(a[0] as u32, a[1] as u32, a[2] as u32),
+        // The older faccessat numbers have no flags argument. Hosted libc's
+        // faccessat uses this entry so AT_EACCESS reaches the credential check.
+        439 => fs::sys_faccessat(a[0] as i32, a[1], a[2] as u32, a[3] as u32),
+        FADVISE_SYSCALL_NUMBER => fs::sys_fadvise(a[0] as i32, a[1] as i64, a[2] as i64, a[3] as i32),
+        FALLOCATE_SYSCALL_NUMBER => fs::sys_fallocate(a[0] as i32, a[1] as u32, a[2] as i64, a[3] as i64),
+        PREADV_SYSCALL_NUMBER => iovec::sys_preadv(a[0] as i32, a[1], a[2] as i32, a[3] as i64),
+        PWRITEV_SYSCALL_NUMBER => iovec::sys_pwritev(a[0] as i32, a[1], a[2] as i32, a[3] as i64),
         PRCTL_SYSCALL_NUMBER => prctl::sys_prctl(a[0], a[1]),
         FLOCK_SYSCALL_NUMBER => crate::fs::flock::sys_flock(a[0] as i32, a[1] as i32),
         REBOOT_SYSCALL_NUMBER => reboot::sys_reboot(a[0], a[1], a[2]),

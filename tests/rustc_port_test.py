@@ -256,6 +256,9 @@ class RustcPort(unittest.TestCase):
         path = RECORDS.parent / 'x2.json'
         self.assertTrue(path.is_file(), 'X2 rustc driver link result has not been recorded')
         record = json.loads(path.read_text())
+        errno_port = record['ruling_108']['patch']
+        self.assertEqual(errno_port['sha256'], hashlib.sha256(ERRNO_PATCH.read_bytes()).hexdigest())
+        self.assertEqual(errno_port['text'], ERRNO_PATCH.read_text())
         self.assertTrue(record['prediction'].strip())
         self.assertLess(datetime.datetime.fromisoformat(record['prediction_time']),
                         datetime.datetime.fromisoformat(record['time']))
@@ -289,6 +292,8 @@ class RustcPort(unittest.TestCase):
         executable = artifacts['rustc']
         libc = artifacts['libc']
         self.assertRegex(driver['name'], r'^librustc_driver(?:-[0-9a-f]+)?\.so$')
+        self.assertNotIn('errno_location', driver['inventory']['undefined_symbols'])
+        self.assertIn('__errno_location', driver['inventory']['undefined_symbols'])
         self.assertEqual(executable['name'], 'rustc')
         self.assertEqual(libc['name'], 'libc.so')
         self.assertEqual(libc['elf_type'], 'ET_DYN')

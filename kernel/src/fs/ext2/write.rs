@@ -11,15 +11,36 @@ impl Ext2Fs {
         unprivileged: bool,
         mapped: bool,
     ) -> Result<usize, &'static str> {
+        self.update_file_range_disk(inode_num, offset, file::RangeData::Write(data), unprivileged, mapped)?;
+        Ok(data.len())
+    }
+
+    /// Reserve the missing blocks in a range; existing data is left in place.
+    pub(super) fn allocate_file_range_disk(
+        &mut self,
+        inode_num: u32,
+        offset: u64,
+        len: u64,
+        unprivileged: bool,
+    ) -> Result<(), &'static str> {
+        self.update_file_range_disk(inode_num, offset, file::RangeData::Preallocate(len), unprivileged, false)
+    }
+
+    fn update_file_range_disk(
+        &mut self,
+        inode_num: u32,
+        offset: u64,
+        range: file::RangeData<'_>,
+        unprivileged: bool,
+        mapped: bool,
+    ) -> Result<(), &'static str> {
         self.check_shrink(inode_num)?;
-        if data.is_empty() {
-            return Ok(0);
+        if range.len() == 0 {
+            return Ok(());
         }
 
-        if offset
-            .checked_add(data.len() as u64)
-            .map_or(true, |end| end > self.max_file_size())
-        {
+        let end = offset.checked_add(range.len()).ok_or("File too large")?;
+        if end > self.max_file_size() {
             return Err("File too large");
         }
 
@@ -33,7 +54,7 @@ impl Ext2Fs {
 
         let mode_before = inode.i_mode;
         let times_before = (inode.i_mtime, inode.i_ctime);
-        if unprivileged {
+        if unprivileged && (matches!(range, file::RangeData::Write(_)) || end > inode.size()) {
             inode.i_mode &= !content_privilege(inode.i_mode);
         }
 
@@ -48,24 +69,19 @@ impl Ext2Fs {
         let previous_epoch = object
             .as_ref()
             .map(|object| object.map.note_disk_write(self.durable_epoch()));
-        let written = if mapped {
-            file::write_mapped_file_range(
-                self.device.as_ref(),
-                &mut inode,
-                &self.superblock,
-                &mut self.block_groups,
-                offset,
-                data,
-            )
-        } else {
-            file::write_file_range_tracked(
-                self.device.as_ref(),
-                &mut inode,
-                &self.superblock,
-                &mut self.block_groups,
-                offset,
-                data,
-            )
+        let written = match range {
+            file::RangeData::Write(data) if mapped => file::write_mapped_file_range(
+                self.device.as_ref(), &mut inode, &self.superblock,
+                &mut self.block_groups, offset, data,
+            ),
+            file::RangeData::Write(data) => file::write_file_range_tracked(
+                self.device.as_ref(), &mut inode, &self.superblock,
+                &mut self.block_groups, offset, data,
+            ),
+            file::RangeData::Preallocate(_) => file::write_file_range_batched(
+                self.device.as_ref(), &mut inode, &self.superblock,
+                &mut self.block_groups, offset, range, false,
+            ),
         };
         if written == Err(crate::block::BlockError::MetadataPublishFailed) {
             // The bitmap may have landed only in part. Do not publish inode
@@ -109,6 +125,12 @@ impl Ext2Fs {
                 &self.block_groups,
             )
             .map_err(|_| "Failed to write inode");
+        if matches!(range, file::RangeData::Preallocate(_)) {
+            if let Err(error) = persisted.and(linked) {
+                self.fail_writes();
+                return Err(error);
+            }
+        }
         let changed = written.map_err(|error| match error {
             crate::block::BlockError::NoSpace => "No free blocks available",
             crate::block::BlockError::OutOfMemory => "No memory for file write",
@@ -127,7 +149,7 @@ impl Ext2Fs {
             }
         }
         self.live_inodes.publish_size(inode_num, inode.size());
-        Ok(data.len())
+        Ok(())
     }
 
 }

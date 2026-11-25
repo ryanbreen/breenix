@@ -1298,9 +1298,9 @@
   },
   "artifacts": {
     "librustc_driver": {
-      "name": "librustc_driver-87725a013a97c44d.so",
-      "size": 262534640,
-      "sha256": "537c693a612f4fa284edd5ce359a4efd884a2a8715370297ecb57c802b26073c",
+      "name": "librustc_driver-2e1bf4637bebadba.so",
+      "size": 262526040,
+      "sha256": "c018a32f90702b369f225abf99200e23decd5cde61b9fd2301f358ef538fe206",
       "inventory": {
         "dynamic_relocations": [
           "R_X86_64_64",
@@ -1358,7 +1358,6 @@
           "dup3",
           "environ",
           "erf",
-          "errno_location",
           "execv",
           "execve",
           "execvp",
@@ -1655,11 +1654,11 @@
         "pt_interp": []
       },
       "dynamic_relocation_counts": {
-        "R_X86_64_64": 4488,
+        "R_X86_64_64": 4489,
         "R_X86_64_DTPMOD64": 1,
         "R_X86_64_GLOB_DAT": 1179,
-        "R_X86_64_JUMP_SLOT": 10585,
-        "R_X86_64_RELATIVE": 276210
+        "R_X86_64_JUMP_SLOT": 10583,
+        "R_X86_64_RELATIVE": 276213
       },
       "undefined_weak": [],
       "readelf": {
@@ -1670,7 +1669,7 @@
           "--dyn-relocations",
           "--wide"
         ],
-        "sha256": "fb2664607f2e14a1b58ff8739c2ceb9c9f9bd71cedec5cc35b632516c6f95ee1"
+        "sha256": "568208a44421c848663e82074b7a8609a5cb9f8e6c224fa232914f52485e9ccb"
       },
       "nm": {
         "args": [
@@ -1678,9 +1677,9 @@
           "--undefined-only",
           "--format=posix"
         ],
-        "sha256": "4dee74b875d85e17fb92ce3db8a6027a17550ddbfca14f65a698a140393e48f0"
+        "sha256": "67b867da67cc525bbd7f0880cbedc7b44da9700bab0bfb6725cc72a49b32f6aa"
       },
-      "dynamic_export_evidence_sha256": "678d265b0a2d0166c10504c9d21449ee8ff7cfefdc2d7f6dc9b4b563c25af002",
+      "dynamic_export_evidence_sha256": "ba1f07f5b9ddc0c66d26a11a709b2108c48a0548e2507685d0993a9f95e6a6c8",
       "elf_type": "ET_DYN",
       "pt_tls": {
         "file_size": 0,
@@ -1692,53 +1691,37 @@
         "$ORIGIN/../lib:$ORIGIN/../lib:/lib"
       ],
       "dt_soname": [
-        "librustc_driver-87725a013a97c44d.so"
+        "librustc_driver-2e1bf4637bebadba.so"
       ],
       "defined_dynamic_symbols_count": 19840,
       "strong_undefined_after_scope": [
         "__breenix_got_start",
         "__breenix_text_start",
-        "__tls_get_addr",
         "dladdr",
         "dlclose",
         "dlerror",
         "dlopen",
-        "dlsym",
-        "dup3",
-        "errno_location",
-        "faccessat",
-        "fstatat",
-        "getrusage",
-        "mkdirat",
-        "msync",
-        "posix_fadvise",
-        "posix_fallocate",
-        "posix_madvise",
-        "preadv",
-        "pwritev",
-        "readlinkat",
-        "symlinkat",
-        "sync"
+        "dlsym"
       ]
     },
     "rustc": {
       "name": "rustc",
       "size": 4152,
-      "sha256": "96e71ee2fde4c9bb55d744707507c8ef9f9ef37ea90e2d0b51037f3c0533c79f",
+      "sha256": "727bce3feb9d1543bc7b22776ad348ee5041a2004b72a4d24b6e7a5ecdd5ac79",
       "inventory": {
         "dynamic_relocations": [
           "R_X86_64_JUMP_SLOT"
         ],
         "tls_models": [],
         "undefined_symbols": [
-          "_RNvCs5MGJD4C8crK_17rustc_driver_impl4main",
+          "_RNvCscNTCD2TqieA_17rustc_driver_impl4main",
           "_ZN3std2rt19lang_start_internal17hf08a2b16c43806d9E",
           "__breenix_libc_init",
           "exit"
         ],
         "dt_needed": [
           "libc.so",
-          "librustc_driver-87725a013a97c44d.so"
+          "librustc_driver-2e1bf4637bebadba.so"
         ],
         "pt_interp": [
           "/lib/ld-breenix.so"
@@ -1756,7 +1739,7 @@
           "--dyn-relocations",
           "--wide"
         ],
-        "sha256": "58e46cd47dc028044dedbce30a998c7421d0b92ccca74ce4dcc1e4cd58f0d24b"
+        "sha256": "cb24279734affe924c2474aa9855e47f9dd4d8d2d7a594a5a1d9c40cfbd75d5e"
       },
       "nm": {
         "args": [
@@ -1764,7 +1747,7 @@
           "--undefined-only",
           "--format=posix"
         ],
-        "sha256": "709eb9f5e93f825d35d91527e3ca271d24e99a01f1d537db5ffc4844eb3626e2"
+        "sha256": "a9ecfb63f7e1c4c859b294149a3a4a56cad8f20ddcd400e7fae4d0a5c63bbce3"
       },
       "dynamic_export_evidence_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "elf_type": "ET_EXEC",
@@ -1777,8 +1760,8 @@
     },
     "libc": {
       "name": "libc.so",
-      "size": 1415200,
-      "sha256": "125ecf82ada23ed25a8add1c2fa1f62bc1f0810ce12dd776645b2fe1526f3617",
+      "size": 1397544,
+      "sha256": "a3cd53f1991ec9d5fea83dea333177217a387bb17ceb177425dd45d3140307b9",
       "inventory": {
         "dynamic_relocations": [
           "R_X86_64_GLOB_DAT",
@@ -1792,7 +1775,7 @@
       },
       "dynamic_relocation_counts": {
         "R_X86_64_GLOB_DAT": 12,
-        "R_X86_64_JUMP_SLOT": 100,
+        "R_X86_64_JUMP_SLOT": 123,
         "R_X86_64_RELATIVE": 1024
       },
       "undefined_weak": [],
@@ -1804,7 +1787,7 @@
           "--dyn-relocations",
           "--wide"
         ],
-        "sha256": "710975135e9583c5f7853f1f0357b3e5ecc1e5a249045b6494c7bd9961c108a1"
+        "sha256": "7399869a52cc9bd039b9314af5ef6b1903f38a0eb7d53317f1ac6ce4930d6485"
       },
       "nm": {
         "args": [
@@ -1814,13 +1797,13 @@
         ],
         "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
       },
-      "dynamic_export_evidence_sha256": "ab86a416c6b822cee75258611caa16a51efea8a85fbbb141be6a92d0463d9938",
+      "dynamic_export_evidence_sha256": "64d24552645f4772e2d632dd5228760588611fa514e8540941b166573691fe9e",
       "elf_type": "ET_DYN",
       "dt_runpath": [],
       "dt_soname": [
         "libc.so"
       ],
-      "defined_dynamic_symbols_count": 1174,
+      "defined_dynamic_symbols_count": 1190,
       "strong_undefined_after_scope": []
     }
   },
@@ -1837,7 +1820,7 @@
     ],
     "undefined_symbols": [
       "_Exit",
-      "_RNvCs5MGJD4C8crK_17rustc_driver_impl4main",
+      "_RNvCscNTCD2TqieA_17rustc_driver_impl4main",
       "_ZN3std2rt19lang_start_internal17hf08a2b16c43806d9E",
       "__breenix_got_start",
       "__breenix_libc_init",
@@ -1884,7 +1867,6 @@
       "dup3",
       "environ",
       "erf",
-      "errno_location",
       "execv",
       "execve",
       "execvp",
@@ -2177,7 +2159,7 @@
     ],
     "dt_needed": [
       "libc.so",
-      "librustc_driver-87725a013a97c44d.so"
+      "librustc_driver-2e1bf4637bebadba.so"
     ],
     "pt_interp": [
       "/lib/ld-breenix.so"
@@ -2449,5 +2431,185 @@
       "time": "2026-11-25T13:48:46.791950+00:00",
       "wall_seconds": 16.332
     }
+  },
+  "ruling_108": {
+    "check_first": "85232977",
+    "referencing_crate": "errno 0.3.12",
+    "license": "MIT OR Apache-2.0",
+    "extern_abi": "C int *__errno_location(void), returning the calling thread errno address",
+    "patch": {
+      "file": "toolchain/rust-host/k5/patches/errno-0.3.12-breenix.patch",
+      "sha256": "5886496e46476c493770c8a784031bb250526cfd3985d0f20d189b4d90136c71",
+      "text": "diff --git a/src/unix.rs b/src/unix.rs\n--- a/src/unix.rs\n+++ b/src/unix.rs\n@@ -100,0 +101 @@\n+    #[cfg_attr(target_os = \"breenix\", link_name = \"__errno_location\")]\n"
+    },
+    "cargo_patch_config": "[patch.crates-io]\nerrno = { path = \"<kd-u6>/patches/errno-0.3.12\" }\n",
+    "lockfile": {
+      "previous_sha256": "3f01023fd98fd8f99550ce235cc8409829268678f0098f6fae33666ea37e6cad",
+      "local_sha256": "3ad08c97bad1ba8dd686a8bf8ecf29caa6d0894f30476b57ee5fa79468f8d6b9",
+      "diff": "--- ruling-105/Cargo.lock\n+++ ruling-108/Cargo.lock\n@@ -1143,8 +1143,6 @@\n [[package]]\n name = \"errno\"\n version = \"0.3.12\"\n-source = \"registry+https://github.com/rust-lang/crates.io-index\"\n-checksum = \"cea14ef9355e3beab063703aa9dab15afd25f0667c341310c1e5274bb1d0da18\"\n dependencies = [\n  \"libc\",\n  \"windows-sys 0.59.0\",\n"
+    },
+    "fork_status_before": "",
+    "fork_status_after": "",
+    "registry_snapshot_before_sha256": "03a282c9c18e239736fd9494e40236b1d18d4f5f030b74a9b49d98b85791256d",
+    "registry_snapshot_after_sha256": "03a282c9c18e239736fd9494e40236b1d18d4f5f030b74a9b49d98b85791256d",
+    "registry_diagnostics_also_present_without_port": [
+      {
+        "diagnostic": "hidden lifetime parameters in types are deprecated",
+        "file": "lib.rs",
+        "line": 46,
+        "count": 1
+      },
+      {
+        "diagnostic": "hidden lifetime parameters in types are deprecated",
+        "file": "lib.rs",
+        "line": 57,
+        "count": 1
+      },
+      {
+        "diagnostic": "unreachable `pub` item",
+        "file": "unix.rs",
+        "line": 27,
+        "count": 1
+      },
+      {
+        "diagnostic": "unreachable `pub` item",
+        "file": "unix.rs",
+        "line": 50,
+        "count": 1
+      },
+      {
+        "diagnostic": "unreachable `pub` item",
+        "file": "unix.rs",
+        "line": 52,
+        "count": 1
+      },
+      {
+        "diagnostic": "unreachable `pub` item",
+        "file": "unix.rs",
+        "line": 56,
+        "count": 1
+      }
+    ],
+    "bootstrap": {
+      "command": [
+        "taskpolicy",
+        "-b",
+        "nice",
+        "-n",
+        "15",
+        "python3",
+        "x.py",
+        "build",
+        "--stage",
+        "1",
+        "compiler/rustc",
+        "--config",
+        "<kd>/x2/bootstrap.toml",
+        "--verbose"
+      ],
+      "config_root": "<kd-u6>/patches",
+      "port": {
+        "budget_seconds": 9217,
+        "started": "2026-11-25T15:07:20.477785+00:00",
+        "exit_status": 0,
+        "time": "2026-11-25T15:24:55.544505+00:00",
+        "wall_seconds": 1055.056,
+        "log_sha256": "71ae0e6aa333252d0e2b707781e5cf54bf1174cc342df5ff3ce1138bd31a7ff8"
+      },
+      "final_link": {
+        "budget_seconds": 8100,
+        "started": "2026-11-25T15:30:51.908909+00:00",
+        "exit_status": 0,
+        "time": "2026-11-25T15:31:09.830392+00:00",
+        "wall_seconds": 17.921,
+        "log_sha256": "550d60d04c3a3f5877a9e5e2aa3b5d99aca74b825d87a7335eaf8272a0bf8a47"
+      }
+    },
+    "libc_build": {
+      "budget_seconds": 1800,
+      "started": "2026-11-25T15:29:01.027321+00:00",
+      "exit_status": 0,
+      "time": "2026-11-25T15:29:08.688543+00:00",
+      "wall_seconds": 7.661,
+      "log_sha256": "6819c94cd728bdd33c5a642ab06f058c79f451ba99490713dc08464e8c8ee7f2"
+    },
+    "link_map_sha256": {
+      "librustc_driver-2e1bf4637bebadba.so.map": "9731e36af01238c7a922c5c598254f160409d886a6fb0c9fa95f6456f2db824a",
+      "rustc.map": "bb93b5debc6378c257cf55ce04d96a6ec267b46e685c52c4a908249bb1bd57c5"
+    },
+    "driver_undefined_delta": {
+      "removed": [
+        "errno_location"
+      ],
+      "added": [],
+      "replacement": {
+        "__errno_location": "libc.so"
+      }
+    },
+    "one_process_state": "pass",
+    "original_strong_undefined_providers": {
+      "__breenix_got_start": [],
+      "__breenix_text_start": [],
+      "__tls_get_addr": [
+        "libc.so"
+      ],
+      "dladdr": [],
+      "dlclose": [],
+      "dlerror": [],
+      "dlopen": [],
+      "dlsym": [],
+      "dup3": [
+        "libc.so"
+      ],
+      "errno_location": [],
+      "faccessat": [
+        "libc.so"
+      ],
+      "fstatat": [
+        "libc.so"
+      ],
+      "getrusage": [
+        "libc.so"
+      ],
+      "mkdirat": [
+        "libc.so"
+      ],
+      "msync": [
+        "libc.so"
+      ],
+      "posix_fadvise": [
+        "libc.so"
+      ],
+      "posix_fallocate": [
+        "libc.so"
+      ],
+      "posix_madvise": [
+        "libc.so"
+      ],
+      "preadv": [
+        "libc.so"
+      ],
+      "pwritev": [
+        "libc.so"
+      ],
+      "readlinkat": [
+        "libc.so"
+      ],
+      "symlinkat": [
+        "libc.so"
+      ],
+      "sync": [
+        "libc.so"
+      ]
+    },
+    "remaining_strong_undefined": [
+      "__breenix_got_start",
+      "__breenix_text_start",
+      "dladdr",
+      "dlclose",
+      "dlerror",
+      "dlopen",
+      "dlsym"
+    ]
   }
 }

@@ -4252,6 +4252,83 @@ pub fn sys_sync() -> SyscallResult {
     SyscallResult::Ok(0)
 }
 
+fn is_pipe(kind: &FdKind) -> bool {
+    matches!(kind, FdKind::PipeRead(_) | FdKind::PipeWrite(_)
+        | FdKind::FifoRead(..) | FdKind::FifoWrite(..) | FdKind::FifoReadWrite(..))
+}
+
+/// Accept POSIX file access hints. Read ahead at most 16 pages for WILLNEED;
+/// the standard leaves the use of the other hints to the filesystem policy.
+pub fn sys_fadvise(fd: i32, offset: i64, len: i64, advice: i32) -> SyscallResult {
+    use super::errno::{EINVAL, ESPIPE};
+
+    if offset < 0 || len < 0 || !(0..=5).contains(&advice) {
+        return SyscallResult::Err(EINVAL as u64);
+    }
+    let entry = match super::metadata::descriptor_entry(fd) {
+        Ok(entry) => entry,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
+    if is_pipe(&entry.kind) {
+        return SyscallResult::Err(ESPIPE as u64);
+    }
+    const POSIX_FADV_WILLNEED: i32 = 3;
+    if let (POSIX_FADV_WILLNEED, FdKind::RegularFile(file)) = (advice, &entry.kind) {
+        let node = file.lock().open.node.clone();
+        const PAGE_SIZE: u64 = 4096;
+        let first = offset as u64 / PAGE_SIZE;
+        let last = if len == 0 { u64::MAX } else { (offset as u64 + len as u64).div_ceil(PAGE_SIZE) };
+        // Readahead is advisory. A cache miss or pressure cannot change the
+        // outcome of ordinary reads from this descriptor.
+        let _ = crate::memory::file_map::populate(&node, first, (last - first).min(16));
+    }
+    SyscallResult::Ok(0)
+}
+
+/// Reserve storage before reporting success, preserving the open description's offset.
+pub fn sys_fallocate(fd: i32, mode: u32, offset: i64, len: i64) -> SyscallResult {
+    use super::errno::{EBADF, EFBIG, EINVAL, ENODEV, EOPNOTSUPP, ESPIPE};
+
+    if offset < 0 || len <= 0 {
+        return SyscallResult::Err(EINVAL as u64);
+    }
+    if mode != 0 {
+        return SyscallResult::Err(EOPNOTSUPP as u64);
+    }
+    let entry = match super::metadata::descriptor_entry(fd) {
+        Ok(entry) => entry,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
+    if is_pipe(&entry.kind) {
+        return SyscallResult::Err(ESPIPE as u64);
+    }
+    if !entry.writable() {
+        return SyscallResult::Err(EBADF as u64);
+    }
+    let FdKind::RegularFile(file) = &entry.kind else {
+        return SyscallResult::Err(ENODEV as u64);
+    };
+    let Some(end) = offset.checked_add(len) else {
+        return SyscallResult::Err(EFBIG as u64);
+    };
+    if end as u64 > super::resource::current_fsize() {
+        super::resource::signal_fsize();
+        return SyscallResult::Err(EFBIG as u64);
+    }
+    let cred = match current_file_credentials() {
+        Ok(cred) => cred,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
+    let (fs, node) = {
+        let file = file.lock();
+        (file.open.fs.clone(), file.open.node.clone())
+    };
+    match fs.preallocate(&node, offset as u64, len as u64, !cred.privileged()) {
+        Ok(()) => SyscallResult::Ok(0),
+        Err(errno) => SyscallResult::Err(errno.into()),
+    }
+}
+
 /// ftruncate changes the inode, leaving every open file description's offset alone.
 pub fn sys_ftruncate(fd: i32, length: i64) -> SyscallResult {
     if length < 0 {

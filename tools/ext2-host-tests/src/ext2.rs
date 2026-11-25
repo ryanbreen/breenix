@@ -533,7 +533,19 @@ pub(crate) mod reclaim_checks {
     fn fallocate_reserves_holes_without_replacing_file_bytes() {
         const BLOCK: u64 = 4096;
         let (mut fs, data, _, _) = two_orphans();
-        fs.write_inode(1, &Ext2Inode::new_regular_file(0o600, 0, 0)).unwrap();
+        {
+            let mut bytes = data.lock().unwrap();
+            // The orphan fixture allocates its data blocks only. Mark its
+            // metadata blocks used too before exercising the allocator.
+            bytes[3 * 4096..3 * 4096 + 3].copy_from_slice(&[0xff, 0xff, 0x3f]);
+        }
+        fs.block_groups[0].bg_free_blocks_count = 490;
+        fs.superblock.s_free_blocks_count = 490;
+        let mut inode = fs.read_inode(1).unwrap();
+        inode.i_block[0] = 0;
+        inode.i_block[1] = 20;
+        inode.i_size = BLOCK as u32;
+        fs.write_inode(1, &inode).unwrap();
         fs.write_file_range(1, BLOCK, b"keep").unwrap();
         let free = fs.statfs().free_blocks;
         let start = BLOCK - 1;

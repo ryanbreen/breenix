@@ -801,6 +801,24 @@ impl FileSystem for Ext2Adapter {
         result
     }
 
+    fn preallocate(
+        &self, node: &VNode, offset: u64, len: u64, clear_setid: bool,
+    ) -> Result<(), Errno> {
+        let ino = ext2::ino32(node.ino)?;
+        let mut guard = write_mount(self.mount)
+            .map_err(errno)?
+            .wait_for_inode(ino)
+            .map_err(errno)?;
+        let fs = guard.as_mut().ok_or(Errno(EIO))?;
+        let handle = self.pin_node(fs, node)?;
+        fs.ensure_writable().map_err(errno)?;
+        let ino = handle.verify(fs).map_err(errno)?;
+        fs.allocate_file_range_disk(ino, offset, len, clear_setid).map_err(errno)?;
+        let inode = fs.read_inode(ino).map_err(errno)?;
+        node.map.transition(inode.size());
+        refresh(node, &inode)
+    }
+
     fn resize(
         &self, node: &VNode, size: u64, clear_setid: bool,
         check: &dyn Fn(NodeAttrs) -> Result<(), Errno>,

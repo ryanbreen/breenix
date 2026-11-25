@@ -378,6 +378,12 @@ pub trait FileSystem: core::any::Any + Send + Sync {
     fn write(&self, _node: &VNode, _req: WriteReq, _buf: &[u8]) -> Result<WriteResult, WriteError> {
         Err(Errno(EOPNOTSUPP).into())
     }
+    /// Reserve storage for this byte range without changing its existing contents.
+    fn preallocate(
+        &self, _node: &VNode, _offset: u64, _len: u64, _clear_setid: bool,
+    ) -> Result<(), Errno> {
+        Err(Errno(EOPNOTSUPP))
+    }
     /// Evaluate VFS policy on fresh metadata after waiting for mutation exclusion.
     /// A policy error leaves the inode and mappings unchanged.
     fn resize(

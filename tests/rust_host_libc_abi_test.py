@@ -16,6 +16,9 @@ O_NDELAY O_CLOEXEC O_NONBLOCK PATH_MAX
 SIGEV_SIGNAL SIGEV_NONE SIGEV_THREAD SIGEV_THREAD_ID SIG_BLOCK SIG_UNBLOCK SIG_SETMASK'''.split()
 LAYOUTS = {
     'fsid_t': ['__val'],
+    'stat': '''st_dev st_ino st_nlink st_mode st_uid st_gid st_rdev st_size st_blksize
+               st_blocks st_atime st_atime_nsec st_mtime st_mtime_nsec
+               st_ctime st_ctime_nsec'''.split(),
     'statfs': '''f_type f_bsize f_blocks f_bfree f_bavail f_files f_ffree f_fsid
                  f_namelen f_frsize f_flags f_spare'''.split(),
     'iovec': ['iov_base', 'iov_len'],
@@ -31,6 +34,11 @@ C_TYPES = {
     'sigevent_notify': '__typeof__(((struct sigevent *)0)->__notify)',
     'sigevent_thread': '__typeof__(((struct sigevent *)0)->__notify.thread)',
 }
+C_STAT_NAMES = {f'st_{kind}time_nsec': f'st_{kind}tim.tv_nsec' for kind in 'amc'}
+RUSAGE_FIELDS = '''ru_utime.tv_sec ru_utime.tv_usec ru_stime.tv_sec ru_stime.tv_usec
+                   ru_maxrss ru_ixrss ru_idrss ru_isrss ru_minflt ru_majflt ru_nswap
+                   ru_inblock ru_oublock ru_msgsnd ru_msgrcv ru_nsignals ru_nvcsw
+                   ru_nivcsw'''.split()
 SIGNATURES = {
     'dup3': ('int', 'int, int, int'),
     'faccessat': ('int', 'int, const char *, int, int'),
@@ -71,7 +79,8 @@ def check(arch, deps, rustc, clang):
     clines = ['#define _GNU_SOURCE 1']
     for header in ('stddef.h', 'limits.h', 'errno.h', 'fcntl.h', 'dirent.h', 'pthread.h',
                    'signal.h', 'unistd.h', 'sys/file.h',
-                   'sys/ioctl.h', 'sys/mman.h', 'sys/stat.h', 'sys/statfs.h', 'sys/statvfs.h', 'sys/uio.h',
+                   'sys/ioctl.h', 'sys/mman.h', 'sys/resource.h', 'sys/stat.h', 'sys/statfs.h',
+                   'sys/statvfs.h', 'sys/uio.h',
                    'sys/sysmacros.h'):
         clines.append(f'#include <{header}>')
     rlines = ['#![no_std]', '#![feature(rustc_private)]', 'extern crate libc;']
@@ -95,8 +104,18 @@ def check(arch, deps, rustc, clang):
         cvalues += [f'sizeof({ctype})', f'_Alignof({ctype})']
         rvalues += [f'core::mem::{operation}::<{rtype}>() as u64'
                     for operation in ('size_of', 'align_of')]
-        cvalues += [f'offsetof({ctype}, {member})' for member in members]
+        cmembers = [C_STAT_NAMES.get(member, member) if name == 'stat' else member
+                    for member in members]
+        cvalues += [f'offsetof({ctype}, {member})' for member in cmembers]
         rvalues += [f'core::mem::offset_of!({rtype}, {member}) as u64' for member in members]
+    # The kernel's getrusage wire record is an array of signed 64-bit words:
+    # the two timevals first, then the fourteen remaining long fields.
+    cvalues += ['sizeof(struct rusage)', '_Alignof(struct rusage)']
+    rvalues += [f'core::mem::{operation}::<[i64; 18]>() as u64'
+                for operation in ('size_of', 'align_of')]
+    cvalues += [f'offsetof(struct rusage, {member})' for member in RUSAGE_FIELDS]
+    rvalues += [f'({index} * core::mem::size_of::<i64>()) as u64'
+                for index, _ in enumerate(RUSAGE_FIELDS)]
     for pair in ((0, 0), (0xfff, 0xfffff), (0x1042, 0x1abcd7)):
         for expr in ('makedev({}, {})', 'major(makedev({}, {}))', 'minor(makedev({}, {}))'):
             value = expr.format(*pair)
@@ -108,7 +127,8 @@ def check(arch, deps, rustc, clang):
 
     def compile_ir(command, file, lines):
         file.write_text('\n'.join(lines) + '\n')
-        ir = subprocess.check_output([*command, str(file), '-o', '-'], text=True, timeout=15)
+        ir = subprocess.check_output([*command, str(file), '-o', '-'], cwd=work,
+                                     text=True, timeout=15)
         return next(line for line in ir.splitlines() if line.startswith('@ABI = '))
 
     with tempfile.TemporaryDirectory(prefix='breenix-x2-libc-abi-') as temp:
