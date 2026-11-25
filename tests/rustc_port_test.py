@@ -19,6 +19,25 @@ def git(*args, tree=TREE):
 
 
 class RustcPort(unittest.TestCase):
+    def test_x2_static_route_answered_with_citations(self):
+        record = json.loads((RECORDS.parent / 'x2.json').read_text())
+        route = record['static_route']
+        self.assertIn(route['answer'], ('documented', 'none'))
+        self.assertTrue(route['citations'])
+        pin = tomllib.loads((ROOT / 'rust-fork.toml').read_text())['hosted']['commit']
+        for citation in route['citations']:
+            self.assertEqual(set(citation), {'file', 'line', 'quote'})
+            self.assertTrue(citation['file'] == 'bootstrap.example.toml' or
+                            citation['file'].startswith('src/doc/rustc-dev-guide/') or
+                            citation['file'].startswith('src/doc/rustc/'))
+            self.assertIs(type(citation['line']), int)
+            self.assertGreater(citation['line'], 0)
+            self.assertTrue(citation['quote'].strip())
+            contents = git('show', f"{pin}:{citation['file']}", tree=ROOT / 'rust-fork')
+            lines = contents.splitlines()
+            self.assertLessEqual(citation['line'], len(lines))
+            self.assertEqual(lines[citation['line'] - 1], citation['quote'])
+
     def test_x2_inventory_recorded(self):
         path = RECORDS.parent / 'x2.json'
         self.assertTrue(path.is_file(), 'X2 rustc driver link result has not been recorded')
