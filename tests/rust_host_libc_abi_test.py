@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 LIBC = ROOT / 'libs/libbreenix-libc/include'
 NAMES = '''FIONREAD LOCK_SH LOCK_EX LOCK_NB LOCK_UN ST_RDONLY ST_NOSUID
 POSIX_FADV_NORMAL POSIX_FADV_RANDOM POSIX_FADV_SEQUENTIAL POSIX_FADV_WILLNEED
-POSIX_FADV_DONTNEED POSIX_FADV_NOREUSE GETENTROPY_MAX'''.split()
+POSIX_FADV_DONTNEED POSIX_FADV_NOREUSE GETENTROPY_MAX _SC_ARG_MAX'''.split()
 LAYOUTS = {
     'fsid_t': ['__val'],
     'statfs': '''f_type f_bsize f_blocks f_bfree f_bavail f_files f_ffree f_fsid
