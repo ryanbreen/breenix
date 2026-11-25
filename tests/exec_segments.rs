@@ -448,7 +448,14 @@ fn padded_exec_helper_reads_its_padding() {
     let (pages, read) = chunked_image(&path, 183, 0x0001_0000_0000_0000);
     std::fs::remove_file(&path).unwrap();
     assert!(pages == whole_file_image(&padded), "the patched helper does not load as its whole-file copy");
-    for (address, page) in whole_file_image(&image) {
+    // The program header table is loaded with the first segment, so the one
+    // rewritten header shows there; the rest of the program's pages equal
+    // the original's.
+    let mut program_pages = whole_file_image(&image);
+    let slot = 0x4000_0000 + offset as u64;
+    assert_eq!(&image[..8], &program_pages[&0x4000_0000][..8], "the first PT_LOAD maps file offset 0");
+    program_pages.get_mut(&(slot & !4095)).unwrap()[(slot & 4095) as usize..][..PHDR].copy_from_slice(&header);
+    for (address, page) in program_pages {
         assert_eq!(pages[&address], page, "program page {address:#x} changed");
     }
     let padding = size - ((image.len() + 4095) & !4095);

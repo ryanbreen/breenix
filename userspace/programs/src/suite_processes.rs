@@ -290,6 +290,9 @@ fn stack_trampoline() -> CaseResult {
 // ---------------------------------------------------------------------------
 // Everything below is the processes effort's own cases and the helpers they share.
 
+#[cfg(not(target_arch = "x86_64"))]
+mod padded_elf;
+
 #[cfg(target_arch = "x86_64")]
 mod nr {
     pub const WRITE: u64 = 1;
@@ -1463,8 +1466,12 @@ fn kill_readers() -> CaseResult {
 #[cfg(not(target_arch = "x86_64"))]
 const PADDED_READ_MS: u64 = 20;
 
-/// A copy of the helper with zeros after it, which the loader ignores but an
-/// exec reads through the same file read path. The zeros double until reading
+/// A copy of the helper with zeros after it. exec reads PT_LOAD bytes, not the
+/// rest of the file, so the copy's ignored PT_GNU_STACK header becomes a
+/// read-only PT_LOAD of the zeros (padded_elf::padding_load), and exec reads
+/// them through the same bounded file reads as the program.
+/// claim-lint:ok: userspace/programs/src/suite_processes.rs padded_helper: read_ms reads the file with std::fs::read and the loop stops at 8 MiB or PADDED_READ_MS.
+/// The zeros double until reading
 /// the whole file takes PADDED_READ_MS, up to 8 MiB: a slow disk may need none,
 /// and how fast one writes says little about how fast it reads back what it
 /// just wrote. Written 64 KiB per call, so a kill ends the writer within one,
@@ -1489,7 +1496,10 @@ fn padded_helper(tmp: &Tmp) -> Result<(String, usize, u64), CaseError> {
         let mut size = image.len();
         loop {
             let took = read_ms(size)?;
-            if took >= PADDED_READ_MS || size >= MAX_SIZE { return Ok((size, took)); }
+            if took >= PADDED_READ_MS || size >= MAX_SIZE {
+                if size > image.len() { load_padding(fd, &image, size)?; }
+                return Ok((size, took));
+            }
             let target = (size * 2).min(MAX_SIZE);
             while size < target {
                 let n = CHUNK.min(target - size);
@@ -1506,6 +1516,15 @@ fn padded_helper(tmp: &Tmp) -> Result<(String, usize, u64), CaseError> {
     synced?;
     want("chmod", chmod(&path, 0o755))?;
     Ok((path, size, took))
+}
+
+/// Replace the padded copy's PT_GNU_STACK header with the PT_LOAD of its padding.
+#[cfg(not(target_arch = "x86_64"))]
+fn load_padding(fd: Fd, image: &[u8], size: usize) -> CaseResult {
+    let (offset, header) = padded_elf::padding_load(image, size as u64)
+        .map_err(|e| format!("the padded helper's padding header: {e}"))?;
+    let n = sc(libbreenix::syscall::nr::PWRITE64, &[fd.raw(), header.as_ptr() as u64, header.len() as u64, offset]);
+    check(n == header.len() as i64, &format!("pwrite of the padded helper's padding header returned {}", shown(n)))
 }
 
 /// Fork a child that writes a byte and then execs `path` (the helper, or
