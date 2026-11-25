@@ -190,7 +190,18 @@ fn dtpmod64_gets_module_id() {
     assert_eq!(slots.next(), None);
     let first = Object::parse(b"/fixture/first.so", &tls.file, BIASES[1]).unwrap();
     let second = Object::parse(b"/fixture/second.so", &tls.file, BIASES[2]).unwrap();
-    let scope = [root, first, second];
+    let libc_path = std::env::var_os("BREENIX_KD_LIBC")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../userspace/programs/target/kd/libc.so")
+        });
+    let libc_file = fs::read(&libc_path).unwrap_or_else(|error| {
+        panic!("build hosted libc first: {}: {error}", libc_path.display())
+    });
+    let libc = Object::parse(b"/lib/libc.so", &libc_file, 0x7000_0000).unwrap();
+    assert!(libc.lookup(b"__tls_get_addr").unwrap().is_some());
+    let scope = [root, first, libc, second];
     for (object, id) in [(first, 1), (second, 2)] {
         let mut module = None;
         object
