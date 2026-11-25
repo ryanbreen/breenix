@@ -8,6 +8,8 @@ mod object;
 #[cfg(feature = "interpreter")]
 pub mod runtime;
 mod scope;
+#[path = "../../libbreenix-libc/src/tls_module.rs"]
+pub mod tls_module;
 
 pub use object::{Object, Patch};
 pub use scope::{Dependency, InitArray, InitKind, InitState, Scope};

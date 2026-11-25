@@ -5,6 +5,7 @@ const PROGRAM_HEADER_SIZE: u64 = 56;
 pub(crate) const PT_LOAD: u32 = 1;
 pub(crate) const PT_DYNAMIC: u32 = 2;
 const PT_INTERP: u32 = 3;
+pub(crate) const PT_TLS: u32 = 7;
 pub(crate) const PT_GNU_RELRO: u32 = 0x6474_e552;
 pub(crate) const PF_W: u32 = 2;
 pub(crate) const PF_R: u32 = 4;
@@ -83,7 +84,6 @@ pub(crate) struct Segment {
     pub address: u64,
     pub file_size: u64,
     pub mem_size: u64,
-    #[cfg(feature = "interpreter")]
     pub align: u64,
 }
 
@@ -167,7 +167,6 @@ impl<'a> Image<'a> {
                     address: header.u64(16)?,
                     file_size: header.u64(32)?,
                     mem_size: header.u64(40)?,
-                    #[cfg(feature = "interpreter")]
                     align: header.u64(48)?,
                 })
             })

@@ -1,6 +1,7 @@
 use core::ops::Range;
 
-use crate::elf::{Bytes, Image, PF_R, PF_W, PT_DYNAMIC, PT_GNU_RELRO};
+use crate::elf::{Bytes, Image, PF_R, PF_W, PT_DYNAMIC, PT_GNU_RELRO, PT_TLS};
+use crate::tls_module::TlsModule;
 use crate::{Error, ErrorKind};
 
 const DT_NEEDED: u64 = 1;
@@ -44,6 +45,7 @@ const R_X86_64_64: u32 = 1;
 const R_X86_64_GLOB_DAT: u32 = 6;
 const R_X86_64_JUMP_SLOT: u32 = 7;
 const R_X86_64_RELATIVE: u32 = 8;
+const R_X86_64_DTPMOD64: u32 = 16;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Object<'a> {
@@ -60,6 +62,7 @@ pub struct Object<'a> {
     pub(crate) preinit: Option<Span>,
     pub(crate) init: Option<Span>,
     relro: Option<Span>,
+    tls: Option<TlsModule>,
 }
 
 /// An eight-byte little-endian store to a validated writable load span.
@@ -228,9 +231,40 @@ impl<'a> Object<'a> {
         )?;
         let mut dynamic = None;
         let mut relro = None;
+        let mut tls = None;
         for segment in image.segments() {
             let segment = segment?;
             match segment.kind {
+                PT_TLS => {
+                    let error = || image.at(segment.header_offset, ErrorKind::InvalidProgramHeader);
+                    let align = segment.align.max(1);
+                    if tls.is_some()
+                        || segment.file_size > segment.mem_size
+                        || !align.is_power_of_two()
+                        || segment.address % align != segment.offset % align
+                    {
+                        return Err(error());
+                    }
+                    let mut template = TlsModule {
+                        image: core::ptr::null(),
+                        file_size: segment.file_size.try_into().map_err(|_| error())?,
+                        mem_size: segment.mem_size.try_into().map_err(|_| error())?,
+                        align: align.try_into().map_err(|_| error())?,
+                    };
+                    if template.file_size != 0 {
+                        let bytes = image.file_at(
+                            segment.address,
+                            segment.file_size,
+                            segment.header_offset,
+                        )?;
+                        if bytes.offset != segment.offset {
+                            return Err(error());
+                        }
+                        // file_at validated the range in a readable PT_LOAD.
+                        template.image = (image.bias + segment.address) as *const u8;
+                    }
+                    tls = Some(template);
+                }
                 PT_DYNAMIC => {
                     let bytes =
                         image.file_at(segment.address, segment.file_size, segment.header_offset)?;
@@ -314,7 +348,13 @@ impl<'a> Object<'a> {
             preinit: tags.array(image, DT_PREINIT_ARRAY, DT_PREINIT_ARRAYSZ)?,
             init: tags.array(image, DT_INIT_ARRAY, DT_INIT_ARRAYSZ)?,
             relro,
+            tls,
         })
+    }
+
+    /// TLS template metadata in the mapped image, if the object has PT_TLS.
+    pub fn tls_module(self) -> Option<TlsModule> {
+        self.tls
     }
 
     pub fn name(self) -> &'a [u8] {
@@ -474,6 +514,16 @@ impl<'a> Object<'a> {
                     R_X86_64_GLOB_DAT | R_X86_64_JUMP_SLOT => {
                         self.resolve(scope, index, entry.offset)?
                     }
+                    // AMD64 psABI §4.4.1: the local-dynamic GOT pair names
+                    // this object's module and has a 0 offset.
+                    R_X86_64_DTPMOD64 if index == 0 && addend == 0 => scope
+                        .iter()
+                        .filter(|object| object.tls.is_some())
+                        .position(|object| {
+                            object.name() == self.name() && object.bias() == self.bias()
+                        })
+                        .map(|slot| slot as u64 + 1)
+                        .ok_or_else(|| entry.error(ErrorKind::InvalidRelocation))?,
                     kind => return Err(entry.error(ErrorKind::UnsupportedRelocation(kind))),
                 };
                 write(Patch { address, value });

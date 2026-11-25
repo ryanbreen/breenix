@@ -1,6 +1,7 @@
 //! Map the AMD64 initial load set using the Breenix syscall ABI and ELF gABI §§7–8.
 
 use crate::elf::{Bytes, Image, Segment, PF_R, PF_W, PT_GNU_RELRO, PT_LOAD};
+use crate::tls_module::{TlsModule, MAX_TLS_MODULES};
 use crate::{Dependency, Error, ErrorKind, InitState, Object, Scope};
 use core::cell::OnceCell;
 use core::fmt::{self, Write};
@@ -15,7 +16,7 @@ use libbreenix::syscall::{nr, raw};
 use libbreenix::{fs, io, process, Fd};
 
 const PATH_MAX: usize = 4096;
-const OBJECTS: usize = 32;
+const OBJECTS: usize = MAX_TLS_MODULES;
 const DEPENDENCIES: usize = 128;
 const PF_X: u32 = 1;
 
@@ -383,22 +384,7 @@ fn relocate_and_initialize(stack: *const usize, auxv: &Auxv) {
             protect_relro(range.start, range.end, auxv.page);
         }
     }
-    for libc in scope
-        .objects()
-        .iter()
-        .filter(|object| object.name().ends_with(b"/libc.so"))
-    {
-        if let Some(address) = libc
-            .lookup(b"__breenix_libc_init")
-            .unwrap_or_else(|error| fail(error))
-        {
-            // SAFETY: this export of the shared Breenix libc has this startup ABI.
-            let initialize: unsafe extern "C" fn(*const usize) =
-                unsafe { core::mem::transmute(address as usize) };
-            // SAFETY: the object is relocated and stack is the kernel's initial stack.
-            unsafe { initialize(stack) };
-        }
-    }
+    initialize_libc(stack, scope.objects());
     let mut state = [InitState::default(); OBJECTS];
     scope
         .initializers(&mut state, |array| {
@@ -412,6 +398,41 @@ fn relocate_and_initialize(stack: *const usize, auxv: &Auxv) {
             }
         })
         .unwrap_or_else(|error| fail(error));
+}
+
+fn initialize_libc(stack: *const usize, objects: &[Object<'_>]) {
+    let mut modules = [TlsModule::default(); MAX_TLS_MODULES];
+    let mut count = 0;
+    for module in objects.iter().filter_map(|object| object.tls_module()) {
+        modules[count] = module;
+        count += 1;
+    }
+    let libc = objects
+        .iter()
+        .find(|object| object.name().ends_with(b"/libc.so"));
+    let lookup =
+        |name| libc.and_then(|object| object.lookup(name).unwrap_or_else(|error| fail(error)));
+    if count != 0 {
+        let address = lookup(b"__breenix_libc_register_tls")
+            .unwrap_or_else(|| fail("no Breenix libc TLS registration export"));
+        // SAFETY: the shared libc export uses the TlsModule startup ABI.
+        let register: unsafe extern "C" fn(*const TlsModule, usize) -> i32 =
+            unsafe { core::mem::transmute(address as usize) };
+        // SAFETY: modules is readable for count entries. Their images are
+        // in relocated PT_LOAD mappings that outlive the interpreter handoff.
+        if unsafe { register(modules.as_ptr(), count) } != 0 {
+            fail("Breenix libc rejected TLS templates");
+        }
+    }
+    if let Some(address) = lookup(b"__breenix_libc_init") {
+        // SAFETY: this export of the shared Breenix libc has this startup ABI.
+        let initialize: unsafe extern "C" fn(*const usize) =
+            unsafe { core::mem::transmute(address as usize) };
+        // SAFETY: the object is relocated and stack is the kernel's initial stack.
+        unsafe { initialize(stack) };
+    } else if count != 0 {
+        fail("no Breenix libc startup export");
+    }
 }
 
 fn protect_relro(start: u64, end: u64, page: u64) {

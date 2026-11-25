@@ -6,7 +6,7 @@ syscall and startup code through the interpreter feature.
 
 ## ELF input and startup
 
-- `Object::parse` reads `PT_DYNAMIC` and `PT_GNU_RELRO` through the ELF program
+- `Object::parse` reads `PT_DYNAMIC`, `PT_TLS` and `PT_GNU_RELRO` through the ELF program
   headers. Its input is an immutable file image, so dynamic virtual addresses
   are translated through file-backed `PT_LOAD` ranges. `ET_EXEC` uses bias
   `0` and `ET_DYN` uses the caller-supplied load bias.
@@ -30,6 +30,13 @@ syscall and startup code through the interpreter feature.
   receives a validated runtime address and a little-endian word to store
   into a writable load. The caller must discard pending mappings if any
   relocation fails.
+- AMD64 local-dynamic `R_X86_64_DTPMOD64` stores the one-based module ID of
+  the requesting object, counting only objects with `PT_TLS` in load order.
+  After relocation and before constructors, the interpreter passes that
+  ordered table of mapped templates to hosted libc. Its `__tls_get_addr`
+  indexes the calling thread's DTV, allocating aligned storage, copying
+  tdata, and zeroing tbss on first use. Thread exit releases the blocks
+  after TLS destructors finish.
 - Once relocations are complete, `Scope::initializers` gives the main
   executable's `PREINIT_ARRAY`, then `INIT_ARRAY` ranges in dependency-first
   order, ending with the executable. Walk each range in ascending address
@@ -41,8 +48,9 @@ The input profile uses RELA and SysV hash tables. Other relocation types,
 symbol versioning, `DT_INIT`, text relocations, symbolic lookup, and legacy
 RPATH without RUNPATH are outside this unit. Shared loads occupy distinct
 virtual pages and GNU_RELRO ends on a page boundary. Secure exec needs a
-trusted library search policy. TLS relocations, dynamic shutdown and the dl*
-interfaces are later KD work. ARM64 builds the shared Rust code. Its kernel
+trusted library search policy. The u4 X2 inventory has only local-dynamic
+TLS, in the driver. Dynamic shutdown and the dl* interfaces are later KD
+work. ARM64 builds the shared Rust code. Its kernel
 exec half, X2 relocation and TLS inventory, backend, and KD acceptance remain
 pending.
 
@@ -71,10 +79,12 @@ them while the object is live.
 
 ## Host oracle
 
-Build the interpreter with `userspace/programs/build.sh --kd-loader`. Run
+Build the interpreter and hosted libc with `userspace/programs/build.sh
+--kd-loader` and `userspace/programs/build.sh --kd-libc`. Run
 `cargo test --manifest-path libs/ld-breenix/Cargo.toml --test loader_host`
 at the repository root. When using a separate `BREENIX_KD_BUILD_DIR`, point
-`BREENIX_LD_BREENIX` at its `ld-breenix.so` for the binary check. The
+`BREENIX_LD_BREENIX` at its `ld-breenix.so` and `BREENIX_KD_LIBC` at its
+`libc.so`. The
 committed fixture script uses clang and
 `ld.lld -shared` to build the DSOs. The test reads the relocation records and
 symbol addresses from `llvm-readelf` and `llvm-nm`, applies the psABI

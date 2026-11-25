@@ -13,6 +13,25 @@ def replace_line(path, original, replacement):
     path.write_text(text.replace(original, replacement))
 
 
+def select_hosted_tls(crate):
+    # Select the DTV alongside the shared CRT. Editing pthread.rs in the
+    # ordinary crate would also move call-site locations encoded in libc.a.
+    enabled = '#[cfg(all(feature = "hosted-rustc", target_arch = "x86_64"))]'
+    root = crate / 'src/lib.rs'
+    line = '\nmod entropy;\n'
+    replace_line(root, line, f'{line}\n{enabled}\nmod tls_module;\n')
+    pthread = crate / 'src/pthread.rs'
+    for line, addition in (
+        ('\nmod spin;\n', 'mod hosted_tls;'),
+        ('\n    reads: *mut ReadBlock,\n', '    dtv: hosted_tls::Dtv,'),
+        ('\n            reads: null_mut(),\n', '            dtv: hosted_tls::Dtv::new(),'),
+        ('\n        unsafe { run_thread_exit(|| take_cxa_destructor(p), || destructors(p)) };\n',
+         '        unsafe { (*p).dtv = hosted_tls::Dtv::new() };'),
+    ):
+        indent = addition[:len(addition) - len(addition.lstrip())]
+        replace_line(pthread, line, f'{line}{indent}{enabled}\n{addition}\n')
+
+
 def prepare(source, build):
     crate = build / source.name
     crate.mkdir(parents=True, exist_ok=True)
@@ -30,6 +49,7 @@ def prepare(source, build):
                  '\n#[path = "crt_shared.rs"]\nmod crt;\n')
     replace_line(crate / 'src/lifecycle.rs', '\npub(crate) unsafe fn run_main<T>(',
                  '\n#[cfg(not(feature = "hosted-rustc"))]\npub(crate) unsafe fn run_main<T>(')
+    select_hosted_tls(crate)
     print(crate / 'Cargo.toml')
 
 
