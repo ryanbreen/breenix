@@ -1,20 +1,110 @@
 """Checks for the pinned LLVM cross build."""
 import hashlib
+import io
 import json
 import os
 import re
+import runpy
 import struct
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts/rust-host'))
 
 
 class LlvmPortTest(unittest.TestCase):
+    def test_llvm_staged_only_under_llvm(self):
+        stage = runpy.run_path(str(ROOT / 'scripts/rust_host_stage.py'))['main']
+        with tempfile.TemporaryDirectory() as temp:
+            image = Path(temp) / 'unselected.img'
+            image.write_bytes(b'unselected image')
+            with patch.object(sys, 'argv', ['stage', '--arch', 'x86_64', '--image', str(image),
+                                            '--suite', 'llvm-extra,ipc']):
+                stage()
+            self.assertEqual(image.read_bytes(), b'unselected image')
+
+        resolve = runpy.run_path(str(ROOT / 'scripts/suite-sequence.py'))['resolve']
+        files = {'docs/efforts/path.json': json.dumps({'efforts': [
+            {'suite': suite, 'targets': ['x86-metal']} for suite in ('ipc', 'llvm', 'cxx-runtime')
+        ]})}
+
+        def read(path):
+            return files[path] if path in files else (ROOT / path).read_text()
+
+        self.assertEqual(resolve('all', 'x86-metal', True, read)[0], ['ipc'])
+        self.assertEqual(resolve('llvm,cxx-runtime', 'x86-metal', True, read)[0],
+                         ['llvm', 'cxx-runtime'])
+
+    def test_staged_image_presence(self):
+        stage = runpy.run_path(str(ROOT / 'scripts/rust_host_stage.py'))['main']
+        mke2fs, debugfs = stage.__globals__['require_e2fsprogs']('mke2fs', 'debugfs')
+        llvm = '/usr/libexec/breenix/llvm'
+        cxx = '/usr/libexec/breenix/cxx-runtime'
+        corpus = ROOT / 'toolchain/rust-host/k4/corpus'
+        inputs = json.loads((corpus / 'expect.json').read_text())['objects']
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            hosted = 'target/hosted/x86_64-breenix-hosted/release'
+            files = {
+                '/sbin/suite-llvm': (f'{hosted}/suite-llvm', '0755'),
+                '/sbin/suite-cxx-runtime': (f'{hosted}/suite-cxx-runtime', '0755'),
+                f'{llvm}/bin/llc': ('target/llvm/x86_64/llc', '0755'),
+                f'{llvm}/bin/llvm-mc': ('target/llvm/x86_64/llvm-mc', '0755'),
+                f'{llvm}/bin/bld': ('target/llvm/x86_64/bld', '0755'),
+                f'{llvm}/lib/libc.a': ('target/llvm/x86_64/libc.a', '0444'),
+                f'{llvm}/linker.ld': ('linker.ld', '0444'),
+                **{f'{cxx}/{name}': (f'target/cxx-runtime/x86_64/{name}', '0755')
+                   for name in ('static-init-order', 'guarded-static', 'containers-threads')},
+            }
+            sources = {}
+            for guest, (local, mode) in files.items():
+                source = root / local
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_bytes((b'\x7fELF' if mode == '0755' else b'') + guest.encode())
+                sources[guest] = (source, mode)
+            for name in ['expect.json', *(entry['input'] for entry in inputs)]:
+                sources[f'{llvm}/corpus/{name}'] = (corpus / name, '0444')
+
+            rehearsal = os.environ.get('BREENIX_LLVM_IMAGE_BUILD')
+            if rehearsal:
+                image = Path(rehearsal) / 'ext2.img'
+                build = json.loads((image.parent / 'build.json').read_text())
+                self.assertEqual(build['suite'], 'llvm,cxx-runtime')
+                record = build['stagedFiles']
+            else:
+                image = root / 'fixture.img'
+                subprocess.run([mke2fs, '-q', '-t', 'ext2', '-F', image, '16384'],
+                               check=True, capture_output=True, timeout=5)
+                output = io.StringIO()
+                with patch.dict(stage.__globals__, PROGRAMS=root), redirect_stdout(output), \
+                        patch.object(sys, 'argv', ['stage', '--arch', 'x86_64', '--image', str(image),
+                                                   '--suite', 'llvm,cxx-runtime']):
+                    stage()
+                binary = subprocess.check_output([debugfs, '-R', f'cat {llvm}/bin/llc', image],
+                                                 stderr=subprocess.PIPE, timeout=5)
+                self.assertTrue(binary.startswith(b'\x7fELF'), 'llc is missing from the staged image')
+                record = json.loads(output.getvalue())
+
+            self.assertEqual(set(record), set(sources))
+            for guest, (source, mode) in sources.items():
+                with self.subTest(path=guest):
+                    data = subprocess.check_output([debugfs, '-R', f'cat {guest}', image],
+                                                   stderr=subprocess.PIPE, timeout=5)
+                    self.assertTrue(data, guest)
+                    self.assertEqual(record[guest], hashlib.sha256(data).hexdigest())
+                    if not rehearsal or guest.startswith(f'{llvm}/corpus/'):
+                        self.assertEqual(data, source.read_bytes())
+                    stat = subprocess.check_output([debugfs, '-R', f'stat {guest}', image],
+                                                   stderr=subprocess.PIPE, text=True, timeout=5)
+                    self.assertIn(f'Type: regular    Mode:  {mode}', stat)
+                    self.assertRegex(stat, r'User:\s+0\s+Group:\s+0')
+
     def test_corpus_objects_match_mac_llc(self):
         corpus = ROOT / 'toolchain/rust-host/k4/corpus'
         manifest = json.loads((corpus / 'expect.json').read_text())
