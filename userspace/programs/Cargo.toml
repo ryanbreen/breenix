@@ -13,6 +13,7 @@ framebuffer-v1 = []
 hosted-link-probe = []
 rust-host = []
 cxx-runtime = []
+llvm = []
 
 [dependencies]
 libcollab = { path = "../../libs/libcollab", features = ["net"] }
@@ -1022,3 +1023,8 @@ required-features = ["rust-host"]
 name = "suite-cxx-runtime"
 path = "src/suite_cxx_runtime.rs"
 required-features = ["cxx-runtime"]
+
+[[bin]]
+name = "suite-llvm"
+path = "src/suite_llvm.rs"
+required-features = ["llvm"]

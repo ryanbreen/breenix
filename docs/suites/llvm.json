@@ -1,0 +1,16 @@
+{
+  "id": "llvm",
+  "title": "LLVM",
+  "area": "Toolchain",
+  "summary": "Checks hosted LLVM object generation and execution.",
+  "binary": "/sbin/suite-llvm",
+  "timingSensitive": true,
+  "categories": [{
+    "id": "llvm",
+    "title": "LLVM",
+    "cases": [
+      {"id": "llc-objects-equal-mac", "title": "LLC objects equal Mac"},
+      {"id": "llc-object-runs", "title": "LLC object runs"}
+    ]
+  }]
+}
