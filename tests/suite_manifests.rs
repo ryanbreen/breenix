@@ -2340,6 +2340,8 @@ fn rustc_manifest_matches_table() {
     assert_eq!(manifest.categories[0].cases.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
         ["identity-and-sysroot", "hello-object-equals-mac", "diagnostic-located"]);
     let (_, files) = suite_files(&root, "rustc").expect("rustc source");
+    let source = fs::read_to_string(root.join("userspace/programs/src/suite_rustc.rs")).unwrap();
+    assert!(source.contains(".case_limit_ms(60_000)"), "rustc cases need provisional 60 s allowances");
     let (suite, guest) = source_suite_files(&files).expect("rustc guest table");
     assert_eq!(suite.id, manifest.id);
     assert_eq!(suite.title, manifest.title);
