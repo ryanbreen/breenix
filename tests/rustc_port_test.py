@@ -39,8 +39,8 @@ class RustcPort(unittest.TestCase):
         drivers = list(stage.glob('librustc_driver-*.so'))
         self.assertEqual(len(drivers), 1, drivers)
         driver, = drivers
-        kd = Path(os.environ.get('BREENIX_KD_BUILD_DIR', ROOT / 'userspace/programs/target/kd'))
-        libc = kd / 'libc.so'
+        cache = Path(os.environ.get('BREENIX_RUSTC_PORT_BUILDS', ROOT / 'build/rustc-port'))
+        libc = cache / 'hosted/lib/libc.so'
 
         def readelf(elf, *args):
             return subprocess.check_output([llvm / 'llvm-readelf', *args, elf],
@@ -57,7 +57,7 @@ class RustcPort(unittest.TestCase):
             self.assertRegex(headers, r'Data:.*little endian')
             self.assertRegex(headers, r'Machine:\s+Advanced Micro Devices X86-64')
             self.assertRegex(headers, rf'Type:\s+{kind}\b')
-            self.assertCountEqual(re.findall(r'\(NEEDED\).*\[(.+)\]', headers), needed, elf)
+            self.assertEqual(re.findall(r'\(NEEDED\).*\[(.+)\]', headers), needed, elf)
             interp = re.findall(r'Requesting program interpreter: (.+)\]', headers)
             self.assertEqual(interp, ['/lib/ld-breenix.so'] if elf == rustc else [], elf)
             if elf == rustc:
@@ -87,11 +87,17 @@ class RustcPort(unittest.TestCase):
         self.assertEqual({elf.name: sorted(names & definitions) for elf, names in weak.items()
                           if names & definitions}, {})
 
+        with libc.open('rb') as artifact:
+            self.assertEqual(hashlib.file_digest(artifact, 'sha256').hexdigest(),
+                             record['hosted_link']['libc_sha256'])
         for elf, key in ((rustc, 'hosted_rustc_sha256'), (driver, 'hosted_driver_sha256')):
             with elf.open('rb') as artifact:
                 self.assertEqual(hashlib.file_digest(artifact, 'sha256').hexdigest(), record[key])
             link_map = stage / f'{elf.name}.map'
             self.assertTrue(link_map.is_file(), link_map)
+            with link_map.open('rb') as artifact:
+                self.assertEqual(hashlib.file_digest(artifact, 'sha256').hexdigest(),
+                                 record['hosted_link']['maps_sha256'][link_map.name])
             with link_map.open('rb') as stream, mmap.mmap(stream.fileno(), 0,
                                                          access=mmap.ACCESS_READ) as contents:
                 self.assertNotRegex(contents, rb'(?:^|[/\s])lib(?:c|unwind)\.a[( :]')
