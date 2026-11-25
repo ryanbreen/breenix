@@ -10,6 +10,24 @@ use crate::arch::{self, NativeContext, RegisterContext, REGISTER_COUNT};
 use crate::ehframe;
 use crate::level1::{self, Actions, Continuation, Exception, Frame, FrameSource, ReasonCode};
 use crate::loaded::LoadedObjects;
+use crate::report::{failure_line, Outcome, Recorded};
+
+/// Leave one stderr line naming the frame that stopped a fatal unwind. The
+/// caller usually aborts next, so this is the only trace of the frame.
+fn report_fatal(reason: ReasonCode, last: Option<(u64, Outcome)>) {
+    if !matches!(reason, ReasonCode::FatalPhase1Error | ReasonCode::FatalPhase2Error) {
+        return;
+    }
+    extern "C" {
+        fn write(fd: c_int, buffer: *const c_void, count: usize) -> isize;
+    }
+    let object = last.and_then(|(pc, _)| LoadedObjects::origin(pc));
+    let line = failure_line(reason, last, object);
+    let bytes = line.as_bytes();
+    // SAFETY: the line is live for the call and fd 2 is standard error. A
+    // short or failed write loses only this diagnostic.
+    unsafe { write(2, bytes.as_ptr().cast(), bytes.len()) };
+}
 
 type ExceptionState = Exception<REGISTER_COUNT>;
 type Cleanup = unsafe extern "C" fn(c_int, *mut UnwindException);
@@ -177,12 +195,17 @@ impl Runtime {
         result: Result<NativeContext, ReasonCode>,
         state: &ExceptionState,
         forced: Option<ForcedCall>,
+        last: Option<(u64, Outcome)>,
     ) -> ReasonCode {
         let context = match result {
             Ok(context) => context,
-            Err(error) => return error,
+            Err(error) => {
+                report_fatal(error, last);
+                return error;
+            }
         };
         let Some(landing_pad) = RegisterContext::landing_pad(&context) else {
+            report_fatal(ReasonCode::FatalPhase2Error, last);
             return ReasonCode::FatalPhase2Error;
         };
 
@@ -219,9 +242,10 @@ unsafe extern "C" fn raise(
     let mut state = unsafe { runtime.exception_state() };
     // SAFETY: the two private words belong to this new invocation.
     unsafe { (*exception).private = [0, 0] };
-    let result = level1::raise_exception(&runtime, captured.cursor(), &mut state);
+    let recorded = Recorded::new(&runtime);
+    let result = level1::raise_exception(&recorded, captured.cursor(), &mut state);
     // SAFETY: the exception remains live through the unwind or error return.
-    unsafe { runtime.finish(result, &state, None) }
+    unsafe { runtime.finish(result, &state, None, recorded.last()) }
 }
 
 unsafe extern "C" fn forced_unwind(
@@ -243,8 +267,9 @@ unsafe extern "C" fn forced_unwind(
     let mut state = unsafe { runtime.exception_state() };
     // SAFETY: the two private words belong to this new invocation.
     unsafe { (*exception).private = [0, 0] };
+    let recorded = Recorded::new(&runtime);
     let result = level1::forced_unwind(
-        &runtime,
+        &recorded,
         captured.cursor(),
         &mut state,
         call_stop,
@@ -252,7 +277,7 @@ unsafe extern "C" fn forced_unwind(
     );
     // SAFETY: the caller's exception remains live, and forced stores the
     // same stop function and parameter just passed to the engine.
-    unsafe { runtime.finish(result, &state, Some(forced)) }
+    unsafe { runtime.finish(result, &state, Some(forced), recorded.last()) }
 }
 
 unsafe extern "C" fn resume(captured: &RegisterContext, exception: *mut UnwindException) -> ! {
@@ -285,9 +310,10 @@ unsafe extern "C" fn resume(captured: &RegisterContext, exception: *mut UnwindEx
             parameter: ptr::from_ref(forced).expose_provenance(),
         });
     }
-    let result = level1::resume(&runtime, captured.cursor(), &mut state);
+    let recorded = Recorded::new(&runtime);
+    let result = level1::resume(&recorded, captured.cursor(), &mut state);
     // SAFETY: the ABI caller's exception remains live through this cleanup.
-    unsafe { runtime.finish(result, &state, forced) };
+    unsafe { runtime.finish(result, &state, forced, recorded.last()) };
     crate::abort()
 }
 

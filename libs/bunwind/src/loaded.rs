@@ -57,6 +57,8 @@ extern "C" {
 }
 
 pub(crate) struct LoadedImage<'a> {
+    #[cfg(target_os = "breenix")]
+    name: *const c_char,
     load_bias: u64,
     headers: &'a [ProgramHeader],
     bases: [u64; 2],
@@ -90,6 +92,8 @@ impl<'a> LoadedImage<'a> {
             static_bases()
         };
         Some(Self {
+            #[cfg(target_os = "breenix")]
+            name: prefix.name,
             load_bias: prefix.load_bias,
             headers,
             bases,
@@ -196,6 +200,19 @@ pub(crate) struct LoadedObjects;
 impl LoadedObjects {
     pub(crate) fn is_code(address: u64) -> bool {
         Self::find(address, PF_X, 0).is_some()
+    }
+
+    /// The name and load bias of the object with a load containing `address`.
+    pub(crate) fn origin(address: u64) -> Option<(&'static [u8], u64)> {
+        let image = Self::find(address, 0, 0)?;
+        let name = if image.name.is_null() {
+            &[][..]
+        } else {
+            // SAFETY: dl_iterate_phdr names are C strings that stay resident:
+            // the loader keeps each published object's name for its lifetime.
+            unsafe { core::ffi::CStr::from_ptr(image.name) }.to_bytes()
+        };
+        Some((if name.is_empty() { b"(main program)" } else { name }, image.load_bias))
     }
 
     fn find(address: u64, required: u32, forbidden: u32) -> Option<LoadedImage<'static>> {
