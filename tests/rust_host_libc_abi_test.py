@@ -11,7 +11,8 @@ ROOT = Path(__file__).resolve().parents[1]
 LIBC = ROOT / 'libs/libbreenix-libc/include'
 NAMES = '''FIONREAD LOCK_SH LOCK_EX LOCK_NB LOCK_UN ST_RDONLY ST_NOSUID
 POSIX_FADV_NORMAL POSIX_FADV_RANDOM POSIX_FADV_SEQUENTIAL POSIX_FADV_WILLNEED
-POSIX_FADV_DONTNEED POSIX_FADV_NOREUSE GETENTROPY_MAX _SC_ARG_MAX O_NDELAY PATH_MAX
+POSIX_FADV_DONTNEED POSIX_FADV_NOREUSE GETENTROPY_MAX _SC_ARG_MAX
+O_NDELAY O_CLOEXEC O_NONBLOCK PATH_MAX
 SIGEV_SIGNAL SIGEV_NONE SIGEV_THREAD SIGEV_THREAD_ID SIG_BLOCK SIG_UNBLOCK SIG_SETMASK'''.split()
 LAYOUTS = {
     'fsid_t': ['__val'],
@@ -41,6 +42,7 @@ SIGNATURES = {
     'mkfifoat': ('int', 'int, const char *, mode_t'),
     'mknodat': ('int', 'int, const char *, mode_t, dev_t'),
     'msync': ('int', 'void *, size_t, int'),
+    'pipe2': ('int', 'int *, int'),
     'posix_fadvise': ('int', 'int, off_t, off_t, int'),
     'posix_fallocate': ('int', 'int, off_t, off_t'),
     'preadv': ('ssize_t', 'int, const struct iovec *, int, off_t'),
@@ -51,7 +53,7 @@ SIGNATURES = {
     'utimensat': ('int', 'int, const char *, const struct timespec *, int'),
 }
 RUST_TYPES = {
-    'int': 'c_int', 'unsigned long': 'c_ulong', 'long': 'c_long',
+    'int': 'c_int', 'int *': '*mut libc::c_int', 'unsigned long': 'c_ulong', 'long': 'c_long',
     'const char *': '*const libc::c_char', 'void *': '*mut libc::c_void',
     'struct statfs *': '*mut libc::statfs', 'DIR *': '*mut libc::DIR',
     'const struct iovec *': '*const libc::iovec',

@@ -89,8 +89,9 @@ class RustcPort(unittest.TestCase):
         patch = NIX_PATCH.read_text()
         self.assertEqual(re.findall(r'(?m)^diff --git (.*)$', patch),
                          ['a/src/errno.rs b/src/errno.rs',
-                          'a/src/sys/signal.rs b/src/sys/signal.rs'])
-        for path in ('src/errno.rs', 'src/sys/signal.rs'):
+                          'a/src/sys/signal.rs b/src/sys/signal.rs',
+                          'a/src/unistd.rs b/src/unistd.rs'])
+        for path in ('src/errno.rs', 'src/sys/signal.rs', 'src/unistd.rs'):
             self.assertIn(f'\n--- a/{path}\n+++ b/{path}\n', patch)
         for hunk in re.split(r'(?m)^@@ .* @@[^\n]*\n', patch)[1:]:
             removed = re.findall(r'(?m)^-(?!-- )(.*)$', hunk)
@@ -103,7 +104,7 @@ class RustcPort(unittest.TestCase):
                 self.assertIn('target_os = "breenix"', line)
             normalized = [line.replace(', target_os = "breenix"', '')
                           .replace('#[cfg_attr(not(target_os = "breenix"), derive(',
-                                   '#[derive(')
+                                   '#[derive(Clone, Debug, ')
                           .replace('PartialEq))]', 'PartialEq)]') for line in added]
             self.assertEqual(removed, normalized)
         self.assert_patch_preserves_registry_copy(NIX_PATCH, 'nix-0.30.1')
