@@ -19,6 +19,7 @@ PIN = '666252fd61839b9e9b1bc9e777a0c84c5cf3dc6d'
 RUSTIX_PATCH = RECORDS.parent / 'k5/patches/rustix-1.0.7-breenix.patch'
 GETRANDOM_PATCH = RECORDS.parent / 'k5/patches/getrandom-0.2.16-breenix.patch'
 LIBLOADING_PATCH = RECORDS.parent / 'k5/patches/libloading-0.8.8-breenix.patch'
+NIX_PATCH = RECORDS.parent / 'k5/patches/nix-0.30.1-breenix.patch'
 
 
 def git(*args, tree=TREE):
@@ -83,6 +84,29 @@ class RustcPort(unittest.TestCase):
                 f'+            pub(super) const {name}: c_int = {values[name]};',
             ])
         self.assert_patch_preserves_registry_copy(LIBLOADING_PATCH, 'libloading-0.8.8')
+
+    def test_nix_patch_is_breenix_only(self):
+        patch = NIX_PATCH.read_text()
+        self.assertEqual(re.findall(r'(?m)^diff --git (.*)$', patch),
+                         ['a/src/errno.rs b/src/errno.rs',
+                          'a/src/sys/signal.rs b/src/sys/signal.rs'])
+        for path in ('src/errno.rs', 'src/sys/signal.rs'):
+            self.assertIn(f'\n--- a/{path}\n+++ b/{path}\n', patch)
+        for hunk in re.split(r'(?m)^@@ .* @@[^\n]*\n', patch)[1:]:
+            removed = re.findall(r'(?m)^-(?!-- )(.*)$', hunk)
+            added = re.findall(r'(?m)^\+(?!\+\+ )(.*)$', hunk)
+            for line in added.copy():
+                if line.strip() in ('target_os = "breenix",',
+                                    '#[derive(Clone, Debug)]'):
+                    added.remove(line)
+            for line in added:
+                self.assertIn('target_os = "breenix"', line)
+            normalized = [line.replace(', target_os = "breenix"', '')
+                          .replace('#[cfg_attr(not(target_os = "breenix"), derive(',
+                                   '#[derive(')
+                          .replace('PartialEq))]', 'PartialEq)]') for line in added]
+            self.assertEqual(removed, normalized)
+        self.assert_patch_preserves_registry_copy(NIX_PATCH, 'nix-0.30.1')
 
     def assert_patch_preserves_registry_copy(self, patch, crate):
         self.assertTrue(patch.is_file(), f'{crate} port patch is missing')

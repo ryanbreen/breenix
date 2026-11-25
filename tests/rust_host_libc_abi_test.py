@@ -11,13 +11,24 @@ ROOT = Path(__file__).resolve().parents[1]
 LIBC = ROOT / 'libs/libbreenix-libc/include'
 NAMES = '''FIONREAD LOCK_SH LOCK_EX LOCK_NB LOCK_UN ST_RDONLY ST_NOSUID
 POSIX_FADV_NORMAL POSIX_FADV_RANDOM POSIX_FADV_SEQUENTIAL POSIX_FADV_WILLNEED
-POSIX_FADV_DONTNEED POSIX_FADV_NOREUSE GETENTROPY_MAX _SC_ARG_MAX'''.split()
+POSIX_FADV_DONTNEED POSIX_FADV_NOREUSE GETENTROPY_MAX _SC_ARG_MAX
+SIGEV_SIGNAL SIGEV_NONE SIGEV_THREAD SIGEV_THREAD_ID'''.split()
 LAYOUTS = {
     'fsid_t': ['__val'],
     'statfs': '''f_type f_bsize f_blocks f_bfree f_bavail f_files f_ffree f_fsid
                  f_namelen f_frsize f_flags f_spare'''.split(),
     'iovec': ['iov_base', 'iov_len'],
     'timespec': ['tv_sec', 'tv_nsec'],
+    'sigval': ['sival_int', 'sival_ptr'],
+    'sigevent': ['sigev_value', 'sigev_signo', 'sigev_notify', '__notify'],
+    'sigevent_notify': ['thread', 'thread_id', '__storage'],
+    'sigevent_thread': ['function', 'attributes'],
+}
+C_TYPES = {
+    'fsid_t': 'fsid_t',
+    'sigval': 'union sigval',
+    'sigevent_notify': '__typeof__(((struct sigevent *)0)->__notify)',
+    'sigevent_thread': '__typeof__(((struct sigevent *)0)->__notify.thread)',
 }
 SIGNATURES = {
     'dup3': ('int', 'int, int, int'),
@@ -55,7 +66,8 @@ def rust_type(name):
 
 def check(arch, deps, rustc, clang):
     clines = ['#define _GNU_SOURCE 1']
-    for header in ('stddef.h', 'limits.h', 'fcntl.h', 'dirent.h', 'pthread.h', 'unistd.h', 'sys/file.h',
+    for header in ('stddef.h', 'limits.h', 'errno.h', 'fcntl.h', 'dirent.h', 'pthread.h',
+                   'signal.h', 'unistd.h', 'sys/file.h',
                    'sys/ioctl.h', 'sys/mman.h', 'sys/stat.h', 'sys/statfs.h', 'sys/statvfs.h', 'sys/uio.h',
                    'sys/sysmacros.h'):
         clines.append(f'#include <{header}>')
@@ -68,10 +80,14 @@ def check(arch, deps, rustc, clang):
         rust_result = '' if result == 'void' else f' -> {rust_type(result)}'
         rlines.append(f'const _: unsafe extern "C" fn({rust_args}){rust_result} = libc::{name};')
 
-    cvalues = list(NAMES)
-    rvalues = [f'libc::{name} as u64' for name in NAMES]
+    errno = (LIBC / 'errno.h').read_text()
+    signal = (LIBC / 'signal.h').read_text()
+    constants = NAMES + re.findall(r'(?m)^#define (E[A-Z0-9]+) [0-9]+$', errno)
+    constants += re.findall(r'(?m)^#define (SIG[A-Z0-9]+) (?:[1-9]|[12][0-9]|3[01])$', signal)
+    cvalues = list(dict.fromkeys(constants))
+    rvalues = [f'libc::{name} as u64' for name in cvalues]
     for name, members in LAYOUTS.items():
-        ctype = name if name == 'fsid_t' else f'struct {name}'
+        ctype = C_TYPES.get(name, f'struct {name}')
         rtype = f'libc::{name}'
         cvalues += [f'sizeof({ctype})', f'_Alignof({ctype})']
         rvalues += [f'core::mem::{operation}::<{rtype}>() as u64'
