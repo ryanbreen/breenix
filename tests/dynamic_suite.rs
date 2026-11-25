@@ -93,6 +93,7 @@ fn manifest_matches_guest_table() {
         "interp-runs-program",
         "missing-interp-fails",
         "dso-relocs-and-tls",
+        "panic-across-dso",
     ];
     let cases = category["cases"].as_array().unwrap();
     assert_eq!(
@@ -136,6 +137,8 @@ paths = {
     f'{prefix}/dynamic-probe': 'dynamic-probe',
     f'{prefix}/missing-interp': 'missing-interp',
     f'{prefix}/libkd-probe.so': 'libkd-probe.so',
+    f'{prefix}/dynamic-panic-probe': 'dynamic-panic-probe',
+    f'{prefix}/libkd-panic.so': 'libkd-panic.so',
 }
 
 def digest(data):
