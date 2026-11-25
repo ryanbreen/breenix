@@ -71,7 +71,7 @@ def resolve(spec, target, has_3d=False, read=read_repo):
             suite = effort.get("suite")
             if not suite:
                 continue
-            if suite in ("rust-host", "cxx-runtime", "llvm"):
+            if suite in ("rust-host", "cxx-runtime", "llvm", "dynamic"):
                 skipped.append((suite, f"opt-in only; run --suite {suite} explicitly"))
             elif target != "x86-metal" and target not in effort.get("targets", []):
                 skipped.append((suite, f"not an effort target of {target}"))
@@ -106,6 +106,8 @@ def resolve(spec, target, has_3d=False, read=read_repo):
         if len(set(ids)) != len(ids):
             raise ValueError(f"a suite is listed twice: {spec}")
         for suite in ids:
+            if suite == "dynamic" and target != "x86-metal":
+                raise ValueError("suite dynamic requires x86-metal")
             loaded = manifest(suite)
             if loaded is None:
                 raise ValueError(f"no manifest docs/suites/{suite}.json")

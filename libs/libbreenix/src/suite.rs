@@ -560,16 +560,14 @@ pub const ARM_BUSYBOX_CASE_ALLOWANCES: &[(&str, &str, u64)] = &[
 /// every byte split, the PngSuite fixtures, 100 window churns and 300 timed commits) get
 /// the workload plus the 1.5 s collection reserve, rounded up.
 pub const NAMED_CASE_ALLOWANCES: &[(&str, &str, u64)] = &[
-    // K4 llvm cases: twice R240 boot 20261125T061143Z-metal's 8.2-8.7 s, rounded up to 10 s
-    // (E25 ruling 81).
+    // K4: twice the 8.2-8.7 s in R240 boot 20261125T061143Z-metal, rounded up to 10 s (E25 ruling 81).
     ("llvm", "llvm/llc-arithmetic-equals-mac", 20_000),
     ("llvm", "llvm/llc-hello-equals-mac", 20_000),
     ("llvm", "llvm/llc-libc-call-equals-mac", 20_000),
     ("llvm", "llvm/llc-loop-equals-mac", 20_000),
     ("llvm", "llvm/llc-struct-equals-mac", 20_000),
     ("llvm", "llvm/llc-object-runs", 20_000),
-    // The shipped catalog measured 2.2 s on the R240. 60 s bounds a slow network
-    // probe while staying inside the 120 s stall watchdog.
+    // The catalog took 2.2 s on R240. A 60 s network probe bound fits the 120 s stall watchdog.
     ("gui-apps", "bcheck/production-catalog", 60_000),
     // Eighteen sequential launches share a case deadline below the suite stall watchdog.
     ("gui-apps", "desktop/launch-each", 80_000),
@@ -654,10 +652,12 @@ pub const NAMED_CASE_ALLOWANCES: &[(&str, &str, u64)] = &[
     // Two authenticated logins, host-injected keys and init's respawn delay.
     ("console", "getty/logout-reacquires", 30_000),
     ("console", "getty/independent-sessions", 30_000),
-    // The boot host's OpenSSH answers over the serial console: a host key scan
-    // and two logins, each a full key exchange with this machine.
+    // Boot-host OpenSSH over the serial console: a key scan and two logins with full key exchanges.
     ("users", "ssh/openssh-operator", 30_000),
     ("users", "ssh/openssh-root-refused", 30_000),
+    #[cfg(feature = "dynamic")] ("dynamic", "dynamic/interp-runs-program", 60_000),
+    #[cfg(feature = "dynamic")] ("dynamic", "dynamic/missing-interp-fails", 60_000),
+    #[cfg(feature = "dynamic")] ("dynamic", "dynamic/dso-relocs-and-tls", 60_000),
 ];
 
 /// In a case's process, when its limit passes, in monotonic nanoseconds; 0 elsewhere.

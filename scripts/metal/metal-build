@@ -362,14 +362,11 @@ def inner(args):
                 build_script = str(clone / 'userspace/programs/build.sh')
                 log = logs / 'dynamic-build.log'
                 with log.open('w') as output:
-                    status = subprocess.call([build_script, '--arch', 'x86_64', '--kd-libc'],
+                    status = subprocess.call([build_script, '--arch', 'x86_64', '--dynamic'],
                                              cwd=clone, stdout=output, stderr=subprocess.STDOUT)
-                    if status == 0:
-                        status = subprocess.call([build_script, '--arch', 'x86_64', '--kd-loader'],
-                                                 cwd=clone, stdout=output, stderr=subprocess.STDOUT)
-                if not clean_build(status, log, 'dynamic interpreter and libc', logs, out):
+                if not clean_build(status, log, 'dynamic suite, interpreter and fixtures', logs, out):
                     return 1
-                timings['dynamic_runtime'] = round(time.time() - started)
+                timings['dynamic_suite'] = round(time.time() - started)
             if hosted:
                 started = time.time()
                 record = subprocess.check_output([sys.executable, str(clone / 'scripts/rust_host_stage.py'),

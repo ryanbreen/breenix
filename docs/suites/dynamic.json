@@ -1,0 +1,19 @@
+{
+  "id": "dynamic",
+  "title": "Dynamic linking",
+  "area": "Toolchain",
+  "summary": "Checks the interpreter handoff, exec rollback, relocations and per-thread TLS.",
+  "binary": "/sbin/suite-dynamic",
+  "timingSensitive": true,
+  "categories": [
+    {
+      "id": "dynamic",
+      "title": "Hosted dynamic executables",
+      "cases": [
+        {"id": "interp-runs-program", "title": "Interpreter enters a two-DSO program with its auxv"},
+        {"id": "missing-interp-fails", "title": "Missing interpreter returns ENOENT in the caller"},
+        {"id": "dso-relocs-and-tls", "title": "X2 relocation values and independent zeroed TLS"}
+      ]
+    }
+  ]
+}

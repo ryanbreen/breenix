@@ -1991,6 +1991,34 @@ itself. It checks close-on-exec pipe descriptors, wait statuses for exit 3
 and SIGTERM, and lock contention and acquisition after release for both
 `flock` and `fcntl(F_SETLK)`. Pipe events order the two processes.
 
+## Dynamic linking
+
+Select `dynamic` explicitly on x86-metal. The launcher builds the feature-gated
+runner, interpreter, shared libc and fixtures with
+`userspace/programs/build.sh --dynamic`. It stages them on the selected test
+image and records the verified file digests in `build.json` under `stagedFiles`.
+
+The probe uses the hosted CRT, `libkd-probe.so` from its own directory via
+`$ORIGIN`, and the shared `libc.so` from `/lib`. It checks
+`AT_PHDR` against its own ELF header, `AT_ENTRY` against its entry symbol, and
+`AT_BASE` against the mapped interpreter header and backing file. A second
+link names an absent interpreter and the runner checks that `execve` returns
+`ENOENT` in the original caller with no child. The relocation probe checks
+the AMD64 X2 values and TLS module descriptor, then checks that a spawned
+thread starts with a distinct zeroed 48-byte TLS block.
+
+| Case | Predicted R240 time | Provisional allowance |
+|---|---:|---:|
+| `interp-runs-program` | 2 s | 60 s |
+| `missing-interp-fails` | 1 s | 60 s |
+| `dso-relocs-and-tls` | 2 s | 60 s |
+
+Each positive case loads two small DSOs and performs a bounded set of
+comparisons, with one thread creation and join in the TLS case. The negative
+case ends during interpreter lookup. The allowances total 180 seconds, or
+225 seconds with 25% reserve, within the 420-second metal suite deadline.
+The times are predictions pending KD acceptance.
+
 ## Developer SDK
 
 `sdk` measures the Developer SDK effort in `docs/efforts/path.json`: our own applications

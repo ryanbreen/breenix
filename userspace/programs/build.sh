@@ -31,6 +31,8 @@
 #     Link llc and llvm-mc into target/llvm/<arch>.
 #   ./userspace/programs/build.sh --kd-libc
 #     Link the x86-64 hosted compiler's libc.so and executable CRT.
+#   ./userspace/programs/build.sh --dynamic
+#     Build the x86-64 dynamic suite, its runtime and fixtures into target/kd.
 #   ./userspace/programs/build.sh --kd-loader
 #     Link the x86-64 ELF interpreter into target/kd.
 
@@ -40,7 +42,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 usage() {
-    echo "Usage: $0 [--arch x86_64|aarch64] [--hosted-bin NAME [--features FEATURES] | --rust-host | --bunwind | --cxx-runtime | --llvm | --kd-libc | --kd-loader]" >&2
+    echo "Usage: $0 [--arch x86_64|aarch64] [--hosted-bin NAME [--features FEATURES] | --rust-host | --bunwind | --cxx-runtime | --llvm | --dynamic | --kd-libc | --kd-loader]" >&2
     exit 2
 }
 
@@ -51,6 +53,7 @@ RUST_HOST=0
 BUNWIND=0
 CXX_RUNTIME=0
 LLVM=0
+DYNAMIC=0
 KD_LIBC=0
 KD_LOADER=0
 while [[ $# -gt 0 ]]; do
@@ -80,6 +83,10 @@ while [[ $# -gt 0 ]]; do
             LLVM=1
             shift
             ;;
+        --dynamic)
+            DYNAMIC=1
+            shift
+            ;;
         --kd-libc)
             KD_LIBC=1
             shift
@@ -98,6 +105,11 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+if [[ "$DYNAMIC" == 1 ]]; then
+    [[ "$ARCH" == x86_64 && "$KD_LIBC" == 0 && "$KD_LOADER" == 0 &&
+       "$CXX_RUNTIME" == 0 && "$LLVM" == 0 && "$BUNWIND" == 0 &&
+       "$RUST_HOST" == 0 && -z "$HOSTED_BIN" && ${#HOSTED_FEATURES[@]} -eq 0 ]] || usage
+fi
 if [[ "$KD_LIBC" == 1 || "$KD_LOADER" == 1 ]]; then
     [[ "$KD_LIBC" != "$KD_LOADER" && "$ARCH" == x86_64 && "$CXX_RUNTIME" == 0 && "$LLVM" == 0 &&
        "$BUNWIND" == 0 && "$RUST_HOST" == 0 && -z "$HOSTED_BIN" && ${#HOSTED_FEATURES[@]} -eq 0 ]] || usage
@@ -160,6 +172,22 @@ if [[ "$BUNWIND" == 1 ]]; then
 fi
 
 HOSTED_TARGET_JSON="$PROJECT_ROOT/$TARGET_DIR-hosted.json"
+if [[ "$DYNAMIC" == 1 ]]; then
+    kd_dir="${BREENIX_KD_BUILD_DIR:-$SCRIPT_DIR/target/kd}"
+    mkdir -p "$kd_dir"
+    BREENIX_KD_BUILD_DIR="$(cd "$kd_dir" && pwd)"
+    export BREENIX_KD_BUILD_DIR
+    "$SCRIPT_DIR/build.sh" --arch x86_64 --kd-libc
+    "$SCRIPT_DIR/build.sh" --arch x86_64 --kd-loader
+    "$SCRIPT_DIR/build.sh" --arch x86_64 --hosted-bin suite-dynamic --features dynamic
+    cp "$SCRIPT_DIR/target/hosted/$TARGET_DIR-hosted/release/suite-dynamic" "$BREENIX_KD_BUILD_DIR/"
+    cd "$SCRIPT_DIR"
+    rust_tools="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin"
+    clang="${BREENIX_CC_CLANG:-$("$PROJECT_ROOT/scripts/breenix-cc" --arch x86_64 --tool-dir)/clang}"
+    python3 "$PROJECT_ROOT/scripts/rust-host/build-dynamic-fixtures.py" \
+        "$BREENIX_KD_BUILD_DIR" "$rust_tools" "$clang"
+    exit 0
+fi
 if [[ "$KD_LOADER" == 1 ]]; then
     kd_dir="${BREENIX_KD_BUILD_DIR:-$SCRIPT_DIR/target/kd}"
     cd "$SCRIPT_DIR"
@@ -415,6 +443,8 @@ build_rust_programs() (
         export RUSTFLAGS="$HOSTED_RUSTFLAGS -C metadata=breenix_std_$FORK_COMMIT"
         extra_link_flags=()
         case "$HOSTED_BIN" in
+            suite-dynamic)
+                extra_link_flags=(-Dwarnings) ;;
             suite-rust-host|rust-host-startup-probe|rust-host-process-probe|rust-host-unwind-probe)
                 extra_link_flags=(-Cforce-unwind-tables=yes) ;;
         esac
