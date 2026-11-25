@@ -91,6 +91,7 @@ pub mod console;
 pub mod input;
 #[cfg(target_arch = "x86_64")]
 pub mod framebuffer;
+pub mod exec_elf;
 pub mod fs;
 pub mod logger;
 #[cfg(target_arch = "aarch64")]

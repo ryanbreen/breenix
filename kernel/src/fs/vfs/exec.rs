@@ -1,19 +1,24 @@
-//! Program images copied through the filesystem interface.
+//! Pin executable images and read them through the filesystem interface.
 use crate::fs::vfs::{FileSystem, MountFlags, NodeKind, VNode};
 use crate::fs::errno::Errno;
 pub use crate::fs::permissions::Credentials;
 use crate::process::credentials::ExecIdentity;
-use crate::syscall::errno::{EACCES, EINTR, EIO, EISDIR, ENOMEM};
-use alloc::vec::Vec;
+use crate::syscall::errno::{EACCES, EINTR, EIO, EISDIR};
+#[cfg(not(test))]
+use crate::exec_elf::{Image, MappedElf, Purpose};
 
-/// Resolve and pin an image, returning bytes, set-ID identity and physical path.
+/// Resolve and pin an image, returning its mapped ELF (or, for exec, its
+/// `#!` line), the identity its set-ID bits confer, and its physical path.
+/// Only the ELF headers pass through the kernel heap; segment bytes are read
+/// straight into the new image's pages while the lease below is held.
 /// Directories return EISDIR; syscall callers retain their historical EACCES.
 #[cfg(not(test))]
 pub fn load_image(
     path: impl AsRef<[u8]>,
     cred: &Credentials,
     killed: impl Fn() -> bool,
-) -> Result<(Vec<u8>, ExecIdentity, Vec<u8>), Errno> {
+    purpose: Purpose,
+) -> Result<(Image, ExecIdentity, alloc::vec::Vec<u8>), Errno> {
     trace(b'1');
     let resolved = crate::fs::namei::resolve_bytes(path.as_ref(), true).map_err(|errno| {
         trace(b'!');
@@ -50,8 +55,17 @@ pub fn load_image(
     let _image = fs.mapping_io(&node)?;
     let _bindings = node.map.block_mapping_bindings().map_err(Errno)?;
     let flags = super::mount::flags_at(&resolved.path);
-    let (bytes, identity) = read_image(fs.as_ref(), &node, flags, cred, killed)?;
-    Ok((bytes, identity, resolved.path))
+    let (image, identity) = read_image(fs.as_ref(), &node, flags, cred, killed, |size, read| {
+        let mut header = [0; crate::exec_elf::ELF_HEADER];
+        let prefix = size.min(header.len() as u64) as usize;
+        read(0, &mut header[..prefix])?;
+        if purpose == Purpose::Exec && header[..prefix].starts_with(b"#!") {
+            crate::exec_elf::read_shebang(&header[2..prefix], size, read).map(Image::Script)
+        } else {
+            MappedElf::load(&header[..prefix], size, read, purpose).map(Image::Elf)
+        }
+    })?;
+    Ok((image, identity, resolved.path))
 }
 
 fn image_kind(kind: NodeKind) -> Result<(), Errno> {
@@ -65,15 +79,16 @@ fn image_kind(kind: NodeKind) -> Result<(), Errno> {
     }
 }
 
-/// The caller retains the image lease through this attribute snapshot and copy.
+/// The caller retains the image lease through this attribute snapshot and the reads `consume` makes.
 /// Disk-only host tests exercise the same policy and byte reads without mappings.
-pub(crate) fn read_image(
+pub(crate) fn read_image<T>(
     fs: &dyn FileSystem,
     node: &VNode,
     flags: MountFlags,
     cred: &Credentials,
     killed: impl Fn() -> bool,
-) -> Result<(Vec<u8>, ExecIdentity), Errno> {
+    consume: impl FnOnce(u64, &mut dyn FnMut(u64, &mut [u8]) -> Result<(), Errno>) -> Result<T, Errno>,
+) -> Result<(T, ExecIdentity), Errno> {
     let attrs = fs.getattr(node.ino).map_err(|errno| {
         trace(b'@');
         errno
@@ -91,30 +106,29 @@ pub(crate) fn read_image(
         Errno(errno)
     })?;
     trace(b'6');
-    let size = usize::try_from(attrs.size).map_err(|_| Errno(ENOMEM))?;
-    let mut bytes = Vec::new();
-    bytes.try_reserve_exact(size).map_err(|_| Errno(ENOMEM))?;
-    while bytes.len() < size {
-        if killed() {
-            return Err(Errno(EINTR));
+    let mut read = |mut offset: u64, bytes: &mut [u8]| {
+        for mut chunk in bytes.chunks_mut(64 * 1024) {
+            while !chunk.is_empty() {
+                if killed() {
+                    return Err(Errno(EINTR));
+                }
+                let n = fs.read(node, offset, chunk).map_err(|errno| {
+                    trace(b'%');
+                    errno
+                })?;
+                if n == 0 || n > chunk.len() {
+                    trace(b'%');
+                    return Err(Errno(EIO));
+                }
+                offset += n as u64;
+                chunk = &mut chunk[n..];
+            }
         }
-        let offset = bytes.len();
-        let end = size.min(offset.saturating_add(64 * 1024));
-        bytes.resize(end, 0);
-        let n = fs
-            .read(node, offset as u64, &mut bytes[offset..end])
-            .map_err(|errno| {
-                trace(b'%');
-                errno
-            })?;
-        if n == 0 || n > end - offset {
-            trace(b'%');
-            return Err(Errno(EIO));
-        }
-        bytes.truncate(offset + n);
-    }
+        Ok(())
+    };
+    let image = consume(attrs.size, &mut read)?;
     trace(b'7');
-    Ok((bytes, identity))
+    Ok((image, identity))
 }
 
 // Retain ARM's bounded exec breadcrumbs at the shared loader's actual stages.

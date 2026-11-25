@@ -5,6 +5,56 @@ extern crate alloc;
 
 #[path = "../kernel/src/fs/vfs/exec.rs"]
 mod exec;
+#[path = "../kernel/src/exec_elf.rs"]
+mod exec_elf;
+
+/// Heap bytes this thread holds, and the most it has held since `begin`.
+mod heap {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::Cell;
+
+    thread_local! {
+        static LIVE: Cell<usize> = const { Cell::new(0) };
+        static PEAK: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub struct Counting;
+
+    // SAFETY: alloc and dealloc forward their arguments unchanged to the system allocator.
+    unsafe impl GlobalAlloc for Counting {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            // SAFETY: the caller's layout contract passes through.
+            let ptr = unsafe { System.alloc(layout) };
+            if !ptr.is_null() {
+                let _ = LIVE.try_with(|live| {
+                    let now = live.get() + layout.size();
+                    live.set(now);
+                    let _ = PEAK.try_with(|peak| peak.set(peak.get().max(now)));
+                });
+            }
+            ptr
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            // SAFETY: the caller's pointer and layout contract passes through.
+            unsafe { System.dealloc(ptr, layout) };
+            let _ = LIVE.try_with(|live| live.set(live.get().saturating_sub(layout.size())));
+        }
+    }
+
+    pub fn begin() -> usize {
+        let live = LIVE.with(Cell::get);
+        PEAK.with(|peak| peak.set(live));
+        live
+    }
+
+    pub fn peak_since(start: usize) -> usize {
+        PEAK.with(Cell::get).saturating_sub(start)
+    }
+}
+
+#[global_allocator]
+static HEAP: heap::Counting = heap::Counting;
 #[path = "../kernel/src/syscall/errno.rs"]
 pub mod syscall_errno;
 mod syscall {
@@ -143,24 +193,59 @@ fn header(file_size: usize, memory_size: usize) -> [u8; ELF_HEADER + PHDR] {
     bytes
 }
 
+const RING_PAGES: usize = 32;
+const USER_END: u64 = 0x8000_0000_0000;
+
+/// Exec the image through the production reader and segment loader, handing
+/// each read's bytes to `copy` with its segment offset. The image's pages come
+/// from a ring allocated before measuring, so only the loader's own heap use
+/// counts. Returns the peak heap bytes the exec held and the loader's facts.
 fn load(
     fs: &dyn FileSystem,
     node: &VNode,
     killed: impl Fn() -> bool,
     mut copy: impl FnMut(usize, &[u8]),
-) -> Result<usize, Errno> {
-    let (image, _) = crate::exec::read_image(
+) -> Result<(usize, [u64; 5]), Errno> {
+    let mut ring = vec![0u8; RING_PAGES * 4096];
+    let base = ring.as_mut_ptr();
+    let start = heap::begin();
+    let (summary, _) = crate::exec::read_image(
         fs,
         node,
         MountFlags::default(),
         &Credentials::kernel(),
         killed,
+        |size, read| {
+            let mut header = [0; exec_elf::ELF_HEADER];
+            let prefix = size.min(header.len() as u64) as usize;
+            read(0, &mut header[..prefix])?;
+            let headers = exec_elf::Headers::read(&header[..prefix], size, 62, USER_END, read)?;
+            let mut pages = 0;
+            let mut loaded = 0;
+            // SAFETY: each ring page is handed out zeroed, and a read run (at
+            // most CHUNK bytes, half the ring) is flushed before its pages
+            // come round again.
+            unsafe {
+                headers.load_segments(
+                    read,
+                    |_, _| {
+                        let page = base.add((pages % RING_PAGES) * 4096);
+                        page.write_bytes(0, 4096);
+                        pages += 1;
+                        Ok(page)
+                    },
+                    |ptr, len| {
+                        copy(loaded, core::slice::from_raw_parts(ptr, len));
+                        loaded += len;
+                    },
+                )?;
+            }
+            Ok(headers.summary())
+        },
     )?;
-    let size = u64::from_le_bytes(image[96..104].try_into().unwrap()) as usize;
-    for (index, bytes) in image[..size].chunks(CHUNK).enumerate() {
-        copy(index * CHUNK, bytes);
-    }
-    Ok(image.capacity())
+    let peak = heap::peak_since(start);
+    drop(ring);
+    Ok((peak, summary))
 }
 
 #[test]
@@ -175,7 +260,7 @@ fn large_segment_uses_at_most_one_chunk_and_headers() {
     let node = VNode::file();
 
     let mut loaded = 0;
-    let peak = load(
+    let (peak, summary) = load(
         &fs,
         &node,
         || false,
@@ -198,6 +283,10 @@ fn large_segment_uses_at_most_one_chunk_and_headers() {
         peak <= CHUNK + header.len(),
         "exec buffered {peak} bytes for a {size}-byte segment"
     );
+    // Entry, the program headers inside the segment, the page-aligned heap
+    // start and image size, and no writable bytes.
+    let pages = (size as u64 + 4095) & !4095;
+    assert_eq!(summary, [0x4000_0000, 0x4000_0000 + ELF_HEADER as u64, 0x4000_0000 + pages, pages, 0]);
 }
 
 #[test]

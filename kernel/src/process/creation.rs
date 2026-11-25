@@ -156,9 +156,9 @@ pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &
 /// process table but before its main thread is handed to the scheduler, so
 /// `before_run` sees a process that has not run yet.
 #[cfg(target_arch = "aarch64")]
-pub fn create_user_process_before_run(
+pub fn create_user_process_before_run<'a>(
     name: String,
-    elf_data: &[u8],
+    elf_data: impl Into<crate::exec_elf::ProcessImage<'a>>,
     before_run: impl FnOnce(ProcessId),
 ) -> Result<ProcessId, &'static str> {
     log::info!(

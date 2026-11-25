@@ -613,68 +613,11 @@ fn load_segment_into_page_table(
         segment_executable
     );
 
-    // Set up final page flags
-    let mut flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
-    if segment_writable {
-        flags |= PageTableFlags::WRITABLE;
-    }
-    if !segment_executable {
-        flags |= PageTableFlags::NO_EXECUTE;
-    }
-
-    // Map and load each page - NEVER switch to process page table
+    // Map and load each page without switching to the process page table.
     for address in page_addresses.step_by(4096) {
         let page = Page::<Size4KiB>::containing_address(VirtAddr::new(address));
-        // Check if page is already mapped (from a previous overlapping segment)
-        // This handles cases like RELRO segments that overlap with data segments
-        let (frame, already_mapped) =
-            if let Some(existing_phys_addr) = page_table.translate_page(page.start_address()) {
-                use x86_64::structures::paging::PhysFrame;
-                let existing_frame = PhysFrame::containing_address(existing_phys_addr);
-                if let Some((_, existing_flags)) = page_table.get_page_info(page) {
-                    let mut merged_flags = existing_flags | flags;
-
-                    // x86 NX is restrictive: if any overlapping segment is executable, the
-                    // shared page must be executable. This handles ELF layouts where a
-                    // page contains the tail of one segment and the head of the next.
-                    if !flags.contains(PageTableFlags::NO_EXECUTE) {
-                        merged_flags.remove(PageTableFlags::NO_EXECUTE);
-                    }
-
-                    if merged_flags != existing_flags {
-                        page_table.update_page_flags(page, merged_flags)?;
-                    }
-                }
-                (existing_frame, true)
-            } else {
-                // Page not mapped yet, allocate a new frame
-                let new_frame =
-                    crate::memory::frame_allocator::allocate_frame().ok_or("Out of memory")?;
-
-                // Map page in the process page table (from kernel space)
-                match page_table.map_page(page, new_frame, flags) {
-                    Ok(()) => {}
-                    Err(e) => {
-                        log::error!("Failed to map page at {:?}: {}", page.start_address(), e);
-                        return Err("Failed to map page in process page table");
-                    }
-                }
-
-                (new_frame, false)
-            };
-
-        // Get physical address for direct memory access (Linux-style)
-        let physical_memory_offset = crate::memory::physical_memory_offset();
-        let frame_phys_addr = frame.start_address();
-        let phys_ptr = (physical_memory_offset.as_u64() + frame_phys_addr.as_u64()) as *mut u8;
-
-        // Only clear the page if it wasn't already mapped (i.e., we just allocated it)
-        // If it was already mapped, a previous segment's data is there and we don't want to erase it
-        if !already_mapped {
-            unsafe {
-                core::ptr::write_bytes(phys_ptr, 0, 4096);
-            }
-        }
+        let phys_ptr = map_image_page(page_table, address, ph.p_flags)
+            .map_err(|_| "Failed to map page in process page table")?;
 
         // Copy data if this page overlaps with file data
         let page_start_vaddr = page.start_address();
@@ -715,9 +658,8 @@ fn load_segment_into_page_table(
             }
 
             log::trace!(
-                "Copied {} bytes to frame {:#x} (page {:#x}) at offset {} using physical access",
+                "Copied {} bytes to page {:#x} at offset {} using physical access",
                 copy_size,
-                frame_phys_addr.as_u64(),
                 page_start_vaddr.as_u64(),
                 page_offset
             );
@@ -731,3 +673,55 @@ fn load_segment_into_page_table(
 
     Ok(())
 }
+
+
+// Filesystem images write these frames through the direct map before they
+// publish the new process image. Shared and inherited mappings are read-only
+// to this path.
+pub(crate) fn map_image_page(
+    table: &mut crate::memory::process_memory::ProcessPageTable,
+    address: u64,
+    segment_flags: u32,
+) -> Result<*mut u8, i32> {
+    use crate::syscall::errno::{ENOEXEC, ENOMEM};
+    let page = Page::<Size4KiB>::containing_address(user_address(address).map_err(|_| ENOEXEC)?);
+    let mut flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
+    if segment_flags & 2 != 0 {
+        flags |= PageTableFlags::WRITABLE;
+    }
+    if segment_flags & 1 == 0 {
+        flags |= PageTableFlags::NO_EXECUTE;
+    }
+    let (frame, fresh) = if let Some(phys) = table.translate_page(page.start_address()) {
+        if !table.owns_image_page(address) {
+            return Err(ENOEXEC);
+        }
+        let (frame, existing) = table.get_page_info(page).ok_or(ENOEXEC)?;
+        debug_assert_eq!(frame.start_address(), phys);
+        let mut merged = existing | flags;
+        if !flags.contains(PageTableFlags::NO_EXECUTE) {
+            merged.remove(PageTableFlags::NO_EXECUTE);
+        }
+        if merged != existing {
+            table.update_page_flags(page, merged).map_err(|_| ENOMEM)?;
+        }
+        (frame, false)
+    } else {
+        let frame = crate::memory::frame_allocator::allocate_frame().ok_or(ENOMEM)?;
+        if table.map_page(page, frame, flags).is_err() {
+            let _ = crate::memory::frame_allocator::deallocate_leaf_frame(frame);
+            return Err(ENOMEM);
+        }
+        (frame, true)
+    };
+    let ptr = (crate::memory::physical_memory_offset().as_u64()
+        + frame.start_address().as_u64()) as *mut u8;
+    if fresh {
+        // SAFETY: the new unpublished page owns this full frame.
+        unsafe { core::ptr::write_bytes(ptr, 0, 4096); }
+    }
+    Ok(ptr)
+}
+
+pub(crate) fn sync_image_range(_: *mut u8, _: usize) {}
+pub(crate) fn finish_image_load() {}

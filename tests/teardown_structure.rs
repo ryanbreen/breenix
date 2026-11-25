@@ -4511,6 +4511,10 @@ const FRAME_LEDGER_INIT_CALLS: &[(&str, &str, usize)] = &[
 #[rustfmt::skip]
 const PROCESS_PAGE_TABLE_CONSTRUCTORS: &[(&str, &str, usize)] = &[
     ("kernel/src/arch_impl/aarch64/syscall_entry.rs", "fn sys_fork_aarch64", 1),
+    // E25 ruling 101: a filesystem image (exec, spawn, init) is read straight
+    // into the frames of the table it is mapped into, so the shared loader
+    // builds that table while the file lease is held; constructors take it over.
+    ("kernel/src/exec_elf.rs", "#[cfg(not(test))] impl MappedElf::fn load", 1),
     ("kernel/src/memory/process_memory.rs", "#[cfg(feature=boot_tests)] fn page_table_custody_disposition_gate_test", 6),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn create_process", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn build_process_with_argv_at", 1),

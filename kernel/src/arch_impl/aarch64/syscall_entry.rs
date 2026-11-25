@@ -1380,7 +1380,7 @@ fn sys_exec_aarch64(
     };
 
     let (elf_vec, (image_identity, exe_path)) = match crate::syscall::exec::read_image(&program_name, &mut arguments, |path| {
-        load_elf_from_ext2(path).map(|(data, identity, path)| (data, (identity, path)))
+        load_elf_from_ext2(path, crate::exec_elf::Purpose::Exec).map(|(data, identity, path)| (data, (identity, path)))
     }) {
         Ok(data) => data,
         Err(errno) => return (-(errno as i64)) as u64,
@@ -1389,7 +1389,6 @@ fn sys_exec_aarch64(
     // Trace: ELF file loaded from filesystem
     super::trace::trace_exec(b'L');
 
-    let elf_data = elf_vec.as_slice();
 
     // The new image's credentials are decided before its stack is built, so
     // the auxiliary vector reports them; the commit refuses if they change.
@@ -1430,7 +1429,7 @@ fn sys_exec_aarch64(
     };
     let mut prepared = match crate::process::manager::ProcessManager::prepare_exec_image(
         current_pid,
-        elf_data,
+        elf_vec,
         Some(&process_name),
         Some(exe_path),
         &argv_slices,
@@ -1606,18 +1605,20 @@ fn sys_exec_aarch64(
     result
 }
 
-/// Load ELF binary from ext2 filesystem path.
+/// Load an ELF binary from a filesystem path into a new page table.
 ///
-/// Returns the file content as Vec<u8> on success, or an errno on failure.
+/// Returns the mapped image (or, for exec, the `#!` line) on success, or an
+/// errno on failure.
 ///
 /// NOTE: This function intentionally has NO logging to avoid timing overhead.
 /// The program image at `path`, the identity its set-ID bits confer, and its
 /// physical absolute pathname.
 fn load_elf_from_ext2(
     path: impl AsRef<[u8]>,
-) -> Result<(alloc::vec::Vec<u8>, crate::process::credentials::ExecIdentity, alloc::vec::Vec<u8>), i32> {
+    purpose: crate::exec_elf::Purpose,
+) -> Result<(crate::exec_elf::Image, crate::process::credentials::ExecIdentity, alloc::vec::Vec<u8>), i32> {
     let cred = crate::fs::permissions::Credentials::current(false).map_err(|errno| errno as i32)?;
-    crate::fs::vfs::exec::load_image(path, &cred, crate::syscall::exec::caller_killed)
+    crate::fs::vfs::exec::load_image(path, &cred, crate::syscall::exec::caller_killed, purpose)
         .map_err(|errno| match errno.0 {
             crate::syscall::errno::EISDIR => crate::syscall::errno::EACCES,
             errno => errno,
@@ -1789,23 +1790,22 @@ fn sys_spawn_aarch64(path_ptr: u64, argv_ptr: u64) -> u64 {
         argv_vec.push(arg0);
     }
 
-    // Load ELF from filesystem (with interrupts enabled for I/O)
-    let (elf_vec, exe_path) = if program_path.contains('/') {
-        match load_elf_from_ext2(&program_path) {
-            Ok((data, _, path)) => (data, path),
-            Err(errno) => return (-(errno as i64)) as u64,
-        }
+    // Load ELF from filesystem (with interrupts enabled for I/O) into the
+    // child's own page table, before the process manager is taken.
+    let loaded = if program_path.contains('/') {
+        load_elf_from_ext2(&program_path, crate::exec_elf::Purpose::Spawn)
     } else {
         let bin_path = alloc::format!("/bin/{}", program_path);
-        match load_elf_from_ext2(&bin_path) {
-            Ok((data, _, path)) => (data, path),
-            Err(errno) => {
-                crate::serial_println!("[spawn] Failed to load /bin/{}: {}", program_path, errno);
-                return (-(errno as i64)) as u64;
-            }
-        }
+        load_elf_from_ext2(&bin_path, crate::exec_elf::Purpose::Spawn).inspect_err(|errno| {
+            crate::serial_println!("[spawn] Failed to load /bin/{}: {}", program_path, errno);
+        })
     };
-    let elf_data = elf_vec.as_slice();
+    let (elf_vec, exe_path) = match loaded
+        .and_then(|(image, _, path)| image.into_elf().map(|elf| (elf, path)).map_err(|errno| errno.0))
+    {
+        Ok(image) => image,
+        Err(errno) => return (-(errno as i64)) as u64,
+    };
 
     // Get caller's PID
     let current_thread_id = match crate::task::scheduler::current_thread_id() {
@@ -1842,7 +1842,7 @@ fn sys_spawn_aarch64(path_ptr: u64, argv_ptr: u64) -> u64 {
     let child_pid = {
         let mut manager_guard = crate::process::manager();
         if let Some(ref mut manager) = *manager_guard {
-            manager.spawn_process(parent_pid, process_name, elf_data, &argv_slices, Some(exe_path))
+            manager.spawn_process(parent_pid, process_name, elf_vec, &argv_slices, Some(exe_path))
         } else {
             Err("Process manager not available")
         }
