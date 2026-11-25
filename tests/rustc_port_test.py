@@ -30,6 +30,74 @@ def git(*args, tree=TREE):
 
 
 class RustcPort(unittest.TestCase):
+    def test_rustc_is_dynamic_breenix_elf(self):
+        stage = ROOT / 'userspace/programs/target/rustc/x86_64'
+        record = json.loads((RECORDS.parent / 'k5/x86_64.json').read_text())
+        llvm = Path(os.environ.get('BREENIX_X2_LLVM', '/opt/homebrew/opt/llvm@20/bin'))
+        rustc = stage / 'rustc'
+        self.assertTrue(rustc.is_file(), 'build the hosted twin with build.sh --rustc')
+        drivers = list(stage.glob('librustc_driver-*.so'))
+        self.assertEqual(len(drivers), 1, drivers)
+        driver, = drivers
+        kd = Path(os.environ.get('BREENIX_KD_BUILD_DIR', ROOT / 'userspace/programs/target/kd'))
+        libc = kd / 'libc.so'
+
+        def readelf(elf, *args):
+            return subprocess.check_output([llvm / 'llvm-readelf', *args, elf],
+                                           text=True, timeout=10)
+
+        definitions = set()
+        strong = {}
+        weak = {}
+        for elf, kind, needed in ((rustc, 'EXEC', [driver.name, libc.name]),
+                                  (driver, 'DYN', [libc.name]),
+                                  (libc, 'DYN', [])):
+            headers = readelf(elf, '-W', '-h', '-l', '-d')
+            self.assertRegex(headers, r'Class:\s+ELF64')
+            self.assertRegex(headers, r'Data:.*little endian')
+            self.assertRegex(headers, r'Machine:\s+Advanced Micro Devices X86-64')
+            self.assertRegex(headers, rf'Type:\s+{kind}\b')
+            self.assertCountEqual(re.findall(r'\(NEEDED\).*\[(.+)\]', headers), needed, elf)
+            interp = re.findall(r'Requesting program interpreter: (.+)\]', headers)
+            self.assertEqual(interp, ['/lib/ld-breenix.so'] if elf == rustc else [], elf)
+            if elf == rustc:
+                self.assertEqual(re.findall(r'\(RUNPATH\).*\[(.+)\]', headers),
+                                 ['$ORIGIN/../lib'])
+                self.assertNotIn('(RPATH)', headers)
+            else:
+                self.assertEqual(re.findall(r'\(SONAME\).*\[(.+)\]', headers), [elf.name])
+
+            strong[elf] = set()
+            weak[elf] = set()
+            for line in readelf(elf, '-W', '--dyn-syms').splitlines():
+                fields = line.split()
+                if len(fields) < 8 or not fields[0].removesuffix(':').isdigit():
+                    continue
+                _, value, _, _, binding, visibility, index, name, *_ = fields
+                if index == 'UND':
+                    if binding == 'WEAK':
+                        self.assertEqual(int(value, 16), 0, name)
+                        weak[elf].add(name)
+                    else:
+                        strong[elf].add(name)
+                elif binding in ('GLOBAL', 'WEAK') and visibility in ('DEFAULT', 'PROTECTED'):
+                    definitions.add(name)
+        self.assertEqual({elf.name: sorted(names - definitions) for elf, names in strong.items()
+                          if names - definitions}, {})
+        self.assertEqual({elf.name: sorted(names & definitions) for elf, names in weak.items()
+                          if names & definitions}, {})
+
+        for elf, key in ((rustc, 'hosted_rustc_sha256'), (driver, 'hosted_driver_sha256')):
+            with elf.open('rb') as artifact:
+                self.assertEqual(hashlib.file_digest(artifact, 'sha256').hexdigest(), record[key])
+            link_map = stage / f'{elf.name}.map'
+            self.assertTrue(link_map.is_file(), link_map)
+            with link_map.open('rb') as stream, mmap.mmap(stream.fileno(), 0,
+                                                         access=mmap.ACCESS_READ) as contents:
+                self.assertNotRegex(contents, rb'(?:^|[/\s])lib(?:c|unwind)\.a[( :]')
+                self.assertEqual(contents.find(b'breenix-crt.o') >= 0, elf == rustc)
+                self.assertEqual(contents.find(b'libbunwind.a(') >= 0, elf == driver)
+
     def test_twin_rlibs_match_twin_compiler(self):
         cache = Path.home() / 'Library/Caches/breenix-e25/k5/twin'
         mac_rustc = Path(os.environ.get('BREENIX_K5_MAC_RUSTC', cache / 'mac/bin/rustc'))
