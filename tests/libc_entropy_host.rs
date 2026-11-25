@@ -36,7 +36,7 @@ unsafe fn getrandom(buffer: *mut u8, len: usize, flags: u32) -> isize {
 
 #[test]
 fn getentropy_fills_the_whole_span_or_returns_an_error() {
-    let mut bytes = [0; 257];
+    let mut bytes = [0u8; 257];
     let buffer = bytes.as_mut_ptr().cast();
     // SAFETY: the first two calls use the live buffer. The last asks the kernel
     // boundary to reject an invalid address without dereferencing it in libc.
