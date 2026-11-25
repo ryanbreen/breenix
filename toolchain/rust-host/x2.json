@@ -70,5 +70,55 @@
     "<llvm-project>/llvm/include/llvm/IR/ConstantFolder.h:31:16: warning: virtual method 'anchor' is inside a 'final' class and can never be overridden [-Wunnecessary-virtual-specifier]": 5
   },
   "log_sha256": "fd70262a6fdf35d988b4936d9d3212aef5d6399051fdd3907a2b2c67d5474b4d",
-  "evidence_directory": "fx/evidence/e25-k4-x2.128PEvFv"
+  "evidence_directory": "fx/evidence/e25-k4-x2.128PEvFv",
+  "static_route": {
+    "answer": "none",
+    "citations": [
+      {
+        "file": "bootstrap.example.toml",
+        "line": 139,
+        "quote": "# Whether to build LLVM as a dynamically linked library (as opposed to statically linked)."
+      },
+      {
+        "file": "bootstrap.example.toml",
+        "line": 809,
+        "quote": "# \"thin\" or \"fat\" to apply Thin/Fat LTO to the `rustc_driver` dylib, or \"off\" to disable"
+      },
+      {
+        "file": "bootstrap.example.toml",
+        "line": 973,
+        "quote": "# Force static or dynamic linkage of the standard library for this target. If"
+      },
+      {
+        "file": "bootstrap.example.toml",
+        "line": 974,
+        "quote": "# this target is a host for rustc, this will also affect the linkage of the"
+      },
+      {
+        "file": "bootstrap.example.toml",
+        "line": 975,
+        "quote": "# compiler itself. This is useful for building rustc on targets that normally"
+      },
+      {
+        "file": "bootstrap.example.toml",
+        "line": 976,
+        "quote": "# only use static libraries. If unset, the target's default linkage is used."
+      },
+      {
+        "file": "src/doc/rustc-dev-guide/src/building/bootstrapping/what-bootstrapping-does.md",
+        "line": 294,
+        "quote": "librustc_driver-4f0cc9f50e53f0ba.so  libtracing_attributes-e4be92c35ab2a33b.so"
+      },
+      {
+        "file": "src/doc/rustc/src/targets/custom.md",
+        "line": 4,
+        "quote": "\"custom target specification\" to define a target. These target specification files"
+      },
+      {
+        "file": "src/doc/rustc/src/targets/custom.md",
+        "line": 5,
+        "quote": "are JSON. To see the JSON for the host target, you can run:"
+      }
+    ]
+  }
 }
