@@ -23,6 +23,75 @@ fn hex(text: &str) -> u64 {
     u64::from_str_radix(text.trim_start_matches("0x"), 16).unwrap()
 }
 
+#[test]
+fn ld_breenix_is_self_contained_dyn() {
+    let path = std::env::var_os("BREENIX_LD_BREENIX")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../userspace/programs/target/kd/ld-breenix.so")
+        });
+    assert!(
+        path.is_file(),
+        "build the interpreter first: {}",
+        path.display()
+    );
+    let inspect = |setting: &str, fallback: &str, args: &[&str]| {
+        let tool = std::env::var_os(setting).unwrap_or_else(|| fallback.into());
+        let result = Command::new(tool).args(args).arg(&path).output().unwrap();
+        assert!(result.status.success(), "{result:?}");
+        String::from_utf8(result.stdout).unwrap()
+    };
+    let elf = inspect(
+        "BREENIX_TOOLCHAIN_READELF",
+        "llvm-readelf",
+        &[
+            "--wide",
+            "--file-header",
+            "--program-headers",
+            "--dynamic-table",
+            "--dyn-relocations",
+        ],
+    );
+    let field = |tag| {
+        elf.lines()
+            .find_map(|line| line.trim().strip_prefix(tag))
+            .unwrap()
+            .trim()
+    };
+    assert_eq!(field("Type:").split_whitespace().next(), Some("DYN"));
+    assert_eq!(field("Machine:"), "Advanced Micro Devices X86-64");
+    let entry = hex(field("Entry point address:"));
+    assert!(!elf
+        .lines()
+        .any(|line| line.trim_start().starts_with("INTERP ")));
+    for kind in ["NEEDED", "REL", "RELR", "JMPREL"] {
+        assert!(
+            !elf.contains(&format!("({kind})")),
+            "{kind} in the interpreter"
+        );
+    }
+    for relocation in elf
+        .lines()
+        .filter_map(|line| line.split_whitespace().nth(2))
+    {
+        if relocation.starts_with("R_") {
+            assert_eq!(relocation, "R_X86_64_RELATIVE");
+        }
+    }
+    assert!(
+        elf.lines().any(|line| {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            fields.first() == Some(&"LOAD")
+                && fields[6..fields.len() - 1].contains(&"E")
+                && (hex(fields[2])..hex(fields[2]) + hex(fields[5])).contains(&entry)
+        }),
+        "entry {entry:#x} is outside every executable PT_LOAD"
+    );
+    let undefined = inspect("BREENIX_TOOLCHAIN_NM", "llvm-nm", &["--undefined-only"]);
+    assert!(undefined.trim().is_empty(), "{undefined}");
+}
+
 impl Fixture {
     fn file_offset(&self, segment: &str) -> usize {
         let mut fields = self
