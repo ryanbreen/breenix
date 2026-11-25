@@ -18,6 +18,7 @@ BASE = '706f244db'
 PIN = '666252fd61839b9e9b1bc9e777a0c84c5cf3dc6d'
 RUSTIX_PATCH = RECORDS.parent / 'k5/patches/rustix-1.0.7-breenix.patch'
 GETRANDOM_PATCH = RECORDS.parent / 'k5/patches/getrandom-0.2.16-breenix.patch'
+LIBLOADING_PATCH = RECORDS.parent / 'k5/patches/libloading-0.8.8-breenix.patch'
 
 
 def git(*args, tree=TREE):
@@ -65,6 +66,23 @@ class RustcPort(unittest.TestCase):
             '        use libc::__errno_location as errno_location;',
         ])
         self.assert_patch_preserves_registry_copy(GETRANDOM_PATCH, 'getrandom-0.2.16')
+
+    def test_libloading_patch_matches_breenix_dlfcn(self):
+        patch = LIBLOADING_PATCH.read_text()
+        source = 'src/os/unix/consts.rs'
+        self.assertEqual(re.findall(r'(?m)^diff --git (.*)$', patch), [f'a/{source} b/{source}'])
+        self.assertIn(f'\n--- a/{source}\n+++ b/{source}\n', patch)
+        self.assertFalse(re.search(r'(?m)^-(?!-- )', patch))
+        header = (ROOT / 'libs/libbreenix-libc/include/dlfcn.h').read_text()
+        values = dict(re.findall(r'(?m)^#define (RTLD_\w+) (\S+)$', header))
+        hunks = re.split(r'(?m)^@@ .* @@[^\n]*\n', patch)[1:]
+        self.assertEqual(len(hunks), 4)
+        for name, hunk in zip(('RTLD_LAZY', 'RTLD_NOW', 'RTLD_GLOBAL', 'RTLD_LOCAL'), hunks):
+            self.assertEqual(hunk.splitlines(), [
+                '+        } else if #[cfg(target_os = "breenix")] {',
+                f'+            pub(super) const {name}: c_int = {values[name]};',
+            ])
+        self.assert_patch_preserves_registry_copy(LIBLOADING_PATCH, 'libloading-0.8.8')
 
     def assert_patch_preserves_registry_copy(self, patch, crate):
         self.assertTrue(patch.is_file(), f'{crate} port patch is missing')
