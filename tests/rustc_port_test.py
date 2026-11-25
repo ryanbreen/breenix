@@ -38,26 +38,49 @@ class RustcPort(unittest.TestCase):
         banner, *fields = verbose.splitlines()
         version = dict(line.split(': ', 1) for line in fields)
         targets = ('x86_64-breenix', 'x86_64-breenix-hosted')
+        digests = {}
+        failures = []
         for target in targets:
             archives = sorted((sysroot / 'lib/rustlib' / target / 'lib').glob('*.rlib'))
             for crate in ('core', 'alloc', 'std'):
                 self.assertEqual(sum(path.name.startswith(f'lib{crate}-') for path in archives),
                                  1, target)
             for archive in archives:
-                with self.subTest(target=target, archive=archive.name):
-                    result = subprocess.run([mac_rustc, '-Zls=root', archive],
-                                            capture_output=True, text=True, timeout=5, check=True)
-                    self.assertEqual(result.stderr, '', f'{archive.name} must match {banner}')
-                    self.assertIn(f'triple {target}', result.stdout.splitlines())
+                result = subprocess.run([mac_rustc, '-Zls=root', archive],
+                                        capture_output=True, text=True, timeout=5, check=True)
+                if result.stderr or f'triple {target}' not in result.stdout.splitlines():
+                    failures.append(f'{target}/{archive.name}: {result.stderr or result.stdout}'.strip())
+                with archive.open('rb') as artifact:
+                    digests[archive.relative_to(sysroot).as_posix()] = hashlib.file_digest(
+                        artifact, 'sha256').hexdigest()
+        self.assertFalse(failures, '\n'.join(failures))
 
         commit = version['commit-hash']
         self.assertRegex(commit, r'^[0-9a-f]{40}$')
-        self.assertIn(f"{version['release']} ({commit[:9]} ", banner)
+        match = re.fullmatch(rf"rustc {re.escape(version['release'])} "
+                             rf"\(([0-9a-f]{{7,40}}) {re.escape(version['commit-date'])}\)", banner)
+        self.assertIsNotNone(match, banner)
+        self.assertTrue(commit.startswith(match[1]))
         hosted = Path(os.environ.get('BREENIX_K5_HOSTED', cache / 'hosted'))
         driver, = (hosted / 'lib').glob('librustc_driver-*.so')
+        llvm = Path(os.environ.get('BREENIX_X2_LLVM', '/opt/homebrew/opt/llvm@20/bin'))
+        headers = subprocess.check_output(
+            [llvm / 'llvm-readelf', '--file-header', '--dynamic-table', hosted / 'bin/rustc'],
+            text=True, timeout=5)
+        self.assertRegex(headers, r'Machine:\s+Advanced Micro Devices X86-64')
+        self.assertIn(driver.name, re.findall(r'\(NEEDED\).*\[(.+)\]', headers))
+        # The hosted ELF cannot run on the Mac. Check the linked driver's
+        # embedded identity here and reserve its live -vV for the guest case.
         with driver.open('rb') as binary, mmap.mmap(binary.fileno(), 0, access=mmap.ACCESS_READ) as data:
-            for value in (version['release'], commit, targets[1]):
+            for value in (version['release'], commit, version['commit-date'], targets[1]):
                 self.assertNotEqual(data.find(value.encode()), -1, f'hosted rustc identity field: {value}')
+
+        record = json.loads((RECORDS.parent / 'k5/x86_64.json').read_text())
+        pin = tomllib.loads((ROOT / 'rust-fork.toml').read_text())['hosted']['commit']
+        self.assertEqual(commit, pin)
+        self.assertEqual(record['sysroot'], {
+            'rustc_version': banner, 'commit_hash': commit, 'files_sha256': digests,
+        })
 
     def test_rustix_patch_is_breenix_only(self):
         patch = RUSTIX_PATCH.read_text()
