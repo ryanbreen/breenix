@@ -182,6 +182,13 @@ class ProgressTest(unittest.TestCase):
                 self.assertGreater(limits[0], 10_000)
                 self.assertLess(limits[0], monitor['STALL_SECONDS'] * 1000)
 
+    def test_llvm_case_allowances(self):
+        runner = (ROOT / 'libs/libbreenix/src/suite.rs').read_text()
+        table = runner.split('pub const NAMED_CASE_ALLOWANCES:', 1)[1].split(';', 1)[0]
+        entries = re.findall(r'\(\s*"llvm"\s*,\s*"([^"]+)"\s*,\s*([\d_]+)\s*,?\s*\)', table)
+        self.assertEqual(entries, [('llvm/llc-objects-equal-mac', '60_000'),
+                                   ('llvm/llc-object-runs', '60_000')])
+
     def test_cxx_runtime_case_allowances(self):
         runner = (ROOT / 'libs/libbreenix/src/suite.rs').read_text()
         manifest = json.loads((ROOT / 'docs/suites/cxx-runtime.json').read_text())
