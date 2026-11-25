@@ -180,6 +180,12 @@ thread_local! {
 
 impl Chain {
     fn new(handler: bool) -> Self {
+        Self::with_pushed_arguments(handler, None)
+    }
+
+    /// `pushed` names a region whose call site has pushed that many argument
+    /// bytes, described by DW_CFA_GNU_args_size (LSB Core 5.0 §10.5.2).
+    fn with_pushed_arguments(handler: bool, pushed: Option<(u64, u8)>) -> Self {
         // DWARF 5 Table 7.29 and LSB Core 5.0 §10.6. A single CIE
         // describes a frame with CFA = R1 + 8 and the return PC at CFA - 8.
         fn record(section: &mut Vec<u8>, body: &[u8]) {
@@ -200,6 +206,9 @@ impl Chain {
             fde.extend(0x100u64.to_le_bytes());
             fde.push(8);
             fde.extend((region + 0x4000).to_le_bytes());
+            if let Some((_, bytes)) = pushed.filter(|&(pushed, _)| pushed == region) {
+                fde.extend([0x2e, bytes]); // DW_CFA_GNU_args_size, ULEB128 operand
+            }
             record(&mut eh_frame, &fde);
         }
 
@@ -342,6 +351,31 @@ fn two_phase_search_then_cleanup_stops_at_handler() {
     assert_eq!(
         take_events(),
         [Personality(REGIONS[2], A::CLEANUP_PHASE | A::HANDLER_FRAME)]
+    );
+}
+
+/// The landing pad runs with the call's pushed arguments discarded. The
+/// personality still sees the frame's stack pointer at the call site.
+#[test]
+fn gnu_args_size_pops_pushed_arguments_at_landing_pad() {
+    use Actions as A;
+    use Event::Personality;
+
+    let chain = Chain::with_pushed_arguments(true, Some((REGIONS[1], 16)));
+    let mut exception = Exception::new(EXCEPTION_CLASS, None);
+    let cleanup = raise_exception(&chain, Chain::start(), &mut exception)
+        .expect("a frame with DW_CFA_GNU_args_size must unwind");
+    assert_eq!(cleanup.get_ip(), CLEANUP_PAD);
+    assert_eq!(cleanup.get_gr(1), Some(STACK + 8 + 16));
+    assert_eq!(
+        take_events(),
+        [
+            Personality(REGIONS[0], A::SEARCH_PHASE),
+            Personality(REGIONS[1], A::SEARCH_PHASE),
+            Personality(REGIONS[2], A::SEARCH_PHASE),
+            Personality(REGIONS[0], A::CLEANUP_PHASE),
+            Personality(REGIONS[1], A::CLEANUP_PHASE),
+        ]
     );
 }
 
