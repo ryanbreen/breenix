@@ -2,6 +2,16 @@ use core::ffi::{c_int, c_void};
 
 use crate::{__errno_location, getrandom, EINTR, EINVAL, EIO};
 
+// lib.rs selects this module for hosted-rustc. Keep the hosted declarations
+// here to preserve the crate root used to build ordinary libc.
+#[cfg(all(feature = "hosted-rustc", not(feature = "hosted-llvm")))]
+#[path = "llvm_host.rs"]
+mod llvm_host;
+
+#[cfg(feature = "hosted-rustc")]
+#[path = "hosted_io.rs"]
+mod hosted_io;
+
 // POSIX.1-2024: <limits.h> GETENTROPY_MAX and getentropy().
 const GETENTROPY_MAX: usize = 256;
 

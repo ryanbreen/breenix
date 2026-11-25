@@ -2292,11 +2292,8 @@ pub unsafe extern "C" fn _Unwind_GetIP(_context: *mut u8) -> usize {
     0
 }
 
-#[cfg(any(feature = "hosted-llvm", feature = "hosted-rustc"))]
+#[cfg(feature = "hosted-llvm")]
 mod llvm_host;
 
 #[cfg(feature = "hosted-rustc")]
 mod entropy;
-
-#[cfg(feature = "hosted-rustc")]
-mod hosted_io;
