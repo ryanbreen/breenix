@@ -5,7 +5,11 @@
 //! bytes straight into the frames mapped for the new image, at most CHUNK
 //! bytes per read. Kernel heap use is the header table, independent of the
 //! file size.
+// The two standalone host harnesses exercise different parts of this module.
+#![cfg_attr(test, allow(dead_code))]
+
 use alloc::vec::Vec;
+use core::{mem::size_of, ops::Range};
 use crate::fs::errno::Errno;
 use crate::syscall::errno::{ENOEXEC, ENOMEM};
 
@@ -13,9 +17,14 @@ pub(crate) const CHUNK: usize = 64 * 1024;
 pub(crate) const ELF_HEADER: usize = 64;
 const PHDR: usize = 56;
 const PAGE: usize = 4096;
+const ET_EXEC: u16 = 2;
+const ET_DYN: u16 = 3;
+const EM_X86_64: u16 = 62;
 const PT_LOAD: u32 = 1;
 const PT_INTERP: u32 = 3;
 const PT_PHDR: u32 = 6;
+// The pathname resolver accepts fewer than 4096 bytes, excluding the NUL.
+const INTERP_PATH_MAX: u64 = 4096;
 
 #[derive(Clone, Copy)]
 struct ProgramHeader {
@@ -25,6 +34,7 @@ struct ProgramHeader {
     address: u64,
     filesz: u64,
     memsz: u64,
+    align: u64,
 }
 
 impl ProgramHeader {
@@ -33,7 +43,7 @@ impl ProgramHeader {
         let u64_at = |at| u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
         Self {
             kind: u32_at(0), flags: u32_at(4), offset: u64_at(8),
-            address: u64_at(16), filesz: u64_at(32), memsz: u64_at(40),
+            address: u64_at(16), filesz: u64_at(32), memsz: u64_at(40), align: u64_at(48),
         }
     }
 }
@@ -42,10 +52,14 @@ type ReadAt<'a> = dyn FnMut(u64, &mut [u8]) -> Result<(), Errno> + 'a;
 
 /// A validated ELF64 executable's header facts and program header table.
 pub(crate) struct Headers {
+    kind: u16,
     entry: u64,
     table: Vec<u8>,
+    interpreter_path: Option<Vec<u8>>,
     phdr_vaddr: u64,
+    first_page: u64,
     segments_end: u64,
+    load_align: u64,
     image_size: u64,
     data_size: u64,
     #[cfg(all(not(test), target_arch = "aarch64"))]
@@ -69,7 +83,9 @@ impl Headers {
         }
         let u16_at = |at| u16::from_le_bytes(header[at..at + 2].try_into().unwrap());
         let u64_at = |at| u64::from_le_bytes(header[at..at + 8].try_into().unwrap());
-        if u16_at(16) != 2 || u16_at(18) != machine
+        let kind = u16_at(16);
+        if (kind != ET_EXEC && !(kind == ET_DYN && machine == EM_X86_64))
+            || u16_at(18) != machine
             || u16_at(52) as usize != ELF_HEADER || u16_at(54) as usize != PHDR
         {
             return Err(bad);
@@ -91,7 +107,10 @@ impl Headers {
 
         let entry = u64_at(24);
         let mut executable_entry = false;
+        let mut interpreter_path = None;
+        let mut first_page = u64::MAX;
         let mut max_end = 0;
+        let mut load_align = PAGE as u64;
         let mut image_size = 0u64;
         let mut data_size = 0u64;
         let mut explicit_phdr = None;
@@ -100,7 +119,14 @@ impl Headers {
         let mut load_base = u64::MAX;
         for ph in table.chunks_exact(PHDR).map(ProgramHeader::parse) {
             match ph.kind {
-                PT_INTERP => return Err(Errno(ENOEXEC)),
+                // gABI ch. 5: PT_INTERP is unique and precedes the loads.
+                PT_INTERP => {
+                    if machine != EM_X86_64 || interpreter_path.is_some() || first_page != u64::MAX {
+                        return Err(Errno(ENOEXEC));
+                    }
+                    interpreter_path = Some(read_interpreter_path(ph, file_len, read)?);
+                    continue;
+                }
                 PT_PHDR if ph.address < user_end => {
                     explicit_phdr = Some(ph.address);
                     continue;
@@ -114,6 +140,16 @@ impl Headers {
             if ph.filesz > ph.memsz || memory_end > user_end || file_end > file_len {
                 return Err(Errno(ENOEXEC));
             }
+            first_page = first_page.min(ph.address & !(PAGE as u64 - 1));
+            if kind == ET_DYN {
+                if ph.offset % PAGE as u64 != ph.address % PAGE as u64
+                    || (ph.align > 1 && (!ph.align.is_power_of_two()
+                        || ph.offset % ph.align != ph.address % ph.align))
+                {
+                    return Err(Errno(ENOEXEC));
+                }
+                load_align = load_align.max(ph.align);
+            }
             if ph.flags & 1 != 0 && (ph.address..memory_end).contains(&entry) {
                 executable_entry = true;
             }
@@ -121,7 +157,7 @@ impl Headers {
                 let address = ph.address + (phoff - ph.offset);
                 // The x86 loader picked the first containing load and the ARM
                 // loader the last one. Normal layouts have just one.
-                if machine == 62 {
+                if machine == EM_X86_64 {
                     mapped_phdr = mapped_phdr.or(Some(address));
                 } else {
                     mapped_phdr = Some(address);
@@ -137,19 +173,64 @@ impl Headers {
             #[cfg(all(not(test), target_arch = "aarch64"))]
             { load_base = load_base.min(ph.address); }
         }
-        if !executable_entry {
+        if !executable_entry
+            || (interpreter_path.is_some() && (mapped_phdr.is_none()
+                || (explicit_phdr.is_some() && explicit_phdr != mapped_phdr)))
+        {
             return Err(Errno(ENOEXEC));
         }
         Ok(Self {
+            kind,
             entry,
             table,
+            interpreter_path,
             phdr_vaddr: explicit_phdr.or(mapped_phdr).unwrap_or(0),
+            first_page,
             segments_end: (max_end + PAGE as u64 - 1) & !(PAGE as u64 - 1),
+            load_align,
             image_size,
             data_size,
             #[cfg(all(not(test), target_arch = "aarch64"))]
             load_base,
         })
+    }
+
+    /// The validated PT_INTERP pathname, without the trailing NUL.
+    pub(crate) fn interpreter_path(&self) -> Option<&[u8]> {
+        self.interpreter_path.as_deref()
+    }
+
+    /// Plan an ET_EXEC handoff. If it names an interpreter, the caller supplies
+    /// its ET_DYN headers and a user address range reserved for its mappings.
+    pub(crate) fn exec_plan(
+        &self,
+        interpreter: Option<(&Self, Range<u64>)>,
+    ) -> Result<ExecPlan, Errno> {
+        let bad = || Errno(ENOEXEC);
+        if self.kind != ET_EXEC {
+            return Err(bad());
+        }
+        let mut plan = ExecPlan::static_image(
+            self.phdr_vaddr, (self.table.len() / PHDR) as u16, PHDR as u16, self.entry,
+        );
+        match (self.interpreter_path(), interpreter) {
+            (None, None) => {}
+            (Some(_), Some((image, region))) if image.kind == ET_DYN && image.interpreter_path().is_none() => {
+                // Place the interpreter above the program's last load.
+                // Align the bias itself to preserve each PT_LOAD's alignment.
+                let start = region.start.max(self.segments_end);
+                let mask = image.load_align - 1;
+                let bias = start.saturating_sub(image.first_page)
+                    .checked_add(mask).ok_or_else(bad)? & !mask;
+                bias.checked_add(image.segments_end)
+                    .filter(|&end| end <= region.end)
+                    .ok_or_else(bad)?;
+                plan.interpreter_bias = Some(bias);
+                plan.initial_pc = image.entry + bias;
+            }
+            _ => return Err(bad()),
+        }
+        Ok(plan)
     }
 
     /// The entry point, program header address, heap start, image size and
@@ -212,6 +293,95 @@ impl Headers {
             }
         }
         Ok(())
+    }
+}
+
+fn read_interpreter_path(
+    ph: ProgramHeader,
+    file_len: u64,
+    read: &mut ReadAt<'_>,
+) -> Result<Vec<u8>, Errno> {
+    if !(2..=INTERP_PATH_MAX).contains(&ph.filesz)
+        || ph.offset.checked_add(ph.filesz).is_none_or(|end| end > file_len)
+    {
+        return Err(Errno(ENOEXEC));
+    }
+    let len = ph.filesz as usize;
+    let mut path = Vec::new();
+    path.try_reserve_exact(len).map_err(|_| Errno(ENOMEM))?;
+    path.resize(len, 0);
+    read(ph.offset, &mut path)?;
+    if path.pop() != Some(0) || path.contains(&0) {
+        return Err(Errno(ENOEXEC));
+    }
+    Ok(path)
+}
+
+/// The program metadata on the initial stack and the PC it starts at. Under
+/// AMD64 psABI §3.4, the auxv still describes the program on interpreter entry.
+pub(crate) struct ExecPlan {
+    phdr_vaddr: u64,
+    phnum: u16,
+    phentsize: u16,
+    program_entry: u64,
+    interpreter_bias: Option<u64>,
+    initial_pc: u64,
+}
+
+impl ExecPlan {
+    const PREFIX_PAIRS: usize = 5;
+    const SUFFIX_PAIRS: usize = 7;
+    const PAIR_SIZE: usize = size_of::<(u64, u64)>();
+    pub(crate) const STATIC_AUXV_SIZE: usize =
+        (Self::PREFIX_PAIRS + Self::SUFFIX_PAIRS) * Self::PAIR_SIZE;
+
+    pub(crate) fn static_image(phdr_vaddr: u64, phnum: u16, phentsize: u16, entry: u64) -> Self {
+        Self {
+            phdr_vaddr,
+            phnum,
+            phentsize,
+            program_entry: entry,
+            interpreter_bias: None,
+            initial_pc: entry,
+        }
+    }
+
+    pub(crate) fn interpreter_bias(&self) -> Option<u64> {
+        self.interpreter_bias
+    }
+
+    pub(crate) fn initial_pc(&self) -> u64 {
+        self.initial_pc
+    }
+
+    pub(crate) fn auxv_size(&self) -> usize {
+        Self::STATIC_AUXV_SIZE + usize::from(self.interpreter_bias().is_some()) * Self::PAIR_SIZE
+    }
+
+    pub(crate) fn auxv(
+        &self,
+        random_addr: u64,
+        [uid, euid, gid, egid, secure]: [u64; 5],
+    ) -> impl Iterator<Item = (u64, u64)> {
+        let prefix: [_; Self::PREFIX_PAIRS] = [
+            (9, self.program_entry),         // AT_ENTRY
+            (3, self.phdr_vaddr),            // AT_PHDR
+            (5, u64::from(self.phnum)),      // AT_PHNUM
+            (4, u64::from(self.phentsize)),  // AT_PHENT
+            (6, PAGE as u64),               // AT_PAGESZ
+        ];
+        let suffix: [_; Self::SUFFIX_PAIRS] = [
+            (25, random_addr), // AT_RANDOM
+            (11, uid),         // AT_UID
+            (12, euid),        // AT_EUID
+            (13, gid),         // AT_GID
+            (14, egid),        // AT_EGID
+            (23, secure),      // AT_SECURE
+            (0, 0),            // AT_NULL
+        ];
+        prefix.into_iter()
+            .chain(self.interpreter_bias().map(|bias| (7, bias))) // AT_BASE
+            .chain(suffix)
     }
 }
 
@@ -281,6 +451,9 @@ impl MappedElf {
         let machine = arch::EM_AARCH64;
         let headers = Headers::read(header, file_len, machine,
             crate::memory::layout::USER_STACK_REGION_END, read)?;
+        // This path maps a single file. Interpreter lookup and mapping must
+        // supply its headers to the plan before publishing a dynamic image.
+        let plan = headers.exec_plan(None)?;
         // Reserve the Box before allocating a root, so ENOMEM cannot strand it.
         let mut table = alloc::boxed::Box::try_new(core::mem::MaybeUninit::<ProcessPageTable>::uninit())
             .map_err(|_| Errno(ENOMEM))?;
@@ -303,9 +476,9 @@ impl MappedElf {
         arch::finish_image_load();
         let elf = arch::LoadedElf {
             #[cfg(target_arch = "x86_64")]
-            entry_point: x86_64::VirtAddr::new(headers.entry),
+            entry_point: x86_64::VirtAddr::new(plan.initial_pc()),
             #[cfg(target_arch = "aarch64")]
-            entry_point: headers.entry,
+            entry_point: plan.initial_pc(),
             #[cfg(target_arch = "x86_64")]
             stack_top: x86_64::VirtAddr::zero(),
             #[cfg(target_arch = "aarch64")]
@@ -313,9 +486,9 @@ impl MappedElf {
             segments_end: headers.segments_end,
             image_size: headers.image_size,
             data_size: headers.data_size,
-            phdr_vaddr: headers.phdr_vaddr,
-            phnum: (headers.table.len() / PHDR) as u16,
-            phentsize: PHDR as u16,
+            phdr_vaddr: plan.phdr_vaddr,
+            phnum: plan.phnum,
+            phentsize: plan.phentsize,
         };
         Ok(Self { table, elf, file_len })
     }
