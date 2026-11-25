@@ -38,7 +38,7 @@ class RustcPort(unittest.TestCase):
             self.assertLessEqual(citation['line'], len(lines))
             self.assertEqual(lines[citation['line'] - 1], citation['quote'])
 
-    def test_x2_inventory_recorded(self):
+    def test_x2_driver_linked_inventory(self):
         path = RECORDS.parent / 'x2.json'
         self.assertTrue(path.is_file(), 'X2 rustc driver link result has not been recorded')
         record = json.loads(path.read_text())
@@ -50,6 +50,8 @@ class RustcPort(unittest.TestCase):
         self.assertEqual(command[:2], ['taskpolicy', '-b'])
         self.assertIn('--config', command)
         self.assertIn('compiler/rustc', command)
+        self.assertEqual(record['result'], 'linked')
+        self.assertEqual(record['exit_status'], 0)
 
         pin = tomllib.loads((ROOT / 'rust-fork.toml').read_text())['hosted']['commit']
         self.assertEqual(record['rust_commit'], pin)
@@ -64,22 +66,31 @@ class RustcPort(unittest.TestCase):
             self.assertEqual(record[field], {'compiler': '', 'llvm_project': ''})
         self.assertRegex(record['log_sha256'], r'^[0-9a-f]{64}$')
 
-        fields = {'dynamic_relocations', 'tls_models', 'undefined_symbols'}
-        if record['result'] == 'linked':
-            self.assertEqual(record['exit_status'], 0)
-            self.assertEqual(set(record['inventory']), fields)
-            for names in record['inventory'].values():
+        fields = {'dynamic_relocations', 'tls_models', 'undefined_symbols', 'dt_needed', 'pt_interp'}
+        inventory = record['inventory']
+        self.assertEqual(set(inventory), fields)
+        artifacts = record['artifacts']
+        self.assertEqual(set(artifacts), {'librustc_driver', 'rustc'})
+        driver = artifacts['librustc_driver']
+        executable = artifacts['rustc']
+        self.assertRegex(driver['name'], r'^librustc_driver(?:-[0-9a-f]+)?\.so$')
+        self.assertEqual(executable['name'], 'rustc')
+        for artifact in artifacts.values():
+            self.assertRegex(artifact['sha256'], r'^[0-9a-f]{64}$')
+            self.assertEqual(set(artifact['inventory']), fields)
+            for names in artifact['inventory'].values():
                 self.assertIsInstance(names, list)
                 self.assertTrue(all(isinstance(name, str) and name.strip() for name in names))
                 self.assertEqual(names, sorted(set(names)))
-        else:
-            self.assertEqual(record['result'], 'deferred')
-            self.assertIs(type(record['exit_status']), int)
-            self.assertNotEqual(record['exit_status'], 0)
-            self.assertEqual(record['deferred_to'], 'K5 first unit')
-            self.assertTrue(record['last_completed_step'].strip())
-            self.assertTrue(record['first_error'].strip())
-            self.assertNotIn('inventory', record)
+        for field, names in inventory.items():
+            self.assertEqual(names, sorted(set(driver['inventory'][field]) |
+                                           set(executable['inventory'][field])))
+        if record['static_route']['answer'] == 'none':
+            self.assertIn(driver['name'], executable['inventory']['dt_needed'])
+            self.assertEqual(driver['inventory']['pt_interp'], [])
+            self.assertEqual(len(executable['inventory']['pt_interp']), 1)
+            self.assertTrue(executable['inventory']['pt_interp'][0].startswith('/'))
+            self.assertTrue(inventory['dynamic_relocations'])
 
     def test_libcxx_runtime_inventory_recorded(self):
         record = self.x0_record(5)
