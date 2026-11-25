@@ -21,10 +21,19 @@ mod errno {
     pub const EFAULT: i32 = 14;
     pub const EISDIR: i32 = 21;
     pub const ELOOP: i32 = 40;
+    pub const ENOENT: i32 = 2;
     pub const ENOEXEC: i32 = 8;
     pub const ENOMEM: i32 = 12;
 }
 use errno::*;
+/// The loader's image kinds: the kernel maps an ELF as it reads it, which
+/// this harness does not; in-memory images take the same parsing path.
+mod exec_elf {
+    #[derive(Debug)] pub struct MappedElf<'a>(pub core::marker::PhantomData<&'a ()>);
+    pub enum Image { Elf(MappedElf<'static>), Script(Vec<u8>), Bytes(Vec<u8>) }
+    #[derive(Debug)] pub enum ProcessImage<'a> { Owned(Vec<u8>), Mapped(MappedElf<'a>) }
+}
+use exec_elf::{Image, MappedElf, ProcessImage};
 mod userptr {
     pub fn copy_from_user<T: Copy>(ptr: *const T) -> Result<T, u64> {
         if ptr.is_null() { return Err(14); }
@@ -68,11 +77,23 @@ fn relative_image_path_is_absolute() {
                               (b"tools/child".as_slice(), b"/tmp/cwd/tools/child".as_slice()),
                               (b"child".as_slice(), b"/bin/child".as_slice())] {
         let mut args = Arguments::copy_from_user(input, 0, 0).unwrap();
-        read_image(input, &mut args, |path| {
+        let (image, ()) = read_image(input, &mut args, |path| {
             assert_eq!(path, expected);
-            Ok((elf(), ()))
+            Ok((Image::Bytes(elf()), ()))
         }).unwrap();
+        assert!(matches!(image, ProcessImage::Owned(data) if data == elf()));
     }
+}
+#[test]
+fn mapped_elf_is_returned_without_another_read() {
+    let mut args = Arguments::copy_from_user(b"/bin/child", 0, 0).unwrap();
+    let mut reads = 0;
+    let (image, ()) = read_image(b"/bin/child", &mut args, |_| {
+        reads += 1;
+        Ok((Image::Elf(MappedElf(core::marker::PhantomData)), ()))
+    }).unwrap();
+    assert!(matches!(image, ProcessImage::Mapped(_)));
+    assert_eq!(reads, 1);
 }
 #[test]
 fn non_utf8_image_and_script_arguments_are_preserved() {
@@ -83,10 +104,10 @@ fn non_utf8_image_and_script_arguments_are_preserved() {
         reads += 1;
         if reads == 1 {
             assert_eq!(path, input);
-            Ok((b"#!/bin/interpreter --flag\xfe\n".to_vec(), ()))
+            Ok((Image::Bytes(b"#!/bin/interpreter --flag\xfe\n".to_vec()), ()))
         } else {
             assert_eq!(path, b"/bin/interpreter");
-            Ok((elf(), ()))
+            Ok((Image::Bytes(elf()), ()))
         }
     }).unwrap();
     assert_eq!(reads, 2);
@@ -95,15 +116,32 @@ fn non_utf8_image_and_script_arguments_are_preserved() {
     assert!(envp.is_empty());
 }
 #[test]
+fn filesystem_script_line_gives_the_same_arguments() {
+    let input = b"/tmp/child\xff";
+    let mut args = Arguments::copy_from_user(input, 0, 0).unwrap();
+    let mut reads = 0;
+    read_image(input, &mut args, |path| {
+        reads += 1;
+        if reads == 1 {
+            Ok((Image::Script(b"/bin/interpreter --flag\xfe".to_vec()), ()))
+        } else {
+            assert_eq!(path, b"/bin/interpreter");
+            Ok((Image::Bytes(elf()), ()))
+        }
+    }).unwrap();
+    let (argv, _) = args.slices().unwrap();
+    assert_eq!(argv, [b"/bin/interpreter\0".as_slice(), b"--flag\xfe\0".as_slice(), b"/tmp/child\xff\0".as_slice()]);
+}
+#[test]
 fn missing_non_utf8_file_preserves_enoent() {
     let mut args = Arguments::copy_from_user(b"/tmp/missing\xff", 0, 0).unwrap();
-    assert_eq!(read_image(b"/tmp/missing\xff", &mut args, |_| Err::<(Vec<u8>, ()), _>(2)).unwrap_err(), 2);
+    assert_eq!(read_image(b"/tmp/missing\xff", &mut args, |_| Err::<(Image, ()), _>(2)).unwrap_err(), 2);
 }
 #[test]
 fn interpreter_cycle_and_invalid_elf_are_rejected() {
     let mut args = Arguments::copy_from_user(b"/loop", 0, 0).unwrap();
-    assert_eq!(read_image(b"/loop", &mut args, |_| Ok((b"#!/loop\n".to_vec(), ()))).unwrap_err(), 40);
-    assert_eq!(read_image(b"/bad", &mut args, |_| Ok((vec![0; 64], ()))).unwrap_err(), 8);
+    assert_eq!(read_image(b"/loop", &mut args, |_| Ok((Image::Bytes(b"#!/loop\n".to_vec()), ()))).unwrap_err(), 40);
+    assert_eq!(read_image(b"/bad", &mut args, |_| Ok((Image::Bytes(vec![0; 64]), ()))).unwrap_err(), 8);
 }
 '''
 # The production module's super is the harness root in this isolated compilation.

@@ -1,6 +1,7 @@
 //! Copy exec inputs and resolve interpreters before publishing a new image.
 
 use super::errno::{E2BIG, EACCES, EFAULT, EISDIR, ELOOP, ENOENT, ENOEXEC, ENOMEM};
+use crate::exec_elf::{Image, ProcessImage};
 use alloc::{boxed::Box, string::String, vec::Vec};
 use core::ops::Range;
 
@@ -308,11 +309,14 @@ fn convenience_path(path: Vec<u8>) -> Result<Vec<u8>, u64> {
 }
 
 /// Resolve scripts using byte pathnames and preserve every argument byte.
+/// `read` maps an ELF as it reads it, so the program comes back ready for
+/// `prepare_exec_image`.
+/// claim-lint:ok: tests/exec_image_host.py non_utf8_image_and_script_arguments_are_preserved
 pub(crate) fn read_image<I>(
     path: impl AsRef<[u8]>,
     args: &mut Arguments,
-    mut read: impl FnMut(&[u8]) -> Result<(Vec<u8>, I), i32>,
-) -> Result<(Vec<u8>, I), u64> {
+    mut read: impl FnMut(&[u8]) -> Result<(Image, I), i32>,
+) -> Result<(ProcessImage<'static>, I), u64> {
     let input = path.as_ref();
     let mut path = Vec::new();
     path.try_reserve_exact(input.len()).map_err(|_| ENOMEM as u64)?;
@@ -331,14 +335,24 @@ pub(crate) fn read_image<I>(
             path = candidate;
             image = read(&path);
         }
-        let (data, identity) = image.map_err(|errno| if errno == EISDIR { EACCES as u64 } else { errno as u64 })?;
-        if !data.starts_with(b"#!") {
-            validate_elf(&data)?;
-            return Ok((data, identity));
-        }
+        let (image, identity) = image.map_err(|errno| if errno == EISDIR { EACCES as u64 } else { errno as u64 })?;
+        let script = match image {
+            Image::Elf(elf) => return Ok((ProcessImage::Mapped(elf), identity)),
+            Image::Bytes(data) if !data.starts_with(b"#!") => {
+                validate_elf(&data)?;
+                return Ok((ProcessImage::Owned(data), identity));
+            }
+            Image::Bytes(data) => {
+                let end = data.iter().position(|&b| b == b'\n').unwrap_or(data.len());
+                let mut line = Vec::new();
+                line.try_reserve_exact(end - 2).map_err(|_| ENOMEM as u64)?;
+                line.extend_from_slice(&data[2..end]);
+                line
+            }
+            Image::Script(line) => line,
+        };
         if depth == 5 { return Err(ELOOP as u64); }
-        let end = data.iter().position(|&b| b == b'\n').unwrap_or(data.len());
-        let mut line = &data[2..end];
+        let mut line = script.as_slice();
         while line.first().is_some_and(|b| matches!(b, b' ' | b'\t')) { line = &line[1..]; }
         while line.last().is_some_and(|b| matches!(b, b' ' | b'\t')) { line = &line[..line.len()-1]; }
         let split = line.iter().position(|b| matches!(b, b' ' | b'\t')).unwrap_or(line.len());

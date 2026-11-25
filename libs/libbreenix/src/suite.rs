@@ -560,6 +560,14 @@ pub const ARM_BUSYBOX_CASE_ALLOWANCES: &[(&str, &str, u64)] = &[
 /// every byte split, the PngSuite fixtures, 100 window churns and 300 timed commits) get
 /// the workload plus the 1.5 s collection reserve, rounded up.
 pub const NAMED_CASE_ALLOWANCES: &[(&str, &str, u64)] = &[
+    // K4 llvm cases: twice R240 boot 20261125T061143Z-metal's 8.2-8.7 s, rounded up to 10 s
+    // (E25 ruling 81).
+    ("llvm", "llvm/llc-arithmetic-equals-mac", 20_000),
+    ("llvm", "llvm/llc-hello-equals-mac", 20_000),
+    ("llvm", "llvm/llc-libc-call-equals-mac", 20_000),
+    ("llvm", "llvm/llc-loop-equals-mac", 20_000),
+    ("llvm", "llvm/llc-struct-equals-mac", 20_000),
+    ("llvm", "llvm/llc-object-runs", 20_000),
     // The shipped catalog measured 2.2 s on the R240. 60 s bounds a slow network
     // probe while staying inside the 120 s stall watchdog.
     ("gui-apps", "bcheck/production-catalog", 60_000),

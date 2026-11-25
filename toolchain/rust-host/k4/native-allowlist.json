@@ -1,0 +1,14 @@
+{
+  "host-toolchain probe": {
+    "xcrun: error: sh -c '/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild -sdk /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -find ld-classic 2> /dev/null' failed with exit code 17664: (null) (errno=Invalid argument)": 1,
+    "xcrun: error: unable to find utility \"ld-classic\", not a developer tool or in PATH": 1
+  },
+  "upstream cmake": {
+    "CMake Warning (deprecated) at <llvm-project>/cmake/Modules/CMakePolicy.cmake:6 (cmake_policy):\n  The OLD behavior for policy CMP0116 will be removed from a future version\n  of CMake.\n\n  The cmake-policies(7) manual explains that the OLD behaviors of all\n  policies are deprecated and that a policy should be set to OLD only under\n  specific short-term circumstances.  Projects should be ported to the NEW\n  behavior and not rely on setting a policy to OLD.\nCall Stack (most recent call first):\n  CMakeLists.txt:8 (include)\nThis warning is for project developers.  Use -Wno-author or -Wno-deprecated\nto suppress it.": 1,
+    "CMake Warning (policy) at cmake/modules/HandleLLVMOptions.cmake:905 (CHECK_C_SOURCE_COMPILES):\n  Policy CMP0219 is not set: Macro invocations preserve backslashes in\n  arguments.  Run \"cmake --help-policy CMP0219\" for policy details.  Use the\n  cmake_policy command to set the policy and suppress this warning.\n\n  Command \"CHECK_C_SOURCE_COMPILES\" called with arguments containing\n  backslashes.\n\n  Since the policy is not set, backslashes in the arguments:\n\n   \"// \\\\\\n//\\nint main(void) {return 0;}\"\n\n  will be interpreted as escape sequences for compatibility.\n\n  Set the policy to NEW to instead pass\n\n   \"// \\\\\\\\\\\\n//\\\\nint main(void) {return 0;}\"\n\n  so that argument parsing will preserve the original values.\nCall Stack (most recent call first):\n  CMakeLists.txt:1019 (include)\nThis warning is for project developers.  Use -Wno-author or -Wno-policy to\nsuppress it.": 1,
+    "CMake Warning (unused-cli):\n  Manually-specified variables were not used by the project:\n\n    LLVM_ENABLE_TERMINFO": 1
+  },
+  "host-toolchain archive": {
+    "libtool: warning: 'AutoConvert.cpp.o' has no symbols": 1
+  }
+}

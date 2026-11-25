@@ -11,11 +11,13 @@ candidate builds with existing_links_load_identical.
 """
 
 import argparse
+from collections import Counter
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import struct
 import subprocess
 import tomllib
 
@@ -177,20 +179,58 @@ def normal_digests(arch, release=None):
     return result
 
 
-def normalized_symbol_strings(data):
-    # Rust v0 Symbol Format, crate-root disambiguator and vendor-specific
-    # suffix. Legacy mangling terminates its path with a 17-byte hash item.
-    def normalized(name):
-        name = re.sub(rb'(?<=\.llvm\.)[0-9]+\Z', lambda m: b'0' * len(m[0]), name)
-        if name.startswith(b'_ZN'):
-            return re.sub(rb'(?<=17h)[0-9a-f]{16}(?=E(?:\.llvm\.[0-9]+)?\Z)',
-                          b'0' * 16, name)
-        if name.startswith(b'_R'):
-            return re.sub(rb'(?<=Cs)[0-9a-zA-Z]+(?=_u?[0-9])',
-                          lambda m: b'0' * len(m[0]), name)
-        return name
+LLVM_SUFFIX = re.compile(rb'\.llvm\.[0-9]+\Z')
+ANON_HASH = re.compile(rb'^(anon)\.[0-9a-f]{32}(?=(?:\.[0-9]+)?\Z)')
+LEGACY_HASH = re.compile(rb'17h[0-9a-f]{16}(?=E\Z)')
+# Rust v0 Symbol Format: follow the outer path tags to the crate root.
+# Preserve nested item disambiguators, such as closure ordinals.
+V0_CRATE_HASH = re.compile(rb'^(_R(?:N[A-Za-z]|I|[MX](?:s[0-9A-Za-z]*_)?|Y)*C)s[0-9A-Za-z]*_')
+ELF64_SYMBOL = struct.Struct("<IBBHQQ")
 
-    return b'\0'.join(normalized(name) for name in data.split(b'\0'))
+
+def normalized_symbol(name):
+    name = ANON_HASH.sub(rb'\1', LLVM_SUFFIX.sub(b'', name))
+    if name.startswith(b'_ZN'):
+        return LEGACY_HASH.sub(b'', name)
+    return V0_CRATE_HASH.sub(rb'\1', name)
+
+
+def symbol_records(symbols, strings):
+    # ELF gABI §5.1: st_name points into the string table; the remaining
+    # fields carry symbol attributes, including binding, type and visibility.
+    return Counter(
+        (normalized_symbol(strings[offset:strings.index(b"\0", offset)]), info,
+         other, section, value, size)
+        for offset, info, other, section, value, size in ELF64_SYMBOL.iter_unpack(symbols)
+    )
+
+
+def file_gaps(data, header, sections):
+    # Match the gaps between file-backed regions in file order. An alignment
+    # pad may change width when the preceding string table changes width.
+    ranges = [(0, header["HeaderSize"], 1, "ELF header"),
+              (header["SectionHeaderOffset"],
+               int(header["SectionHeaderCount"]) * header["SectionHeaderEntrySize"],
+               8, "section headers")]
+    if header["ProgramHeaderCount"]:
+        ranges.append((header["ProgramHeaderOffset"],
+                       header["ProgramHeaderCount"] * header["ProgramHeaderEntrySize"],
+                       8, "program headers"))
+    ranges.extend((section["Offset"], section["Size"], section["AddressAlignment"] or 1,
+                   section["Index"]) for section in sections
+                  if section["Type"]["Value"] not in (0, 8))
+    end = 0
+    gaps = []
+    for offset, size, alignment, identity in sorted(ranges, key=lambda region: region[:2]):
+        if offset < end or offset + size > len(data):
+            raise ValueError(f"invalid ELF file region: {identity}")
+        gap = data[end:offset]
+        pad = -end % alignment
+        if len(gap) >= pad and not any(gap[:pad]):
+            gap = gap[pad:]
+        gaps.append((identity, gap))
+        end = offset + size
+    return gaps, data[end:]
 
 
 def elf_differences(reference, candidate, readelf):
@@ -204,7 +244,8 @@ def elf_differences(reference, candidate, readelf):
     base_header, base_segments, base_sections = layout(reference)
     header, segments, sections = layout(candidate)
     differences = []
-    if base_header != header:
+    if ({key: value for key, value in base_header.items() if key != "SectionHeaderOffset"}
+            != {key: value for key, value in header.items() if key != "SectionHeaderOffset"}):
         differences.append("ELF header or entry point")
     if base_segments != segments:
         differences.append("segment layout")
@@ -212,34 +253,42 @@ def elf_differences(reference, candidate, readelf):
         for index in range(max(len(base_sections), len(sections))):
             left = base_sections[index:index + 1]
             right = sections[index:index + 1]
+            if (left and right and right[0]["Type"]["Value"] not in (0, 8)
+                    and not (left[0]["Flags"]["Value"] | right[0]["Flags"]["Value"]) & 2):
+                omitted = {"Offset"}
+                if left[0]["Name"]["Name"] == right[0]["Name"]["Name"] == ".strtab":
+                    omitted.add("Size")
+                left = [{key: value for key, value in left[0].items() if key not in omitted}]
+                right = [{key: value for key, value in right[0].items() if key not in omitted}]
             if left != right:
                 names = sorted({section["Name"]["Name"] for section in left + right})
                 differences.append(f"section layout [{index}] {', '.join(names)}")
 
-    # The section-header comparison covers the size and address of NOBITS,
-    # which has no file payload (gABI §3.2). Hash exceptions apply only to
-    # non-allocatable string data.
-    outside_before, outside_after = bytearray(before), bytearray(after)
+    def payload(data, section):
+        return data[section["Offset"]:section["Offset"] + section["Size"]]
+
+    # NOBITS has no file payload (gABI §3.2). Only a non-allocated symbol
+    # table and its .strtab can have different payloads.
     for left, right in zip(base_sections, sections):
         name = right["Name"]["Name"]
         if left["Name"]["Name"] != name or left["Type"] != right["Type"]:
             continue
         if right["Type"]["Value"] in (0, 8):  # SHT_NULL and SHT_NOBITS.
             continue
-        offset, end = left["Offset"], left["Offset"] + left["Size"]
-        new_offset, new_end = right["Offset"], right["Offset"] + right["Size"]
-        old_data, new_data = before[offset:end], after[new_offset:new_end]
-        allowed_strings = (
-            not (left["Flags"]["Value"] | right["Flags"]["Value"]) & 2
-            and name in (".strtab", ".comment", ".debug_str", ".debug_line_str")
-        )
-        if old_data != new_data and not (
-            allowed_strings and normalized_symbol_strings(old_data) == normalized_symbol_strings(new_data)
-        ):
+        old_data, new_data = payload(before, left), payload(after, right)
+        if not (left["Flags"]["Value"] | right["Flags"]["Value"]) & 2:
+            if name == ".strtab" and right["Type"]["Value"] == 3:
+                old_data = Counter(map(normalized_symbol, old_data.split(b"\0")))
+                new_data = Counter(map(normalized_symbol, new_data.split(b"\0")))
+            elif right["Type"]["Value"] == 2:
+                old_strings, new_strings = base_sections[left["Link"]], sections[right["Link"]]
+                if (old_strings["Name"]["Name"] == new_strings["Name"]["Name"] == ".strtab"
+                        and not (old_strings["Flags"]["Value"] | new_strings["Flags"]["Value"]) & 2):
+                    old_data = symbol_records(old_data, payload(before, old_strings))
+                    new_data = symbol_records(new_data, payload(after, new_strings))
+        if old_data != new_data:
             differences.append(name)
-        outside_before[offset:end] = bytes(len(old_data))
-        outside_after[new_offset:new_end] = bytes(len(new_data))
-    if not differences and outside_before != outside_after:
+    if not differences and file_gaps(before, base_header, base_sections) != file_gaps(after, header, sections):
         differences.append("bytes outside sections")
     return differences
 

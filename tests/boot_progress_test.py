@@ -182,6 +182,26 @@ class ProgressTest(unittest.TestCase):
                 self.assertGreater(limits[0], 10_000)
                 self.assertLess(limits[0], monitor['STALL_SECONDS'] * 1000)
 
+    def test_llvm_case_allowances(self):
+        runner = (ROOT / 'libs/libbreenix/src/suite.rs').read_text()
+        table = runner.split('pub const NAMED_CASE_ALLOWANCES:', 1)[1].split(';', 1)[0]
+        entries = re.findall(r'\(\s*"llvm"\s*,\s*"([^"]+)"\s*,\s*([\d_]+)\s*,?\s*\)', table)
+        # CASE durations from R240 boot 20261125T061143Z-metal, in milliseconds (ruling 81).
+        measured_ms = {
+            'llvm/llc-arithmetic-equals-mac': 8_530,
+            'llvm/llc-hello-equals-mac': 8_286,
+            'llvm/llc-libc-call-equals-mac': 8_237,
+            'llvm/llc-loop-equals-mac': 8_348,
+            'llvm/llc-struct-equals-mac': 8_176,
+            'llvm/llc-object-runs': 8_663,
+        }
+        expected = [(case, min(60_000, ((2 * ms + 9_999) // 10_000) * 10_000))
+                    for case, ms in measured_ms.items()]
+        self.assertEqual([(case, int(limit.replace('_', ''))) for case, limit in entries], expected)
+        driver = (ROOT / 'scripts/metal/metal-boot').read_text()
+        deadline = int(re.search(r"MODE_DEADLINE_SECONDS = \{[^\n]*'suite': (\d+)", driver)[1])
+        self.assertGreaterEqual(deadline * 1000 * 4, sum(limit for _, limit in expected) * 5)
+
     def test_cxx_runtime_case_allowances(self):
         runner = (ROOT / 'libs/libbreenix/src/suite.rs').read_text()
         manifest = json.loads((ROOT / 'docs/suites/cxx-runtime.json').read_text())

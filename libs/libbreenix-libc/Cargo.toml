@@ -15,6 +15,7 @@ name = "c"  # Produces libc.a
 
 [features]
 default = []
+hosted-llvm = []
 
 [dependencies]
 libbreenix = { path = "../libbreenix", default-features = false }

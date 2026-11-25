@@ -2636,6 +2636,11 @@ impl ProcessPageTable {
         true
     }
 
+    /// Only image-owned leaves are writable through the unpublished ELF loader.
+    pub(crate) fn owns_image_page(&self, address: u64) -> bool {
+        self.leaves.search(address).is_some_and(|leaf| matches!(leaf.mapping, LeafMapping::Owned))
+    }
+
     /// Copy a kernel buffer into this address space without a user-VA fault.
     /// The caller holds PROCESS_MANAGER, so mappings cannot change underneath
     /// the copy. Resolve CoW through the owned table rather than reacquiring PM

@@ -1,0 +1,20 @@
+{
+  "id": "llvm",
+  "title": "LLVM",
+  "area": "Toolchain",
+  "summary": "Checks hosted LLVM object generation and execution.",
+  "binary": "/sbin/suite-llvm",
+  "timingSensitive": true,
+  "categories": [{
+    "id": "llvm",
+    "title": "LLVM",
+    "cases": [
+      {"id": "llc-arithmetic-equals-mac", "title": "LLC arithmetic object equals Mac"},
+      {"id": "llc-hello-equals-mac", "title": "LLC hello object equals Mac"},
+      {"id": "llc-libc-call-equals-mac", "title": "LLC libc call object equals Mac"},
+      {"id": "llc-loop-equals-mac", "title": "LLC loop object equals Mac"},
+      {"id": "llc-struct-equals-mac", "title": "LLC struct object equals Mac"},
+      {"id": "llc-object-runs", "title": "LLC object runs"}
+    ]
+  }]
+}

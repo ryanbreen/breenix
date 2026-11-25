@@ -384,6 +384,40 @@ pub unsafe extern "C" fn getlocalename_l(cat: i32, p: *mut c_void) -> *const u8 
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use core::ffi::CStr;
+
+    #[test]
+    fn all_locale_objects_use_dot_radix_without_grouping() {
+        // Each category independently selects C or C.UTF-8. Aliases and the
+        // environment resolve to the same bit patterns as the named locales.
+        for selection in 0..(1 << (CATEGORIES - 1)) {
+            let mut locale = Locale {
+                bits: selection << 1,
+            };
+            let object = (&mut locale as *mut Locale).cast();
+            unsafe {
+                let previous = uselocale(object);
+                let conventions = &*localeconv();
+                let radix = CStr::from_ptr(conventions.decimal_point.cast()).to_bytes();
+                let separator = CStr::from_ptr(conventions.thousands_sep.cast()).to_bytes();
+                let grouping = CStr::from_ptr(conventions.grouping.cast()).to_bytes();
+                uselocale(previous);
+
+                assert_eq!(radix, b".");
+                assert!(separator.is_empty());
+                assert!(grouping.is_empty());
+                assert_eq!(
+                    CStr::from_ptr(nl_langinfo_l(RADIXCHAR, object).cast()).to_bytes(),
+                    b"."
+                );
+                assert!(CStr::from_ptr(nl_langinfo_l(THOUSEP, object).cast())
+                    .to_bytes()
+                    .is_empty());
+            }
+        }
+    }
+
     // The C headers and these constants must agree; parse the headers' #defines.
     fn defines(header: &str) -> std::collections::HashMap<&str, i32> {
         header

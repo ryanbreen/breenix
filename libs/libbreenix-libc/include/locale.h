@@ -23,6 +23,7 @@ struct lconv {
     char p_sign_posn, n_sign_posn, int_p_cs_precedes, int_p_sep_by_space, int_n_cs_precedes;
     char int_n_sep_by_space, int_p_sign_posn, int_n_sign_posn;
 };
+__BREENIX_BEGIN_DECLS
 char *setlocale(int, const char *);
 struct lconv *localeconv(void);
 #if defined(__BREENIX_POSIX)
@@ -42,4 +43,5 @@ void freelocale(locale_t);
 locale_t uselocale(locale_t);
 const char *getlocalename_l(int, locale_t);
 #endif
+__BREENIX_END_DECLS
 #endif

@@ -1,0 +1,23 @@
+--- a/libcxx/include/__locale_dir/locale_base_api.h
++++ b/libcxx/include/__locale_dir/locale_base_api.h
+@@ -129,3 +129,5 @@
+ //       will define those directly.
+-#    if defined(_AIX) || defined(__MVS__)
++#    if defined(__breenix__)
++#      include <__locale_dir/locale_base_api/breenix.h>
++#    elif defined(_AIX) || defined(__MVS__)
+ #      include <__locale_dir/locale_base_api/ibm.h>
+--- /dev/null
++++ b/libcxx/include/__locale_dir/locale_base_api/breenix.h
+@@ -0,0 +1,11 @@
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++#ifndef _LIBCPP___LOCALE_DIR_LOCALE_BASE_API_BREENIX_H
++#define _LIBCPP___LOCALE_DIR_LOCALE_BASE_API_BREENIX_H
++
++#include <locale.h>
++
++// C and C.UTF-8 share the dot radix and have no numeric grouping.
++#include <__support/xlocale/__strtonum_fallback.h>
++#define _LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE
++
++#endif // _LIBCPP___LOCALE_DIR_LOCALE_BASE_API_BREENIX_H

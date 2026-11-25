@@ -2292,3 +2292,30 @@ fn cxx_runtime_manifest_matches_table() {
         ["static-init-order", "guarded-static-8-threads", "containers-and-threads"]);
     assert_eq!(guest, manifest.categories);
 }
+
+#[test]
+fn llvm_manifest_matches_table() {
+    let root = repo_root();
+    let mut errors = Vec::new();
+    let manifest = read_manifest(&root.join("docs/suites/llvm.json"), &mut errors).expect("llvm manifest");
+    assert!(errors.is_empty(), "{}", errors.join("\n"));
+    let (_, files) = suite_files(&root, "llvm").expect("llvm source");
+    let (suite, guest) = source_suite_files(&files).expect("llvm guest table");
+    assert_eq!(suite.id, manifest.id);
+    assert_eq!(manifest.categories.len(), 1);
+    assert_eq!(manifest.categories[0].entry.id, "llvm");
+    // One case per corpus object (each one llc run, ruling 68's regroup of a
+    // composite case over 30 s), in expect.json order, then the linked program.
+    let expect: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(root.join("toolchain/rust-host/k4/corpus/expect.json")).unwrap(),
+    ).unwrap();
+    let mut expected: Vec<String> = expect["objects"].as_array().unwrap().iter()
+        .map(|object| format!("llc-{}-equals-mac",
+            object["input"].as_str().unwrap().strip_suffix(".ll").unwrap()))
+        .collect();
+    assert_eq!(expected.len(), 5);
+    expected.push("llc-object-runs".into());
+    assert_eq!(manifest.categories[0].cases.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+        expected.iter().map(String::as_str).collect::<Vec<_>>());
+    assert_eq!(guest, manifest.categories);
+}

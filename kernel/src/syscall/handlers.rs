@@ -1817,9 +1817,9 @@ pub fn sys_fork() -> SyscallResult {
     SyscallResult::Err(22) // EINVAL - invalid argument
 }
 
-/// Load ELF binary from ext2 filesystem path.
+/// Load an ELF binary from a filesystem path into a new exec page table.
 ///
-/// Returns the file content as Vec<u8> on success, or an errno on failure.
+/// Returns the mapped image (or the `#!` line) on success, or an errno on failure.
 ///
 /// NOTE: This function intentionally has NO logging to avoid timing overhead.
 /// It's called on every exec syscall, and serial I/O causes CI timing issues.
@@ -1828,9 +1828,10 @@ pub fn sys_fork() -> SyscallResult {
 /// physical absolute pathname.
 fn load_elf_from_ext2(
     path: impl AsRef<[u8]>,
-) -> Result<(Vec<u8>, crate::process::credentials::ExecIdentity, Vec<u8>), i32> {
+) -> Result<(crate::exec_elf::Image, crate::process::credentials::ExecIdentity, Vec<u8>), i32> {
     let cred = crate::fs::permissions::Credentials::current(false).map_err(|errno| errno as i32)?;
-    crate::fs::vfs::exec::load_image(path, &cred, crate::syscall::exec::caller_killed)
+    crate::fs::vfs::exec::load_image(path, &cred, crate::syscall::exec::caller_killed,
+        crate::exec_elf::Purpose::Exec)
         .map_err(|errno| match errno.0 {
             crate::syscall::errno::EISDIR => crate::syscall::errno::EACCES,
             errno => errno,
@@ -1915,7 +1916,8 @@ pub fn sys_execv_with_frame(
                     Err(errno) if errno == super::errno::ENOENT && !program_name.contains(&b'/') => {
                         core::str::from_utf8(program_name).ok()
                             .and_then(|name| crate::userspace_test::load_test_binary_from_disk(name).ok())
-                            .map(|data| (data, (Default::default(), None))).ok_or(errno)
+                            .map(|data| (crate::exec_elf::Image::Bytes(data), (Default::default(), None)))
+                            .ok_or(errno)
                     }
                     Err(errno) => Err(errno),
                 }
@@ -1923,7 +1925,6 @@ pub fn sys_execv_with_frame(
                 Ok(data) => data,
                 Err(errno) => return SyscallResult::Err(errno),
             };
-        let elf_data = elf_vec.as_slice();
 
         // Find current process
         // The new image's credentials are decided before its stack is built,
@@ -1966,7 +1967,7 @@ pub fn sys_execv_with_frame(
         };
         let mut prepared = match crate::process::manager::ProcessManager::prepare_exec_image(
             current_pid,
-            elf_data,
+            elf_vec,
             Some(&process_name),
             exe_path,
             &argv_slices,
@@ -2101,7 +2102,6 @@ pub fn sys_execv_with_frame(
                 Ok(data) => data,
                 Err(errno) => return SyscallResult::Err(errno),
             };
-        let elf_data = elf_vec.as_slice();
 
         // #721 K12: reclaim scheduler-owned kernel stacks and deferred process resources
         // before exec runs, mirroring sys_spawn's identical ordering (#713 precheck C8).
@@ -2151,7 +2151,7 @@ pub fn sys_execv_with_frame(
         };
         let mut prepared = match crate::process::manager::ProcessManager::prepare_exec_image(
             current_pid,
-            elf_data,
+            elf_vec,
             Some(&process_name),
             Some(exe_path),
             &argv_slices,
@@ -2372,7 +2372,6 @@ pub fn sys_spawn(path_ptr: u64, argv_ptr: u64) -> SyscallResult {
         Ok(image) => image,
         Err(errno) => return SyscallResult::Err(errno as u64),
     };
-    let elf_data = elf_vec.as_slice();
 
     // Reclaim scheduler-owned kernel stacks and deferred process resources
     // BEFORE consuming another finite kernel-stack pool slot (#713 precheck
@@ -2422,7 +2421,7 @@ pub fn sys_spawn(path_ptr: u64, argv_ptr: u64) -> SyscallResult {
         let mut manager_guard = crate::process::manager();
         match *manager_guard {
             Some(ref mut manager) => {
-                manager.spawn_process(parent_pid, process_name, elf_data, &argv_slices, Some(exe_path))
+                manager.spawn_process(parent_pid, process_name, elf_vec, &argv_slices, Some(exe_path))
             }
             None => Err("Process manager not available"),
         }

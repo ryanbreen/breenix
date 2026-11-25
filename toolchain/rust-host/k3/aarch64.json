@@ -7,6 +7,9 @@
     "version": "Apple clang version 21.0.0 (clang-2100.4.1.1)"
   },
   "configure": {
+    "started": "2026-11-24T20:41:58.408791+00:00",
+    "ended": "2026-11-24T20:42:09.998951+00:00",
+    "elapsed_seconds": 11.58992833411321,
     "command": [
       "taskpolicy",
       "-b",
@@ -14,7 +17,7 @@
       "-G",
       "Ninja",
       "-S",
-      "<llvm-project>/runtimes",
+      "<scratch>/source/runtimes",
       "-B",
       "<scratch>/build",
       "-DCMAKE_SYSTEM_NAME=Breenix",
@@ -30,12 +33,12 @@
       "-DCMAKE_C_COMPILER_TARGET=aarch64-unknown-none",
       "-DCMAKE_CXX_COMPILER_TARGET=aarch64-unknown-none",
       "-DCMAKE_ASM_COMPILER_TARGET=aarch64-unknown-none",
-      "-DCMAKE_C_FLAGS=-nostdlibinc -isystem <repo>/libs/libbreenix-libc/include -D_POSIX_C_SOURCE=200809L",
-      "-DCMAKE_CXX_FLAGS=-nostdlibinc -isystem <repo>/libs/libbreenix-libc/include -D_POSIX_C_SOURCE=200809L",
+      "-DCMAKE_C_FLAGS=-nostdlibinc -isystem <repo>/libs/libbreenix-libc/include -D_POSIX_C_SOURCE=200809L -D__breenix__=1",
+      "-DCMAKE_CXX_FLAGS=-nostdlibinc -isystem <repo>/libs/libbreenix-libc/include -D_POSIX_C_SOURCE=200809L -D__breenix__=1",
       "-DLLVM_ENABLE_RUNTIMES=libcxx;libcxxabi",
       "-DLLVM_INCLUDE_TESTS=OFF",
       "-DLIBCXX_CXX_ABI=libcxxabi",
-      "-DLIBCXX_ENABLE_LOCALIZATION=OFF",
+      "-DLIBCXX_ENABLE_LOCALIZATION=ON",
       "-DLIBCXX_ENABLE_FILESYSTEM=OFF",
       "-DLIBCXX_ENABLE_THREADS=ON",
       "-DTHREADS_PREFER_PTHREAD_FLAG=ON",
@@ -52,14 +55,22 @@
     ],
     "exit_status": 0,
     "first_error": null,
-    "warnings": {
-      "CMake Warning (deprecated) at <llvm-project>/cmake/Modules/CMakePolicy.cmake:6 (cmake_policy):\n  The OLD behavior for policy CMP0116 will be removed from a future version\n  of CMake.\n\n  The cmake-policies(7) manual explains that the OLD behaviors of all\n  policies are deprecated and that a policy should be set to OLD only under\n  specific short-term circumstances.  Projects should be ported to the NEW\n  behavior and not rely on setting a policy to OLD.\nCall Stack (most recent call first):\n  CMakeLists.txt:18 (include)\nThis warning is for project developers.  Use -Wno-author or -Wno-deprecated\nto suppress it.": 1,
-      "CMake Warning (policy) at <llvm-project>/llvm/cmake/modules/HandleLLVMOptions.cmake:905 (CHECK_C_SOURCE_COMPILES):\n  Policy CMP0219 is not set: Macro invocations preserve backslashes in\n  arguments.  Run \"cmake --help-policy CMP0219\" for policy details.  Use the\n  cmake_policy command to set the policy and suppress this warning.\n\n  Command \"CHECK_C_SOURCE_COMPILES\" called with arguments containing\n  backslashes.\n\n  Since the policy is not set, backslashes in the arguments:\n\n   \"// \\\\\\n//\\nint main(void) {return 0;}\"\n\n  will be interpreted as escape sequences for compatibility.\n\n  Set the policy to NEW to instead pass\n\n   \"// \\\\\\\\\\\\n//\\\\nint main(void) {return 0;}\"\n\n  so that argument parsing will preserve the original values.\nCall Stack (most recent call first):\n  CMakeLists.txt:175 (include)\nThis warning is for project developers.  Use -Wno-author or -Wno-policy to\nsuppress it.": 1,
+    "diagnostics": {
+      "CMake Warning (deprecated) at <scratch>/source/cmake/Modules/CMakePolicy.cmake:6 (cmake_policy):\n  The OLD behavior for policy CMP0116 will be removed from a future version\n  of CMake.\n\n  The cmake-policies(7) manual explains that the OLD behaviors of all\n  policies are deprecated and that a policy should be set to OLD only under\n  specific short-term circumstances.  Projects should be ported to the NEW\n  behavior and not rely on setting a policy to OLD.\nCall Stack (most recent call first):\n  CMakeLists.txt:18 (include)\nThis warning is for project developers.  Use -Wno-author or -Wno-deprecated\nto suppress it.": 1,
+      "CMake Warning (policy) at <scratch>/source/llvm/cmake/modules/HandleLLVMOptions.cmake:905 (CHECK_C_SOURCE_COMPILES):\n  Policy CMP0219 is not set: Macro invocations preserve backslashes in\n  arguments.  Run \"cmake --help-policy CMP0219\" for policy details.  Use the\n  cmake_policy command to set the policy and suppress this warning.\n\n  Command \"CHECK_C_SOURCE_COMPILES\" called with arguments containing\n  backslashes.\n\n  Since the policy is not set, backslashes in the arguments:\n\n   \"// \\\\\\n//\\nint main(void) {return 0;}\"\n\n  will be interpreted as escape sequences for compatibility.\n\n  Set the policy to NEW to instead pass\n\n   \"// \\\\\\\\\\\\n//\\\\nint main(void) {return 0;}\"\n\n  so that argument parsing will preserve the original values.\nCall Stack (most recent call first):\n  CMakeLists.txt:175 (include)\nThis warning is for project developers.  Use -Wno-author or -Wno-policy to\nsuppress it.": 1,
       "CMake Warning (unused-cli):\n  Manually-specified variables were not used by the project:\n\n    THREADS_PREFER_PTHREAD_FLAG": 1
     },
-    "log_sha256": "94fb05fd0189844cd25b882e8aeee4c696e3bae6b16c08bd8e85be25e0f44028"
+    "warnings": {
+      "CMake Warning (deprecated) at <scratch>/source/cmake/Modules/CMakePolicy.cmake:6 (cmake_policy):\n  The OLD behavior for policy CMP0116 will be removed from a future version\n  of CMake.\n\n  The cmake-policies(7) manual explains that the OLD behaviors of all\n  policies are deprecated and that a policy should be set to OLD only under\n  specific short-term circumstances.  Projects should be ported to the NEW\n  behavior and not rely on setting a policy to OLD.\nCall Stack (most recent call first):\n  CMakeLists.txt:18 (include)\nThis warning is for project developers.  Use -Wno-author or -Wno-deprecated\nto suppress it.": 1,
+      "CMake Warning (policy) at <scratch>/source/llvm/cmake/modules/HandleLLVMOptions.cmake:905 (CHECK_C_SOURCE_COMPILES):\n  Policy CMP0219 is not set: Macro invocations preserve backslashes in\n  arguments.  Run \"cmake --help-policy CMP0219\" for policy details.  Use the\n  cmake_policy command to set the policy and suppress this warning.\n\n  Command \"CHECK_C_SOURCE_COMPILES\" called with arguments containing\n  backslashes.\n\n  Since the policy is not set, backslashes in the arguments:\n\n   \"// \\\\\\n//\\nint main(void) {return 0;}\"\n\n  will be interpreted as escape sequences for compatibility.\n\n  Set the policy to NEW to instead pass\n\n   \"// \\\\\\\\\\\\n//\\\\nint main(void) {return 0;}\"\n\n  so that argument parsing will preserve the original values.\nCall Stack (most recent call first):\n  CMakeLists.txt:175 (include)\nThis warning is for project developers.  Use -Wno-author or -Wno-policy to\nsuppress it.": 1,
+      "CMake Warning (unused-cli):\n  Manually-specified variables were not used by the project:\n\n    THREADS_PREFER_PTHREAD_FLAG": 1
+    },
+    "log_sha256": "0883e1996983287f8674e61686d6c7b0026482f8f387fc7e21346c9d8c349b15"
   },
   "build": {
+    "started": "2026-11-24T20:42:10.001103+00:00",
+    "ended": "2026-11-24T20:42:32.928502+00:00",
+    "elapsed_seconds": 22.92718504113145,
     "command": [
       "taskpolicy",
       "-b",
@@ -74,22 +85,40 @@
     ],
     "exit_status": 0,
     "first_error": null,
-    "warnings": {
-      "<llvm-project>/libcxx/src/include/config_elast.h:48:4: warning: ELAST for this platform not yet implemented [-W#warnings]": 1,
-      "<scratch>/build/include/c++/v1/__memory/allocator_traits.h:143:1: warning: 'is_always_equal' is deprecated [-Wdeprecated-declarations]": 106,
-      "<scratch>/build/include/c++/v1/tuple:313:13: warning: builtin __reference_binds_to_temporary is deprecated; use __reference_constructs_from_temporary instead [-Wdeprecated-builtins]": 32
+    "diagnostics": {
+      "<scratch>/build/include/c++/v1/tuple:313:13: warning: builtin __reference_binds_to_temporary is deprecated; use __reference_constructs_from_temporary instead [-Wdeprecated-builtins]": 40,
+      "<scratch>/build/include/c++/v1/__memory/allocator_traits.h:143:1: warning: 'is_always_equal' is deprecated [-Wdeprecated-declarations]": 147,
+      "<scratch>/source/libcxx/src/include/config_elast.h:48:4: warning: ELAST for this platform not yet implemented [-W#warnings]": 2
     },
-    "log_sha256": "eaddbea46f747c22d34b0b8b4aa53e8a7fc08445653a5a19938c69cd0a946349"
+    "warnings": {
+      "<scratch>/build/include/c++/v1/__memory/allocator_traits.h:143:1: warning: 'is_always_equal' is deprecated [-Wdeprecated-declarations]": 147,
+      "<scratch>/build/include/c++/v1/tuple:313:13: warning: builtin __reference_binds_to_temporary is deprecated; use __reference_constructs_from_temporary instead [-Wdeprecated-builtins]": 40,
+      "<scratch>/source/libcxx/src/include/config_elast.h:48:4: warning: ELAST for this platform not yet implemented [-W#warnings]": 2
+    },
+    "log_sha256": "0c2f777863bdd82c1de20b672ec41623723d0dacab428338df41703718210e23"
   },
   "archives": {
     "libc++.a": {
-      "sha256": "49070116abac4094276127048d4b7fd995c20610f7edc26b401e4a4bb34c1278",
-      "notice_sha256": "539dd7aed86e8a4f12cbdd0e6c50c189c7d74847e4fecc64ce2c6ee3a01da38b"
+      "sha256": "e47ebf6d0be601bb03d476f0d0cdf9ff561d722e3a4b81aa3608a3c4565fc12e",
+      "notice_sha256": "539dd7aed86e8a4f12cbdd0e6c50c189c7d74847e4fecc64ce2c6ee3a01da38b",
+      "input_sha256": "7be2ce059e4cbeaff990bb5cefec1ea35b8abfa8edb454f197b34727f522c22f",
+      "provided_by_libc": [
+        "pthread",
+        "rt"
+      ]
     },
     "libc++abi.a": {
-      "sha256": "4dfff29706d05304af296b8f47f70b51d1343dea8e619df784c02c5528f0b028",
-      "notice_sha256": "e2b35be49f7284a45b7baca8fc7b3ab7440e7902392b2528a457816b5bb2a15c"
+      "sha256": "d117d91ec81ac3027be0fc6e0c0836f748ee10eaae82c1d61623094fe6a6c0cc",
+      "notice_sha256": "e2b35be49f7284a45b7baca8fc7b3ab7440e7902392b2528a457816b5bb2a15c",
+      "input_sha256": "f0089d6aa45f1e9f5f5ce24f2e8925ec1ba0b535724995fcb6dccac61120e49d",
+      "provided_by_libc": [
+        "pthread"
+      ]
     }
+  },
+  "locale_patch": {
+    "sha256": "198ff389997a17d832e0b875d3c5109cc5c8bc457680f978e033f7a97d1f71d1",
+    "text": "--- a/libcxx/include/__locale_dir/locale_base_api.h\n+++ b/libcxx/include/__locale_dir/locale_base_api.h\n@@ -129,3 +129,5 @@\n //       will define those directly.\n-#    if defined(_AIX) || defined(__MVS__)\n+#    if defined(__breenix__)\n+#      include <__locale_dir/locale_base_api/breenix.h>\n+#    elif defined(_AIX) || defined(__MVS__)\n #      include <__locale_dir/locale_base_api/ibm.h>\n--- /dev/null\n+++ b/libcxx/include/__locale_dir/locale_base_api/breenix.h\n@@ -0,0 +1,11 @@\n+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception\n+#ifndef _LIBCPP___LOCALE_DIR_LOCALE_BASE_API_BREENIX_H\n+#define _LIBCPP___LOCALE_DIR_LOCALE_BASE_API_BREENIX_H\n+\n+#include <locale.h>\n+\n+// C and C.UTF-8 share the dot radix and have no numeric grouping.\n+#include <__support/xlocale/__strtonum_fallback.h>\n+#define _LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE\n+\n+#endif // _LIBCPP___LOCALE_DIR_LOCALE_BASE_API_BREENIX_H\n"
   },
   "generic_collision_targets": [
     "cxxabi_shared",

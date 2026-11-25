@@ -812,16 +812,16 @@ impl ProcessManager {
     /// table's leaf release returns them (#583) and no per-process address range
     /// is consumed.
     #[cfg(target_arch = "x86_64")]
-    pub fn create_process_with_argv(
+    pub fn create_process_with_argv<'a>(
         &mut self,
         name: String,
-        elf_data: &[u8],
+        image: impl Into<crate::exec_elf::ProcessImage<'a>>,
         argv: &[&[u8]],
         cred: &super::credentials::ProcessCredentials,
         parent_pid: Option<ProcessId>,
     ) -> Result<ProcessId, &'static str> {
         let pid = self.allocate_ordinary_pid();
-        self.build_process_with_argv_at(pid, name, elf_data, argv, cred, parent_pid)?;
+        self.build_process_with_argv_at(pid, name, image.into(), argv, cred, parent_pid)?;
         self.ready_queue.push(pid);
         Ok(pid)
     }
@@ -831,25 +831,33 @@ impl ProcessManager {
         &mut self,
         pid: ProcessId,
         name: String,
-        elf_data: &[u8],
+        image: crate::exec_elf::ProcessImage<'_>,
         argv: &[&[u8]],
         cred: &super::credentials::ProcessCredentials,
         parent_pid: Option<ProcessId>,
     ) -> Result<(), &'static str> {
         // --- Page table + ELF load (build_process_at's block) ---
-        let mut page_table = crate::memory::process_memory::UnpublishedPageTable::new(
-            crate::memory::process_memory::ProcessPageTable::new().map_err(|e| {
-                log::error!(
-                    "create_process_with_argv: Failed to create process page table for PID {}: {}",
+        // A filesystem image arrives already read into its own table.
+        let (mut page_table, loaded_elf, code_size) = match image.into_loaded(pid.as_u64()) {
+            crate::exec_elf::Loaded::Mapped(page_table, loaded_elf, code_size) => {
+                (page_table, loaded_elf, code_size)
+            }
+            crate::exec_elf::Loaded::Bytes(elf_data) => {
+                let mut page_table = crate::memory::process_memory::UnpublishedPageTable::new(
+                    crate::memory::process_memory::ProcessPageTable::new().map_err(|e| {
+                        log::error!(
+                            "create_process_with_argv: Failed to create process page table for PID {}: {}",
+                            pid.as_u64(),
+                            e
+                        );
+                        "Failed to create process page table"
+                    })?,
                     pid.as_u64(),
-                    e
                 );
-                "Failed to create process page table"
-            })?,
-            pid.as_u64(),
-        );
-
-        let loaded_elf = elf::load_elf_into_page_table(elf_data, page_table.as_mut())?;
+                let loaded_elf = elf::load_elf_into_page_table(&elf_data, page_table.as_mut())?;
+                (page_table, loaded_elf, elf_data.len())
+            }
+        };
 
         // Restore kernel low-half mappings after ELF load. Same fixup
         // build_process_at applies, and for the same reason: the ELF loader may
@@ -917,7 +925,7 @@ impl ProcessManager {
         process.image_data_size = loaded_elf.data_size;
         process.heap_start = heap_base;
         process.heap_end = heap_base;
-        process.memory_usage.code_size = elf_data.len();
+        process.memory_usage.code_size = code_size;
 
         // --- Stack: where exec puts it, pages the process page table owns ---
         use crate::memory::layout::{USER_STACK_REGION_START, USER_STACK_SIZE};
@@ -995,11 +1003,11 @@ impl ProcessManager {
     /// `creation::create_user_process` does (precheck C10) — a shell spawning a
     /// child must not steal its own keyboard focus.
     #[cfg(target_arch = "x86_64")]
-    pub fn spawn_process(
+    pub fn spawn_process<'a>(
         &mut self,
         parent_pid: ProcessId,
         name: String,
-        elf_data: &[u8],
+        image: impl Into<crate::exec_elf::ProcessImage<'a>>,
         argv: &[&[u8]],
         exe_path: Option<Vec<u8>>,
     ) -> Result<ProcessId, &'static str> {
@@ -1025,7 +1033,7 @@ impl ProcessManager {
         };
 
         // Create the child process (allocates PID, page table, loads ELF, argv stack).
-        let child_pid = self.create_process_with_argv(name, elf_data, argv, &cred, Some(parent_pid))?;
+        let child_pid = self.create_process_with_argv(name, image, argv, &cred, Some(parent_pid))?;
 
         // Set up the parent-child relationship and inherit attributes.
         if let Some(child) = self.processes.live_row_mut(&child_pid) {
@@ -1260,16 +1268,16 @@ impl ProcessManager {
     ///
     /// Returns: ProcessId on success
     #[cfg(target_arch = "aarch64")]
-    pub fn create_process_with_argv(
+    pub fn create_process_with_argv<'a>(
         &mut self,
         name: String,
-        elf_data: &[u8],
+        image: impl Into<crate::exec_elf::ProcessImage<'a>>,
         argv: &[&[u8]],
         cred: &super::credentials::ProcessCredentials,
         parent_pid: Option<ProcessId>,
     ) -> Result<ProcessId, &'static str> {
         let pid = self.allocate_ordinary_pid();
-        self.build_process_with_argv_at(pid, name, elf_data, argv, cred, parent_pid)?;
+        self.build_process_with_argv_at(pid, name, image.into(), argv, cred, parent_pid)?;
         self.ready_queue.push(pid);
         Ok(pid)
     }
@@ -1279,7 +1287,7 @@ impl ProcessManager {
         &mut self,
         pid: ProcessId,
         name: String,
-        elf_data: &[u8],
+        image: crate::exec_elf::ProcessImage<'_>,
         argv: &[&[u8]],
         cred: &super::credentials::ProcessCredentials,
         parent_pid: Option<ProcessId>,
@@ -1287,7 +1295,7 @@ impl ProcessManager {
         crate::diag_println!(
             "manager.create_process_with_argv [ARM64]: ENTRY - name='{}', elf_size={}, argc={}",
             name,
-            elf_data.len(),
+            image.len(),
             argv.len()
         );
 
@@ -1297,30 +1305,34 @@ impl ProcessManager {
             pid.as_u64()
         );
 
-        // Create a new page table for this process
+        // Create a new page table for this process and load the ELF into it.
+        // A filesystem image arrives already read into its own table.
         crate::diag_println!(
             "manager.create_process_with_argv [ARM64]: Creating ProcessPageTable"
         );
-        let mut page_table = crate::memory::process_memory::UnpublishedPageTable::new(
-            crate::memory::process_memory::ProcessPageTable::new().map_err(|e| {
-                log::error!(
-                    "ARM64: Failed to create process page table for PID {}: {}",
+        let (page_table, loaded_elf, code_size) = match image.into_loaded(pid.as_u64()) {
+            crate::exec_elf::Loaded::Mapped(page_table, loaded_elf, code_size) => {
+                (page_table, loaded_elf, code_size)
+            }
+            crate::exec_elf::Loaded::Bytes(elf_data) => {
+                let mut page_table = crate::memory::process_memory::UnpublishedPageTable::new(
+                    crate::memory::process_memory::ProcessPageTable::new().map_err(|e| {
+                        log::error!(
+                            "ARM64: Failed to create process page table for PID {}: {}",
+                            pid.as_u64(),
+                            e
+                        );
+                        "Failed to create process page table"
+                    })?,
                     pid.as_u64(),
-                    e
                 );
-                "Failed to create process page table"
-            })?,
-            pid.as_u64(),
-        );
-
-        // Load the ELF binary into the process's page table
-        crate::diag_println!(
-            "manager.create_process_with_argv [ARM64]: Loading ELF into page table"
-        );
-        let loaded_elf = crate::arch_impl::aarch64::elf::load_elf_into_page_table(
-            elf_data,
-            page_table.as_mut(),
-        )?;
+                let loaded_elf = crate::arch_impl::aarch64::elf::load_elf_into_page_table(
+                    &elf_data,
+                    page_table.as_mut(),
+                )?;
+                (page_table, loaded_elf, elf_data.len())
+            }
+        };
         crate::diag_println!(
             "manager.create_process_with_argv [ARM64]: ELF loaded, entry={:#x}",
             loaded_elf.entry_point
@@ -1355,7 +1367,7 @@ impl ProcessManager {
         process.heap_end = heap_base;
 
         // Update memory usage
-        process.memory_usage.code_size = elf_data.len();
+        process.memory_usage.code_size = code_size;
 
         // The user stack, below USER_STACK_REGION_START as exec puts it: pages
         // the process page table owns, returned with its other leaves.
@@ -1454,12 +1466,12 @@ impl ProcessManager {
 
     /// `exe_path` is the physical absolute pathname init was read from, which
     /// `/proc/1/exe` reports; argv[0] is passed to init as given.
-    pub fn create_init_process_with_argv_at(
+    pub fn create_init_process_with_argv_at<'a>(
         &mut self,
         provisional_pid: ProcessId,
         name: String,
         exe_path: &[u8],
-        elf_data: &[u8],
+        image: impl Into<crate::exec_elf::ProcessImage<'a>>,
         argv: &[&[u8]],
     ) -> Result<InitDesignationTicket, &'static str> {
         if !exe_path.starts_with(b"/") {
@@ -1472,7 +1484,7 @@ impl ProcessManager {
         self.build_process_with_argv_at(
             provisional_pid,
             name,
-            elf_data,
+            image.into(),
             argv,
             &super::credentials::ProcessCredentials::root(),
             None,
@@ -1482,18 +1494,18 @@ impl ProcessManager {
         self.hold_init_publication(provisional_pid)
     }
 
-    pub fn create_init_process_with_argv(
+    pub fn create_init_process_with_argv<'a>(
         &mut self,
         name: String,
         exe_path: &[u8],
-        elf_data: &[u8],
+        image: impl Into<crate::exec_elf::ProcessImage<'a>>,
         argv: &[&[u8]],
     ) -> Result<InitDesignationTicket, &'static str> {
         self.create_init_process_with_argv_at(
             ProcessId::new(RESERVED_INIT_PID),
             name,
             exe_path,
-            elf_data,
+            image,
             argv,
         )
     }
@@ -1506,11 +1518,11 @@ impl ProcessManager {
     ///
     /// The child inherits the parent's process group, session, and cwd.
     #[cfg(target_arch = "aarch64")]
-    pub fn spawn_process(
+    pub fn spawn_process<'a>(
         &mut self,
         parent_pid: ProcessId,
         name: String,
-        elf_data: &[u8],
+        image: impl Into<crate::exec_elf::ProcessImage<'a>>,
         argv: &[&[u8]],
         exe_path: Option<Vec<u8>>,
     ) -> Result<ProcessId, &'static str> {
@@ -1536,7 +1548,7 @@ impl ProcessManager {
         };
 
         // Create the child process (allocates PID, page table, loads ELF, etc.)
-        let child_pid = self.create_process_with_argv(name, elf_data, argv, &cred, Some(parent_pid))?;
+        let child_pid = self.create_process_with_argv(name, image, argv, &cred, Some(parent_pid))?;
 
         // Set up parent-child relationship and inherit attributes
         if let Some(child) = self.processes.live_row_mut(&child_pid) {
@@ -4390,39 +4402,10 @@ impl ProcessManager {
     ///
     /// Returns: (entry_point, stack_pointer) on success
     /// Note: Exec requires architecture-specific register manipulation
-    /// Build an unpublished image with interrupts enabled and no manager guard.
+    /// Clear exec's new table of the ranges an old image used, before the new
+    /// image is loaded into it, for in-memory and filesystem images alike.
     #[cfg(target_arch = "x86_64")]
-    pub(crate) fn prepare_exec_image(
-        pid: ProcessId,
-        elf_data: &[u8],
-        program_name: Option<&str>,
-        exe_path: Option<Vec<u8>>,
-        argv: &[&[u8]],
-        envp: &[&[u8]],
-        image: super::credentials::ExecIdentity,
-        cred: super::credentials::ProcessCredentials,
-    ) -> Result<PreparedExecImage, &'static str> {
-        let exe_path = exe_path
-            .map(alloc::sync::Arc::try_new)
-            .transpose()
-            .map_err(|_| "exec allocation failed")?;
-        let user_stack_size = crate::syscall::exec::stack_size(argv, envp)?;
-        let cmdline = super::process::cmdline_of(argv)?;
-        let program_name = program_name
-            .map(crate::syscall::exec::copy_string)
-            .transpose()
-            .map_err(|_| "exec allocation failed")?;
-        // Reserve the Box before allocating a root, so ENOMEM cannot strand it.
-        let mut table_storage =
-            crate::syscall::exec::try_box(core::mem::MaybeUninit::<ProcessPageTable>::uninit())?;
-        table_storage.write(
-            ProcessPageTable::new().map_err(|_| "Failed to create new page table for exec")?,
-        );
-        // SAFETY: storage contains the initialized table and keeps the same layout.
-        let table = unsafe { Box::from_raw(Box::into_raw(table_storage) as *mut ProcessPageTable) };
-        let mut new_page_table =
-            crate::memory::process_memory::UnpublishedPageTable::from_box(table, pid.as_u64());
-
+    pub(crate) fn clear_exec_table(new_page_table: &mut ProcessPageTable) {
         // Clear any user mappings that might have been copied
         new_page_table.clear_user_entries();
 
@@ -4450,10 +4433,51 @@ impl ProcessManager {
                 log::warn!("Failed to unmap old stack pages: {}", e);
             }
         }
+    }
 
-        // Load the ELF binary into the new page table
+    /// Build an unpublished image with interrupts enabled and no manager guard.
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn prepare_exec_image<'a>(
+        pid: ProcessId,
+        image_source: impl Into<crate::exec_elf::ProcessImage<'a>>,
+        program_name: Option<&str>,
+        exe_path: Option<Vec<u8>>,
+        argv: &[&[u8]],
+        envp: &[&[u8]],
+        image: super::credentials::ExecIdentity,
+        cred: super::credentials::ProcessCredentials,
+    ) -> Result<PreparedExecImage, &'static str> {
+        let exe_path = exe_path
+            .map(alloc::sync::Arc::try_new)
+            .transpose()
+            .map_err(|_| "exec allocation failed")?;
+        let user_stack_size = crate::syscall::exec::stack_size(argv, envp)?;
+        let cmdline = super::process::cmdline_of(argv)?;
+        let program_name = program_name
+            .map(crate::syscall::exec::copy_string)
+            .transpose()
+            .map_err(|_| "exec allocation failed")?;
+        // Load the ELF binary into the new page table. A filesystem image
+        // arrives already read into a table cleared by clear_exec_table.
         log::debug!("exec_process_with_argv: Loading ELF into new page table...");
-        let loaded_elf = crate::elf::load_elf_into_page_table(elf_data, new_page_table.as_mut())?;
+        let (mut new_page_table, loaded_elf) = match image_source.into().into_loaded(pid.as_u64()) {
+            crate::exec_elf::Loaded::Mapped(new_page_table, loaded_elf, _) => (new_page_table, loaded_elf),
+            crate::exec_elf::Loaded::Bytes(elf_data) => {
+                // Reserve the Box before allocating a root, so ENOMEM cannot strand it.
+                let mut table_storage =
+                    crate::syscall::exec::try_box(core::mem::MaybeUninit::<ProcessPageTable>::uninit())?;
+                table_storage.write(
+                    ProcessPageTable::new().map_err(|_| "Failed to create new page table for exec")?,
+                );
+                // SAFETY: storage contains the initialized table and keeps the same layout.
+                let table = unsafe { Box::from_raw(Box::into_raw(table_storage) as *mut ProcessPageTable) };
+                let mut new_page_table =
+                    crate::memory::process_memory::UnpublishedPageTable::from_box(table, pid.as_u64());
+                Self::clear_exec_table(new_page_table.as_mut());
+                let loaded_elf = crate::elf::load_elf_into_page_table(&elf_data, new_page_table.as_mut())?;
+                (new_page_table, loaded_elf)
+            }
+        };
         let new_entry_point = loaded_elf.entry_point.as_u64();
         log::debug!(
             "exec_process_with_argv: ELF loaded successfully, entry point: {:#x}",
@@ -4802,41 +4826,11 @@ impl ProcessManager {
     /// release the process-manager lock before applying the commit, so the scheduler
     /// and process-manager locks do not nest in either direction, and before
     /// queueing the retirement receipt.
-    /// Build an unpublished image with interrupts enabled and no manager guard.
+    /// Clear exec's new table of the ranges an old image used, before the new
+    /// image is loaded into it, for in-memory and filesystem images alike.
     #[cfg(target_arch = "aarch64")]
-    pub(crate) fn prepare_exec_image(
-        pid: ProcessId,
-        elf_data: &[u8],
-        program_name: Option<&str>,
-        exe_path: Option<Vec<u8>>,
-        argv: &[&[u8]],
-        envp: &[&[u8]],
-        image: super::credentials::ExecIdentity,
-        cred: super::credentials::ProcessCredentials,
-    ) -> Result<PreparedExecImage, &'static str> {
-        #[cfg(target_arch = "aarch64")]
+    pub(crate) fn clear_exec_table(new_page_table: &mut ProcessPageTable) {
         use crate::arch_impl::aarch64::constants::USER_STACK_REGION_START;
-        let exe_path = exe_path
-            .map(alloc::sync::Arc::try_new)
-            .transpose()
-            .map_err(|_| "exec allocation failed")?;
-        let user_stack_size = crate::syscall::exec::stack_size(argv, envp)?;
-        let cmdline = super::process::cmdline_of(argv)?;
-        let program_name = program_name
-            .map(crate::syscall::exec::copy_string)
-            .transpose()
-            .map_err(|_| "exec allocation failed")?;
-        // Reserve the Box before allocating a root, so ENOMEM cannot strand it.
-        let mut table_storage =
-            crate::syscall::exec::try_box(core::mem::MaybeUninit::<ProcessPageTable>::uninit())?;
-        table_storage.write(
-            ProcessPageTable::new().map_err(|_| "Failed to create new page table for exec")?,
-        );
-        // SAFETY: storage contains the initialized table and keeps the same layout.
-        let table = unsafe { Box::from_raw(Box::into_raw(table_storage) as *mut ProcessPageTable) };
-        let mut new_page_table =
-            crate::memory::process_memory::UnpublishedPageTable::from_box(table, pid.as_u64());
-
         new_page_table.clear_user_entries();
 
         if let Err(e) = new_page_table.unmap_user_pages(
@@ -4862,12 +4856,58 @@ impl ProcessManager {
                 log::warn!("ARM64: Failed to unmap old stack pages: {}", e);
             }
         }
+    }
 
+    /// Build an unpublished image with interrupts enabled and no manager guard.
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn prepare_exec_image<'a>(
+        pid: ProcessId,
+        image_source: impl Into<crate::exec_elf::ProcessImage<'a>>,
+        program_name: Option<&str>,
+        exe_path: Option<Vec<u8>>,
+        argv: &[&[u8]],
+        envp: &[&[u8]],
+        image: super::credentials::ExecIdentity,
+        cred: super::credentials::ProcessCredentials,
+    ) -> Result<PreparedExecImage, &'static str> {
+        #[cfg(target_arch = "aarch64")]
+        use crate::arch_impl::aarch64::constants::USER_STACK_REGION_START;
+        let exe_path = exe_path
+            .map(alloc::sync::Arc::try_new)
+            .transpose()
+            .map_err(|_| "exec allocation failed")?;
+        let user_stack_size = crate::syscall::exec::stack_size(argv, envp)?;
+        let cmdline = super::process::cmdline_of(argv)?;
+        let program_name = program_name
+            .map(crate::syscall::exec::copy_string)
+            .transpose()
+            .map_err(|_| "exec allocation failed")?;
+        let user_stack_top = USER_STACK_REGION_START;
+
+        // A filesystem image arrives already read into a table cleared by
+        // clear_exec_table.
         log::debug!("exec_process_with_argv [ARM64]: Loading ELF into new page table...");
-        let loaded_elf = crate::arch_impl::aarch64::elf::load_elf_into_page_table(
-            elf_data,
-            new_page_table.as_mut(),
-        )?;
+        let (mut new_page_table, loaded_elf) = match image_source.into().into_loaded(pid.as_u64()) {
+            crate::exec_elf::Loaded::Mapped(new_page_table, loaded_elf, _) => (new_page_table, loaded_elf),
+            crate::exec_elf::Loaded::Bytes(elf_data) => {
+                // Reserve the Box before allocating a root, so ENOMEM cannot strand it.
+                let mut table_storage =
+                    crate::syscall::exec::try_box(core::mem::MaybeUninit::<ProcessPageTable>::uninit())?;
+                table_storage.write(
+                    ProcessPageTable::new().map_err(|_| "Failed to create new page table for exec")?,
+                );
+                // SAFETY: storage contains the initialized table and keeps the same layout.
+                let table = unsafe { Box::from_raw(Box::into_raw(table_storage) as *mut ProcessPageTable) };
+                let mut new_page_table =
+                    crate::memory::process_memory::UnpublishedPageTable::from_box(table, pid.as_u64());
+                Self::clear_exec_table(new_page_table.as_mut());
+                let loaded_elf = crate::arch_impl::aarch64::elf::load_elf_into_page_table(
+                    &elf_data,
+                    new_page_table.as_mut(),
+                )?;
+                (new_page_table, loaded_elf)
+            }
+        };
         let new_entry_point = loaded_elf.entry_point;
         log::debug!(
             "exec_process_with_argv [ARM64]: ELF loaded successfully, entry point: {:#x}",

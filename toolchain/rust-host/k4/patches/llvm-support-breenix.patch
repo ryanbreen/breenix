@@ -1,0 +1,19 @@
+--- a/llvm/lib/Support/Unix/Path.inc
++++ b/llvm/lib/Support/Unix/Path.inc
+@@ -332,2 +332,8 @@
++#elif defined(__breenix__)
++  char Path[PATH_MAX + 1];
++  ssize_t Length = ::readlink("/proc/self/exe", Path, sizeof(Path));
++  if (Length < 0 || static_cast<size_t>(Length) == sizeof(Path))
++    return {};
++  return std::string(Path, static_cast<size_t>(Length));
+ #else
+ #error GetMainExecutable is not implemented on this host yet.
+@@ -554 +560,7 @@
++#if defined(__breenix__)
++  // POSIX statvfs has no flag distinguishing local and network mounts.
++  (void)Vfs.f_flag;
++  return true;
++#else
+   return !!(STATVFS_F_FLAG(Vfs) & MNT_LOCAL);
++#endif

@@ -48,10 +48,10 @@ __BREENIX_SPAWN_ASSERT(sizeof(posix_spawn_file_actions_t) == 16, "spawn actions 
 __BREENIX_BEGIN_DECLS
 int posix_spawn(pid_t *__BREENIX_RESTRICT, const char *__BREENIX_RESTRICT,
                 const posix_spawn_file_actions_t *, const posix_spawnattr_t *__BREENIX_RESTRICT,
-                char *const[__BREENIX_RESTRICT], char *const[__BREENIX_RESTRICT]);
+                char *const *__BREENIX_RESTRICT, char *const *__BREENIX_RESTRICT);
 int posix_spawnp(pid_t *__BREENIX_RESTRICT, const char *__BREENIX_RESTRICT,
                  const posix_spawn_file_actions_t *, const posix_spawnattr_t *__BREENIX_RESTRICT,
-                 char *const[__BREENIX_RESTRICT], char *const[__BREENIX_RESTRICT]);
+                 char *const *__BREENIX_RESTRICT, char *const *__BREENIX_RESTRICT);
 int posix_spawn_file_actions_addchdir(posix_spawn_file_actions_t *__BREENIX_RESTRICT,
                                       const char *__BREENIX_RESTRICT);
 int posix_spawn_file_actions_addclose(posix_spawn_file_actions_t *, int);

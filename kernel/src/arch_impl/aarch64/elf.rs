@@ -426,20 +426,7 @@ pub fn load_elf_into_page_table(
     // Page-align the heap start (4KB alignment)
     let heap_start = (max_segment_end + 0xfff) & !0xfff;
 
-    // All segments loaded — invalidate the entire instruction cache.
-    // Data was written through HHDM (TTBR1) but will be fetched through TTBR0
-    // (user VA). ic iallu is required because per-line ic ivau with HHDM
-    // addresses doesn't reliably invalidate user VA cache sets on Apple Silicon
-    // where the VIPT i-cache index extends beyond the page offset.
-    unsafe {
-        core::arch::asm!(
-            "dsb ish",  // Ensure all data cache cleans are visible
-            "ic iallu", // Invalidate ALL instruction cache to PoU
-            "dsb ish",  // Ensure i-cache invalidation completes
-            "isb",      // Synchronize instruction stream
-            options(nostack, preserves_flags)
-        );
-    }
+    finish_image_load();
 
     let load_base = if min_load_addr == u64::MAX {
         0
@@ -511,93 +498,10 @@ fn load_segment_into_page_table(
     let end_addr = VirtAddr::new(vaddr.as_u64() + mem_size as u64 - 1);
     let end_page = Page::<Size4KiB>::containing_address(end_addr);
 
-    // Determine page flags based on ELF segment flags
-    let segment_readable = ph.p_flags & flags::PF_R != 0;
-    let segment_writable = ph.p_flags & flags::PF_W != 0;
-    let segment_executable = ph.p_flags & flags::PF_X != 0;
-
-    // All mapped pages need PRESENT and USER_ACCESSIBLE
-    let mut page_flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
-
-    if segment_writable {
-        page_flags |= PageTableFlags::WRITABLE;
-    }
-
-    if !segment_executable {
-        page_flags |= PageTableFlags::NO_EXECUTE;
-    }
-
-    log::trace!(
-        "[elf-arm64] Segment permissions: R={}, W={}, X={}",
-        segment_readable,
-        segment_writable,
-        segment_executable
-    );
-
-    // Get physical memory offset for kernel-space access to physical frames
-    let physical_memory_offset = crate::memory::physical_memory_offset();
-
-    // Map and load each page
     for page in Page::range_inclusive(start_page, end_page) {
         let page_vaddr = page.start_address();
-
-        // Check if page is already mapped (handles overlapping segments like RELRO)
-        // translate_page takes VirtAddr and returns Option<PhysAddr>
-        #[cfg(target_arch = "x86_64")]
-        let existing_phys_opt =
-            page_table.translate_page(x86_64::VirtAddr::new(page_vaddr.as_u64()));
-        #[cfg(not(target_arch = "x86_64"))]
-        let existing_phys_opt =
-            page_table.translate_page(crate::memory::arch_stub::VirtAddr::new(page_vaddr.as_u64()));
-
-        let (frame, already_mapped) = if let Some(existing_phys) = existing_phys_opt {
-            let existing_frame =
-                PhysFrame::containing_address(PhysAddr::new(existing_phys.as_u64()));
-            log::trace!(
-                "[elf-arm64] Page {:#x} already mapped to frame {:#x}, reusing",
-                page_vaddr.as_u64(),
-                existing_frame.start_address().as_u64()
-            );
-            (existing_frame, true)
-        } else {
-            // Allocate a new physical frame
-            let new_frame = crate::memory::frame_allocator::allocate_frame()
-                .ok_or("Out of memory allocating frame for ELF segment")?;
-
-            log::trace!(
-                "[elf-arm64] Allocated frame {:#x} for page {:#x}",
-                new_frame.start_address().as_u64(),
-                page_vaddr.as_u64()
-            );
-
-            // Map the page in the process page table. A refusal leaves the
-            // frame unpublished, so the loader still owns its return.
-            if let Err(error) = page_table.map_page(page, new_frame, page_flags) {
-                let _ = crate::memory::frame_allocator::deallocate_leaf_frame(new_frame);
-                return Err(error);
-            }
-
-            (new_frame, false)
-        };
-
-        // Get virtual pointer to the physical frame via kernel's physical memory mapping
-        let frame_phys_addr = frame.start_address();
-        let phys_ptr = (physical_memory_offset.as_u64() + frame_phys_addr.as_u64()) as *mut u8;
-
-        // Only zero the page if it was newly allocated (don't overwrite existing data from overlapping segments)
-        if !already_mapped {
-            unsafe {
-                core::ptr::write_bytes(phys_ptr, 0, 4096);
-                // Clean cache for zeroed page (same HHDM→TTBR0 coherency issue)
-                let mut addr = phys_ptr as usize;
-                let end = addr + 4096;
-                while addr < end {
-                    core::arch::asm!("dc cvau, {}", in(reg) addr, options(nostack));
-                    addr += 64;
-                }
-                core::arch::asm!("dsb ish", options(nostack, preserves_flags));
-            }
-        }
+        let phys_ptr = map_image_page(page_table, page_vaddr.as_u64(), ph.p_flags)
+            .map_err(|_| "Failed to map page in process page table")?;
 
         // Calculate offset within the page where data should go.
         // For the first page of a non-page-aligned segment (p_vaddr not aligned),
@@ -633,37 +537,8 @@ fn load_segment_into_page_table(
                 let dst = phys_ptr.add(page_offset);
                 core::ptr::copy_nonoverlapping(src, dst, copy_size);
 
-                // ARM64 cache maintenance: data was written through HHDM (TTBR1)
-                // virtual address but will be read/executed through TTBR0 (user)
-                // virtual address. Clean data cache to Point of Unification so
-                // the instruction cache and other observers see the written data.
-                let flush_start = dst as usize;
-                let flush_end = flush_start + copy_size;
-                let mut addr = flush_start & !63; // align to cache line
-                while addr < flush_end {
-                    core::arch::asm!(
-                        "dc cvau, {addr}",  // Clean data cache by VA to PoU
-                        addr = in(reg) addr,
-                        options(nostack)
-                    );
-                    addr += 64;
-                }
-                core::arch::asm!("dsb ish", options(nostack, preserves_flags));
-                // NOTE: i-cache invalidation is deferred to after all segments
-                // are loaded (ic iallu in load_elf_into_page_table). Per-line
-                // ic ivau with HHDM addresses doesn't reliably invalidate
-                // user VA cache sets on Apple Silicon where the VIPT i-cache
-                // index extends beyond the page offset (bits [14:12] differ
-                // between HHDM VA and user VA).
+                sync_image_range(dst, copy_size);
             }
-
-            log::trace!(
-                "[elf-arm64] Copied {} bytes to frame {:#x} (page {:#x}) at offset {}",
-                copy_size,
-                frame_phys_addr.as_u64(),
-                page_vaddr.as_u64(),
-                page_offset
-            );
         }
     }
 
@@ -681,4 +556,76 @@ fn load_segment_into_page_table(
     );
 
     Ok(())
+}
+
+
+pub(crate) fn map_image_page(
+    table: &mut crate::memory::process_memory::ProcessPageTable,
+    address: u64,
+    segment_flags: u32,
+) -> Result<*mut u8, i32> {
+    use crate::syscall::errno::{ENOEXEC, ENOMEM};
+    let page = Page::<Size4KiB>::containing_address(VirtAddr::new(address));
+    let mut flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
+    if segment_flags & flags::PF_W != 0 {
+        flags |= PageTableFlags::WRITABLE;
+    }
+    if segment_flags & flags::PF_X == 0 {
+        flags |= PageTableFlags::NO_EXECUTE;
+    }
+    let (frame, fresh) = if let Some(phys) = table.translate_page(page.start_address()) {
+        if !table.owns_image_page(address) {
+            return Err(ENOEXEC);
+        }
+        (PhysFrame::containing_address(PhysAddr::new(phys.as_u64())), false)
+    } else {
+        let new_frame = crate::memory::frame_allocator::allocate_frame().ok_or(ENOMEM)?;
+        if table.map_page(page, new_frame, flags).is_err() {
+            let _ = crate::memory::frame_allocator::deallocate_leaf_frame(new_frame);
+            return Err(ENOMEM);
+        }
+        (new_frame, true)
+    };
+    let ptr = (crate::memory::physical_memory_offset().as_u64()
+        + frame.start_address().as_u64()) as *mut u8;
+    if fresh {
+        // SAFETY: the new unpublished page owns this full frame.
+        unsafe { core::ptr::write_bytes(ptr, 0, 4096); }
+        sync_image_range(ptr, 4096);
+    }
+    Ok(ptr)
+}
+
+// HHDM writes must reach the point of unification before user instruction fetch.
+pub(crate) fn sync_image_range(ptr: *mut u8, len: usize) {
+    let mut address = ptr as usize & !63;
+    let end = ptr as usize + len;
+    // SAFETY: the caller supplies a range in the kernel's direct map.
+    unsafe {
+        while address < end {
+            core::arch::asm!("dc cvau, {}", in(reg) address, options(nostack));
+            address += 64;
+        }
+        core::arch::asm!("dsb ish", options(nostack, preserves_flags));
+    }
+}
+
+pub(crate) fn finish_image_load() {
+    // The segments are loaded: invalidate the instruction cache.
+    // Data was written through HHDM (TTBR1) but will be fetched through TTBR0
+    // (user VA). A whole-cache invalidate is required because per-line ic ivau
+    // with HHDM addresses doesn't reliably invalidate user VA cache sets on
+    // Apple Silicon where the VIPT i-cache index extends beyond the page offset.
+    // A filesystem image blocks on reads between its copies and this call, so
+    // the loader may resume on another CPU: invalidate the Inner Shareable
+    // domain's I-caches, as kernel/src/arch_impl/aarch64/cache.rs sync_user_page does.
+    unsafe {
+        core::arch::asm!(
+            "dsb ish",    // Ensure the data cache cleans are visible
+            "ic ialluis", // Invalidate instruction caches, Inner Shareable, to PoU
+            "dsb ish",  // Ensure i-cache invalidation completes
+            "isb",      // Synchronize instruction stream
+            options(nostack, preserves_flags)
+        );
+    }
 }

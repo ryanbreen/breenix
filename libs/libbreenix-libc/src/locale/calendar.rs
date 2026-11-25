@@ -853,6 +853,20 @@ pub unsafe extern "C" fn strftime(s: *mut u8, n: usize, fmt: *const u8, t: *cons
     }
     out.n - 1
 }
+
+/// POSIX.1-2024 strftime_l uses the supplied object's LC_TIME data.
+#[no_mangle]
+pub unsafe extern "C" fn strftime_l(
+    s: *mut u8,
+    n: usize,
+    fmt: *const u8,
+    t: *const Tm,
+    _locale: *mut core::ffi::c_void,
+) -> usize {
+    // Breenix uses the POSIX LC_TIME data for both C and C.UTF-8.
+    strftime(s, n, fmt, t)
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn wcsftime(s: *mut u32, n: usize, fmt: *const u32, t: *const Tm) -> usize {
     // Calendar names/formats in our supported locales are ASCII; preserve all

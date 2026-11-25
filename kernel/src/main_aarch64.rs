@@ -41,12 +41,13 @@ extern crate kernel;
     ),
     allow(dead_code)
 )]
-fn read_init_from_ext2(path: &str) -> Result<alloc::vec::Vec<u8>, &'static str> {
+fn read_init_from_ext2(path: &str) -> Result<kernel::exec_elf::MappedElf, &'static str> {
     let cred = kernel::fs::vfs::exec::Credentials::kernel();
-    kernel::fs::vfs::exec::load_image(path, &cred, || false)
-        .map(|(bytes, _, _)| bytes)
+    kernel::fs::vfs::exec::load_image(path, &cred, || false, kernel::exec_elf::Purpose::Spawn)
+        .and_then(|(image, _, _)| image.into_elf())
         .map_err(|errno| match errno.0 {
             kernel::syscall::errno::ENOENT => "init not found",
+            kernel::syscall::errno::ENOEXEC => "not a loadable ELF executable for this machine",
             kernel::syscall::errno::EISDIR => {
                 unsafe {
                     kernel::arch_impl::aarch64::cpu::Aarch64Cpu::enable_interrupts();
@@ -364,7 +365,7 @@ impl InitLaunch {
     /// Launch this program from its pre-loaded ELF (see `launch_init_from_elf`).
     fn launch(
         &self,
-        elf_data: alloc::vec::Vec<u8>,
+        elf_data: kernel::exec_elf::MappedElf,
     ) -> Result<core::convert::Infallible, &'static str> {
         let argv: alloc::vec::Vec<&[u8]> = self.argv.iter().map(|arg| arg.as_slice()).collect();
         let mut shown = self.path.clone();
@@ -397,8 +398,9 @@ fn release_boot_preempt_pin() {
 
 /// Create a userspace process from a pre-loaded ELF and jump to it.
 ///
-/// Takes ELF bytes that were read earlier (e.g., before SMP bring-up) and
-/// completes the process-creation and userspace-entry sequence.
+/// Takes an ELF that was read into its page table earlier (e.g., before SMP
+/// bring-up) and completes the process-creation and userspace-entry sequence.
+/// The read validated it as an executable for this machine.
 #[cfg(target_arch = "aarch64")]
 #[cfg_attr(
     any(
@@ -409,7 +411,7 @@ fn release_boot_preempt_pin() {
     allow(dead_code)
 )]
 fn launch_init_from_elf(
-    elf_data: alloc::vec::Vec<u8>,
+    elf_data: kernel::exec_elf::MappedElf,
     path: &str,
     exe_path: &[u8],
     argv: &[&[u8]],
@@ -426,20 +428,13 @@ fn launch_init_from_elf(
         kernel::arch_impl::aarch64::cpu::Aarch64Cpu::disable_interrupts();
     }
 
-    if elf_data.len() < 4 || &elf_data[0..4] != b"\x7fELF" {
-        unsafe {
-            kernel::arch_impl::aarch64::cpu::Aarch64Cpu::enable_interrupts();
-        }
-        return Err("init is not a valid ELF file");
-    }
-
     let proc_name = path.rsplit('/').next().unwrap_or(path);
 
     let (pid, init_thread, designated_pid_raw, reserved_collisions) = {
         let mut manager_guard = kernel::process::manager();
         if let Some(ref mut manager) = *manager_guard {
             let ticket =
-                manager.create_init_process_with_argv(String::from(proc_name), exe_path, &elf_data, argv)?;
+                manager.create_init_process_with_argv(String::from(proc_name), exe_path, elf_data, argv)?;
             let publication = manager.designate_init(ticket)?;
             // Decide suite controls after designation and before the init thread is published.
             let suite_path = if argv.get(1) == Some(&b"suite".as_slice()) { argv.get(2).copied() } else { None };
@@ -1367,26 +1362,20 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         boot_mode,
         BootMode::Probe | BootMode::PersistentInstall | BootMode::PersistentMigrate | BootMode::Program | BootMode::Suite
     );
-    let mode_elf: Option<alloc::vec::Vec<u8>> = if runs_own_binary && device_count > 0 {
+    let mode_elf: Option<kernel::exec_elf::MappedElf> = if runs_own_binary && device_count > 0 {
         serial_println!(
             "[boot] Pre-loading {} from {} (before timer)...",
             init_launch.path, kernel::fs::vfs::root_kind()
         );
         match read_init_from_ext2(&init_launch.path) {
-            Ok(data) => match kernel::boot::target::check_elf(&data) {
-                Ok(()) => {
-                    serial_println!(
-                        "[boot] {} pre-loaded: {} bytes",
-                        init_launch.path,
-                        data.len()
-                    );
-                    Some(data)
-                }
-                Err(e) => {
-                    serial_println!("[boot] {} is not a loadable ELF: {}", init_launch.path, e);
-                    None
-                }
-            },
+            Ok(data) => {
+                serial_println!(
+                    "[boot] {} pre-loaded: {} bytes",
+                    init_launch.path,
+                    data.file_len
+                );
+                Some(data)
+            }
             Err("init not found") => {
                 serial_println!("[boot] {} not found", init_launch.path);
                 None
@@ -1410,13 +1399,13 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         init_launch = InitLaunch::default_init();
     }
     announce_boot_mode(boot_mode, mode_arg.as_deref(), only.as_deref());
-    let init_elf: Option<alloc::vec::Vec<u8>> = if mode_elf.is_some() {
+    let init_elf: Option<kernel::exec_elf::MappedElf> = if mode_elf.is_some() {
         mode_elf
     } else if device_count > 0 {
         serial_println!("[boot] Pre-loading /sbin/init from {} (before timer)...", kernel::fs::vfs::root_kind());
         match read_init_from_ext2("/sbin/init") {
             Ok(data) => {
-                serial_println!("[boot] Init binary pre-loaded: {} bytes", data.len());
+                serial_println!("[boot] Init binary pre-loaded: {} bytes", data.file_len);
                 Some(data)
             }
             Err(e) => {
@@ -2216,9 +2205,15 @@ fn load_test_binaries_from_ext2() {
             let mut found = None;
             for dir in &search_dirs {
                 let path = format!("{}/{}", dir, name);
-                match kernel::fs::vfs::exec::load_image(path.as_bytes(), &cred, || false) {
-                    Ok((bytes, _, _)) => { found = Some(bytes); break; }
+                match kernel::fs::vfs::exec::load_image(path.as_bytes(), &cred, || false,
+                    kernel::exec_elf::Purpose::Spawn).and_then(|(image, _, _)| image.into_elf())
+                {
+                    Ok(image) => { found = Some(image); break; }
                     Err(errno) if errno.0 == kernel::syscall::errno::ENOENT => continue,
+                    Err(errno) if errno.0 == kernel::syscall::errno::ENOEXEC => {
+                        serial_println!("[test] {} is not a valid ELF file", name);
+                        break;
+                    }
                     Err(errno) => {
                         serial_println!("[test] Failed to read {}: {}", path, errno.0);
                         break;
@@ -2226,7 +2221,7 @@ fn load_test_binaries_from_ext2() {
                 }
             }
             match found {
-                Some(bytes) => bytes,
+                Some(image) => image,
                 None => {
                     serial_println!("[test] Failed to load {} from test directories", name);
                     failed += 1;
@@ -2235,17 +2230,10 @@ fn load_test_binaries_from_ext2() {
             }
         };
 
-        // Validate ELF magic
-        if elf_data.len() < 4 || &elf_data[0..4] != b"\x7fELF" {
-            serial_println!("[test] {} is not a valid ELF file", name);
-            failed += 1;
-            continue;
-        }
-
         // Create userspace process (adds to scheduler ready queue)
         let created = kernel::process::creation::create_user_process_before_run(
             String::from(*name),
-            &elf_data,
+            elf_data,
             |#[cfg_attr(not(feature = "boot_tests"), allow(unused_variables))] pid| {
                 #[cfg(feature = "boot_tests")]
                 if core::mem::take(&mut process_context_pending) {

@@ -1216,7 +1216,7 @@ fn nonblock_eagain_test_main() -> ! {
 fn launch_x86_production_init(
     name: &str,
     exe_path: &[u8],
-    elf_data: &[u8],
+    elf_data: kernel::exec_elf::MappedElf,
     only: Option<&str>,
     console_mode: Option<X86ConsoleMode>,
 ) -> Result<(), &'static str> {
@@ -1479,15 +1479,13 @@ fn x86_console_mode() -> Option<X86ConsoleMode> {
     ))
 ))]
 fn read_x86_production_init(
-) -> Result<(alloc::string::String, alloc::vec::Vec<u8>, alloc::vec::Vec<u8>, Option<alloc::string::String>, Option<X86ConsoleMode>), &'static str> {
+) -> Result<(alloc::string::String, alloc::vec::Vec<u8>, kernel::exec_elf::MappedElf, Option<alloc::string::String>, Option<X86ConsoleMode>), &'static str> {
     use kernel::boot::{init_image::read_init_from_ext2, target};
 
     let suite = match x86_boot_target() {
         Some(X86BootTarget::Suite(suite)) => Some(suite),
         Some(X86BootTarget::Probe) => {
-            match read_init_from_ext2("/sbin/probe")
-                .and_then(|(elf_data, exe_path)| target::check_elf(&elf_data).map(|()| (elf_data, exe_path)))
-            {
+            match read_init_from_ext2("/sbin/probe") {
                 Ok((elf_data, exe_path)) => {
                     log::info!("[boot] Boot mode: probe");
                     kernel::console::splash::set_mode(format_args!("probe"));
@@ -1498,9 +1496,7 @@ fn read_x86_production_init(
             None
         }
         Some(X86BootTarget::PersistentInstall) => {
-            match read_init_from_ext2("/sbin/persistent-install")
-                .and_then(|(elf_data, exe_path)| target::check_elf(&elf_data).map(|()| (elf_data, exe_path)))
-            {
+            match read_init_from_ext2("/sbin/persistent-install") {
                 Ok((elf_data, exe_path)) => {
                     log::info!("[boot] Boot mode: persistent-install");
                     kernel::console::splash::set_mode(format_args!("persistent-install"));
@@ -1515,7 +1511,6 @@ fn read_x86_production_init(
         }
         Some(X86BootTarget::PersistentMigrate) => {
             let (elf_data, exe_path) = read_init_from_ext2("/sbin/persistent-migrate")?;
-            target::check_elf(&elf_data)?;
             log::info!("[boot] Boot mode: persistent-migrate");
             kernel::console::splash::set_mode(format_args!("persistent-migrate"));
             return Ok((alloc::string::String::from("persistent-migrate"), exe_path, elf_data, None, None));
@@ -1525,9 +1520,7 @@ fn read_x86_production_init(
     if let Some(suite) = suite {
         let id = suite.id;
         let path = target::suite_path(&id);
-        match read_init_from_ext2(if id == "users" || id == "gui-apps" { "/sbin/init" } else { &path })
-            .and_then(|(elf_data, exe_path)| target::check_elf(&elf_data).map(|()| (elf_data, exe_path)))
-        {
+        match read_init_from_ext2(if id == "users" || id == "gui-apps" { "/sbin/init" } else { &path }) {
             Ok((elf_data, exe_path)) => {
                 if let Some(case) = &suite.case {
                     log::info!("[boot] Boot mode: suite {} case {}", id, case);
@@ -1558,7 +1551,7 @@ fn read_x86_production_init(
     ))
 ))]
 fn read_default_x86_init(
-) -> Result<(alloc::string::String, alloc::vec::Vec<u8>, alloc::vec::Vec<u8>, Option<alloc::string::String>, Option<X86ConsoleMode>), &'static str> {
+) -> Result<(alloc::string::String, alloc::vec::Vec<u8>, kernel::exec_elf::MappedElf, Option<alloc::string::String>, Option<X86ConsoleMode>), &'static str> {
     // Prepare terminal input and the keyboard when falling back to init.
     let mode = Some(x86_console_mode().unwrap_or(X86ConsoleMode::Desktop));
     let mode_name = mode.map_or("default", X86ConsoleMode::arg);
@@ -2191,7 +2184,7 @@ fn kernel_main_continue() -> ! {
                 Ok((name, exe_path, elf_data, only, mode)) => {
                     kernel::console::splash::set_status(format_args!("Starting {}", name));
                     let launched = x86_64::instructions::interrupts::without_interrupts(|| {
-                        launch_x86_production_init(&name, &exe_path, &elf_data, only.as_deref(), mode)
+                        launch_x86_production_init(&name, &exe_path, elf_data, only.as_deref(), mode)
                     });
                     match launched {
                         Ok(()) => {

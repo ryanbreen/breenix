@@ -34,12 +34,13 @@ def llvm_tool(root, name):
     return rustc.parent.parent / 'lib' / 'rustlib' / host / 'bin' / name
 
 
-def build(command, log, *, cwd=None, env=None):
+def build(command, log, *, cwd=None, env=None, timeout=55):
     with log.open('wb') as transcript:
         with subprocess.Popen(command, cwd=cwd, env=env, stdout=transcript,
                               stderr=subprocess.STDOUT, start_new_session=True) as process:
+            log.with_suffix(".pid").write_text(f"{process.pid}\n")
             try:
-                return process.wait(timeout=55)
+                return process.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
                 os.killpg(process.pid, signal.SIGKILL)
                 process.wait()
