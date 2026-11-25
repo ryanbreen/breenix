@@ -13,12 +13,55 @@ BASE = '706f244db'
 PIN = '666252fd61839b9e9b1bc9e777a0c84c5cf3dc6d'
 
 
-def git(*args):
-    return subprocess.run(['git', '-C', str(TREE), *args], text=True,
+def git(*args, tree=TREE):
+    return subprocess.run(['git', '-C', str(tree), *args], text=True,
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True).stdout.strip()
 
 
 class RustcPort(unittest.TestCase):
+    def test_x2_inventory_recorded(self):
+        path = RECORDS.parent / 'x2.json'
+        self.assertTrue(path.is_file(), 'X2 rustc driver link result has not been recorded')
+        record = json.loads(path.read_text())
+        self.assertTrue(record['prediction'].strip())
+        self.assertLess(datetime.datetime.fromisoformat(record['prediction_time']),
+                        datetime.datetime.fromisoformat(record['time']))
+        self.assertEqual(record['target'], 'x86_64-breenix-hosted')
+        command = record['command']
+        self.assertEqual(command[:2], ['taskpolicy', '-b'])
+        self.assertIn('--config', command)
+        self.assertIn('compiler/rustc', command)
+
+        pin = tomllib.loads((ROOT / 'rust-fork.toml').read_text())['hosted']['commit']
+        self.assertEqual(record['rust_commit'], pin)
+        fork = ROOT / 'rust-fork'
+        self.assertEqual(record['compiler_tree'], git('rev-parse', f'{pin}:compiler', tree=fork))
+        self.assertEqual(record['compiler_tree'], git('rev-parse', f'{PIN}:compiler'))
+        self.assertEqual(record['llvm_commit'],
+                         git('ls-tree', pin, 'src/llvm-project', tree=fork).split()[2])
+        self.assertEqual(git('status', '--porcelain', '--ignore-submodules=none',
+                             '--', 'compiler', 'src/llvm-project'), '')
+        for field in ('pinned_status_before', 'pinned_status_after'):
+            self.assertEqual(record[field], {'compiler': '', 'llvm_project': ''})
+        self.assertRegex(record['log_sha256'], r'^[0-9a-f]{64}$')
+
+        fields = {'dynamic_relocations', 'tls_models', 'undefined_symbols'}
+        if record['result'] == 'linked':
+            self.assertEqual(record['exit_status'], 0)
+            self.assertEqual(set(record['inventory']), fields)
+            for names in record['inventory'].values():
+                self.assertIsInstance(names, list)
+                self.assertTrue(all(isinstance(name, str) and name.strip() for name in names))
+                self.assertEqual(names, sorted(set(names)))
+        else:
+            self.assertEqual(record['result'], 'deferred')
+            self.assertIs(type(record['exit_status']), int)
+            self.assertNotEqual(record['exit_status'], 0)
+            self.assertEqual(record['deferred_to'], 'K5 first unit')
+            self.assertTrue(record['last_completed_step'].strip())
+            self.assertTrue(record['first_error'].strip())
+            self.assertNotIn('inventory', record)
+
     def test_libcxx_runtime_inventory_recorded(self):
         record = self.x0_record(5)
         self.assertRegex(record['llvm_project'], r'^[0-9a-f]{40}$')
