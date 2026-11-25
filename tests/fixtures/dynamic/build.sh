@@ -31,7 +31,12 @@ done
     --dynamic-linker=/lib/ld-breenix.so --enable-new-dtags \
     -rpath '$ORIGIN/missing:$ORIGIN/lib' -o fixture main.o lib/libouter.so
 
-for file in fixture lib/libouter.so lib/private/libinner.so; do
+"$clang" --target=x86_64-unknown-none-elf -std=c17 -ffreestanding \
+    -nostdinc -fno-stack-protector -fPIC -ftls-model=local-dynamic \
+    -Wall -Wextra -Werror -c "$src/tls.c" -o tls.o
+"$lld" -shared --hash-style=sysv -z relro -z now -o libtls.so tls.o
+
+for file in fixture lib/libouter.so lib/private/libinner.so libtls.so; do
     "$readelf" -W -r -d -l "$file" > "$file.readelf"
     "$nm" -P --defined-only "$file" > "$file.nm"
 done

@@ -125,8 +125,8 @@ impl Fixture {
     }
 }
 
-fn fixtures() -> &'static [Fixture; 3] {
-    static FIXTURES: OnceLock<[Fixture; 3]> = OnceLock::new();
+fn fixtures() -> &'static [Fixture; 4] {
+    static FIXTURES: OnceLock<[Fixture; 4]> = OnceLock::new();
     FIXTURES.get_or_init(|| {
         let script =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/dynamic/build.sh");
@@ -143,7 +143,7 @@ fn fixtures() -> &'static [Fixture; 3] {
         ));
         let result = Command::new(script).arg(&temp.0).output().unwrap();
         assert!(result.status.success(), "{result:?}");
-        FILES.map(|name| Fixture {
+        [FILES[0], FILES[1], FILES[2], "libtls.so"].map(|name| Fixture {
             file: fs::read(temp.0.join(name)).unwrap(),
             readelf: fs::read_to_string(temp.0.join(format!("{name}.readelf"))).unwrap(),
             symbols: fs::read_to_string(temp.0.join(format!("{name}.nm")))
@@ -157,6 +157,51 @@ fn fixtures() -> &'static [Fixture; 3] {
                 .collect(),
         })
     })
+}
+
+#[test]
+fn dtpmod64_gets_module_id() {
+    let fixtures = fixtures();
+    let root = Object::parse(NAMES[0], &fixtures[0].file, BIASES[0]).unwrap();
+    let tls = &fixtures[3];
+    let tls_header: Vec<_> = tls
+        .readelf
+        .lines()
+        .find(|line| line.trim_start().starts_with("TLS "))
+        .unwrap()
+        .split_whitespace()
+        .collect();
+    assert_eq!(
+        (hex(tls_header[4]), hex(tls_header[5]), hex(tls_header[7])),
+        (0, 48, 8)
+    );
+    let mut slots = tls.readelf.lines().filter_map(|line| {
+        let mut fields = line.split_whitespace();
+        let address = fields.next()?;
+        let info = fields.next()?;
+        (fields.next()? == "R_X86_64_DTPMOD64").then(|| {
+            assert_eq!(hex(info) >> 32, 0);
+            hex(address)
+        })
+    });
+    let slot = slots
+        .next()
+        .expect("fixture must use a local-dynamic module slot");
+    assert_eq!(slots.next(), None);
+    let first = Object::parse(b"/fixture/first.so", &tls.file, BIASES[1]).unwrap();
+    let second = Object::parse(b"/fixture/second.so", &tls.file, BIASES[2]).unwrap();
+    let scope = [root, first, second];
+    for (object, id) in [(first, 1), (second, 2)] {
+        let mut module = None;
+        object
+            .relocate(&scope, |patch| {
+                if patch.address == object.bias() + slot {
+                    assert!(module.replace(patch.value).is_none());
+                }
+            })
+            .unwrap();
+        assert_eq!(module, Some(id));
+    }
 }
 
 #[test]
