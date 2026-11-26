@@ -979,6 +979,28 @@ impl<W: Wait> BufferCache<W> {
     /// Submit a prepared range directly when no cache capacity is reclaimable.
     /// Keep device ordering and retire old cache copies under that admission.
     pub fn write_uncached(&self, device: &dyn BlockDevice, start: u64, bytes: &[u8]) -> Result<(), BlockError> {
+        self.write_direct(device, start, bytes, false)
+    }
+
+    /// Write one contiguous range through to the device before publishing its
+    /// clean cache copies. A failed write can have reached the media in part,
+    /// so subsequent reads must refill the range from the device.
+    pub fn write_through_blocks(
+        &self,
+        device: &dyn BlockDevice,
+        start: u64,
+        bytes: &[u8],
+    ) -> Result<(), BlockError> {
+        self.write_direct(device, start, bytes, true)
+    }
+
+    fn write_direct(
+        &self,
+        device: &dyn BlockDevice,
+        start: u64,
+        bytes: &[u8],
+        retain: bool,
+    ) -> Result<(), BlockError> {
         let size = device.block_size();
         if size == 0 || bytes.is_empty() || bytes.len() % size != 0 {
             return Err(BlockError::IoError);
@@ -988,7 +1010,7 @@ impl<W: Wait> BufferCache<W> {
             return Err(BlockError::OutOfBounds);
         }
         let identity = device.identity();
-        let _admission = self.enter(identity);
+        let admission = self.enter(identity);
         self.with(|state| {
             let end = start + count as u64;
             let keys = (identity, start)..(identity, end);
@@ -1000,7 +1022,21 @@ impl<W: Wait> BufferCache<W> {
             }
             Ok(())
         })?;
-        self.device_write(device, start, count, bytes)
+        self.device_write(device, start, count, bytes)?;
+        let mut pressure = false;
+        if retain {
+            for (i, sector) in bytes.chunks_exact(size).enumerate() {
+                let key = (identity, start + i as u64);
+                let charge = self.begin(key, size);
+                pressure |= charge.is_none();
+                self.finish(key, sector, charge, Ok(()));
+            }
+        }
+        drop(admission);
+        if pressure {
+            self.request_commits();
+        }
+        Ok(())
     }
 
     /// Reserve the barrier before draining earlier requests, then wait for the

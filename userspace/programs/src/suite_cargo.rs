@@ -32,7 +32,8 @@ static SUITE: Suite = suite(
 )
 .case_limit_ms(60_000);
 
-const FIXTURE: &str = "/usr/libexec/breenix/cargo";
+const FIXTURE: &str = "/usr/libexec/breenix/rustc";
+const CORPUS: &str = "/usr/libexec/breenix/cargo/corpus";
 
 // tests/cargo_suite_test.py projects these commands onto the Mac twin fixture.
 const INVOCATIONS: &str = r#"{
@@ -103,7 +104,7 @@ fn copy_tree(source: &Path, destination: &Path) -> io::Result<()> {
 }
 
 fn read_expectation() -> Result<Value, String> {
-    let path = Path::new(FIXTURE).join("corpus/expect.json");
+    let path = Path::new(CORPUS).join("expect.json");
     let bytes = fs::read(&path).map_err(|error| format!("{}: {error}", path.display()))?;
     serde_json::from_slice(&bytes).map_err(|error| format!("{}: {error}", path.display()))
 }
@@ -162,7 +163,7 @@ fn run_step(step: &Value, expected: &Value, workspace: &Path) -> Result<(), Stri
 }
 
 fn run_workload(name: &str, workspace: &Path) -> Result<(), String> {
-    let source = Path::new(FIXTURE).join("corpus").join(name);
+    let source = Path::new(CORPUS).join(name);
     copy_tree(&source, workspace).map_err(|error| format!("{}: {error}", source.display()))?;
     let plan: Value = serde_json::from_str(INVOCATIONS).map_err(|error| error.to_string())?;
     let expected = read_expectation()?;

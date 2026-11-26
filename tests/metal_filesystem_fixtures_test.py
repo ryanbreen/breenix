@@ -28,6 +28,32 @@ class FilesystemFixturesTest(existing.StateTest):
         self.build = {'ext2': {'sha256': disk.metal_image.sha256(self.inputs / 'ext2.img')}}
         self.site = {}
 
+    def test_d1_transfers_only_scratch_format_extents(self):
+        # A fresh scratch filesystem needs its format records and workspace
+        # extents. A writable hole between them is not part of the wire image.
+        import struct
+        scratch = self.inputs / 'd1-scratch.dat'
+        first = b'begin' + bytes(4096 - 5)
+        last = b'end' + bytes(4096 - 3)
+        extents = (struct.pack('<QQ', 0, len(first)) + first
+                   + struct.pack('<QQ', FIXTURE_BYTES - len(last), len(last)) + last)
+        scratch.write_bytes(extents)
+        self.build['d1'] = dict(commit='b' * 40, scratchBytes=FIXTURE_BYTES,
+                                disk=dict(size=len(extents), sha256=disk.metal_image.sha256(scratch)))
+        layout = persist.reclaimed_layout(persist.add_breenfs_layout(persist.new_layout()))
+        with patch.object(disk.metal_root, 'stage_root'), patch.object(disk.metal_root, 'console_identity',
+                                                                       return_value='fixture'):
+            facts, files = disk.stage(self.directory, self.inputs, 'suite', 'b' * 40, self.site,
+                                      self.build, mode='suite', suite='rustc,cargo,d1', the_layout=layout)
+
+        self.assertEqual(facts.get('fixtureSlices'), [
+            dict(role='scratch', offset=ROOT_BYTES, length=FIXTURE_BYTES),
+        ])
+        self.assertEqual(facts['stagedBytes'], ROOT_BYTES + len(extents))
+        self.assertEqual(files['suite-root.img'].stat().st_size, facts['stagedBytes'])
+        self.assertEqual(files['suite-root.img'].read_bytes()[ROOT_BYTES:], extents)
+        self.assertEqual(list(self.inputs.glob('breenfs-*.img')), [])
+
     def test_fixture_payload_and_intent_follow_arm_discovery_order(self):
         launcher = (REPO / 'scripts/boot-interactive.sh').read_text()
         scratch = (REPO / 'scripts/lib/root-fs.sh').read_text()

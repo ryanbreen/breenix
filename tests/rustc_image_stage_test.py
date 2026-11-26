@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location('rust_host_stage', ROOT / 'scripts/rust_host_stage.py')
@@ -30,10 +31,10 @@ class RustcImageStageTest(unittest.TestCase):
             artifacts = root / 'artifacts'
             sysroot = root / 'sysroot'
             targets = root / 'targets'
-            corpus = root / 'corpus'
+            corpus = root / 'k5/corpus'
             kd = root / 'kd'
             for directory in (artifacts, targets, corpus, kd):
-                directory.mkdir()
+                directory.mkdir(parents=True)
             def write(path, data):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(data)
@@ -58,19 +59,23 @@ class RustcImageStageTest(unittest.TestCase):
                   'sysroot': {'files_sha256': files}}
             kd_record = {'ld-breenix.so': digest(loader), 'libc.so': digest(libc)}
             before = image.stat().st_size
-            record = STAGE.stage_rustc(image, 'rustc', 'x86_64', suite, artifacts,
-                                       sysroot, targets, corpus, kd, k5, kd_record)
+            with patch.object(STAGE, 'ROOT', targets):
+                record = STAGE.stage_hosted_toolchain(
+                    image, ['rustc'], root, artifacts, None, sysroot, None,
+                    kd, None, root, k5, kd_record, {},
+                )
             prefix = '/usr/libexec/breenix/rustc'
             expected = {'/sbin/suite-rustc': digest(suite), f'{prefix}/bin/rustc': digest(compiler),
                         f'{prefix}/lib/{driver.name}': digest(driver), '/lib/ld-breenix.so': digest(loader),
                         '/lib/libc.so': digest(libc)}
-            expected.update({f'{prefix}/sysroot/{p}': h for p, h in files.items()})
+            expected.update({f'{prefix}/sysroot/{p}': h for p, h in files.items()
+                             if p.startswith('lib/rustlib/x86_64-breenix/')})
             expected.update({f'{prefix}/targets/{p.name}': digest(p) for p in targets.iterdir()})
             expected.update({f'{prefix}/corpus/{p.name}': digest(p) for p in corpus.iterdir()})
             self.assertEqual(record, expected)
             staged_bytes = sum(p.stat().st_size for p in [suite, compiler, driver, loader, libc]
-                               + list(sysroot.rglob('*.rlib')) + list(targets.iterdir()) + list(corpus.iterdir()))
-            self.assertGreaterEqual(image.stat().st_size - before, staged_bytes * 2 + 16 * 1024 * 1024)
+                               + list((sysroot / 'lib/rustlib/x86_64-breenix').rglob('*.rlib')) + list(targets.iterdir()) + list(corpus.iterdir()))
+            self.assertGreaterEqual(image.stat().st_size - before, staged_bytes + 64 * 1024 * 1024)
             for path, expected_digest in expected.items():
                 with self.subTest(path=path), subprocess.Popen(
                     [debugfs, '-R', f'cat {path}', image], stdout=subprocess.PIPE,

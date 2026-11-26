@@ -17,7 +17,6 @@
 #                              (default: <repo>/build/llvm-port)
 #   BREENIX_RUSTC_PORT_BUILDS   K5 twin cache with hosted/{bin,lib,maps}
 #                              (default: <repo>/build/rustc-port)
-#                              hosted/lib includes the KD libc.so used to link.
 #
 # Usage:
 #   ./userspace/programs/build.sh                  # x86_64 (default)
@@ -224,7 +223,7 @@ if [[ "$DYNAMIC" == 1 ]]; then
     BREENIX_KD_BUILD_DIR="$(cd "$kd_dir" && pwd)"
     export BREENIX_KD_BUILD_DIR
     "$SCRIPT_DIR/build.sh" --arch x86_64 --kd-libc
-    # A combined K5 image links the probes against the compiler's recorded DSO.
+    # A combined image links the dynamic probes against the staged runtime.
     if [[ -n "${BREENIX_KD_LIBC_INPUT:-}" ]]; then
         cp "$BREENIX_KD_LIBC_INPUT" "$BREENIX_KD_BUILD_DIR/libc.so"
     fi
@@ -553,7 +552,7 @@ build_rust_programs() (
         export RUSTFLAGS="$HOSTED_RUSTFLAGS -C metadata=breenix_std_$FORK_COMMIT"
         extra_link_flags=()
         case "$HOSTED_BIN" in
-            suite-dynamic|suite-cargo)
+            suite-dynamic|suite-cargo|suite-d1)
                 extra_link_flags=(-Dwarnings) ;;
             suite-rust-host|rust-host-startup-probe|rust-host-process-probe|rust-host-unwind-probe)
                 extra_link_flags=(-Cforce-unwind-tables=yes) ;;

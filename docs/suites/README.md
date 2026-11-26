@@ -1991,6 +1991,42 @@ itself. It checks close-on-exec pipe descriptors, wait statuses for exit 3
 and SIGTERM, and lock contention and acquisition after release for both
 `flock` and `fcntl(F_SETLK)`. Pipe events order the two processes.
 
+## E25 self-host diagnostic
+
+D1 measures the time and scratch space needed to rebuild the Rust toolchain on the R240.
+Select it explicitly with `--suite d1`, or as the last stage of
+`--suite rustc,cargo,d1`. The diagnostic uses a Mac prebuilt for a disposable
+test-root boot. Its measurements inform 25.8 and have no milestone score.
+
+After the sequence reset, D1 mounts the E24 scratch companion at `/src`.
+The companion holds the pinned workspace under `/src/toolchain`.
+D1 shares rustc, Cargo, their tool-target sysroot,
+both target specifications, bld, the Rust-ABI archive and the linker script
+with the rustc and Cargo suites under `/usr/libexec/breenix/rustc`. Cargo
+creates its empty registry and target directory under a new nonce on the
+scratch companion, then reuses them through bobj, bas, bld, bar, bnm, bcc
+and bmake in order. The staged companion contains the formatter's written
+extents. Its free space takes no bytes on the wire.
+
+Ruling 126 gives each Cargo process group 600 seconds. D1 kills the group
+at the deadline and reports the timeout. A suite case has 10 more seconds
+to reap and write its record. During that case the sequence watchdog honors
+the case window and the normal process sweep, then returns to its usual
+stall interval. A long build or a Cargo error is a diagnostic
+finding. Each case writes its wall time, sampled peak RSS summed across the
+process group, successful logical write bytes on the scratch mount, exit
+status and any first error to serial as a `D1` JSON record. RSS samples can
+miss short peaks and include shared pages in each member's count.
+
+The Mac replay uses the same command constructor and the pinned Mac twin.
+Its receipt includes the output hashes and the growth in retained scratch
+bytes after each package. The fixture reserves four times that growth plus
+128 MiB beyond its payload for transient files and filesystem overhead.
+The target argument is the staged JSON path. The bare target name in
+plan §5.5 selected the built-in target, and the Mac twin rejected the
+JSON-built sysroot with E0461. ARM64 still needs hosted compiler and Cargo
+artifacts, fixture replay and guest acceptance.
+
 ## Dynamic linking
 
 Select `dynamic` explicitly on x86-metal. The launcher builds the feature-gated

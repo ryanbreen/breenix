@@ -430,11 +430,16 @@ in "Measured".
 | Power-on to the image request | Firmware text, POST code, boot progress | The POST budget passes with no request; or a boot-progress state new since power-on reads "No bootable devices" | 124, 2 |
 | The request was refused (no image staged) | — | 30 s of capture after the 404 | 2 |
 | Download | Bytes moving in the server's log | No bytes for 15 s; not complete 60 s after the first byte; a complete transfer with the wrong sha256 | 2 |
-| Download to bootloader | `UEFI bootloader started` (a test payload: its own line) | Not seen within 60 s of a complete transfer; the delivery stub's `metal-stub: FAILED` line | 2 |
+| Download to bootloader | `UEFI bootloader started` (a test payload: its own line); increasing byte counts from `metal-stub: suite staging progress:` | 60 s after transfer or the latest advancing staging line; a 600 s staging cap from transfer; the delivery stub's `metal-stub: FAILED` line | 2 |
 | Bootloader to handoff | New console bytes | 120 s of silence | 124 |
 | Kernel (after `Jumping to kernel entry point at`) | New console bytes | 120 s of silence; a `fatal` pattern from the boot's own definition (stopped 5 s later, so the backtrace lands); a reset: a second bootloader banner, an image request after the transfer, or a non-empty POST boot-progress state. Under S26, `None` or empty progress records `boot-progress-unknown` with the selected management reading; POST state, POST code change, second bootloader banner or new image request within 60 s confirms a reset timed at that unknown reading. Without confirmation, stages continue to decide the boot. claim-lint:ok: S26, #2526 and tests/metal_boot_progress_test.py define the unknown-state contract. | 124, 1, 1 |
 | Mode finished | The mode's final marker, from the boot's own `docs/metal/boot-path.json`: the last stage of the newest milestone the mode measures, a stub milestone excepted (tests mode: `USERSPACE TEST REPORT DONE`) | Boot mode: 5 minutes after handoff with the marker missing; suite mode: 7 minutes, and in a multi-suite boot 7 minutes from each suite's START; tests mode: 10 minutes | 0, else 1 |
 | Whole attempt | — | 15 minutes from power-on, 22 for a suite and 7 more for each further suite of a multi-suite boot, 25 for tests mode (enforced by the reaper as well) | 124 |
+
+Suite staging counts bytes processed across the write and readback passes.
+The stub reports at 8 MiB or five seconds between lines while firmware I/O
+advances. The driver renews the deadline when the count advances and the
+reported total matches the staged image.
 
 **The POST budget** is 10 minutes from power-on until three power-on-to-request intervals are measured, then twice
 the longest of them (`post-times.json` in the boot store; the measured values are in "Measured", below). A POST

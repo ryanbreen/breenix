@@ -17,6 +17,7 @@ llvm = []
 rustc = []
 rust-link = []
 cargo-suite = []
+d1 = []
 dynamic = ["breenix-suite/dynamic"]
 
 [dependencies]
@@ -1052,3 +1053,8 @@ required-features = ["rust-link"]
 name = "suite-cargo"
 path = "src/suite_cargo.rs"
 required-features = ["cargo-suite"]
+
+[[bin]]
+name = "suite-d1"
+path = "src/suite_d1.rs"
+required-features = ["d1"]

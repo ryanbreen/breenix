@@ -944,7 +944,7 @@ fn missing_suite_manifest(name: &str, manifest_ids: &HashSet<String>) -> Option<
 #[test]
 fn hosted_suite_builds_are_registered() {
     let builds = SuiteBuilds::read(&repo_root());
-    let errors: Vec<_> = ["dynamic", "rustc", "rust-link", "cargo"]
+    let errors: Vec<_> = ["dynamic", "rustc", "rust-link", "cargo", "d1"]
         .into_iter()
         .filter_map(|id| suite_build_error(id, &builds))
         .collect();

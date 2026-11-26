@@ -586,7 +586,12 @@ pub fn mutation_costs() -> Result<String, Errno> {
     let mut text = String::new();
     for (id, fs) in storage()? {
         let info = super::mount::get_mount_info(id).ok_or(Errno(EIO))?;
-        fs.mutation_costs(if info.0 == "/" { "root" } else { "home" }, &mut text)?;
+        let name = match info.0.as_str() {
+            "/" => "root",
+            "/home" => "home",
+            path => path,
+        };
+        fs.mutation_costs(name, &mut text)?;
     }
     Ok(text)
 }

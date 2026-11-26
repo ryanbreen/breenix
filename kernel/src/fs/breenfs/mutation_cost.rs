@@ -148,13 +148,21 @@ impl Refusals {
 pub(super) struct Costs {
     slots: [Slot; OPS.len() * PHASES.len()],
     refusals: Refusals,
+    write_bytes: AtomicU64,
 }
 impl Costs {
     pub fn new() -> Self {
         Self {
             slots: [const { Slot::new() }; OPS.len() * PHASES.len()],
             refusals: Refusals::new(),
+            write_bytes: AtomicU64::new(0),
         }
+    }
+    pub fn record_write(&self, bytes: usize) {
+        self.write_bytes.fetch_add(bytes as u64, Ordering::Relaxed);
+    }
+    pub fn write_bytes(&self) -> u64 {
+        self.write_bytes.load(Ordering::Relaxed)
     }
     /// Whether a refusal under installed `generation` gets a receipt: the
     /// first REFUSALS_PER_PUBLICATION per generation. Mount lock held.

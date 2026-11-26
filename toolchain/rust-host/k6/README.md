@@ -39,13 +39,27 @@ The recorder resolves `-l` operands through the recorded `-L` paths and the
 `-Bstatic`/`-Bdynamic` state, following GNU ld 2.45 §2.1. The hosted link
 resolves `-lbunwind` to Breenix's unwinder and uses the hosted linker script.
 
+## Retained fixture for K8
+
+`BREENIX_K6_FIXTURE` names the retained x86-64 K6 linker capture, including
+the K5 twin sysroot at `sysroot/` within it. The default is `k6/fixture`
+relative to the shared E25 cache (`~/Library/Caches/breenix-e25` on the Mac).
+Rust linker and Cargo image staging use this default for the K6 inputs.
+When staging from the retained sysroot, set `BREENIX_K5_SYSROOT` to the
+`sysroot/` directory inside the fixture.
+
+Run `python3 scripts/rust-host/check-k6-fixture.py` from the repo root before
+using the retained fixture. The check reports the resolved directory and
+compares 89 SHA-256 digests and eight argument vectors against the committed
+K5 and K6 records. It exits nonzero if the directory or a pinned file is
+missing, a digest differs, or an argument vector changes.
+
 ## Verify and replay
 
-Retain the original fixture with its committed record. The input hashes
-cover the actual bytes used for that capture, including Cargo's build-specific
-file names. A new capture writes its own record in its fixture directory.
-Run the checks below from the repo root. For a relocated copy of the original
-fixture, set `BREENIX_K6_FIXTURE` to its root.
+The input hashes identify the original capture, including Cargo's
+build-specific file names. A new capture writes its own record in its fixture
+directory. For the LLVM inspection below, set `BREENIX_K6_FIXTURE` to the
+retained fixture root and run the checks from the repo root.
 
 ```sh
 PYTHONPATH=tests python3 -m unittest \

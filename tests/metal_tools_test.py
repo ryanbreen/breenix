@@ -1303,6 +1303,14 @@ class ModeApplicabilityTest(StateTest):
         self.assertTrue(boot.marker_matches((marker, 'contains'),
             'SUITE rustc DONE passed=3 failed=0 skipped=0 total=3'))
 
+    def test_cargo_and_d1_done_satisfy_suite_finished_stage(self):
+        stage = next(item for item in self.definition['milestones'] if item['id'] == 'suite-finished')
+        marker = stage['stages']['suite'][0]['marker']
+        for suite, total in (('cargo', 2), ('d1', 7)):
+            with self.subTest(suite=suite):
+                self.assertTrue(boot.marker_matches((marker, 'contains'),
+                    f'SUITE {suite} DONE passed={total} failed=0 skipped=0 total={total}'))
+
     def test_cxx_runtime_done_satisfies_suite_finished_stage(self):
         stage = next(item for item in self.definition['milestones'] if item['id'] == 'suite-finished')
         marker = stage['stages']['suite'][0]['marker']
@@ -2770,6 +2778,11 @@ class BuildSlotTest(unittest.TestCase):
             oracle = clone / 'docs/gui/provenance/gt710-contexts.json'
             oracle.parent.mkdir(parents=True, exist_ok=True)
             oracle.write_text('context oracle fixture')
+            libc = clone / 'hosted-libc.so'
+            libc.write_bytes(b'shared libc')
+            pin = clone / 'toolchain/rust-host/hosted-libc-x86_64.json'
+            pin.parent.mkdir(parents=True, exist_ok=True)
+            pin.write_text(json.dumps({'sha256': build.sha256(libc)}))
             kernel_out = clone / 'target/x86_64-unknown-none/release/build/kernel-current/out'
             elf = kernel_out.parents[2] / 'deps/kernel-current'
             assembly = {'cargo_package': 'bas', 'build_host': 'x86_64-unknown-linux-gnu',
@@ -2806,7 +2819,7 @@ class BuildSlotTest(unittest.TestCase):
                     kd = clone / 'userspace/programs/target/kd'
                     kd.mkdir(parents=True)
                     (kd / 'ld-breenix.so').write_bytes(b'loader')
-                    (kd / 'libc.so').write_bytes(b'libc')
+                    (kd / 'libc.so').write_bytes(Path(pinned_libc).read_bytes() if pinned_libc else b'libc')
                 if command[:4] == ['cargo', 'build', '--release', '--bin'] and command[4] == 'qemu-uefi':
                     options_env = options.get('env', build.os.environ)
                     order.append(('assembler', options_env.get('BREENIX_KERNEL_ASSEMBLER')))
@@ -2837,7 +2850,7 @@ class BuildSlotTest(unittest.TestCase):
                     work = options['env']['TMPDIR']
                     order.append(('sdk-work', work, Path(work).is_dir()))
                 return 0
-            with patch.dict(build.os.environ, CARGO_BUILD_JOBS='4'), \
+            with patch.dict(build.os.environ, CARGO_BUILD_JOBS='4', BREENIX_HOSTED_LIBC=str(libc)), \
                  patch.object(build.subprocess, 'run', side_effect=run), \
                  patch.object(build.subprocess, 'call', side_effect=call), \
                  patch.object(build.subprocess, 'check_output', return_value='{}'):
@@ -2921,11 +2934,9 @@ class BuildSlotTest(unittest.TestCase):
         self.assertNotIn(str(Path.home()), work)
 
     def test_combined_rustc_dynamic_build_uses_the_pinned_libc(self):
-        cache = '/fixture/k5-cache'
-        with patch.object(sys, 'platform', 'darwin'), \
-             patch.dict(os.environ, BREENIX_RUSTC_PORT_BUILDS=cache):
-            _, _, _, order, _, _ = self.build_inner('rustc,dynamic')
-            self.assertIn(('dynamic-libc-input', f'{cache}/hosted/lib/libc.so'), order)
+        with patch.object(sys, 'platform', 'darwin'):
+            _, clone, _, order, _, _ = self.build_inner('rustc,dynamic')
+            self.assertIn(('dynamic-libc-input', str((clone / 'hosted-libc.so').resolve())), order)
             _, _, _, order, _, _ = self.build_inner('dynamic')
             self.assertIn(('dynamic-libc-input', None), order)
 

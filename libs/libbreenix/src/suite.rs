@@ -2401,6 +2401,7 @@ fn run_case_body(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool,
             }
         }
     } else { None };
+    sequence::case_started(limit_ms.saturating_add(SWEEP_MS));
     let start = monotonic_ns();
     HOSTKEY_SEQ.fetch_add(RECORDS_PER_CASE as u64, Ordering::Relaxed);
     match process::fork() {

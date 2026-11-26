@@ -1,5 +1,6 @@
 """Execute the production sequence with controlled process/syscall boundaries."""
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import unittest
@@ -148,6 +149,88 @@ CHECKS = r'''
 '''
 
 class SequenceRoles(unittest.TestCase):
+    def test_long_case_gets_its_declared_watchdog_window(self):
+        sequence = (ROOT / 'libs/libbreenix/src/suite_sequence.rs').read_text()
+        sequence = '\n'.join(line for line in sequence.splitlines() if not line.startswith('//!'))
+        runner = (ROOT / 'libs/libbreenix/src/suite.rs').read_text()
+        case_body = runner.split('\nfn run_case_body(', 1)[1].split('\nfn ', 1)[0]
+        call = re.search(r'(?m)^    sequence::case_started\([^\n]+\);$', case_body)
+        start_case = call[0].replace('sequence::', '', 1) if call else ''
+        sweep_ms = re.search(r'(?m)^const SWEEP_MS: u64 = [0-9_]+;$', runner)[0]
+        checks = r'''
+        fn start_case(limit_ms: u64) {
+            let _ = limit_ms;
+            START_CASE
+        }
+
+        #[test] fn case_watchdog_window() {
+            std::env::set_var("BREENIX_SUITE_SEQUENCE_MEMBER", "1");
+            prepare(&["d1".into()], 0, 7);
+            let deadline_ms = || (STALL_AT_NS.load(Ordering::Relaxed) - monotonic_ns()) / 1_000_000;
+            assert_eq!(deadline_ms(), 90_000);
+            start_case(60_000);
+            assert_eq!(deadline_ms(), 90_000, "ordinary cases keep the stall bound");
+            progress_after(5);
+            start_case(610_000);
+            assert_eq!(deadline_ms(), 612_000, "sequence watchdog interrupted bcc before its case deadline");
+            progress_after(6);
+            assert_eq!(deadline_ms(), 90_000, "case completion restores the stall bound");
+        }
+    }
+}
+'''.replace('START_CASE', start_case)
+        with tempfile.TemporaryDirectory() as scratch:
+            source, binary = Path(scratch) / 'watchdog.rs', Path(scratch) / 'watchdog'
+            source.write_text(STUBS + sequence + '\n' + sweep_ms + checks)
+            subprocess.run(['taskpolicy', '-b', 'rustc', '--edition=2021', '-Dwarnings', '--test',
+                            str(source), '-o', str(binary)], check=True)
+            result = subprocess.run([str(binary)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_d1_mounts_after_sequence_reset(self):
+        suite = (ROOT / 'userspace/programs/src/suite_d1.rs').read_text()
+        runner = (ROOT / 'libs/libbreenix/src/suite.rs').read_text()
+        sequence_reset = runner.index('sequence::prepare(ids, *index, total);')
+        initial_observer = runner.index('observe(0, total, "");')
+        first_case = runner.index('let mut outcome = run_case(')
+        self.assertLess(sequence_reset, initial_observer)
+        self.assertLess(initial_observer, first_case)
+
+        # Run D1's entry point against the runner's reset/observe order. A mock
+        # mount records exactly when its filesystem would become visible.
+        main = re.search(r'(?ms)^fn main\(\) \{.*?^\}', suite)[0]
+        observer = re.search(r'\.with_case_observer\((\w+)\)', suite)
+        callback = (re.search(rf'(?ms)^fn {observer[1]}\(.*?^\}}', suite)[0]
+                    if observer else '')
+        call = f'{observer[1]}(0, 7, "");' if observer else ''
+        harness = r'''
+use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
+static EVENTS: Mutex<Vec<&str>> = Mutex::new(Vec::new());
+static RUN: OnceLock<Result<PathBuf, String>> = OnceLock::new();
+struct Suite;
+static SUITE: Suite = Suite;
+impl Suite {
+    fn run(&self) {
+        EVENTS.lock().unwrap().push("reset");
+        START_OBSERVER
+        assert_eq!(*EVENTS.lock().unwrap(), ["reset", "mount"]);
+        assert!(RUN.get().is_some_and(Result::is_ok));
+    }
+}
+fn mount_fixture() -> Result<PathBuf, String> {
+    EVENTS.lock().unwrap().push("mount");
+    Ok("/src/run".into())
+}
+'''.replace('START_OBSERVER', call)
+        with tempfile.TemporaryDirectory() as scratch:
+            source, binary = Path(scratch) / 'd1.rs', Path(scratch) / 'd1'
+            source.write_text(harness + callback + '\n' + main)
+            subprocess.run(['taskpolicy', '-b', 'rustc', '--edition=2021', '-Dwarnings',
+                            str(source), '-o', str(binary)], check=True)
+            result = subprocess.run([str(binary)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_scoped_completion_and_standard_transcript(self):
         from suite_runner_roles_test import item
         source = (ROOT / 'libs/libbreenix/src/suite.rs').read_text()
