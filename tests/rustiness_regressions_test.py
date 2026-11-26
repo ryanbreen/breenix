@@ -13,9 +13,9 @@ SYSCALL = ROOT / "kernel/src/syscall"
 BUILD = ROOT / "target/rustiness-host"
 TASKPOLICY = ["taskpolicy", "-b"] if sys.platform == "darwin" else []
 
-# The test addresses are ordinary host allocations. The layout shim labels one
-# as kernel memory, and the uaccess shim reports bytes left at a simulated
-# mapping boundary, just as the architecture-specific copy routine would.
+# The test addresses are ordinary host addresses. The layout shim labels a
+# range as kernel memory, and the uaccess shim reports bytes left at a
+# simulated mapping boundary, just as the architecture-specific copy routine would.
 UACCESS = r"""
 #[derive(Debug, PartialEq)]
 pub enum SyscallResult { Ok(u64), Err(u64) }
@@ -26,18 +26,25 @@ pub mod memory {
 
         thread_local! {
             static MAPPED: Cell<(u64, usize)> = const { Cell::new((0, 0)) };
-            static KERNEL: Cell<u64> = const { Cell::new(0) };
+            static KERNEL: Cell<(u64, usize)> = const { Cell::new((0, 0)) };
         }
 
         pub const USER_STACK_REGION_END: u64 = u64::MAX;
 
-        pub fn set_regions(mapped: u64, len: usize, kernel: u64) {
+        pub fn set_regions(mapped: u64, len: usize, kernel: u64, kernel_len: usize) {
             MAPPED.set((mapped, len));
-            KERNEL.set(kernel);
+            KERNEL.set((kernel, kernel_len));
         }
 
         pub fn is_valid_user_range(addr: u64, len: usize) -> bool {
-            addr != 0 && addr != KERNEL.get() && addr.checked_add(len as u64).is_some()
+            if len == 0 {
+                return true;
+            }
+            let Some(last) = addr.checked_add(len as u64 - 1) else {
+                return false;
+            };
+            let (kernel, kernel_len) = KERNEL.get();
+            addr != 0 && (last < kernel || addr >= kernel + kernel_len as u64)
         }
 
         pub fn is_valid_user_address(addr: u64) -> bool {
@@ -92,7 +99,8 @@ def checked_copy(functions):
     return "\n".join(item(source, marker) for marker in functions)
 
 
-def run_test(fixture, name, *, miri=False):
+def run_test(fixture, name=None, *, miri=False):
+    test_filter = ["--exact", name] if name is not None else []
     BUILD.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=BUILD) as tmp:
         path = Path(tmp)
@@ -111,7 +119,7 @@ def run_test(fixture, name, *, miri=False):
                           "regression.rs", "-o", "regression"],
             cwd=path, check=True, timeout=25,
         )
-        subprocess.run([str(path / "regression"), "--exact", name],
+        subprocess.run([str(path / "regression")] + test_filter,
                        cwd=path, check=True, timeout=25)
 
 
@@ -137,7 +145,7 @@ fn sigpending_output_respects_mapping() {
     let valid_addr = &raw mut valid as u64;
     let unmapped_addr = &raw mut unmapped as u64;
     let kernel_addr = &raw mut kernel as u64;
-    memory::layout::set_regions(valid_addr, size_of::<u64>(), kernel_addr);
+    memory::layout::set_regions(valid_addr, size_of::<u64>(), kernel_addr, size_of_val(&kernel));
 
     assert_eq!(return_pending(valid_addr, 0x400), SyscallResult::Ok(0));
     assert_eq!(valid, 0x400);
@@ -184,13 +192,13 @@ fn cow_stats_checks_all_output_bytes() {
     let unmapped_addr = unmapped.as_mut_ptr() as u64;
     let kernel_addr = kernel.as_mut_ptr() as u64;
 
-    set_regions(valid_addr, size_of_val(&valid), kernel_addr);
+    set_regions(valid_addr, size_of_val(&valid), kernel_addr, size_of_val(&kernel));
     assert_eq!(sys_cow_stats(valid_addr), SyscallResult::Ok(0));
     assert_eq!(valid, [13, 11, 2, 8, 5]);
     assert_eq!(sys_cow_stats(unmapped_addr), SyscallResult::Err(14));
     assert_eq!(sys_cow_stats(kernel_addr), SyscallResult::Err(14));
 
-    set_regions(valid_addr, size_of::<u64>(), kernel_addr);
+    set_regions(valid_addr, size_of::<u64>(), kernel_addr, size_of_val(&kernel));
     assert_eq!(sys_cow_stats(valid_addr), SyscallResult::Err(14));
 }
 """
@@ -267,20 +275,46 @@ fn audio_reads_only_mapped_pcm() {
     let kernel_addr = kernel.as_ptr() as u64;
     let write = audio::sys_audio_write;
 
-    set_regions(valid_addr, 4, kernel_addr);
+    set_regions(valid_addr, 4, kernel_addr, kernel.len());
     assert_eq!(write(valid_addr, 4), SyscallResult::Ok(4));
     assert_eq!(write(unmapped_addr, 4), SyscallResult::Err(14));
     assert_eq!(write(kernel_addr, 4), SyscallResult::Err(14));
     assert_eq!(write(valid_addr, 5), SyscallResult::Err(14));
 
-    set_regions(valid_addr, 16 * 1024, kernel_addr);
+    set_regions(valid_addr, 16 * 1024, kernel_addr, kernel.len());
     assert_eq!(write(valid_addr, valid.len() as u64), SyscallResult::Ok(16 * 1024));
+}
+
+#[test]
+fn audio_empty_pcm_ignores_slice_address() {
+    let empty = Vec::<u8>::new();
+    let addr = empty.as_ptr() as u64;
+    memory::layout::set_regions(0, 0, addr, 1);
+
+    assert_eq!(audio::sys_audio_write(addr, 0), SyscallResult::Ok(0));
+}
+
+#[test]
+fn audio_short_write_checks_only_the_pcm_prefix() {
+    use memory::layout::{is_valid_user_range, set_regions};
+
+    let valid = [0x42u8; 16 * 1024 + 1];
+    let addr = valid.as_ptr() as u64;
+    let prefix_len = valid.len() - 1;
+    set_regions(addr, prefix_len, addr + prefix_len as u64, 1);
+
+    assert!(is_valid_user_range(addr, prefix_len));
+    assert!(!is_valid_user_range(addr, valid.len()));
+    assert_eq!(
+        audio::sys_audio_write(addr, valid.len() as u64),
+        SyscallResult::Ok(prefix_len as u64),
+    );
 }
 """
         imports = source[source.index("use ") : source.index("/// sys_audio_init")]
         fixture = fixture.replace("// AUDIO_WRITE", imports + handler)
         fixture = fixture.replace("// CHECKED_COPY", checked_copy(("pub fn read_user_bytes(",)))
-        run_test(fixture, "audio_reads_only_mapped_pcm")
+        run_test(fixture)
 
 
     def test_elf_headers(self):
