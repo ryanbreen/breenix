@@ -168,10 +168,13 @@ pub(crate) struct ForkCopy {
     /// The parent's ranges the child gets no page of (window mappings).
     skip: Vec<(u64, u64)>,
     child_page_table: crate::memory::process_memory::UnpublishedPageTable,
-    /// The table of the address space the caller runs in. The calling thread
-    /// keeps the address space alive during the syscall (`KillCustody`).
-    /// The claim keeps changes off the table and makes ownership transfers
-    /// wait until `copy`, its only user, has finished.
+    /// The table of the address space the caller runs in, read only by
+    /// `copy`. An exit or exec of the row owning it can hand its Box to
+    /// another row on the same root mid-copy (`transfer_address_space`),
+    /// which moves the Box, not the table. The table is released only when
+    /// no live row on its root shares its lifetime. The calling row is one
+    /// until its syscall returns: a kill waits for its `KillCustody`, so the
+    /// row is not terminated. The claim keeps changes off the table.
     parent_page_table: *const ProcessPageTable,
     claim: crate::memory::fork_copy::CopyClaim,
     /// The child's share of the parent's SEM_UNDO adjustments (CLONE_SYSVSEM).
@@ -2654,11 +2657,18 @@ impl ProcessManager {
             })
             .map(|(&peer, _)| peer)
         else {
+            // A row copying this root for fork qualifies as heir (see
+            // `ForkCopy::parent_page_table`). Finding no heir means its copy
+            // has ended before the caller releases the table.
+            assert!(
+                !crate::memory::fork_copy::copying(root),
+                "an address space was released while a fork copies it"
+            );
             return false;
         };
-        // The heir can be copying this table for fork. Copy releases its
-        // claim without PROCESS_MANAGER, before we move the owning Box.
-        crate::memory::fork_copy::wait(root);
+        // Do not wait for a fork copying this root: it may be this CPU's own,
+        // interrupted by an exit drained on its way out of an IRQ (ARM64).
+        // Moving the Box leaves the table where the copy reads it.
         let Some(from) = self.processes.live_row_mut(&pid) else {
             return false;
         };

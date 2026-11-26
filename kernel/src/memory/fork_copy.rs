@@ -29,10 +29,12 @@
 //!
 //! A CLONE_VM thread can fork the table it shares with another row. Fork
 //! checks its PROCESS_MANAGER guard with `after_fork_copy` to serialize
-//! copies of the same root. A transfer waits for the copy before moving
-//! the table between rows. `ProcessPageTable`'s mutating methods refuse
-//! a claimed table, so a path that reaches one without checking fails
-//! before changing a table the copy is reading.
+//! copies of the same root. An owner's exit or exec can hand the table to
+//! another row on the root mid-copy without waiting: the copy may be this
+//! CPU's own, and the handoff moves the owning Box, not the table.
+//! `ProcessPageTable`'s mutating methods refuse a claimed table, so a path
+//! that reaches one without checking fails before changing a table the copy
+//! is reading.
 
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
