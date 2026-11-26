@@ -1,0 +1,2616 @@
+{
+  "cargo_commit": "84709f085062cbf3c51fa507527c1b2334015178",
+  "features": [
+    "all-static"
+  ],
+  "scope": "cargo tree -p cargo -e normal,build --target x86_64-breenix-hosted --locked --offline --features all-static",
+  "classification": "E25 rulings 18, 120 and 121; permissive includes notices, opaque only prohibits reading, patching or replacing the component. LicenseRef identifiers describe licenses without a matching SPDX identifier.",
+  "packages": [
+    {
+      "name": "ahash",
+      "version": "0.8.12",
+      "spdx": "MIT",
+      "source": "crates.io ahash 0.8.12: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "aho-corasick",
+      "version": "1.1.3",
+      "spdx": "MIT",
+      "source": "crates.io aho-corasick 1.1.3: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Unlicense OR MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "allocator-api2",
+      "version": "0.2.21",
+      "spdx": "MIT",
+      "source": "crates.io allocator-api2 0.2.21: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "annotate-snippets",
+      "version": "0.11.5",
+      "spdx": "MIT",
+      "source": "crates.io annotate-snippets 0.11.5: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "anstream",
+      "version": "0.6.19",
+      "spdx": "MIT",
+      "source": "crates.io anstream 0.6.19: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "anstyle",
+      "version": "1.0.11",
+      "spdx": "MIT",
+      "source": "crates.io anstyle 1.0.11: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "anstyle-parse",
+      "version": "0.2.7",
+      "spdx": "MIT",
+      "source": "crates.io anstyle-parse 0.2.7: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "anstyle-query",
+      "version": "1.1.3",
+      "spdx": "MIT",
+      "source": "crates.io anstyle-query 1.1.3: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "anyhow",
+      "version": "1.0.98",
+      "spdx": "MIT",
+      "source": "crates.io anyhow 1.0.98: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "arc-swap",
+      "version": "1.7.1",
+      "spdx": "MIT",
+      "source": "crates.io arc-swap 1.7.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "arrayref",
+      "version": "0.3.9",
+      "spdx": "BSD-2-Clause",
+      "source": "crates.io arrayref 0.3.9: Cargo.toml license (cargo metadata)",
+      "metadata_license": "BSD-2-Clause",
+      "disposition": "permissive"
+    },
+    {
+      "name": "arrayvec",
+      "version": "0.7.6",
+      "spdx": "MIT",
+      "source": "crates.io arrayvec 0.7.6: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "autocfg",
+      "version": "1.4.0",
+      "spdx": "MIT",
+      "source": "crates.io autocfg 1.4.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Apache-2.0 OR MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "base16ct",
+      "version": "0.2.0",
+      "spdx": "MIT",
+      "source": "crates.io base16ct 0.2.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Apache-2.0 OR MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "base64",
+      "version": "0.22.1",
+      "spdx": "MIT",
+      "source": "crates.io base64 0.22.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "base64ct",
+      "version": "1.8.0",
+      "spdx": "MIT",
+      "source": "crates.io base64ct 1.8.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Apache-2.0 OR MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "bitflags",
+      "version": "2.9.1",
+      "spdx": "MIT",
+      "source": "crates.io bitflags 2.9.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "bitmaps",
+      "version": "2.1.0",
+      "spdx": "MPL-2.0-or-later",
+      "source": "crates.io bitmaps 2.1.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MPL-2.0+",
+      "disposition": "opaque only"
+    },
+    {
+      "name": "blake3",
+      "version": "1.8.2",
+      "spdx": "Apache-2.0",
+      "source": "crates.io blake3 1.8.2: Cargo.toml license (cargo metadata)",
+      "metadata_license": "CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception",
+      "disposition": "permissive"
+    },
+    {
+      "name": "block-buffer",
+      "version": "0.10.4",
+      "spdx": "MIT",
+      "source": "crates.io block-buffer 0.10.4: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "bstr",
+      "version": "1.12.0",
+      "spdx": "MIT",
+      "source": "crates.io bstr 1.12.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "byteorder",
+      "version": "1.5.0",
+      "spdx": "MIT",
+      "source": "crates.io byteorder 1.5.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Unlicense OR MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "bytes",
+      "version": "1.10.1",
+      "spdx": "MIT",
+      "source": "crates.io bytes 1.10.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "cargo",
+      "version": "0.90.0",
+      "spdx": "MIT",
+      "source": "Cargo repository at 84709f08: Cargo.toml (cargo metadata license)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "cargo-credential",
+      "version": "0.4.8",
+      "spdx": "MIT",
+      "source": "Cargo repository at 84709f08: credential/cargo-credential/Cargo.toml (cargo metadata license)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "cargo-platform",
+      "version": "0.3.0",
+      "spdx": "MIT",
+      "source": "Cargo repository at 84709f08: crates/cargo-platform/Cargo.toml (cargo metadata license)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "cargo-util",
+      "version": "0.2.22",
+      "spdx": "MIT",
+      "source": "Cargo repository at 84709f08: crates/cargo-util/Cargo.toml (cargo metadata license)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "cargo-util-schemas",
+      "version": "0.9.0",
+      "spdx": "MIT",
+      "source": "Cargo repository at 84709f08: crates/cargo-util-schemas/Cargo.toml (cargo metadata license)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "cc",
+      "version": "1.2.25",
+      "spdx": "MIT",
+      "source": "crates.io cc 1.2.25: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "cfg-if",
+      "version": "1.0.0",
+      "spdx": "MIT",
+      "source": "crates.io cfg-if 1.0.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT/Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "clap",
+      "version": "4.5.39",
+      "spdx": "MIT",
+      "source": "crates.io clap 4.5.39: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "clap_builder",
+      "version": "4.5.39",
+      "spdx": "MIT",
+      "source": "crates.io clap_builder 4.5.39: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "clap_complete",
+      "version": "4.5.52",
+      "spdx": "MIT",
+      "source": "crates.io clap_complete 4.5.52: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "clap_lex",
+      "version": "0.7.4",
+      "spdx": "MIT",
+      "source": "crates.io clap_lex 0.7.4: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "clru",
+      "version": "0.6.2",
+      "spdx": "MIT",
+      "source": "crates.io clru 0.6.2: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "color-print",
+      "version": "0.3.7",
+      "spdx": "MIT",
+      "source": "crates.io color-print 0.3.7: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "color-print-proc-macro",
+      "version": "0.3.7",
+      "spdx": "MIT",
+      "source": "crates.io color-print-proc-macro 0.3.7: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "colorchoice",
+      "version": "1.0.4",
+      "spdx": "MIT",
+      "source": "crates.io colorchoice 1.0.4: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "const-oid",
+      "version": "0.9.6",
+      "spdx": "MIT",
+      "source": "crates.io const-oid 0.9.6: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Apache-2.0 OR MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "constant_time_eq",
+      "version": "0.3.1",
+      "spdx": "Apache-2.0",
+      "source": "crates.io constant_time_eq 0.3.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "CC0-1.0 OR MIT-0 OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "cpufeatures",
+      "version": "0.2.17",
+      "spdx": "MIT",
+      "source": "crates.io cpufeatures 0.2.17: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "crates-io",
+      "version": "0.40.12",
+      "spdx": "MIT",
+      "source": "Cargo repository at 84709f08: crates/crates-io/Cargo.toml (cargo metadata license)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "crc32fast",
+      "version": "1.4.2",
+      "spdx": "MIT",
+      "source": "crates.io crc32fast 1.4.2: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "crossbeam-channel",
+      "version": "0.5.15",
+      "spdx": "MIT",
+      "source": "crates.io crossbeam-channel 0.5.15: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "crossbeam-deque",
+      "version": "0.8.6",
+      "spdx": "MIT",
+      "source": "crates.io crossbeam-deque 0.8.6: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "crossbeam-epoch",
+      "version": "0.9.18",
+      "spdx": "MIT",
+      "source": "crates.io crossbeam-epoch 0.9.18: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "crossbeam-utils",
+      "version": "0.8.21",
+      "spdx": "MIT",
+      "source": "crates.io crossbeam-utils 0.8.21: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "crypto-bigint",
+      "version": "0.5.5",
+      "spdx": "MIT",
+      "source": "crates.io crypto-bigint 0.5.5: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Apache-2.0 OR MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "crypto-common",
+      "version": "0.1.6",
+      "spdx": "MIT",
+      "source": "crates.io crypto-common 0.1.6: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "ct-codecs",
+      "version": "1.1.6",
+      "spdx": "MIT",
+      "source": "crates.io ct-codecs 1.1.6: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "curl",
+      "version": "0.4.47",
+      "spdx": "MIT",
+      "source": "crates.io curl 0.4.47: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "curl-sys",
+      "version": "0.4.80+curl-8.12.1",
+      "spdx": "MIT",
+      "source": "crates.io curl-sys 0.4.80+curl-8.12.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "der",
+      "version": "0.7.10",
+      "spdx": "MIT",
+      "source": "crates.io der 0.7.10: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Apache-2.0 OR MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "deranged",
+      "version": "0.4.0",
+      "spdx": "MIT",
+      "source": "crates.io deranged 0.4.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "digest",
+      "version": "0.10.7",
+      "spdx": "MIT",
+      "source": "crates.io digest 0.10.7: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "displaydoc",
+      "version": "0.2.5",
+      "spdx": "MIT",
+      "source": "crates.io displaydoc 0.2.5: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "ecdsa",
+      "version": "0.16.9",
+      "spdx": "MIT",
+      "source": "crates.io ecdsa 0.16.9: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Apache-2.0 OR MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "ed25519-compact",
+      "version": "2.1.1",
+      "spdx": "MIT",
+      "source": "crates.io ed25519-compact 2.1.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "either",
+      "version": "1.15.0",
+      "spdx": "MIT",
+      "source": "crates.io either 1.15.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "elliptic-curve",
+      "version": "0.13.8",
+      "spdx": "MIT",
+      "source": "crates.io elliptic-curve 0.13.8: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Apache-2.0 OR MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "encoding_rs",
+      "version": "0.8.35",
+      "spdx": "MIT AND BSD-3-Clause",
+      "source": "crates.io encoding_rs 0.8.35: Cargo.toml license (cargo metadata)",
+      "metadata_license": "(Apache-2.0 OR MIT) AND BSD-3-Clause",
+      "disposition": "permissive"
+    },
+    {
+      "name": "equivalent",
+      "version": "1.0.2",
+      "spdx": "MIT",
+      "source": "crates.io equivalent 1.0.2: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Apache-2.0 OR MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "erased-serde",
+      "version": "0.4.6",
+      "spdx": "MIT",
+      "source": "crates.io erased-serde 0.4.6: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "errno",
+      "version": "0.3.12",
+      "spdx": "MIT",
+      "source": "crates.io errno 0.3.12: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "fallible-iterator",
+      "version": "0.3.0",
+      "spdx": "MIT",
+      "source": "crates.io fallible-iterator 0.3.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT/Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "fallible-streaming-iterator",
+      "version": "0.1.9",
+      "spdx": "MIT",
+      "source": "crates.io fallible-streaming-iterator 0.1.9: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT/Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "faster-hex",
+      "version": "0.10.0",
+      "spdx": "MIT",
+      "source": "crates.io faster-hex 0.10.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "fastrand",
+      "version": "2.3.0",
+      "spdx": "MIT",
+      "source": "crates.io fastrand 2.3.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Apache-2.0 OR MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "ff",
+      "version": "0.13.1",
+      "spdx": "MIT",
+      "source": "crates.io ff 0.13.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT/Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "fiat-crypto",
+      "version": "0.2.9",
+      "spdx": "MIT",
+      "source": "crates.io fiat-crypto 0.2.9: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0 OR BSD-1-Clause",
+      "disposition": "permissive"
+    },
+    {
+      "name": "filetime",
+      "version": "0.2.25",
+      "spdx": "MIT",
+      "source": "crates.io filetime 0.2.25: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT/Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "flate2",
+      "version": "1.1.1",
+      "spdx": "MIT",
+      "source": "crates.io flate2 1.1.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "fnv",
+      "version": "1.0.7",
+      "spdx": "MIT",
+      "source": "crates.io fnv 1.0.7: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Apache-2.0 / MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "foldhash",
+      "version": "0.1.5",
+      "spdx": "Zlib",
+      "source": "crates.io foldhash 0.1.5: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Zlib",
+      "disposition": "permissive"
+    },
+    {
+      "name": "foreign-types",
+      "version": "0.3.2",
+      "spdx": "MIT",
+      "source": "crates.io foreign-types 0.3.2: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT/Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "foreign-types-shared",
+      "version": "0.1.1",
+      "spdx": "MIT",
+      "source": "crates.io foreign-types-shared 0.1.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT/Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "form_urlencoded",
+      "version": "1.2.1",
+      "spdx": "MIT",
+      "source": "crates.io form_urlencoded 1.2.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "generic-array",
+      "version": "0.14.7",
+      "spdx": "MIT",
+      "source": "crates.io generic-array 0.14.7: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "getrandom",
+      "version": "0.2.16",
+      "spdx": "MIT",
+      "source": "crates.io getrandom 0.2.16: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "getrandom",
+      "version": "0.3.3",
+      "spdx": "MIT",
+      "source": "crates.io getrandom 0.3.3: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "git2",
+      "version": "0.20.2",
+      "spdx": "MIT",
+      "source": "crates.io git2 0.20.2: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "git2-curl",
+      "version": "0.21.0",
+      "spdx": "MIT",
+      "source": "crates.io git2-curl 0.21.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix",
+      "version": "0.72.1",
+      "spdx": "MIT",
+      "source": "crates.io gix 0.72.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-actor",
+      "version": "0.35.1",
+      "spdx": "MIT",
+      "source": "crates.io gix-actor 0.35.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-attributes",
+      "version": "0.26.1",
+      "spdx": "MIT",
+      "source": "crates.io gix-attributes 0.26.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-bitmap",
+      "version": "0.2.14",
+      "spdx": "MIT",
+      "source": "crates.io gix-bitmap 0.2.14: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-chunk",
+      "version": "0.4.11",
+      "spdx": "MIT",
+      "source": "crates.io gix-chunk 0.4.11: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-command",
+      "version": "0.6.1",
+      "spdx": "MIT",
+      "source": "crates.io gix-command 0.6.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-commitgraph",
+      "version": "0.28.0",
+      "spdx": "MIT",
+      "source": "crates.io gix-commitgraph 0.28.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-config",
+      "version": "0.45.1",
+      "spdx": "MIT",
+      "source": "crates.io gix-config 0.45.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-config-value",
+      "version": "0.15.0",
+      "spdx": "MIT",
+      "source": "crates.io gix-config-value 0.15.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-credentials",
+      "version": "0.29.0",
+      "spdx": "MIT",
+      "source": "crates.io gix-credentials 0.29.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-date",
+      "version": "0.10.2",
+      "spdx": "MIT",
+      "source": "crates.io gix-date 0.10.2: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-diff",
+      "version": "0.52.1",
+      "spdx": "MIT",
+      "source": "crates.io gix-diff 0.52.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-dir",
+      "version": "0.14.1",
+      "spdx": "MIT",
+      "source": "crates.io gix-dir 0.14.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-discover",
+      "version": "0.40.1",
+      "spdx": "MIT",
+      "source": "crates.io gix-discover 0.40.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-features",
+      "version": "0.42.1",
+      "spdx": "MIT",
+      "source": "crates.io gix-features 0.42.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-filter",
+      "version": "0.19.2",
+      "spdx": "MIT",
+      "source": "crates.io gix-filter 0.19.2: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-fs",
+      "version": "0.15.0",
+      "spdx": "MIT",
+      "source": "crates.io gix-fs 0.15.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-glob",
+      "version": "0.20.1",
+      "spdx": "MIT",
+      "source": "crates.io gix-glob 0.20.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-hash",
+      "version": "0.18.0",
+      "spdx": "MIT",
+      "source": "crates.io gix-hash 0.18.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-hashtable",
+      "version": "0.8.1",
+      "spdx": "MIT",
+      "source": "crates.io gix-hashtable 0.8.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-ignore",
+      "version": "0.15.0",
+      "spdx": "MIT",
+      "source": "crates.io gix-ignore 0.15.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-index",
+      "version": "0.40.1",
+      "spdx": "MIT",
+      "source": "crates.io gix-index 0.40.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-lock",
+      "version": "17.1.0",
+      "spdx": "MIT",
+      "source": "crates.io gix-lock 17.1.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-negotiate",
+      "version": "0.20.1",
+      "spdx": "MIT",
+      "source": "crates.io gix-negotiate 0.20.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-object",
+      "version": "0.49.1",
+      "spdx": "MIT",
+      "source": "crates.io gix-object 0.49.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-odb",
+      "version": "0.69.1",
+      "spdx": "MIT",
+      "source": "crates.io gix-odb 0.69.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-pack",
+      "version": "0.59.1",
+      "spdx": "MIT",
+      "source": "crates.io gix-pack 0.59.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-packetline",
+      "version": "0.19.0",
+      "spdx": "MIT",
+      "source": "crates.io gix-packetline 0.19.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-packetline-blocking",
+      "version": "0.19.0",
+      "spdx": "MIT",
+      "source": "crates.io gix-packetline-blocking 0.19.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-path",
+      "version": "0.10.18",
+      "spdx": "MIT",
+      "source": "crates.io gix-path 0.10.18: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-pathspec",
+      "version": "0.11.0",
+      "spdx": "MIT",
+      "source": "crates.io gix-pathspec 0.11.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-prompt",
+      "version": "0.11.0",
+      "spdx": "MIT",
+      "source": "crates.io gix-prompt 0.11.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-protocol",
+      "version": "0.50.1",
+      "spdx": "MIT",
+      "source": "crates.io gix-protocol 0.50.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-quote",
+      "version": "0.6.0",
+      "spdx": "MIT",
+      "source": "crates.io gix-quote 0.6.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-ref",
+      "version": "0.52.1",
+      "spdx": "MIT",
+      "source": "crates.io gix-ref 0.52.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-refspec",
+      "version": "0.30.1",
+      "spdx": "MIT",
+      "source": "crates.io gix-refspec 0.30.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-revision",
+      "version": "0.34.1",
+      "spdx": "MIT",
+      "source": "crates.io gix-revision 0.34.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-revwalk",
+      "version": "0.20.1",
+      "spdx": "MIT",
+      "source": "crates.io gix-revwalk 0.20.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-sec",
+      "version": "0.11.0",
+      "spdx": "MIT",
+      "source": "crates.io gix-sec 0.11.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-shallow",
+      "version": "0.4.0",
+      "spdx": "MIT",
+      "source": "crates.io gix-shallow 0.4.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-submodule",
+      "version": "0.19.1",
+      "spdx": "MIT",
+      "source": "crates.io gix-submodule 0.19.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-tempfile",
+      "version": "17.1.0",
+      "spdx": "MIT",
+      "source": "crates.io gix-tempfile 17.1.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-trace",
+      "version": "0.1.12",
+      "spdx": "MIT",
+      "source": "crates.io gix-trace 0.1.12: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-transport",
+      "version": "0.47.0",
+      "spdx": "MIT",
+      "source": "crates.io gix-transport 0.47.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-traverse",
+      "version": "0.46.2",
+      "spdx": "MIT",
+      "source": "crates.io gix-traverse 0.46.2: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-url",
+      "version": "0.31.0",
+      "spdx": "MIT",
+      "source": "crates.io gix-url 0.31.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-utils",
+      "version": "0.3.0",
+      "spdx": "MIT",
+      "source": "crates.io gix-utils 0.3.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-validate",
+      "version": "0.10.0",
+      "spdx": "MIT",
+      "source": "crates.io gix-validate 0.10.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "gix-worktree",
+      "version": "0.41.0",
+      "spdx": "MIT",
+      "source": "crates.io gix-worktree 0.41.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "glob",
+      "version": "0.3.2",
+      "spdx": "MIT",
+      "source": "crates.io glob 0.3.2: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "globset",
+      "version": "0.4.16",
+      "spdx": "MIT",
+      "source": "crates.io globset 0.4.16: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Unlicense OR MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "group",
+      "version": "0.13.0",
+      "spdx": "MIT",
+      "source": "crates.io group 0.13.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT/Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "hash32",
+      "version": "0.3.1",
+      "spdx": "MIT",
+      "source": "crates.io hash32 0.3.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "hashbrown",
+      "version": "0.14.5",
+      "spdx": "MIT",
+      "source": "crates.io hashbrown 0.14.5: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "hashbrown",
+      "version": "0.15.3",
+      "spdx": "MIT",
+      "source": "crates.io hashbrown 0.15.3: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "hashlink",
+      "version": "0.10.0",
+      "spdx": "MIT",
+      "source": "crates.io hashlink 0.10.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "heapless",
+      "version": "0.8.0",
+      "spdx": "MIT",
+      "source": "crates.io heapless 0.8.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "hex",
+      "version": "0.4.3",
+      "spdx": "MIT",
+      "source": "crates.io hex 0.4.3: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "hkdf",
+      "version": "0.12.4",
+      "spdx": "MIT",
+      "source": "crates.io hkdf 0.12.4: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "hmac",
+      "version": "0.12.1",
+      "spdx": "MIT",
+      "source": "crates.io hmac 0.12.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "home",
+      "version": "0.5.11",
+      "spdx": "MIT",
+      "source": "crates.io home 0.5.11: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "http-auth",
+      "version": "0.1.10",
+      "spdx": "MIT",
+      "source": "crates.io http-auth 0.1.10: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT/Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "icu_collections",
+      "version": "2.0.0",
+      "spdx": "Unicode-3.0",
+      "source": "crates.io icu_collections 2.0.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Unicode-3.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "icu_locale_core",
+      "version": "2.0.0",
+      "spdx": "Unicode-3.0",
+      "source": "crates.io icu_locale_core 2.0.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Unicode-3.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "icu_normalizer",
+      "version": "2.0.0",
+      "spdx": "Unicode-3.0",
+      "source": "crates.io icu_normalizer 2.0.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Unicode-3.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "icu_normalizer_data",
+      "version": "2.0.0",
+      "spdx": "Unicode-3.0",
+      "source": "crates.io icu_normalizer_data 2.0.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Unicode-3.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "icu_properties",
+      "version": "2.0.1",
+      "spdx": "Unicode-3.0",
+      "source": "crates.io icu_properties 2.0.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Unicode-3.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "icu_properties_data",
+      "version": "2.0.1",
+      "spdx": "Unicode-3.0",
+      "source": "crates.io icu_properties_data 2.0.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Unicode-3.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "icu_provider",
+      "version": "2.0.0",
+      "spdx": "Unicode-3.0",
+      "source": "crates.io icu_provider 2.0.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Unicode-3.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "idna",
+      "version": "1.0.3",
+      "spdx": "MIT",
+      "source": "crates.io idna 1.0.3: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "idna_adapter",
+      "version": "1.2.1",
+      "spdx": "MIT",
+      "source": "crates.io idna_adapter 1.2.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Apache-2.0 OR MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "ignore",
+      "version": "0.4.23",
+      "spdx": "MIT",
+      "source": "crates.io ignore 0.4.23: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Unlicense OR MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "im-rc",
+      "version": "15.1.0",
+      "spdx": "MPL-2.0-or-later",
+      "source": "crates.io im-rc 15.1.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MPL-2.0+",
+      "disposition": "opaque only"
+    },
+    {
+      "name": "indexmap",
+      "version": "2.9.0",
+      "spdx": "MIT",
+      "source": "crates.io indexmap 2.9.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Apache-2.0 OR MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "is_executable",
+      "version": "1.0.4",
+      "spdx": "MIT",
+      "source": "crates.io is_executable 1.0.4: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Apache-2.0/MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "is_terminal_polyfill",
+      "version": "1.70.1",
+      "spdx": "MIT",
+      "source": "crates.io is_terminal_polyfill 1.70.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "itertools",
+      "version": "0.14.0",
+      "spdx": "MIT",
+      "source": "crates.io itertools 0.14.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "itoa",
+      "version": "1.0.15",
+      "spdx": "MIT",
+      "source": "crates.io itoa 1.0.15: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "jiff",
+      "version": "0.2.14",
+      "spdx": "MIT",
+      "source": "crates.io jiff 0.2.14: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Unlicense OR MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "jobserver",
+      "version": "0.1.33",
+      "spdx": "MIT",
+      "source": "crates.io jobserver 0.1.33: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "kstring",
+      "version": "2.0.2",
+      "spdx": "MIT",
+      "source": "crates.io kstring 2.0.2: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "lazy_static",
+      "version": "1.5.0",
+      "spdx": "MIT",
+      "source": "crates.io lazy_static 1.5.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "lazycell",
+      "version": "1.3.0",
+      "spdx": "MIT",
+      "source": "crates.io lazycell 1.3.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT/Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "libc",
+      "version": "0.2.172",
+      "spdx": "MIT",
+      "source": "crates.io libc 0.2.172: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "libgit2-sys",
+      "version": "0.18.1+1.9.0",
+      "spdx": "MIT",
+      "source": "crates.io libgit2-sys 0.18.1+1.9.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "libnghttp2-sys",
+      "version": "0.1.11+1.64.0",
+      "spdx": "MIT",
+      "source": "crates.io libnghttp2-sys 0.1.11+1.64.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT/Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "libsqlite3-sys",
+      "version": "0.32.0",
+      "spdx": "MIT",
+      "source": "crates.io libsqlite3-sys 0.32.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "libssh2-sys",
+      "version": "0.3.1",
+      "spdx": "MIT",
+      "source": "crates.io libssh2-sys 0.3.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "libz-rs-sys",
+      "version": "0.5.0",
+      "spdx": "Zlib",
+      "source": "crates.io libz-rs-sys 0.5.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Zlib",
+      "disposition": "permissive"
+    },
+    {
+      "name": "libz-sys",
+      "version": "1.1.22",
+      "spdx": "MIT",
+      "source": "crates.io libz-sys 1.1.22: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "litemap",
+      "version": "0.8.0",
+      "spdx": "Unicode-3.0",
+      "source": "crates.io litemap 0.8.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Unicode-3.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "lock_api",
+      "version": "0.4.13",
+      "spdx": "MIT",
+      "source": "crates.io lock_api 0.4.13: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "log",
+      "version": "0.4.27",
+      "spdx": "MIT",
+      "source": "crates.io log 0.4.27: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "matchers",
+      "version": "0.1.0",
+      "spdx": "MIT",
+      "source": "crates.io matchers 0.1.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "maybe-async",
+      "version": "0.2.10",
+      "spdx": "MIT",
+      "source": "crates.io maybe-async 0.2.10: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "memchr",
+      "version": "2.7.4",
+      "spdx": "MIT",
+      "source": "crates.io memchr 2.7.4: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Unlicense OR MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "memmap2",
+      "version": "0.9.5",
+      "spdx": "MIT",
+      "source": "crates.io memmap2 0.9.5: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "minimal-lexical",
+      "version": "0.2.1",
+      "spdx": "MIT",
+      "source": "crates.io minimal-lexical 0.2.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT/Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "nom",
+      "version": "7.1.3",
+      "spdx": "MIT",
+      "source": "crates.io nom 7.1.3: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "nu-ansi-term",
+      "version": "0.46.0",
+      "spdx": "MIT",
+      "source": "crates.io nu-ansi-term 0.46.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "num-conv",
+      "version": "0.1.0",
+      "spdx": "MIT",
+      "source": "crates.io num-conv 0.1.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "num-traits",
+      "version": "0.2.19",
+      "spdx": "MIT",
+      "source": "crates.io num-traits 0.2.19: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "once_cell",
+      "version": "1.21.3",
+      "spdx": "MIT",
+      "source": "crates.io once_cell 1.21.3: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "opener",
+      "version": "0.7.2",
+      "spdx": "MIT",
+      "source": "crates.io opener 0.7.2: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "openssl",
+      "version": "0.10.73",
+      "spdx": "Apache-2.0",
+      "source": "crates.io openssl 0.10.73: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "openssl-macros",
+      "version": "0.1.1",
+      "spdx": "MIT",
+      "source": "crates.io openssl-macros 0.1.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT/Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "openssl-probe",
+      "version": "0.1.6",
+      "spdx": "MIT",
+      "source": "crates.io openssl-probe 0.1.6: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT/Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "openssl-src",
+      "version": "300.5.0+3.5.0",
+      "spdx": "MIT",
+      "source": "crates.io openssl-src 300.5.0+3.5.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT/Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "openssl-sys",
+      "version": "0.9.109",
+      "spdx": "MIT",
+      "source": "crates.io openssl-sys 0.9.109: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "ordered-float",
+      "version": "2.10.1",
+      "spdx": "MIT",
+      "source": "crates.io ordered-float 2.10.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "orion",
+      "version": "0.17.10",
+      "spdx": "MIT",
+      "source": "crates.io orion 0.17.10: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "os_info",
+      "version": "3.11.0",
+      "spdx": "MIT",
+      "source": "crates.io os_info 3.11.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "overload",
+      "version": "0.1.1",
+      "spdx": "MIT",
+      "source": "crates.io overload 0.1.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "p384",
+      "version": "0.13.1",
+      "spdx": "MIT",
+      "source": "crates.io p384 0.13.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Apache-2.0 OR MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "parking_lot",
+      "version": "0.12.4",
+      "spdx": "MIT",
+      "source": "crates.io parking_lot 0.12.4: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "parking_lot_core",
+      "version": "0.9.11",
+      "spdx": "MIT",
+      "source": "crates.io parking_lot_core 0.9.11: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "pasetors",
+      "version": "0.7.4",
+      "spdx": "MIT",
+      "source": "crates.io pasetors 0.7.4: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "pathdiff",
+      "version": "0.2.3",
+      "spdx": "MIT",
+      "source": "crates.io pathdiff 0.2.3: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT/Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "pem-rfc7468",
+      "version": "0.7.0",
+      "spdx": "MIT",
+      "source": "crates.io pem-rfc7468 0.7.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Apache-2.0 OR MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "percent-encoding",
+      "version": "2.3.1",
+      "spdx": "MIT",
+      "source": "crates.io percent-encoding 2.3.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "pin-project-lite",
+      "version": "0.2.16",
+      "spdx": "MIT",
+      "source": "crates.io pin-project-lite 0.2.16: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Apache-2.0 OR MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "pkcs8",
+      "version": "0.10.2",
+      "spdx": "MIT",
+      "source": "crates.io pkcs8 0.10.2: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Apache-2.0 OR MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "pkg-config",
+      "version": "0.3.32",
+      "spdx": "MIT",
+      "source": "crates.io pkg-config 0.3.32: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "potential_utf",
+      "version": "0.1.2",
+      "spdx": "Unicode-3.0",
+      "source": "crates.io potential_utf 0.1.2: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Unicode-3.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "powerfmt",
+      "version": "0.2.0",
+      "spdx": "MIT",
+      "source": "crates.io powerfmt 0.2.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "ppv-lite86",
+      "version": "0.2.21",
+      "spdx": "MIT",
+      "source": "crates.io ppv-lite86 0.2.21: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "primeorder",
+      "version": "0.13.6",
+      "spdx": "MIT",
+      "source": "crates.io primeorder 0.13.6: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Apache-2.0 OR MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "proc-macro2",
+      "version": "1.0.95",
+      "spdx": "MIT",
+      "source": "crates.io proc-macro2 1.0.95: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "prodash",
+      "version": "29.0.2",
+      "spdx": "MIT",
+      "source": "crates.io prodash 29.0.2: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "quote",
+      "version": "1.0.40",
+      "spdx": "MIT",
+      "source": "crates.io quote 1.0.40: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "rand",
+      "version": "0.9.1",
+      "spdx": "MIT",
+      "source": "crates.io rand 0.9.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "rand_chacha",
+      "version": "0.9.0",
+      "spdx": "MIT",
+      "source": "crates.io rand_chacha 0.9.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "rand_core",
+      "version": "0.6.4",
+      "spdx": "MIT",
+      "source": "crates.io rand_core 0.6.4: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "rand_core",
+      "version": "0.9.3",
+      "spdx": "MIT",
+      "source": "crates.io rand_core 0.9.3: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "rand_xoshiro",
+      "version": "0.6.0",
+      "spdx": "MIT",
+      "source": "crates.io rand_xoshiro 0.6.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "regex",
+      "version": "1.11.1",
+      "spdx": "MIT",
+      "source": "crates.io regex 1.11.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "regex-automata",
+      "version": "0.1.10",
+      "spdx": "MIT",
+      "source": "crates.io regex-automata 0.1.10: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Unlicense/MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "regex-automata",
+      "version": "0.4.9",
+      "spdx": "MIT",
+      "source": "crates.io regex-automata 0.4.9: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "regex-syntax",
+      "version": "0.6.29",
+      "spdx": "MIT",
+      "source": "crates.io regex-syntax 0.6.29: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "regex-syntax",
+      "version": "0.8.5",
+      "spdx": "MIT",
+      "source": "crates.io regex-syntax 0.8.5: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "rfc6979",
+      "version": "0.4.0",
+      "spdx": "MIT",
+      "source": "crates.io rfc6979 0.4.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Apache-2.0 OR MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "rusqlite",
+      "version": "0.34.0",
+      "spdx": "MIT",
+      "source": "crates.io rusqlite 0.34.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "rustc-hash",
+      "version": "2.1.1",
+      "spdx": "MIT",
+      "source": "crates.io rustc-hash 2.1.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Apache-2.0 OR MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "rustc-stable-hash",
+      "version": "0.1.2",
+      "spdx": "MIT",
+      "source": "crates.io rustc-stable-hash 0.1.2: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Apache-2.0 OR MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "rustfix",
+      "version": "0.9.1",
+      "spdx": "MIT",
+      "source": "Cargo repository at 84709f08: crates/rustfix/Cargo.toml (cargo metadata license)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "rustix",
+      "version": "1.0.7",
+      "spdx": "MIT",
+      "source": "crates.io rustix 1.0.7: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "ryu",
+      "version": "1.0.20",
+      "spdx": "Apache-2.0",
+      "source": "crates.io ryu 1.0.20: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Apache-2.0 OR BSL-1.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "same-file",
+      "version": "1.0.6",
+      "spdx": "MIT",
+      "source": "crates.io same-file 1.0.6: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Unlicense/MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "scopeguard",
+      "version": "1.2.0",
+      "spdx": "MIT",
+      "source": "crates.io scopeguard 1.2.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "sec1",
+      "version": "0.7.3",
+      "spdx": "MIT",
+      "source": "crates.io sec1 0.7.3: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Apache-2.0 OR MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "semver",
+      "version": "1.0.26",
+      "spdx": "MIT",
+      "source": "crates.io semver 1.0.26: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "serde",
+      "version": "1.0.219",
+      "spdx": "MIT",
+      "source": "crates.io serde 1.0.219: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "serde-untagged",
+      "version": "0.1.7",
+      "spdx": "MIT",
+      "source": "crates.io serde-untagged 0.1.7: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "serde-value",
+      "version": "0.7.0",
+      "spdx": "MIT",
+      "source": "crates.io serde-value 0.7.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "serde_derive",
+      "version": "1.0.219",
+      "spdx": "MIT",
+      "source": "crates.io serde_derive 1.0.219: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "serde_ignored",
+      "version": "0.1.12",
+      "spdx": "MIT",
+      "source": "crates.io serde_ignored 0.1.12: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "serde_json",
+      "version": "1.0.140",
+      "spdx": "MIT",
+      "source": "crates.io serde_json 1.0.140: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "serde_spanned",
+      "version": "0.6.8",
+      "spdx": "MIT",
+      "source": "crates.io serde_spanned 0.6.8: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "sha1",
+      "version": "0.10.6",
+      "spdx": "MIT",
+      "source": "crates.io sha1 0.10.6: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "sha1-checked",
+      "version": "0.10.0",
+      "spdx": "MIT",
+      "source": "crates.io sha1-checked 0.10.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "sha2",
+      "version": "0.10.9",
+      "spdx": "MIT",
+      "source": "crates.io sha2 0.10.9: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "sharded-slab",
+      "version": "0.1.7",
+      "spdx": "MIT",
+      "source": "crates.io sharded-slab 0.1.7: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "shell-escape",
+      "version": "0.1.5",
+      "spdx": "MIT",
+      "source": "crates.io shell-escape 0.1.5: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT/Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "shell-words",
+      "version": "1.1.0",
+      "spdx": "MIT",
+      "source": "crates.io shell-words 1.1.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT/Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "shlex",
+      "version": "1.3.0",
+      "spdx": "MIT",
+      "source": "crates.io shlex 1.3.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "signature",
+      "version": "2.2.0",
+      "spdx": "MIT",
+      "source": "crates.io signature 2.2.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Apache-2.0 OR MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "sized-chunks",
+      "version": "0.6.5",
+      "spdx": "MPL-2.0-or-later",
+      "source": "crates.io sized-chunks 0.6.5: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MPL-2.0+",
+      "disposition": "opaque only"
+    },
+    {
+      "name": "smallvec",
+      "version": "1.15.0",
+      "spdx": "MIT",
+      "source": "crates.io smallvec 1.15.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "socket2",
+      "version": "0.5.10",
+      "spdx": "MIT",
+      "source": "crates.io socket2 0.5.10: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "spki",
+      "version": "0.7.3",
+      "spdx": "MIT",
+      "source": "crates.io spki 0.7.3: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Apache-2.0 OR MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "stable_deref_trait",
+      "version": "1.2.0",
+      "spdx": "MIT",
+      "source": "crates.io stable_deref_trait 1.2.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT/Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "static_assertions",
+      "version": "1.1.0",
+      "spdx": "MIT",
+      "source": "crates.io static_assertions 1.1.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "strsim",
+      "version": "0.11.1",
+      "spdx": "MIT",
+      "source": "crates.io strsim 0.11.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "subtle",
+      "version": "2.6.1",
+      "spdx": "BSD-3-Clause",
+      "source": "crates.io subtle 2.6.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "BSD-3-Clause",
+      "disposition": "permissive"
+    },
+    {
+      "name": "supports-hyperlinks",
+      "version": "3.1.0",
+      "spdx": "Apache-2.0",
+      "source": "crates.io supports-hyperlinks 3.1.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "supports-unicode",
+      "version": "3.0.0",
+      "spdx": "Apache-2.0",
+      "source": "crates.io supports-unicode 3.0.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "syn",
+      "version": "2.0.101",
+      "spdx": "MIT",
+      "source": "crates.io syn 2.0.101: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "synstructure",
+      "version": "0.13.2",
+      "spdx": "MIT",
+      "source": "crates.io synstructure 0.13.2: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "tar",
+      "version": "0.4.44",
+      "spdx": "MIT",
+      "source": "crates.io tar 0.4.44: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "tempfile",
+      "version": "3.20.0",
+      "spdx": "MIT",
+      "source": "crates.io tempfile 3.20.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "terminal_size",
+      "version": "0.4.2",
+      "spdx": "MIT",
+      "source": "crates.io terminal_size 0.4.2: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "thiserror",
+      "version": "2.0.12",
+      "spdx": "MIT",
+      "source": "crates.io thiserror 2.0.12: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "thiserror-impl",
+      "version": "2.0.12",
+      "spdx": "MIT",
+      "source": "crates.io thiserror-impl 2.0.12: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "thread_local",
+      "version": "1.1.8",
+      "spdx": "MIT",
+      "source": "crates.io thread_local 1.1.8: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "time",
+      "version": "0.3.41",
+      "spdx": "MIT",
+      "source": "crates.io time 0.3.41: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "time-core",
+      "version": "0.1.4",
+      "spdx": "MIT",
+      "source": "crates.io time-core 0.1.4: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "tinystr",
+      "version": "0.8.1",
+      "spdx": "Unicode-3.0",
+      "source": "crates.io tinystr 0.8.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Unicode-3.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "tinyvec",
+      "version": "1.9.0",
+      "spdx": "MIT",
+      "source": "crates.io tinyvec 1.9.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Zlib OR Apache-2.0 OR MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "tinyvec_macros",
+      "version": "0.1.1",
+      "spdx": "MIT",
+      "source": "crates.io tinyvec_macros 0.1.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0 OR Zlib",
+      "disposition": "permissive"
+    },
+    {
+      "name": "toml",
+      "version": "0.8.22",
+      "spdx": "MIT",
+      "source": "crates.io toml 0.8.22: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "toml_datetime",
+      "version": "0.6.9",
+      "spdx": "MIT",
+      "source": "crates.io toml_datetime 0.6.9: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "toml_edit",
+      "version": "0.22.26",
+      "spdx": "MIT",
+      "source": "crates.io toml_edit 0.22.26: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "toml_write",
+      "version": "0.1.1",
+      "spdx": "MIT",
+      "source": "crates.io toml_write 0.1.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "tracing",
+      "version": "0.1.41",
+      "spdx": "MIT",
+      "source": "crates.io tracing 0.1.41: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "tracing-attributes",
+      "version": "0.1.28",
+      "spdx": "MIT",
+      "source": "crates.io tracing-attributes 0.1.28: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "tracing-chrome",
+      "version": "0.7.2",
+      "spdx": "MIT",
+      "source": "crates.io tracing-chrome 0.7.2: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "tracing-core",
+      "version": "0.1.33",
+      "spdx": "MIT",
+      "source": "crates.io tracing-core 0.1.33: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "tracing-log",
+      "version": "0.2.0",
+      "spdx": "MIT",
+      "source": "crates.io tracing-log 0.2.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "tracing-subscriber",
+      "version": "0.3.19",
+      "spdx": "MIT",
+      "source": "crates.io tracing-subscriber 0.3.19: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "typeid",
+      "version": "1.0.3",
+      "spdx": "MIT",
+      "source": "crates.io typeid 1.0.3: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "typenum",
+      "version": "1.18.0",
+      "spdx": "MIT",
+      "source": "crates.io typenum 1.18.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "unicase",
+      "version": "2.8.1",
+      "spdx": "MIT",
+      "source": "crates.io unicase 2.8.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "unicode-bom",
+      "version": "2.0.3",
+      "spdx": "Apache-2.0",
+      "source": "crates.io unicode-bom 2.0.3: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "unicode-ident",
+      "version": "1.0.18",
+      "spdx": "MIT AND Unicode-3.0",
+      "source": "crates.io unicode-ident 1.0.18: Cargo.toml license (cargo metadata)",
+      "metadata_license": "(MIT OR Apache-2.0) AND Unicode-3.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "unicode-normalization",
+      "version": "0.1.24",
+      "spdx": "MIT",
+      "source": "crates.io unicode-normalization 0.1.24: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT/Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "unicode-width",
+      "version": "0.2.0",
+      "spdx": "MIT",
+      "source": "crates.io unicode-width 0.2.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "unicode-xid",
+      "version": "0.2.6",
+      "spdx": "MIT",
+      "source": "crates.io unicode-xid 0.2.6: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "url",
+      "version": "2.5.4",
+      "spdx": "MIT",
+      "source": "crates.io url 2.5.4: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT OR Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "utf8_iter",
+      "version": "1.0.4",
+      "spdx": "MIT",
+      "source": "crates.io utf8_iter 1.0.4: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Apache-2.0 OR MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "utf8parse",
+      "version": "0.2.2",
+      "spdx": "MIT",
+      "source": "crates.io utf8parse 0.2.2: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Apache-2.0 OR MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "vcpkg",
+      "version": "0.2.15",
+      "spdx": "MIT",
+      "source": "crates.io vcpkg 0.2.15: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT/Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "version_check",
+      "version": "0.9.5",
+      "spdx": "MIT",
+      "source": "crates.io version_check 0.9.5: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT/Apache-2.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "walkdir",
+      "version": "2.5.0",
+      "spdx": "MIT",
+      "source": "crates.io walkdir 2.5.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Unlicense/MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "winnow",
+      "version": "0.7.10",
+      "spdx": "MIT",
+      "source": "crates.io winnow 0.7.10: Cargo.toml license (cargo metadata)",
+      "metadata_license": "MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "writeable",
+      "version": "0.6.1",
+      "spdx": "Unicode-3.0",
+      "source": "crates.io writeable 0.6.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Unicode-3.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "yoke",
+      "version": "0.8.0",
+      "spdx": "Unicode-3.0",
+      "source": "crates.io yoke 0.8.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Unicode-3.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "yoke-derive",
+      "version": "0.8.0",
+      "spdx": "Unicode-3.0",
+      "source": "crates.io yoke-derive 0.8.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Unicode-3.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "zerocopy",
+      "version": "0.8.25",
+      "spdx": "MIT",
+      "source": "crates.io zerocopy 0.8.25: Cargo.toml license (cargo metadata)",
+      "metadata_license": "BSD-2-Clause OR Apache-2.0 OR MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "zerofrom",
+      "version": "0.1.6",
+      "spdx": "Unicode-3.0",
+      "source": "crates.io zerofrom 0.1.6: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Unicode-3.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "zerofrom-derive",
+      "version": "0.1.6",
+      "spdx": "Unicode-3.0",
+      "source": "crates.io zerofrom-derive 0.1.6: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Unicode-3.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "zeroize",
+      "version": "1.8.1",
+      "spdx": "MIT",
+      "source": "crates.io zeroize 1.8.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Apache-2.0 OR MIT",
+      "disposition": "permissive"
+    },
+    {
+      "name": "zerotrie",
+      "version": "0.2.2",
+      "spdx": "Unicode-3.0",
+      "source": "crates.io zerotrie 0.2.2: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Unicode-3.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "zerovec",
+      "version": "0.11.2",
+      "spdx": "Unicode-3.0",
+      "source": "crates.io zerovec 0.11.2: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Unicode-3.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "zerovec-derive",
+      "version": "0.11.1",
+      "spdx": "Unicode-3.0",
+      "source": "crates.io zerovec-derive 0.11.1: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Unicode-3.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "zlib-rs",
+      "version": "0.5.0",
+      "spdx": "Zlib",
+      "source": "crates.io zlib-rs 0.5.0: Cargo.toml license (cargo metadata)",
+      "metadata_license": "Zlib",
+      "disposition": "permissive"
+    }
+  ],
+  "excluded": [
+    {
+      "name": "benchsuite",
+      "version": "0.0.0",
+      "reason": "Cargo workspace development tooling outside the normal and build dependency closure."
+    },
+    {
+      "name": "build-rs",
+      "version": "0.3.1",
+      "reason": "Cargo workspace development tooling outside the normal and build dependency closure."
+    },
+    {
+      "name": "build-rs-test-lib",
+      "version": "0.0.0",
+      "reason": "Cargo workspace development tooling outside the normal and build dependency closure."
+    },
+    {
+      "name": "capture",
+      "version": "0.1.0",
+      "reason": "Cargo workspace development tooling outside the normal and build dependency closure."
+    },
+    {
+      "name": "cargo-credential-1password",
+      "version": "0.4.5",
+      "reason": "Cargo workspace development tooling outside the normal and build dependency closure."
+    },
+    {
+      "name": "cargo-credential-libsecret",
+      "version": "0.5.0",
+      "reason": "Cargo workspace development tooling outside the normal and build dependency closure."
+    },
+    {
+      "name": "cargo-credential-macos-keychain",
+      "version": "0.4.15",
+      "reason": "Cargo workspace development tooling outside the normal and build dependency closure."
+    },
+    {
+      "name": "cargo-credential-wincred",
+      "version": "0.4.15",
+      "reason": "Cargo workspace development tooling outside the normal and build dependency closure."
+    },
+    {
+      "name": "cargo-test-macro",
+      "version": "0.4.4",
+      "reason": "Cargo workspace development tooling outside the normal and build dependency closure."
+    },
+    {
+      "name": "cargo-test-support",
+      "version": "0.7.5",
+      "reason": "Cargo workspace development tooling outside the normal and build dependency closure."
+    },
+    {
+      "name": "home",
+      "version": "0.5.12",
+      "reason": "Cargo workspace development tooling outside the normal and build dependency closure."
+    },
+    {
+      "name": "mdman",
+      "version": "0.0.0",
+      "reason": "Cargo workspace development tooling outside the normal and build dependency closure."
+    },
+    {
+      "name": "resolver-tests",
+      "version": "0.0.0",
+      "reason": "Cargo workspace development tooling outside the normal and build dependency closure."
+    },
+    {
+      "name": "semver-check",
+      "version": "0.0.0",
+      "reason": "Cargo workspace development tooling outside the normal and build dependency closure."
+    },
+    {
+      "name": "xtask-build-man",
+      "version": "0.0.0",
+      "reason": "Cargo workspace development tooling outside the normal and build dependency closure."
+    },
+    {
+      "name": "xtask-bump-check",
+      "version": "0.0.0",
+      "reason": "Cargo workspace development tooling outside the normal and build dependency closure."
+    },
+    {
+      "name": "xtask-lint-docs",
+      "version": "0.1.0",
+      "reason": "Cargo workspace development tooling outside the normal and build dependency closure."
+    },
+    {
+      "name": "xtask-stale-label",
+      "version": "0.0.0",
+      "reason": "Cargo workspace development tooling outside the normal and build dependency closure."
+    }
+  ],
+  "vendored_c_libraries": [
+    {
+      "name": "zlib",
+      "version": "1.3.1",
+      "spdx": "Zlib",
+      "source": "libz-sys 1.1.22 src/zlib/zlib.h ZLIB_VERSION; src/zlib/LICENSE",
+      "vendored_by": "libz-sys 1.1.22",
+      "disposition": "permissive"
+    },
+    {
+      "name": "curl",
+      "version": "8.12.1-DEV",
+      "spdx": "curl",
+      "source": "curl-sys 0.4.80+curl-8.12.1 curl/include/curl/curlver.h LIBCURL_VERSION; curl/COPYING",
+      "vendored_by": "curl-sys 0.4.80+curl-8.12.1",
+      "disposition": "permissive"
+    },
+    {
+      "name": "nghttp2",
+      "version": "1.64.0",
+      "spdx": "MIT",
+      "source": "libnghttp2-sys 0.1.11+1.64.0 nghttp2/CMakeLists.txt project VERSION; nghttp2/COPYING",
+      "vendored_by": "libnghttp2-sys 0.1.11+1.64.0",
+      "disposition": "permissive"
+    },
+    {
+      "name": "OpenSSL",
+      "version": "3.5.0",
+      "spdx": "Apache-2.0",
+      "source": "openssl-src 300.5.0+3.5.0 openssl/VERSION.dat; openssl/LICENSE.txt",
+      "vendored_by": "openssl-src 300.5.0+3.5.0 via openssl-sys 0.9.109",
+      "disposition": "permissive"
+    },
+    {
+      "name": "libgit2",
+      "version": "1.9.0",
+      "spdx": "GPL-2.0-only WITH LicenseRef-libgit2-linking-exception",
+      "source": "libgit2-sys 0.18.1+1.9.0 libgit2/include/git2/version.h LIBGIT2_VERSION; libgit2/COPYING (GCC-style linking exception)",
+      "vendored_by": "libgit2-sys 0.18.1+1.9.0",
+      "disposition": "opaque only"
+    },
+    {
+      "name": "libssh2",
+      "version": "1.11.1_DEV",
+      "spdx": "BSD-3-Clause",
+      "source": "libssh2-sys 0.3.1 libssh2/include/libssh2.h LIBSSH2_VERSION; libssh2/COPYING",
+      "vendored_by": "libssh2-sys 0.3.1",
+      "disposition": "permissive"
+    },
+    {
+      "name": "SQLite",
+      "version": "3.49.1",
+      "spdx": "LicenseRef-SQLite-Public-Domain",
+      "source": "libsqlite3-sys 0.32.0 sqlite3/sqlite3.h SQLITE_VERSION; public domain, https://sqlite.org/copyright.html",
+      "vendored_by": "libsqlite3-sys 0.32.0",
+      "disposition": "permissive"
+    }
+  ]
+}
