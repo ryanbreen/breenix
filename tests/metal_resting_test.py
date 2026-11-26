@@ -1,9 +1,11 @@
 """Idle admission and one-shot lease regressions; no hardware is contacted."""
 import os
 import json
+import hashlib
 import runpy
 from pathlib import Path
 import sys
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -107,6 +109,41 @@ class PreemptionTest(unittest.TestCase):
         self.assertTrue(predicate(dict(session=True, resting=True)))
         self.assertFalse(predicate(dict(session=True, resting=True, upgradeParent='install')))
         self.assertFalse(predicate(dict(session=True, resting=True, run=['work'])))
+
+    def test_preemption_uses_the_pin_for_the_recorded_layout(self):
+        preempt = runpy.run_path(str(existing.TOOLS / 'resting_host.py'))['preempt']
+        lease = dict(id='holder', kind='persistent', queue=[dict(id='waiter')])
+        holder = dict(resting=True, session=True)
+        reads = {'lease.json': lease, 'run.json': holder, 'claim.json': {}, 'preemption.json': {}}
+        def in_metal(env, *cmd, **kw):
+            if cmd[0] == 'test':
+                return SimpleNamespace(returncode=1)
+            return SimpleNamespace(returncode=0, stdout=json.dumps(reads[Path(cmd[-1]).name]))
+        runner = dict(host_env=dict, in_metal=in_metal, STATE='/state')
+        for version, record in persistent.persistent_disk_records().items():
+            with self.subTest(version=version), TemporaryDirectory() as scratch:
+                home = Path(scratch)
+                state = home / '.local/state/breenix-metal'
+                state.mkdir(parents=True)
+                role = 'breenfs-system' if version == 3 else 'system'
+                system = record['layout']['partitions'][role]['guid']
+                key_id = hashlib.sha256((system + ':host').encode()).hexdigest()
+                (state / ('pinned-hostkey-' + key_id + '.json')).write_text(json.dumps(dict(known='pinned')))
+                lab = Mock(site=dict(SERVER_SSH_HOST='host', OPERATOR_UID='1000'), args=SimpleNamespace(boot='waiter'))
+                lab.ended.return_value = False
+                lab.lease.return_value = lease
+                lab.read.side_effect = lambda boot, name: json.dumps(reads[name])
+                lab.remote.side_effect = lambda *cmd, **kw: persistent.disk_read_result(cmd[2], record)
+                lab.probe.known = home / 'known_hosts'
+                lab.probe.ssh.return_value = SimpleNamespace(returncode=0, stdout='1000')
+                with patch.object(runpy, 'run_path', side_effect=[runner, {}, {'Lab': Mock(return_value=lab)}]), \
+                     patch.object(Path, 'home', return_value=home), \
+                     patch('time.sleep', side_effect=AssertionError('unexpected preemption retry')):
+                    preempt('waiter')
+                self.assertEqual(lab.probe.known.read_text(), 'pinned')
+                lab.probe.ssh.assert_called_once_with('id -u')
+                lab.probe.require.assert_called_once_with(lab.probe.ssh.return_value, '1000')
+                lab.power.assert_called_once_with('poweroff')
 
 
 class OneShotTest(unittest.TestCase):

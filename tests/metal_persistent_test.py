@@ -1,5 +1,7 @@
 """The boot manager and persistent install's boot-loop side (docs/metal/README.md, "Boot manager and persistent
 install"); no controller is contacted."""
+from contextlib import redirect_stdout
+from io import StringIO
 import json
 import os
 from pathlib import Path
@@ -8,7 +10,7 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -20,6 +22,23 @@ http = existing.load_script('metal-http')
 import metal_disk  # noqa: E402
 import metal_persist  # noqa: E402
 import metal_score  # noqa: E402
+
+
+def persistent_disk_records():
+    with patch.object(uuid, 'uuid4', side_effect=[uuid.UUID(int=n) for n in range(1, 8)]):
+        old = metal_persist.new_layout()
+        migration = metal_persist.add_breenfs_layout(old)
+    return {1: {'layout': old}, 2: {'layout': migration},
+            3: {'layout': metal_persist.reclaimed_layout(migration)}}
+
+
+def disk_read_result(command, record):
+    """Run the tool's container-side disk lookup locally against a fixture."""
+    output = StringIO()
+    with patch.object(metal_persist, 'read_disk', return_value=record), \
+         patch.object(sys, 'path', sys.path.copy()), redirect_stdout(output):
+        exec(command, {})
+    return SimpleNamespace(returncode=0, stdout=output.getvalue())
 
 
 class LabAnswerTest(existing.StateTest):
@@ -284,6 +303,52 @@ class DriverPersistentTest(unittest.TestCase):
 
     def tearDown(self):
         self.fixture.tearDown()
+
+    def test_install_and_slot_intents_use_the_recorded_layout(self):
+        d = self.driver
+        d.args.commit = 'a' * 40
+        d.site = {'BOOT_URL': 'http://example.invalid/boot'}
+        d.phase = d.event = Mock()
+        inputs = d.dir / 'inputs'
+        inputs.mkdir()
+        manager = inputs / 'manager.efi'
+        manager.write_bytes(b'manager')
+        build = dict(manager=dict(sha256=boot.metal_image.sha256(manager)))
+        esp = dict.fromkeys(boot.metal_image.ESP_FILES, manager)
+        def assemble(path, files):
+            path.write_bytes(files['ramdisk'].read_bytes())
+            return path
+        for version, record in persistent_disk_records().items():
+            if version == 2:
+                continue
+            with self.subTest(version=version), \
+                 patch.object(boot.metal_image, 'extract_esp', return_value=esp), \
+                 patch.object(boot.metal_image, 'assemble', side_effect=assemble), \
+                 patch.object(boot.metal_disk, 'stage', return_value=({}, {})), \
+                 patch.object(boot.metal_root, 'operator_account', return_value='fixture'), \
+                 patch.object(boot.metal_migration, 'require_closed', return_value={'closed': 'return'}), \
+                 patch.object(boot.metal_migration, 'require_upgrade_next'), \
+                 patch.object(metal_persist, 'store_definition'):
+                layout = record['layout']
+                metal_persist.update_disk(**record)
+                files, _ = d.prepare_install(inputs, build)
+                install = files['ramdisk'].read_text().splitlines()
+                slot = (d.stage / 'persist/next.img').read_text().splitlines()
+                parts = layout['partitions']
+                test = parts['test']['guid']
+                if version == 1:
+                    system, home = (parts[role]['guid'] for role in ('system', 'home'))
+                    self.assertEqual(install, ['BREENIX-BOOT 2', 'target persistent-install',
+                                              'root ' + test, 'home ' + system, 'userland ' + d.id])
+                    self.assertEqual(slot, ['BREENIX-BOOT 2', 'target persistent', 'root ' + system,
+                                           'home ' + home, 'userland ' + d.id])
+                else:
+                    system, home = (parts[role]['guid'] for role in ('breenfs-system', 'breenfs-home'))
+                    self.assertEqual(install, ['BREENIX-BOOT 3', 'target persistent-install', f'mount {test} / ro',
+                                              f'mount {system} /migrate/system rw', f'mount {home} /migrate/home rw',
+                                              'userland ' + d.id])
+                    self.assertEqual(slot, ['BREENIX-BOOT 3', 'target persistent', f'mount {system} / rw',
+                                           f'mount {home} /home rw', 'userland ' + d.id])
 
     def test_power_on_skips_the_override_on_the_persistent_layout(self):
         d = self.driver
