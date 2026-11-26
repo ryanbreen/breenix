@@ -16,6 +16,12 @@ mod sha256;
 const ASSEMBLER: &str = "BREENIX_KERNEL_ASSEMBLER";
 const ASSEMBLY_RECORD: &str = "kernel-assembly.record";
 const LINK_RECORD_ARG: &str = "--breenix-bas-record=";
+const AARCH64_ASSEMBLY_DIR: &str = "src/arch_impl/aarch64";
+const AARCH64_GUARD: &str = "resume_pc_guard.inc";
+const AARCH64_ASSEMBLY: [(&str, &str, &str); 2] = [
+    ("boot.S", "boot.s", "boot.o"),
+    ("syscall_entry.S", "syscall_entry.s", "syscall_entry.o"),
+];
 const X86_ASSEMBLY: [(&str, &str); 4] = [
     ("src/syscall/entry.asm", "syscall_entry.o"),
     ("src/interrupts/timer_entry.asm", "timer_entry.o"),
@@ -25,7 +31,11 @@ const X86_ASSEMBLY: [(&str, &str); 4] = [
 
 fn digest(path: &Path) -> String {
     let bytes = fs::read(path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
-    sha256::sha256(&bytes)
+    digest_bytes(&bytes)
+}
+
+fn digest_bytes(bytes: &[u8]) -> String {
+    sha256::sha256(bytes)
         .iter()
         .fold(String::new(), |mut hex, byte| {
             write!(hex, "{byte:02x}").unwrap();
@@ -198,6 +208,76 @@ fn build_host_bas(toolchain: &Path, out_dir: &Path) -> (PathBuf, String) {
     (bas, record)
 }
 
+fn record_kernel_link(record_path: &Path, bin: &str, inputs: String) {
+    fs::write(record_path.with_extension("inputs"), inputs).expect("write kernel assembly inputs");
+    let linker = env::current_exe().expect("locate kernel build script");
+    println!(
+        "cargo:rustc-env=BREENIX_KERNEL_BAS_LINKER={}",
+        linker.display()
+    );
+    println!(
+        "cargo:rustc-link-arg-bin={bin}={LINK_RECORD_ARG}{}",
+        record_path.display()
+    );
+}
+
+fn assemble_aarch64(kernel_dir: &Path, out_dir: &Path, use_bas: bool) {
+    let repo_root = kernel_dir.parent().expect("kernel directory parent");
+    println!(
+        "cargo:rerun-if-changed={}",
+        repo_root.join("scripts/kernel-link.sh").display()
+    );
+    let record_path = out_dir.join(ASSEMBLY_RECORD);
+    remove_record(&record_path);
+    if !use_bas {
+        remove_record(&record_path.with_extension("inputs"));
+        return;
+    }
+
+    let (bas, mut record) = build_host_bas(&repo_root.join("toolchain"), out_dir);
+    let source_dir = kernel_dir.join(AARCH64_ASSEMBLY_DIR);
+    let guard = fs::read(source_dir.join(AARCH64_GUARD)).expect("read resume-PC guard");
+    writeln!(
+        record,
+        "{AARCH64_ASSEMBLY_DIR}/{AARCH64_GUARD}={}",
+        digest_bytes(&guard)
+    )
+    .unwrap();
+
+    for (source, unit, object) in AARCH64_ASSEMBLY {
+        let input = source_dir.join(source);
+        let unit_path = out_dir.join(unit);
+        let object_path = out_dir.join(object);
+        let source_bytes =
+            fs::read(&input).unwrap_or_else(|error| panic!("read {}: {error}", input.display()));
+        let unit_bytes = [guard.as_slice(), &source_bytes].concat();
+        fs::write(&unit_path, &unit_bytes).expect("write ARM64 assembly unit");
+
+        let status = Command::new(&bas)
+            .args(["--target", "aarch64", "-o"])
+            .arg(&object_path)
+            .arg(&unit_path)
+            .status()
+            .expect("run host bas for ARM64");
+        assert!(status.success(), "assemble {}", unit_path.display());
+        writeln!(
+            record,
+            "{AARCH64_ASSEMBLY_DIR}/{source}={}\n{unit}={}\n{object}={}",
+            digest_bytes(&source_bytes),
+            digest_bytes(&unit_bytes),
+            digest(&object_path)
+        )
+        .unwrap();
+        println!(
+            "cargo:rustc-link-arg-bin=kernel-aarch64={}",
+            object_path.display()
+        );
+    }
+
+    println!("cargo:rustc-cfg=breenix_bas_kernel_asm");
+    record_kernel_link(&record_path, "kernel-aarch64", record);
+}
+
 fn assemble_x86(kernel_dir: &Path, out_dir: &Path, use_bas: bool) {
     let repo_root = kernel_dir.parent().expect("kernel directory parent");
     println!(
@@ -250,17 +330,7 @@ fn assemble_x86(kernel_dir: &Path, out_dir: &Path, use_bas: bool) {
         println!("cargo:rustc-link-arg={}", out_dir.join(object).display());
     }
     if let Some((_, record)) = bas {
-        fs::write(record_path.with_extension("inputs"), record)
-            .expect("write kernel assembly inputs");
-        let linker = env::current_exe().expect("locate kernel build script");
-        println!(
-            "cargo:rustc-env=BREENIX_KERNEL_BAS_LINKER={}",
-            linker.display()
-        );
-        println!(
-            "cargo:rustc-link-arg-bin=kernel={LINK_RECORD_ARG}{}",
-            record_path.display()
-        );
+        record_kernel_link(&record_path, "kernel", record);
     }
 }
 
@@ -271,6 +341,7 @@ fn main() {
         return;
     }
     println!("cargo:rerun-if-env-changed={ASSEMBLER}");
+    println!("cargo:rustc-check-cfg=cfg(breenix_bas_kernel_asm)");
     let selection = env::var_os(ASSEMBLER);
     let use_bas = match selection.as_deref().and_then(OsStr::to_str) {
         None if selection.is_none() => false,
@@ -383,6 +454,7 @@ fn main() {
     // AArch64 kernel linker script (moved from aarch64-breenix.json so the
     // target JSON can be shared between kernel and userspace std builds)
     if target.contains("aarch64") {
+        assemble_aarch64(&kernel_dir, Path::new(&out_dir), use_bas);
         println!("cargo:rustc-link-arg=-Tkernel/src/arch_impl/aarch64/linker.ld");
         println!("cargo:rustc-link-arg=--fix-cortex-a53-843419");
         println!("cargo:rustc-link-arg=--orphan-handling=error");

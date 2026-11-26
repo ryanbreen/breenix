@@ -16,6 +16,7 @@
 //!   - TTBR0_EL1/TTBR1_EL1 instead of CR3
 
 use alloc::boxed::Box;
+#[cfg(not(breenix_bas_kernel_asm))]
 use core::arch::global_asm;
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -26,6 +27,7 @@ use crate::arch_impl::traits::{PerCpuOps, SyscallFrame};
 use crate::tracing::providers::syscall::{trace_entry, trace_exit};
 
 // Include the shared resume-PC guard macros and syscall assembly as one unit.
+#[cfg(not(breenix_bas_kernel_asm))]
 global_asm!(concat!(
     include_str!("resume_pc_guard.inc"),
     include_str!("syscall_entry.S")

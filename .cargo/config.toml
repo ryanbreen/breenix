@@ -8,3 +8,6 @@ linker = "scripts/kernel-link.sh"
 
 [target.x86_64-breenix]
 linker = "scripts/kernel-link.sh"
+
+[target.aarch64-breenix-kernel]
+linker = "scripts/kernel-link.sh"
