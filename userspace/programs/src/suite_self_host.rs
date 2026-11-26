@@ -1,6 +1,8 @@
 //! E25 25.8 builds and checks the Rust toolchain on the x86-64 fixture.
 #[path = "suite_support/d1.rs"]
 mod d1;
+#[path = "suite_support/self_host_behave.rs"]
+mod self_host_behave;
 #[path = "suite_support/self_host_chain.rs"]
 mod self_host_chain;
 
@@ -23,6 +25,7 @@ const SOURCE: &str = "/src";
 const FIXTURE: &str = "/usr/libexec/breenix/rustc";
 const MARKER: &str = "/src/breenix-self-host";
 const MAC_REFERENCE: &str = include_str!("../../../toolchain/rust-host/selfhost/x86_64-mac.json");
+const MAC_MATCH: &str = "tools-equal-mac.sha256.json";
 const BUILDS: [(&str, u64); 7] = [
     // Ruling 133(2) gives the D1 wall times. Round 1.5x up to milliseconds.
     ("bobj", 17_235),
@@ -53,6 +56,11 @@ static SUITE: Suite = suite(
                 "tools-equal-mac",
                 "Match the Mac twin binaries",
                 tools_equal_mac,
+            ),
+            case(
+                "rebuilt-tools-behave",
+                "Run the corpus with the rebuilt tools",
+                rebuilt_tools_behave,
             ),
             case(
                 "rebuilt-cargo-noop",
@@ -254,6 +262,7 @@ fn tools_equal_mac() -> CaseResult {
     verify_record(run, "bcc", &current)?;
     let mac: serde_json::Value = serde_json::from_str(MAC_REFERENCE)
         .map_err(|error| format!("parse Mac twin record: {error}"))?;
+    let mut matched = Digests::new();
     for tool in TOOLS {
         let path = format!("{PROFILE}/{tool}");
         let output = current
@@ -266,8 +275,21 @@ fn tools_equal_mac() -> CaseResult {
             return Err(format!("{tool} differs from the Mac twin: {}", output.sha256).into());
         }
         case_diagnostic(&format!("SELF_HOST {tool} mac_sha256={expected}"));
+        matched.insert(tool.into(), expected.into());
     }
+    let receipt = serde_json::to_vec(&matched).map_err(|error| error.to_string())?;
+    fs::write(run.join(MAC_MATCH), receipt)
+        .map_err(|error| format!("write Mac comparison record: {error}"))?;
     Ok(())
+}
+
+fn rebuilt_tools_behave() -> CaseResult {
+    let run = run_dir()?;
+    let receipt = fs::read(run.join(MAC_MATCH))
+        .map_err(|error| format!("read Mac comparison record: {error}"))?;
+    let matched: Digests = serde_json::from_slice(&receipt)
+        .map_err(|error| format!("parse Mac comparison record: {error}"))?;
+    self_host_behave::exercise(run, &matched).map_err(Into::into)
 }
 
 fn check_fresh(log: &str) -> CaseResult {

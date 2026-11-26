@@ -17,6 +17,7 @@
       {"id": "build-bmake", "title": "Build bmake"},
       {"id": "build-bcc", "title": "Build bcc"},
       {"id": "tools-equal-mac", "title": "Match the Mac twin binaries"},
+      {"id": "rebuilt-tools-behave", "title": "Run the corpus with the rebuilt tools"},
       {"id": "rebuilt-cargo-noop", "title": "Repeat Cargo build without recompiling"}
     ]
   }]
