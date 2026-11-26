@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import metal_tools_test as existing
+from metal_persistent_test import disk_read_result, persistent_disk_records
 
 
 class UpgradeSuiteStop(unittest.TestCase):
@@ -73,17 +74,29 @@ class UpgradePinRecovery(unittest.TestCase):
         self.assertEqual(pin, 'new')
 
     def test_migration_verification_syncs_using_installed_utility(self):
-        result, calls, _ = self.run_probe(phase='cutover')
+        result, calls, _ = self.run_probe(version=2, phase='cutover')
         self.assertTrue(result['passed'], result)
         self.assertTrue(result['homeReadable'])
+        self.assertEqual(calls[:2], [('id -u', 'old'), ('id -u', 'new')])
         self.assertIn(('/usr/bin/sync', 'new'), calls)
 
-    def run_probe(self, phase=None):
+    def test_reclaimed_layout_learns_the_new_pin_through_the_console(self):
+        result, calls, pin = self.run_probe(version=3)
+        self.assertTrue(result['passed'], result)
+        self.assertEqual(calls[0], ('id -u', 'new'))
+        self.assertTrue(result['homeReadable'])
+        self.assertEqual(pin, 'new')
+
+    def run_probe(self, version=1, phase=None):
         import hashlib
         import json
         import tempfile
         module = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'scripts/metal/server-suite'))
         fn = module['probe_upgrade_attempt']
+        records = persistent_disk_records()
+        old_system = records[1]['layout']['partitions']['system']['guid']
+        record = records[version]
+        shared_id = record['layout']['partitions']['breenfs-system']['guid'] if version == 3 else old_system
         with tempfile.TemporaryDirectory() as scratch:
             home = Path(scratch)
             (home / '.ssh').mkdir()
@@ -91,18 +104,23 @@ class UpgradePinRecovery(unittest.TestCase):
             (home / '.ssh/operator').touch()
             state = home / '.local/state/breenix-metal'
             state.mkdir(parents=True)
-            cache = state / ('pinned-hostkey-' + hashlib.sha256(b'system:host').hexdigest() + '.json')
-            cache.write_text(json.dumps(dict(known='old', fingerprint='old')))
+            def cache_for(guid):
+                return state / ('pinned-hostkey-' + hashlib.sha256((guid + ':host').encode()).hexdigest() + '.json')
+            old_cache = cache_for(old_system)
+            old_cache.write_text(json.dumps(dict(known='old', fingerprint='old')))
+            cache = cache_for(shared_id)
             calls = []
-            now = module['time'].time()
+            now = 1000
             boot_id = '20261023T000000Z-metal'
             run = dict(migrationPhase=phase) if phase else dict(upgradeParent='parent')
+            if version == 3:
+                run['breenfsUpgrade'] = 'return'
             def remote(env, *cmd, **kw):
-                text = ' '.join(cmd)
                 if cmd[0] == 'python3':
-                    value = (dict(partitions=dict(system=dict(guid='system'))) if 'read_disk' in text else
-                             dict(SERVER_SSH_HOST='host', OPERATOR_USER='operator', OPERATOR_UID='1000',
-                                  OPERATOR_SSH_PUBLIC_KEY='ssh-ed25519 public', CONSOLE_USER='root', CONSOLE_PASSWORD='secret'))
+                    if 'metal_persist' in cmd[2]:
+                        return disk_read_result(cmd[2], record)
+                    value = dict(SERVER_SSH_HOST='host', OPERATOR_USER='operator', OPERATOR_UID='1000',
+                                 OPERATOR_SSH_PUBLIC_KEY='ssh-ed25519 public', CONSOLE_USER='root', CONSOLE_PASSWORD='secret')
                     return SimpleNamespace(returncode=0, stdout=json.dumps(value))
                 name = Path(cmd[-1]).name
                 values = {'run.json': json.dumps(run),
@@ -142,9 +160,12 @@ class UpgradePinRecovery(unittest.TestCase):
                                                        for name in module['Services'].REQUIRED})), \
                  patch.object(module['runpy'], 'run_path', return_value=runner), \
                  patch.object(Path, 'home', return_value=home), \
+                 patch.object(module['time'], 'time', return_value=now), \
                  patch.object(module['re'], 'search', return_value=['', 'SHA256:new']):
                 result = fn(SimpleNamespace(boot=boot_id))
-            return result, calls, json.loads(cache.read_text())['known']
+            if version == 3:
+                self.assertEqual(json.loads(old_cache.read_text())['known'], 'old')
+            return result, calls, json.loads(cache.read_text())['known'] if cache.exists() else None
 
 
 class UpgradeDriver(existing.StateTest):
