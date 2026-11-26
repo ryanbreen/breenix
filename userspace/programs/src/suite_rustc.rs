@@ -20,6 +20,7 @@ static SUITE: Suite = suite("rustc", "Rust compiler", &[category("rustc", "Rust 
 ])]).case_limit_ms(60_000);
 
 const FIXTURE: &str = "/usr/libexec/breenix/rustc";
+const TARGET: &str = "x86_64-breenix";
 #[repr(C)]
 struct FileActions { head: *mut c_void, tail: *mut c_void }
 extern "C" {
@@ -110,7 +111,7 @@ fn compile(input: &str, extra: &[&str]) -> Result<(i32, Vec<u8>, String), CaseEr
     let output = format!("/tmp/rustc-{}-{input}.o", std::process::id());
     let _ = fs::remove_file(&output);
     let mut args: Vec<String> = ["--edition=2021", "--sysroot", &format!("{FIXTURE}/sysroot"),
-        "-Dwarnings", "--emit=obj", "--target", "x86_64-breenix"]
+        "-Dwarnings", "--emit=obj", "--target", TARGET]
         .iter().map(|s| (*s).to_string()).collect();
     args.extend(extra.iter().map(|s| (*s).to_string()));
     args.extend([input.to_string(), "-o".into(), output.clone()]);

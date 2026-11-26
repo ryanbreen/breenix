@@ -30,6 +30,29 @@ def git(*args, tree=TREE):
 
 
 class RustcPort(unittest.TestCase):
+    def test_guest_target_loads_twin_sysroot(self):
+        cache = Path.home() / 'Library/Caches/breenix-e25/k5/twin'
+        mac_rustc = Path(os.environ.get('BREENIX_K5_MAC_RUSTC', cache / 'mac/bin/rustc'))
+        sysroot = Path(os.environ.get('BREENIX_K5_SYSROOT', cache / 'sysroot'))
+        suite = (ROOT / 'userspace/programs/src/suite_rustc.rs').read_text()
+        match = re.search(r'^const TARGET: &str = "([^"]+)";$', suite, re.M)
+        self.assertIsNotNone(match, 'guest target argument')
+        with tempfile.TemporaryDirectory(prefix='breenix-k5-target-') as directory:
+            fixture = Path(directory)
+            targets = fixture / 'targets'
+            targets.mkdir()
+            shutil.copyfile(ROOT / 'x86_64-breenix.json', targets / 'x86_64-breenix.json')
+            corpus = fixture / 'corpus'
+            shutil.copytree(RECORDS.parent / 'k5/corpus', corpus)
+            output = fixture / 'uses-std.o'
+            result = subprocess.run(
+                [mac_rustc, '--edition=2021', '--sysroot', sysroot, '-Dwarnings',
+                 '--emit=obj', '--target', match[1], 'uses-std.rs', '-o', output],
+                cwd=corpus, env=dict(os.environ, RUST_TARGET_PATH=str(targets)),
+                capture_output=True, text=True, timeout=15)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertGreater(output.stat().st_size, 0)
+
     def test_rustc_is_dynamic_breenix_elf(self):
         stage = ROOT / 'userspace/programs/target/rustc/x86_64'
         record = json.loads((RECORDS.parent / 'k5/x86_64.json').read_text())
