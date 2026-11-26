@@ -25,7 +25,7 @@ static SUITE: Suite = suite(
 .case_limit_ms(60_000);
 
 const FIXTURE: &str = "/usr/libexec/breenix/rust-link";
-const BLD: &str = "/opt/breenix-dev/25.2/bin/ld";
+const BLD: &str = "/usr/libexec/breenix/rust-link/bin/bld";
 
 struct Scratch(PathBuf);
 

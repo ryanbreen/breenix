@@ -23,6 +23,7 @@ testing kernel), and removes the clone. Every build also writes manager.efi, the
 for a cold readback or a boot manager probe, under a metal-build slot without a kernel or userspace build.
 For `--suite llvm`, the Mac prebuilt builder takes the K4 cross-builds from BREENIX_LLVM_BUILDS and the K3
 runtime from BREENIX_CXX_RUNTIME_BUILDS. `build.json` names the staged fixture digests by guest path.
+For `--suite rust-link`, set BREENIX_K6_FIXTURE to the retained K6 capture on the Mac builder.
 Exit 0 on success; 3 when the guard refuses the commit.
 """
 import argparse
@@ -205,8 +206,11 @@ def inner(args):
     cxx_runtime = 'cxx-runtime' in suites
     llvm = 'llvm' in suites
     rustc_suite = 'rustc' in suites
+    rust_link = 'rust-link' in suites
     if rustc_suite and sys.platform != 'darwin':
         raise ValueError('rustc requires a Mac prebuilt image and BREENIX_RUSTC_PORT_BUILDS')
+    if rust_link and sys.platform != 'darwin':
+        raise ValueError('rust-link requires a Mac prebuilt image and BREENIX_K6_FIXTURE')
     if llvm and sys.platform != 'darwin':
         raise ValueError('llvm requires a Mac prebuilt image and BREENIX_LLVM_BUILDS')
     if cxx_runtime and sys.platform != 'darwin':
@@ -219,8 +223,9 @@ def inner(args):
     toolchain_build = None
     kernel_image = None
     staged_files = {}
+    rust_link_build = None
     build_companions = build_fixtures or busybox
-    hosted = rust_host or cxx_runtime or llvm or dynamic or rustc_suite
+    hosted = rust_host or cxx_runtime or llvm or dynamic or rustc_suite or rust_link
     root = tmp / 'ext2-staged.img' if 'sdk' in suites or build_fixtures or transfer or hosted else seed
     try:
         started = time.time()
@@ -397,6 +402,18 @@ def inner(args):
                 kd = Path(os.environ.get('BREENIX_KD_BUILD_DIR', clone / 'userspace/programs/target/kd'))
                 (kd / 'build.json').write_text(json.dumps({name: sha256(kd / name)
                     for name in ('ld-breenix.so', 'libc.so')}))
+            if rust_link:
+                started = time.time()
+                log = logs / 'rust-link-build.log'
+                with log.open('w') as output:
+                    status = subprocess.call([str(clone / 'userspace/programs/build.sh'),
+                                              '--arch', 'x86_64', '--rust-link'],
+                                             cwd=clone, stdout=output, stderr=subprocess.STDOUT)
+                if not clean_build(status, log, 'Rust linker replay suite and linker', logs, out):
+                    return 1
+                rust_link_build = json.loads(
+                    (clone / 'userspace/programs/target/rust-link/x86_64/build.json').read_text())
+                timings['rust_link_suite'] = round(time.time() - started)
             if hosted:
                 started = time.time()
                 record = subprocess.check_output([sys.executable, str(clone / 'scripts/rust_host_stage.py'),
@@ -520,6 +537,8 @@ def inner(args):
             build['toolchain'] = toolchain_build
         if staged_files:
             build['stagedFiles'] = staged_files
+        if rust_link_build is not None:
+            build['rustLink'] = rust_link_build
         if kernel_assembly:
             build['kernelAssembly'] = toolchain_build['kernelAssembly']
         if (out / 'test-binaries.img').is_file():
