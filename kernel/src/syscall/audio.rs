@@ -47,13 +47,13 @@ pub fn sys_audio_write(buf_ptr: u64, buf_len: u64) -> SyscallResult {
     if let Err(errno) = crate::process::privilege::require(crate::process::privilege::Operation::Audio) {
         return SyscallResult::Err(errno);
     }
-    if !is_valid_user_range(buf_ptr, buf_len.max(1) as usize) {
-        return SyscallResult::Err(super::ErrorCode::Fault as u64);
-    }
-
     // The device accepts a short write for larger buffers. Only the bytes
     // submitted in this call need to be mapped and copied.
     let len = (buf_len as usize).min(MAX_PCM_WRITE);
+    if !is_valid_user_range(buf_ptr, len) {
+        return SyscallResult::Err(super::ErrorCode::Fault as u64);
+    }
+
     let mut data = Vec::new();
     if data.try_reserve_exact(len).is_err() {
         return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
