@@ -36,7 +36,15 @@ static SUITE: Suite = suite(
     )],
 )
 // Ruling 126 grants 600 s to Cargo. The suite watchdog leaves 10 s to reap and report.
-.case_limit_ms(610_000);
+.case_limit_ms(610_000)
+.with_case_observer(prepare_scratch);
+
+fn prepare_scratch(completed: usize, _: usize, _: &str) {
+    // The runner takes ownership after the sequence reset and before the first fork.
+    if completed == 0 {
+        let _ = RUN.set(mount_fixture());
+    }
+}
 
 fn mount_fixture() -> Result<PathBuf, String> {
     fs::create_dir_all(SOURCE).map_err(|e| format!("create {SOURCE}: {e}"))?;
@@ -213,6 +221,5 @@ fn measure_package() -> CaseResult {
 }
 
 fn main() {
-    let _ = RUN.set(mount_fixture());
     SUITE.run();
 }
