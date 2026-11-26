@@ -123,8 +123,8 @@ def compare_absolute_constants(source, reference, candidate):
     for record in list(reference[1] - candidate[1]):
         name, binding, kind, visibility, section, _, size = record
         if name in names and (binding, kind, visibility, section, size) == (0, 0, 0, 0xfff1, 0):
-            # The remainder of the check still verifies every emitted
-            # instruction, data value and relocation that uses the constant.
+            # Instructions, data and relocations that use the constant
+            # remain part of the comparison.
             del reference[1][record]
 
 

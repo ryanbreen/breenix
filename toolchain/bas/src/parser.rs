@@ -644,6 +644,14 @@ impl<'src, 'obj> Parser<'src, 'obj> {
         let name = op.text.strip_prefix('.').unwrap_or(op.text);
         match name {
             "section" => self.section()?,
+            "extern" if op.text == ".extern" && self.constants.is_some() => {
+                // GNU A64 treats .extern as an optional declaration.
+                // A reference, not the declaration, creates the symbol.
+                let symbol = self.word();
+                if !symbol.is_name() {
+                    return Err(self.error(symbol.column, "expected a symbol after .extern"));
+                }
+            }
             "global" | "globl" | "extern" | "weak" => {
                 let symbol = self.word();
                 let index = self.symbol(symbol)?;

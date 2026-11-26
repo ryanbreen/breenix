@@ -38,6 +38,7 @@ struct Expander<'src> {
 }
 
 pub(crate) fn assemble(source: &[u8], object: &mut Object) -> Result<()> {
+    let source = mask_block_comments(source)?;
     let lines: Vec<_> = source
         .split(|&byte| byte == b'\n')
         .enumerate()
@@ -62,6 +63,58 @@ pub(crate) fn assemble(source: &[u8], object: &mut Object) -> Result<()> {
         expanded_lines: 0,
     }
     .lines(&lines, None, object)
+}
+
+fn mask_block_comments(source: &[u8]) -> Result<Cow<'_, [u8]>> {
+    let mut masked = Cow::Borrowed(source);
+    let mut block = None;
+    let mut start = 0;
+    for (index, line) in source.split_inclusive(|&byte| byte == b'\n').enumerate() {
+        check_source_line(line, index + 1)?;
+        let bytes = line.strip_suffix(b"\n").unwrap_or(line);
+        let mut cursor = 0;
+        let mut quoted = false;
+        while cursor < bytes.len() {
+            let rest = &bytes[cursor..];
+            if block.is_some() {
+                let closed = rest.starts_with(b"*/");
+                let width = if closed { 2 } else { 1 };
+                masked.to_mut()[start + cursor..start + cursor + width].fill(b' ');
+                cursor += width;
+                if closed {
+                    block = None;
+                }
+            } else if quoted {
+                match rest[0] {
+                    b'\\' if rest.len() > 1 => cursor += 1,
+                    b'"' => quoted = false,
+                    _ => {}
+                }
+                cursor += 1;
+            } else if rest.starts_with(b"/*") {
+                block = Some(Location {
+                    line: index + 1,
+                    column: cursor + 1,
+                });
+                masked.to_mut()[start + cursor..start + cursor + 2].fill(b' ');
+                cursor += 2;
+            } else if rest.starts_with(b"//")
+                || rest[0] == b';'
+                || (rest[0] == b'#'
+                    && masked[start..start + cursor].iter().all(u8::is_ascii_whitespace))
+            {
+                break;
+            } else {
+                quoted = rest[0] == b'"';
+                cursor += 1;
+            }
+        }
+        start += line.len();
+    }
+    if let Some(at) = block {
+        return Err(at.error("unterminated block comment"));
+    }
+    Ok(masked)
 }
 
 struct Invocation<'a, 'src> {
@@ -91,7 +144,6 @@ impl<'src> Expander<'src> {
         let mut cursor = 0;
         while let Some(&Line { bytes, number }) = lines.get(cursor) {
             cursor += 1;
-            check_source_line(bytes, number)?;
             let line = match &invocation {
                 Some(call) => call.substitute(bytes, number)?,
                 None => Cow::Borrowed(bytes),
@@ -229,7 +281,6 @@ fn macro_body<'a, 'src>(
     while let Some(&Line { bytes, number }) = lines.get(*cursor) {
         let end = *cursor;
         *cursor += 1;
-        check_source_line(bytes, number)?;
         let mut parser = Parser::new(bytes, number, object);
         let op = parser.word();
         match op.text {
