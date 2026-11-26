@@ -878,14 +878,52 @@ fn describe(categories: &[Category]) -> String {
         .join("\n")
 }
 
-fn suite_build_error(id: &str, binaries: &[String], build: &str) -> Option<String> {
+struct SuiteBuilds {
+    ordinary: Vec<String>,
+    hosted: HashSet<String>,
+    staged: HashSet<String>,
+}
+
+impl SuiteBuilds {
+    fn read(root: &Path) -> Self {
+        let build = fs::read_to_string(root.join("userspace/programs/build.sh")).unwrap();
+        let metal = fs::read_to_string(root.join("scripts/metal/metal-build")).unwrap();
+        let stage = fs::read_to_string(root.join("scripts/rust_host_stage.py")).unwrap();
+        let ordinary = std_binaries(&build);
+        assert!(!ordinary.is_empty(), "no STD_BINARIES=( ... ) array in userspace/programs/build.sh");
+
+        // These literal install destinations are in the selected staging paths.
+        // The default build also installs rust-host, whose stager uses SUITE_PATH.
+        let is_code = |line: &&str| !line.trim_start().starts_with('#');
+        let staged: HashSet<String> = stage.lines()
+            .filter(is_code)
+            .filter_map(|line| {
+                let (_, rest) = line.split_once("'/sbin/suite-")?;
+                let (id, _) = rest.split_once("',")?;
+                is_id(id).then(|| format!("suite-{id}"))
+            })
+            .collect();
+        let metal = metal.lines().filter(is_code).flat_map(str::split_whitespace)
+            .collect::<Vec<_>>().join(" ");
+        let hosted = staged.iter().filter(|entry| {
+            let shell_call = format!("--hosted-bin {entry} --features ");
+            let metal_call = format!("'--hosted-bin', '{entry}', '--features',");
+            let assignment = format!("HOSTED_BIN=\"{entry}\"");
+            metal.contains(&metal_call) || build.lines().filter(is_code).any(|line| {
+                line.contains(&shell_call) || line.trim() == assignment
+            })
+        }).cloned().collect();
+        Self { ordinary, hosted, staged }
+    }
+}
+
+fn suite_build_error(id: &str, builds: &SuiteBuilds) -> Option<String> {
     let entry = format!("suite-{id}");
-    let ordinary = binaries.iter()
+    let ordinary = builds.ordinary.iter()
         .any(|listed| *listed == entry || *listed == format!("{entry}:{entry}"));
-    if id == "dynamic" {
-        let hosted = r#""$SCRIPT_DIR/build.sh" --arch x86_64 --hosted-bin suite-dynamic --features dynamic"#;
-        if ordinary || !build.lines().any(|line| line.trim() == hosted) {
-            return Some(format!("{id}: {entry} must use the opt-in hosted build in userspace/programs/build.sh"));
+    if builds.staged.contains(&entry) {
+        if ordinary || !builds.hosted.contains(&entry) {
+            return Some(format!("{id}: {entry} must use the opt-in hosted build outside STD_BINARIES"));
         }
     } else if !ordinary {
         return Some(format!("{id}: \"{entry}\" is not in STD_BINARIES in userspace/programs/build.sh"));
@@ -901,11 +939,10 @@ fn missing_suite_manifest(name: &str, manifest_ids: &HashSet<String>) -> Option<
 
 #[test]
 fn hosted_suite_builds_are_registered() {
-    let build = fs::read_to_string(repo_root().join("userspace/programs/build.sh")).unwrap();
-    let binaries = std_binaries(&build);
+    let builds = SuiteBuilds::read(&repo_root());
     let errors: Vec<_> = ["dynamic", "rustc", "rust-link", "cargo"]
         .into_iter()
-        .filter_map(|id| suite_build_error(id, &binaries, &build))
+        .filter_map(|id| suite_build_error(id, &builds))
         .collect();
     assert!(errors.is_empty(), "{}", errors.join("\n"));
 }
@@ -923,9 +960,7 @@ fn ordinary_suite_without_manifest_is_rejected() {
 fn suite_manifests_match_their_binaries() {
     let root = repo_root();
     let bins = cargo_bins(&fs::read_to_string(root.join("userspace/programs/Cargo.toml")).unwrap());
-    let build = fs::read_to_string(root.join("userspace/programs/build.sh")).unwrap();
-    let binaries = std_binaries(&build);
-    assert!(!binaries.is_empty(), "no STD_BINARIES=( ... ) array in userspace/programs/build.sh");
+    let builds = SuiteBuilds::read(&root);
     let mut errors = Vec::new();
     let mut manifest_ids = HashSet::new();
 
@@ -981,7 +1016,7 @@ fn suite_manifests_match_their_binaries() {
                 bin.0, bin.1
             ));
         }
-        if let Some(error) = suite_build_error(id, &binaries, &build) {
+        if let Some(error) = suite_build_error(id, &builds) {
             errors.push(error);
         }
 
@@ -1019,7 +1054,7 @@ fn suite_manifests_match_their_binaries() {
         // E22 22.1 section 7: the argv-built scoped fixture is not an effort suite.
         if name == "ui-runner-fixture_test" {
             assert_eq!(path, "src/suite_runner_fixture.rs");
-            assert_scoped_runner_fixture(&root, &binaries);
+            assert_scoped_runner_fixture(&root, &builds.ordinary);
             continue;
         }
         if let Some(error) = missing_suite_manifest(name, &manifest_ids) {
