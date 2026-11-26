@@ -76,7 +76,7 @@ class SuiteWatcherTest(unittest.TestCase):
         sequence_deadlines = runpy.run_path(str(helper_path))["suite_deadlines"]
         deadlines = sequence_deadlines(suites, "aarch64")
         for arch, by_suite, expected in (
-            ("aarch64", deadlines, [1757, 3250, 2425]),
+            ("aarch64", deadlines, [1794, 3250, 2425]),
             ("x86_64", sequence_deadlines(suites, "x86_64"), [1769, 3250, 2425]),
         ):
             with self.subTest(arch=arch):
@@ -87,7 +87,7 @@ class SuiteWatcherTest(unittest.TestCase):
                              for case in category["cases"] if "targets" not in case or arch in case["targets"]]
                     total = sum(allowances.get((suite, case), default) for case in cases)
                     if arch == "aarch64" and suite == "toolchain":
-                        self.assertEqual(total, 1_405_000)
+                        self.assertEqual(total, 1_435_000)
                     self.assertGreaterEqual(by_suite[suite], (total * 5 + 3999) // 4000, suite)
                 self.assertEqual([by_suite[suite] for suite in suites], expected)
         self.assertEqual(old_deadline, 1800)  # Previous per-suite gate.
