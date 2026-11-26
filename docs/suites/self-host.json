@@ -1,0 +1,24 @@
+{
+  "id": "self-host",
+  "title": "Native Rust toolchain rebuild",
+  "area": "Toolchain",
+  "summary": "Opt-in x86-64 rebuild with the hosted compiler and Cargo. The no-op replay preserves every target file and SHA-256. Only the mtimes of x86_64-breenix/selfhost/{,lib}<tool>.d for bas, bld, bar, bnm, bcc and bmake may change (E25 ruling 137).",
+  "binary": "/sbin/suite-self-host",
+  "timingSensitive": true,
+  "categories": [{
+    "id": "self-host",
+    "title": "Self-hosted toolchain",
+    "cases": [
+      {"id": "build-bobj", "title": "Build bobj"},
+      {"id": "build-bas", "title": "Build bas"},
+      {"id": "build-bld", "title": "Build bld"},
+      {"id": "build-bar", "title": "Build bar"},
+      {"id": "build-bnm", "title": "Build bnm"},
+      {"id": "build-bmake", "title": "Build bmake"},
+      {"id": "build-bcc", "title": "Build bcc"},
+      {"id": "tools-equal-mac", "title": "Match the Mac twin binaries"},
+      {"id": "rebuilt-tools-behave", "title": "Run the corpus with the rebuilt tools"},
+      {"id": "rebuilt-cargo-noop", "title": "Repeat Cargo build without recompiling"}
+    ]
+  }]
+}

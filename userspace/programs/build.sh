@@ -23,6 +23,7 @@
 #   ./userspace/programs/build.sh --arch aarch64   # aarch64
 #   ./userspace/programs/build.sh --hosted-bin NAME [--features FEATURES]
 #     Build a single bin into target/hosted for the selected architecture.
+#     For E25 self-host, use --hosted-bin suite-self-host --features self-host.
 #   ./userspace/programs/build.sh --rust-host
 #     Build the opt-in suite and its probes into target/hosted.
 #   ./userspace/programs/build.sh --arch x86_64|aarch64 --bunwind
@@ -552,7 +553,7 @@ build_rust_programs() (
         export RUSTFLAGS="$HOSTED_RUSTFLAGS -C metadata=breenix_std_$FORK_COMMIT"
         extra_link_flags=()
         case "$HOSTED_BIN" in
-            suite-dynamic|suite-cargo|suite-d1)
+            suite-dynamic|suite-cargo|suite-d1|suite-self-host)
                 extra_link_flags=(-Dwarnings) ;;
             suite-rust-host|rust-host-startup-probe|rust-host-process-probe|rust-host-unwind-probe)
                 extra_link_flags=(-Cforce-unwind-tables=yes) ;;

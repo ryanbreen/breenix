@@ -662,7 +662,9 @@ impl MappedElf {
         };
         self.exec_vmas.try_reserve_exact(regions.len()).map_err(|_| Errno(ENOMEM))?;
         let flags = MmapFlags::from_bits_truncate(MmapFlags::PRIVATE.bits() | MmapFlags::ANONYMOUS.bits());
-        for region in regions {
+        // The interpreter is above the program. Each contributes regions in
+        // ascending order, so reversing gives the live VMA order.
+        for region in regions.into_iter().rev() {
             // ELF PF_R and PF_X occupy the opposite bits from PROT_READ
             // and PROT_EXEC. PF_W and PROT_WRITE both occupy bit 1.
             let elf = region.flags;

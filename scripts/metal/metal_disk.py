@@ -124,20 +124,19 @@ def config_2(action, size, partition, expected, root, url=''):
     return HEADER_2.pack(MAGIC_2, action, size, guid, expected, root) + (url.encode('ascii') + b'\0' if url else b'')
 
 
-def append_d1_scratch(image, root_bytes, partition_bytes, inputs, record):
+def append_sparse_scratch(image, root_bytes, partition_bytes, packed, record):
     scratch_bytes = record['scratchBytes']
     end = root_bytes + scratch_bytes
     if (scratch_bytes < FIXTURE_BYTES or scratch_bytes % 4096
             or root_bytes % metal_image.SECTOR or end > partition_bytes):
-        raise ValueError('D1 scratch does not fit after the test root')
-    packed = inputs / 'd1-scratch.dat'
+        raise ValueError(f'{packed.name} does not fit after the test root')
     disk = dict(size=packed.stat().st_size, sha256=metal_image.sha256(packed))
     if disk != record['disk'] or not 0 < disk['size'] < scratch_bytes:
-        raise ValueError('D1 sparse scratch differs from the build record')
+        raise ValueError(f'{packed.name} differs from the build record')
     with image.open('ab') as payload, packed.open('rb') as source:
         shutil.copyfileobj(source, payload, 1 << 20)
     if image.stat().st_size != root_bytes + disk['size']:
-        raise ValueError('D1 sparse scratch delivery length differs')
+        raise ValueError(f'{packed.name} delivery length differs')
     return image.stat().st_size, [dict(role='scratch', offset=root_bytes, length=scratch_bytes)]
 
 
@@ -155,11 +154,13 @@ def stage(directory, inputs, boot_id, commit, site, build, mode='console', suite
     previous = metal_persist.test_root()
     built_fixtures = build.get('filesystemFixtures')
     toolchain_scratch = bool(build.get('toolchain', {}).get('busyboxScratch'))
-    diagnostic = build.get('d1') if 'd1' in (suite or '').split(',') else None
+    names = (suite or '').split(',')
+    sparse = (('self-host-scratch.dat', build['selfHost']) if 'self-host' in names else
+              ('d1-scratch.dat', build['d1']) if 'd1' in names else None)
     use_fixtures = (built_fixtures is not None and mode == 'suite'
                     and ('filesystem' in (suite or '').split(',') or toolchain_scratch)
                     and not (case or '').startswith('power-cut/'))
-    if (use_fixtures or diagnostic) and not the_layout:
+    if (use_fixtures or sparse) and not the_layout:
         raise ValueError('filesystem fixtures require the disposable test-root partition')
     if not the_layout and not previous:
         raise ValueError('disk delivery needs a previously verified install to identify its owned disk')
@@ -207,11 +208,12 @@ def stage(directory, inputs, boot_id, commit, site, build, mode='console', suite
     if the_layout:
         partition = the_layout['partitions']['test']['guid']
         size = facts['bytes']
-        if diagnostic:
-            wire_bytes, slices = append_d1_scratch(image, size, test_partition_bytes(the_layout, partition),
-                                                   inputs, diagnostic)
+        if sparse:
+            name, scratch = sparse
+            wire_bytes, slices = append_sparse_scratch(
+                image, size, test_partition_bytes(the_layout, partition), inputs / name, scratch)
             facts.update(fixtureSlices=slices, stagedBytes=wire_bytes)
-            request.write_bytes(config_3(size + diagnostic['scratchBytes'], partition, root, size, wire_bytes))
+            request.write_bytes(config_3(size + scratch['scratchBytes'], partition, root, size, wire_bytes))
         else:
             if use_fixtures:
                 size, slices = append_fixtures(image, size, test_partition_bytes(the_layout, partition),

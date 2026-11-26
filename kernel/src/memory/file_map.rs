@@ -1799,11 +1799,12 @@ pub(crate) fn isolate(
             inner.writable_shared += 1;
         }
         inner.bindings.push(rec);
-        vmas.insert(index + 1 + slot, vma);
+        // Each successive cut starts higher than the preceding one.
+        vmas.insert(index, vma);
     }
     drop(inner);
     // The range is the VMA that starts at `start`.
-    Ok(Some(if start > vma_start { index + 1 } else { index }))
+    Ok(Some(index + cuts.len() - usize::from(start > vma_start)))
 }
 
 /// Remove the leaves of file VMA `vmas[index]`. The caller keeps its binding

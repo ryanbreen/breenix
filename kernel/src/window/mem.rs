@@ -203,7 +203,12 @@ pub fn protect_range(mem: &Mem, start: u64, offset: u64, len: u64, writable: boo
         let suffix = (to < vend).then(|| process.vmas[index].piece(VirtAddr::new(to), VirtAddr::new(vend)));
         process.vmas[index] = process.vmas[index].replacement_piece(VirtAddr::new(from), VirtAddr::new(to));
         process.vmas[index].prot = prot;
-        process.vmas.extend(prefix.into_iter().chain(suffix));
+        if let Some(prefix) = prefix {
+            process.vmas.insert(index + 1, prefix);
+        }
+        if let Some(suffix) = suffix {
+            process.vmas.insert(index, suffix);
+        }
     }
     Ok(())
 }

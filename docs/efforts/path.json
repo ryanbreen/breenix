@@ -2490,7 +2490,7 @@
           "id": "self-host",
           "title": "The tools rebuild themselves to identical bytes",
           "measure": {
-            "suite": "toolchain",
+            "suite": "self-host",
             "categories": [
               "self-host"
             ]
