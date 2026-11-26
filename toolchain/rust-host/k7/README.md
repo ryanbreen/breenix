@@ -109,3 +109,27 @@ console write when the log device cannot accept the message.
 
 The ARM64 Breenix build still needs a hosted Rust twin, an ARM64 OpenSSL
 target, its own ELF inventory and guest acceptance.
+
+## Offline Cargo suite
+
+`userspace/programs/build.sh --arch ARCH --cargo-suite` builds the opt-in
+runner into `userspace/programs/target/hosted`. The runner reads the corpus
+under `/usr/libexec/breenix/cargo/corpus` beside `bin/{cargo,rustc,bld}`,
+`sysroot`, `targets` and `lib/{libc.a,linker.ld}`. It copies each workspace
+into private scratch space and enforces a 60-second case deadline with
+process-group cleanup on timeout.
+
+Run `python3 -m unittest tests.cargo_suite_test` with the retained K5 and
+K7 twins, a Mac-native `bld` built from this checkout, and the soft-float
+x86-64 `libc.a`. The check projects the guest commands from
+`suite_cargo.rs`. It cross-links the two-crate workspace, then compares
+output using a Mac-native build of the same workspace. The registry case
+compares exit status and stderr byte for byte after projecting the workspace
+path. Its registry directory permits Cargo's cache tag and rejects
+registry index, archive and unpacked-source entries. The host-only listener
+requires 0 offline connections and at least 1 in the locked online control.
+
+The test accepts `BREENIX_K7_MAC_CARGO`, `BREENIX_K7_MAC_STDLIB`,
+`BREENIX_K5_MAC_RUSTC`, `BREENIX_K5_SYSROOT`, `BREENIX_K7_BLD` and
+`BREENIX_K7_LIBC` for artifact locations. The Mac standard-library directory
+contains the stage-1 Mac rlibs retained from the twin build.

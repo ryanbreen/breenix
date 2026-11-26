@@ -1,0 +1,14 @@
+version = 4
+
+[[package]]
+name = "k7-registry-user"
+version = "0.1.0"
+dependencies = [
+ "k7-unavailable",
+]
+
+[[package]]
+name = "k7-unavailable"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0000000000000000000000000000000000000000000000000000000000000000"

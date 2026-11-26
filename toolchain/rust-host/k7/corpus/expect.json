@@ -1,0 +1,22 @@
+{
+  "offline-path-workspace": {
+    "build": {
+      "status": 0
+    },
+    "run": {
+      "status": 0,
+      "stdout": "hello from the offline path workspace\n",
+      "stderr": ""
+    }
+  },
+  "no-network": {
+    "build": {
+      "status": 101,
+      "stdout": "",
+      "stderr": "error: no matching package named `k7-unavailable` found\nlocation searched: `k7-registry` index (which is replacing registry `crates-io`)\nrequired by package `k7-registry-user v0.1.0 ({workspace})`\nAs a reminder, you're using offline mode (--frozen) which can sometimes cause surprising resolution failures, if this error is too confusing you may wish to retry without `--frozen`.\n"
+    },
+    "registry_metadata": {
+      "CACHEDIR.TAG": "Signature: 8a477f597d28d172789f06886806bc55\n# This file is a cache directory tag created by cargo.\n# For information about cache directory tags see https://bford.info/cachedir/\n"
+    }
+  }
+}

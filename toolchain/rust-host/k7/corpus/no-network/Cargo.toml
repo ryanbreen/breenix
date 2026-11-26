@@ -1,0 +1,9 @@
+[package]
+name = "k7-registry-user"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+k7-unavailable = "=0.1.0"

@@ -110,7 +110,7 @@ class CargoSuite(unittest.TestCase):
         self.assertEqual(set(expect), set(invocations))
 
         with tempfile.TemporaryDirectory(prefix="breenix-k7-") as directory:
-            fixture = self.stage_twins(Path(directory))
+            fixture = self.stage_twins(Path(directory).resolve())
             for name, check in (("offline-path-workspace", self.check_path_workspace),
                                 ("no-network", self.check_no_network)):
                 with self.subTest(case=name):
@@ -127,12 +127,15 @@ class CargoSuite(unittest.TestCase):
         k7 = read_json(K7 / "x86_64.json")
         default_rustc = CACHE / "k5/twin/mac/bin/rustc"
         default_sysroot = CACHE / "k5/twin/sysroot"
+        target = k7["mac_target"]
         cargo = os.environ.get("BREENIX_K7_MAC_CARGO")
-        if cargo is None:
-            g4 = Path((CACHE / "k7/g4.path").read_text().strip())
-            target = k7["mac_target"]
-            cargo = g4 / f"build/{target}/stage0-tools/{target}/release/cargo"
+        mac_std = os.environ.get("BREENIX_K7_MAC_STDLIB")
+        if cargo is None or mac_std is None:
+            g4 = Path((CACHE / "k7/g4.path").read_text().strip()) / "build" / target
+            cargo = cargo or g4 / f"stage0-tools/{target}/release/cargo"
+            mac_std = mac_std or g4 / f"stage1-std/{target}/release/deps"
         cargo = Path(cargo).resolve()
+        mac_std = Path(mac_std).resolve()
         rustc = Path(os.environ.get("BREENIX_K5_MAC_RUSTC", default_rustc)).resolve()
         sysroot = Path(os.environ.get("BREENIX_K5_SYSROOT", default_sysroot)).resolve()
         bld = Path(os.environ.get("BREENIX_K7_BLD", ROOT / "toolchain/target/release/bld")).resolve()
@@ -143,6 +146,7 @@ class CargoSuite(unittest.TestCase):
         self.assertEqual(digest(cargo), k7["mac_cargo_sha256"])
         self.assertEqual(digest(rustc), k7["k5_compiler_digests"]["mac_rustc_sha256"])
         self.assertTrue(sysroot.is_dir(), sysroot)
+        self.assertTrue(any(mac_std.glob("libstd-*.rlib")), mac_std)
         self.assertTrue(bld.is_file(), bld)
         self.assertTrue(libc.is_file(), libc)
         (fixture / "bin").mkdir()
@@ -151,22 +155,26 @@ class CargoSuite(unittest.TestCase):
         for name, path in (("cargo", cargo), ("rustc", rustc), ("bld", bld)):
             (fixture / "bin" / name).symlink_to(path)
         (fixture / "sysroot").symlink_to(sysroot)
+        mac_rustlib = fixture / "mac-sysroot/lib/rustlib" / target
+        mac_rustlib.mkdir(parents=True)
+        (mac_rustlib / "lib").symlink_to(mac_std)
         (fixture / "lib/libc.a").symlink_to(libc)
         shutil.copyfile(ROOT / "userspace/programs/linker.ld", fixture / "lib/linker.ld")
         for target in ("x86_64-breenix", "x86_64-breenix-hosted"):
             shutil.copyfile(ROOT / f"{target}.json", fixture / f"targets/{target}.json")
         return fixture
 
-    def check_result(self, result, expected):
+    def check_result(self, result, expected, workspace):
         self.assertEqual(result.returncode, expected["status"], result.stderr)
         for stream in ("stdout", "stderr"):
             if stream in expected:
-                self.assertEqual(getattr(result, stream), expected[stream].encode())
+                value = expected[stream].replace("{workspace}", str(workspace))
+                self.assertEqual(getattr(result, stream), value.encode())
 
     def check_path_workspace(self, steps, expected, workspace, deadline):
         self.assertEqual(set(steps), {"build", "run"})
         build = steps["build"]
-        self.check_result(run(build, deadline), expected["build"])
+        self.check_result(run(build, deadline), expected["build"], workspace)
         binary = Path(steps["run"][0][0])
         with binary.open("rb") as elf:
             header = elf.read(20)
@@ -180,11 +188,20 @@ class CargoSuite(unittest.TestCase):
         target = argv.index("--target") + 1
         native_argv = argv.copy()
         native_argv[target] = native
-        native_env = {**env, "CARGO_ENCODED_RUSTFLAGS": "-Dwarnings"}
-        self.check_result(run((native_argv, cwd, native_env), deadline), expected["build"])
+        native_sysroot = Path(env["RUSTC"]).parents[1] / "mac-sysroot"
+        native_env = {
+            **env,
+            "CARGO_ENCODED_RUSTFLAGS": "\x1f".join((
+                f"--sysroot={native_sysroot}",
+                "-Clinker=/usr/bin/cc",
+                "-Cstrip=none",
+                "-Dwarnings",
+            )),
+        }
+        self.check_result(run((native_argv, cwd, native_env), deadline), expected["build"], workspace)
         target_dir = cwd / argv[argv.index("--target-dir") + 1]
         native_binary = target_dir / native / binary.parent.name / binary.name
-        self.check_result(run(steps["run"], deadline, executable=native_binary), expected["run"])
+        self.check_result(run(steps["run"], deadline, executable=native_binary), expected["run"], workspace)
 
     def check_no_network(self, steps, expected, workspace, deadline):
         self.assertEqual(set(steps), {"build"})
@@ -199,14 +216,26 @@ class CargoSuite(unittest.TestCase):
             # Project the fixture's inert loopback endpoint to the Mac listener.
             projected = f"sparse+http://127.0.0.1:{listener.server_port}/"
             config.write_text(config_text.replace(registry, projected))
+            self.check_result(run((argv, cwd, env), deadline), expected["build"], workspace)
+            # Nobody accepts during the offline invocation. A completed
+            # connection would still be queued even if its client exited.
+            listener.socket.setblocking(False)
+            try:
+                with self.assertRaises(BlockingIOError):
+                    connection, _ = listener.socket.accept()
+                    connection.close()
+            finally:
+                listener.socket.setblocking(True)
+            registry_dir = Path(env["CARGO_HOME"]) / "registry"
+            metadata = expected["registry_metadata"]
+            for entry in registry_dir.glob("*"):
+                self.assertIn(entry.name, metadata, "Cargo populated the offline registry cache")
+                self.assertTrue(entry.is_file() and not entry.is_symlink(), entry)
+                self.assertEqual(entry.read_bytes(), metadata[entry.name].encode())
+
             server = Thread(target=listener.serve_forever)
             server.start()
             try:
-                self.check_result(run((argv, cwd, env), deadline), expected["build"])
-                self.assertEqual(listener.connections, 0)
-                registry_dir = Path(env["CARGO_HOME"]) / "registry"
-                self.assertEqual(list(registry_dir.glob("*")), [])
-
                 # Frozen implies offline as well. Preserve lock enforcement
                 # in the control while allowing the registry request.
                 online = [arg for arg in argv if arg != "--offline"]

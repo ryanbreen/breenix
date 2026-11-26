@@ -1,0 +1,12 @@
+version = 4
+
+[[package]]
+name = "k7-app"
+version = "0.1.0"
+dependencies = [
+ "k7-words",
+]
+
+[[package]]
+name = "k7-words"
+version = "0.1.0"
