@@ -144,6 +144,42 @@ class ToolchainGuestBuildTest(unittest.TestCase):
                             self.assertEqual(digest(path), digest(bindir / tool))
                             self.assertEqual(image.fixture_mode(path.relative_to(root)), 0o755)
 
+    def test_arm_kernel_assembly_fixture_and_elf_digest(self):
+        with mock.patch.object(sys, "path", [str(ROOT / "scripts"), *sys.path]):
+            builder = importlib.import_module("toolchain-build-tools")
+            image = importlib.import_module("toolchain-image")
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            out = root / "out"
+            out.mkdir()
+            sources = ("src/arch_impl/aarch64/resume_pc_guard.inc",
+                       "src/arch_impl/aarch64/boot.S", "src/arch_impl/aarch64/syscall_entry.S")
+            generated = ("boot.s", "syscall_entry.s", "boot.o", "syscall_entry.o")
+            for name in (*generated, "bas"):
+                (out / name).write_bytes(name.encode())
+            elf = root / "kernel"
+            elf.write_bytes(b"linked kernel")
+            fields = {name: digest(ROOT / "kernel" / name) for name in sources}
+            fields.update({name: digest(out / name) for name in generated})
+            fields.update(bas_sha256=digest(out / "bas"), kernel_elf_sha256=digest(elf),
+                          cargo_package="bas", build_host="host", rustc="rustc")
+            record = out / "kernel-assembly.record"
+            record.write_text("".join(f"{key}={value}\n" for key, value in fields.items()))
+            corpus = root / image.CORPUS
+            builder.stage_kernel_assembly(image, "aarch64", corpus, image.KERNEL_ASSEMBLY_MILESTONE, record)
+            directory = corpus / "kernel-asm"
+            expected = {*sources, *generated, "privileged-a64.s", "privileged-a64.hex", "kernel-assembly.record"}
+            self.assertEqual({str(p.relative_to(directory)) for p in directory.rglob("*") if p.is_file()}, expected)
+            files = [p.relative_to(root) for p in directory.rglob("*") if p.is_file()]
+            self.assertEqual(image.kernel_assembly_record(root, files, "aarch64", image.KERNEL_ASSEMBLY_MILESTONE), fields)
+            image.verify_kernel_elf(record, elf, "aarch64")
+            elf.write_bytes(b"different kernel")
+            with self.assertRaisesRegex(ValueError, "kernel.*digest"):
+                image.verify_kernel_elf(record, elf, "aarch64")
+            (directory / "boot.o").write_bytes(b"tampered")
+            with self.assertRaisesRegex(ValueError, "differ"):
+                image.kernel_assembly_record(root, files, "aarch64", image.KERNEL_ASSEMBLY_MILESTONE)
+
     def test_arm_guest_link_inputs_are_keyed_by_content(self):
         script = ROOT / "scripts/toolchain-build-tools.py"
         spec = importlib.util.spec_from_file_location("toolchain_build_tools", script)

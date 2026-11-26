@@ -131,6 +131,31 @@ class SuiteWatcherTest(unittest.TestCase):
             else:
                 self.assertNotIn("--suite-deadlines", lines)
 
+    def test_arm_kernel_assembly_uses_suite_deadlines(self):
+        launcher = (ROOT / "scripts/boot-interactive.sh").read_text()
+        selection = launcher.split("WATCH_READY_ARGS=()", 1)[1].split('[ "$UNTIL_DESKTOP_READY"', 1)[0]
+        for explicit in ("0", "1"):
+            result = subprocess.run(["bash", "-c", 'ROOT="$1"; MILESTONE=toolchain/kernel-assembly; '
+                                     'GATE_TIMEOUT_EXPLICIT="$2"; SUITE="toolchain,processes"; '
+                                     'WATCH_READY_ARGS=(); ' + selection +
+                                     'printf "%s\n" "${WATCH_READY_ARGS[@]}"',
+                                     "test", str(ROOT), explicit], capture_output=True, text=True, check=True)
+            lines = result.stdout.splitlines()
+            if explicit == "0":
+                self.assertEqual(lines[0], "--suite-deadlines")
+                deadlines = runpy.run_path(str(ROOT / "scripts/suite-deadlines.py"))["suite_deadlines"]
+                self.assertEqual(json.loads(lines[1]), deadlines(["toolchain", "processes"], "aarch64"))
+            else:
+                self.assertNotIn("--suite-deadlines", lines)
+
+    def test_arm_kernel_assembly_uses_busybox_scratch(self):
+        script = ROOT / "scripts/lib/root-fs.sh"
+        result = subprocess.run(["bash", "-c", 'source "$1"; MODE=suite; SUITE=toolchain; '
+                                 'MILESTONE=toolchain/kernel-assembly; WRITABLE=/tmp/run/root.img; '
+                                 'root_fs_scratch; printf "%s\n" "${BREENFS_SCRATCH_ARGS[@]}"',
+                                 "test", str(script)], capture_output=True, text=True, check=True)
+        self.assertIn("file=/tmp/run/toolchain-scratch.img", result.stdout)
+
     def test_stalled_suite_does_not_shift_the_next_suite_deadline(self):
         with tempfile.TemporaryDirectory() as tmp:
             serial = Path(tmp) / "serial"
