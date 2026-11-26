@@ -18,6 +18,7 @@ rustc = []
 rust-link = []
 cargo-suite = []
 d1 = []
+self-host = []
 dynamic = ["breenix-suite/dynamic"]
 
 [dependencies]
@@ -1058,3 +1059,8 @@ required-features = ["cargo-suite"]
 name = "suite-d1"
 path = "src/suite_d1.rs"
 required-features = ["d1"]
+
+[[bin]]
+name = "suite-self-host"
+path = "src/suite_self_host.rs"
+required-features = ["self-host"]
