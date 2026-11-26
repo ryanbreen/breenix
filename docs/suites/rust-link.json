@@ -1,0 +1,17 @@
+{
+  "id": "rust-link",
+  "title": "Rust linker",
+  "area": "Toolchain",
+  "summary": "Checks recorded Rust linker invocations and rlib handling.",
+  "binary": "/sbin/suite-rust-link",
+  "timingSensitive": true,
+  "categories": [{
+    "id": "rust-link",
+    "title": "Rust linker",
+    "cases": [
+      {"id": "links-tool-target", "title": "Links the tool target"},
+      {"id": "links-hosted-unwind", "title": "Links hosted unwinding"},
+      {"id": "rlib-members-skipped", "title": "Skips only rlib metadata"}
+    ]
+  }]
+}

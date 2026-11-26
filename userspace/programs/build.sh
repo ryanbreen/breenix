@@ -34,6 +34,8 @@
 #     Link llc and llvm-mc into target/llvm/<arch>.
 #   ./userspace/programs/build.sh --rustc
 #     Stage the linked K5 twin compiler and maps into target/rustc/x86_64.
+#   ./userspace/programs/build.sh --rust-link
+#     Build the hosted replay suite and guest bld into target/rust-link/x86_64.
 #   ./userspace/programs/build.sh --kd-libc
 #     Link the x86-64 hosted compiler's libc.so and executable CRT.
 #   ./userspace/programs/build.sh --dynamic
@@ -47,7 +49,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 usage() {
-    echo "Usage: $0 [--arch x86_64|aarch64] [--hosted-bin NAME [--features FEATURES] | --rust-host | --bunwind | --cxx-runtime | --llvm | --rustc | --dynamic | --kd-libc | --kd-loader]" >&2
+    echo "Usage: $0 [--arch x86_64|aarch64] [--hosted-bin NAME [--features FEATURES] | --rust-host | --bunwind | --cxx-runtime | --llvm | --rustc | --rust-link | --dynamic | --kd-libc | --kd-loader]" >&2
     exit 2
 }
 
@@ -59,6 +61,7 @@ BUNWIND=0
 CXX_RUNTIME=0
 LLVM=0
 RUSTC_PORT=0
+RUST_LINK=0
 DYNAMIC=0
 KD_LIBC=0
 KD_LOADER=0
@@ -93,6 +96,10 @@ while [[ $# -gt 0 ]]; do
             RUSTC_PORT=1
             shift
             ;;
+        --rust-link)
+            RUST_LINK=1
+            shift
+            ;;
         --dynamic)
             DYNAMIC=1
             shift
@@ -115,6 +122,12 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+if [[ "$RUST_LINK" == 1 ]]; then
+    [[ "$ARCH" == x86_64 && "$RUSTC_PORT" == 0 && "$DYNAMIC" == 0 &&
+       "$KD_LIBC" == 0 && "$KD_LOADER" == 0 && "$CXX_RUNTIME" == 0 &&
+       "$LLVM" == 0 && "$BUNWIND" == 0 && "$RUST_HOST" == 0 &&
+       -z "$HOSTED_BIN" && ${#HOSTED_FEATURES[@]} -eq 0 ]] || usage
+fi
 if [[ "$RUSTC_PORT" == 1 ]]; then
     [[ "$ARCH" == x86_64 && "$DYNAMIC" == 0 && "$KD_LIBC" == 0 && "$KD_LOADER" == 0 &&
        "$CXX_RUNTIME" == 0 && "$LLVM" == 0 && "$BUNWIND" == 0 &&
@@ -290,6 +303,63 @@ fork_commit() {
         git -C "$1/.." rev-parse HEAD
     fi
 }
+
+if [[ "$RUST_LINK" == 1 ]]; then
+    "$PROJECT_ROOT/scripts/rust-fork.sh" verify
+    library="${BREENIX_RUST_FORK_LIBRARY:-$PROJECT_ROOT/rust-fork/library}"
+    fork="$(fork_commit "$library")"
+    "$SCRIPT_DIR/build.sh" --arch "$ARCH" --hosted-bin suite-rust-link --features rust-link
+    out="$SCRIPT_DIR/target/rust-link/$ARCH"
+    cd "$PROJECT_ROOT/toolchain"
+    stage0="$(rustup which rustc)"
+    flags=(-L "native=$LIBC_RELEASE_DIR" -C "link-arg=-T$SCRIPT_DIR/linker.ld"
+           -C link-arg=--allow-multiple-definition -C default-linker-libraries=no
+           -C "metadata=breenix_std_$fork" -D warnings)
+    if [[ "${BREENIX_USERSPACE_REMAP:-0}" == 1 ]]; then
+        flags+=("--remap-path-prefix=$PROJECT_ROOT=/breenix" "--remap-path-prefix=$CARGO_HOME=/cargo")
+    fi
+    encoded="$(IFS=$'\x1f'; printf '%s' "${flags[*]}")"
+    RUSTC="$stage0" __CARGO_TESTS_ONLY_SRC_ROOT="$library" CARGO_ENCODED_RUSTFLAGS="$encoded" \
+        cargo build --locked --release -p bld --bin bld --target "$PROJECT_ROOT/$TARGET_DIR.json" \
+        --target-dir "$out/cargo" -Z build-std=std,panic_abort -Z build-std-features=compiler-builtins-mem
+
+    python3 - "$out" "$TARGET_DIR" "$fork" "$stage0" "$LIBC_RELEASE_DIR/libc.a" \
+        "$SCRIPT_DIR/target/hosted/$TARGET_DIR-hosted/release/suite-rust-link" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+
+output, target, fork, rustc, libc, suite = sys.argv[1:]
+output = Path(output)
+
+def sha256(path):
+    with open(path, 'rb') as stream:
+        return hashlib.file_digest(stream, 'sha256').hexdigest()
+
+binaries = {'bld': output / 'cargo' / target / 'release/bld', 'suite-rust-link': Path(suite)}
+record = {
+    'target': target,
+    'cargo_package': 'bld',
+    'rust_fork_commit': fork,
+    'stage0': {'version': subprocess.check_output([rustc, '--version'], text=True).strip(),
+               'sha256': sha256(rustc)},
+    'bld_libc_sha256': sha256(libc),
+    'files_sha256': {name: sha256(path) for name, path in binaries.items()},
+}
+with tempfile.TemporaryDirectory(dir=output) as temporary:
+    scratch = Path(temporary)
+    for name, path in binaries.items():
+        shutil.copy2(path, scratch / name)
+    (scratch / 'build.json').write_text(json.dumps(record, indent=2) + '\n')
+    for name in (*binaries, 'build.json'):
+        (scratch / name).replace(output / name)
+PY
+    exit 0
+fi
 
 if [[ "$CXX_RUNTIME" == 1 || "$LLVM" == 1 ]]; then
     runtime_build="${BREENIX_CXX_RUNTIME_BUILDS:-$PROJECT_ROOT/build/cxx-runtime}/$ARCH/build"

@@ -19,7 +19,8 @@ edition pin whose full publication has no digest recorded here.
 | [WG14 N2244](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n2244.htm) | C11 clarification request summary with C17 dispositions, version 1.13, October 2017 | `7fa6be89b5a9a8407f5a26cc18ad86cef52d2c9683094f968bf916dba07bb0d4` |
 | [System V AMD64 psABI](https://raw.githubusercontent.com/wiki/hjl-tools/x86-psabi/x86-64-psABI-1.0.pdf) | AMD64 ABI Draft 1.0, 2018-01-28 | `f5c0e21542fc379090252e18ff3d083d2a5f51da8cca62b0fec41cc330a74641` |
 | [ELF gABI](https://gabi.xinuos.com/elf.pdf) | Xinuos ELF Object File Format, version 4.3 draft, 2025-09-04 | `e695f547dbb989e204dde79bc4dc6cfee7de7cca9b65a10208142932a216831b` |
-| [Linux Standard Base Core Specification](https://refspecs.linuxfoundation.org/LSB_5.0.0/LSB-Core-generic/LSB-Core-generic.pdf) | 5.0, Generic Part, chapter 11 (E25 ruling 8) | — |
+| [Linux Standard Base Core Specification](https://refspecs.linuxfoundation.org/LSB_5.0.0/LSB-Core-generic/LSB-Core-generic.pdf) | 5.0, Generic Part, §§10.5–10.6 and chapter 11 (E25 rulings 8 and 115) | — |
+| [DWARF Debugging Information Format](https://dwarfstd.org/doc/DWARF5.pdf) | Version 5, 2017-02-13, §§6.4.1 and 7.6 | `cc9a9b49163aa7c65923b45ade0df6f5dff5ee50ecf8e5938c03ffbfa06a25e4` |
 | [Intel SDM](https://cdrdv2-public.intel.com/812392/325462-sdm-vol-1-2abcd-3abcd-4.pdf) | Combined volumes 1–4, 325462-082US, December 2023 | `3b2551f01b4c91dc80e7f9cfb1e9790feeefe503cff15d2922ace049f4d8730f` |
 | [AMD APM](https://kib.kiev.ua/x86docs/AMD/AMD64/40332-r4.09.pdf) | AMD publication 40332, combined volumes 1–5, revision 4.09, March 2026, archived PDF | `ae18704f924bb80bc9bbfe9d3c33b97c16cdeaa9c7afccb033d136e86fd88a08` |
 | [IEEE Std 754](https://standards.ieee.org/ieee/754/6210/) | IEEE 754-2019, 2019-07-22 (E25 ruling 44) | — |
@@ -167,6 +168,32 @@ repeats that search for the archives between `--start-group` and `--end-group`.
 `--no-whole-archive` resets selection to the indexed search. ELF gABI §§5.2
 and 5.5 describe weak binding and common storage.
 
+### bld static links from rustc
+
+GNU ld 2.45 §2.1 governs the recorded K6 interface. The explicit directories
+from `-L` apply to `-l` regardless of order, and preceding directories extend lookup for
+`-T`. Library operands keep their position among the input files. `-l:FILE`
+searches for the literal filename. `-Bstatic` searches for archives.
+`-Bdynamic` searches each directory for a shared library before the archive.
+A required shared library produces a diagnostic naming its path. In
+`--as-needed` mode, bld can omit an ELF shared input that satisfies no strong
+undefined reference at that position. `--no-as-needed` restores the default.
+
+`--allow-multiple-definition` retains the first strong definition.
+`-z noexecstack` uses bld's non-executable stack header (LSB Core 5.0 Table 11-1).
+`-O1` applies to GNU ld's shared output. The captured `-flavor gnu` pair
+selects bld's GNU interface for direct compiler invocations. This interface
+and `--strip-debug` emit defined global and weak symbols in the executable
+symbol table, using ELF gABI §§3 and 5. Hidden and internal symbols are
+omitted as §5.4 permits. The tables are outside the load segments.
+
+The K6 Mac twin receipt records `lib.rmeta` as compiler metadata. bld skips
+that exact archive member name and diagnoses any other non-ELF member with
+its archive and member name. Solaris `ar(3HEAD)` uses the leading symbol count
+to determine the offset and name entries. A recorded `.rlib` with the
+32-bit count `0` and four NUL bytes in the name area contributes an
+empty index. Member framing and names still use the common archive reader.
+
 ## Relocatable links
 
 GNU ld 2.45 §2.1 describes `-r` (`--relocatable`). bld applies its usual
@@ -196,6 +223,33 @@ GNU ld 2.45 §§2.1 and 3.6 describe `--gc-sections` and `KEEP`. Entry and
 selection and the retention of whole groups. AMD64 psABI §§4.4 and 10.3
 govern static relocation arithmetic, GOT slots without relaxation and
 variant-II TLS offsets. ELF gABI §7.7 describes the TLS template.
+
+### bld exception frame index
+
+GNU ld 2.45 §2.1 specifies `--eh-frame-hdr`. LSB Core 5.0 §§10.5–10.6
+(Tables 10-4–10-6 and 10-8–10-11) and Table 11-1 define the sections, encoding,
+and program header. bld writes version 1 and these encodings.
+
+| Field | Encoding |
+| --- | --- |
+| `.eh_frame` pointer | `DW_EH_PE_pcrel\|DW_EH_PE_sdata4` (0x1b), relative to the pointer field |
+| FDE count | `DW_EH_PE_udata4` (0x03) |
+| Initial PC and FDE address | `DW_EH_PE_datarel\|DW_EH_PE_sdata4` (0x3b), relative to the start of `.eh_frame_hdr` |
+
+DWARF 5 §§6.4.1 and 7.6 supply the CIE/FDE layout and LEB128 format.
+AMD64 psABI §4.2.4 supplies the exception-frame conventions (version 1
+CIE, backward FDE CIE pointer and CIE/FDE augmentation). The initial
+PC must have an absolute or PC-relative relocation bld supports for
+that width. AMD64 psABI §4.4 and AAELF64 §5.7.5 define these relocations.
+The linker preserves the CFI instruction bytes and retains only the
+records for live code, including the CIEs and any personality and LSDA
+dependencies used by those records. It sorts the index by initial PC
+and diagnoses any displacement outside its signed 32-bit encoding.
+
+Without a custom script the index gets a read-only `PT_GNU_EH_FRAME`.
+A custom script declares that segment in `PHDRS` and may assign it as
+the second segment on the read-only `.eh_frame_hdr` output. The program
+header covers the index alone.
 
 ## C conformance fixtures
 

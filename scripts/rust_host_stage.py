@@ -194,7 +194,7 @@ def stage_rustc(image, selection, arch, suite, artifacts, sysroot, targets, corp
     return stage_files(image, directories, entries, extra_headroom=16384)
 
 
-def stage_files(image, directories, entries, extra_headroom=0):
+def stage_files(image, directories, entries, extra_headroom=0, *, align_to_block=False):
     expected = {}
     total_size = 0
     for path, source, mode in entries:
@@ -205,9 +205,23 @@ def stage_files(image, directories, entries, extra_headroom=0):
             expected[path] = hashlib.file_digest(stream, 'sha256').hexdigest()
         total_size += source.stat().st_size
     debugfs, resize2fs = require_e2fsprogs('debugfs', 'resize2fs')
+    target_size = image.stat().st_size + total_size * 2 + 16 * 1024 * 1024 + extra_headroom
+    resize_command = [resize2fs, image]
+    if align_to_block:
+        superblock = subprocess.run([debugfs, '-R', 'stats', image], check=True,
+                                    capture_output=True, text=True,
+                                    env={**os.environ, 'LC_ALL': 'C'}).stdout
+        match = re.search(r'^Block size:\s+([1-9][0-9]*)$', superblock, re.MULTILINE)
+        if not match:
+            raise ValueError(f'cannot read ext2 block size for {image}')
+        block_size = int(match[1])
+        blocks = (target_size + block_size - 1) // block_size
+        target_size = blocks * block_size
+        # Automatic sizing can round down even when the backing length is aligned.
+        resize_command.append(str(blocks))
     with image.open('r+b') as disk:
-        disk.truncate(image.stat().st_size + total_size * 2 + 16 * 1024 * 1024 + extra_headroom)
-    subprocess.run([resize2fs, image], check=True, capture_output=True)
+        disk.truncate(target_size)
+    subprocess.run(resize_command, check=True, capture_output=True)
     with tempfile.TemporaryDirectory(prefix='hosted-suite-stage-') as temporary:
         commands = Path(temporary) / 'commands'
         parents = ['/sbin', '/usr', '/usr/libexec', '/usr/libexec/breenix']
@@ -232,6 +246,76 @@ def stage_files(image, directories, entries, extra_headroom=0):
                 or not re.search(r'User:\s+0\s+Group:\s+0', stat)):
             raise ValueError(f'staging metadata differs for {path}')
     return expected
+
+
+def stage_rust_link(image, arch, artifacts, fixture, records):
+    if arch != 'x86_64':
+        raise ValueError('the recorded Rust linker fixture is only built for x86-64')
+    prefix = '/usr/libexec/breenix/rust-link'
+    build = json.loads((artifacts / 'build.json').read_text())['files_sha256']
+    k5 = json.loads((records / 'k5/x86_64.json').read_text())
+    receipt = records / 'k6/x86_64.json'
+    expectations = records / 'k6/expect.json'
+    k6 = json.loads(receipt.read_text())
+    expect = json.loads(expectations.read_text())
+    if (k6['rustc_sha256'], k6['rustc_commit']) != (k5['mac_rustc_sha256'], k5['fork_commit']):
+        raise ValueError('K6 compiler identity differs from the K5 build record')
+
+    def sha256(source):
+        with source.open('rb') as stream:
+            return hashlib.file_digest(stream, 'sha256').hexdigest()
+
+    entries = []
+    expected = {}
+
+    def add(path, source, mode, digest):
+        if sha256(source) != digest or (path in expected and expected[path] != digest):
+            raise ValueError(f'{path} differs from its build record')
+        if path not in expected:
+            entries.append((path, source, mode))
+            expected[path] = digest
+
+    add('/sbin/suite-rust-link', artifacts / 'suite-rust-link', '0755', build['suite-rust-link'])
+    add(f'{prefix}/bin/bld', artifacts / 'bld', '0755', build['bld'])
+    # The K6 input inventory includes the exact libbunwind.a used for the
+    # hosted replay. An independently rebuilt archive cannot replace it.
+    for name, record in k6['inputs'].items():
+        add(f'{prefix}/{name}', fixture / name, '0444', record['sha256'])
+    for name, digest in k5['sysroot']['files_sha256'].items():
+        source = f'sysroot/{name}'
+        add(f'{prefix}/{source}', fixture / source, '0444', digest)
+
+    directories = set()
+    for name, link in k6['links'].items():
+        relative = f'links/{name}/argv.json'
+        source = fixture / relative
+        argv_bytes = source.read_bytes()
+        if json.loads(argv_bytes) != link['argv']:
+            raise ValueError(f'{relative} differs from its build record')
+        add(f'{prefix}/{relative}', source, '0444', hashlib.sha256(argv_bytes).hexdigest())
+        reference = f'links/{name}/reference.elf'
+        if name in expect and expect[name]['reference_sha256'] != link['reference_sha256']:
+            raise ValueError(f'{reference} differs between the K6 record and expect.json')
+        add(f'{prefix}/{reference}', fixture / reference, '0755', link['reference_sha256'])
+        # Some recorded -L directories are empty. Keep the relative layout.
+        directories.update(f'{prefix}/{arg}' for arg, option in zip(link['argv'][1:], link['argv'])
+                           if option == '-L')
+    control = expect['control']['archive']
+    add(f'{prefix}/{control}', fixture / control, '0444', expect['control']['sha256'])
+    metadata = expect['metadata']['archive']
+    add(f'{prefix}/{metadata}', records / 'k6' / metadata, '0444', expect['metadata']['sha256'])
+    for source in (receipt, expectations):
+        add(f'{prefix}/{source.name}', source, '0444', sha256(source))
+    for path in [*expected, *directories]:
+        directories.update(str(parent) for parent in Path(path).parents
+                           if str(parent).startswith(prefix))
+
+    # Budget for the staged payload and a payload-sized replay workspace,
+    # plus 16 MiB of headroom. Ext2 allocation also draws from this budget.
+    staged = stage_files(image, sorted(directories), entries, align_to_block=True)
+    if staged != expected:
+        raise ValueError('Rust linker staging readback differs from the build records')
+    return staged
 
 
 def main():
@@ -259,6 +343,11 @@ def main():
         staged.update(stage_rustc(args.image, args.suite, args.arch, release / 'suite-rustc',
                                   PROGRAMS / 'target/rustc' / args.arch, sysroot, ROOT,
                                   ROOT / 'toolchain/rust-host/k5/corpus', kd, k5, kd_record))
+    if 'rust-link' in args.suite.split(','):
+        cache = Path(os.environ.get('BREENIX_RUSTC_PORT_BUILDS', ROOT / 'build/rustc-port'))
+        fixture = Path(os.environ.get('BREENIX_K6_FIXTURE', cache / 'k6/fixture'))
+        staged.update(stage_rust_link(args.image, args.arch, PROGRAMS / 'target/rust-link' / args.arch,
+                                     fixture, ROOT / 'toolchain/rust-host'))
     stage(args.image, args.suite, release / 'suite-rust-host',
           release / 'rust-host-startup-probe', release / 'rust-host-process-probe',
           release / 'rust-host-unwind-probe')

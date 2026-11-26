@@ -10,6 +10,7 @@ import sys
 import tempfile
 import tomllib
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,12 +25,21 @@ NIX_PATCH = RECORDS.parent / 'k5/patches/nix-0.30.1-breenix.patch'
 ERRNO_PATCH = RECORDS.parent / 'k5/patches/errno-0.3.12-breenix.patch'
 
 
+sys.path.insert(0, str(ROOT / "scripts/rust-host"))
+from rustc_port import guest_environment
+
+
 def git(*args, tree=TREE):
     return subprocess.run(['git', '-C', str(tree), *args], text=True,
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True).stdout.strip()
 
 
 class RustcPort(unittest.TestCase):
+    def test_twin_spawn_environment_is_guest_set(self):
+        with mock.patch.dict(os.environ, {"RUSTFLAGS": "ambient", "CARGO_HOME": "ambient"}):
+            self.assertEqual(guest_environment(Path("/fixture/targets")),
+                             {"RUST_TARGET_PATH": "/fixture/targets"})
+
     def test_guest_target_loads_twin_sysroot(self):
         cache = Path.home() / 'Library/Caches/breenix-e25/k5/twin'
         mac_rustc = Path(os.environ.get('BREENIX_K5_MAC_RUSTC', cache / 'mac/bin/rustc'))
@@ -47,11 +57,9 @@ class RustcPort(unittest.TestCase):
             host = json.loads((corpus / 'expect.json').read_text())['hosted_host']
             shutil.copyfile(ROOT / f'{host}.json', targets / f'{host}.json')
             # Translate the guest's explicit spawn environment to the host fixture.
-            environment = dict(os.environ)
-            environment.pop('RUST_TARGET_PATH', None)
-            if 'let envp = [target_path.as_ptr().cast(), null()];' in suite:
-                self.assertIn('CString::new(format!("RUST_TARGET_PATH={FIXTURE}/targets"))', suite)
-                environment['RUST_TARGET_PATH'] = str(targets)
+            self.assertIn('let envp = [target_path.as_ptr().cast(), null()];', suite)
+            self.assertIn('CString::new(format!("RUST_TARGET_PATH={FIXTURE}/targets"))', suite)
+            environment = guest_environment(targets)
             host_lookup = subprocess.run(
                 [mac_rustc, '--target', host, '--print', 'cfg'], cwd=corpus, env=environment,
                 capture_output=True, text=True, timeout=15)

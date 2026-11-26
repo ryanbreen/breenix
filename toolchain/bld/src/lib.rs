@@ -2,6 +2,7 @@
 
 //! Static and relocatable ELF64 links from objects and common archives.
 
+mod eh_frame;
 mod input;
 mod layout;
 mod object;
@@ -9,9 +10,10 @@ mod relocatable;
 mod relocate;
 mod script;
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -55,23 +57,35 @@ impl Machine {
     }
 }
 
-const USAGE: &str = "usage: bld -o OUTPUT [-nostdlib] [-r | [-T SCRIPT] [--gc-sections]] [-Map FILE]\n\
+const USAGE: &str = "usage: bld -o OUTPUT [-nostdlib] [-r | [-T SCRIPT] [--gc-sections] [--eh-frame-hdr]] [-Map FILE]\n\
+       \x20      [-L DIRECTORY] [-Bstatic | -Bdynamic] [-l NAME | -l:FILE]\n\
        \x20      [--whole-archive | --no-whole-archive | --start-group |\n\
        \x20       --end-group | OBJECT | ARCHIVE] ...";
 
 struct Input {
-    path: PathBuf,
+    name: InputName,
     whole_archive: bool,
+    static_only: bool,
+    as_needed: bool,
+}
+
+enum InputName {
+    File(PathBuf),
+    Library(OsString),
 }
 
 #[derive(Default)]
 struct Options {
     output: PathBuf,
-    script: Option<PathBuf>,
+    script: Option<(PathBuf, usize)>,
     map: Option<PathBuf>,
     inputs: Vec<Vec<Input>>,
+    search: Vec<PathBuf>,
     gc: bool,
+    eh_frame_hdr: bool,
     relocatable: bool,
+    allow_multiple_definition: bool,
+    executable_symbols: bool,
 }
 
 impl Options {
@@ -80,11 +94,32 @@ impl Options {
         let mut options = Self::default();
         let mut group = None::<Vec<Input>>;
         let mut whole_archive = false;
+        let mut static_only = false;
+        let mut as_needed = false;
         while let Some(arg) = args.next() {
-            let value = match arg.as_encoded_bytes() {
+            // GNU ld §2.1 allows attached operands for these short options.
+            let (flag, attached) = match arg.as_encoded_bytes() {
+                [b'-', b'L' | b'l' | b'T', operand @ ..] if !operand.is_empty() => (
+                    &arg.as_encoded_bytes()[..2],
+                    Some(OsStr::from_bytes(operand)),
+                ),
+                flag => (flag, None),
+            };
+            let mut operand = || {
+                attached
+                    .map(OsStr::to_os_string)
+                    .or_else(|| args.next())
+                    .filter(|arg| !arg.is_empty())
+                    .ok_or(USAGE)
+            };
+            let value = match flag {
                 b"-o" if options.output.as_os_str().is_empty() => &mut options.output,
                 b"-T" | b"--script" if options.script.is_none() => {
-                    options.script.insert(PathBuf::new())
+                    let prior_search_paths = options.search.len();
+                    &mut options
+                        .script
+                        .insert((PathBuf::new(), prior_search_paths))
+                        .0
                 }
                 // GNU ld 2.45 §2.1 names the map option. bld writes
                 // selected symbol, binding and input path as TSV.
@@ -95,8 +130,41 @@ impl Options {
                     continue;
                 }
                 // GNU ld 2.45 §2.1 disables implicit library search.
-                // bld opens only the input paths provided on the command line.
+                // bld has no implicit library search directories.
                 b"-nostdlib" => continue,
+                b"-L" => {
+                    options.search.push(operand()?.into());
+                    continue;
+                }
+                b"-Bstatic" | b"-Bdynamic" => {
+                    static_only = flag == b"-Bstatic";
+                    continue;
+                }
+                b"--as-needed" | b"--no-as-needed" => {
+                    as_needed = flag == b"--as-needed";
+                    continue;
+                }
+                b"--allow-multiple-definition" => {
+                    options.allow_multiple_definition = true;
+                    continue;
+                }
+                // rustc selects the GNU flavor of a multi-flavor linker.
+                b"-flavor" if operand()? == "gnu" => {
+                    options.executable_symbols = true;
+                    continue;
+                }
+                // Executables already have a non-executable PT_GNU_STACK.
+                b"-z" if operand()? == "noexecstack" => continue,
+                // GNU ld §2.1 applies this optimization to shared output.
+                b"-O1" => continue,
+                b"--strip-debug" => {
+                    options.executable_symbols = true;
+                    continue;
+                }
+                b"--eh-frame-hdr" => {
+                    options.eh_frame_hdr = true;
+                    continue;
+                }
                 b"--gc-sections" => {
                     options.gc = true;
                     continue;
@@ -124,7 +192,7 @@ impl Options {
                     continue;
                 }
                 b"--start-group" | b"-(" | b"--end-group" | b"-)" => return Err(USAGE.into()),
-                [] | [b'-', ..] => {
+                [] | [b'-', ..] if flag != b"-l" => {
                     return Err(format!(
                         "bld: invalid link input or option: {}\n{USAGE}",
                         arg.to_string_lossy()
@@ -132,8 +200,14 @@ impl Options {
                 }
                 _ => {
                     let input = Input {
-                        path: arg.into(),
+                        name: if flag == b"-l" {
+                            InputName::Library(operand()?)
+                        } else {
+                            InputName::File(arg.into())
+                        },
                         whole_archive,
+                        static_only,
+                        as_needed,
                     };
                     if let Some(group) = &mut group {
                         group.push(input);
@@ -143,11 +217,7 @@ impl Options {
                     continue;
                 }
             };
-            *value = args
-                .next()
-                .filter(|arg| !arg.is_empty())
-                .ok_or(USAGE)?
-                .into();
+            *value = operand()?.into();
         }
         if group.is_some() || options.output.as_os_str().is_empty() || options.inputs.is_empty() {
             return Err(USAGE.into());
@@ -157,6 +227,9 @@ impl Options {
         }
         if options.relocatable && (options.script.is_some() || options.gc) {
             return Err("bld: -r cannot be combined with -T or --gc-sections".into());
+        }
+        if options.relocatable && options.eh_frame_hdr {
+            return Err("bld: -r cannot be combined with --eh-frame-hdr".into());
         }
         Ok(options)
     }
@@ -201,12 +274,20 @@ fn write_map(path: &Path, link: &Link, relocatable: bool) -> io::Result<()> {
 
 fn link(options: Options, source: &mut dyn ReadSource) -> Result<()> {
     let script = match options.script {
-        Some(path) => Script::parse(&path, &input::read_file(&path, source)?)?,
+        Some((path, prior_search_paths)) => {
+            let path = input::find_script(path, &options.search[..prior_search_paths])?;
+            Script::parse(&path, &input::read_file(&path, source)?)?
+        }
         None => Script::default(),
     };
-    let mut link = Link::new(script, options.gc, options.relocatable);
+    let mut link = Link::new(
+        script,
+        options.gc,
+        options.relocatable,
+        options.allow_multiple_definition,
+    );
     for group in options.inputs {
-        link.include_group(&group, source)?;
+        link.include_group(&group, &options.search, source)?;
     }
     let (bytes, mode, kind) = if options.relocatable {
         (
@@ -215,13 +296,27 @@ fn link(options: Options, source: &mut dyn ReadSource) -> Result<()> {
             "relocatable object",
         )
     } else {
-        link.select_live_sections();
+        let frames = options
+            .eh_frame_hdr
+            .then(|| eh_frame::Frames::read(&mut link))
+            .transpose()?;
+        link.select_live_sections(frames.as_ref());
+        let index = frames
+            .map(|frames| frames.compact(&mut link))
+            .transpose()?
+            .flatten();
         link.allocate_common()?;
         link.allocate_got()?;
-        let mut image = layout::Image::new(&mut link)?;
+        let mut image = layout::Image::new(&mut link, index.as_ref())?;
         let entry = link.entry_address()?;
         link.relocate(&mut image)?;
+        if let Some(index) = index {
+            index.write(&link, &mut image)?;
+        }
         image.write_headers(&link, entry);
+        if options.executable_symbols {
+            link.write_executable_symbols(&mut image.bytes)?;
+        }
         (image.bytes, 0o777, "executable")
     };
     if let Some(path) = options.map {

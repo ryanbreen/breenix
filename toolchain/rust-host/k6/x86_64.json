@@ -1,0 +1,1788 @@
+{
+  "rustc_sha256": "b3e90b74fd944e6812a0e4a23ad89f98cdc4887c17faf82e8f6e767300be10d6",
+  "rustc_commit": "a763a7dd70cc6bc97736aca5eabaf867b36477bf",
+  "cargo_channel": "nightly-2025-06-24",
+  "cargo_version": "cargo 1.90.0-nightly (84709f085 2025-06-22)",
+  "rust_lld_sha256": "088c5a892106ffb2a17fb1381cc081c6b80889fabcb6dcb885c9b1eb7868c8cc",
+  "cargo_argv": [
+    "build",
+    "--offline",
+    "--frozen",
+    "--jobs",
+    "4",
+    "--profile",
+    "selfhost",
+    "--target",
+    "targets/x86_64-breenix.json",
+    "--manifest-path",
+    "src/toolchain/Cargo.toml",
+    "-p",
+    "bas",
+    "-p",
+    "bld",
+    "-p",
+    "bar",
+    "-p",
+    "bnm",
+    "-p",
+    "bcc",
+    "-p",
+    "bmake",
+    "--target-dir",
+    "target"
+  ],
+  "cargo_environment": {
+    "RUSTC": "<k5>/mac/bin/rustc",
+    "RUST_TARGET_PATH": "targets",
+    "CARGO_HOME": "cargo-home",
+    "CARGO_ENCODED_RUSTFLAGS": "--sysroot=sysroot\u001f-Clinker=bin/k6-linker\u001f-Clink-arg=-Tlib/tools/linker.ld\u001f-Lnative=lib/tools\u001f-Clink-arg=--allow-multiple-definition\u001f-Cdefault-linker-libraries=no\u001f--remap-path-prefix=src=/breenix-src"
+  },
+  "rlib_metadata_member": "lib.rmeta",
+  "links": {
+    "bas": {
+      "argv": [
+        "-flavor",
+        "gnu",
+        "links/bas/inputs/1-symbols.o",
+        "links/bas/inputs/2-bas-906cf6147f22b5a0.bas.b158481d71ba73b6-cgu.0.rcgu.o",
+        "links/bas/inputs/3-bas-906cf6147f22b5a0.31cs7olc5ec7lbd3z2lp1djwg.rcgu.o",
+        "--as-needed",
+        "-Bstatic",
+        "links/bas/inputs/6-libbas-d11cab3f3244966b.rlib",
+        "links/bas/inputs/7-libbobj-70b0f38fde3c0e02.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libstd-d5c991d6609a6050.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libpanic_abort-4915d6c5fd85623e.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libobject-dc264dd034f976fb.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libmemchr-12a0ceda651a8dd9.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libaddr2line-ba37975f7d8adf35.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libgimli-35cfc4a2e7e86fd2.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_demangle-65c78af9312cb81f.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libstd_detect-ec720b3dd175b489.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libhashbrown-8dcd519fb7da6f51.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_std_workspace_alloc-7ade61cdb4713159.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libminiz_oxide-14f58b3b3e778d83.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libadler2-dd423baddc1d50ec.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libunwind-20e4e418da0d602f.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libcfg_if-11010efc6058d911.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/liblibc-9636e9f58f5c6436.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_std_workspace_core-1a46c4e57e8e3ea0.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/liballoc-1161479d64262814.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libcore-5b00ff3053f7705b.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libcompiler_builtins-96c412bbf464e3d2.rlib",
+        "-Bdynamic",
+        "-lc",
+        "-L",
+        "links/bas/search/0",
+        "--eh-frame-hdr",
+        "-z",
+        "noexecstack",
+        "-L",
+        "lib/tools",
+        "-o",
+        "links/bas/reference.elf",
+        "--gc-sections",
+        "-O1",
+        "--strip-debug",
+        "-Tlib/tools/linker.ld",
+        "--allow-multiple-definition"
+      ],
+      "argument_kinds": [
+        "driver-flavor",
+        "file",
+        "file",
+        "file",
+        "as-needed",
+        "static-libraries",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "shared-libraries",
+        "library",
+        "search",
+        "eh-frame-header",
+        "elf-option",
+        "search",
+        "output",
+        "section-gc",
+        "linker-optimization",
+        "strip-debug",
+        "script",
+        "multiple-definitions"
+      ],
+      "inputs": [
+        "lib/tools/libc.a",
+        "lib/tools/linker.ld",
+        "links/bas/inputs/1-symbols.o",
+        "links/bas/inputs/2-bas-906cf6147f22b5a0.bas.b158481d71ba73b6-cgu.0.rcgu.o",
+        "links/bas/inputs/3-bas-906cf6147f22b5a0.31cs7olc5ec7lbd3z2lp1djwg.rcgu.o",
+        "links/bas/inputs/6-libbas-d11cab3f3244966b.rlib",
+        "links/bas/inputs/7-libbobj-70b0f38fde3c0e02.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libaddr2line-ba37975f7d8adf35.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libadler2-dd423baddc1d50ec.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/liballoc-1161479d64262814.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libcfg_if-11010efc6058d911.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libcompiler_builtins-96c412bbf464e3d2.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libcore-5b00ff3053f7705b.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libgimli-35cfc4a2e7e86fd2.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libhashbrown-8dcd519fb7da6f51.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/liblibc-9636e9f58f5c6436.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libmemchr-12a0ceda651a8dd9.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libminiz_oxide-14f58b3b3e778d83.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libobject-dc264dd034f976fb.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libpanic_abort-4915d6c5fd85623e.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_demangle-65c78af9312cb81f.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_std_workspace_alloc-7ade61cdb4713159.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_std_workspace_core-1a46c4e57e8e3ea0.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libstd-d5c991d6609a6050.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libstd_detect-ec720b3dd175b489.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libunwind-20e4e418da0d602f.rlib"
+      ],
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_GOTPCREL",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "needs_bld": [],
+      "reference_sha256": "f6e0692e0627ebf15af1c5e326827788cb83f10b7b017b2bf9e4ba28e32e6edf"
+    },
+    "bld": {
+      "argv": [
+        "-flavor",
+        "gnu",
+        "links/bld/inputs/1-symbols.o",
+        "links/bld/inputs/2-bld-a66c7b43b2f4149a.bld.b970ee3b1001abba-cgu.0.rcgu.o",
+        "links/bld/inputs/3-bld-a66c7b43b2f4149a.3ktip4kd2xr1rbw9j92n8fkuy.rcgu.o",
+        "--as-needed",
+        "-Bstatic",
+        "links/bld/inputs/6-libbld-894afb284a93316d.rlib",
+        "links/bld/inputs/7-libbobj-70b0f38fde3c0e02.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libstd-d5c991d6609a6050.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libpanic_abort-4915d6c5fd85623e.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libobject-dc264dd034f976fb.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libmemchr-12a0ceda651a8dd9.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libaddr2line-ba37975f7d8adf35.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libgimli-35cfc4a2e7e86fd2.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_demangle-65c78af9312cb81f.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libstd_detect-ec720b3dd175b489.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libhashbrown-8dcd519fb7da6f51.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_std_workspace_alloc-7ade61cdb4713159.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libminiz_oxide-14f58b3b3e778d83.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libadler2-dd423baddc1d50ec.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libunwind-20e4e418da0d602f.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libcfg_if-11010efc6058d911.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/liblibc-9636e9f58f5c6436.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_std_workspace_core-1a46c4e57e8e3ea0.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/liballoc-1161479d64262814.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libcore-5b00ff3053f7705b.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libcompiler_builtins-96c412bbf464e3d2.rlib",
+        "-Bdynamic",
+        "-lc",
+        "-L",
+        "links/bld/search/0",
+        "--eh-frame-hdr",
+        "-z",
+        "noexecstack",
+        "-L",
+        "lib/tools",
+        "-o",
+        "links/bld/reference.elf",
+        "--gc-sections",
+        "-O1",
+        "--strip-debug",
+        "-Tlib/tools/linker.ld",
+        "--allow-multiple-definition"
+      ],
+      "argument_kinds": [
+        "driver-flavor",
+        "file",
+        "file",
+        "file",
+        "as-needed",
+        "static-libraries",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "shared-libraries",
+        "library",
+        "search",
+        "eh-frame-header",
+        "elf-option",
+        "search",
+        "output",
+        "section-gc",
+        "linker-optimization",
+        "strip-debug",
+        "script",
+        "multiple-definitions"
+      ],
+      "inputs": [
+        "lib/tools/libc.a",
+        "lib/tools/linker.ld",
+        "links/bld/inputs/1-symbols.o",
+        "links/bld/inputs/2-bld-a66c7b43b2f4149a.bld.b970ee3b1001abba-cgu.0.rcgu.o",
+        "links/bld/inputs/3-bld-a66c7b43b2f4149a.3ktip4kd2xr1rbw9j92n8fkuy.rcgu.o",
+        "links/bld/inputs/6-libbld-894afb284a93316d.rlib",
+        "links/bld/inputs/7-libbobj-70b0f38fde3c0e02.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libaddr2line-ba37975f7d8adf35.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libadler2-dd423baddc1d50ec.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/liballoc-1161479d64262814.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libcfg_if-11010efc6058d911.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libcompiler_builtins-96c412bbf464e3d2.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libcore-5b00ff3053f7705b.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libgimli-35cfc4a2e7e86fd2.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libhashbrown-8dcd519fb7da6f51.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/liblibc-9636e9f58f5c6436.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libmemchr-12a0ceda651a8dd9.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libminiz_oxide-14f58b3b3e778d83.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libobject-dc264dd034f976fb.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libpanic_abort-4915d6c5fd85623e.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_demangle-65c78af9312cb81f.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_std_workspace_alloc-7ade61cdb4713159.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_std_workspace_core-1a46c4e57e8e3ea0.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libstd-d5c991d6609a6050.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libstd_detect-ec720b3dd175b489.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libunwind-20e4e418da0d602f.rlib"
+      ],
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_GOTPCREL",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "needs_bld": [],
+      "reference_sha256": "a755278dbc2d559096d0f1122f95ed2938cafccdf6603ab44cc8d6b9f2887764"
+    },
+    "bar": {
+      "argv": [
+        "-flavor",
+        "gnu",
+        "links/bar/inputs/1-symbols.o",
+        "links/bar/inputs/2-bar-002c1d79ca4e56de.bar.d8f4bf46e73fb3ce-cgu.0.rcgu.o",
+        "links/bar/inputs/3-bar-002c1d79ca4e56de.1larec2d2n24d5s8bu03sak79.rcgu.o",
+        "--as-needed",
+        "-Bstatic",
+        "links/bar/inputs/6-libbar-18cf3ebfdd943f04.rlib",
+        "links/bar/inputs/7-libbobj-70b0f38fde3c0e02.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libstd-d5c991d6609a6050.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libpanic_abort-4915d6c5fd85623e.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libobject-dc264dd034f976fb.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libmemchr-12a0ceda651a8dd9.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libaddr2line-ba37975f7d8adf35.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libgimli-35cfc4a2e7e86fd2.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_demangle-65c78af9312cb81f.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libstd_detect-ec720b3dd175b489.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libhashbrown-8dcd519fb7da6f51.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_std_workspace_alloc-7ade61cdb4713159.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libminiz_oxide-14f58b3b3e778d83.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libadler2-dd423baddc1d50ec.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libunwind-20e4e418da0d602f.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libcfg_if-11010efc6058d911.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/liblibc-9636e9f58f5c6436.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_std_workspace_core-1a46c4e57e8e3ea0.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/liballoc-1161479d64262814.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libcore-5b00ff3053f7705b.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libcompiler_builtins-96c412bbf464e3d2.rlib",
+        "-Bdynamic",
+        "-lc",
+        "-L",
+        "links/bar/search/0",
+        "--eh-frame-hdr",
+        "-z",
+        "noexecstack",
+        "-L",
+        "lib/tools",
+        "-o",
+        "links/bar/reference.elf",
+        "--gc-sections",
+        "-O1",
+        "--strip-debug",
+        "-Tlib/tools/linker.ld",
+        "--allow-multiple-definition"
+      ],
+      "argument_kinds": [
+        "driver-flavor",
+        "file",
+        "file",
+        "file",
+        "as-needed",
+        "static-libraries",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "shared-libraries",
+        "library",
+        "search",
+        "eh-frame-header",
+        "elf-option",
+        "search",
+        "output",
+        "section-gc",
+        "linker-optimization",
+        "strip-debug",
+        "script",
+        "multiple-definitions"
+      ],
+      "inputs": [
+        "lib/tools/libc.a",
+        "lib/tools/linker.ld",
+        "links/bar/inputs/1-symbols.o",
+        "links/bar/inputs/2-bar-002c1d79ca4e56de.bar.d8f4bf46e73fb3ce-cgu.0.rcgu.o",
+        "links/bar/inputs/3-bar-002c1d79ca4e56de.1larec2d2n24d5s8bu03sak79.rcgu.o",
+        "links/bar/inputs/6-libbar-18cf3ebfdd943f04.rlib",
+        "links/bar/inputs/7-libbobj-70b0f38fde3c0e02.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libaddr2line-ba37975f7d8adf35.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libadler2-dd423baddc1d50ec.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/liballoc-1161479d64262814.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libcfg_if-11010efc6058d911.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libcompiler_builtins-96c412bbf464e3d2.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libcore-5b00ff3053f7705b.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libgimli-35cfc4a2e7e86fd2.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libhashbrown-8dcd519fb7da6f51.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/liblibc-9636e9f58f5c6436.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libmemchr-12a0ceda651a8dd9.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libminiz_oxide-14f58b3b3e778d83.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libobject-dc264dd034f976fb.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libpanic_abort-4915d6c5fd85623e.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_demangle-65c78af9312cb81f.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_std_workspace_alloc-7ade61cdb4713159.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_std_workspace_core-1a46c4e57e8e3ea0.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libstd-d5c991d6609a6050.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libstd_detect-ec720b3dd175b489.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libunwind-20e4e418da0d602f.rlib"
+      ],
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_GOTPCREL",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "needs_bld": [],
+      "reference_sha256": "b0be100d71cce7876e681fe86c8da6a74d8c5c71be2465633b5c307de6e057cb"
+    },
+    "bnm": {
+      "argv": [
+        "-flavor",
+        "gnu",
+        "links/bnm/inputs/1-symbols.o",
+        "links/bnm/inputs/2-bnm-ba4858378d3a6011.bnm.cd357fa5730e8b34-cgu.0.rcgu.o",
+        "links/bnm/inputs/3-bnm-ba4858378d3a6011.6irvkv763ntkp3m0w9zvyyvuh.rcgu.o",
+        "--as-needed",
+        "-Bstatic",
+        "links/bnm/inputs/6-libbnm-e80f2466efb17674.rlib",
+        "links/bnm/inputs/7-libbobj-70b0f38fde3c0e02.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libstd-d5c991d6609a6050.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libpanic_abort-4915d6c5fd85623e.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libobject-dc264dd034f976fb.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libmemchr-12a0ceda651a8dd9.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libaddr2line-ba37975f7d8adf35.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libgimli-35cfc4a2e7e86fd2.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_demangle-65c78af9312cb81f.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libstd_detect-ec720b3dd175b489.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libhashbrown-8dcd519fb7da6f51.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_std_workspace_alloc-7ade61cdb4713159.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libminiz_oxide-14f58b3b3e778d83.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libadler2-dd423baddc1d50ec.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libunwind-20e4e418da0d602f.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libcfg_if-11010efc6058d911.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/liblibc-9636e9f58f5c6436.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_std_workspace_core-1a46c4e57e8e3ea0.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/liballoc-1161479d64262814.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libcore-5b00ff3053f7705b.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libcompiler_builtins-96c412bbf464e3d2.rlib",
+        "-Bdynamic",
+        "-lc",
+        "-L",
+        "links/bnm/search/0",
+        "--eh-frame-hdr",
+        "-z",
+        "noexecstack",
+        "-L",
+        "lib/tools",
+        "-o",
+        "links/bnm/reference.elf",
+        "--gc-sections",
+        "-O1",
+        "--strip-debug",
+        "-Tlib/tools/linker.ld",
+        "--allow-multiple-definition"
+      ],
+      "argument_kinds": [
+        "driver-flavor",
+        "file",
+        "file",
+        "file",
+        "as-needed",
+        "static-libraries",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "shared-libraries",
+        "library",
+        "search",
+        "eh-frame-header",
+        "elf-option",
+        "search",
+        "output",
+        "section-gc",
+        "linker-optimization",
+        "strip-debug",
+        "script",
+        "multiple-definitions"
+      ],
+      "inputs": [
+        "lib/tools/libc.a",
+        "lib/tools/linker.ld",
+        "links/bnm/inputs/1-symbols.o",
+        "links/bnm/inputs/2-bnm-ba4858378d3a6011.bnm.cd357fa5730e8b34-cgu.0.rcgu.o",
+        "links/bnm/inputs/3-bnm-ba4858378d3a6011.6irvkv763ntkp3m0w9zvyyvuh.rcgu.o",
+        "links/bnm/inputs/6-libbnm-e80f2466efb17674.rlib",
+        "links/bnm/inputs/7-libbobj-70b0f38fde3c0e02.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libaddr2line-ba37975f7d8adf35.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libadler2-dd423baddc1d50ec.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/liballoc-1161479d64262814.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libcfg_if-11010efc6058d911.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libcompiler_builtins-96c412bbf464e3d2.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libcore-5b00ff3053f7705b.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libgimli-35cfc4a2e7e86fd2.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libhashbrown-8dcd519fb7da6f51.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/liblibc-9636e9f58f5c6436.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libmemchr-12a0ceda651a8dd9.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libminiz_oxide-14f58b3b3e778d83.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libobject-dc264dd034f976fb.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libpanic_abort-4915d6c5fd85623e.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_demangle-65c78af9312cb81f.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_std_workspace_alloc-7ade61cdb4713159.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_std_workspace_core-1a46c4e57e8e3ea0.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libstd-d5c991d6609a6050.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libstd_detect-ec720b3dd175b489.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libunwind-20e4e418da0d602f.rlib"
+      ],
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_GOTPCREL",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "needs_bld": [],
+      "reference_sha256": "9ad27fbe915308fd8df6431a6f4c2ea4fb89a7fdf3646b5e20687586256fe1ca"
+    },
+    "bcc": {
+      "argv": [
+        "-flavor",
+        "gnu",
+        "links/bcc/inputs/1-symbols.o",
+        "links/bcc/inputs/2-bcc-b7e6236d557441f7.bcc.e4a8965150f5b84a-cgu.0.rcgu.o",
+        "links/bcc/inputs/3-bcc-b7e6236d557441f7.3gdvjgdukdwwbtvj1vp7zkdyx.rcgu.o",
+        "--as-needed",
+        "-Bstatic",
+        "links/bcc/inputs/6-libbcc-70cf38b6aafa50c8.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libstd-d5c991d6609a6050.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libpanic_abort-4915d6c5fd85623e.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libobject-dc264dd034f976fb.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libmemchr-12a0ceda651a8dd9.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libaddr2line-ba37975f7d8adf35.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libgimli-35cfc4a2e7e86fd2.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_demangle-65c78af9312cb81f.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libstd_detect-ec720b3dd175b489.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libhashbrown-8dcd519fb7da6f51.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_std_workspace_alloc-7ade61cdb4713159.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libminiz_oxide-14f58b3b3e778d83.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libadler2-dd423baddc1d50ec.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libunwind-20e4e418da0d602f.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libcfg_if-11010efc6058d911.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/liblibc-9636e9f58f5c6436.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_std_workspace_core-1a46c4e57e8e3ea0.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/liballoc-1161479d64262814.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libcore-5b00ff3053f7705b.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libcompiler_builtins-96c412bbf464e3d2.rlib",
+        "-Bdynamic",
+        "-lc",
+        "-L",
+        "links/bcc/search/0",
+        "--eh-frame-hdr",
+        "-z",
+        "noexecstack",
+        "-L",
+        "lib/tools",
+        "-o",
+        "links/bcc/reference.elf",
+        "--gc-sections",
+        "-O1",
+        "--strip-debug",
+        "-Tlib/tools/linker.ld",
+        "--allow-multiple-definition"
+      ],
+      "argument_kinds": [
+        "driver-flavor",
+        "file",
+        "file",
+        "file",
+        "as-needed",
+        "static-libraries",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "shared-libraries",
+        "library",
+        "search",
+        "eh-frame-header",
+        "elf-option",
+        "search",
+        "output",
+        "section-gc",
+        "linker-optimization",
+        "strip-debug",
+        "script",
+        "multiple-definitions"
+      ],
+      "inputs": [
+        "lib/tools/libc.a",
+        "lib/tools/linker.ld",
+        "links/bcc/inputs/1-symbols.o",
+        "links/bcc/inputs/2-bcc-b7e6236d557441f7.bcc.e4a8965150f5b84a-cgu.0.rcgu.o",
+        "links/bcc/inputs/3-bcc-b7e6236d557441f7.3gdvjgdukdwwbtvj1vp7zkdyx.rcgu.o",
+        "links/bcc/inputs/6-libbcc-70cf38b6aafa50c8.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libaddr2line-ba37975f7d8adf35.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libadler2-dd423baddc1d50ec.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/liballoc-1161479d64262814.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libcfg_if-11010efc6058d911.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libcompiler_builtins-96c412bbf464e3d2.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libcore-5b00ff3053f7705b.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libgimli-35cfc4a2e7e86fd2.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libhashbrown-8dcd519fb7da6f51.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/liblibc-9636e9f58f5c6436.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libmemchr-12a0ceda651a8dd9.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libminiz_oxide-14f58b3b3e778d83.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libobject-dc264dd034f976fb.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libpanic_abort-4915d6c5fd85623e.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_demangle-65c78af9312cb81f.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_std_workspace_alloc-7ade61cdb4713159.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_std_workspace_core-1a46c4e57e8e3ea0.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libstd-d5c991d6609a6050.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libstd_detect-ec720b3dd175b489.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libunwind-20e4e418da0d602f.rlib"
+      ],
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_GOTPCREL",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "needs_bld": [],
+      "reference_sha256": "1718d6877b2e3bdeda7f183be174f4ba983bc0e141f9117ff73d9cf6a860c0e3"
+    },
+    "bmake": {
+      "argv": [
+        "-flavor",
+        "gnu",
+        "links/bmake/inputs/1-symbols.o",
+        "links/bmake/inputs/2-bmake-c643a0e1ff767efb.bmake.ed1e80714c3183f3-cgu.0.rcgu.o",
+        "links/bmake/inputs/3-bmake-c643a0e1ff767efb.0maewqtqktavl81qmjwgk2vd4.rcgu.o",
+        "--as-needed",
+        "-Bstatic",
+        "links/bmake/inputs/6-libbmake-52bbf6def655c93f.rlib",
+        "links/bmake/inputs/7-libbobj-70b0f38fde3c0e02.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libstd-d5c991d6609a6050.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libpanic_abort-4915d6c5fd85623e.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libobject-dc264dd034f976fb.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libmemchr-12a0ceda651a8dd9.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libaddr2line-ba37975f7d8adf35.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libgimli-35cfc4a2e7e86fd2.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_demangle-65c78af9312cb81f.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libstd_detect-ec720b3dd175b489.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libhashbrown-8dcd519fb7da6f51.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_std_workspace_alloc-7ade61cdb4713159.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libminiz_oxide-14f58b3b3e778d83.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libadler2-dd423baddc1d50ec.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libunwind-20e4e418da0d602f.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libcfg_if-11010efc6058d911.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/liblibc-9636e9f58f5c6436.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_std_workspace_core-1a46c4e57e8e3ea0.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/liballoc-1161479d64262814.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libcore-5b00ff3053f7705b.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libcompiler_builtins-96c412bbf464e3d2.rlib",
+        "-Bdynamic",
+        "-lc",
+        "-L",
+        "links/bmake/search/0",
+        "--eh-frame-hdr",
+        "-z",
+        "noexecstack",
+        "-L",
+        "lib/tools",
+        "-o",
+        "links/bmake/reference.elf",
+        "--gc-sections",
+        "-O1",
+        "--strip-debug",
+        "-Tlib/tools/linker.ld",
+        "--allow-multiple-definition"
+      ],
+      "argument_kinds": [
+        "driver-flavor",
+        "file",
+        "file",
+        "file",
+        "as-needed",
+        "static-libraries",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "shared-libraries",
+        "library",
+        "search",
+        "eh-frame-header",
+        "elf-option",
+        "search",
+        "output",
+        "section-gc",
+        "linker-optimization",
+        "strip-debug",
+        "script",
+        "multiple-definitions"
+      ],
+      "inputs": [
+        "lib/tools/libc.a",
+        "lib/tools/linker.ld",
+        "links/bmake/inputs/1-symbols.o",
+        "links/bmake/inputs/2-bmake-c643a0e1ff767efb.bmake.ed1e80714c3183f3-cgu.0.rcgu.o",
+        "links/bmake/inputs/3-bmake-c643a0e1ff767efb.0maewqtqktavl81qmjwgk2vd4.rcgu.o",
+        "links/bmake/inputs/6-libbmake-52bbf6def655c93f.rlib",
+        "links/bmake/inputs/7-libbobj-70b0f38fde3c0e02.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libaddr2line-ba37975f7d8adf35.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libadler2-dd423baddc1d50ec.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/liballoc-1161479d64262814.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libcfg_if-11010efc6058d911.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libcompiler_builtins-96c412bbf464e3d2.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libcore-5b00ff3053f7705b.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libgimli-35cfc4a2e7e86fd2.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libhashbrown-8dcd519fb7da6f51.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/liblibc-9636e9f58f5c6436.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libmemchr-12a0ceda651a8dd9.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libminiz_oxide-14f58b3b3e778d83.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libobject-dc264dd034f976fb.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libpanic_abort-4915d6c5fd85623e.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_demangle-65c78af9312cb81f.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_std_workspace_alloc-7ade61cdb4713159.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_std_workspace_core-1a46c4e57e8e3ea0.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libstd-d5c991d6609a6050.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libstd_detect-ec720b3dd175b489.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libunwind-20e4e418da0d602f.rlib"
+      ],
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_GOTPCREL",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "needs_bld": [],
+      "reference_sha256": "37112bf5b59651360a3be46bd97306f088afdf6adbb5f05d8f13a777c2bc2b93"
+    },
+    "panic-abort": {
+      "argv": [
+        "-flavor",
+        "gnu",
+        "links/panic-abort/inputs/1-symbols.o",
+        "links/panic-abort/inputs/2-panic-abort.panic_abort.32030fe9b922af72-cgu.0.rcgu.o",
+        "links/panic-abort/inputs/3-panic-abort.17sm7p667wbxnhdydda8nah4f.rcgu.o",
+        "--as-needed",
+        "-Bstatic",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libstd-d5c991d6609a6050.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libpanic_abort-4915d6c5fd85623e.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libobject-dc264dd034f976fb.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libmemchr-12a0ceda651a8dd9.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libaddr2line-ba37975f7d8adf35.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libgimli-35cfc4a2e7e86fd2.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_demangle-65c78af9312cb81f.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libstd_detect-ec720b3dd175b489.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libhashbrown-8dcd519fb7da6f51.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_std_workspace_alloc-7ade61cdb4713159.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libminiz_oxide-14f58b3b3e778d83.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libadler2-dd423baddc1d50ec.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libunwind-20e4e418da0d602f.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libcfg_if-11010efc6058d911.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/liblibc-9636e9f58f5c6436.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_std_workspace_core-1a46c4e57e8e3ea0.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/liballoc-1161479d64262814.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libcore-5b00ff3053f7705b.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libcompiler_builtins-96c412bbf464e3d2.rlib",
+        "-Bdynamic",
+        "-lc",
+        "-L",
+        "links/panic-abort/search/0",
+        "--eh-frame-hdr",
+        "-z",
+        "noexecstack",
+        "-L",
+        "lib/tools",
+        "-o",
+        "links/panic-abort/reference.elf",
+        "--gc-sections",
+        "-Tlib/tools/linker.ld",
+        "--allow-multiple-definition"
+      ],
+      "argument_kinds": [
+        "driver-flavor",
+        "file",
+        "file",
+        "file",
+        "as-needed",
+        "static-libraries",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "shared-libraries",
+        "library",
+        "search",
+        "eh-frame-header",
+        "elf-option",
+        "search",
+        "output",
+        "section-gc",
+        "script",
+        "multiple-definitions"
+      ],
+      "inputs": [
+        "lib/tools/libc.a",
+        "lib/tools/linker.ld",
+        "links/panic-abort/inputs/1-symbols.o",
+        "links/panic-abort/inputs/2-panic-abort.panic_abort.32030fe9b922af72-cgu.0.rcgu.o",
+        "links/panic-abort/inputs/3-panic-abort.17sm7p667wbxnhdydda8nah4f.rcgu.o",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libaddr2line-ba37975f7d8adf35.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libadler2-dd423baddc1d50ec.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/liballoc-1161479d64262814.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libcfg_if-11010efc6058d911.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libcompiler_builtins-96c412bbf464e3d2.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libcore-5b00ff3053f7705b.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libgimli-35cfc4a2e7e86fd2.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libhashbrown-8dcd519fb7da6f51.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/liblibc-9636e9f58f5c6436.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libmemchr-12a0ceda651a8dd9.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libminiz_oxide-14f58b3b3e778d83.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libobject-dc264dd034f976fb.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libpanic_abort-4915d6c5fd85623e.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_demangle-65c78af9312cb81f.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_std_workspace_alloc-7ade61cdb4713159.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_std_workspace_core-1a46c4e57e8e3ea0.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libstd-d5c991d6609a6050.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libstd_detect-ec720b3dd175b489.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix/lib/libunwind-20e4e418da0d602f.rlib"
+      ],
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_GOTPCREL",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "needs_bld": [],
+      "reference_sha256": "72db2c94bb01b070670f0c3a34d249a5e3259fbb3c13af4cfb44e9c2e47e1251"
+    },
+    "catch-unwind": {
+      "argv": [
+        "-flavor",
+        "gnu",
+        "links/catch-unwind/inputs/1-symbols.o",
+        "links/catch-unwind/inputs/2-catch-unwind.catch_unwind.97f45e5e84843892-cgu.0.rcgu.o",
+        "links/catch-unwind/inputs/3-catch-unwind.cijvti2t77wtkg6wucg8ryt3q.rcgu.o",
+        "--as-needed",
+        "-Bstatic",
+        "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/libstd-f32a85bea434ce93.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/libpanic_unwind-1efcfa545b344aa7.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/libobject-440d9deaf57df429.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/libmemchr-8c9388d9a0410e34.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/libaddr2line-08f4d3b2e2fc561a.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/libgimli-20a21012686b6372.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/librustc_demangle-4323d449b5028a53.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/libstd_detect-accf65cf3a95f3f6.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/libhashbrown-3a51e6f2fffa2247.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/librustc_std_workspace_alloc-4726a4245d484b50.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/libminiz_oxide-1d23b874efeb2053.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/libadler2-fc26cad1601bcf27.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/libunwind-bb964b5abebcc773.rlib",
+        "-lbunwind",
+        "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/libcfg_if-7849917f56016e87.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/liblibc-1381444901b7e40f.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/librustc_std_workspace_core-50adf3d8dc5babe4.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/liballoc-8d8c55230ec6779a.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/libcore-362c45578282528b.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/libcompiler_builtins-f341317c6d192fd4.rlib",
+        "-Bdynamic",
+        "-lc",
+        "-L",
+        "links/catch-unwind/search/0",
+        "--eh-frame-hdr",
+        "-z",
+        "noexecstack",
+        "-L",
+        "lib/hosted",
+        "-o",
+        "links/catch-unwind/reference.elf",
+        "--gc-sections",
+        "-Tlib/hosted/linker-hosted.ld",
+        "--allow-multiple-definition"
+      ],
+      "argument_kinds": [
+        "driver-flavor",
+        "file",
+        "file",
+        "file",
+        "as-needed",
+        "static-libraries",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "library",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "shared-libraries",
+        "library",
+        "search",
+        "eh-frame-header",
+        "elf-option",
+        "search",
+        "output",
+        "section-gc",
+        "script",
+        "multiple-definitions"
+      ],
+      "inputs": [
+        "lib/hosted/libbunwind.a",
+        "lib/hosted/libc.a",
+        "lib/hosted/linker-hosted.ld",
+        "links/catch-unwind/inputs/1-symbols.o",
+        "links/catch-unwind/inputs/2-catch-unwind.catch_unwind.97f45e5e84843892-cgu.0.rcgu.o",
+        "links/catch-unwind/inputs/3-catch-unwind.cijvti2t77wtkg6wucg8ryt3q.rcgu.o",
+        "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/libaddr2line-08f4d3b2e2fc561a.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/libadler2-fc26cad1601bcf27.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/liballoc-8d8c55230ec6779a.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/libcfg_if-7849917f56016e87.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/libcompiler_builtins-f341317c6d192fd4.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/libcore-362c45578282528b.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/libgimli-20a21012686b6372.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/libhashbrown-3a51e6f2fffa2247.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/liblibc-1381444901b7e40f.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/libmemchr-8c9388d9a0410e34.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/libminiz_oxide-1d23b874efeb2053.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/libobject-440d9deaf57df429.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/libpanic_unwind-1efcfa545b344aa7.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/librustc_demangle-4323d449b5028a53.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/librustc_std_workspace_alloc-4726a4245d484b50.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/librustc_std_workspace_core-50adf3d8dc5babe4.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/libstd-f32a85bea434ce93.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/libstd_detect-accf65cf3a95f3f6.rlib",
+        "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/libunwind-bb964b5abebcc773.rlib"
+      ],
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_GOTPCREL",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "needs_bld": [],
+      "reference_sha256": "a1ae13708e4c1a8b63275894f375474b4a9d0479561a66ff7bd61043a50f64e1"
+    }
+  },
+  "inputs": {
+    "lib/hosted/libbunwind.a": {
+      "sha256": "5c2a081d485aef69f60301ae60c47280cc6726095ba2703b03ad4e862c14e4b9",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_GOTPCREL",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": []
+    },
+    "lib/hosted/libc.a": {
+      "sha256": "ebf2197622f14a2f778cdc8a317f4f89d1824506d1b11d86953cb2aac8f86150",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_GOTPCREL",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": []
+    },
+    "lib/hosted/linker-hosted.ld": {
+      "sha256": "0359801889d7e27c9c783a430ac67562360c804784fc852915620ea20c82ad70",
+      "relocations": [],
+      "metadata_members": []
+    },
+    "lib/tools/libc.a": {
+      "sha256": "76083cd7083565f1fe4d1dc78534f086816779f3e5461c86dfac83c92f9c8400",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_GOTPCREL",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": []
+    },
+    "lib/tools/linker.ld": {
+      "sha256": "84cb49304763022d1d369cf625ed1bc95ed82c3bbcff13c3af83df0c63317033",
+      "relocations": [],
+      "metadata_members": []
+    },
+    "links/bar/inputs/1-symbols.o": {
+      "sha256": "ab4c2a626949ae24df554d4beeb5187827a649bc338f70fd75eb6b2a48e2ce62",
+      "relocations": [],
+      "metadata_members": []
+    },
+    "links/bar/inputs/2-bar-002c1d79ca4e56de.bar.d8f4bf46e73fb3ce-cgu.0.rcgu.o": {
+      "sha256": "b4ea32e3fe277e2fd74c675666f9d854b048a85f853741b6bab19110a4ea6045",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": []
+    },
+    "links/bar/inputs/3-bar-002c1d79ca4e56de.1larec2d2n24d5s8bu03sak79.rcgu.o": {
+      "sha256": "db5a4ac7418a6de903d58b82bfc85c832fc11e30fb2fe3431623f3ee97c534e0",
+      "relocations": [
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": []
+    },
+    "links/bar/inputs/6-libbar-18cf3ebfdd943f04.rlib": {
+      "sha256": "fefea59c7c03fffbe546881cea52725d7849d76b936f1565c8fc323c74d6bfdc",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_GOTPCREL",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "links/bar/inputs/7-libbobj-70b0f38fde3c0e02.rlib": {
+      "sha256": "2ad4bd32ed51d0c5a75ca27851f02f3e04dc303e02d720ef2c27d5db0664697b",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_GOTPCREL",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "links/bas/inputs/1-symbols.o": {
+      "sha256": "ab4c2a626949ae24df554d4beeb5187827a649bc338f70fd75eb6b2a48e2ce62",
+      "relocations": [],
+      "metadata_members": []
+    },
+    "links/bas/inputs/2-bas-906cf6147f22b5a0.bas.b158481d71ba73b6-cgu.0.rcgu.o": {
+      "sha256": "cad10c0299fcd571965a96637b2dc249e0710ec6384fbca536b3f4895689e1af",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_GOTPCREL",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": []
+    },
+    "links/bas/inputs/3-bas-906cf6147f22b5a0.31cs7olc5ec7lbd3z2lp1djwg.rcgu.o": {
+      "sha256": "65b9ed3c3277a9a289e644bc2dd4d1bb8befa65e1433bd4801271d350c0f83e6",
+      "relocations": [
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": []
+    },
+    "links/bas/inputs/6-libbas-d11cab3f3244966b.rlib": {
+      "sha256": "802ed2eb8b5ba6b3b94e348c6a7b72c8de7770f0640f256b08d0414d21c72c01",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_GOTPCREL",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "links/bas/inputs/7-libbobj-70b0f38fde3c0e02.rlib": {
+      "sha256": "2ad4bd32ed51d0c5a75ca27851f02f3e04dc303e02d720ef2c27d5db0664697b",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_GOTPCREL",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "links/bcc/inputs/1-symbols.o": {
+      "sha256": "ab4c2a626949ae24df554d4beeb5187827a649bc338f70fd75eb6b2a48e2ce62",
+      "relocations": [],
+      "metadata_members": []
+    },
+    "links/bcc/inputs/2-bcc-b7e6236d557441f7.bcc.e4a8965150f5b84a-cgu.0.rcgu.o": {
+      "sha256": "27f41035b5d0a1c63dfd0ddf8a3695a2435a5fd2789b1eaee757d7783deccb74",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_GOTPCREL",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": []
+    },
+    "links/bcc/inputs/3-bcc-b7e6236d557441f7.3gdvjgdukdwwbtvj1vp7zkdyx.rcgu.o": {
+      "sha256": "df41bf90e3d088117c965c865b17a7991e87176c8fa0e80ec6e44d6cacf646c6",
+      "relocations": [
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": []
+    },
+    "links/bcc/inputs/6-libbcc-70cf38b6aafa50c8.rlib": {
+      "sha256": "b22c220acb751cb01364fdb96834ed006e868ac2dd09b67702325cc537a79d89",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_GOTPCREL",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "links/bld/inputs/1-symbols.o": {
+      "sha256": "ab4c2a626949ae24df554d4beeb5187827a649bc338f70fd75eb6b2a48e2ce62",
+      "relocations": [],
+      "metadata_members": []
+    },
+    "links/bld/inputs/2-bld-a66c7b43b2f4149a.bld.b970ee3b1001abba-cgu.0.rcgu.o": {
+      "sha256": "065d902592853c3e807eedd41cbc5e4e2aaaede582218975046dc6c021438f98",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": []
+    },
+    "links/bld/inputs/3-bld-a66c7b43b2f4149a.3ktip4kd2xr1rbw9j92n8fkuy.rcgu.o": {
+      "sha256": "3e81707862a52c07e57ecf1f73d8ca44c960d959d0192ef9c111cf01083e16f3",
+      "relocations": [
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": []
+    },
+    "links/bld/inputs/6-libbld-894afb284a93316d.rlib": {
+      "sha256": "8e61dacf6bebc578cb797cc46b66e6077ba2577f3362a14d3182d45893aef24b",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_GOTPCREL",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "links/bld/inputs/7-libbobj-70b0f38fde3c0e02.rlib": {
+      "sha256": "2ad4bd32ed51d0c5a75ca27851f02f3e04dc303e02d720ef2c27d5db0664697b",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_GOTPCREL",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "links/bmake/inputs/1-symbols.o": {
+      "sha256": "ab4c2a626949ae24df554d4beeb5187827a649bc338f70fd75eb6b2a48e2ce62",
+      "relocations": [],
+      "metadata_members": []
+    },
+    "links/bmake/inputs/2-bmake-c643a0e1ff767efb.bmake.ed1e80714c3183f3-cgu.0.rcgu.o": {
+      "sha256": "07416b7de3848c3eb1a0abe8fec6a7d8dc5c0c8f838a5aee5351e4e0c5a067e5",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_GOTPCREL",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": []
+    },
+    "links/bmake/inputs/3-bmake-c643a0e1ff767efb.0maewqtqktavl81qmjwgk2vd4.rcgu.o": {
+      "sha256": "f4aa3710855e80552e9da0e04109768e80ead140e2795955f05b92389fc5d0ad",
+      "relocations": [
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": []
+    },
+    "links/bmake/inputs/6-libbmake-52bbf6def655c93f.rlib": {
+      "sha256": "3e5f6401fdaefc9edacc16fc0f787526f8fb4849462b00fb360dfda91d2991e8",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_GOTPCREL",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "links/bmake/inputs/7-libbobj-70b0f38fde3c0e02.rlib": {
+      "sha256": "2ad4bd32ed51d0c5a75ca27851f02f3e04dc303e02d720ef2c27d5db0664697b",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_GOTPCREL",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "links/bnm/inputs/1-symbols.o": {
+      "sha256": "ab4c2a626949ae24df554d4beeb5187827a649bc338f70fd75eb6b2a48e2ce62",
+      "relocations": [],
+      "metadata_members": []
+    },
+    "links/bnm/inputs/2-bnm-ba4858378d3a6011.bnm.cd357fa5730e8b34-cgu.0.rcgu.o": {
+      "sha256": "605924c65ffcaac4e0bf47eab2e8ae0d5350dcfdd0ee7af4cc7a9e85206751fb",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_GOTPCREL",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": []
+    },
+    "links/bnm/inputs/3-bnm-ba4858378d3a6011.6irvkv763ntkp3m0w9zvyyvuh.rcgu.o": {
+      "sha256": "f2c85de62c581d27f0c2c310de881bccca65f0641a7209eec8d615dda70025f0",
+      "relocations": [
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": []
+    },
+    "links/bnm/inputs/6-libbnm-e80f2466efb17674.rlib": {
+      "sha256": "a93ed289b26c79f7617eb8cdf7fa85de667a7b401dbc21decbc75f552a3e4506",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "links/bnm/inputs/7-libbobj-70b0f38fde3c0e02.rlib": {
+      "sha256": "2ad4bd32ed51d0c5a75ca27851f02f3e04dc303e02d720ef2c27d5db0664697b",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_GOTPCREL",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "links/catch-unwind/inputs/1-symbols.o": {
+      "sha256": "d8c3bac75ade011e8c34340b877ec7d22b556024f6b78f8f2ffe5e0f4382da98",
+      "relocations": [],
+      "metadata_members": []
+    },
+    "links/catch-unwind/inputs/2-catch-unwind.catch_unwind.97f45e5e84843892-cgu.0.rcgu.o": {
+      "sha256": "9607bfbc58a6e94e27ea18846f69b1b18d1ed84016b1b744fcfe9d4dbbe23dd6",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": []
+    },
+    "links/catch-unwind/inputs/3-catch-unwind.cijvti2t77wtkg6wucg8ryt3q.rcgu.o": {
+      "sha256": "3403364778e2d7dc24b554e893b793e9d59dd090529ca84042895b3bb64a143a",
+      "relocations": [
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": []
+    },
+    "links/panic-abort/inputs/1-symbols.o": {
+      "sha256": "ab4c2a626949ae24df554d4beeb5187827a649bc338f70fd75eb6b2a48e2ce62",
+      "relocations": [],
+      "metadata_members": []
+    },
+    "links/panic-abort/inputs/2-panic-abort.panic_abort.32030fe9b922af72-cgu.0.rcgu.o": {
+      "sha256": "f289c8a8b246477a929dd622793d3f5150feb6b401866ef9ee0953066ccf117d",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": []
+    },
+    "links/panic-abort/inputs/3-panic-abort.17sm7p667wbxnhdydda8nah4f.rcgu.o": {
+      "sha256": "eb333aaff9a30201885c56aeb9b6796aec8dab892d869ff74e9c6107c35c370c",
+      "relocations": [
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": []
+    },
+    "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/libaddr2line-08f4d3b2e2fc561a.rlib": {
+      "sha256": "47d3d3bbd393af4dac44e28a321b657b74b77f1991b4a15646f4e09a8f272018",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/libadler2-fc26cad1601bcf27.rlib": {
+      "sha256": "22aeeae93a310c83cc08700e4fd7cce92d7074af4333e6368ac6b5fbf44b8a6b",
+      "relocations": [
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/liballoc-8d8c55230ec6779a.rlib": {
+      "sha256": "1d22579712facdcb73d04d99ac502b24d86a6db8adec97b41090ee870370d0e4",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_GOTPCREL",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/libcfg_if-7849917f56016e87.rlib": {
+      "sha256": "95e0acf555844cae6b17a9b99d9f32ade14931dbfce85f9322eb0e7705e9316e",
+      "relocations": [],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/libcompiler_builtins-f341317c6d192fd4.rlib": {
+      "sha256": "40af59ef167e33295d9750e1ed86b91ca4960c803bc6219cf14275259b1d32ae",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/libcore-362c45578282528b.rlib": {
+      "sha256": "0678dd8c69067166b91ab91afbdc6ec9d73f5e5e180144e6e1f9b78967beb295",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_GOTPCREL",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/libgimli-20a21012686b6372.rlib": {
+      "sha256": "8785e8e9397c23e0a080a9e462f9c28410ae2b548dc3380d470e1eefb315be69",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_GOTPCREL",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/libhashbrown-3a51e6f2fffa2247.rlib": {
+      "sha256": "97d317fa89eab17202b99d096c40e8af75ca59b40a948d2579b4d3923331c2ce",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/liblibc-1381444901b7e40f.rlib": {
+      "sha256": "ae1250c1a2612948612a41b5cc5d344f1f5243e14293ac4852a0f843bc0bc921",
+      "relocations": [
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/libmemchr-8c9388d9a0410e34.rlib": {
+      "sha256": "3209e16041eb776fdae98e10f60c32afc552b26714a6b205643a39bca564111a",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_GOTPCREL",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/libminiz_oxide-1d23b874efeb2053.rlib": {
+      "sha256": "c75d47c46f46cc5b2dfe3032c590f1d4459a72cf28c34cf4d04e2c6db6b60309",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/libobject-440d9deaf57df429.rlib": {
+      "sha256": "55691cf4c848f692a09039d695f73999c839375e34be5b950803b4df98d629f9",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_GOTPCREL",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/libpanic_unwind-1efcfa545b344aa7.rlib": {
+      "sha256": "a820022057e9911246772eee2112edd7136657ccb2ad8155e1f4d82933dd3d82",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/librustc_demangle-4323d449b5028a53.rlib": {
+      "sha256": "191709e8a357c712f871cc5e602097e01ec0d7ce2c8fa35c0e39727ce01b9164",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_GOTPCREL",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/librustc_std_workspace_alloc-4726a4245d484b50.rlib": {
+      "sha256": "fdad02a20332e7f58037ac3dc28bf5d1ca20ba650ee19320d50c668cf7b6a401",
+      "relocations": [],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/librustc_std_workspace_core-50adf3d8dc5babe4.rlib": {
+      "sha256": "83ca494798b54bd1d54b0573ab9f8a9581050f8107a75b12d05731741190b573",
+      "relocations": [],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/libstd-f32a85bea434ce93.rlib": {
+      "sha256": "640554a945e4204f3c467b9e1b0c1b951e5c493c19b6bd838ab6f63feef4224f",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_GOTPCREL",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/libstd_detect-accf65cf3a95f3f6.rlib": {
+      "sha256": "06a1902d76b81c11fdd0d8924b2569a39f9cf9ac46ba484ba7ba2b30b8a4a961",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_GOTPCREL",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/x86_64-breenix-hosted/lib/libunwind-bb964b5abebcc773.rlib": {
+      "sha256": "4cb72b3080571a61185001a5efce54c123798d26189444884795079c6e05c98e",
+      "relocations": [],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/x86_64-breenix/lib/libaddr2line-ba37975f7d8adf35.rlib": {
+      "sha256": "387b1c26d25ebe5b833827bc01bb161b459a9f58367aad057ba6bb686b8df04d",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/x86_64-breenix/lib/libadler2-dd423baddc1d50ec.rlib": {
+      "sha256": "cc71d7a921a703070cee4804fb12681d6a361b93a69ebedaeb007fdb0667ea4f",
+      "relocations": [
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/x86_64-breenix/lib/liballoc-1161479d64262814.rlib": {
+      "sha256": "cfd96588055d0852054609bfc9fe7088588989ecbb9bea4df6fa79a2b2c64e65",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_GOTPCREL",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/x86_64-breenix/lib/libcfg_if-11010efc6058d911.rlib": {
+      "sha256": "6fa04125312db1c3759aba890be458c0b523a1435eadeecc5bba1b59bf0430f8",
+      "relocations": [],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/x86_64-breenix/lib/libcompiler_builtins-96c412bbf464e3d2.rlib": {
+      "sha256": "f0df057c02e5ee952642fd45d961c736fec8decf27ce4e42fc63fc9f1e9c9f2f",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/x86_64-breenix/lib/libcore-5b00ff3053f7705b.rlib": {
+      "sha256": "a4f70275b14ea875b4a2d83e87be6a6804c3646a4acd9034dbcf30b08ed4875c",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_GOTPCREL",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/x86_64-breenix/lib/libgimli-35cfc4a2e7e86fd2.rlib": {
+      "sha256": "390fac8000cfe974d7b66a4d485cb94476dcd6cc05d2db5e2556a1ff68dd9372",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_GOTPCREL",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/x86_64-breenix/lib/libhashbrown-8dcd519fb7da6f51.rlib": {
+      "sha256": "434d60ddf4ed9cd7b2ca5a73268a7179af368f24cb2ca7e738c6bb584d6e746f",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/x86_64-breenix/lib/liblibc-9636e9f58f5c6436.rlib": {
+      "sha256": "e5c5d3890a11077d61fca130730be5e4f451141ec270492035b985ca0e5195e2",
+      "relocations": [
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/x86_64-breenix/lib/libmemchr-12a0ceda651a8dd9.rlib": {
+      "sha256": "3975a83388094fd4d8b41b5692e8809012545d92f0922f12b96013950b28c63a",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_GOTPCREL",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/x86_64-breenix/lib/libminiz_oxide-14f58b3b3e778d83.rlib": {
+      "sha256": "dce70b404f860ea7905efe5d33328c8f5eb6533a5bc7d564cf9c3c0c445708a6",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/x86_64-breenix/lib/libobject-dc264dd034f976fb.rlib": {
+      "sha256": "8ad79185dcb42b0889399cebbbf1cae43d573d9608ce223ddf9833f2bedd075e",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_GOTPCREL",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/x86_64-breenix/lib/libpanic_abort-4915d6c5fd85623e.rlib": {
+      "sha256": "3022cf5e7ef90c0403f9fb63ae0f6c02a864566fcd7c8ecca3feef22bcafbd8e",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_demangle-65c78af9312cb81f.rlib": {
+      "sha256": "bf6679314b5abc5a4e5cbb89f95a991d3eb5f5e6138eb9c2da4dea21b102714d",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_GOTPCREL",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_std_workspace_alloc-7ade61cdb4713159.rlib": {
+      "sha256": "e8a6e4fea05f063ae921679d2ea02b0dd74012374df8cd56d9b89b5b2d5a8d1a",
+      "relocations": [],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/x86_64-breenix/lib/librustc_std_workspace_core-1a46c4e57e8e3ea0.rlib": {
+      "sha256": "139d40c736f1de78d6561e7b7133ac8dd61afad4d41c152a2c1687b1bd553535",
+      "relocations": [],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/x86_64-breenix/lib/libstd-d5c991d6609a6050.rlib": {
+      "sha256": "c2ceb0c16c33565de5f40a3de7aece66a3c343f57785a99d18388c380603df79",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_GOTPCREL",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/x86_64-breenix/lib/libstd_detect-ec720b3dd175b489.rlib": {
+      "sha256": "c1859948a7d62faac8c3a4bc5a46469722c370cfcb629d165449ba8d78c7fb46",
+      "relocations": [
+        "R_X86_64_64",
+        "R_X86_64_GOTPCREL",
+        "R_X86_64_PC32",
+        "R_X86_64_PLT32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/x86_64-breenix/lib/libunwind-20e4e418da0d602f.rlib": {
+      "sha256": "d3cc7a0ce06e14da201682e68720857055f877e9b82c5d9153f62e0a8bb70155",
+      "relocations": [],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    }
+  },
+  "relocations": {
+    "observed": [
+      "R_X86_64_64",
+      "R_X86_64_GOTPCREL",
+      "R_X86_64_PC32",
+      "R_X86_64_PLT32"
+    ],
+    "supported_by_bld": [
+      "R_X86_64_64",
+      "R_X86_64_GOTPCREL",
+      "R_X86_64_PC32",
+      "R_X86_64_PLT32"
+    ],
+    "needs_bld": []
+  }
+}

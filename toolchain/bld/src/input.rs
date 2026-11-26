@@ -1,7 +1,9 @@
+use std::ffi::{OsStr, OsString};
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, Read, Write};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::Result;
@@ -18,6 +20,81 @@ impl ReadSource for FileSource {
     fn read(&mut self, file: &mut File, bytes: &mut [u8]) -> io::Result<usize> {
         file.read(bytes)
     }
+}
+
+pub(crate) fn find_library(
+    name: &OsStr,
+    directories: &[PathBuf],
+    static_only: bool,
+) -> Result<PathBuf> {
+    let exact = name
+        .as_encoded_bytes()
+        .strip_prefix(b":")
+        .map(OsStr::from_bytes);
+    let basename = Path::new(exact.unwrap_or(name));
+    if !matches!(basename.components().next(), Some(Component::Normal(_)))
+        || basename.file_name() != Some(basename.as_os_str())
+    {
+        return Err(format!(
+            "bld: -l{}: invalid library name",
+            name.to_string_lossy()
+        ));
+    }
+    let candidate = |suffix| {
+        let mut filename = OsString::from("lib");
+        filename.push(name);
+        filename.push(suffix);
+        filename
+    };
+    let archive = exact.map_or_else(|| candidate(".a"), OsStr::to_os_string);
+    let shared = exact.is_none().then(|| candidate(".so"));
+    let mut unavailable = None;
+    for directory in directories {
+        if let Some(shared) = &shared {
+            let path = directory.join(shared);
+            if exists(&path)? {
+                if !static_only {
+                    return Ok(path);
+                }
+                unavailable.get_or_insert(path);
+            }
+        }
+        let path = directory.join(&archive);
+        if exists(&path)? {
+            return Ok(path);
+        }
+    }
+    if let Some(path) = unavailable {
+        return Err(format!(
+            "{}: shared library cannot be used with -Bstatic",
+            path.display()
+        ));
+    }
+    Err(format!(
+        "bld: -l{}: library not found in -L paths",
+        name.to_string_lossy()
+    ))
+}
+
+fn exists(path: &Path) -> Result<bool> {
+    match fs::metadata(path) {
+        Ok(metadata) => Ok(metadata.is_file()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!("{}: {error}", path.display())),
+    }
+}
+
+pub(crate) fn find_script(path: PathBuf, directories: &[PathBuf]) -> Result<PathBuf> {
+    // GNU ld §2.1: only -L options preceding -T extend script lookup.
+    if !directories.is_empty() && path.is_relative() && !exists(&path)? {
+        for directory in directories {
+            let candidate = directory.join(&path);
+            if exists(&candidate)? {
+                return Ok(candidate);
+            }
+        }
+    }
+    Ok(path)
 }
 
 pub(crate) fn read_file(path: &Path, source: &mut dyn ReadSource) -> Result<Vec<u8>> {
