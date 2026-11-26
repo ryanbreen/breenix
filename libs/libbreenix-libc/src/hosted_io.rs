@@ -49,6 +49,14 @@ pub unsafe extern "C" fn mlock(addr: *const c_void, len: usize) -> i32 {
     syscall_result_to_c_int(result as i64)
 }
 
+/// madvise(2): apply the selected advice to the given virtual address range.
+#[cfg_attr(not(test), no_mangle)]
+pub unsafe extern "C" fn madvise(addr: *mut c_void, len: usize, advice: i32) -> i32 {
+    // SAFETY: the kernel validates the address range and advice.
+    let result = unsafe { raw::syscall3(nr::MADVISE, addr as u64, len as u64, advice as u64) };
+    syscall_result_to_c_int(result as i64)
+}
+
 #[cfg_attr(not(test), no_mangle)]
 pub unsafe extern "C" fn dup3(old: i32, new: i32, flags: i32) -> i32 {
     // SAFETY: the syscall takes descriptor numbers and a flags word.

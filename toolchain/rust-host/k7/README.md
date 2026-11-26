@@ -1,4 +1,64 @@
-# Cargo X1 archive inventory
+# K7 Cargo twins and X1 inventory
+
+## K7 Cargo twins
+
+Use the retained K5 stage-1 compiler and sysroot for both Cargo builds.
+The hosted sysroot must include `proc_macro`. Use both hosts in one
+bootstrap configuration and select `scripts/rust-host/kd_link.py` as
+the linker for `x86_64-breenix-hosted`.
+
+Apply `rustix-1.0.7-breenix.patch` here after the K5 rustix patch.
+Apply `socket2-0.5.10-breenix.patch` to the pinned registry release.
+Select both in the hosted leg's build-local Cargo patch table and
+lockfile. The socket2 patch uses Breenix's `size_t` for `msg_iovlen`
+and excludes socket options outside the current Breenix ABI.
+
+Set `build.cargo` to the absolute path of
+`scripts/rust-host/k7_bootstrap_cargo.py`. Set `K7_STAGE0_CARGO`,
+`K7_STAGE1_RUSTC`, `K7_CARGO_CONFIG` and `K7_CARGO_LOCKFILE` to the
+pinned Cargo, retained Mac stage-1 compiler, and build-local patch table
+and lockfile. The adapter selects `--bin cargo --features all-static`
+and keeps bootstrap's dual proc-macro flag. It selects the patches and
+the custom getrandom backend for the hosted leg. The Mac leg uses the
+native libc bindings.
+
+Build shared libc with `userspace/programs/build.sh --arch x86_64 --kd-libc`
+before invoking bootstrap. Set `BREENIX_KD_BUILD_DIR` to the directory
+with `libc.so` and `breenix-crt.o`, and `BREENIX_X2_STAGE` to the
+receipt directory. Use the K5 linker environment for `BREENIX_X2_LLD`
+and `BREENIX_X2_FALLBACK_LINKER`. For `X2_RUSTC` and `X2_SYSROOT_DEPS`,
+use the stage-1 compiler and its hosted rlib directory.
+
+Build bunwind with the same stage-1 compiler and its hosted sysroot.
+Set `BREENIX_K7_BUNWIND` to the resulting `libbunwind.rlib`. The linker
+extracts its bunwind object and uses the core and panic runtime from the
+same sysroot that built Cargo.
+
+```sh
+export CARGO_BUILD_JOBS=4 CARGO_NET_OFFLINE=true
+taskpolicy -b nice -n 15 python3 x.py build --stage 1 src/tools/cargo \
+    --config "$cache/bootstrap.toml" \
+    --keep-stage 0 --keep-stage 1 --keep-stage-std 0 --keep-stage-std 1 -j 4
+```
+
+Use the Cargo binaries in the target-specific release directories under
+bootstrap's `stage0-tools` directory. Stage the hosted result under
+`bin/cargo` and the shared libc under
+`lib/libc.so` beside the linker's `maps/cargo.map`. Point
+`BREENIX_K7_STAGE` to that directory for the host checks.
+
+```sh
+python3 -m unittest \
+    tests.cargo_port_test.CargoPort.test_cargo_is_breenix_elf_with_empty_undefined_set \
+    tests.cargo_port_test.CargoPort.test_cargo_one_process_state
+```
+
+The x86-64 hosted output uses the KD interpreter and links bunwind.
+Its only dynamic dependency is the shared Breenix libc. The final ELF
+inventory is in [`x1.json`](../x1.json). The build and artifact
+digests are in [`x86_64.json`](x86_64.json).
+
+## X1 archive probe
 
 Use an APFS clone of the K5 twin build directory. Keep the pinned fork, Cargo
 checkout and registry sources clean. Apply the K5 patches and the K7
@@ -47,5 +107,5 @@ symbols. The logging calls use Breenix's timestamped kernel log via
 `/dev/kmsg`, subject to its existing access controls. `LOG_CONS` allows a
 console write when the log device cannot accept the message.
 
-The ARM64 Breenix build still needs a hosted Rust twin and an ARM64 OpenSSL
-target before its own Cargo dependency inventory.
+The ARM64 Breenix build still needs a hosted Rust twin, an ARM64 OpenSSL
+target, its own ELF inventory and guest acceptance.

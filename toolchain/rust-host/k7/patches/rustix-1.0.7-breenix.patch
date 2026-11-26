@@ -1,0 +1,18 @@
+--- a/src/termios/types.rs
++++ b/src/termios/types.rs
+@@ -455,6 +455,7 @@
+
+         /// `XTABS`
+         #[cfg(not(any(
++            target_os = "breenix",
+             bsd,
+             solarish,
+             target_os = "aix",
+@@ -575,6 +576,7 @@
+
+         /// `CMSPAR`
+         #[cfg(not(any(
++            target_os = "breenix",
+             bsd,
+             solarish,
+             target_os = "aix",

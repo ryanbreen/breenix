@@ -54,7 +54,9 @@ class CargoPort(unittest.TestCase):
 
         link_map = (stage / 'maps/cargo.map').read_text()
         self.assertTrue(link_map.strip(), 'missing Cargo linker map contents')
-        self.assertNotRegex(link_map, r'\b(?:libc|libbreenix_libc)[^/\s()]*\.a[(:]')
+        self.assertNotRegex(
+            link_map,
+            r'\b(?:libc(?:-pic)?|libbreenix[_-]libc)(?:-[0-9a-f]+)?\.(?:a|rlib)[(:]')
         self.assertNotRegex(link_map, r'\.a[(:][^\s)]*crt[^\s)]*\.o\b')
 
         record = json.loads((ROOT / 'toolchain/rust-host/k7/x86_64.json').read_text())
