@@ -1,4 +1,5 @@
 """Run the affected production Rust with host stand-ins for kernel services."""
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -91,11 +92,20 @@ def checked_copy(functions):
     return "\n".join(item(source, marker) for marker in functions)
 
 
-def run_test(fixture, name):
+def run_test(fixture, name, *, miri=False):
     BUILD.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=BUILD) as tmp:
         path = Path(tmp)
         (path / "regression.rs").write_text(fixture)
+        if miri:
+            (path / "Cargo.toml").write_text(
+                '[package]\nname = "rustiness-regression"\nversion = "0.0.0"\n'
+                'edition = "2021"\n[lib]\npath = "regression.rs"\n[workspace]\n'
+            )
+            env = dict(os.environ, MIRIFLAGS="-Zmiri-symbolic-alignment-check", RUSTFLAGS="-Dwarnings")
+            subprocess.run(TASKPOLICY + ["cargo", "miri", "test", name, "--", "--exact"],
+                           cwd=path, env=env, check=True, timeout=55)
+            return
         subprocess.run(
             TASKPOLICY + ["rustc", "--edition=2021", "--test", "-Dwarnings",
                           "regression.rs", "-o", "regression"],
@@ -271,6 +281,62 @@ fn audio_reads_only_mapped_pcm() {
         fixture = fixture.replace("// AUDIO_WRITE", imports + handler)
         fixture = fixture.replace("// CHECKED_COPY", checked_copy(("pub fn read_user_bytes(",)))
         run_test(fixture, "audio_reads_only_mapped_pcm")
+
+
+    def test_elf_headers(self):
+        source = (ROOT / "kernel/src/elf.rs").read_text()
+        types = (item(source, "pub struct Elf64Header {") + "\n"
+                 + item(source, "pub struct Elf64ProgramHeader {"))
+        types = types.replace("pub struct", "#[repr(C)]\npub struct")
+        offset = item(source, "fn program_header_offset(")
+
+        base_loader = item(source, "pub fn load_elf_at_base(")
+        process_loader = item(source, "pub fn load_elf_into_page_table(")
+        base_header = base_loader[base_loader.index("    // Verify ELF header"):
+                                  base_loader.index('    log::trace!("ELF header loaded");')]
+        process_header = process_loader[process_loader.index("    if data.len()"):
+                                        process_loader.index("    // Validate ELF header")]
+
+        def parse(name, loader, header):
+            program_header = loader[loader.index("        let ph_start ="):
+                                    loader.index("        // Check for PT_PHDR segment")]
+            return (f"fn {name}(data: &[u8]) -> Result<(u64, u32, u64), &'static str> {{\n"
+                    f"{header}\nlet i = 0;\n{program_header}\n"
+                    "Ok((header.entry, ph.p_type, ph.p_vaddr))\n}\n")
+
+        fixture = r"""
+extern crate self as log;
+use core::mem;
+#[macro_export]
+macro_rules! error { ($($arg:tt)*) => {} }
+"""
+        fixture += types + "\n" + offset + "\n"
+        fixture += parse("parse_at_base", base_loader, base_header)
+        fixture += parse("parse_for_process", process_loader, process_header)
+        fixture += r"""
+#[test]
+fn elf_headers_from_misaligned_bytes() {
+    #[repr(align(8))]
+    struct Storage([u8; 121]);
+
+    let mut storage = Storage([0; 121]);
+    let data = &mut storage.0[1..];
+    assert_eq!(data.as_ptr().align_offset(8), 7);
+    data[..7].copy_from_slice(b"\x7fELF\x02\x01\x01");
+    data[24..32].copy_from_slice(&0x0123_4567u64.to_le_bytes());
+    data[32..40].copy_from_slice(&64u64.to_le_bytes());
+    data[54..56].copy_from_slice(&56u16.to_le_bytes());
+    data[56..58].copy_from_slice(&1u16.to_le_bytes());
+    data[64..68].copy_from_slice(&6u32.to_le_bytes());
+    data[80..88].copy_from_slice(&0x0123_4000u64.to_le_bytes());
+
+    let expected = Ok((0x0123_4567, 6, 0x0123_4000));
+    assert_eq!(parse_at_base(data), expected);
+    assert_eq!(parse_for_process(data), expected);
+}
+"""
+        run_test(fixture, "elf_headers_from_misaligned_bytes",
+                 miri=os.environ.get("BREENIX_RUSTINESS_MIRI") == "1")
 
 
 if __name__ == "__main__":
