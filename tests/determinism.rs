@@ -12,7 +12,12 @@ fn two_directories_same_bytes() {
     let runner = work.join("selfhost-mac");
     assert!(Command::new("rustc")
         .current_dir(&root)
-        .args(["--edition=2021", "scripts/rust-host/selfhost-mac.rs", "-o"])
+        .args([
+            "--edition=2021",
+            "-Dwarnings",
+            "scripts/rust-host/selfhost-mac.rs",
+            "-o"
+        ])
         .arg(&runner)
         .status()
         .unwrap()
@@ -42,5 +47,5 @@ fn two_directories_same_bytes() {
             work.display()
         );
     }
-    fs::remove_dir_all(work).unwrap();
+    println!("comparison artifacts: {}", work.display());
 }
