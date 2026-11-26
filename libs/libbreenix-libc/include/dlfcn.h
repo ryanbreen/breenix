@@ -1,5 +1,4 @@
-/* <dlfcn.h>: POSIX.1-2024 dynamic linking. libc does not define this header's functions yet
- * (issue #1591), so it declares only the types and constants. */
+/* POSIX.1-2024 <dlfcn.h>. The dynamic functions use the hosted runtime. */
 #ifndef __BREENIX_DLFCN_H
 #define __BREENIX_DLFCN_H
 #include <__breenix/features.h>
@@ -15,5 +14,12 @@ typedef struct {
 #define RTLD_NOW 2
 #define RTLD_GLOBAL 0x100
 #define RTLD_LOCAL 0
+
+__BREENIX_BEGIN_DECLS
+void *dlopen(const char *, int);
+void *dlsym(void *__BREENIX_RESTRICT, const char *__BREENIX_RESTRICT);
+char *dlerror(void);
+int dlclose(void *);
+__BREENIX_END_DECLS
 #endif /* __BREENIX_POSIX */
 #endif

@@ -259,7 +259,7 @@ if [[ "$KD_LIBC" == 1 ]]; then
     "$rust_tools/llvm-objcopy" --rename-section \
         .rodata.breenix_dso_handle=.data.rel.ro.breenix_dso_handle,alloc,load,data,contents \
         "$kd_dir/libc/$TARGET_DIR-hosted/release/libc.a" "$kd_dir/libc-pic.a"
-    python3 "$PROJECT_ROOT/scripts/libc-clean-archive.py" --archive "$kd_dir/libc-pic.a" --tool-dir "$rust_tools"
+    python3 "$PROJECT_ROOT/scripts/libc-clean-archive.py" --archive "$kd_dir/libc-pic.a" --tool-dir "$rust_tools" --shared-libc
     "$rust_tools/gcc-ld/ld.lld" -shared --no-undefined --fatal-warnings --eh-frame-hdr --hash-style=sysv \
         -soname libc.so --version-script "$libc_dir/hosted-libc.exports" \
         -o "$kd_dir/libc.so" --whole-archive "$kd_dir/libc-pic.a" --no-whole-archive

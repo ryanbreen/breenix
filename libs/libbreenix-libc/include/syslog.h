@@ -1,5 +1,4 @@
-/* <syslog.h>: POSIX.1-2024 system logging. libc does not define this header's functions yet
- * (issue #1600), so it declares only the types and constants. */
+/* POSIX.1-2024 <syslog.h>. These functions use the hosted system log. */
 #ifndef __BREENIX_SYSLOG_H
 #define __BREENIX_SYSLOG_H
 #include <__breenix/features.h>
@@ -38,5 +37,11 @@
 #define LOG_DEBUG 7
 
 #define LOG_MASK(pri) (1 << (pri))
+
+__BREENIX_BEGIN_DECLS
+void openlog(const char *, int, int);
+void syslog(int, const char *, ...);
+void closelog(void);
+__BREENIX_END_DECLS
 #endif /* __BREENIX_POSIX */
 #endif

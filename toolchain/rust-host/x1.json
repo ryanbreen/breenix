@@ -21029,5 +21029,80 @@
       "provider": "k5/getrandom.rs",
       "provider_object_sha256": "fdd0b28cc3e3874a24c9a1f854ede0bb97df1ff2b57078d6f73dbc29e7144a6c"
     }
+  },
+  "g3_closure": {
+    "libc_sha256": "6a319091247f27d137805188df2746038d02192a0b3033989d840b523f8c406e",
+    "openssl_config_sha256": "7c2d79bae68c3d87a0e6722b2bd267ef3908112baa13364b6d9fbc93680acdde",
+    "forced_declaration_include": false,
+    "entropy_symbol": "getentropy",
+    "crates": [
+      {
+        "crate": "curl-sys",
+        "exit_status": 0,
+        "remaining_breenix_symbols": [],
+        "archives": {
+          "libcurl.a": "851703d4dcf6304ffe8fc56ae5663abe39349cf9c2924e4eafbda1a4d0c1fc88"
+        }
+      },
+      {
+        "crate": "libgit2-sys",
+        "exit_status": 0,
+        "remaining_breenix_symbols": [],
+        "archives": {
+          "libgit2.a": "a092471959594928ba2981d9acac004d1109e0163f0480dc320c0cb46163a61a"
+        }
+      },
+      {
+        "crate": "libnghttp2-sys",
+        "exit_status": 0,
+        "remaining_breenix_symbols": [],
+        "archives": {
+          "libnghttp2.a": "36e30ec669061cff219d1fefc5c490a57f636e2a40cdd1048f750a2bd6b46740"
+        }
+      },
+      {
+        "crate": "libsqlite3-sys",
+        "exit_status": 0,
+        "remaining_breenix_symbols": [],
+        "archives": {
+          "libsqlite3.a": "e1884b975b6db3aba42bed37a0aae84338845cd4feedbcc3aa99b0d3ffdb5a6c"
+        }
+      },
+      {
+        "crate": "libssh2-sys",
+        "exit_status": 0,
+        "remaining_breenix_symbols": [],
+        "archives": {
+          "libssh2.a": "0bb1cf1ea38872a93438e4baf9b7d1dc160cbabfb9713768f93249152f9e5f0d"
+        }
+      },
+      {
+        "crate": "libz-rs-sys",
+        "exit_status": 0,
+        "remaining_breenix_symbols": [],
+        "archives": {
+          "liblibz_rs_sys-bca951c76d2a807f.rlib": "41cb4a9731705152d52af59b6821a3fa22dd58fbf246d0ce9540e4a1eabaf51d"
+        }
+      },
+      {
+        "crate": "libz-sys",
+        "exit_status": 0,
+        "remaining_breenix_symbols": [],
+        "archives": {
+          "libz.a": "96c261dd84f93dc20ca3ec4224becfbb9572b9caa3390ce5855f20858c831e08"
+        }
+      },
+      {
+        "crate": "openssl-sys",
+        "exit_status": 0,
+        "remaining_breenix_symbols": [],
+        "archives": {
+          "libcrypto.a": "928598dffebc8c2fa431a401e6c35aa5b6650122469c6ed4ce7bf96a8a236b95",
+          "libssl.a": "392cb6af8a7aa1a416fef7bc4558f383a4b2b65b88068bc69e929cafaedcc847"
+        }
+      }
+    ],
+    "check": "tests.cargo_port_test.CargoPort.test_x1_c_dependencies_resolve_in_libc",
+    "remaining_breenix_symbols": []
   }
 }

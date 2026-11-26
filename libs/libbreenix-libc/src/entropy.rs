@@ -12,6 +12,10 @@ mod llvm_host;
 #[path = "hosted_io.rs"]
 mod hosted_io;
 
+#[cfg(feature = "hosted-rustc")]
+#[path = "hosted_syslog.rs"]
+mod hosted_syslog;
+
 // POSIX.1-2024: <limits.h> GETENTROPY_MAX and getentropy().
 const GETENTROPY_MAX: usize = 256;
 

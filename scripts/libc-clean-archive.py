@@ -17,6 +17,9 @@ import subprocess
 import tempfile
 
 MEMORY = {'memcpy', 'memmove', 'memset', 'memcmp', 'bcmp', 'strlen'}
+# The five C definitions are already in libbreenix-libc. Under ELF gABI
+# §5.4, the weak hidden duplicates would hide the strong definitions in a DSO.
+SHARED_MEMORY_EXPORTS = MEMORY - {'bcmp'}
 
 
 def symbols(nm, path):
@@ -29,7 +32,7 @@ def foreign(name):
     return 'libm_math' in name or 'compiler_builtins4math' in name or 'compiler_builtins..math..' in name
 
 
-def clean(archive, tool_dir):
+def clean(archive, tool_dir, shared_libc=False):
     before = hashlib.sha256(archive.read_bytes()).digest()
     timestamps = archive.stat()
     record = archive.with_suffix('.a.cleaned.json')
@@ -48,8 +51,9 @@ def clean(archive, tool_dir):
             subprocess.run([str(ar), 'x', '--output', tmp, str(archive), member], check=True)
             obj = directory / member
             syms = symbols(nm, obj)
-            names = {name for name, kind in syms if foreign(name) or
-                     (kind in 'Ww' and not name.startswith('_') and name not in MEMORY)}
+            names = {name for name, kind in syms if foreign(name) or (kind in 'Ww' and (
+                (not name.startswith('_') and name not in MEMORY)
+                or (shared_libc and name in SHARED_MEMORY_EXPORTS)))}
             if not names:
                 continue
             # Embedded bitcode (.llvmbc, .llvmcmd) is the member's whole module, math included.
@@ -67,7 +71,9 @@ def clean(archive, tool_dir):
             # ELF may keep an unreferenced undefined symbol after its caller's
             # section is removed. Strip it; objcopy fails if a relocation still
             # uses it, so this cannot disguise a live dependency.
-            dangling = [name for name, kind in symbols(nm, obj) if kind == 'U' and foreign(name)]
+            dangling = [name for name, kind in symbols(nm, obj)
+                        if kind == 'U' and (foreign(name) or
+                            (shared_libc and name in names & SHARED_MEMORY_EXPORTS))]
             if dangling:
                 subprocess.run([str(objcopy)] + ['--strip-symbol=' + name for name in dangling] + [str(obj)], check=True)
             remaining = {name for name, kind in symbols(nm, obj) if kind != 'U' and (foreign(name) or name in names)}
@@ -94,8 +100,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--archive', type=Path, required=True)
     parser.add_argument('--tool-dir', type=Path, required=True)
+    parser.add_argument('--shared-libc', action='store_true',
+                        help='remove weak hidden builtins shadowing libc.so exports')
     args = parser.parse_args()
-    clean(args.archive.resolve(), args.tool_dir.resolve())
+    clean(args.archive.resolve(), args.tool_dir.resolve(), args.shared_libc)
 
 
 if __name__ == '__main__':

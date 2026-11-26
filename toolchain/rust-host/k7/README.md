@@ -23,13 +23,10 @@ through `CC_x86_64_breenix_hosted`, `CFLAGS_x86_64_breenix_hosted` and
 `AR_x86_64_breenix_hosted`. Keep both the Cargo JSON messages and stderr.
 [cc build environment](https://docs.rs/cc/latest/cc/#external-configuration-via-environment-variables).
 
-For the X1 probe, add `-include` and the absolute path to
-`inventory-declarations.h` to the hosted C flags. These declarations let
-OpenSSL's optional logging BIO and SQLite's load-extension code compile so
-their references appear in the archive inventory. The hosted libc exports
-`dlopen`, `dlsym`, `dlerror` and `dlclose`. The syslog functions remain undefined
-and are recorded for g3. This declaration-only header is scoped to the inventory
-build.
+The g2 inventory build used `-include inventory-declarations.h` to measure
+OpenSSL's logging BIO and SQLite's load-extension references. Build against
+libbreenix-libc's `<syslog.h>` and `<dlfcn.h>` directly for g3 and later.
+SQLite keeps extension loading enabled.
 
 If the cloned sysroot was built with `library/std`, build `library` for each
 twin target with stage 1 to include `proc_macro`. Stage the matching library
@@ -41,7 +38,14 @@ Set `BREENIX_X1_CARGO_MESSAGES` to the hosted invocation's JSON stream and
 inventory is in [`x1.json`](../x1.json). Its raw gaps subtract the hosted
 libc.so exports from each crate's undefined symbols. A dependency-side entry
 can already have a definition in a recorded archive or the Rust sysroot.
-The remaining Breenix symbols are the work list for g3.
+The initial remaining Breenix symbols are the g3 work list. To check closure,
+build `userspace/programs/build.sh --arch x86_64 --kd-libc` and run
+`tests.cargo_port_test.CargoPort.test_x1_c_dependencies_resolve_in_libc`.
+Set `BREENIX_X1_LIBC` if using a separate output directory. The check reads the
+retained archives, the hosted sysroot and the rebuilt library's dynamic
+symbols. The logging calls use Breenix's timestamped kernel log via
+`/dev/kmsg`, subject to its existing access controls. `LOG_CONS` allows a
+console write when the log device cannot accept the message.
 
 The ARM64 Breenix build still needs a hosted Rust twin and an ARM64 OpenSSL
 target before its own Cargo dependency inventory.
