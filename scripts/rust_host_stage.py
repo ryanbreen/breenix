@@ -171,19 +171,79 @@ def rustc_fixture_entries(artifacts, sysroot, targets, k5):
         yield f'targets/{name}', targets / name, '0444', None
 
 
-def stage_rustc(image, selection, arch, suite, artifacts, sysroot, targets, corpus, kd, k5, kd_record):
+def verify_hosted_libc(kd, records, k5, rustc, cargo):
+    libc = kd / 'libc.so'
+    pin = json.loads((records / 'hosted-libc-x86_64.json').read_text())
+    runtime = json.loads((kd / 'build.json').read_text())
+    if runtime['libc.so'] != pin['sha256'] or sha256(libc) != pin['sha256']:
+        raise ValueError(f'{libc}: SHA-256 differs from the hosted libc pin')
+    libdir = subprocess.check_output(['rustc', '--print', 'target-libdir'], cwd=ROOT,
+                                     text=True, timeout=10).strip()
+    readobj = Path(libdir).parent / 'bin/llvm-readobj'
+
+    def symbols(path, needed, soname=None):
+        elf, = json.loads(subprocess.check_output(
+            [readobj, '--elf-output-style=JSON', '--dyn-symbols', '--needed-libs', path],
+            timeout=15))
+        summary = elf['FileSummary']
+        if (summary['Format'] != 'elf64-x86-64' or sorted(elf['NeededLibraries']) != sorted(needed)
+                or (soname is not None and summary['LoadName'] != soname)):
+            raise ValueError(f'{path.name}: unexpected hosted ELF dependencies')
+        imports, exports = set(), set()
+        # ELF gABI §5.1–5.4. The null symbol has no name. Definitions must
+        # be global or weak and externally visible, as in ld-breenix lookup.
+        for entry in elf['DynamicSymbols']:
+            symbol = entry['Symbol']
+            name = symbol['Name']['Name']
+            if not name:
+                continue
+            if symbol['Section']['Value'] == 0:
+                imports.add(name)
+            elif symbol['Binding']['Value'] in (1, 2) and (symbol['Other']['Value'] & 3) in (0, 3):
+                exports.add(name)
+        return imports, exports
+
+    def verify(path, imports, exports):
+        missing = sorted(imports - exports)
+        if missing:
+            raise ValueError(f'{path.name}: unresolved hosted imports: {", ".join(missing)}')
+
+    libc_imports, libc_exports = symbols(libc, [], libc.name)
+    verify(libc, libc_imports, set())
+    driver = rustc / k5['hosted_link']['driver']
+    driver_imports, driver_exports = symbols(driver, [libc.name], driver.name)
+    verify(driver, driver_imports, libc_exports)
+    compiler = rustc / 'rustc'
+    compiler_imports, _ = symbols(compiler, [driver.name, libc.name])
+    verify(compiler, compiler_imports, libc_exports | driver_exports)
+    if cargo is not None:
+        cargo_imports, _ = symbols(cargo, [libc.name])
+        verify(cargo, cargo_imports, libc_exports)
+    return runtime
+
+
+def hosted_runtime_entries(kd, runtime, already_staged):
+    entries, expected = [], {}
+    for name in ('ld-breenix.so', 'libc.so'):
+        path = f'/lib/{name}'
+        if path in already_staged:
+            if already_staged[path] != runtime[name]:
+                raise ValueError(f'{path} differs from the hosted runtime build record')
+        else:
+            entries.append((path, kd / name, '0755'))
+            expected[path] = runtime[name]
+    return entries, expected
+
+
+def stage_rustc(image, selection, arch, suite, artifacts, sysroot, targets, corpus, kd, k5,
+                kd_record, *, already_staged=None):
     if 'rustc' not in selection.split(','):
         return {}
     if arch != 'x86_64':
         raise ValueError('the hosted rustc is only built for x86-64')
     prefix = '/usr/libexec/breenix/rustc'
-    entries = [('/sbin/suite-rustc', suite, '0755'),
-               ('/lib/ld-breenix.so', kd / 'ld-breenix.so', '0755'),
-               ('/lib/libc.so', kd / 'libc.so', '0755')]
-    expected = {'/lib/ld-breenix.so': kd_record['ld-breenix.so'],
-                '/lib/libc.so': k5['hosted_link']['libc_sha256']}
-    if kd_record['libc.so'] != expected['/lib/libc.so']:
-        raise ValueError('KD libc differs from K5 build record')
+    entries, expected = hosted_runtime_entries(kd, kd_record, already_staged or {})
+    entries.append(('/sbin/suite-rustc', suite, '0755'))
     for name, source, mode, digest in rustc_fixture_entries(artifacts, sysroot, targets, k5):
         path = f'{prefix}/{name}'
         entries.append((path, source, mode))
@@ -346,14 +406,14 @@ def stage_rust_link(image, arch, artifacts, fixture, records):
     return staged
 
 
-def stage_cargo(image, arch, suite, artifacts, rust_link, sysroot, fixture, kd, k7_stage, records):
+def stage_cargo(image, arch, suite, artifacts, rust_link, sysroot, fixture, kd, k7_stage,
+                records, kd_record, already_staged):
     if arch != 'x86_64':
         raise ValueError('the recorded Cargo fixture is only built for x86-64')
     prefix = '/usr/libexec/breenix/cargo'
     k5 = json.loads((records / 'k5/x86_64.json').read_text())
     k6 = json.loads((records / 'k6/x86_64.json').read_text())
     k7 = json.loads((records / 'k7/x86_64.json').read_text())
-    kd_record = json.loads((kd / 'build.json').read_text())
     if (any(k5[name] != digest for name, digest in k7['k5_compiler_digests'].items())
             or (k6['rustc_sha256'], k6['rustc_commit']) !=
             (k5['mac_rustc_sha256'], k5['fork_commit'])):
@@ -368,11 +428,8 @@ def stage_cargo(image, arch, suite, artifacts, rust_link, sysroot, fixture, kd, 
     ]
     files.extend((name, records / 'k7' / name, '0444', digest)
                  for name, digest in digests.items() if name.startswith('corpus/'))
-    entries = [('/sbin/suite-cargo', suite, '0755'),
-               ('/lib/ld-breenix.so', kd / 'ld-breenix.so', '0755'),
-               ('/lib/libc.so', k7_stage / 'lib/libc.so', '0755')]
-    expected = {'/lib/ld-breenix.so': kd_record['ld-breenix.so'],
-                '/lib/libc.so': k7['libc_sha256']}
+    entries, expected = hosted_runtime_entries(kd, kd_record, already_staged)
+    entries.append(('/sbin/suite-cargo', suite, '0755'))
     for name, source, mode, digest in files:
         path = f'{prefix}/{name}'
         entries.append((path, source, mode))
@@ -391,41 +448,37 @@ def main():
     parser.add_argument('--image', type=Path, required=True)
     args = parser.parse_args()
     suites = args.suite.split(',')
-    if 'cargo' in suites and 'rustc' in suites:
-        parser.error('cargo and rustc pin different shared libc.so builds')
     release = PROGRAMS / f'target/hosted/{args.arch}-breenix-hosted/release'
-    staged = stage_cxx_runtime(args.image, args.suite, release / 'suite-cxx-runtime',
-                               [PROGRAMS / 'target/cxx-runtime' / args.arch / name for name in CXX_PROBES])
-    staged.update(stage_llvm(args.image, args.suite, release / 'suite-llvm',
-                             PROGRAMS / 'target/llvm' / args.arch,
-                             ROOT / 'toolchain/rust-host/k4/corpus', PROGRAMS / 'linker.ld'))
-    staged.update(stage_dynamic(
-        args.image, args.suite, args.arch,
-        Path(os.environ.get('BREENIX_KD_BUILD_DIR', PROGRAMS / 'target/kd')),
-    ))
+    kd = Path(os.environ.get('BREENIX_KD_BUILD_DIR', PROGRAMS / 'target/kd'))
     cache = Path(os.environ.get('BREENIX_RUSTC_PORT_BUILDS', ROOT / 'build/rustc-port'))
     records = ROOT / 'toolchain/rust-host'
     rustc = PROGRAMS / 'target/rustc' / args.arch
     rust_link = PROGRAMS / 'target/rust-link' / args.arch
     fixture = Path(os.environ.get('BREENIX_K6_FIXTURE', cache / 'k6/fixture'))
-    if 'rustc' in suites:
+    if 'rustc' in suites or 'cargo' in suites:
+        if args.arch != 'x86_64':
+            parser.error('hosted rustc and Cargo staging requires x86-64')
         sysroot = Path(os.environ.get('BREENIX_K5_SYSROOT', cache / 'sysroot'))
-        kd = Path(os.environ.get('BREENIX_KD_BUILD_DIR', PROGRAMS / 'target/kd'))
-        k5 = json.loads((ROOT / 'toolchain/rust-host/k5/x86_64.json').read_text())
-        kd_record = json.loads((kd / 'build.json').read_text())
+        k7_stage = Path(os.environ.get('BREENIX_K7_STAGE', cache / 'k7/stage1'))
+        k5 = json.loads((records / 'k5/x86_64.json').read_text())
+        cargo = k7_stage / 'bin/cargo' if 'cargo' in suites else None
+        kd_record = verify_hosted_libc(kd, records, k5, rustc, cargo)
+
+    staged = stage_cxx_runtime(args.image, args.suite, release / 'suite-cxx-runtime',
+                               [PROGRAMS / 'target/cxx-runtime' / args.arch / name for name in CXX_PROBES])
+    staged.update(stage_llvm(args.image, args.suite, release / 'suite-llvm',
+                             PROGRAMS / 'target/llvm' / args.arch,
+                             ROOT / 'toolchain/rust-host/k4/corpus', PROGRAMS / 'linker.ld'))
+    staged.update(stage_dynamic(args.image, args.suite, args.arch, kd))
+    if 'rustc' in suites:
         staged.update(stage_rustc(args.image, args.suite, args.arch, release / 'suite-rustc',
                                   rustc, sysroot, ROOT,
-                                  ROOT / 'toolchain/rust-host/k5/corpus', kd, k5, kd_record))
+                                  records / 'k5/corpus', kd, k5, kd_record, already_staged=staged))
     if 'rust-link' in suites:
         staged.update(stage_rust_link(args.image, args.arch, rust_link, fixture, records))
     if 'cargo' in suites:
-        sysroot = Path(os.environ.get('BREENIX_K5_SYSROOT', cache / 'sysroot'))
-        kd = Path(os.environ.get('BREENIX_KD_BUILD_DIR', PROGRAMS / 'target/kd'))
-        k7_stage = Path(os.environ.get('BREENIX_K7_STAGE', cache / 'k7/stage1'))
-        if 'dynamic' in suites and staged['/lib/libc.so'] != sha256(k7_stage / 'lib/libc.so'):
-            raise ValueError('dynamic and cargo must use the same shared libc.so')
         staged.update(stage_cargo(args.image, args.arch, release / 'suite-cargo', rustc, rust_link,
-                                  sysroot, fixture, kd, k7_stage, records))
+                                  sysroot, fixture, kd, k7_stage, records, kd_record, staged))
     stage(args.image, args.suite, release / 'suite-rust-host',
           release / 'rust-host-startup-probe', release / 'rust-host-process-probe',
           release / 'rust-host-unwind-probe')

@@ -136,17 +136,27 @@ contains the stage-1 Mac rlibs retained from the twin build.
 
 ## Cargo image staging
 
-Select `cargo` on the Mac metal builder with `BREENIX_K7_STAGE` pointing at
-the hosted Cargo ELF and its shared libc, and `BREENIX_RUSTC_PORT_BUILDS`
+Select `cargo`, `rustc`, or `rustc,cargo` on the Mac metal builder. For Cargo,
+set `BREENIX_K7_STAGE` to the directory containing `bin/cargo`. Set `BREENIX_RUSTC_PORT_BUILDS`
 pointing at the retained K5 build. Set `BREENIX_K5_SYSROOT` and
 `BREENIX_K6_FIXTURE` for relocated copies of the K5 sysroot and the K6 capture.
 The builder places the K5 driver in the compiler's `$ORIGIN/../lib`.
 It takes the soft-float archive and linker script
 from K6, and uses the guest `bld` from the Rust linker bundle build.
-`/lib/libc.so` uses the K7 digest. The standalone `rustc` selection pins a
-different libc build, so it cannot share this image with `cargo`.
 
-The image starts with the base ext2 root. Let the payload be the sum of the
+Set `BREENIX_HOSTED_LIBC` to the retained main build of `libc.so`, outside
+the builder's KD output directory. The default is `shared-libc/libc.so`
+under `BREENIX_RUSTC_PORT_BUILDS`. The builder stages those bytes as
+`/lib/libc.so` for both suites. The source commit and expected SHA-256 are in
+[the shared runtime pin](../hosted-libc-x86_64.json). Staging verifies the digest and
+checks the dynamic imports of the compiler, its driver and Cargo when
+selected. The compiler also imports symbols from its driver. The K5 and K7
+build records retain the libc digests used for their original links.
+The pinned artifact was produced by `userspace/programs/build.sh --arch x86_64
+--kd-libc` with `BREENIX_USERSPACE_REMAP=1`. Builds in different directories can
+produce different digests, so keep the file that matches the pin.
+
+The standalone Cargo image starts with the base ext2 root. Let the payload be the sum of the
 staged file lengths, including both copies of the g5 registry config. The
 final backing length is the base length plus the payload plus 67,108,864
 bytes (64 MiB), rounded up to the block size in the ext2 superblock.

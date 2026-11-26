@@ -122,9 +122,6 @@ def stage_hosted(cache, stage):
         driver.name: record['hosted_driver_sha256'],
         **hosted['maps_sha256'],
     }
-    libc = cache / 'hosted/lib/libc.so'
-    if sha256(libc) != hosted['libc_sha256']:
-        raise ValueError(f'{libc}: SHA-256 differs from the K5 build record')
     stage.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=stage.parent) as scratch:
         pending = Path(scratch)

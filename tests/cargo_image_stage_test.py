@@ -75,7 +75,7 @@ class CargoImageStageTest(unittest.TestCase):
         entries = {
             '/sbin/suite-cargo': (suite, sha256(suite)),
             '/lib/ld-breenix.so': (kd / 'ld-breenix.so', read_json(kd / 'build.json')['ld-breenix.so']),
-            '/lib/libc.so': (k7_stage / 'lib/libc.so', k7['libc_sha256']),
+            '/lib/libc.so': (kd / 'libc.so', read_json(RECORDS / 'hosted-libc-x86_64.json')['sha256']),
             f'{PREFIX}/bin/cargo': (k7_stage / 'bin/cargo', k7['cargo_sha256']),
             f'{PREFIX}/bin/rustc': (rustc / 'rustc', k5['hosted_rustc_sha256']),
             f'{PREFIX}/lib/{driver}': (rustc / driver, k5['hosted_driver_sha256']),
