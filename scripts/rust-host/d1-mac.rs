@@ -49,19 +49,19 @@ fn main() -> io::Result<()> {
     fs::create_dir(&run)?;
     fs::create_dir(run.join("tmp"))?;
     fs::create_dir(run.join("target"))?;
-    let home = source.join("fixture/cargo-home");
-    fs::create_dir(&home)?;
-    fs::create_dir(home.join("registry"))?;
-    let mut previous = size(&run)? + size(&home)?;
+    fs::create_dir_all(run.join("cargo-home/registry"))?;
+    let fixture = source.join("fixture");
+    let linker = source.join("bundle/bin/ld");
+    let mut previous = size(&run)?;
     for package in d1::PACKAGES {
         let log = work.join(format!("{package}.log"));
         let build = d1::measure(
-            &mut d1::cargo(&source, &run, package),
+            &mut d1::cargo(&source, &fixture, &linker, &run, package),
             &log,
             Duration::from_secs(600),
             |group, _| group_rss(group),
         )?;
-        let total = size(&run)? + size(&home)?;
+        let total = size(&run)?;
         println!(
             "{package}\t{}\t{}\t{}\t{}\t{}\t{}",
             build.wall.as_millis(),

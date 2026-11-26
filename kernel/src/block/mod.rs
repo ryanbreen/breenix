@@ -375,11 +375,11 @@ pub fn devices() -> alloc::vec::Vec<alloc::boxed::Box<dyn BlockDevice>> {
     if hardware_read_only() {
         let mut devices: alloc::vec::Vec<_> = devices.into_iter().map(read_only::device).collect();
         if let Some(fixtures) = FIXTURE_DEVICES.get() {
-            // As on ARM, the first fixture is read-only. The corruption and
-            // scratch volumes use the existing write grant for test-root.
+            // In the four-disk filesystem fixture the first volume is read-only.
+            // A single scratch volume uses the test-root write grant.
             devices.extend(fixtures.iter().enumerate().map(|(index, fixture)| {
                 let device: alloc::boxed::Box<dyn BlockDevice> = alloc::boxed::Box::new(fixture.clone());
-                if index == 0 { read_only::device(device) } else { device }
+                if index == 0 && fixtures.len() > 1 { read_only::device(device) } else { device }
             }));
         }
         devices

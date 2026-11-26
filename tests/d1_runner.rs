@@ -13,8 +13,15 @@ fn cargo_runs_one_package_in_a_clean_environment() {
         d1::PACKAGES,
         ["bobj", "bas", "bld", "bar", "bnm", "bcc", "bmake"]
     );
-    let command = d1::cargo(Path::new("/src"), Path::new("/src/run"), "bld");
-    assert_eq!(command.get_program(), "/src/fixture/bin/cargo");
+    let fixture = Path::new("/usr/libexec/breenix/rustc");
+    let command = d1::cargo(
+        Path::new("/src"),
+        fixture,
+        &fixture.join("bin/bld"),
+        Path::new("/src/run"),
+        "bld",
+    );
+    assert_eq!(command.get_program(), "/usr/libexec/breenix/rustc/bin/cargo");
     assert!(command.get_args().eq([
         "build",
         "--offline",
@@ -22,7 +29,7 @@ fn cargo_runs_one_package_in_a_clean_environment() {
         "--profile",
         "selfhost",
         "--target",
-        "/src/fixture/targets/x86_64-breenix.json",
+        "/usr/libexec/breenix/rustc/targets/x86_64-breenix.json",
         "--manifest-path",
         "/src/toolchain/Cargo.toml",
         "-p",
@@ -41,10 +48,10 @@ fn cargo_runs_one_package_in_a_clean_environment() {
     assert_eq!(
         flags.split('\u{1f}').collect::<Vec<_>>(),
         [
-            "--sysroot=/src/fixture/sysroot",
-            "-Clinker=/src/bundle/bin/ld",
-            "-Clink-arg=-T/src/fixture/lib/linker.ld",
-            "-Lnative=/src/fixture/lib",
+            "--sysroot=/usr/libexec/breenix/rustc/sysroot",
+            "-Clinker=/usr/libexec/breenix/rustc/bin/bld",
+            "-Clink-arg=-T/usr/libexec/breenix/rustc/lib/linker.ld",
+            "-Lnative=/usr/libexec/breenix/rustc/lib",
             "-Clink-arg=--allow-multiple-definition",
             "-Cdefault-linker-libraries=no",
             "--remap-path-prefix=/src=/breenix-src",

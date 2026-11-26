@@ -14,6 +14,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 const SOURCE: &str = "/src";
+const FIXTURE: &str = "/usr/libexec/breenix/rustc";
 const MARKER: &str = "/src/breenix-d1";
 static RUN: OnceLock<Result<PathBuf, String>> = OnceLock::new();
 
@@ -79,8 +80,8 @@ fn mount_fixture() -> Result<PathBuf, String> {
         let nonce: String = nonce.iter().map(|byte| format!("{byte:02x}")).collect();
         let run = Path::new(SOURCE).join(nonce);
         fs::create_dir(&run).map_err(|e| format!("create D1 run directory: {e}"))?;
-        for name in ["target", "tmp"] {
-            fs::create_dir(run.join(name)).map_err(|e| format!("create D1 {name}: {e}"))?;
+        for name in ["target", "tmp", "cargo-home/registry"] {
+            fs::create_dir_all(run.join(name)).map_err(|e| format!("create D1 {name}: {e}"))?;
         }
         Ok(run)
     })();
@@ -156,7 +157,13 @@ fn measure_package() -> CaseResult {
     let mut last_progress = Duration::ZERO;
     let log = Path::new("/tmp").join(format!("d1-{}-{package}.log", std::process::id()));
     let result = d1::measure(
-        &mut d1::cargo(Path::new(SOURCE), run, package),
+        &mut d1::cargo(
+            Path::new(SOURCE),
+            Path::new(FIXTURE),
+            &Path::new(FIXTURE).join("bin/bld"),
+            run,
+            package,
+        ),
         &log,
         Duration::from_secs(600),
         |group, elapsed| {

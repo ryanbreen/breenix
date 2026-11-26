@@ -3,7 +3,8 @@
 //! Format 1 names the previously owned whole disk by its exact storage record in LBA 0 (the layout before the
 //! persistent install). Format 2 names the test root partition by its unique GUID (docs/metal/README.md, "Test boots
 //! on the persistent layout"): the stub writes through that partition's own Block I/O, so a write cannot leave it.
-//! Either way selection requires exactly one match.
+//! Format 3 uses the same GPT fence and carries a dense root followed by sparse scratch extents.
+//! Selection requires exactly one device match.
 use core::ffi::c_void;
 use core::ptr::{null, null_mut};
 
@@ -14,8 +15,10 @@ use metal_efi::uefi::*;
 
 const MAGIC_1: &[u8; 16] = b"BREENIX-SUITE-1\0";
 const MAGIC_2: &[u8; 16] = b"BREENIX-SUITE-2\0";
+const MAGIC_3: &[u8; 16] = b"BREENIX-SUITE-3\0";
 const HEADER_1: usize = 32 + 2 * SECTOR;
 const HEADER_2: usize = 48 + 2 * SECTOR;
+const HEADER_3: usize = HEADER_2 + 16;
 pub(super) const CHUNK: usize = 64 * 1024;
 const RECORD: &[u8] = b"BREENIX-STORAGE 1\nroot ";
 
@@ -75,7 +78,7 @@ pub unsafe fn open_root(boot: &BootServices, volume: *const u8) -> Result<*mut F
 /// An ordinary delivery has no request file and takes the existing boot path.
 pub(super) unsafe fn run(boot: &BootServices, volume: *const u8, image: Handle) -> Result<(), Status> {
     let root = open_root(boot, volume)?;
-    let mut config = [0u8; HEADER_2 + 2048];
+    let mut config = [0u8; HEADER_3 + 2048];
     let name = Wide::<16>::new("suite-disk.cfg");
     let result = read_file(root, &name.units, &mut config);
     if result == Err(NOT_FOUND) {
@@ -90,7 +93,7 @@ pub(super) unsafe fn run(boot: &BootServices, volume: *const u8, image: Handle) 
 /// The disk or partition a request names, and the request's fields once its format is read.
 struct Request<'c> {
     action: u64,
-    size: usize,
+    geometry: StageGeometry,
     expected: &'c [u8],
     record: &'c [u8],
     url: &'c [u8],
@@ -106,23 +109,38 @@ unsafe fn operate(boot: &BootServices, root: *mut File, config: &[u8], image: Ha
             return Err(INVALID_PARAMETER);
         }
         let disk = find_disk(boot, expected, size)?;
-        Request { action: number(16), size, expected, record: &config[32 + SECTOR..HEADER_1], url: &config[HEADER_1..], disk }
-    } else if config.len() >= HEADER_2 && &config[..16] == MAGIC_2 {
+        Request { action: number(16), geometry: StageGeometry::dense(size), expected, record: &config[32 + SECTOR..HEADER_1], url: &config[HEADER_1..], disk }
+    } else if config.len() >= HEADER_2 && [&MAGIC_2[..], &MAGIC_3[..]].contains(&&config[..16]) {
         let size = usize::try_from(number(24)).map_err(|_| INVALID_PARAMETER)?;
         let guid: [u8; 16] = config[32..48].try_into().unwrap();
         let disk = find_partition(boot, &guid, size)?;
+        let action = number(16);
+        let (geometry, url) = if &config[..16] == MAGIC_3 {
+            if config.len() != HEADER_3 || action != 1 {
+                return Err(INVALID_PARAMETER);
+            }
+            let dense = usize::try_from(number(HEADER_2)).map_err(|_| INVALID_PARAMETER)?;
+            let wire = usize::try_from(number(HEADER_2 + 8)).map_err(|_| INVALID_PARAMETER)?;
+            if dense < 2 * SECTOR || dense % SECTOR != 0 || !(dense < wire && wire < size) {
+                return Err(INVALID_PARAMETER);
+            }
+            (StageGeometry { dense, disk: size, wire }, &[][..])
+        } else {
+            (StageGeometry::dense(size), &config[HEADER_2..])
+        };
         Request {
-            action: number(16),
-            size,
+            action,
+            geometry,
             expected: &config[48..48 + SECTOR],
             record: &config[48 + SECTOR..HEADER_2],
-            url: &config[HEADER_2..],
+            url,
             disk,
         }
     } else {
         return Err(INVALID_PARAMETER);
     };
-    if request.size < 2 * SECTOR || request.size % SECTOR != 0 || ![1, 2].contains(&request.action) {
+    let size = request.geometry.disk;
+    if size < 2 * SECTOR || size % SECTOR != 0 || ![1, 2].contains(&request.action) {
         return Err(INVALID_PARAMETER);
     }
     if !request.record.starts_with(RECORD) {
@@ -136,10 +154,10 @@ unsafe fn operate(boot: &BootServices, root: *mut File, config: &[u8], image: Ha
         let filename = Wide::<16>::new("suite-root.img");
         let mut file = null_mut();
         ok(((*root).open)(root, &mut file, filename.as_ptr(), FILE_MODE_READ, 0))?;
-        let result = install(boot, disk, file, request.size, request.record, &bytes);
+        let result = install(boot, disk, file, request.geometry, request.record, &bytes);
         ((*file).close)(file);
         result?;
-        say!("suite fixture verified: {} bytes", request.size);
+        say!("suite fixture verified: {} bytes", request.geometry.wire);
         Ok(())
     } else {
         if request.expected != request.record {
@@ -156,11 +174,11 @@ unsafe fn operate(boot: &BootServices, root: *mut File, config: &[u8], image: Ha
         if url.len() > 2046 || !url.starts_with(b"http://") || !url.is_ascii() {
             return Err(INVALID_PARAMETER);
         }
-        say!("reading the suite disk after power-off: {} bytes", request.size);
-        upload(boot, image, request.size, &bytes, url, |offset, len| {
+        say!("reading the suite disk after power-off: {} bytes", size);
+        upload(boot, image, size, &bytes, url, |offset, len| {
             ok(((*disk).read_blocks)(disk, (*(*disk).media).media_id, (offset / SECTOR) as u64, len, bytes.data.cast()))
         })?;
-        say!("disk readback complete: {} bytes", request.size);
+        say!("disk readback complete: {} bytes", size);
         metal_efi::com1::halt()
     }
 }
@@ -244,63 +262,109 @@ pub unsafe fn find_partition(boot: &BootServices, guid: &[u8; 16], size: usize) 
     Ok(found)
 }
 
+#[derive(Clone, Copy)]
+struct StageGeometry {
+    dense: usize,
+    disk: usize,
+    wire: usize,
+}
+
+impl StageGeometry {
+    fn dense(size: usize) -> Self {
+        Self { dense: size, disk: size, wire: size }
+    }
+}
+
+unsafe fn read_exact(file: *mut File, out: *mut u8, wanted: usize) -> Result<(), Status> {
+    let mut read = wanted;
+    ok(((*file).read)(file, &mut read, out.cast()))?;
+    if read != wanted {
+        return Err(LOAD_ERROR);
+    }
+    Ok(())
+}
+
+unsafe fn walk_body(
+    file: *mut File,
+    geometry: StageGeometry,
+    buffer: &Buffer<'_>,
+    mut extent: impl FnMut(u64, usize) -> Result<(), Status>,
+) -> Result<(), Status> {
+    let mut piece = |mut offset: usize, end: usize| -> Result<(), Status> {
+        while offset < end {
+            let wanted = CHUNK.min(end - offset);
+            read_exact(file, buffer.data, wanted)?;
+            extent((offset / SECTOR) as u64, wanted)?;
+            offset += wanted;
+        }
+        Ok(())
+    };
+    piece(SECTOR, geometry.dense)?;
+
+    // Packed records are little-endian scratch-relative byte offset and byte
+    // length followed by the written blocks. Gaps are unreferenced free space.
+    let mut remaining = geometry.wire - geometry.dense;
+    let mut end = geometry.dense;
+    while remaining != 0 {
+        let mut header = [0; 16];
+        remaining = remaining.checked_sub(header.len()).ok_or(LOAD_ERROR)?;
+        read_exact(file, header.as_mut_ptr(), header.len())?;
+        let number = |at| u64::from_le_bytes(header[at..at + 8].try_into().unwrap());
+        let relative = usize::try_from(number(0)).map_err(|_| LOAD_ERROR)?;
+        let length = usize::try_from(number(8)).map_err(|_| LOAD_ERROR)?;
+        let first = geometry.dense.checked_add(relative).ok_or(LOAD_ERROR)?;
+        let next = first.checked_add(length).ok_or(LOAD_ERROR)?;
+        if relative % 4096 != 0 || length == 0 || length % 4096 != 0
+            || first < end || next > geometry.disk || length > remaining
+        {
+            return Err(LOAD_ERROR);
+        }
+        piece(first, next)?;
+        remaining -= length;
+        end = next;
+    }
+    let mut extra = 1;
+    ok(((*file).read)(file, &mut extra, buffer.data.cast()))?;
+    if end != geometry.disk || extra != 0 {
+        return Err(LOAD_ERROR);
+    }
+    Ok(())
+}
+
 unsafe fn install(
     boot: &BootServices,
     disk: *mut BlockIo,
     file: *mut File,
-    size: usize,
+    geometry: StageGeometry,
     record: &[u8],
     buffer: &Buffer<'_>,
 ) -> Result<(), Status> {
     let media_id = (*(*disk).media).media_id;
-    let wire = core::slice::from_raw_parts_mut(buffer.data, CHUNK);
-    let mut first = SECTOR;
-    ok(((*file).read)(file, &mut first, buffer.data.cast()))?;
-    if first != SECTOR || &wire[..SECTOR] != record {
+    read_exact(file, buffer.data, SECTOR)?;
+    if core::slice::from_raw_parts(buffer.data, SECTOR) != record {
         return Err(LOAD_ERROR);
     }
     // Invalidate first, data next, root record last; an interrupted stage cannot name a root.
-    wire[..SECTOR].fill(0);
+    core::ptr::write_bytes(buffer.data, 0, SECTOR);
     ok(((*disk).write_blocks)(disk, media_id, 0, SECTOR, buffer.data.cast()))?;
     ok(((*disk).flush_blocks)(disk))?;
     let check = Buffer::new(boot, CHUNK, (*(*disk).media).io_align as usize)?;
-    let mut offset = SECTOR;
-    while offset < size {
-        let wanted = CHUNK.min(size - offset);
-        let mut read = wanted;
-        ok(((*file).read)(file, &mut read, buffer.data.cast()))?;
-        if read != wanted {
-            return Err(LOAD_ERROR);
-        }
-        ok(((*disk).write_blocks)(disk, media_id, (offset / SECTOR) as u64, wanted, buffer.data.cast()))?;
-        offset += wanted;
-    }
-    let mut extra = 1;
-    ok(((*file).read)(file, &mut extra, buffer.data.cast()))?;
-    if extra != 0 {
-        return Err(LOAD_ERROR);
-    }
+    walk_body(file, geometry, buffer, |lba, length| {
+        ok(((*disk).write_blocks)(disk, media_id, lba, length, buffer.data.cast()))
+    })?;
 
-    // Flush the data together, then compare each extent with the read-only
-    // source. Keep LBA 0 invalid until the entire flushed body verifies.
+    // Verify the written blocks after the data barrier, then publish LBA 0.
     ok(((*disk).flush_blocks)(disk))?;
     ok(((*file).set_position)(file, SECTOR as u64))?;
-    let mut offset = SECTOR;
-    while offset < size {
-        let wanted = CHUNK.min(size - offset);
-        let mut read = wanted;
-        ok(((*file).read)(file, &mut read, buffer.data.cast()))?;
-        if read != wanted {
+    walk_body(file, geometry, buffer, |lba, length| {
+        ok(((*disk).read_blocks)(disk, media_id, lba, length, check.data.cast()))?;
+        if core::slice::from_raw_parts(check.data, length) != core::slice::from_raw_parts(buffer.data, length) {
             return Err(LOAD_ERROR);
         }
-        ok(((*disk).read_blocks)(disk, media_id, (offset / SECTOR) as u64, wanted, check.data.cast()))?;
-        if core::slice::from_raw_parts(check.data, wanted) != &wire[..wanted] {
-            return Err(LOAD_ERROR);
-        }
-        offset += wanted;
-    }
+        Ok(())
+    })?;
 
-    wire[..SECTOR].copy_from_slice(record);
+    core::slice::from_raw_parts_mut(buffer.data, SECTOR).copy_from_slice(record);
     ok(((*disk).write_blocks)(disk, media_id, 0, SECTOR, buffer.data.cast()))?;
     ok(((*disk).flush_blocks)(disk))?;
     ok(((*disk).read_blocks)(disk, media_id, 0, SECTOR, check.data.cast()))?;

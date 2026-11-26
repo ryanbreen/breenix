@@ -44,3 +44,25 @@ fixture 134221824 67108864 corrupt-data\nfixture 201330688 67108864 scratch\n";
         assert!(intent::root_userland(Some(&refused)).is_err());
     }
 }
+
+#[test]
+fn scratch_only_intent_requires_the_test_root_and_fits_after_it() {
+    let payload = b"BREENIX-BOOT 2\ntarget suite rustc\n\
+root 085d88d8-0000-4000-a000-000000000001\nfixture 4096 67108864 scratch\n";
+    let captured = intent::parse(payload).unwrap();
+    assert_eq!(intent::root_userland(Some(&captured)), Ok(None));
+    let end = 67112960;
+    let slices = captured.fixture_slices(4096, end).unwrap();
+    assert_eq!(slices.iter().map(|s| (s.offset, s.length)).collect::<Vec<_>>(), [(4096, 67108864)]);
+    assert!(captured.fixture_slices(4608, end).is_err());
+    assert!(captured.fixture_slices(4096, end - 512).is_err());
+    let text = core::str::from_utf8(payload).unwrap();
+    for bad in [
+        text.replace("target suite rustc", "target console"),
+        text.replace("root 085d88d8-0000-4000-a000-000000000001\n", ""),
+        text.replace("scratch", "read"),
+    ] {
+        let refused = intent::parse(bad.as_bytes()).unwrap();
+        assert!(intent::root_userland(Some(&refused)).is_err());
+    }
+}

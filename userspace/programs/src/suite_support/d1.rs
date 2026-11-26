@@ -8,11 +8,10 @@ use std::time::{Duration, Instant};
 
 pub const PACKAGES: [&str; 7] = ["bobj", "bas", "bld", "bar", "bnm", "bcc", "bmake"];
 
-pub fn cargo(source: &Path, run: &Path, package: &str) -> Command {
-    let fixture = source.join("fixture");
+pub fn cargo(source: &Path, fixture: &Path, linker: &Path, run: &Path, package: &str) -> Command {
     let flags = [
         format!("--sysroot={}", fixture.join("sysroot").display()),
-        format!("-Clinker={}", source.join("bundle/bin/ld").display()),
+        format!("-Clinker={}", linker.display()),
         format!("-Clink-arg=-T{}", fixture.join("lib/linker.ld").display()),
         format!("-Lnative={}", fixture.join("lib").display()),
         "-Clink-arg=--allow-multiple-definition".into(),
@@ -23,8 +22,8 @@ pub fn cargo(source: &Path, run: &Path, package: &str) -> Command {
     command
         .env_clear()
         .env("PATH", "/bin")
-        .env("HOME", fixture.join("cargo-home"))
-        .env("CARGO_HOME", fixture.join("cargo-home"))
+        .env("HOME", run.join("cargo-home"))
+        .env("CARGO_HOME", run.join("cargo-home"))
         .env("CARGO_BUILD_JOBS", "4")
         .env("CARGO_TERM_COLOR", "never")
         .env("RUSTC", fixture.join("bin/rustc"))

@@ -142,7 +142,7 @@ fn stage_flushes_once_for_data_and_validates_before_publishing() {
         // SAFETY: All firmware callbacks are backed by the live fixture structs.
         let result = unsafe {
             let buffer = Buffer::new(&BootServices, CHUNK, 1).unwrap();
-            install(&BootServices, &mut dev.io, &mut source.file, size, record, &buffer)
+            install(&BootServices, &mut dev.io, &mut source.file, StageGeometry::dense(size), record, &buffer)
         };
         if corrupt_at.is_some() {
             assert_eq!(result, Err(LOAD_ERROR));
@@ -156,6 +156,50 @@ fn stage_flushes_once_for_data_and_validates_before_publishing() {
         assert_eq!(dev.flushes, 3, "invalidate, data, publish");
     }
 }
+#[test]
+fn sparse_body_reads_only_declared_blocks_and_bounds_the_last_extent() {
+    let dense = 2 * SECTOR;
+    let scratch = 3 * 4096;
+    let disk = dense + scratch;
+    let mut bytes = vec![0x11; dense];
+    for offset in [0, 2 * 4096] {
+        bytes.extend_from_slice(&(offset as u64).to_le_bytes());
+        bytes.extend_from_slice(&4096u64.to_le_bytes());
+        bytes.extend_from_slice(&[0x22; 4096]);
+    }
+    let geometry = StageGeometry { dense, disk, wire: bytes.len() };
+    let mut source = Source {
+        file: File {
+            revision: 1, open: unsupported5, close: unsupported, delete: unsupported,
+            read: source_read, write: unsupported3, get_position: 0, set_position: seek,
+            get_info: unsupported4, set_info: unsupported4, flush: unsupported,
+        },
+        bytes,
+        position: SECTOR,
+    };
+    let mut ranges = Vec::new();
+    // SAFETY: The file and buffer use the live host fixtures above.
+    unsafe {
+        let buffer = Buffer::new(&BootServices, CHUNK, 1).unwrap();
+        walk_body(&mut source.file, geometry, &buffer, |lba, count| {
+            ranges.push((lba, count));
+            Ok(())
+        }).unwrap();
+        assert_eq!(ranges, [(1, SECTOR), (2, 4096), (18, 4096)]);
+        source.position = SECTOR;
+        // Move the final extent beyond the recorded slice.
+        let last_header = dense + 16 + 4096;
+        source.bytes[last_header..last_header + 8].copy_from_slice(&(scratch as u64).to_le_bytes());
+        ranges.clear();
+        let result = walk_body(&mut source.file, geometry, &buffer, |lba, count| {
+            ranges.push((lba, count));
+            Ok(())
+        });
+        assert_eq!(result, Err(LOAD_ERROR));
+        assert_eq!(ranges, [(1, SECTOR), (2, 4096)]);
+    }
+}
+
 '''
 
 
@@ -163,8 +207,8 @@ class MetalSuiteStageTest(unittest.TestCase):
     def test_firmware_batches_data_flush_without_losing_readback(self):
         source = (EFI / 'suite_disk.rs').read_text()
         chunk = next(line for line in source.splitlines() if line.startswith('pub(super) const CHUNK:'))
-        start = source.index('unsafe fn install(')
-        end = source.index('\n}\n', start) + 3
+        start = source.index('#[derive(Clone, Copy)]\nstruct StageGeometry')
+        end = source.index('/// The HTTP binding', start)
         install = source[start:end]
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'stage.rs'

@@ -1998,13 +1998,14 @@ Select it explicitly with `--suite d1`, or as the last stage of
 `--suite rustc,cargo,d1`. The diagnostic uses a Mac prebuilt for a disposable
 test-root boot. Its measurements inform 25.8 and have no milestone score.
 
-The E24 scratch companion mounts at `/src`. It holds the workspace under
-`/src/toolchain`, the pinned K5 compiler and sysroot, the K7 Cargo binary,
-the K6 Rust-ABI archive and linker script, and the matching tool target JSON.
-The selected build stages the checkout's Rust linker at `/src/bundle/bin/ld`.
-Cargo starts offline with an empty registry and a new nonce's empty target
-directory, then reuses that directory through bobj, bas, bld, bar, bnm, bcc
-and bmake in order.
+The E24 scratch companion mounts at `/src` and holds the pinned workspace
+under `/src/toolchain`. D1 shares rustc, Cargo, their tool-target sysroot,
+both target specifications, bld, the Rust-ABI archive and the linker script
+with the rustc and Cargo suites under `/usr/libexec/breenix/rustc`. Cargo
+creates its empty registry and target directory under a new nonce on the
+scratch companion, then reuses them through bobj, bas, bld, bar, bnm, bcc
+and bmake in order. The staged companion contains the formatter's written
+extents. Its free space takes no bytes on the wire.
 
 Ruling 126 gives each Cargo process group 600 seconds. D1 kills the group
 at the deadline and reports the timeout. A suite case has 10 more seconds

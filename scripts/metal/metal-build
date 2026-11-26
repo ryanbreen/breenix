@@ -243,7 +243,7 @@ def inner(args):
     kernel_image = None
     staged_files = {}
     rust_link_build = None
-    build_companions = build_fixtures or busybox or d1
+    build_companions = build_fixtures or busybox
     hosted = rust_host or cxx_runtime or llvm or dynamic or rustc_suite or rust_link or cargo_suite or d1
     root = tmp / 'ext2-staged.img' if 'sdk' in suites or build_fixtures or transfer or hosted else seed
     try:
@@ -441,9 +441,8 @@ def inner(args):
                 timings['rust_link_suite'] = round(time.time() - started)
             if hosted:
                 started = time.time()
-                d1_tree = ['--d1-tree', str(tmp / 'd1-tree')] if d1 else []
                 record = subprocess.check_output([sys.executable, str(clone / 'scripts/rust_host_stage.py'),
-                                                  '--arch', 'x86_64', '--image', str(root), '--suite', args.suite, *d1_tree],
+                                                  '--arch', 'x86_64', '--image', str(root), '--suite', args.suite],
                                                  cwd=clone, text=True)
                 if record:
                     staged_files = json.loads(record)
@@ -475,23 +474,30 @@ def inner(args):
                 env = dict(os.environ, CARGO_TARGET_DIR=str(tmp / 'fixture-target'))
                 with log.open('w') as output:
                     arguments = ['bash', str(fixture_builder), str(root), str(out)]
-                    if (busybox or d1) and not build_fixtures:
+                    if busybox and not build_fixtures:
                         arguments.append('--toolchain-companions')
                     status = subprocess.call(arguments, cwd=clone, env=env, stdout=output,
                                              stderr=subprocess.STDOUT)
                 if not clean_build(status, log, 'filesystem fixtures', logs, out):
                     return 1
                 timings['filesystem_fixtures'] = round(time.time() - started)
-                if d1:
-                    log = logs / 'd1-fixture.log'
-                    with log.open('w') as output:
-                        status = subprocess.call([sys.executable, str(clone / 'scripts/rust-host/d1-fixture.py'),
-                                                  str(tmp / 'd1-tree'),
-                                                  str(tmp / 'fixture-target/release/breenfs-mkfs'),
-                                                  str(out / 'breenfs-scratch.img')],
-                                                 cwd=clone, stdout=output, stderr=subprocess.STDOUT)
-                    if not clean_build(status, log, 'D1 scratch fixture', logs, out):
-                        return 1
+            if d1:
+                started = time.time()
+                log = logs / 'd1-fixture.log'
+                target = tmp / 'fixture-target'
+                with log.open('w') as output:
+                    status = subprocess.call(
+                        ['cargo', 'build', '--release', '--locked', '--bin', 'breenfs-mkfs',
+                         '--manifest-path', str(clone / 'tools/breenfs/Cargo.toml'), '--target-dir', str(target)],
+                        cwd=clone, stdout=output, stderr=subprocess.STDOUT)
+                    if status == 0:
+                        status = subprocess.call(
+                            [sys.executable, str(clone / 'scripts/rust-host/d1-fixture.py'), str(tmp / 'd1-tree'),
+                             str(target / 'release/breenfs-mkfs'), str(out / 'd1-scratch.dat')],
+                            cwd=clone, stdout=output, stderr=subprocess.STDOUT)
+                if not clean_build(status, log, 'D1 sparse scratch fixture', logs, out):
+                    return 1
+                timings['d1_fixture'] = round(time.time() - started)
             if toolchain:
                 started = time.time()
                 bundle = tmp / 'toolchain-bundle'

@@ -752,11 +752,10 @@ class Driver:
             raise Finish(m.EXIT_CANCELLED, 'a toolchain fixture needs the toolchain suite')
         if 'd1' in suites(self.args):
             record = build.get('d1')
-            companions = build.get('filesystemFixtures')
-            disk = inputs / 'breenfs-scratch.img'
+            disk = inputs / 'd1-scratch.dat'
             if (getattr(self.args, 'disk', None) != 'root' or getattr(self.args, 'case', None)
                     or not isinstance(record, dict) or record.get('commit') != self.args.commit
-                    or not isinstance(companions, dict) or record.get('disk') != companions.get(disk.name)
+                    or not isinstance(record.get('scratchBytes'), int) or 'filesystemFixtures' in build
                     or not disk.is_file() or record.get('disk') != metal_prebuilt.facts(disk)):
                 raise Finish(m.EXIT_CANCELLED, 'D1 requires its verified scratch image and a whole-suite test boot')
         self.delivery['build'] = build

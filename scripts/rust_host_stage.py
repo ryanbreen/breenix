@@ -8,7 +8,6 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -26,7 +25,9 @@ MMAP_FIXTURE_PATH = '/usr/libexec/breenix/rust-host/mmap-fixture'
 MMAP_FIXTURE_BYTES = 163_067_344  # Largest file mapping in the X0.9 profile.
 # Leave room for the fixture and ext2 allocation metadata.
 SCRATCH_HEADROOM = 192 * 1024 * 1024
-CARGO_HEADROOM = 64 * 1024 * 1024
+HOSTED_HEADROOM = 64 * 1024 * 1024
+HOSTED_TOOLCHAIN = '/usr/libexec/breenix/rustc'
+CARGO_CORPUS = '/usr/libexec/breenix/cargo'
 RUST_TARGETS = ('x86_64-breenix', 'x86_64-breenix-hosted')
 
 
@@ -158,15 +159,16 @@ def rustc_fixture_entries(artifacts, sysroot, targets, k5):
     yield 'bin/rustc', artifacts / 'rustc', '0755', k5['hosted_rustc_sha256']
     yield f'lib/{driver}', artifacts / driver, '0755', k5['hosted_driver_sha256']
     files = k5['sysroot']['files_sha256']
-    for target in RUST_TARGETS:
-        relative = f'lib/rustlib/{target}/lib'
-        archives = sorted((sysroot / relative).glob('*.rlib'))
-        if not archives or {str(p.relative_to(sysroot)) for p in archives} != {
-                name for name in files if name.startswith(relative + '/') }:
-            raise ValueError(f'{target} sysroot differs from K5 build record')
-        for source in archives:
-            name = str(source.relative_to(sysroot))
-            yield f'sysroot/{name}', source, '0444', files[name]
+    # The suites compile for the tool target. Resolving rustc's own hosted
+    # target needs its JSON, so stage both specs with the tool target rlibs.
+    relative = 'lib/rustlib/x86_64-breenix/lib'
+    archives = sorted((sysroot / relative).glob('*.rlib'))
+    if not archives or {str(p.relative_to(sysroot)) for p in archives} != {
+            name for name in files if name.startswith(relative + '/') }:
+        raise ValueError('tool target sysroot differs from K5 build record')
+    for source in archives:
+        name = str(source.relative_to(sysroot))
+        yield f'sysroot/{name}', source, '0444', files[name]
     for target in RUST_TARGETS:
         name = f'{target}.json'
         yield f'targets/{name}', targets / name, '0444', None
@@ -236,33 +238,6 @@ def hosted_runtime_entries(kd, runtime, already_staged):
     return entries, expected
 
 
-def stage_rustc(image, selection, arch, suite, artifacts, sysroot, targets, corpus, kd, k5,
-                kd_record, *, already_staged=None):
-    if 'rustc' not in selection.split(','):
-        return {}
-    if arch != 'x86_64':
-        raise ValueError('the hosted rustc is only built for x86-64')
-    prefix = '/usr/libexec/breenix/rustc'
-    entries, expected = hosted_runtime_entries(kd, kd_record, already_staged or {})
-    entries.append(('/sbin/suite-rustc', suite, '0755'))
-    for name, source, mode, digest in rustc_fixture_entries(artifacts, sysroot, targets, k5):
-        path = f'{prefix}/{name}'
-        entries.append((path, source, mode))
-        if digest is not None:
-            expected[path] = digest
-    sources = sorted(path for path in corpus.iterdir() if path.is_file())
-    if not sources:
-        raise ValueError('empty rustc corpus')
-    entries.extend((f'{prefix}/corpus/{source.name}', source, '0444') for source in sources)
-    directories = ['/lib', prefix, f'{prefix}/bin', f'{prefix}/lib', f'{prefix}/sysroot',
-                   f'{prefix}/sysroot/lib', f'{prefix}/sysroot/lib/rustlib']
-    for target in RUST_TARGETS:
-        directories.extend([f'{prefix}/sysroot/lib/rustlib/{target}',
-                            f'{prefix}/sysroot/lib/rustlib/{target}/lib'])
-    directories.extend([f'{prefix}/targets', f'{prefix}/corpus'])
-    return stage_files(image, directories, entries, extra_headroom=16384, recorded=expected)
-
-
 def ext2_stats(image, debugfs):
     output = subprocess.run([debugfs, '-R', 'stats', image], check=True,
                             capture_output=True, text=True,
@@ -324,6 +299,15 @@ def stage_files(image, directories, entries, extra_headroom=0, *, align_to_block
             raise ValueError(f'staging metadata differs for {path}')
     if scratch_headroom is not None:
         free = int(ext2_stats(image, debugfs)['Free blocks']) * block_size
+        if free < scratch_headroom:
+            # Growing small-block filesystems can consume part of the reserve
+            # for allocation metadata. Leave room for the next resize as well.
+            blocks += 2 * ((scratch_headroom - free) // block_size + 1)
+            target_size = blocks * block_size
+            with image.open('r+b') as disk:
+                disk.truncate(target_size)
+            subprocess.run([resize2fs, image, str(blocks)], check=True, capture_output=True)
+            free = int(ext2_stats(image, debugfs)['Free blocks']) * block_size
         if image.stat().st_size != target_size or free < scratch_headroom:
             raise ValueError(f'{image}: unexpected backing size or insufficient scratch space '
                              f'({free} free bytes, need {scratch_headroom})')
@@ -407,46 +391,60 @@ def stage_rust_link(image, arch, artifacts, fixture, records):
     return staged
 
 
-def stage_cargo(image, arch, suite, artifacts, rust_link, sysroot, fixture, kd, k7_stage,
-                records, kd_record, already_staged):
-    if arch != 'x86_64':
-        raise ValueError('the recorded Cargo fixture is only built for x86-64')
-    prefix = '/usr/libexec/breenix/cargo'
-    k5 = json.loads((records / 'k5/x86_64.json').read_text())
-    k6 = json.loads((records / 'k6/x86_64.json').read_text())
-    k7 = json.loads((records / 'k7/x86_64.json').read_text())
-    if (any(k5[name] != digest for name, digest in k7['k5_compiler_digests'].items())
-            or (k6['rustc_sha256'], k6['rustc_commit']) !=
-            (k5['mac_rustc_sha256'], k5['fork_commit'])):
-        raise ValueError('K7 and K6 compiler identities must match the K5 build record')
-
-    digests = k7['fixture_sha256']
-    files = [
-        *rustc_fixture_entries(artifacts, sysroot, ROOT, k5),
-        *rust_link_fixture_entries(rust_link, fixture, k6, tools_only=True),
-        ('bin/cargo', k7_stage / 'bin/cargo', '0755', k7['cargo_sha256']),
-        ('cargo-home/config.toml', records / 'k7/corpus/no-network/.cargo/config.toml', '0444', None),
-    ]
-    files.extend((name, records / 'k7' / name, '0444', digest)
-                 for name, digest in digests.items() if name.startswith('corpus/'))
+def stage_hosted_toolchain(image, suites, release, artifacts, rust_link, sysroot, fixture, kd,
+                           cargo, records, k5, kd_record, already_staged):
     entries, expected = hosted_runtime_entries(kd, kd_record, already_staged)
-    entries.append(('/sbin/suite-cargo', suite, '0755'))
+    files = list(rustc_fixture_entries(artifacts, sysroot, ROOT, k5))
+    if cargo is not None:
+        k6 = json.loads((records / 'k6/x86_64.json').read_text())
+        k7 = json.loads((records / 'k7/x86_64.json').read_text())
+        if (any(k5[name] != digest for name, digest in k7['k5_compiler_digests'].items())
+                or (k6['rustc_sha256'], k6['rustc_commit']) !=
+                (k5['mac_rustc_sha256'], k5['fork_commit'])):
+            raise ValueError('K7 and K6 compiler identities must match the K5 build record')
+        files.extend(rust_link_fixture_entries(rust_link, fixture, k6, tools_only=True))
+        files.append(('bin/cargo', cargo, '0755', k7['cargo_sha256']))
+        digests = k7['fixture_sha256']
+        files = [(name, source, mode, digest or digests[name])
+                 for name, source, mode, digest in files]
+        if 'd1' in suites:
+            replay = json.loads((records / 'd1/x86_64-mac.json').read_text())
+            inputs = {f'fixture/{name}': (source, digest) for name, source, _, digest in files}
+            for name, facts in replay['inputs'].items():
+                source, digest = inputs[name]
+                if digest != facts['sha256'] or source.stat().st_size != facts['size']:
+                    raise ValueError(f'{name} differs from the D1 Mac twin input')
+        if 'cargo' in suites:
+            entries.extend((f'{CARGO_CORPUS}/{name}', records / 'k7' / name, '0444')
+                           for name in digests if name.startswith('corpus/'))
+            expected.update({f'{CARGO_CORPUS}/{name}': digest for name, digest in digests.items()
+                             if name.startswith('corpus/')})
+
+    if 'rustc' in suites:
+        corpus = records / 'k5/corpus'
+        for name in ('expect.json', 'hello.rs', 'type-error.rs', 'uses-std.rs'):
+            files.append((f'corpus/{name}', corpus / name, '0444', None))
     for name, source, mode, digest in files:
-        path = f'{prefix}/{name}'
+        path = f'{HOSTED_TOOLCHAIN}/{name}'
         entries.append((path, source, mode))
-        expected[path] = digests[name] if digest is None else digest
+        if digest is not None:
+            expected[path] = digest
+    for name in ('rustc', 'cargo', 'd1'):
+        if name in suites:
+            entries.append((f'/sbin/suite-{name}', release / f'suite-{name}', '0755'))
+
+    base = Path('/usr/libexec/breenix')
     directories = {'/lib'}
     directories.update(str(parent) for path, _, _ in entries for parent in Path(path).parents
-                       if parent == Path(prefix) or Path(prefix) in parent.parents)
+                       if base in parent.parents)
     return stage_files(image, sorted(directories), entries, recorded=expected,
-                       scratch_headroom=CARGO_HEADROOM)
+                       scratch_headroom=HOSTED_HEADROOM)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--arch', choices=('x86_64', 'aarch64'), required=True)
     parser.add_argument('--suite', required=True)
-    parser.add_argument('--d1-tree', type=Path)
     parser.add_argument('--image', type=Path, required=True)
     args = parser.parse_args()
     suites = args.suite.split(',')
@@ -459,9 +457,8 @@ def main():
     retained = Path.home() / 'Library/Caches/breenix-e25/k6/fixture'
     fixture = Path(os.environ.get('BREENIX_K6_FIXTURE', retained)).expanduser()
     diagnostic = 'd1' in suites
-    if diagnostic != (args.d1_tree is not None):
-        parser.error('d1 and --d1-tree must be selected together')
-    if 'rustc' in suites or 'cargo' in suites or diagnostic:
+    hosted_toolchain = 'rustc' in suites or 'cargo' in suites or diagnostic
+    if hosted_toolchain:
         if args.arch != 'x86_64':
             parser.error('hosted rustc and Cargo staging requires x86-64')
         sysroot = Path(os.environ.get('BREENIX_K5_SYSROOT', cache / 'sysroot'))
@@ -476,41 +473,11 @@ def main():
                              PROGRAMS / 'target/llvm' / args.arch,
                              ROOT / 'toolchain/rust-host/k4/corpus', PROGRAMS / 'linker.ld'))
     staged.update(stage_dynamic(args.image, args.suite, args.arch, kd))
-    if 'rustc' in suites:
-        staged.update(stage_rustc(args.image, args.suite, args.arch, release / 'suite-rustc',
-                                  rustc, sysroot, ROOT,
-                                  records / 'k5/corpus', kd, k5, kd_record, already_staged=staged))
     if 'rust-link' in suites:
         staged.update(stage_rust_link(args.image, args.arch, rust_link, fixture, records))
-    if 'cargo' in suites:
-        staged.update(stage_cargo(args.image, args.arch, release / 'suite-cargo', rustc, rust_link,
-                                  sysroot, fixture, kd, k7_stage, records, kd_record, staged))
-    if diagnostic:
-        k6 = json.loads((records / 'k6/x86_64.json').read_text())
-        k7 = json.loads((records / 'k7/x86_64.json').read_text())
-        if (k6['rustc_sha256'] != k5['mac_rustc_sha256']
-                or any(k5[name] != digest for name, digest in k7['k5_compiler_digests'].items())):
-            raise ValueError('D1 requires the K5, K6 and K7 twin artifacts')
-        # Even rustc -vV resolves the compiler's host through RUST_TARGET_PATH.
-        # Only the hosted rlibs are unnecessary when building the tool target.
-        inputs = [(f'fixture/{name}', source, mode, digest)
-                  for name, source, mode, digest in rustc_fixture_entries(rustc, fixture / 'sysroot', fixture / 'targets', k5)
-                  if not name.startswith('sysroot/lib/rustlib/x86_64-breenix-hosted/')]
-        linker_inputs = rust_link_fixture_entries(rust_link, fixture, k6, tools_only=True)
-        inputs.extend(('bundle/bin/ld' if name == 'bin/bld' else f'fixture/{name}', source, mode, digest)
-                      for name, source, mode, digest in linker_inputs)
-        inputs.append(('fixture/bin/cargo', cargo, '0755', k7['cargo_sha256']))
-        for name, source, mode, digest in inputs:
-            path = args.d1_tree / name
-            path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source, path)
-            path.chmod(int(mode, 8))
-            expected = digest or k7['fixture_sha256'][name.removeprefix('fixture/')]
-            if sha256(path) != expected:
-                raise ValueError(f'{name}: differs from the D1 fixture pin')
-        entries, expected = hosted_runtime_entries(kd, kd_record, staged)
-        entries.append(('/sbin/suite-d1', release / 'suite-d1', '0755'))
-        staged.update(stage_files(args.image, ['/lib'], entries, recorded=expected))
+    if hosted_toolchain:
+        staged.update(stage_hosted_toolchain(args.image, suites, release, rustc, rust_link,
+                                              sysroot, fixture, kd, cargo, records, k5, kd_record, staged))
     stage(args.image, args.suite, release / 'suite-rust-host',
           release / 'rust-host-startup-probe', release / 'rust-host-process-probe',
           release / 'rust-host-unwind-probe')

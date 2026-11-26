@@ -13,7 +13,8 @@ from unittest.mock import patch
 
 from tests.rust_link_image_stage_test import FIXTURE, RECORDS, ROOT, STAGE, read_json
 
-PREFIX = '/usr/libexec/breenix/cargo'
+PREFIX = '/usr/libexec/breenix/rustc'
+CORPUS = '/usr/libexec/breenix/cargo/corpus'
 HEADROOM = 64 * 1024 * 1024
 PROGRAMS = ROOT / 'userspace/programs/target'
 
@@ -35,7 +36,7 @@ class CargoImageStageTest(unittest.TestCase):
                            check=True, capture_output=True)
             stdout = io.StringIO()
             argv = ['rust_host_stage.py', '--arch', 'x86_64', '--image', str(image),
-                    '--suite', 'rustc,cargo,d1', '--d1-tree', str(image.parent / 'd1')]
+                    '--suite', 'rustc,cargo,d1']
             with patch('sys.argv', argv), redirect_stdout(stdout):
                 STAGE.main()
 
@@ -67,11 +68,11 @@ class CargoImageStageTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             image = directory / 'root.img'
-            tree = directory / 'd1'
+            debugfs, = STAGE.require_e2fsprogs('debugfs')
             subprocess.run([mke2fs, '-q', '-t', 'ext2', '-F', image, '16M'],
                            check=True, capture_output=True)
             argv = ['rust_host_stage.py', '--arch', 'x86_64', '--image', str(image),
-                    '--suite', 'd1', '--d1-tree', str(tree)]
+                    '--suite', 'd1']
             with patch('sys.argv', argv), redirect_stdout(io.StringIO()):
                 STAGE.main()
 
@@ -79,10 +80,10 @@ class CargoImageStageTest(unittest.TestCase):
             # own target through RUST_TARGET_PATH even when Cargo asks for -vV.
             for target in ('x86_64-breenix-hosted', 'x86_64-breenix'):
                 name = f'targets/{target}.json'
-                spec = tree / 'fixture' / name
                 with self.subTest(target=target):
-                    self.assertTrue(spec.is_file(), f'D1 fixture omits {name}')
-                    self.assertEqual(sha256(spec), pins[name])
+                    spec = subprocess.check_output([debugfs, '-R', f'cat {PREFIX}/{name}', image],
+                                                   stderr=subprocess.DEVNULL)
+                    self.assertEqual(hashlib.sha256(spec).hexdigest(), pins[name])
 
     def test_rustc_and_cargo_share_hosted_libc(self):
         mke2fs, debugfs = STAGE.require_e2fsprogs('mke2fs', 'debugfs')
@@ -108,11 +109,9 @@ class CargoImageStageTest(unittest.TestCase):
                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as readback:
                 self.assertEqual(hashlib.file_digest(readback.stdout, 'sha256').hexdigest(), libc)
                 self.assertEqual(readback.wait(), 0)
-            for suite in ('rustc', 'cargo'):
-                prefix = f'/usr/libexec/breenix/{suite}'
-                self.assertEqual(staged[f'{prefix}/bin/rustc'], k5['hosted_rustc_sha256'])
-                driver = k5['hosted_link']['driver']
-                self.assertEqual(staged[f'{prefix}/lib/{driver}'], k5['hosted_driver_sha256'])
+            self.assertEqual(staged[f'{PREFIX}/bin/rustc'], k5['hosted_rustc_sha256'])
+            driver = k5['hosted_link']['driver']
+            self.assertEqual(staged[f'{PREFIX}/lib/{driver}'], k5['hosted_driver_sha256'])
             self.assertEqual(staged[f'{PREFIX}/bin/cargo'], k7['cargo_sha256'])
 
     def test_cargo_image_matches_records_and_size(self):
@@ -131,7 +130,6 @@ class CargoImageStageTest(unittest.TestCase):
         linker = 'lib/tools/linker.ld'
         libc = 'lib/tools/libc.a'
         corpus = RECORDS / 'k7/corpus'
-        config = corpus / 'no-network/.cargo/config.toml'
         entries = {
             '/sbin/suite-cargo': (suite, sha256(suite)),
             '/lib/ld-breenix.so': (kd / 'ld-breenix.so', read_json(kd / 'build.json')['ld-breenix.so']),
@@ -143,16 +141,16 @@ class CargoImageStageTest(unittest.TestCase):
                                   read_json(rust_link / 'build.json')['files_sha256']['bld']),
             f'{PREFIX}/lib/linker.ld': (FIXTURE / linker, k6['inputs'][linker]['sha256']),
             f'{PREFIX}/lib/libc.a': (FIXTURE / libc, k6['inputs'][libc]['sha256']),
-            f'{PREFIX}/cargo-home/config.toml': (config, sha256(config)),
         }
         for name, digest in k5['sysroot']['files_sha256'].items():
-            entries[f'{PREFIX}/sysroot/{name}'] = (sysroot / name, digest)
+            if name.startswith('lib/rustlib/x86_64-breenix/'):
+                entries[f'{PREFIX}/sysroot/{name}'] = (sysroot / name, digest)
         for name in ('x86_64-breenix.json', 'x86_64-breenix-hosted.json'):
             target = ROOT / name
             entries[f'{PREFIX}/targets/{name}'] = (target, sha256(target))
         for source in corpus.rglob('*'):
             if source.is_file():
-                entries[f'{PREFIX}/corpus/{source.relative_to(corpus)}'] = (source, sha256(source))
+                entries[f'{CORPUS}/{source.relative_to(corpus)}'] = (source, sha256(source))
 
         with tempfile.TemporaryDirectory() as temporary:
             image = Path(temporary) / 'cargo.img'
@@ -173,10 +171,7 @@ class CargoImageStageTest(unittest.TestCase):
                 ) as readback:
                     self.assertEqual(hashlib.file_digest(readback.stdout, 'sha256').hexdigest(), digest)
                     self.assertEqual(readback.wait(), 0)
-            home = subprocess.check_output([debugfs, '-R', f'ls -p {PREFIX}/cargo-home', image],
-                                           text=True, stderr=subprocess.DEVNULL)
-            self.assertEqual({line.split('/')[5] for line in home.splitlines() if line},
-                             {'.', '..', 'config.toml'})
+
 
             summary = subprocess.check_output([dumpe2fs, '-h', image], text=True,
                                               stderr=subprocess.DEVNULL)

@@ -23,6 +23,7 @@ import uuid
 MAGIC = b'BREENIX-SUITE-1\0'
 HEADER = struct.Struct('<16sQQ512s512s')
 MAGIC_2 = b'BREENIX-SUITE-2\0'
+MAGIC_3 = b'BREENIX-SUITE-3\0'
 HEADER_2 = struct.Struct('<16sQQ16s512s512s')
 UPLOAD_PREFIX = '/suite-disk/'
 FIXTURE_ROLES = ('read', 'corrupt-node', 'corrupt-data', 'scratch')
@@ -123,6 +124,29 @@ def config_2(action, size, partition, expected, root, url=''):
     return HEADER_2.pack(MAGIC_2, action, size, guid, expected, root) + (url.encode('ascii') + b'\0' if url else b'')
 
 
+def append_d1_scratch(image, root_bytes, partition_bytes, inputs, record):
+    scratch_bytes = record['scratchBytes']
+    end = root_bytes + scratch_bytes
+    if (scratch_bytes < FIXTURE_BYTES or scratch_bytes % 4096
+            or root_bytes % metal_image.SECTOR or end > partition_bytes):
+        raise ValueError('D1 scratch does not fit after the test root')
+    packed = inputs / 'd1-scratch.dat'
+    disk = dict(size=packed.stat().st_size, sha256=metal_image.sha256(packed))
+    if disk != record['disk'] or not 0 < disk['size'] < scratch_bytes:
+        raise ValueError('D1 sparse scratch differs from the build record')
+    with image.open('ab') as payload, packed.open('rb') as source:
+        shutil.copyfileobj(source, payload, 1 << 20)
+    if image.stat().st_size != root_bytes + disk['size']:
+        raise ValueError('D1 sparse scratch delivery length differs')
+    return image.stat().st_size, [dict(role='scratch', offset=root_bytes, length=scratch_bytes)]
+
+
+def config_3(size, partition, root, root_bytes, wire_bytes):
+    """Format 3 appends a sparse extent stream after the dense ext2 root."""
+    dense = config_2(1, size, partition, bytes(512), root)
+    return MAGIC_3 + dense[16:] + struct.pack('<QQ', root_bytes, wire_bytes)
+
+
 def stage(directory, inputs, boot_id, commit, site, build, mode='console', suite=None, idle_minutes=None, replug=False,
           the_layout=None, operator=None, no_ssh=False, screen_proof=False, screen_known=None, case=None, root_fs='ext2', tools_dir=None):
     """Reset the writable root for each boot, including unchanged userspace builds. `the_layout` is the layout an
@@ -133,9 +157,9 @@ def stage(directory, inputs, boot_id, commit, site, build, mode='console', suite
     toolchain_scratch = bool(build.get('toolchain', {}).get('busyboxScratch'))
     diagnostic = build.get('d1') if 'd1' in (suite or '').split(',') else None
     use_fixtures = (built_fixtures is not None and mode == 'suite'
-                    and ('filesystem' in (suite or '').split(',') or toolchain_scratch or diagnostic is not None)
+                    and ('filesystem' in (suite or '').split(',') or toolchain_scratch)
                     and not (case or '').startswith('power-cut/'))
-    if use_fixtures and not the_layout:
+    if (use_fixtures or diagnostic) and not the_layout:
         raise ValueError('filesystem fixtures require the disposable test-root partition')
     if not the_layout and not previous:
         raise ValueError('disk delivery needs a previously verified install to identify its owned disk')
@@ -183,12 +207,17 @@ def stage(directory, inputs, boot_id, commit, site, build, mode='console', suite
     if the_layout:
         partition = the_layout['partitions']['test']['guid']
         size = facts['bytes']
-        if use_fixtures:
-            scratch_bytes = diagnostic['disk']['size'] if diagnostic else FIXTURE_BYTES
-            size, slices = append_fixtures(image, size, test_partition_bytes(the_layout, partition),
-                                           inputs, built_fixtures, scratch_bytes=scratch_bytes)
-            facts.update(fixtureSlices=slices, stagedBytes=size)
-        request.write_bytes(config_2(1, size, partition, bytes(512), root))
+        if diagnostic:
+            wire_bytes, slices = append_d1_scratch(image, size, test_partition_bytes(the_layout, partition),
+                                                   inputs, diagnostic)
+            facts.update(fixtureSlices=slices, stagedBytes=wire_bytes)
+            request.write_bytes(config_3(size + diagnostic['scratchBytes'], partition, root, size, wire_bytes))
+        else:
+            if use_fixtures:
+                size, slices = append_fixtures(image, size, test_partition_bytes(the_layout, partition),
+                                               inputs, built_fixtures)
+                facts.update(fixtureSlices=slices, stagedBytes=size)
+            request.write_bytes(config_2(1, size, partition, bytes(512), root))
         facts['partition'] = partition
     else:
         request.write_bytes(config(1, facts['bytes'], record(previous), root))

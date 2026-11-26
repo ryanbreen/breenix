@@ -128,7 +128,8 @@ fn parse_format_2(body: &[u8], format_3: bool) -> Result<Captured, &'static str>
             }
             "fixture" if !format_3 => {
                 let (range, role) = value.rsplit_once(' ').ok_or("fixture needs a role")?;
-                if FIXTURE_ROLES.get(fixture_count).copied() != Some(role) {
+                let scratch_only = fixture_count == 0 && role == "scratch";
+                if !scratch_only && FIXTURE_ROLES.get(fixture_count).copied() != Some(role) {
                     return Err("invalid filesystem fixture role or order");
                 }
                 let (offset, length) = range.split_once(' ').ok_or("fixture needs an offset and a length")?;
@@ -149,6 +150,9 @@ fn parse_format_2(body: &[u8], format_3: bool) -> Result<Captured, &'static str>
                     if offset != previous.offset + previous.length {
                         return Err("filesystem fixture slices must be contiguous");
                     }
+                }
+                if scratch_only {
+                    fixture_count = FIXTURE_ROLES.len() - 1;
                 }
                 captured.fixtures[fixture_count] = FixtureSlice { offset, length };
                 fixture_count += 1;
@@ -183,14 +187,20 @@ impl Captured {
     /// the independently recorded root image and its actual GPT partition.
     #[cfg(any(target_arch = "x86_64", test))]
     pub(crate) fn fixture_slices(&self, root_bytes: u64, partition_bytes: u64) -> Result<&[FixtureSlice], &'static str> {
-        if self.fixtures[0].length == 0 {
+        let slices = if self.fixtures[0].length == 0 {
+            &self.fixtures[FIXTURE_ROLES.len() - 1..]
+        } else {
+            &self.fixtures[..]
+        };
+        let first = &slices[0];
+        let last = &self.fixtures[FIXTURE_ROLES.len() - 1];
+        if first.length == 0 {
             return Ok(&[]);
         }
-        let [first, .., last] = self.fixtures;
         if first.offset != root_bytes || last.offset + last.length > partition_bytes {
             return Err("filesystem fixtures do not fit after the recorded root");
         }
-        Ok(&self.fixtures)
+        Ok(slices)
     }
 
     /// Distinguish a refused format-3 intent from a legacy boot.
