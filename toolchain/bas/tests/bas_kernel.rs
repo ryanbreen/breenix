@@ -216,3 +216,21 @@ fn four_sources_match_nasm() {
         String::from_utf8_lossy(&output.stderr),
     );
 }
+
+#[test]
+fn two_units_match_clang() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let output = std::process::Command::new("python3")
+        .current_dir(&root)
+        .arg("-I")
+        .arg("toolchain/tests/bas_kernel/compare_a64.py")
+        .arg(env!("CARGO_BIN_EXE_bas"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
