@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 Progress = runpy.run_path(str(ROOT / 'scripts/boot_progress.py'))['BootProgress']
 
 
-def has_case_override(source):
+def has_case_override(source, source_path=None):
     import re
     source = re.sub(r"//[^\n]*|/\*.*?\*/", "", source, flags=re.S)
     return bool(re.search(r"\bcase_limit_ms\s*(?:[:=(])", source))
@@ -128,7 +128,7 @@ class ProgressTest(unittest.TestCase):
         # Inspect both builder calls and public-field overrides in the program
         # tree, including helpers imported by suite entry points.
         for source in (ROOT / 'userspace/programs/src').rglob('*.rs'):
-            self.assertFalse(has_case_override(source.read_text()), str(source))
+            self.assertFalse(has_case_override(source.read_text(), source), str(source))
         runner = (ROOT / 'libs/libbreenix/src/suite.rs').read_text()
         self.assertIn('pub const DEFAULT_CASE_LIMIT_MS: u64 = 10_000;', runner)
         table = runner.split('pub const NAMED_CASE_ALLOWANCES:', 1)[1].split(';', 1)[0]
@@ -282,6 +282,17 @@ class ProgressTest(unittest.TestCase):
         for source in ('Suite { case_limit_ms: 121_000, ..suite }',
                        'suite.case_limit_ms = 121000;', 'suite.case_limit_ms (121000)'):
             self.assertTrue(has_case_override(source), source)
+
+    def test_hosted_suite_deadline_constructors(self):
+        for suite in ('rustc', 'rust_link', 'cargo'):
+            path = ROOT / f'userspace/programs/src/suite_{suite}.rs'
+            with self.subTest(suite=suite):
+                self.assertFalse(has_case_override(path.read_text(), path))
+
+    def test_ordinary_suite_deadline_override_is_rejected(self):
+        path = ROOT / 'userspace/programs/src/suite_time.rs'
+        source = 'static SUITE: Suite = suite("time", "Time", &[]).case_limit_ms(60_000);'
+        self.assertTrue(has_case_override(source, path))
 
     def test_one_case_done_disarms_completion_monitor(self):
         self.progress = Progress(self.serial, now=0, epoch=0, track_completion=True)

@@ -878,6 +878,47 @@ fn describe(categories: &[Category]) -> String {
         .join("\n")
 }
 
+fn suite_build_error(id: &str, binaries: &[String], build: &str) -> Option<String> {
+    let entry = format!("suite-{id}");
+    let ordinary = binaries.iter()
+        .any(|listed| *listed == entry || *listed == format!("{entry}:{entry}"));
+    if id == "dynamic" {
+        let hosted = r#""$SCRIPT_DIR/build.sh" --arch x86_64 --hosted-bin suite-dynamic --features dynamic"#;
+        if ordinary || !build.lines().any(|line| line.trim() == hosted) {
+            return Some(format!("{id}: {entry} must use the opt-in hosted build in userspace/programs/build.sh"));
+        }
+    } else if !ordinary {
+        return Some(format!("{id}: \"{entry}\" is not in STD_BINARIES in userspace/programs/build.sh"));
+    }
+    None
+}
+
+fn missing_suite_manifest(name: &str, manifest_ids: &HashSet<String>) -> Option<String> {
+    let id = name.strip_prefix("suite-")?;
+    (!manifest_ids.contains(id))
+        .then(|| format!("Cargo binary {name} has no manifest docs/suites/{id}.json"))
+}
+
+#[test]
+fn hosted_suite_builds_are_registered() {
+    let build = fs::read_to_string(repo_root().join("userspace/programs/build.sh")).unwrap();
+    let binaries = std_binaries(&build);
+    let errors: Vec<_> = ["dynamic", "rustc", "rust-link", "cargo"]
+        .into_iter()
+        .filter_map(|id| suite_build_error(id, &binaries, &build))
+        .collect();
+    assert!(errors.is_empty(), "{}", errors.join("\n"));
+}
+
+#[test]
+fn ordinary_suite_without_manifest_is_rejected() {
+    let manifests = HashSet::from(["threads".to_string()]);
+    assert_eq!(
+        missing_suite_manifest("suite-time", &manifests).as_deref(),
+        Some("Cargo binary suite-time has no manifest docs/suites/time.json"),
+    );
+}
+
 #[test]
 fn suite_manifests_match_their_binaries() {
     let root = repo_root();
@@ -940,16 +981,8 @@ fn suite_manifests_match_their_binaries() {
                 bin.0, bin.1
             ));
         }
-        let entry = format!("suite-{id}");
-        let ordinary = binaries.iter()
-            .any(|listed| *listed == entry || *listed == format!("{entry}:{entry}"));
-        if id == "dynamic" {
-            let hosted = r#""$SCRIPT_DIR/build.sh" --arch x86_64 --hosted-bin suite-dynamic --features dynamic"#;
-            if ordinary || !build.lines().any(|line| line.trim() == hosted) {
-                errors.push(format!("{id}: {entry} must use the opt-in hosted build in userspace/programs/build.sh"));
-            }
-        } else if !ordinary {
-            errors.push(format!("{id}: \"{entry}\" is not in STD_BINARIES in userspace/programs/build.sh"));
+        if let Some(error) = suite_build_error(id, &binaries, &build) {
+            errors.push(error);
         }
 
         let (suite, categories) = match source_suite_files(&files) {
@@ -989,10 +1022,8 @@ fn suite_manifests_match_their_binaries() {
             assert_scoped_runner_fixture(&root, &binaries);
             continue;
         }
-        if let Some(id) = name.strip_prefix("suite-") {
-            if !manifest_ids.contains(id) {
-                errors.push(format!("Cargo binary {name} has no manifest docs/suites/{id}.json"));
-            }
+        if let Some(error) = missing_suite_manifest(name, &manifest_ids) {
+            errors.push(error);
         }
     }
 
