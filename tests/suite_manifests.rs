@@ -333,7 +333,10 @@ fn read_manifest(path: &Path, errors: &mut Vec<String>) -> Option<Manifest> {
                                         Some(list) if !list.is_empty() && list.iter().enumerate().all(|(index, target)|
                                             matches!(target.as_str(), Some("aarch64" | "x86_64"))
                                                 && !list[..index].contains(target)) => {
-                                            case.targets = list.iter().map(|target| target.as_str().unwrap().to_string()).collect();
+                                            // Both supported targets are equivalent to an unscoped guest case.
+                                            if list.len() == 1 {
+                                                case.targets = list.iter().map(|target| target.as_str().unwrap().to_string()).collect();
+                                            }
                                         }
                                         _ => errors.push(format!("{case_at}: targets must list unique supported architectures")),
                                     }
