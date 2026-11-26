@@ -24,6 +24,47 @@ class BootProgressTest(existing.StateTest):
         self.d.progress_key = ('OSRunning', '', None)
         self.d.post_code = 126
 
+    def test_suite_staging_progress_transcripts(self):
+        # Reuse the failed capture's staging prefix and payload size. Append
+        # timestamped examples of the new stub line at the deadline boundaries.
+        total = 2 * 2_709_733_376
+        prefix = [(1, 'metal-stub: started'),
+                  (2, 'metal-stub: staging the suite fixture on its recorded disk')]
+
+        def progress(at, done, expected=total):
+            return at, f'metal-stub: suite staging progress: {done}/{expected} bytes'
+
+        def replay(lines, continues, stops, reason):
+            self.make_driver()
+            d = self.d
+            d.args.disk = 'root'
+            d.kernel_started = None
+            d.request_at, d.complete_at = d.t0 + 20, d.t0 + 67
+            d.delivery['diskRoot'] = {'bytes': total // 2}
+            for seconds, line in prefix + lines:
+                instant = d.complete_at + seconds
+                with patch.object(m, 'now', return_value=instant):
+                    d.on_line(line, observed_at=instant)
+                    d.check_deadlines()
+            with patch.object(m, 'now', return_value=d.complete_at + continues):
+                d.check_deadlines()
+            with patch.object(m, 'now', return_value=d.complete_at + stops):
+                with self.assertRaisesRegex(boot.Finish, reason) as raised:
+                    d.check_deadlines()
+            self.assertEqual(raised.exception.status, m.EXIT_DELIVERY)
+
+        with self.subTest('no progress'):
+            replay([], 59, 60, 'no bootloader')
+        with self.subTest('duplicates, regressions and foreign totals do not extend the window'):
+            replay([progress(4, 8 << 20), progress(25, 8 << 20), progress(35, 1 << 20),
+                    progress(53, 16 << 20, total + 2)], 63, 64, 'no bootloader')
+        with self.subTest('steady progress extends the window'):
+            replay([progress(20, 8 << 20), progress(70, 16 << 20),
+                    progress(120, 24 << 20)], 179, 180, 'no bootloader')
+        with self.subTest('progress cannot extend the absolute cap'):
+            replay([progress(at, index << 23) for index, at in
+                    enumerate(range(49, 600, 49), 1)], 599, 600, 'staging.*cap')
+
     def reading(self, at, state, code=0):
         reading = dict(t=at, power='On', progress={'LastState': state}, postCode=code)
         self.d.bmc_events = [reading]
