@@ -24,6 +24,29 @@ def sha256(path):
 
 
 class CargoImageStageTest(unittest.TestCase):
+    def test_d1_stages_both_target_specs(self):
+        mke2fs, = STAGE.require_e2fsprogs('mke2fs')
+        pins = read_json(RECORDS / 'k7/x86_64.json')['fixture_sha256']
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            image = directory / 'root.img'
+            tree = directory / 'd1'
+            subprocess.run([mke2fs, '-q', '-t', 'ext2', '-F', image, '16M'],
+                           check=True, capture_output=True)
+            argv = ['rust_host_stage.py', '--arch', 'x86_64', '--image', str(image),
+                    '--suite', 'd1', '--d1-tree', str(tree)]
+            with patch('sys.argv', argv), redirect_stdout(io.StringIO()):
+                STAGE.main()
+
+            # The cross target is explicit, but hosted rustc also resolves its
+            # own target through RUST_TARGET_PATH even when Cargo asks for -vV.
+            for target in ('x86_64-breenix-hosted', 'x86_64-breenix'):
+                name = f'targets/{target}.json'
+                spec = tree / 'fixture' / name
+                with self.subTest(target=target):
+                    self.assertTrue(spec.is_file(), f'D1 fixture omits {name}')
+                    self.assertEqual(sha256(spec), pins[name])
+
     def test_rustc_and_cargo_share_hosted_libc(self):
         mke2fs, debugfs = STAGE.require_e2fsprogs('mke2fs', 'debugfs')
         kd = Path(os.environ.get('BREENIX_KD_BUILD_DIR', PROGRAMS / 'kd'))
