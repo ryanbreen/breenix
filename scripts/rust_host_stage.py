@@ -302,6 +302,8 @@ def stage_rust_link(image, arch, artifacts, fixture, records):
                            if option == '-L')
     control = expect['control']['archive']
     add(f'{prefix}/{control}', fixture / control, '0444', expect['control']['sha256'])
+    metadata = expect['metadata']['archive']
+    add(f'{prefix}/{metadata}', records / 'k6' / metadata, '0444', expect['metadata']['sha256'])
     for source in (receipt, expectations):
         add(f'{prefix}/{source.name}', source, '0444', sha256(source))
     for path in [*expected, *directories]:

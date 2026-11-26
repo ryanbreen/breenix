@@ -85,6 +85,7 @@ fn link(
     name: &str,
     destination: &Path,
     replacement: Option<(&str, &str)>,
+    extra_args: &[&str],
 ) -> Result<Output, CaseError> {
     let receipt = read_json("x86_64.json")?;
     let line = receipt["links"][name]["argv"]
@@ -117,12 +118,18 @@ fn link(
             .current_dir(FIXTURE)
             .env_clear()
             .args(args)
+            .args(extra_args)
             .output(),
     )?)
 }
 
-fn link_verified(name: &str, destination: &Path, expected: &Value) -> CaseResult {
-    let linked = link(name, destination, None)?;
+fn link_verified(
+    name: &str,
+    destination: &Path,
+    expected: &Value,
+    extra_args: &[&str],
+) -> CaseResult {
+    let linked = link(name, destination, None, extra_args)?;
     if !linked.status.success() {
         return Err(format!(
             "{name}: bld {}: {}",
@@ -138,7 +145,7 @@ fn probe(name: &str) -> Result<(Output, Output), CaseError> {
     let expect = read_json("expect.json")?;
     let scratch = Scratch::new()?;
     let candidate = scratch.0.join(name);
-    link_verified(name, &candidate, &expect[name])?;
+    link_verified(name, &candidate, &expect[name], &[])?;
     let reference = Path::new(FIXTURE)
         .join("links")
         .join(name)
@@ -181,13 +188,30 @@ fn links_hosted_unwind() -> CaseResult {
 fn rlib_members_skipped() -> CaseResult {
     let scratch = Scratch::new()?;
     let expect = read_json("expect.json")?;
-    link_verified("panic-abort", &scratch.0.join("original"), &expect["panic-abort"])?;
+    let metadata = &expect["metadata"];
+    let archive = field(metadata, "archive")?;
+    verify_digest(
+        &Path::new(FIXTURE).join(archive),
+        field(metadata, "sha256")?,
+    )?;
+    // Whole-archive selection reaches the extraction-time skip without an index entry.
+    link_verified(
+        "panic-abort",
+        &scratch.0.join("original"),
+        &expect["panic-abort"],
+        &["--whole-archive", archive, "--no-whole-archive"],
+    )?;
 
     let control = &expect["control"];
     let archive = field(control, "archive")?;
     verify_digest(&Path::new(FIXTURE).join(archive), field(control, "sha256")?)?;
     let original = field(control, "original")?;
-    let rejected = link("panic-abort", &scratch.0.join("control"), Some((original, archive)))?;
+    let rejected = link(
+        "panic-abort",
+        &scratch.0.join("control"),
+        Some((original, archive)),
+        &[],
+    )?;
     let diagnostic = field(control, "diagnostic")?;
     if !matches!(rejected.status.code(), Some(code) if code != 0)
         || rejected.stderr != diagnostic.as_bytes()

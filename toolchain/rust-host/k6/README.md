@@ -62,5 +62,13 @@ compares against bld's `amd64_field_width` dispatch. This capture contains
 the later bld replay can skip Rust metadata. The hosted reference has
 `PT_GNU_EH_FRAME` (LSB Core 5.0 §11.2).
 
+The `rlib-members-skipped` case adds `control/raw-metadata.rlib` under
+`--whole-archive` and requires the recorded panic-abort ELF digest. The
+archive was made with `bar rcs` from one file named `lib.rmeta` whose bytes
+are the `control.payload` string in `expect.json`, including its newline.
+Whole-archive selection exercises the skip during both archive validation
+and member extraction. The negative control uses the same payload under
+the name `notes.bin` and requires the recorded diagnostic.
+
 This unit captures the x86-64 reference links on the host. ARM64 K6
 still needs its own twin capture and bld replay.
