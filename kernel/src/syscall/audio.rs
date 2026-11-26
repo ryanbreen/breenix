@@ -2,10 +2,13 @@
 //!
 //! Provides syscalls for initializing audio playback and writing PCM data.
 
-use super::SyscallResult;
+use alloc::vec::Vec;
 
-/// Maximum valid userspace address
-const USER_SPACE_MAX: u64 = crate::memory::layout::USER_STACK_REGION_END;
+use super::{userptr::read_user_bytes, SyscallResult};
+use crate::memory::layout::is_valid_user_range;
+
+/// Maximum PCM payload accepted by either VirtIO sound backend per write.
+const MAX_PCM_WRITE: usize = 16 * 1024;
 
 /// sys_audio_init - Initialize the audio stream for playback
 ///
@@ -44,27 +47,27 @@ pub fn sys_audio_write(buf_ptr: u64, buf_len: u64) -> SyscallResult {
     if let Err(errno) = crate::process::privilege::require(crate::process::privilege::Operation::Audio) {
         return SyscallResult::Err(errno);
     }
-    if buf_ptr == 0 {
+    if !is_valid_user_range(buf_ptr, buf_len.max(1) as usize) {
         return SyscallResult::Err(super::ErrorCode::Fault as u64);
     }
 
-    if buf_ptr >= USER_SPACE_MAX {
-        return SyscallResult::Err(super::ErrorCode::Fault as u64);
+    // The device accepts a short write for larger buffers. Only the bytes
+    // submitted in this call need to be mapped and copied.
+    let len = (buf_len as usize).min(MAX_PCM_WRITE);
+    let mut data = Vec::new();
+    if data.try_reserve_exact(len).is_err() {
+        return SyscallResult::Err(super::ErrorCode::OutOfMemory as u64);
     }
-
-    let end = buf_ptr.saturating_add(buf_len);
-    if end > USER_SPACE_MAX {
-        return SyscallResult::Err(super::ErrorCode::Fault as u64);
+    data.resize(len, 0);
+    if let Err(errno) = read_user_bytes(data.as_mut_ptr(), buf_ptr, len) {
+        return SyscallResult::Err(errno);
     }
-
-    let len = buf_len as usize;
-    let data = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, len) };
 
     #[cfg(target_arch = "aarch64")]
-    let result = crate::drivers::virtio::sound_mmio::write_pcm(data);
+    let result = crate::drivers::virtio::sound_mmio::write_pcm(&data);
 
     #[cfg(target_arch = "x86_64")]
-    let result = crate::drivers::virtio::sound::write_pcm(data);
+    let result = crate::drivers::virtio::sound::write_pcm(&data);
 
     match result {
         Ok(written) => SyscallResult::Ok(written as u64),
