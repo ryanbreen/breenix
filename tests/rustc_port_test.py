@@ -30,6 +30,10 @@ def git(*args, tree=TREE):
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True).stdout.strip()
 
 
+def guest_environment(targets):
+    return {"RUST_TARGET_PATH": str(targets)}
+
+
 class RustcPort(unittest.TestCase):
     def test_twin_spawn_environment_is_guest_set(self):
         with mock.patch.dict(os.environ, {"RUSTFLAGS": "ambient", "CARGO_HOME": "ambient"}):
@@ -53,11 +57,9 @@ class RustcPort(unittest.TestCase):
             host = json.loads((corpus / 'expect.json').read_text())['hosted_host']
             shutil.copyfile(ROOT / f'{host}.json', targets / f'{host}.json')
             # Translate the guest's explicit spawn environment to the host fixture.
-            environment = dict(os.environ)
-            environment.pop('RUST_TARGET_PATH', None)
-            if 'let envp = [target_path.as_ptr().cast(), null()];' in suite:
-                self.assertIn('CString::new(format!("RUST_TARGET_PATH={FIXTURE}/targets"))', suite)
-                environment['RUST_TARGET_PATH'] = str(targets)
+            self.assertIn('let envp = [target_path.as_ptr().cast(), null()];', suite)
+            self.assertIn('CString::new(format!("RUST_TARGET_PATH={FIXTURE}/targets"))', suite)
+            environment = guest_environment(targets)
             host_lookup = subprocess.run(
                 [mac_rustc, '--target', host, '--print', 'cfg'], cwd=corpus, env=environment,
                 capture_output=True, text=True, timeout=15)
