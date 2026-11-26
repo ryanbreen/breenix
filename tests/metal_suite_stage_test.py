@@ -210,6 +210,14 @@ fn sparse_body_reads_only_declared_blocks_and_bounds_the_last_extent() {
 
 
 class MetalSuiteStageTest(unittest.TestCase):
+    def test_toolchain_and_self_host_stay_out_of_aggregate_selection(self):
+        resolve = runpy.run_path(str(ROOT / 'scripts/suite-sequence.py'))['resolve']
+        names, _ = resolve('all', 'x86-metal', has_3d=True)
+        self.assertNotIn('self-host', names)
+        self.assertNotIn('toolchain', names)
+        selected = 'memory,processes,self-host'
+        self.assertEqual(resolve(selected, 'x86-metal')[0], selected.split(','))
+
     def test_self_host_carries_only_packed_scratch_extents(self):
         disk = existing.boot.metal_disk
         with tempfile.TemporaryDirectory() as directory:
