@@ -12,6 +12,58 @@ PIN = '84709f085062cbf3c51fa507527c1b2334015178'
 
 
 class CargoPort(unittest.TestCase):
+    def test_cargo_is_breenix_elf_with_empty_undefined_set(self):
+        stage = Path(os.environ.get('BREENIX_K7_STAGE', CACHE / 'stage1'))
+        cargo = stage / 'bin/cargo'
+        libc = stage / 'lib/libc.so'
+        self.assertTrue(cargo.is_file(), 'missing hosted Cargo ELF')
+        readelf = os.environ.get('LLVM_READELF', 'llvm-readelf')
+
+        def inspect(path, *args):
+            return subprocess.check_output([readelf, *args, path], text=True, timeout=30)
+
+        elf = inspect(cargo, '-h', '-l', '-d')
+        self.assertRegex(elf, r'Class:\s+ELF64\b')
+        self.assertRegex(elf, r'Type:\s+EXEC\b')
+        self.assertRegex(elf, r'Machine:\s+Advanced Micro Devices X86-64')
+        self.assertEqual(re.findall(r'\[Requesting program interpreter: (.+?)\]', elf),
+                         ['/lib/ld-breenix.so'])
+        self.assertEqual(re.findall(r'\(NEEDED\).*\[(.+?)\]', elf), ['libc.so'])
+        library = inspect(libc, '-h', '-d')
+        self.assertRegex(library, r'Type:\s+DYN\b')
+        self.assertRegex(library, r'Machine:\s+Advanced Micro Devices X86-64')
+        self.assertEqual(re.findall(r'\(SONAME\).*\[(.+?)\]', library), ['libc.so'])
+        self.assertNotRegex(library, r'\(NEEDED\)')
+
+        defined, undefined = set(), set()
+        for path in (cargo, libc):
+            for line in inspect(path, '--dyn-syms', '--wide').splitlines():
+                fields = line.split()
+                if len(fields) < 8 or not re.fullmatch(r'\d+:', fields[0]):
+                    continue
+                binding, visibility, index, name = fields[4:8]
+                if index == 'UND' and binding in ('GLOBAL', 'UNIQUE'):
+                    undefined.add(name)
+                if (index != 'UND' and binding in ('GLOBAL', 'WEAK', 'UNIQUE')
+                        and visibility in ('DEFAULT', 'PROTECTED')):
+                    # A default version also satisfies an unversioned lookup.
+                    defined.add(name.replace('@@', '@'))
+                    if '@@' in name:
+                        defined.add(name.split('@@', 1)[0])
+        self.assertEqual(sorted(undefined - defined), [])
+
+        link_map = (stage / 'maps/cargo.map').read_text()
+        self.assertTrue(link_map.strip(), 'missing Cargo linker map contents')
+        self.assertNotRegex(link_map, r'\b(?:libc|libbreenix_libc)[^/\s()]*\.a[(:]')
+        self.assertNotRegex(link_map, r'\.a[(:][^\s)]*crt[^\s)]*\.o\b')
+
+        record = json.loads((ROOT / 'toolchain/rust-host/k7/x86_64.json').read_text())
+        for path, key in ((cargo, 'cargo_sha256'), (libc, 'libc_sha256'),
+                          (stage / 'maps/cargo.map', 'map_sha256')):
+            with path.open('rb') as stream:
+                self.assertEqual(hashlib.file_digest(stream, 'sha256').hexdigest(),
+                                 record[key], path.name)
+
     def test_x1_c_dependencies_resolve_in_libc(self):
         run = Path((CACHE / 'g2.path').read_text().strip())
         messages = Path(os.environ.get(
