@@ -177,3 +177,67 @@ fn rustc_link_line_recorded_on_mac_links() {
         );
     }
 }
+
+#[test]
+fn existing_links_byte_identical() {
+    let fixture = PathBuf::from(
+        std::env::var_os("BREENIX_BLD_PARITY_ROOT")
+            .expect("set BREENIX_BLD_PARITY_ROOT to the staged corpus and f06b3116 linker"),
+    )
+    .canonicalize()
+    .unwrap();
+    let baseline = fixture.join("baseline/release");
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let script = repo
+        .join("userspace/programs/linker.ld")
+        .canonicalize()
+        .unwrap();
+    let scratch = Scratch::new();
+    let cases: Vec<_> = include_str!("../../corpus/cases").lines().collect();
+    assert_eq!(cases.len(), 30);
+    for arch in ["x86_64", "aarch64"] {
+        let arch = fixture.join(arch);
+        let objects = arch.join("objs");
+        let libc = arch.join("libc.a");
+        let archive = scratch.0.join("got.a");
+        run(Command::new(baseline.join("bar"))
+            .args(["rcs"])
+            .arg(&archive)
+            .args([
+                objects.join("got-entry.o"),
+                objects.join("archive-value-with-long-name.o"),
+            ]));
+        let corpus = cases
+            .iter()
+            .map(|name| (name.to_string(), vec![objects.join(format!("{name}.o"))]));
+        let linker = [
+            (
+                "got-main".into(),
+                vec![objects.join("got-main.o"), archive.clone()],
+            ),
+            ("tls-template".into(), vec![objects.join("tls-template.o")]),
+        ];
+        for (name, inputs) in corpus.chain(linker) {
+            let output = scratch.0.join("out.elf");
+            let link = |binary: &Path| {
+                run(Command::new(binary)
+                    .env_clear()
+                    .arg("-T")
+                    .arg(&script)
+                    .args(["--gc-sections", "-o"])
+                    .arg(&output)
+                    .args(&inputs)
+                    .arg(&libc));
+                fs::read(&output).unwrap()
+            };
+            let expected = link(&baseline.join("bld"));
+            let actual = link(Path::new(env!("CARGO_BIN_EXE_bld")));
+            assert!(
+                actual == expected,
+                "{}: {name} bytes changed",
+                arch.display()
+            );
+        }
+        fs::remove_file(archive).unwrap();
+    }
+}

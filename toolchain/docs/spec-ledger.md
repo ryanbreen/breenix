@@ -168,6 +168,32 @@ repeats that search for the archives between `--start-group` and `--end-group`.
 `--no-whole-archive` resets selection to the indexed search. ELF gABI §§5.2
 and 5.5 describe weak binding and common storage.
 
+### bld static links from rustc
+
+GNU ld 2.45 §2.1 governs the recorded K6 interface. The explicit directories
+from `-L` apply to `-l` regardless of order, and preceding directories extend lookup for
+`-T`. Library operands keep their position among the input files. `-l:FILE`
+searches for the literal filename. `-Bstatic` searches for archives.
+`-Bdynamic` searches each directory for a shared library before the archive.
+A required shared library produces a diagnostic naming its path. In
+`--as-needed` mode, bld can omit an ELF shared input that satisfies no strong
+undefined reference at that position. `--no-as-needed` restores the default.
+
+`--allow-multiple-definition` retains the first strong definition.
+`-z noexecstack` uses bld's non-executable stack header (LSB Core 5.0 Table 11-1).
+`-O1` applies to GNU ld's shared output. The captured `-flavor gnu` pair
+selects bld's GNU interface for direct compiler invocations. This interface
+and `--strip-debug` emit defined global and weak symbols in the executable
+symbol table, using ELF gABI §§3 and 5. Hidden and internal symbols are
+omitted as §5.4 permits. The tables are outside the load segments.
+
+The K6 Mac twin receipt records `lib.rmeta` as compiler metadata. bld skips
+that exact archive member name and diagnoses any other non-ELF member with
+its archive and member name. Solaris `ar(3HEAD)` uses the leading symbol count
+to determine the offset and name entries. A recorded `.rlib` with the
+32-bit count `0` and four NUL bytes in the name area contributes an
+empty index. Member framing and names still use the common archive reader.
+
 ## Relocatable links
 
 GNU ld 2.45 §2.1 describes `-r` (`--relocatable`). bld applies its usual
