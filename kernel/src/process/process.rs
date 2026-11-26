@@ -392,7 +392,7 @@ pub struct Process {
     /// Current heap end (program break)
     pub heap_end: u64,
 
-    /// Virtual memory areas for this process (mmap regions)
+    /// Disjoint virtual memory areas in descending start-address order.
     #[allow(dead_code)]
     pub vmas: alloc::vec::Vec<crate::memory::vma::Vma>,
 
@@ -1265,6 +1265,7 @@ impl Process {
             vma.start.as_u64(),
             vma.end.as_u64(),
         );
-        self.vmas.push(vma);
+        let index = self.vmas.partition_point(|existing| existing.start > vma.start);
+        self.vmas.insert(index, vma);
     }
 }

@@ -222,6 +222,13 @@ def mode_deadline_seconds(args, suite=None):
         # Seven 610 s watchdogs under E25 ruling 126, plus at least 25% reserve.
         if name == 'd1':
             return 5338
+        if name == 'self-host' and milestone == 'toolchain/self-host':
+            # Seven Cargo windows (including 660 s for bcc), the rebuilt
+            # corpus and the Cargo no-op. Budget the full 670 s watchdog
+            # for the digest comparison, 10 s per inner window for case
+            # overhead, and at least 25% reserve.
+            work_ms = 887_478 + 56_891 + 10_000 + 670_000 + 9 * 10_000
+            return (work_ms * 5 + 3999) // 4000
         base = {'breengel': 900, 'window-manager': 1800, 'ui-testing': 1800}.get(name, MODE_DEADLINE_SECONDS['suite'])
         return base + (intent_manifest.counts().get(name, 0) if getattr(args, 'screen_proof', False) else 0)
     return MODE_DEADLINE_SECONDS[args.mode]
@@ -720,9 +727,21 @@ class Driver:
             raise Finish(m.EXIT_CANCELLED, 'the test-binary disk differs from its build record')
         if not prebuilt and build.get('suite') != (getattr(self.args, 'suite', None) if self.args.mode == 'suite' else None):
             raise Finish(m.EXIT_CANCELLED, 'the build staged fixtures for a different suite')
+        self_host = 'self-host' in suites(self.args)
+        if self_host:
+            record = build.get('selfHost')
+            packed = inputs / 'self-host-scratch.dat'
+            if (not prebuilt or suites(self.args) != ['memory', 'processes', 'self-host']
+                    or getattr(self.args, 'milestone', None) != 'toolchain/self-host'
+                    or getattr(self.args, 'disk', None) != 'root' or root_fs not in (None, 'ext2')
+                    or getattr(self.args, 'case', None) or not isinstance(record, dict)
+                    or record.get('commit') != self.args.commit or not isinstance(record.get('scratchBytes'), int)
+                    or 'filesystemFixtures' in build or not packed.is_file()
+                    or record.get('disk') != metal_prebuilt.facts(packed)):
+                raise Finish(m.EXIT_CANCELLED, 'self-host requires the Mac prebuilt and verified scratch for the 25.8 test boot')
         fixture = inputs / 'toolchain-root.img'
         scratch = inputs / 'toolchain-scratch.img'
-        if 'toolchain' in suites(self.args):
+        if 'toolchain' in suites(self.args) or self_host:
             if getattr(self.args, 'disk', None) == 'install':
                 raise Finish(m.EXIT_CANCELLED, 'a toolchain fixture cannot be an install image')
             record = build.get('toolchain')
@@ -765,8 +784,10 @@ class Driver:
         self.delivery['build'] = build
         run = m.read_json(self.dir / 'run.json', {})
         run['build'] = {key: build[key] for key in ('commit', 'profile', 'features')}
-        if 'toolchain' in suites(self.args):
+        if 'toolchain' in suites(self.args) or self_host:
             run['build']['toolchain'] = build['toolchain']
+        if self_host:
+            run['build']['selfHost'] = build['selfHost']
         if 'd1' in suites(self.args):
             run['build']['d1'] = build['d1']
         m.write_json(self.dir / 'run.json', run)

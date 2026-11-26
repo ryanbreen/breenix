@@ -320,12 +320,16 @@ def rust_link_fixture_entries(artifacts, fixture, k6, *, tools_only=False):
         yield '/sbin/suite-rust-link', artifacts / 'suite-rust-link', '0755', build['suite-rust-link']
     yield 'bin/bld', artifacts / 'bld', '0755', build['bld']
     if tools_only:
-        for name in ('linker.ld', 'libc.a'):
-            relative = f'lib/tools/{name}'
-            yield f'lib/{name}', fixture / relative, '0444', k6['inputs'][relative]['sha256']
+        yield from tool_target_link_inputs(fixture, k6)
     else:
         for name, record in k6['inputs'].items():
             yield name, fixture / name, '0444', record['sha256']
+
+
+def tool_target_link_inputs(fixture, k6):
+    for name in ('linker.ld', 'libc.a'):
+        relative = f'lib/tools/{name}'
+        yield f'lib/{name}', fixture / relative, '0444', k6['inputs'][relative]['sha256']
 
 
 def stage_rust_link(image, arch, artifacts, fixture, records):
@@ -395,6 +399,7 @@ def stage_hosted_toolchain(image, suites, release, artifacts, rust_link, sysroot
                            cargo, records, k5, kd_record, already_staged):
     entries, expected = hosted_runtime_entries(kd, kd_record, already_staged)
     files = list(rustc_fixture_entries(artifacts, sysroot, ROOT, k5))
+    self_host = 'self-host' in suites
     if cargo is not None:
         k6 = json.loads((records / 'k6/x86_64.json').read_text())
         k7 = json.loads((records / 'k7/x86_64.json').read_text())
@@ -402,18 +407,31 @@ def stage_hosted_toolchain(image, suites, release, artifacts, rust_link, sysroot
                 or (k6['rustc_sha256'], k6['rustc_commit']) !=
                 (k5['mac_rustc_sha256'], k5['fork_commit'])):
             raise ValueError('K7 and K6 compiler identities must match the K5 build record')
-        files.extend(rust_link_fixture_entries(rust_link, fixture, k6, tools_only=True))
+        if self_host:
+            files.extend(tool_target_link_inputs(fixture, k6))
+        else:
+            files.extend(rust_link_fixture_entries(rust_link, fixture, k6, tools_only=True))
         files.append(('bin/cargo', cargo, '0755', k7['cargo_sha256']))
         digests = k7['fixture_sha256']
         files = [(name, source, mode, digest or digests[name])
                  for name, source, mode, digest in files]
-        if 'd1' in suites:
-            replay = json.loads((records / 'd1/x86_64-mac.json').read_text())
+        if 'd1' in suites or self_host:
+            replay_dir = 'selfhost' if self_host else 'd1'
+            replay = json.loads((records / replay_dir / 'x86_64-mac.json').read_text())
+            if self_host:
+                # The Mac has its own executables and the hosted target rlibs.
+                # Match the shared inputs used to produce the compared ELF files.
+                tool_sysroot = 'sysroot/lib/rustlib/x86_64-breenix/'
+                shared = {name: name for name, _, _, _ in files
+                          if name.startswith((tool_sysroot, 'targets/'))}
+                shared.update({f'lib/{name}': f'lib/tools/{name}' for name in ('linker.ld', 'libc.a')})
+                replay['inputs'] = {f'fixture/{name}': replay['inputs'][mac_name]
+                                    for name, mac_name in shared.items()}
             inputs = {f'fixture/{name}': (source, digest) for name, source, _, digest in files}
             for name, facts in replay['inputs'].items():
                 source, digest = inputs[name]
                 if digest != facts['sha256'] or source.stat().st_size != facts['size']:
-                    raise ValueError(f'{name} differs from the D1 Mac twin input')
+                    raise ValueError(f'{name} differs from the {replay_dir} Mac twin input')
         if 'cargo' in suites:
             entries.extend((f'{CARGO_CORPUS}/{name}', records / 'k7' / name, '0444')
                            for name in digests if name.startswith('corpus/'))
@@ -429,9 +447,15 @@ def stage_hosted_toolchain(image, suites, release, artifacts, rust_link, sysroot
         entries.append((path, source, mode))
         if digest is not None:
             expected[path] = digest
-    for name in ('rustc', 'cargo', 'd1'):
+    runners = {
+        'rustc': '/sbin/suite-rustc',
+        'cargo': '/sbin/suite-cargo',
+        'd1': '/sbin/suite-d1',
+        'self-host': '/sbin/suite-self-host',
+    }
+    for name, path in runners.items():
         if name in suites:
-            entries.append((f'/sbin/suite-{name}', release / f'suite-{name}', '0755'))
+            entries.append((path, release / Path(path).name, '0755'))
 
     base = Path('/usr/libexec/breenix')
     directories = {'/lib'}
@@ -456,15 +480,15 @@ def main():
     rust_link = PROGRAMS / 'target/rust-link' / args.arch
     retained = Path.home() / 'Library/Caches/breenix-e25/k6/fixture'
     fixture = Path(os.environ.get('BREENIX_K6_FIXTURE', retained)).expanduser()
-    diagnostic = 'd1' in suites
-    hosted_toolchain = 'rustc' in suites or 'cargo' in suites or diagnostic
+    cargo_needed = bool({'cargo', 'd1', 'self-host'}.intersection(suites))
+    hosted_toolchain = 'rustc' in suites or cargo_needed
     if hosted_toolchain:
         if args.arch != 'x86_64':
             parser.error('hosted rustc and Cargo staging requires x86-64')
         sysroot = Path(os.environ.get('BREENIX_K5_SYSROOT', cache / 'sysroot'))
         k7_stage = Path(os.environ.get('BREENIX_K7_STAGE', cache / 'k7/stage1'))
         k5 = json.loads((records / 'k5/x86_64.json').read_text())
-        cargo = k7_stage / 'bin/cargo' if 'cargo' in suites or diagnostic else None
+        cargo = k7_stage / 'bin/cargo' if cargo_needed else None
         kd_record = verify_hosted_libc(kd, records, k5, rustc, cargo)
 
     staged = stage_cxx_runtime(args.image, args.suite, release / 'suite-cxx-runtime',

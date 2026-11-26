@@ -1,4 +1,5 @@
 """S26: distinguish an unknown management state from confirmed POST evidence."""
+import json
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 import unittest
@@ -23,6 +24,25 @@ class BootProgressTest(existing.StateTest):
         self.d.kernel_started = 1793095717.595
         self.d.progress_key = ('OSRunning', '', None)
         self.d.post_code = 126
+
+    def test_self_host_has_its_own_done_deadline_and_marker(self):
+        args = SimpleNamespace(mode='suite', suite='memory,processes,self-host',
+                               milestone='toolchain/self-host', payload='image')
+        # The builds, corpus and Cargo no-op have explicit inner windows.
+        # The digest comparison uses the suite's 670 s watchdog.
+        work_ms = 887_478 + 56_891 + 10_000 + 670_000
+        deadline = boot.mode_deadline_seconds(args, 'self-host')
+        with self.subTest('done deadline'):
+            self.assertGreaterEqual(deadline * 4000, work_ms * 5)
+        for name in ('memory', 'processes'):
+            self.assertEqual(boot.mode_deadline_seconds(args, name), boot.MODE_DEADLINE_SECONDS['suite'])
+        self.assertGreaterEqual(boot.ceiling_seconds(args), deadline + 2 * boot.MODE_DEADLINE_SECONDS['suite'])
+        path = existing.TOOLS.parents[1] / 'docs/metal/boot-path.json'
+        stages = json.loads(path.read_text())['milestones']
+        marker = next(stage for stage in stages if stage['id'] == 'suite-finished')['stages']['suite'][0]['marker']
+        with self.subTest('done marker'):
+            self.assertTrue(boot.marker_matches((marker, 'contains'),
+                                               'SUITE self-host DONE passed=10 failed=0 skipped=0 total=10'))
 
     def test_suite_staging_progress_transcripts(self):
         # Reuse the failed capture's staging prefix and payload size. Append

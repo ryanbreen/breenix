@@ -205,11 +205,6 @@
       ]
     },
     {
-      "id": "self-host",
-      "title": "The tools rebuild themselves with stage 2 and stage 3 byte-identical",
-      "cases": []
-    },
-    {
       "id": "c11",
       "title": "The declared C11 feature profile and its diagnostics",
       "cases": [

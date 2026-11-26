@@ -20,11 +20,12 @@ def has_case_override(source, source_path=None):
             'suite_rust_link.rs': 'rust-link',
             'suite_cargo.rs': 'cargo',
             'suite_d1.rs': 'd1',
+            'suite_self_host.rs': 'self-host',
         }.get(source_path.name)
         if suite is not None:
             constructor = rf'(\bstatic\s+SUITE\s*:\s*Suite\s*=\s*suite\s*\(\s*"{suite}"[^;]*?\))'
-            # Ruling 126: D1 has 600 s for Cargo plus 10 s to reap and report.
-            limit = '610_000' if suite == 'd1' else '60_000'
+            # Rulings 126 and 136: D1 and self-host leave 10 s beyond the longest Cargo window.
+            limit = {'d1': '610_000', 'self-host': '670_000'}.get(suite, '60_000')
             deadline = rf'\s*\.\s*case_limit_ms\s*\(\s*{limit}\s*\)(?=\s*;)'
             source = re.sub(constructor + deadline, r'\1', source, count=1)
     return bool(re.search(r"\bcase_limit_ms\s*(?:[:=(])", source))
@@ -302,7 +303,7 @@ class ProgressTest(unittest.TestCase):
             self.assertTrue(has_case_override(source), source)
 
     def test_hosted_suite_deadline_constructors(self):
-        for suite in ('rustc', 'rust_link', 'cargo', 'd1'):
+        for suite in ('rustc', 'rust_link', 'cargo', 'd1', 'self_host'):
             path = ROOT / f'userspace/programs/src/suite_{suite}.rs'
             with self.subTest(suite=suite):
                 self.assertFalse(has_case_override(path.read_text(), path))
