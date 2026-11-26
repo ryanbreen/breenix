@@ -12,17 +12,20 @@ Progress = runpy.run_path(str(ROOT / 'scripts/boot_progress.py'))['BootProgress'
 
 def has_case_override(source, source_path=None):
     source = re.sub(r"//[^\n]*|/\*.*?\*/", "", source, flags=re.S)
-    # These hosted runners declare a 60 s deadline on their own suite table.
+    # These hosted runners declare their own suite deadline.
     # Keep scanning those files for any other call or direct field override.
     if source_path is not None and source_path.parent == ROOT / 'userspace/programs/src':
         suite = {
             'suite_rustc.rs': 'rustc',
             'suite_rust_link.rs': 'rust-link',
             'suite_cargo.rs': 'cargo',
+            'suite_d1.rs': 'd1',
         }.get(source_path.name)
         if suite is not None:
             constructor = rf'(\bstatic\s+SUITE\s*:\s*Suite\s*=\s*suite\s*\(\s*"{suite}"[^;]*?\))'
-            deadline = r'\s*\.\s*case_limit_ms\s*\(\s*60_000\s*\)(?=\s*;)'
+            # Ruling 126: D1 has 600 s for Cargo plus 10 s to reap and report.
+            limit = '610_000' if suite == 'd1' else '60_000'
+            deadline = rf'\s*\.\s*case_limit_ms\s*\(\s*{limit}\s*\)(?=\s*;)'
             source = re.sub(constructor + deadline, r'\1', source, count=1)
     return bool(re.search(r"\bcase_limit_ms\s*(?:[:=(])", source))
 
@@ -299,7 +302,7 @@ class ProgressTest(unittest.TestCase):
             self.assertTrue(has_case_override(source), source)
 
     def test_hosted_suite_deadline_constructors(self):
-        for suite in ('rustc', 'rust_link', 'cargo'):
+        for suite in ('rustc', 'rust_link', 'cargo', 'd1'):
             path = ROOT / f'userspace/programs/src/suite_{suite}.rs'
             with self.subTest(suite=suite):
                 self.assertFalse(has_case_override(path.read_text(), path))

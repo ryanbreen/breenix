@@ -219,6 +219,9 @@ def mode_deadline_seconds(args, suite=None):
             deadlines = {'toolchain': 1969, 'libc': 3250, 'utilities': 2425}
             if name in deadlines:
                 return deadlines[name]
+        # Seven 610 s watchdogs under E25 ruling 126, plus at least 25% reserve.
+        if name == 'd1':
+            return 5338
         base = {'breengel': 900, 'window-manager': 1800, 'ui-testing': 1800}.get(name, MODE_DEADLINE_SECONDS['suite'])
         return base + (intent_manifest.counts().get(name, 0) if getattr(args, 'screen_proof', False) else 0)
     return MODE_DEADLINE_SECONDS[args.mode]
@@ -747,11 +750,22 @@ class Driver:
             if self.args.mode != 'suite':
                 raise Finish(m.EXIT_CANCELLED, 'a toolchain fixture needs a suite boot')
             raise Finish(m.EXIT_CANCELLED, 'a toolchain fixture needs the toolchain suite')
+        if 'd1' in suites(self.args):
+            record = build.get('d1')
+            companions = build.get('filesystemFixtures')
+            disk = inputs / 'breenfs-scratch.img'
+            if (getattr(self.args, 'disk', None) != 'root' or getattr(self.args, 'case', None)
+                    or not isinstance(record, dict) or record.get('commit') != self.args.commit
+                    or not isinstance(companions, dict) or record.get('disk') != companions.get(disk.name)
+                    or not disk.is_file() or record.get('disk') != metal_prebuilt.facts(disk)):
+                raise Finish(m.EXIT_CANCELLED, 'D1 requires its verified scratch image and a whole-suite test boot')
         self.delivery['build'] = build
         run = m.read_json(self.dir / 'run.json', {})
         run['build'] = {key: build[key] for key in ('commit', 'profile', 'features')}
         if 'toolchain' in suites(self.args):
             run['build']['toolchain'] = build['toolchain']
+        if 'd1' in suites(self.args):
+            run['build']['d1'] = build['d1']
         m.write_json(self.dir / 'run.json', run)
         self.event('build-delivered', commit=build.get('commit'), guard=build.get('guardTarget'))
         if run.get('builder') == 'mac' or 'buildChoice' in run:

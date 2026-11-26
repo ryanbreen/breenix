@@ -1,0 +1,216 @@
+{
+  "workspace": {
+    "Cargo.toml": "6601f1c4fa02bd1a3d1647ae23485bc5f1ab23d2",
+    "Cargo.lock": "9d536ab12d25f4e3f26ce4f24f4234428027f29e",
+    "bobj": "ec3106576f748c26ee5a75e13a9a264a200f55f7",
+    "bas": "00934f5c6aaa61f56b084ea1a221619f1dfa1d90",
+    "bld": "584ab2bdcc03962916d572e34bd6bc21bb5d963c",
+    "bar": "b9d1ca8831b6ff1871065093cd3a74f48f73eafa",
+    "bnm": "a238263518708af34bb7e145ba2ae975f41e6de5",
+    "bcc": "fee2f47b69d9d47149b960c98becf3c315642cc9",
+    "bmake": "597a176fb3702c1db97b0f9d2c3a27bd12325f95",
+    "brt": "1f5236dd3a01d2084e98fe1c365aab6ba22cdd6b",
+    "elfcheck": "4301ad02d2a56fb1489f740e2b5f687e8f1fdc56"
+  },
+  "inputs": {
+    "fixture/targets/x86_64-breenix.json": {
+      "size": 505,
+      "sha256": "052045da45c438f9b3616ad4af2ae961cc4e43e2ef986c31945d80aaf34803ec"
+    },
+    "fixture/lib/libc.a": {
+      "size": 2637588,
+      "sha256": "76083cd7083565f1fe4d1dc78534f086816779f3e5461c86dfac83c92f9c8400"
+    },
+    "fixture/lib/linker.ld": {
+      "size": 1187,
+      "sha256": "84cb49304763022d1d369cf625ed1bc95ed82c3bbcff13c3af83df0c63317033"
+    },
+    "fixture/sysroot/lib/rustlib/x86_64-breenix/lib/libaddr2line-ba37975f7d8adf35.rlib": {
+      "size": 494212,
+      "sha256": "387b1c26d25ebe5b833827bc01bb161b459a9f58367aad057ba6bb686b8df04d"
+    },
+    "fixture/sysroot/lib/rustlib/x86_64-breenix/lib/libadler2-dd423baddc1d50ec.rlib": {
+      "size": 28902,
+      "sha256": "cc71d7a921a703070cee4804fb12681d6a361b93a69ebedaeb007fdb0667ea4f"
+    },
+    "fixture/sysroot/lib/rustlib/x86_64-breenix/lib/liballoc-1161479d64262814.rlib": {
+      "size": 6821134,
+      "sha256": "cfd96588055d0852054609bfc9fe7088588989ecbb9bea4df6fa79a2b2c64e65"
+    },
+    "fixture/sysroot/lib/rustlib/x86_64-breenix/lib/libcfg_if-11010efc6058d911.rlib": {
+      "size": 9726,
+      "sha256": "6fa04125312db1c3759aba890be458c0b523a1435eadeecc5bba1b59bf0430f8"
+    },
+    "fixture/sysroot/lib/rustlib/x86_64-breenix/lib/libcompiler_builtins-96c412bbf464e3d2.rlib": {
+      "size": 1908576,
+      "sha256": "f0df057c02e5ee952642fd45d961c736fec8decf27ce4e42fc63fc9f1e9c9f2f"
+    },
+    "fixture/sysroot/lib/rustlib/x86_64-breenix/lib/libcore-5b00ff3053f7705b.rlib": {
+      "size": 57656714,
+      "sha256": "a4f70275b14ea875b4a2d83e87be6a6804c3646a4acd9034dbcf30b08ed4875c"
+    },
+    "fixture/sysroot/lib/rustlib/x86_64-breenix/lib/libgimli-35cfc4a2e7e86fd2.rlib": {
+      "size": 6038074,
+      "sha256": "390fac8000cfe974d7b66a4d485cb94476dcd6cc05d2db5e2556a1ff68dd9372"
+    },
+    "fixture/sysroot/lib/rustlib/x86_64-breenix/lib/libhashbrown-8dcd519fb7da6f51.rlib": {
+      "size": 1440068,
+      "sha256": "434d60ddf4ed9cd7b2ca5a73268a7179af368f24cb2ca7e738c6bb584d6e746f"
+    },
+    "fixture/sysroot/lib/rustlib/x86_64-breenix/lib/liblibc-9636e9f58f5c6436.rlib": {
+      "size": 937570,
+      "sha256": "e5c5d3890a11077d61fca130730be5e4f451141ec270492035b985ca0e5195e2"
+    },
+    "fixture/sysroot/lib/rustlib/x86_64-breenix/lib/libmemchr-12a0ceda651a8dd9.rlib": {
+      "size": 1463786,
+      "sha256": "3975a83388094fd4d8b41b5692e8809012545d92f0922f12b96013950b28c63a"
+    },
+    "fixture/sysroot/lib/rustlib/x86_64-breenix/lib/libminiz_oxide-14f58b3b3e778d83.rlib": {
+      "size": 234298,
+      "sha256": "dce70b404f860ea7905efe5d33328c8f5eb6533a5bc7d564cf9c3c0c445708a6"
+    },
+    "fixture/sysroot/lib/rustlib/x86_64-breenix/lib/libobject-dc264dd034f976fb.rlib": {
+      "size": 8745958,
+      "sha256": "8ad79185dcb42b0889399cebbbf1cae43d573d9608ce223ddf9833f2bedd075e"
+    },
+    "fixture/sysroot/lib/rustlib/x86_64-breenix/lib/libpanic_abort-4915d6c5fd85623e.rlib": {
+      "size": 9992,
+      "sha256": "3022cf5e7ef90c0403f9fb63ae0f6c02a864566fcd7c8ecca3feef22bcafbd8e"
+    },
+    "fixture/sysroot/lib/rustlib/x86_64-breenix/lib/libpanic_unwind-c876b439e8fea62b.rlib": {
+      "size": 18978,
+      "sha256": "2eee3e85e444e1175cb1a9a6ac8ef9140ca8325a04cd972b5796f39450ffc9c3"
+    },
+    "fixture/sysroot/lib/rustlib/x86_64-breenix/lib/librustc_demangle-65c78af9312cb81f.rlib": {
+      "size": 336140,
+      "sha256": "bf6679314b5abc5a4e5cbb89f95a991d3eb5f5e6138eb9c2da4dea21b102714d"
+    },
+    "fixture/sysroot/lib/rustlib/x86_64-breenix/lib/librustc_std_workspace_alloc-7ade61cdb4713159.rlib": {
+      "size": 6108,
+      "sha256": "e8a6e4fea05f063ae921679d2ea02b0dd74012374df8cd56d9b89b5b2d5a8d1a"
+    },
+    "fixture/sysroot/lib/rustlib/x86_64-breenix/lib/librustc_std_workspace_core-1a46c4e57e8e3ea0.rlib": {
+      "size": 9514,
+      "sha256": "139d40c736f1de78d6561e7b7133ac8dd61afad4d41c152a2c1687b1bd553535"
+    },
+    "fixture/sysroot/lib/rustlib/x86_64-breenix/lib/libstd-d5c991d6609a6050.rlib": {
+      "size": 11618328,
+      "sha256": "c2ceb0c16c33565de5f40a3de7aece66a3c343f57785a99d18388c380603df79"
+    },
+    "fixture/sysroot/lib/rustlib/x86_64-breenix/lib/libstd_detect-ec720b3dd175b489.rlib": {
+      "size": 541504,
+      "sha256": "c1859948a7d62faac8c3a4bc5a46469722c370cfcb629d165449ba8d78c7fb46"
+    },
+    "fixture/sysroot/lib/rustlib/x86_64-breenix/lib/libunwind-20e4e418da0d602f.rlib": {
+      "size": 26966,
+      "sha256": "d3cc7a0ce06e14da201682e68720857055f877e9b82c5d9153f62e0a8bb70155"
+    }
+  },
+  "mac_executables": {
+    "fixture/bin/rustc": {
+      "size": 50616,
+      "sha256": "b3e90b74fd944e6812a0e4a23ad89f98cdc4887c17faf82e8f6e767300be10d6"
+    },
+    "fixture/bin/cargo": {
+      "size": 34972680,
+      "sha256": "4af0de1d89b99abdf23e4164ee821af89e2b12ebd13b630eb27e05d37c14b6c9"
+    },
+    "bundle/bin/ld": {
+      "size": 688160,
+      "sha256": "885a2502186037bc85575cfed07c2b560e5891c1ca4fcdc81e34a3a1c946b50c"
+    }
+  },
+  "packages": [
+    {
+      "package": "bobj",
+      "wall_ms": 1648,
+      "peak_rss_bytes": 149389312,
+      "scratch_growth_bytes": 908392,
+      "retained_scratch_bytes": 908392,
+      "exit_code": 0,
+      "timed_out": false,
+      "first_error": null,
+      "output": "libbobj.rlib",
+      "size": 332936,
+      "sha256": "2ad4bd32ed51d0c5a75ca27851f02f3e04dc303e02d720ef2c27d5db0664697b"
+    },
+    {
+      "package": "bas",
+      "wall_ms": 6273,
+      "peak_rss_bytes": 201097216,
+      "scratch_growth_bytes": 2879350,
+      "retained_scratch_bytes": 3787742,
+      "exit_code": 0,
+      "timed_out": false,
+      "first_error": null,
+      "output": "bas",
+      "size": 590584,
+      "sha256": "ab971d6ab009ed3ec53727aac8a1f67834e7130b10fcc73f6b9df96a19cf73a0"
+    },
+    {
+      "package": "bld",
+      "wall_ms": 10919,
+      "peak_rss_bytes": 258424832,
+      "scratch_growth_bytes": 3593156,
+      "retained_scratch_bytes": 7380898,
+      "exit_code": 0,
+      "timed_out": false,
+      "first_error": null,
+      "output": "bld",
+      "size": 698704,
+      "sha256": "01ab7a2b916c2a4eae02d5d9a17250af2fc9a9f9e548bfce134b236e344e5bc6"
+    },
+    {
+      "package": "bar",
+      "wall_ms": 1061,
+      "peak_rss_bytes": 115441664,
+      "scratch_growth_bytes": 962049,
+      "retained_scratch_bytes": 8342947,
+      "exit_code": 0,
+      "timed_out": false,
+      "first_error": null,
+      "output": "bar",
+      "size": 418392,
+      "sha256": "1a83bbd297c8db5465618e3e42b33a0d7763fa669853320d3778414b964fb612"
+    },
+    {
+      "package": "bnm",
+      "wall_ms": 974,
+      "peak_rss_bytes": 112623616,
+      "scratch_growth_bytes": 1066442,
+      "retained_scratch_bytes": 9409389,
+      "exit_code": 0,
+      "timed_out": false,
+      "first_error": null,
+      "output": "bnm",
+      "size": 418744,
+      "sha256": "01089c00492ca17fe03067606274c3fa893d8301a90eee00c84098f0fcdaf1f0"
+    },
+    {
+      "package": "bcc",
+      "wall_ms": 32181,
+      "peak_rss_bytes": 483557376,
+      "scratch_growth_bytes": 13105431,
+      "retained_scratch_bytes": 22514820,
+      "exit_code": 0,
+      "timed_out": false,
+      "first_error": null,
+      "output": "bcc",
+      "size": 1538400,
+      "sha256": "be872009add2b87da7b4ce366018b62bea9bef2ab204dc85bcfe5a2cba860262"
+    },
+    {
+      "package": "bmake",
+      "wall_ms": 12881,
+      "peak_rss_bytes": 275890176,
+      "scratch_growth_bytes": 4728826,
+      "retained_scratch_bytes": 27243646,
+      "exit_code": 0,
+      "timed_out": false,
+      "first_error": null,
+      "output": "bmake",
+      "size": 843632,
+      "sha256": "84d47b8a50e009828dec127af53b63a82d2df869cb7c1f574eec7f420f60be87"
+    }
+  ]
+}

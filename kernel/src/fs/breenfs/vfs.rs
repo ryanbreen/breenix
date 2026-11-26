@@ -2302,6 +2302,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         // Growth clears the old EOF tail before the new bytes are copied.
         node.map.transition(inode.size);
         node.map.commit_write(offset, &bytes[..length]);
+        self.inner.costs.record_write(length);
         Ok(WriteResult {
             offset,
             bytes: length,
@@ -3640,7 +3641,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
     }
     fn mutation_costs(&self, name: &str, text: &mut alloc::string::String) -> Result<(), Errno> {
         use core::fmt::Write;
-        writeln!(text, "{name} breenfs mutation_costs=1").map_err(|_| Errno(ENOMEM))?;
+        writeln!(text, "{name} breenfs mutation_costs=1 write_bytes={}", self.inner.costs.write_bytes()).map_err(|_| Errno(ENOMEM))?;
         self.inner.costs.report(self.inner.id, self.inner.root_id, text).map_err(|_| Errno(ENOMEM))
     }
     fn failure(&self) -> Option<(&'static str, i32)> {

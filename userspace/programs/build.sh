@@ -552,7 +552,7 @@ build_rust_programs() (
         export RUSTFLAGS="$HOSTED_RUSTFLAGS -C metadata=breenix_std_$FORK_COMMIT"
         extra_link_flags=()
         case "$HOSTED_BIN" in
-            suite-dynamic|suite-cargo)
+            suite-dynamic|suite-cargo|suite-d1)
                 extra_link_flags=(-Dwarnings) ;;
             suite-rust-host|rust-host-startup-probe|rust-host-process-probe|rust-host-unwind-probe)
                 extra_link_flags=(-Cforce-unwind-tables=yes) ;;

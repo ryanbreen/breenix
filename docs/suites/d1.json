@@ -1,0 +1,21 @@
+{
+  "id": "d1",
+  "title": "Self-host diagnostic",
+  "area": "Toolchain",
+  "summary": "Measures offline Cargo builds on the x86 self-host fixture.",
+  "binary": "/sbin/suite-d1",
+  "timingSensitive": true,
+  "categories": [{
+    "id": "build-profile",
+    "title": "Cargo package measurements",
+    "cases": [
+      {"id": "bobj", "title": "Measure bobj"},
+      {"id": "bas", "title": "Measure bas"},
+      {"id": "bld", "title": "Measure bld"},
+      {"id": "bar", "title": "Measure bar"},
+      {"id": "bnm", "title": "Measure bnm"},
+      {"id": "bcc", "title": "Measure bcc"},
+      {"id": "bmake", "title": "Measure bmake"}
+    ]
+  }]
+}

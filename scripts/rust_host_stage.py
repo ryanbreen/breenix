@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -445,6 +446,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--arch', choices=('x86_64', 'aarch64'), required=True)
     parser.add_argument('--suite', required=True)
+    parser.add_argument('--d1-tree', type=Path)
     parser.add_argument('--image', type=Path, required=True)
     args = parser.parse_args()
     suites = args.suite.split(',')
@@ -456,13 +458,16 @@ def main():
     rust_link = PROGRAMS / 'target/rust-link' / args.arch
     retained = Path.home() / 'Library/Caches/breenix-e25/k6/fixture'
     fixture = Path(os.environ.get('BREENIX_K6_FIXTURE', retained)).expanduser()
-    if 'rustc' in suites or 'cargo' in suites:
+    diagnostic = 'd1' in suites
+    if diagnostic != (args.d1_tree is not None):
+        parser.error('d1 and --d1-tree must be selected together')
+    if 'rustc' in suites or 'cargo' in suites or diagnostic:
         if args.arch != 'x86_64':
             parser.error('hosted rustc and Cargo staging requires x86-64')
         sysroot = Path(os.environ.get('BREENIX_K5_SYSROOT', cache / 'sysroot'))
         k7_stage = Path(os.environ.get('BREENIX_K7_STAGE', cache / 'k7/stage1'))
         k5 = json.loads((records / 'k5/x86_64.json').read_text())
-        cargo = k7_stage / 'bin/cargo' if 'cargo' in suites else None
+        cargo = k7_stage / 'bin/cargo' if 'cargo' in suites or diagnostic else None
         kd_record = verify_hosted_libc(kd, records, k5, rustc, cargo)
 
     staged = stage_cxx_runtime(args.image, args.suite, release / 'suite-cxx-runtime',
@@ -480,6 +485,31 @@ def main():
     if 'cargo' in suites:
         staged.update(stage_cargo(args.image, args.arch, release / 'suite-cargo', rustc, rust_link,
                                   sysroot, fixture, kd, k7_stage, records, kd_record, staged))
+    if diagnostic:
+        k6 = json.loads((records / 'k6/x86_64.json').read_text())
+        k7 = json.loads((records / 'k7/x86_64.json').read_text())
+        if (k6['rustc_sha256'] != k5['mac_rustc_sha256']
+                or any(k5[name] != digest for name, digest in k7['k5_compiler_digests'].items())):
+            raise ValueError('D1 requires the K5, K6 and K7 twin artifacts')
+        inputs = [(f'fixture/{name}', source, mode, digest)
+                  for name, source, mode, digest in rustc_fixture_entries(rustc, fixture / "sysroot", fixture / "targets", k5)
+                  if 'x86_64-breenix-hosted' not in name]
+        linker_inputs = rust_link_fixture_entries(rust_link, fixture, k6, tools_only=True)
+        inputs.extend(('bundle/bin/ld' if name == 'bin/bld' else f'fixture/{name}', source, mode, digest)
+                      for name, source, mode, digest in linker_inputs)
+        inputs.append(('fixture/bin/cargo', cargo, '0755', k7['cargo_sha256']))
+        # The target is an opaque pin just like the sysroot and the link inputs.
+        metadata = k7['fixture_sha256']['targets/x86_64-breenix.json']
+        for name, source, mode, digest in inputs:
+            path = args.d1_tree / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, path)
+            path.chmod(int(mode, 8))
+            if sha256(path) != (digest or metadata):
+                raise ValueError(f'{name}: differs from the D1 fixture pin')
+        entries, expected = hosted_runtime_entries(kd, kd_record, staged)
+        entries.append(('/sbin/suite-d1', release / 'suite-d1', '0755'))
+        staged.update(stage_files(args.image, ['/lib'], entries, recorded=expected))
     stage(args.image, args.suite, release / 'suite-rust-host',
           release / 'rust-host-startup-probe', release / 'rust-host-process-probe',
           release / 'rust-host-unwind-probe')

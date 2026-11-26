@@ -985,7 +985,7 @@ impl<W: Wait> BufferCache<W> {
     /// Write one contiguous range through to the device before publishing its
     /// clean cache copies. A failed write can have reached the media in part,
     /// so subsequent reads must refill the range from the device.
-    pub(crate) fn write_through_blocks(
+    pub fn write_through_blocks(
         &self,
         device: &dyn BlockDevice,
         start: u64,

@@ -134,7 +134,14 @@ fn parse_format_2(body: &[u8], format_3: bool) -> Result<Captured, &'static str>
                 let (offset, length) = range.split_once(' ').ok_or("fixture needs an offset and a length")?;
                 let offset = number(offset).ok_or("bad fixture offset")? as u64;
                 let length = number(length).ok_or("bad fixture length")? as u64;
-                if offset % 512 != 0 || length != FIXTURE_BYTES || offset.checked_add(length).is_none() {
+                // The scratch volume may hold a workload-sized fixture.
+                // The actual test partition bounds are checked at discovery.
+                let valid_length = if role == "scratch" {
+                    length >= FIXTURE_BYTES && length % 4096 == 0
+                } else {
+                    length == FIXTURE_BYTES
+                };
+                if offset % 512 != 0 || !valid_length || offset.checked_add(length).is_none() {
                     return Err("invalid filesystem fixture range");
                 }
                 if fixture_count != 0 {

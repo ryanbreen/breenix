@@ -39,7 +39,9 @@ def validate_fixture_slices(root_bytes, partition_bytes, slices):
     end = root_bytes
     for role, item in zip(FIXTURE_ROLES, slices):
         offset, length = item['offset'], item['length']
-        if (item['role'] != role or length != FIXTURE_BYTES or offset < 0
+        valid_length = (length >= FIXTURE_BYTES and length % 4096 == 0
+                        if role == 'scratch' else length == FIXTURE_BYTES)
+        if (item['role'] != role or not valid_length or offset < 0
                 or offset > MAX_U64 - length or offset != end or offset + length > partition_bytes):
             raise ValueError(f'filesystem fixture {role} does not fit its recorded slice')
         end = offset + length
@@ -53,18 +55,20 @@ def test_partition_bytes(layout, guid):
     return (part['last'] - part['first'] + 1) * metal_image.SECTOR
 
 
-def append_fixtures(image, root_bytes, partition_bytes, inputs, built):
+def append_fixtures(image, root_bytes, partition_bytes, inputs, built, *, scratch_bytes=FIXTURE_BYTES):
     """Verify the build artifacts and bounds before extending the firmware delivery image."""
-    slices = [dict(role=role, offset=root_bytes + index * FIXTURE_BYTES, length=FIXTURE_BYTES)
+    slices = [dict(role=role, offset=root_bytes + index * FIXTURE_BYTES,
+                   length=scratch_bytes if role == 'scratch' else FIXTURE_BYTES)
               for index, role in enumerate(FIXTURE_ROLES)]
     size = validate_fixture_slices(root_bytes, partition_bytes, slices)
     names = [f'breenfs-{role}.img' for role in FIXTURE_ROLES]
     if set(built) != set(names):
         raise ValueError('the build must supply the complete filesystem fixture set')
-    for name in names:
+    for name, item in zip(names, slices):
         path = inputs / name
-        if (not path.is_file() or path.stat().st_size != FIXTURE_BYTES
-                or built[name] != dict(size=FIXTURE_BYTES, sha256=metal_image.sha256(path))):
+        length = item['length']
+        if (not path.is_file() or path.stat().st_size != length
+                or built[name] != dict(size=length, sha256=metal_image.sha256(path))):
             raise ValueError(f'filesystem fixture differs from the build record: {name}')
     with image.open('ab') as payload:
         for name in names:
@@ -127,8 +131,9 @@ def stage(directory, inputs, boot_id, commit, site, build, mode='console', suite
     previous = metal_persist.test_root()
     built_fixtures = build.get('filesystemFixtures')
     toolchain_scratch = bool(build.get('toolchain', {}).get('busyboxScratch'))
+    diagnostic = build.get('d1') if 'd1' in (suite or '').split(',') else None
     use_fixtures = (built_fixtures is not None and mode == 'suite'
-                    and ('filesystem' in (suite or '').split(',') or toolchain_scratch)
+                    and ('filesystem' in (suite or '').split(',') or toolchain_scratch or diagnostic is not None)
                     and not (case or '').startswith('power-cut/'))
     if use_fixtures and not the_layout:
         raise ValueError('filesystem fixtures require the disposable test-root partition')
@@ -179,7 +184,9 @@ def stage(directory, inputs, boot_id, commit, site, build, mode='console', suite
         partition = the_layout['partitions']['test']['guid']
         size = facts['bytes']
         if use_fixtures:
-            size, slices = append_fixtures(image, size, test_partition_bytes(the_layout, partition), inputs, built_fixtures)
+            scratch_bytes = diagnostic['disk']['size'] if diagnostic else FIXTURE_BYTES
+            size, slices = append_fixtures(image, size, test_partition_bytes(the_layout, partition),
+                                           inputs, built_fixtures, scratch_bytes=scratch_bytes)
             facts.update(fixtureSlices=slices, stagedBytes=size)
         request.write_bytes(config_2(1, size, partition, bytes(512), root))
         facts['partition'] = partition
