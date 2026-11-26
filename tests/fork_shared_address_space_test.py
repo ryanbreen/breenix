@@ -1,4 +1,5 @@
-"""Drive begin_fork with a process table that models CLONE_VM ownership."""
+"""Drive fork preparation and address-space handoff with modeled process rows."""
+import json
 from pathlib import Path
 import subprocess
 import tempfile
@@ -50,9 +51,17 @@ struct Process {
     image_data_size: u64,
     user_stack_top: u64,
     user_stack_bottom: u64,
+    terminated: bool,
+    memory_locks: Vec<u64>,
+    pending_old_page_tables: Vec<Box<ProcessPageTable>>,
+    fb_mmap: Option<u64>,
+    mmap_pending: Vec<u64>,
+    mmap_gaps: Option<u64>,
+    address_space_release_deferred: bool,
 }
 impl Process {
     fn is_tombstone(&self) -> bool { false }
+    fn is_terminated(&self) -> bool { self.terminated }
     fn fork_child(_: ProcessId, name: String, entry_point: u64, _: &Self) -> Self {
         Self { name, entry_point, ..Self::default() }
     }
@@ -79,9 +88,11 @@ impl ProcessPageTable {
 struct ProcessManager { processes: BTreeMap<ProcessId, Process> }
 trait LiveRow {
     fn live_row(&self, pid: &ProcessId) -> Option<&Process>;
+    fn live_row_mut(&mut self, pid: &ProcessId) -> Option<&mut Process>;
 }
 impl LiveRow for BTreeMap<ProcessId, Process> {
     fn live_row(&self, pid: &ProcessId) -> Option<&Process> { self.get(pid) }
+    fn live_row_mut(&mut self, pid: &ProcessId) -> Option<&mut Process> { self.get_mut(pid) }
 }
 
 struct SharedUndo(Option<ProcessId>);
@@ -101,13 +112,15 @@ mod memory {
             Ok(vmas.iter().map(|start| (*start, start + 4096)).collect())
         }
     }
-    pub mod fork_copy {
-        pub struct CopyClaim(pub u64, pub u64);
-        impl CopyClaim {
-            pub fn take(root: u64, child: u64) -> Self { Self(root, child) }
-        }
-    }
+    // Compile the real claim module. This fixture drives its fork path.
+    #[allow(dead_code)]
+    #[path = FORK_COPY_PATH]
+    pub(crate) mod fork_copy;
 }
+mod task { pub mod scheduler {
+    pub const MAX_CPUS: usize = 1;
+    pub fn current_cpu() -> usize { 0 }
+} }
 mod syscall {
     pub mod clone {
         #[derive(Default)]
@@ -179,32 +192,125 @@ fn worker_forks_with_its_shared_address_space_and_own_context() {
     assert_eq!(fork.skip, [(0x3000, 0x4000)]);
     assert_eq!(fork.parent_page_table, manager.processes[&owner].page_table.as_deref().unwrap()
         as *const ProcessPageTable);
-    assert_eq!(fork.claim.0, root);
-    assert_eq!(fork.claim.1, fork.child_page_table.0);
+    assert!(memory::fork_copy::copying(root));
+    assert!(memory::fork_copy::forming(fork.child_page_table.0));
     assert_eq!(fork.child_pid, ProcessId(20));
     assert!(fork.undo.0.is_none());
+    drop(fork.claim);
+}
+
+#[test]
+fn owner_exit_hands_off_the_table_during_this_cpus_fork_copy() {
+    let root = 0x1000;
+    let child_root = 0x2000;
+    let owner = ProcessId(11);
+    let worker = ProcessId(12);
+    let lifetime = Arc::new(());
+    let table = Box::new(ProcessPageTable(root));
+    let parent_table = std::ptr::from_ref(table.as_ref());
+    let mut manager = ProcessManager { processes: BTreeMap::from([
+        (owner, Process {
+            page_table: Some(table),
+            address_space_lifetime: Some(lifetime.clone()),
+            ..Process::default()
+        }),
+        (worker, Process {
+            main_thread: Some("worker context".to_owned()),
+            inherited_cr3: Some(root),
+            address_space_lifetime: Some(lifetime),
+            ..Process::default()
+        }),
+    ]) };
+    let mut fork = manager.begin_fork(
+        worker, Box::new(ProcessPageTable(child_root)), &Default::default(),
+    ).expect("worker must claim its shared root");
+    assert!(memory::fork_copy::copying(root));
+
+    assert!(manager.transfer_address_space(owner));
+    assert!(manager.processes[&owner].page_table.is_none());
+    let (heir, row) = manager.find_process_by_cr3(root).expect("root must still have an owner");
+    assert_eq!(heir, worker);
+    assert_eq!(std::ptr::from_ref(row.page_table.as_deref().unwrap()), parent_table);
+    assert!(memory::fork_copy::copying(root));
+    assert!(memory::fork_copy::forming(child_root));
+    fork.claim.end_copy();
+    assert!(!memory::fork_copy::copying(root));
+}
+
+#[test]
+fn single_owner_forks_its_own_address_space() {
+    let root = 0x1000;
+    let owner = ProcessId(11);
+    let mut manager = ProcessManager { processes: BTreeMap::from([
+        (owner, Process {
+            main_thread: Some("owner context".to_owned()),
+            page_table: Some(Box::new(ProcessPageTable(root))),
+            vmas: vec![0x3000],
+            ..Process::default()
+        }),
+    ]) };
+    let fork = manager.begin_fork(
+        owner, Box::new(ProcessPageTable(0x2000)), &Default::default(),
+    ).expect("a single owner can fork");
+    assert_eq!(fork.parent_pid, owner);
+    assert_eq!(fork.parent_thread, "owner context");
+    assert_eq!(fork.child_process.parent, Some(owner));
+    assert_eq!(fork.vmas, [0x3000]);
+    assert!(memory::fork_copy::copying(root));
+}
+
+#[test]
+fn inherited_root_from_a_different_lifetime_is_refused() {
+    let root = 0x1000;
+    let child_root = 0x2000;
+    let owner = ProcessId(11);
+    let worker = ProcessId(12);
+    let mut manager = ProcessManager { processes: BTreeMap::from([
+        (owner, Process {
+            page_table: Some(Box::new(ProcessPageTable(root))),
+            address_space_lifetime: Some(Arc::new(())),
+            ..Process::default()
+        }),
+        (worker, Process {
+            main_thread: Some("worker context".to_owned()),
+            inherited_cr3: Some(root),
+            address_space_lifetime: Some(Arc::new(())),
+            ..Process::default()
+        }),
+    ]) };
+    assert_eq!(manager.find_process_by_cr3(root).unwrap().0, owner);
+    let result = manager.begin_fork(
+        worker, Box::new(ProcessPageTable(child_root)), &Default::default(),
+    );
+    assert_eq!(result.err(), Some("Parent process has no page table"));
+    assert!(!memory::fork_copy::copying(root));
+    assert!(!memory::fork_copy::forming(child_root));
 }
 '''
 
 
 class SharedAddressSpaceFork(unittest.TestCase):
-    def test_worker_fork_uses_the_shared_address_space(self):
+    def test_fork_and_address_space_handoff(self):
         source = (ROOT / "kernel/src/process/manager.rs").read_text()
         owner_lookup = method(source, "find_process_by_cr3", "find_process_by_cr3_mut")
         begin_fork = method(source, "begin_fork", "end_fork_copy")
+        transfer = method(source, "transfer_address_space", "remove_from_ready_queue")
+        fork_copy = ROOT / "kernel/src/memory/fork_copy.rs"
         with tempfile.TemporaryDirectory(prefix="breenix-fork-host-") as temp:
             path = Path(temp) / "fork.rs"
-            path.write_text(HARNESS + f"""
+            path.write_text(HARNESS.replace("FORK_COPY_PATH", json.dumps(str(fork_copy))) + f"""
 impl ProcessManager {{
     fn allocate_ordinary_pid(&mut self) -> ProcessId {{ ProcessId(20) }}
     {owner_lookup}
     {begin_fork}
+    {transfer}
 }}
 """)
             binary = path.with_suffix("")
             subprocess.run(["rustc", "--edition=2021", "-Dwarnings", "--test", path, "-o", binary],
                            cwd=ROOT, check=True, timeout=30)
-            subprocess.run([binary], check=True, timeout=10)
+            # Serialize the tests because the scheduler stub returns CPU 0.
+            subprocess.run([binary, "--test-threads=1"], check=True, timeout=10)
 
 
 if __name__ == "__main__":
