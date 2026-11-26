@@ -1,9 +1,15 @@
 """Drive the firmware suite install with file and block I/O callbacks."""
+import json
 from pathlib import Path
+import runpy
+import struct
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
+
+import metal_tools_test as existing
 
 ROOT = Path(__file__).resolve().parents[1]
 EFI = ROOT / 'scripts/metal/efi-stub/src'
@@ -204,6 +210,86 @@ fn sparse_body_reads_only_declared_blocks_and_bounds_the_last_extent() {
 
 
 class MetalSuiteStageTest(unittest.TestCase):
+    def test_self_host_carries_only_packed_scratch_extents(self):
+        disk = existing.boot.metal_disk
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            image = root / 'ext2.img'
+            root_bytes = 2048
+            image.write_bytes(bytes(1080) + b'\x53\xef' + bytes(root_bytes - 1082))
+            scratch_bytes = (64 << 20) + 4096
+            packed = root / 'self-host-scratch.dat'
+            packed.write_bytes(struct.pack('<QQ', scratch_bytes - 4096, 4096) + bytes(4096))
+            build = {
+                'ext2': existing.boot.metal_prebuilt.facts(image),
+                'selfHost': {'scratchBytes': scratch_bytes,
+                             'disk': existing.boot.metal_prebuilt.facts(packed)},
+            }
+            partition = '00000000-0000-0000-0000-000000000001'
+            with patch.object(disk.metal_persist, 'test_root', return_value=None), \
+                 patch.object(disk, 'test_partition_bytes', return_value=1 << 30), \
+                 patch.object(disk.metal_root, 'console_identity', return_value={}), \
+                 patch.object(disk.metal_root, 'stage_root', return_value={}), \
+                 patch.object(disk.m, 'power_token', return_value='test-token'):
+                facts, files = disk.stage(root, root, '20261126T000000Z-metal', 'a' * 40, {}, build,
+                                          mode='suite', suite='memory,processes,self-host',
+                                          the_layout={'partitions': {'test': {'guid': partition}}})
+            wire_bytes = root_bytes + packed.stat().st_size
+            self.assertEqual(facts['stagedBytes'], wire_bytes)
+            self.assertEqual(facts['fixtureSlices'],
+                             [{'role': 'scratch', 'offset': root_bytes, 'length': scratch_bytes}])
+            self.assertEqual(files['suite-root.img'].read_bytes()[root_bytes:], packed.read_bytes())
+            self.assertTrue(files['suite-disk.cfg'].read_bytes().startswith(disk.MAGIC_3))
+
+    def test_self_host_fixture_matches_mac_git_trees_and_reserves_headroom(self):
+        script = ROOT / 'scripts/rust-host/selfhost-fixture.py'
+        self.assertTrue(script.is_file(), 'the self-host scratch fixture producer is missing')
+        fixture = runpy.run_path(str(script))['main']
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = root / 'repo'
+            repo.mkdir()
+            for name in ('Cargo.toml', 'Cargo.lock', 'bobj/Cargo.toml', 'bobj/src/lib.rs'):
+                path = repo / 'toolchain' / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(name)
+
+            def git(*args):
+                return subprocess.check_output(['git', '-C', repo, *args], text=True).strip()
+
+            git('init', '-q')
+            git('add', 'toolchain')
+            git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+                'commit', '-qm', 'Record workspace')
+            receipt = root / 'mac.json'
+            receipt.write_text(json.dumps({'workspace': {
+                name: git('rev-parse', f'HEAD:toolchain/{name}')
+                for name in ('Cargo.toml', 'Cargo.lock', 'bobj')
+            }}))
+            formatter = root / 'mkfs'
+            formatter.write_text("""#!/bin/sh
+size=$3
+python3 -c 'import sys; open(sys.argv[1], "wb").truncate(int(sys.argv[2]))' "$6" "$size"
+printf '0 1\n%s 1\n' "$((size / 4096 - 1))"
+""")
+            formatter.chmod(0o755)
+            disk = root / 'self-host-scratch.dat'
+            with patch.dict(fixture.__globals__, ROOT=repo, MAC_REFERENCE=receipt):
+                fixture(root / 'tree', formatter, disk)
+                record = json.loads((root / 'self-host-build.json').read_text())
+                self.assertEqual((root / 'tree/breenix-self-host').read_bytes(), b'e25-self-host\n')
+                payload = sum(path.stat().st_size for path in (root / 'tree').rglob('*') if path.is_file())
+                self.assertEqual(record['payload_bytes'], payload)
+                self.assertEqual(record['scratchBytes'], ((payload + (64 << 20) + 4095) // 4096) * 4096)
+                self.assertEqual(disk.stat().st_size, 2 * (16 + 4096))
+                (repo / 'toolchain/bobj/src/lib.rs').write_text('changed after the Mac replay')
+                git('add', 'toolchain')
+                git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+                    'commit', '-qm', 'Change workspace')
+                with self.assertRaisesRegex(ValueError, 'toolchain/bobj.*Mac twin'):
+                    fixture(root / 'changed', formatter, root / 'changed.dat')
+                self.assertFalse((root / 'changed.dat').exists())
+
     def test_firmware_batches_data_flush_without_losing_readback(self):
         source = (EFI / 'suite_disk.rs').read_text()
         chunk = next(line for line in source.splitlines() if line.startswith('pub(super) const CHUNK:'))
