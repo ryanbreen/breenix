@@ -1,4 +1,5 @@
 import json
+import hashlib
 import os
 import re
 from pathlib import Path
@@ -11,6 +12,77 @@ PIN = '84709f085062cbf3c51fa507527c1b2334015178'
 
 
 class CargoPort(unittest.TestCase):
+    def test_x1_c_dependencies_resolve_in_libc(self):
+        run = Path((CACHE / 'g2.path').read_text().strip())
+        messages = Path(os.environ.get(
+            'BREENIX_X1_CARGO_MESSAGES', run / 'bootstrap-x86-inventory.cargo.jsonl'))
+        target = 'x86_64-breenix-hosted'
+        libc = Path(os.environ.get('BREENIX_X1_LIBC', ROOT /
+                                  'userspace/programs/target/kd/libc.so'))
+        sysroot = Path(os.environ.get('BREENIX_X1_SYSROOT', run / 'stage1'))
+        record = json.loads((ROOT / 'toolchain/rust-host/x1.json').read_text())
+        nm = os.environ.get('LLVM_NM', 'llvm-nm')
+        readelf = os.environ.get('LLVM_READELF', 'llvm-readelf')
+
+        def symbols(paths, *flags):
+            output = subprocess.run(
+                [nm, '--format=posix', '--extern-only', *flags, *paths],
+                capture_output=True, text=True, check=True)
+            for line in output.stderr.splitlines():
+                self.assertTrue(line.endswith('no symbols'), line)
+            return {fields[0] for line in output.stdout.splitlines()
+                    if len(fields := line.split()) == 4 and len(fields[1]) == 1}
+
+        header = subprocess.check_output([readelf, '-h', '-d', libc], text=True)
+        self.assertRegex(header, r'Type:\s+DYN\b')
+        self.assertRegex(header, r'Machine:\s+Advanced Micro Devices X86-64')
+        self.assertRegex(header, r'\(SONAME\).*\[libc\.so\]')
+        exports = symbols([libc], '--dynamic', '--defined-only')
+        self.assertTrue(set(record['libc']['exports']) <= exports,
+                        'the rebuilt shared libc lost existing exports')
+
+        build_dirs = {}
+        rust_archives = {}
+        for line in messages.read_text().splitlines():
+            if not line.startswith('{'):
+                continue
+            message = json.loads(line)
+            if message['reason'] == 'build-script-executed':
+                path = Path(message['out_dir'])
+                if target in path.parts:
+                    package = message['package_id'].rsplit('#', 1)[-1]
+                    build_dirs[package] = path
+            if message['reason'] == 'compiler-artifact':
+                for file in map(Path, message['filenames']):
+                    if target in file.parts and file.suffix == '.rlib':
+                        rust_archives[message['target']['name']] = file
+
+        archives = {}
+        for crate in record['crates']:
+            name = crate['name']
+            self.assertEqual(crate['exit_status'], 0, name)
+            package = f"{name}@{crate['version']}"
+            paths = (list(build_dirs[package].rglob('*.a')) if package in build_dirs
+                     else [rust_archives[name.replace('-', '_')]])
+            self.assertCountEqual([path.name for path in paths],
+                                  [archive['name'] for archive in crate['archives']])
+            receipts = {archive['name']: archive for archive in crate['archives']}
+            for path in paths:
+                with path.open('rb') as stream:
+                    self.assertEqual(hashlib.file_digest(stream, 'sha256').hexdigest(),
+                                     receipts[path.name]['sha256'], path.name)
+            archives[name] = paths
+
+        rlibs = sorted((sysroot / 'lib/rustlib' / target / 'lib').glob('*.rlib'))
+        self.assertTrue(rlibs, 'missing hosted Rust sysroot')
+        providers = symbols([*rlibs, rust_archives['zlib_rs'],
+                             *(path for paths in archives.values() for path in paths)],
+                            '--defined-only')
+        for crate, paths in archives.items():
+            with self.subTest(crate=crate):
+                missing = symbols(paths, '--undefined-only') - providers - exports
+                self.assertEqual(sorted(missing), [])
+
     def test_openssl_breenix_archives(self):
         run = Path((CACHE / 'g2.path').read_text().strip())
         messages = Path(os.environ.get(
