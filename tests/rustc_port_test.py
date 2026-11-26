@@ -10,6 +10,7 @@ import sys
 import tempfile
 import tomllib
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -30,6 +31,11 @@ def git(*args, tree=TREE):
 
 
 class RustcPort(unittest.TestCase):
+    def test_twin_spawn_environment_is_guest_set(self):
+        with mock.patch.dict(os.environ, {"RUSTFLAGS": "ambient", "CARGO_HOME": "ambient"}):
+            self.assertEqual(guest_environment(Path("/fixture/targets")),
+                             {"RUST_TARGET_PATH": "/fixture/targets"})
+
     def test_guest_target_loads_twin_sysroot(self):
         cache = Path.home() / 'Library/Caches/breenix-e25/k5/twin'
         mac_rustc = Path(os.environ.get('BREENIX_K5_MAC_RUSTC', cache / 'mac/bin/rustc'))
