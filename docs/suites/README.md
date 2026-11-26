@@ -1998,8 +1998,9 @@ Select it explicitly with `--suite d1`, or as the last stage of
 `--suite rustc,cargo,d1`. The diagnostic uses a Mac prebuilt for a disposable
 test-root boot. Its measurements inform 25.8 and have no milestone score.
 
-The E24 scratch companion mounts at `/src` and holds the pinned workspace
-under `/src/toolchain`. D1 shares rustc, Cargo, their tool-target sysroot,
+After the sequence reset, D1 mounts the E24 scratch companion at `/src`.
+The companion holds the pinned workspace under `/src/toolchain`.
+D1 shares rustc, Cargo, their tool-target sysroot,
 both target specifications, bld, the Rust-ABI archive and the linker script
 with the rustc and Cargo suites under `/usr/libexec/breenix/rustc`. Cargo
 creates its empty registry and target directory under a new nonce on the
@@ -2009,7 +2010,9 @@ extents. Its free space takes no bytes on the wire.
 
 Ruling 126 gives each Cargo process group 600 seconds. D1 kills the group
 at the deadline and reports the timeout. A suite case has 10 more seconds
-to reap and write its record. A long build or a Cargo error is a diagnostic
+to reap and write its record. During that case the sequence watchdog honors
+the case window and the normal process sweep, then returns to its usual
+stall interval. A long build or a Cargo error is a diagnostic
 finding. Each case writes its wall time, sampled peak RSS summed across the
 process group, successful logical write bytes on the scratch mount, exit
 status and any first error to serial as a `D1` JSON record. RSS samples can

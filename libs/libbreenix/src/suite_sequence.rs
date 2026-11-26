@@ -38,8 +38,9 @@
 //!   `/proc/meminfo` shows as each suite starts, so memory an earlier suite left
 //!   allocated is visible, and the FRAMES lines after them name the code that
 //!   allocated the frames in use and what became of process page tables.
-//! - A watchdog ends a suite that makes no progress (no case starts or finishes) for
-//!   [`STALL_MS`]: SIGALRM from ITIMER_REAL prints STALLED with the cases reported so far
+//! - A watchdog ends a suite without progress after [`STALL_MS`]. A running case with
+//!   a longer declared window keeps its own bound through teardown. SIGALRM from
+//!   ITIMER_REAL prints STALLED with the cases reported so far
 //!   and hands off to the next suite. The handler uses system calls only, since the
 //!   runner may have been anywhere when it fired. A suite whose kernel stops altogether
 //!   cannot be moved past; the launcher's own stall watchdog ends that boot.
@@ -91,9 +92,8 @@ fn sequence_paths() -> &'static SequencePaths {
     })
 }
 
-/// How long a suite may go without starting or finishing a case. Below the launchers'
-/// 120-second stall watchdog, and above the longest case allowance (25 s) plus its kill
-/// and sweep.
+/// Default time a suite may go without reporting a case. A longer declared case
+/// window temporarily takes precedence while the case runs.
 pub const STALL_MS: u64 = 90_000;
 /// Regular files up to this size are compared by content; larger ones by size and
 /// modification time.
@@ -311,12 +311,24 @@ pub fn progress_after(reported: usize) {
     progress();
 }
 
+/// Allow a long case's own watchdog and teardown to finish before ending its suite.
+pub(super) fn case_started(window_ms: u64) {
+    if window_ms > STALL_MS {
+        arm_progress(window_ms);
+    }
+}
+
 fn progress() {
+    arm_progress(STALL_MS);
+}
+
+fn arm_progress(ms: u64) {
     if !ACTIVE.load(Ordering::Relaxed) {
         return;
     }
-    STALL_AT_NS.store(monotonic_ns() + STALL_MS * 1_000_000, Ordering::Relaxed);
-    arm(STALL_MS);
+    let due = monotonic_ns().saturating_add(ms.saturating_mul(1_000_000));
+    STALL_AT_NS.store(due, Ordering::Relaxed);
+    arm(ms);
 }
 
 /// In a case's child: SIGALRM back to its default action, as a case run alone finds it.
