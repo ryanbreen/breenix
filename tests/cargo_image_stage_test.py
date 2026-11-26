@@ -24,6 +24,37 @@ def sha256(path):
 
 
 class CargoImageStageTest(unittest.TestCase):
+    def test_rustc_and_cargo_share_hosted_libc(self):
+        mke2fs, debugfs = STAGE.require_e2fsprogs('mke2fs', 'debugfs')
+        kd = Path(os.environ.get('BREENIX_KD_BUILD_DIR', PROGRAMS / 'kd'))
+        k5 = read_json(RECORDS / 'k5/x86_64.json')
+        k7 = read_json(RECORDS / 'k7/x86_64.json')
+        with tempfile.TemporaryDirectory() as temporary:
+            image = Path(temporary) / 'rustc-and-cargo.img'
+            subprocess.run([mke2fs, '-q', '-t', 'ext2', '-b', '4096', '-F', image, '16M'],
+                           check=True, capture_output=True)
+            stdout = io.StringIO()
+            argv = ['rust_host_stage.py', '--arch', 'x86_64', '--image', str(image),
+                    '--suite', 'rustc,cargo']
+            with patch('sys.argv', argv), redirect_stdout(stdout):
+                STAGE.main()
+
+            staged = json.loads(stdout.getvalue())
+            self.assertIn('/sbin/suite-rustc', staged)
+            self.assertIn('/sbin/suite-cargo', staged)
+            libc = sha256(kd / 'libc.so')
+            self.assertEqual(staged['/lib/libc.so'], libc)
+            with subprocess.Popen([debugfs, '-R', 'cat /lib/libc.so', image],
+                                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as readback:
+                self.assertEqual(hashlib.file_digest(readback.stdout, 'sha256').hexdigest(), libc)
+                self.assertEqual(readback.wait(), 0)
+            for suite in ('rustc', 'cargo'):
+                prefix = f'/usr/libexec/breenix/{suite}'
+                self.assertEqual(staged[f'{prefix}/bin/rustc'], k5['hosted_rustc_sha256'])
+                driver = k5['hosted_link']['driver']
+                self.assertEqual(staged[f'{prefix}/lib/{driver}'], k5['hosted_driver_sha256'])
+            self.assertEqual(staged[f'{PREFIX}/bin/cargo'], k7['cargo_sha256'])
+
     def test_cargo_image_matches_records_and_size(self):
         mke2fs, debugfs, dumpe2fs = STAGE.require_e2fsprogs('mke2fs', 'debugfs', 'dumpe2fs')
         cache = Path(os.environ.get('BREENIX_RUSTC_PORT_BUILDS', ROOT / 'build/rustc-port'))
