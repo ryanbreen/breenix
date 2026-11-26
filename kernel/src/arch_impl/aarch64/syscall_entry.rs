@@ -936,7 +936,9 @@ fn dispatch_syscall_enum(
             arg4 as u32,
         )),
         // Testing/diagnostic syscalls
-        SyscallNumber::CowStats => sys_cow_stats_aarch64(arg1),
+        SyscallNumber::CowStats => {
+            result_to_u64(crate::syscall::handlers::sys_cow_stats(arg1))
+        }
         SyscallNumber::SimulateOom => sys_simulate_oom_aarch64(arg1),
         // Resource limits and system info
         SyscallNumber::Getrlimit => {
@@ -1642,67 +1644,6 @@ extern "C" {
 // =============================================================================
 // Testing/diagnostic syscall implementations for ARM64
 // =============================================================================
-
-/// CowStatsResult structure returned by sys_cow_stats
-/// Matches the layout expected by userspace
-#[repr(C)]
-struct CowStatsResultAarch64 {
-    total_faults: u64,
-    manager_path: u64,
-    direct_path: u64,
-    pages_copied: u64,
-    sole_owner_opt: u64,
-}
-
-/// sys_cow_stats - Get Copy-on-Write statistics (for testing) - ARM64 implementation
-///
-/// This syscall is used to verify that the CoW optimization paths are working.
-/// It returns the current CoW statistics to userspace.
-///
-/// Parameters:
-/// - stats_ptr: pointer to a CowStatsResult structure in userspace
-///
-/// Returns: 0 on success, negative error code on failure
-fn sys_cow_stats_aarch64(stats_ptr: u64) -> u64 {
-    use crate::memory::cow_stats;
-
-    if stats_ptr == 0 {
-        return (-14_i64) as u64; // -EFAULT - null pointer
-    }
-
-    // Validate the address is in userspace
-    if !crate::memory::layout::is_valid_user_address(stats_ptr) {
-        log::error!(
-            "sys_cow_stats_aarch64: Invalid userspace address {:#x}",
-            stats_ptr
-        );
-        return (-14_i64) as u64; // -EFAULT
-    }
-
-    // Get the current stats from the shared module
-    let stats = cow_stats::get_stats();
-
-    // Copy to userspace
-    unsafe {
-        let user_stats = stats_ptr as *mut CowStatsResultAarch64;
-        (*user_stats).total_faults = stats.total_faults;
-        (*user_stats).manager_path = stats.manager_path;
-        (*user_stats).direct_path = stats.direct_path;
-        (*user_stats).pages_copied = stats.pages_copied;
-        (*user_stats).sole_owner_opt = stats.sole_owner_opt;
-    }
-
-    log::debug!(
-        "sys_cow_stats_aarch64: total={}, manager={}, direct={}, copied={}, sole_owner={}",
-        stats.total_faults,
-        stats.manager_path,
-        stats.direct_path,
-        stats.pages_copied,
-        stats.sole_owner_opt
-    );
-
-    0
-}
 
 /// sys_simulate_oom - Enable or disable OOM simulation (for testing) - ARM64 implementation
 ///

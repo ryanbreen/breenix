@@ -1183,9 +1183,8 @@ pub fn sys_sigpending(set: u64, sigsetsize: u64) -> SyscallResult {
     };
 
     // Write pending signal set to userspace
-    let set_ptr = set as *mut u64;
-    unsafe {
-        *set_ptr = pending;
+    if let Err(errno) = copy_to_user(set as *mut u64, &pending) {
+        return SyscallResult::Err(errno);
     }
 
     log::debug!("sigpending: pending signals = {:#x}", pending);

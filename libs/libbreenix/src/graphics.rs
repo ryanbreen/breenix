@@ -1168,10 +1168,19 @@ impl Framebuffer {
     pub fn set_pixel(&mut self, x: u32, y: u32, color: u32) {
         if x < self.width && y < self.height {
             let offset = (y * self.stride + x * self.bpp) as usize;
-            unsafe {
-                let p = self.ptr.add(offset) as *mut u32;
-                *p = color;
-            }
+            self.write_pixel(offset, color);
+        }
+    }
+
+    /// Store the low `bpp` bytes of `color` at a byte offset inside the buffer.
+    #[inline]
+    fn write_pixel(&mut self, offset: usize, color: u32) {
+        let bytes = color.to_le_bytes();
+        let len = (self.bpp as usize).min(bytes.len());
+        // SAFETY: Callers bound the pixel inside its row, so the `bpp` bytes at
+        // `offset` lie in the mapping. A byte copy needs no alignment.
+        unsafe {
+            core::ptr::copy_nonoverlapping(bytes.as_ptr(), self.ptr.add(offset), len);
         }
     }
 
@@ -1228,10 +1237,7 @@ impl Framebuffer {
             let row_offset = (row * self.stride) as usize;
             for col in x..x_end {
                 let offset = row_offset + (col * self.bpp) as usize;
-                unsafe {
-                    let p = self.ptr.add(offset) as *mut u32;
-                    *p = color;
-                }
+                self.write_pixel(offset, color);
             }
         }
     }

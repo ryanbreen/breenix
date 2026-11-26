@@ -3307,6 +3307,7 @@ pub fn sys_pselect6(
 /// CowStats structure returned by sys_cow_stats
 /// Matches the layout expected by userspace
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct CowStatsResult {
     pub total_faults: u64,
     pub manager_path: u64,
@@ -3440,27 +3441,16 @@ pub(crate) fn console_owner_exited(group: u64) {
 pub fn sys_cow_stats(stats_ptr: u64) -> SyscallResult {
     use crate::memory::cow_stats;
 
-    if stats_ptr == 0 {
-        return SyscallResult::Err(14); // EFAULT - null pointer
-    }
-
-    // Validate the address is in userspace
-    if !crate::memory::layout::is_valid_user_address(stats_ptr) {
-        log::error!("sys_cow_stats: Invalid userspace address {:#x}", stats_ptr);
-        return SyscallResult::Err(14); // EFAULT
-    }
-
-    // Get the current stats
     let stats = cow_stats::get_stats();
-
-    // Copy to userspace
-    unsafe {
-        let user_stats = stats_ptr as *mut CowStatsResult;
-        (*user_stats).total_faults = stats.total_faults;
-        (*user_stats).manager_path = stats.manager_path;
-        (*user_stats).direct_path = stats.direct_path;
-        (*user_stats).pages_copied = stats.pages_copied;
-        (*user_stats).sole_owner_opt = stats.sole_owner_opt;
+    let result = CowStatsResult {
+        total_faults: stats.total_faults,
+        manager_path: stats.manager_path,
+        direct_path: stats.direct_path,
+        pages_copied: stats.pages_copied,
+        sole_owner_opt: stats.sole_owner_opt,
+    };
+    if let Err(errno) = crate::syscall::userptr::copy_to_user(stats_ptr as *mut CowStatsResult, &result) {
+        return SyscallResult::Err(errno);
     }
 
     log::debug!(

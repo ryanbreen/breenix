@@ -194,10 +194,10 @@ pub fn load_elf_at_base(data: &[u8], base_offset: VirtAddr) -> Result<LoadedElf,
         return Err("ELF file too small");
     }
 
-    // Copy header data to avoid alignment issues
-    let mut header_bytes = [0u8; mem::size_of::<Elf64Header>()];
-    header_bytes.copy_from_slice(&data[..mem::size_of::<Elf64Header>()]);
-    let header: &Elf64Header = unsafe { &*(header_bytes.as_ptr() as *const Elf64Header) };
+    // SAFETY: The length check above covers the header. Its fields are
+    // integers, so any bit pattern is a valid value, and read_unaligned
+    // accepts a byte slice with alignment 1.
+    let header = unsafe { data.as_ptr().cast::<Elf64Header>().read_unaligned() };
 
     log::trace!("ELF header loaded");
 
@@ -249,12 +249,12 @@ pub fn load_elf_at_base(data: &[u8], base_offset: VirtAddr) -> Result<LoadedElf,
     let mut mapped_phdr_vaddr: Option<u64> = None;
 
     for i in 0..ph_count {
-        let ph_start = program_header_offset(header, i, data.len())?;
+        let ph_start = program_header_offset(&header, i, data.len())?;
 
-        // Copy program header to avoid alignment issues
-        let mut ph_bytes = [0u8; mem::size_of::<Elf64ProgramHeader>()];
-        ph_bytes.copy_from_slice(&data[ph_start..ph_start + mem::size_of::<Elf64ProgramHeader>()]);
-        let ph: &Elf64ProgramHeader = unsafe { &*(ph_bytes.as_ptr() as *const Elf64ProgramHeader) };
+        // SAFETY: program_header_offset checked the full record. Its fields
+        // are integers, and read_unaligned copies out an owned value without
+        // borrowing the bytes as a header.
+        let ph = unsafe { data[ph_start..].as_ptr().cast::<Elf64ProgramHeader>().read_unaligned() };
 
         // Check for PT_PHDR segment
         if ph.p_type == SegmentType::Phdr as u32 {
@@ -271,11 +271,11 @@ pub fn load_elf_at_base(data: &[u8], base_offset: VirtAddr) -> Result<LoadedElf,
             if ph.p_flags & 2 != 0 {
                 data_size = data_size.checked_add(bytes).ok_or("Data size overflow")?;
             }
-            load_segment(data, ph, base_offset)?;
+            load_segment(data, &ph, base_offset)?;
 
             // Calculate end of this segment (vaddr + memsz) considering base offset
             let vaddr = biased_address(ph.p_vaddr, base_offset)?.as_u64();
-            mapped_phdr_vaddr = mapped_phdr_vaddr.or(mapped_program_headers(header, ph, vaddr)?);
+            mapped_phdr_vaddr = mapped_phdr_vaddr.or(mapped_program_headers(&header, &ph, vaddr)?);
             let segment_end = vaddr
                 .checked_add(ph.p_memsz)
                 .ok_or("Segment address overflow")?;
@@ -458,10 +458,10 @@ pub fn load_elf_into_page_table(
         return Err("Data too small for ELF header");
     }
 
-    // Parse ELF header
-    let mut header_bytes = [0u8; mem::size_of::<Elf64Header>()];
-    header_bytes.copy_from_slice(&data[..mem::size_of::<Elf64Header>()]);
-    let header: &Elf64Header = unsafe { &*(header_bytes.as_ptr() as *const Elf64Header) };
+    // SAFETY: The length check above covers the header. Its fields are
+    // integers, so any bit pattern is a valid value, and read_unaligned
+    // accepts a byte slice with alignment 1.
+    let header = unsafe { data.as_ptr().cast::<Elf64Header>().read_unaligned() };
 
     // Validate ELF header
     if header.magic != ELF_MAGIC {
@@ -488,12 +488,12 @@ pub fn load_elf_into_page_table(
 
     // Load program segments
     for i in 0..header.phnum {
-        let ph_start = program_header_offset(header, i as usize, data.len())?;
+        let ph_start = program_header_offset(&header, i as usize, data.len())?;
 
-        // Copy program header to avoid alignment issues
-        let mut ph_bytes = [0u8; mem::size_of::<Elf64ProgramHeader>()];
-        ph_bytes.copy_from_slice(&data[ph_start..ph_start + mem::size_of::<Elf64ProgramHeader>()]);
-        let ph: &Elf64ProgramHeader = unsafe { &*(ph_bytes.as_ptr() as *const Elf64ProgramHeader) };
+        // SAFETY: program_header_offset checked the full record. Its fields
+        // are integers, and read_unaligned copies out an owned value without
+        // borrowing the bytes as a header.
+        let ph = unsafe { data[ph_start..].as_ptr().cast::<Elf64ProgramHeader>().read_unaligned() };
 
         // Check for PT_PHDR segment
         if ph.p_type == SegmentType::Phdr as u32 {
@@ -510,9 +510,9 @@ pub fn load_elf_into_page_table(
             if ph.p_flags & 2 != 0 {
                 data_size = data_size.checked_add(bytes).ok_or("Data size overflow")?;
             }
-            load_segment_into_page_table(data, ph, page_table)?;
+            load_segment_into_page_table(data, &ph, page_table)?;
             mapped_phdr_vaddr =
-                mapped_phdr_vaddr.or(mapped_program_headers(header, ph, ph.p_vaddr)?);
+                mapped_phdr_vaddr.or(mapped_program_headers(&header, &ph, ph.p_vaddr)?);
 
             // Calculate end of this segment (vaddr + memsz)
             let segment_end = ph
