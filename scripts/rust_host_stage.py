@@ -491,21 +491,22 @@ def main():
         if (k6['rustc_sha256'] != k5['mac_rustc_sha256']
                 or any(k5[name] != digest for name, digest in k7['k5_compiler_digests'].items())):
             raise ValueError('D1 requires the K5, K6 and K7 twin artifacts')
+        # Even rustc -vV resolves the compiler's host through RUST_TARGET_PATH.
+        # Only the hosted rlibs are unnecessary when building the tool target.
         inputs = [(f'fixture/{name}', source, mode, digest)
-                  for name, source, mode, digest in rustc_fixture_entries(rustc, fixture / "sysroot", fixture / "targets", k5)
-                  if 'x86_64-breenix-hosted' not in name]
+                  for name, source, mode, digest in rustc_fixture_entries(rustc, fixture / 'sysroot', fixture / 'targets', k5)
+                  if not name.startswith('sysroot/lib/rustlib/x86_64-breenix-hosted/')]
         linker_inputs = rust_link_fixture_entries(rust_link, fixture, k6, tools_only=True)
         inputs.extend(('bundle/bin/ld' if name == 'bin/bld' else f'fixture/{name}', source, mode, digest)
                       for name, source, mode, digest in linker_inputs)
         inputs.append(('fixture/bin/cargo', cargo, '0755', k7['cargo_sha256']))
-        # The target is an opaque pin just like the sysroot and the link inputs.
-        metadata = k7['fixture_sha256']['targets/x86_64-breenix.json']
         for name, source, mode, digest in inputs:
             path = args.d1_tree / name
             path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source, path)
             path.chmod(int(mode, 8))
-            if sha256(path) != (digest or metadata):
+            expected = digest or k7['fixture_sha256'][name.removeprefix('fixture/')]
+            if sha256(path) != expected:
                 raise ValueError(f'{name}: differs from the D1 fixture pin')
         entries, expected = hosted_runtime_entries(kd, kd_record, staged)
         entries.append(('/sbin/suite-d1', release / 'suite-d1', '0755'))
