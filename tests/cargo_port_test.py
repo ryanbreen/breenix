@@ -25,7 +25,7 @@ class CargoPort(unittest.TestCase):
             ['cargo', 'tree', '--manifest-path', str(cargo / 'Cargo.toml'),
              '-p', 'cargo', '-e', 'normal,build', '--target',
              'x86_64-breenix-hosted', '--locked', '--offline', '--prefix', 'none',
-             '--format', '{p}'], env=env, text=True)
+             '--features', 'all-static', '--format', '{p}'], env=env, text=True)
         closure = set()
         for line in tree.splitlines():
             match = re.match(r'^([^ ]+) v([^ ]+)', line)
