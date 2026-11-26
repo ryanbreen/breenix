@@ -1303,6 +1303,14 @@ class ModeApplicabilityTest(StateTest):
         self.assertTrue(boot.marker_matches((marker, 'contains'),
             'SUITE rustc DONE passed=3 failed=0 skipped=0 total=3'))
 
+    def test_cargo_and_d1_done_satisfy_suite_finished_stage(self):
+        stage = next(item for item in self.definition['milestones'] if item['id'] == 'suite-finished')
+        marker = stage['stages']['suite'][0]['marker']
+        for suite, total in (('cargo', 2), ('d1', 7)):
+            with self.subTest(suite=suite):
+                self.assertTrue(boot.marker_matches((marker, 'contains'),
+                    f'SUITE {suite} DONE passed={total} failed=0 skipped=0 total={total}'))
+
     def test_cxx_runtime_done_satisfies_suite_finished_stage(self):
         stage = next(item for item in self.definition['milestones'] if item['id'] == 'suite-finished')
         marker = stage['stages']['suite'][0]['marker']
