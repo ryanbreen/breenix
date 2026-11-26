@@ -23,6 +23,7 @@ use std::time::Duration;
 
 const SOURCE: &str = "/src";
 const FIXTURE: &str = "/usr/libexec/breenix/rustc";
+const LINKER: &str = "/opt/breenix-dev/25.2/bin/ld";
 const MARKER: &str = "/src/breenix-self-host";
 const MAC_REFERENCE: &str = include_str!("../../../toolchain/rust-host/selfhost/x86_64-mac.json");
 const MAC_MATCH: &str = "tools-equal-mac.sha256.json";
@@ -162,18 +163,21 @@ fn verify_record(run: &Path, package: &str, current: &Snapshot) -> CaseResult {
 
 fn cargo(run: &Path, package: &str) -> Command {
     let fixture = Path::new(FIXTURE);
-    d1::cargo(
-        Path::new(SOURCE),
-        fixture,
-        &fixture.join("bin/bld"),
-        run,
-        package,
-    )
+    d1::cargo(Path::new(SOURCE), fixture, Path::new(LINKER), run, package)
 }
 
 fn run_cargo(command: &mut Command, log: &Path, window: Duration) -> CaseResult {
-    let build = d1::measure(command, log, window, |_, _| Ok(0))
-        .map_err(|error| format!("run Cargo: {error}"))?;
+    // Keep the metal driver's 120 s serial-silence watchdog active during
+    // a long Cargo run. This progress report does not sample /proc.
+    let mut last_progress = Duration::ZERO;
+    let build = d1::measure(command, log, window, |_, elapsed| {
+        if elapsed - last_progress >= Duration::from_secs(75) {
+            case_diagnostic(&format!("SELF_HOST Cargo elapsed_ms={}", elapsed.as_millis()));
+            last_progress = elapsed;
+        }
+        Ok(0)
+    })
+    .map_err(|error| format!("run Cargo: {error}"))?;
     // The shared runner received no RSS samples.
     let _ = build.peak_rss_bytes;
     case_diagnostic(&format!(
