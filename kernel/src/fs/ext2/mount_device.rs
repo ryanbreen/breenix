@@ -123,14 +123,14 @@ impl BlockDevice for MountDevice {
         self.writable()?;
         cache_kernel::assert_io_context();
         let bytes = self.span(start, count, buf.len())?;
-        if self.cache.is_none() {
-            return self.inner.write_blocks(start, count, buf);
+        match self.cache {
+            Some(cache) if count > 1 => {
+                cache.write_through_blocks(self.inner.as_ref(), start, &buf[..bytes])
+            }
+            Some(_) if count == 1 => self.write_block(start, buf),
+            Some(_) => Ok(()),
+            None => self.inner.write_blocks(start, count, buf),
         }
-        let size = self.inner.block_size();
-        for (i, chunk) in buf[..bytes].chunks_exact(size).enumerate() {
-            self.write_block(start + i as u64, chunk)?;
-        }
-        Ok(())
     }
 
     fn block_size(&self) -> usize {
