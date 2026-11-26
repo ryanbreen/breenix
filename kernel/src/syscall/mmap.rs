@@ -841,7 +841,12 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u32) -> SyscallResult {
             .then(|| process.vmas[index].piece(VirtAddr::new(next), VirtAddr::new(end)));
         process.vmas[index] = process.vmas[index].replacement_piece(VirtAddr::new(cursor), VirtAddr::new(next));
         process.vmas[index].prot = new_prot;
-        process.vmas.extend(prefix.into_iter().chain(suffix));
+        if let Some(prefix) = prefix {
+            process.vmas.insert(index + 1, prefix);
+        }
+        if let Some(suffix) = suffix {
+            process.vmas.insert(index, suffix);
+        }
         cursor = next;
     }
 
@@ -993,7 +998,10 @@ pub(crate) fn unmap_range(
         let prefix = (start < addr).then(|| vma.piece(vma.start, VirtAddr::new(addr)));
         let suffix = (end_addr < end).then(|| vma.piece(VirtAddr::new(end_addr), vma.end));
         process.vmas.remove(index);
-        process.vmas.extend(prefix.into_iter().chain(suffix));
+        for piece in suffix.into_iter().chain(prefix) {
+            process.vmas.insert(index, piece);
+            index += 1;
+        }
         super::memory_common::MmapGaps::uncover(
             &mut process.mmap_gaps,
             start.max(addr),

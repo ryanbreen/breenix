@@ -42,12 +42,16 @@ where
         if super::fork_copy::copying(root) {
             return FaultOutcome::Resolved;
         }
+        let Some((pid, owner)) = guard.as_ref().and_then(|m| m.find_process_by_cr3(root)) else {
+            return FaultOutcome::NotFile;
+        };
+        let Some(vma) = covering_vma(&owner.vmas, address) else {
+            return FaultOutcome::NotFile;
+        };
+        let vmas = core::slice::from_ref(vma);
         // Object allocation/zeroing must run after releasing PM. The second
         // section revalidates the VMA, its protection, and the current EOF.
-        let shm = guard
-            .as_ref()
-            .and_then(|m| m.find_process_by_cr3(root))
-            .and_then(|(_, owner)| crate::ipc::shmem::population_snapshot(&owner.vmas, address));
+        let shm = crate::ipc::shmem::population_snapshot(vmas, address);
         if let Some((object, offset, prot)) = shm {
             drop(guard);
             let prepared = if permitted(prot, access) {
@@ -103,16 +107,13 @@ where
             }
             return outcome;
         }
-        let Some((pid, owner)) = guard.as_ref().and_then(|m| m.find_process_by_cr3(root)) else {
-            return FaultOutcome::NotFile;
-        };
         let Some(table) = owner.page_table.as_deref() else {
             return FaultOutcome::NotFile;
         };
-        if reserved_and_absent(table, &owner.vmas, address) {
+        if reserved_and_absent(table, vmas, address) {
             return FaultOutcome::Resolved;
         }
-        let Some(prot) = anonymous_protection(&owner.vmas, address) else {
+        let Some(prot) = anonymous_protection(vmas, address) else {
             return FaultOutcome::NotFile;
         };
         if table.translate(page.start_address()).is_some() && permitted(prot, access) {
@@ -205,19 +206,20 @@ pub(crate) fn reserved_and_absent(
     vmas: &[super::vma::Vma],
     address: u64,
 ) -> bool {
-    vmas.iter()
-        .any(|v| v.reservation != 0 && v.contains(VirtAddr::new(address)))
+    covering_vma(vmas, address).is_some_and(|v| v.reservation != 0)
         && table.translate(VirtAddr::new(address)).is_none()
 }
 
 fn anonymous_protection(vmas: &[super::vma::Vma], address: u64) -> Option<Protection> {
-    vmas.iter()
-        .find(|v| {
-            v.contains(VirtAddr::new(address))
-                && v.flags.contains(MmapFlags::ANONYMOUS)
-                && v.flags.contains(MmapFlags::PRIVATE)
-        })
+    covering_vma(vmas, address)
+        .filter(|v| v.flags.contains(MmapFlags::ANONYMOUS) && v.flags.contains(MmapFlags::PRIVATE))
         .map(|v| v.prot)
+}
+
+/// Live VMAs are disjoint and stored in descending start-address order.
+fn covering_vma(vmas: &[super::vma::Vma], address: u64) -> Option<&super::vma::Vma> {
+    let index = vmas.partition_point(|v| v.start.as_u64() > address);
+    vmas.get(index).filter(|v| v.contains(VirtAddr::new(address)))
 }
 
 pub(crate) use crate::ipc::shmem::resolve_page as resolve_shm_page;
