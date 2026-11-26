@@ -82,7 +82,7 @@ fn immediate(p: &mut Parser<'_, '_>, max: u32) -> Result<u32> {
     p.expect(b'#', "expected '#' before immediate")?;
     p.peek();
     let column = p.column;
-    let value = p.magnitude()?;
+    let value = p.count()?;
     if value > u64::from(max) {
         return Err(p.error(column, "immediate out of range"));
     }

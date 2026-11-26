@@ -155,6 +155,10 @@ impl Object {
                         && name.len() > ".text.".len())
                     .then_some((name, SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR))
                 })
+                .or_else(|| {
+                    (self.target == Target::Aarch64 && name.starts_with(".bss."))
+                        .then_some((name, SHT_NOBITS, SHF_ALLOC | SHF_WRITE))
+                })
                 .ok_or_else(|| at.error("unsupported section"))?;
             let index = self.sections.len();
             if index >= usize::from(bobj::elf::SHN_LORESERVE) - 1 {
@@ -371,6 +375,52 @@ impl Object {
         let padding = section.size.wrapping_neg() & (alignment - 1);
         self.last_output_at = at;
         self.fill(at, padding, fill)
+    }
+
+    pub(crate) fn align_aarch64(
+        &mut self,
+        at: Location,
+        alignment: u64,
+        fill: Option<u8>,
+        maximum: Option<u64>,
+    ) -> Result<()> {
+        let section = &mut self.sections[self.current];
+        section.alignment = section.alignment.max(alignment);
+        let padding = section.size.wrapping_neg() & (alignment - 1);
+        if maximum.is_some_and(|maximum| padding > maximum) {
+            return Ok(());
+        }
+        if let Some(fill) = fill {
+            return self.fill(at, padding, fill);
+        }
+        if !self.in_text() || !self.in_progbits() {
+            return self.fill(at, padding, 0);
+        }
+        // Pad to an instruction boundary with 0x00, then emit A64 NOPs
+        // (Arm ARM DDI 0487, NOP) under the instruction mapping symbol.
+        let prefix = padding % 4;
+        self.fill(at, prefix, 0)?;
+        if padding > prefix {
+            self.map_text(b"$x");
+            let section = &mut self.sections[self.current];
+            let bytes = &mut section.bytes;
+            let start = bytes.len();
+            let count = usize::try_from(padding - prefix)
+                .map_err(|_| at.error("section size out of range"))?;
+            let end = start
+                .checked_add(count)
+                .ok_or_else(|| at.error("section size out of range"))?;
+            bytes
+                .try_reserve(count)
+                .map_err(|_| at.error("cannot allocate section contents"))?;
+            bytes.resize(end, 0);
+            for word in bytes[start..end].chunks_exact_mut(4) {
+                word.copy_from_slice(&0xd503_201fu32.to_le_bytes());
+            }
+            section.size = end as u64;
+            self.last_output_at = at;
+        }
+        Ok(())
     }
 
     pub(crate) fn reference(

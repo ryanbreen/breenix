@@ -168,7 +168,7 @@ fn register_offset(p: &mut Parser<'_, '_>, scale: Option<u32>) -> Result<u32> {
         p.expect(b'#', "expected '#' before register offset shift")?;
         p.peek();
         let column = p.column;
-        let shift = p.magnitude()?;
+        let shift = p.count()?;
         if shift != 0 && shift != u64::from(scale) {
             return Err(p.error(column, "invalid register offset shift"));
         }

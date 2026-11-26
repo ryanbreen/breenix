@@ -11,6 +11,10 @@ use crate::nasm::Syntax;
 use crate::object::{Endpoint, LabelDifference, Object};
 use crate::{Diagnostic, Location, Result, Target};
 
+#[path = "aarch64/gnu.rs"]
+mod gnu;
+pub(crate) use gnu::assemble as assemble_aarch64;
+
 #[derive(Clone, Copy)]
 pub(crate) struct Token<'a> {
     pub(crate) text: &'a str,
@@ -49,6 +53,7 @@ pub(crate) struct Parser<'src, 'obj> {
     pub(crate) column: usize,
     pub(crate) object: &'obj mut Object,
     nasm: Option<&'obj mut Syntax>,
+    constants: Option<&'obj mut gnu::Constants<'src>>,
     origin: Option<Location>,
 }
 
@@ -60,6 +65,7 @@ impl<'src, 'obj> Parser<'src, 'obj> {
             column: 0,
             object,
             nasm: None,
+            constants: None,
             origin: None,
         }
     }
@@ -148,6 +154,8 @@ impl<'src, 'obj> Parser<'src, 'obj> {
         let start = self.column;
         let rest = &self.line[start..];
         let (digits, radix) = match rest {
+            [b'0', b'b' | b'B', digits @ ..] if self.constants.is_some() => (digits, 2),
+            [b'0', b'x' | b'X', digits @ ..] if self.constants.is_some() => (digits, 16),
             [b'0', b'x' | b'X', first, ..] if first.is_ascii_hexdigit() => (&rest[2..], 16),
             _ => (rest, 10),
         };
@@ -163,6 +171,9 @@ impl<'src, 'obj> Parser<'src, 'obj> {
                 .ok_or_else(|| self.error(start, "integer out of range"))?;
             length += 1;
         }
+        if digits.len() != rest.len() && length == 2 {
+            return Err(self.error(start, "expected digits after radix prefix"));
+        }
         self.column = start + length;
         Ok(value)
     }
@@ -170,6 +181,15 @@ impl<'src, 'obj> Parser<'src, 'obj> {
     pub(crate) fn integer(&mut self, width: usize, signed_only: bool) -> Result<u64> {
         self.peek();
         let start = self.column;
+        if self.constants.is_some() {
+            let value = self.gnu_expression()?;
+            let sign_bit = 1i128 << (width * 8 - 1);
+            let maximum = if signed_only { sign_bit - 1 } else { 2 * sign_bit - 1 };
+            if (-sign_bit..=maximum).contains(&value) {
+                return Ok(value as u64);
+            }
+            return Err(self.error(start, "integer out of range for operand width"));
+        }
         let negative = self.take(b'-');
         if !negative {
             self.take(b'+');
@@ -202,6 +222,12 @@ impl<'src, 'obj> Parser<'src, 'obj> {
     }
 
     pub(crate) fn count(&mut self) -> Result<u64> {
+        if self.constants.is_some() {
+            self.peek();
+            let column = self.column;
+            return u64::try_from(self.gnu_expression()?)
+                .map_err(|_| self.error(column, "expected a nonnegative integer"));
+        }
         self.take(b'+');
         self.magnitude()
     }
@@ -451,7 +477,7 @@ impl<'src, 'obj> Parser<'src, 'obj> {
             let column = self.column;
             if self.peek() == b'"' && width == 1 {
                 self.emit_string(false)?;
-            } else if starts_number(self.peek()) {
+            } else if starts_number(self.peek()) || self.starts_gnu_expression() {
                 let value = self.integer(width, false)?;
                 self.emit_word(column, value, width)?;
             } else if self.object.target == Target::Aarch64 {
@@ -585,7 +611,10 @@ impl<'src, 'obj> Parser<'src, 'obj> {
         groups
     }
 
-    fn directive(&mut self, op: Token<'_>) -> Result<bool> {
+    fn directive(&mut self, op: Token<'src>) -> Result<bool> {
+        if self.constants.is_some() && self.gnu_directive(op)? {
+            return Ok(true);
+        }
         let name = op.text.strip_prefix('.').unwrap_or(op.text);
         match name {
             "section" => self.section()?,
@@ -664,12 +693,18 @@ impl<'src, 'obj> Parser<'src, 'obj> {
             } else if !self.directive(op)? {
                 self.instruction(op)?;
             }
-            if !self.at_end() {
-                return Err(self.error(self.column, "unexpected input after operands"));
-            }
+            self.require_end()?;
             break;
         }
         Ok(())
+    }
+
+    fn require_end(&mut self) -> Result<()> {
+        if self.at_end() {
+            Ok(())
+        } else {
+            Err(self.error(self.column, "unexpected input after operands"))
+        }
     }
 
     fn set_bits(&mut self) -> Result<()> {
