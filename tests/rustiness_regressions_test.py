@@ -335,8 +335,9 @@ fn elf_headers_from_misaligned_bytes() {
     assert_eq!(parse_for_process(data), expected);
 }
 """
-        run_test(fixture, "elf_headers_from_misaligned_bytes",
-                 miri=os.environ.get("BREENIX_RUSTINESS_MIRI") == "1")
+        # A misaligned reference is undefined behaviour that a native run can
+        # survive, so only Miri's alignment check makes this test fail on it.
+        run_test(fixture, "elf_headers_from_misaligned_bytes", miri=True)
 
 
     def test_framebuffer_pixels(self):
