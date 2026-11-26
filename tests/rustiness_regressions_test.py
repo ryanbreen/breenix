@@ -339,5 +339,54 @@ fn elf_headers_from_misaligned_bytes() {
                  miri=os.environ.get("BREENIX_RUSTINESS_MIRI") == "1")
 
 
+    def test_framebuffer_pixels(self):
+        source = (ROOT / "libs/libbreenix/src/graphics.rs").read_text()
+        # The whole production handle and its methods, over a host byte buffer.
+        # Only the syscall-backed constructors and flushes are stand-ins.
+        fixture = r"""
+#![allow(dead_code)]
+pub struct Error;
+pub struct FbInfo { pub height: u64, pub bytes_per_pixel: u64 }
+impl FbInfo { pub fn is_bgr(&self) -> bool { false } }
+pub fn fbinfo() -> Result<FbInfo, Error> { Err(Error) }
+pub fn fb_mmap_pane() -> Result<(*mut u8, u64), Error> { Err(Error) }
+pub fn fb_flush() -> Result<(), Error> { Ok(()) }
+pub fn fb_flush_rect(_: i32, _: i32, _: i32, _: i32) -> Result<(), Error> { Ok(()) }
+"""
+        fixture += item(source, "pub struct Framebuffer {") + "\n"
+        fixture += item(source, "impl Framebuffer {") + "\n"
+        fixture += r"""
+const GUARD: u8 = 0xAA;
+
+fn draw(bpp: u32) -> Vec<u8> {
+    const WIDTH: u32 = 4;
+    const HEIGHT: u32 = 2;
+    let stride = WIDTH * bpp;
+    // One guard byte past the last row.
+    let mut bytes = vec![GUARD; (stride * HEIGHT) as usize + 1];
+    let mut fb = Framebuffer {
+        ptr: bytes.as_mut_ptr(), width: WIDTH, height: HEIGHT, stride, bpp, bgr: false,
+    };
+    fb.set_pixel(WIDTH - 1, 0, 0x4433_2211);
+    fb.fill_rect(WIDTH - 1, 1, 1, 1, 0x8877_6655);
+    bytes
+}
+
+#[test]
+fn framebuffer_writes_bpp_bytes_per_pixel() {
+    let bytes = draw(3);
+    // Last column of row 0, then the first byte of row 1 stays untouched.
+    assert_eq!(bytes[9..13], [0x11, 0x22, 0x33, GUARD]);
+    // Last column of the last row, then the guard byte past the buffer.
+    assert_eq!(bytes[21..25], [0x55, 0x66, 0x77, GUARD]);
+
+    let bytes = draw(4);
+    assert_eq!(bytes[12..17], [0x11, 0x22, 0x33, 0x44, GUARD]);
+    assert_eq!(bytes[28..33], [0x55, 0x66, 0x77, 0x88, GUARD]);
+}
+"""
+        run_test(fixture, "framebuffer_writes_bpp_bytes_per_pixel")
+
+
 if __name__ == "__main__":
     unittest.main()
