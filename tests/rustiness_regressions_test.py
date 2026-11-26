@@ -28,6 +28,8 @@ pub mod memory {
             static KERNEL: Cell<u64> = const { Cell::new(0) };
         }
 
+        pub const USER_STACK_REGION_END: u64 = u64::MAX;
+
         pub fn set_regions(mapped: u64, len: usize, kernel: u64) {
             MAPPED.set((mapped, len));
             KERNEL.set(kernel);
@@ -187,6 +189,88 @@ fn cow_stats_checks_all_output_bytes() {
         fixture = fixture.replace("// CHECKED_COPY", checked_copy(WRITE_COPY))
         fixture = fixture.replace("// COW_STATS", types + "\n" + handler)
         run_test(fixture, "cow_stats_checks_all_output_bytes")
+
+
+    def test_audio_write(self):
+        source = (SYSCALL / "audio.rs").read_text()
+        handler = item(source, "pub fn sys_audio_write(")
+        fixture = UACCESS + r"""
+extern crate alloc;
+
+pub enum ErrorCode { Fault = 14, IoError = 5, OutOfMemory = 12 }
+
+mod process {
+    pub mod privilege {
+        pub enum Operation { Audio }
+        pub fn require(_: Operation) -> Result<(), u64> { Ok(()) }
+    }
+}
+
+mod drivers {
+    pub mod virtio {
+        pub mod pcm {
+            pub fn write_pcm(data: &[u8]) -> Result<usize, &'static str> {
+                let prefix = &data[..data.len().min(16 * 1024)];
+                assert!(prefix.iter().all(|&byte| byte == 0x42));
+                Ok(prefix.len())
+            }
+        }
+        #[cfg(target_arch = "x86_64")]
+        pub use pcm as sound;
+        #[cfg(target_arch = "aarch64")]
+        pub use pcm as sound_mmio;
+    }
+}
+
+mod audio {
+    // AUDIO_WRITE
+}
+
+pub mod userptr {
+    use crate::memory::layout::mapped_prefix;
+
+    unsafe fn read(dst: *mut u8, src: *const u8, len: usize) -> usize {
+        let copied = mapped_prefix(src as u64, len);
+        if copied != 0 {
+            unsafe { std::ptr::copy_nonoverlapping(src, dst, copied); }
+        }
+        len - copied
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    use read as breenix_uaccess_copy;
+    #[cfg(target_arch = "aarch64")]
+    use read as breenix_uaccess_read;
+
+    // CHECKED_COPY
+}
+
+#[test]
+fn audio_reads_only_mapped_pcm() {
+    use memory::layout::set_regions;
+
+    let valid = [0x42u8; 16 * 1024 + 1];
+    let unmapped = [0x42u8; 4];
+    let kernel = [0x42u8; 4];
+    let valid_addr = valid.as_ptr() as u64;
+    let unmapped_addr = unmapped.as_ptr() as u64;
+    let kernel_addr = kernel.as_ptr() as u64;
+    let write = audio::sys_audio_write;
+
+    set_regions(valid_addr, 4, kernel_addr);
+    assert_eq!(write(valid_addr, 4), SyscallResult::Ok(4));
+    assert_eq!(write(unmapped_addr, 4), SyscallResult::Err(14));
+    assert_eq!(write(kernel_addr, 4), SyscallResult::Err(14));
+    assert_eq!(write(valid_addr, 5), SyscallResult::Err(14));
+
+    set_regions(valid_addr, 16 * 1024, kernel_addr);
+    assert_eq!(write(valid_addr, valid.len() as u64), SyscallResult::Ok(16 * 1024));
+}
+"""
+        imports = source[source.index("use ") : source.index("/// sys_audio_init")]
+        fixture = fixture.replace("// AUDIO_WRITE", imports + handler)
+        fixture = fixture.replace("// CHECKED_COPY", checked_copy(("pub fn read_user_bytes(",)))
+        run_test(fixture, "audio_reads_only_mapped_pcm")
 
 
 if __name__ == "__main__":
