@@ -33,7 +33,13 @@ fn main() -> io::Result<()> {
     checked(
         Command::new("cargo")
             .current_dir(&repo)
-            .args(["build", "--offline", "--release", "--manifest-path"])
+            .args([
+                "build",
+                "--offline",
+                "--locked",
+                "--release",
+                "--manifest-path",
+            ])
             .arg(repo.join("toolchain/Cargo.toml"))
             .args(["-p", "bld", "--target-dir"])
             .arg(&host_target),

@@ -2,6 +2,8 @@
 use std::fs;
 use std::process::Command;
 
+const OUTPUTS: [&str; 7] = ["bas", "bld", "bar", "bnm", "bmake", "bcc", "libbobj.rlib"];
+
 #[test]
 fn two_directories_same_bytes() {
     let fixture = std::env::var_os("BREENIX_K6_FIXTURE")
@@ -33,7 +35,7 @@ fn two_directories_same_bytes() {
         "Mac twin build failed; evidence retained in {}",
         work.display()
     );
-    for name in ["bas", "bld", "bar", "bnm", "bmake", "bcc", "libbobj.rlib"] {
+    for name in OUTPUTS {
         let left = work
             .join("one/run/target/x86_64-breenix/selfhost")
             .join(name);
@@ -47,5 +49,17 @@ fn two_directories_same_bytes() {
             work.display()
         );
     }
+    assert!(
+        Command::new("python3")
+            .arg(root.join("tests/selfhost_mac_receipt.py"))
+            .arg(root.join("toolchain/rust-host/selfhost/x86_64-mac.json"))
+            .arg(&work)
+            .args(OUTPUTS)
+            .status()
+            .unwrap()
+            .success(),
+        "Mac twin receipt check failed; evidence retained in {}",
+        work.display()
+    );
     println!("comparison artifacts: {}", work.display());
 }
