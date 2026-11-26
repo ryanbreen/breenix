@@ -44,3 +44,6 @@
     tlbi vmalle1is
     dc ivac, x13
     ic iallu
+    bic x1, x1, #0xc0
+    bic w10, w10, #0x10000000
+    b .

@@ -101,7 +101,7 @@ local:
         let symbol = symbols.get(relocation.symbol as usize).unwrap();
         assert_eq!((symbol.name, symbol.section), (symbol_name, symbol_section));
 
-        // AAELF64 2025Q1 §5.6.5: the pool and its zero padding are data.
+        // AAELF64 2025Q1 §5.6.5: the pool and its alignment padding are data.
         let mappings: Vec<_> = (1..symbols.len())
             .map(|index| symbols.get(index).unwrap())
             .filter(|symbol| symbol.section as usize == section && symbol.name.starts_with(b"$"))
@@ -128,7 +128,7 @@ local:
 #[test]
 fn unsupported_a64_system_register_is_located() {
     for (instruction, column, message) in [
-        ("mrs x0, unknown_el1", 11, "unsupported MRS system register"),
+        ("mrs x0, tpidr_el9", 11, "unsupported MRS system register"),
         ("msr unknown_el1, x0", 7, "unsupported MSR system register"),
         ("msr CurrentEL, x0", 7, "read-only system register"),
         ("msr MPIDR_EL1, x0", 7, "read-only system register"),

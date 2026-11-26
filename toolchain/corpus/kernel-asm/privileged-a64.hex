@@ -43,3 +43,6 @@ e0 03 9f d6  # C6.2.157
 1f 83 08 d5  # C6.2.479, C5.5.78
 2d 76 08 d5  # C6.2.145, C5.3.37
 1f 75 08 d5  # C6.2.175, C5.3.39
+21 f4 78 92  # C6.2.14, C6.2.41; AND with the complemented 64-bit mask
+4a 79 03 12  # C6.2.14, C6.2.41; AND with the complemented 32-bit mask
+00 00 00 14  # C6.2.35; imm26 = 0 for the current instruction address
