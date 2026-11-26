@@ -133,3 +133,35 @@ The test accepts `BREENIX_K7_MAC_CARGO`, `BREENIX_K7_MAC_STDLIB`,
 `BREENIX_K5_MAC_RUSTC`, `BREENIX_K5_SYSROOT`, `BREENIX_K7_BLD` and
 `BREENIX_K7_LIBC` for artifact locations. The Mac standard-library directory
 contains the stage-1 Mac rlibs retained from the twin build.
+
+## Cargo image staging
+
+Select `cargo` on the Mac metal builder with `BREENIX_K7_STAGE` pointing at
+the hosted Cargo ELF and its shared libc, and `BREENIX_RUSTC_PORT_BUILDS`
+pointing at the retained K5 build. Set `BREENIX_K5_SYSROOT` and
+`BREENIX_K6_FIXTURE` for relocated copies of the K5 sysroot and the K6 capture.
+The builder places the K5 driver in the compiler's `$ORIGIN/../lib`.
+It takes the soft-float archive and linker script
+from K6, and uses the guest `bld` from the Rust linker bundle build.
+`/lib/libc.so` uses the K7 digest. The standalone `rustc` selection pins a
+different libc build, so it cannot share this image with `cargo`.
+
+The image starts with the base ext2 root. Let the payload be the sum of the
+staged file lengths, including both copies of the g5 registry config. The
+final backing length is the base length plus the payload plus 67,108,864
+bytes (64 MiB), rounded up to the block size in the ext2 superblock.
+Allocation metadata uses space already available on the base root. After
+staging, the builder requires the exact backing length and at least 64 MiB
+of free blocks for the suite's per-case scratch directories. The staged
+`cargo-home` contains only `config.toml`. The case runner uses private homes
+and the corpus's workspace-local configuration.
+
+The host check staged a 507,687,089-byte payload on a 16,777,216-byte base.
+Adding 67,108,864 bytes gives 591,573,169 bytes, which rounds up to
+591,577,088 bytes on 4,096-byte blocks. The superblock reported
+91,811,840 free bytes after staging.
+
+`python3 -m unittest tests.cargo_image_stage_test` exercises staging and
+checks the size, free blocks and file digests through ext2 readback. The
+check uses the retained artifacts and the suite and linker build outputs
+at their usual paths.

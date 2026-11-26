@@ -24,6 +24,7 @@ for a cold readback or a boot manager probe, under a metal-build slot without a 
 For `--suite llvm`, the Mac prebuilt builder takes the K4 cross-builds from BREENIX_LLVM_BUILDS and the K3
 runtime from BREENIX_CXX_RUNTIME_BUILDS. `build.json` names the staged fixture digests by guest path.
 For `--suite rust-link`, set BREENIX_K6_FIXTURE to the retained K6 capture on the Mac builder.
+For `--suite cargo`, also set BREENIX_K7_STAGE to the retained hosted Cargo and shared libc.
 Exit 0 on success; 3 when the guard refuses the commit.
 """
 import argparse
@@ -207,6 +208,11 @@ def inner(args):
     llvm = 'llvm' in suites
     rustc_suite = 'rustc' in suites
     rust_link = 'rust-link' in suites
+    cargo_suite = 'cargo' in suites
+    if cargo_suite and sys.platform != 'darwin':
+        raise ValueError('cargo requires a Mac prebuilt image with the retained K5, K6 and K7 artifacts')
+    if cargo_suite and rustc_suite:
+        raise ValueError('cargo and rustc pin different shared libc.so builds')
     if rustc_suite and sys.platform != 'darwin':
         raise ValueError('rustc requires a Mac prebuilt image and BREENIX_RUSTC_PORT_BUILDS')
     if rust_link and sys.platform != 'darwin':
@@ -225,7 +231,7 @@ def inner(args):
     staged_files = {}
     rust_link_build = None
     build_companions = build_fixtures or busybox
-    hosted = rust_host or cxx_runtime or llvm or dynamic or rustc_suite or rust_link
+    hosted = rust_host or cxx_runtime or llvm or dynamic or rustc_suite or rust_link or cargo_suite
     root = tmp / 'ext2-staged.img' if 'sdk' in suites or build_fixtures or transfer or hosted else seed
     try:
         started = time.time()
@@ -365,16 +371,19 @@ def inner(args):
                 if not clean_build(status, log, 'LLVM suite and tools', logs, out):
                     return 1
                 timings['llvm_suite'] = round(time.time() - started)
-            if rustc_suite:
+            if rustc_suite or cargo_suite:
                 started = time.time()
-                log = logs / 'rustc-build.log'
+                log = logs / ('cargo-build.log' if cargo_suite else 'rustc-build.log')
                 build_script = str(clone / 'userspace/programs/build.sh')
                 kd = Path(os.environ.get('BREENIX_KD_BUILD_DIR', clone / 'userspace/programs/target/kd'))
                 cache = Path(os.environ.get('BREENIX_RUSTC_PORT_BUILDS', clone / 'build/rustc-port'))
-                pinned_libc = cache / 'hosted/lib/libc.so'
+                k7_stage = Path(os.environ.get('BREENIX_K7_STAGE', cache / 'k7/stage1'))
+                pinned_libc = (k7_stage / 'lib/libc.so' if cargo_suite
+                               else cache / 'hosted/lib/libc.so')
+                suite_args = (['--cargo-suite'] if cargo_suite
+                              else ['--hosted-bin', 'suite-rustc', '--features', 'rustc'])
                 with log.open('w') as output:
-                    status = subprocess.call([build_script, '--arch', 'x86_64', '--hosted-bin',
-                                              'suite-rustc', '--features', 'rustc'],
+                    status = subprocess.call([build_script, '--arch', 'x86_64', *suite_args],
                                              cwd=clone, stdout=output, stderr=subprocess.STDOUT)
                     if status == 0:
                         status = subprocess.call([build_script, '--arch', 'x86_64', '--rustc'],
@@ -382,27 +391,30 @@ def inner(args):
                     if status == 0 and not dynamic:
                         status = subprocess.call([build_script, '--arch', 'x86_64', '--kd-loader'],
                                                  cwd=clone, stdout=output, stderr=subprocess.STDOUT)
-                if not clean_build(status, log, 'rustc suite and compiler', logs, out):
+                name = 'cargo' if cargo_suite else 'rustc'
+                if not clean_build(status, log, f'{name} suite and compiler', logs, out):
                     return 1
-                if not dynamic:
+                if rustc_suite and not dynamic:
                     shutil.copyfile(pinned_libc, kd / 'libc.so')
-                timings['rustc_suite'] = round(time.time() - started)
+                timings[f'{name}_suite'] = round(time.time() - started)
             if dynamic:
                 started = time.time()
                 build_script = str(clone / 'userspace/programs/build.sh')
                 log = logs / 'dynamic-build.log'
-                env = dict(os.environ, BREENIX_KD_LIBC_INPUT=str(pinned_libc)) if rustc_suite else None
+                env = (dict(os.environ, BREENIX_KD_LIBC_INPUT=str(pinned_libc))
+                       if rustc_suite or cargo_suite else None)
                 with log.open('w') as output:
                     status = subprocess.call([build_script, '--arch', 'x86_64', '--dynamic'],
                                              cwd=clone, env=env, stdout=output, stderr=subprocess.STDOUT)
                 if not clean_build(status, log, 'dynamic suite, interpreter and fixtures', logs, out):
                     return 1
                 timings['dynamic_suite'] = round(time.time() - started)
-            if rustc_suite:
-                kd = Path(os.environ.get('BREENIX_KD_BUILD_DIR', clone / 'userspace/programs/target/kd'))
-                (kd / 'build.json').write_text(json.dumps({name: sha256(kd / name)
-                    for name in ('ld-breenix.so', 'libc.so')}))
-            if rust_link:
+            if rustc_suite or cargo_suite:
+                (kd / 'build.json').write_text(json.dumps({
+                    'ld-breenix.so': sha256(kd / 'ld-breenix.so'),
+                    'libc.so': sha256(pinned_libc),
+                }))
+            if rust_link or cargo_suite:
                 started = time.time()
                 log = logs / 'rust-link-build.log'
                 with log.open('w') as output:

@@ -65,5 +65,21 @@
   "bunwind": {
     "stage1_rlib_sha256": "362607145b05d21d841f4f2fe3fcb094fd781b9cf580c239e95cc90aff78875b",
     "link_archive_sha256": "5a54c9c8111e5198f1f8243f3f4220347cbd24f7de9f2e4df4d12f8750095424"
+  },
+  "fixture_sha256": {
+    "cargo-home/config.toml": "9969ce8511482bd9f04d47859b6aa41a36fc4d4554e25e7f184c0598c140bf6b",
+    "corpus/expect.json": "1421090f7ad8bcf4c9e5411d6aa00d78d70bdc453e402712c5b19bb9d4414f9a",
+    "corpus/no-network/.cargo/config.toml": "9969ce8511482bd9f04d47859b6aa41a36fc4d4554e25e7f184c0598c140bf6b",
+    "corpus/no-network/Cargo.lock": "238b00f9ce0d80882f57dc67ce5f072724e76bf478714763c08ca3806fbbb431",
+    "corpus/no-network/Cargo.toml": "6feb9a6528dd1030c48cb82c6cbbf70d5d92da04b73635a2e0805268026d6349",
+    "corpus/no-network/src/main.rs": "536e506bb90914c243a12b397b9a998f85ae2cbd9ba02dfd03a9e155ca5ca0f4",
+    "corpus/offline-path-workspace/Cargo.lock": "84b210faa2b4de6441e5fe70fc1c1b1981c743dbc4b147bf827efe1e747f44a4",
+    "corpus/offline-path-workspace/Cargo.toml": "ac41957c08c17747e7611484fc0d56663493b80ecd7b2ed72b86941a94bd2dd2",
+    "corpus/offline-path-workspace/app/Cargo.toml": "80db9bf8e2d665626a0eea3326a26961231fcfdc08cfedc2041e446263c30882",
+    "corpus/offline-path-workspace/app/src/main.rs": "55753f2512c3f4d08e81958e7ef063165296562d471c8b018c69c4f0f1c36c6a",
+    "corpus/offline-path-workspace/words/Cargo.toml": "c740e6073340bd6f0fbc23259bd3adf346ce1ce097db6cbbb040c439869a27a0",
+    "corpus/offline-path-workspace/words/src/lib.rs": "23eedf4804e4e130d583c34de49ebac7a4769463d59958857dedb5bf35b51229",
+    "targets/x86_64-breenix-hosted.json": "38f171cfe64cc98f7d1b3e247916a6205158e9c024cafa7288fb3738b23e1a07",
+    "targets/x86_64-breenix.json": "052045da45c438f9b3616ad4af2ae961cc4e43e2ef986c31945d80aaf34803ec"
   }
 }
