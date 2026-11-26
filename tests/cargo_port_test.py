@@ -64,6 +64,42 @@ class CargoPort(unittest.TestCase):
                 self.assertEqual(hashlib.file_digest(stream, 'sha256').hexdigest(),
                                  record[key], path.name)
 
+    def test_cargo_one_process_state(self):
+        stage = Path(os.environ.get('BREENIX_K7_STAGE', CACHE / 'stage1'))
+        cargo, libc = stage / 'bin/cargo', stage / 'lib/libc.so'
+        self.assertTrue(cargo.is_file(), 'missing hosted Cargo ELF')
+        nm = os.environ.get('LLVM_NM', 'llvm-nm')
+        symbols = {}
+        for path in (cargo, libc):
+            output = subprocess.check_output(
+                [nm, '--defined-only', '--demangle', '--format=posix', path],
+                text=True, timeout=30)
+            symbols[path.name] = [tuple(line.rsplit(maxsplit=3)[:2])
+                                  for line in output.splitlines()]
+
+        def owners(pattern):
+            return [file for file, definitions in symbols.items()
+                    for name, _ in definitions if re.fullmatch(pattern, name)]
+
+        self.assertEqual(owners('_start'), ['cargo'])
+        for name in ('environ', 'stdin', 'stdout', 'stderr', 'optarg', 'optind',
+                     'opterr', 'optopt', '__cxa_atexit', 'getauxval'):
+            self.assertEqual(owners(name), ['libc.so'], name)
+        for name in ('AUXV', 'PROCESS', 'RUNTIME_READY', 'EARLY_ERRNO', 'TLS_IMAGE',
+                     'STACK_CACHE', 'AT_EXIT'):
+            self.assertEqual(owners(r'c::.*::' + name + r'::h[0-9a-f]+(?: \(.*\))?'),
+                             ['libc.so'], name)
+
+        runtime = ('std::', 'alloc::', 'bunwind::', 'c::', '__cxxabiv1::',
+                   '__rust', '__unw', '_Unwind_', '__cxa_')
+        data = {}
+        for file, definitions in symbols.items():
+            for name, kind in definitions:
+                if kind.upper() in {'B', 'D', 'G', 'R', 'S', 'V'} and name.startswith(runtime):
+                    name = re.sub(r'::h[0-9a-f]{16}(?: \(.*\))?$', '', name)
+                    data.setdefault(name, set()).add(file)
+        self.assertEqual(sorted(name for name, files in data.items() if len(files) > 1), [])
+
     def test_x1_c_dependencies_resolve_in_libc(self):
         run = Path((CACHE / 'g2.path').read_text().strip())
         messages = Path(os.environ.get(
