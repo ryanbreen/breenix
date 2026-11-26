@@ -152,7 +152,9 @@ impl BlockDevice for MountDevice {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec::Vec;
     use core::sync::atomic::AtomicUsize;
+    use spin::Mutex;
 
     #[derive(Default)]
     struct ReadCalls {
@@ -202,6 +204,83 @@ mod tests {
         assert_eq!(cached, bytes);
         assert_eq!(calls.single.load(Ordering::Relaxed), 0);
         assert_eq!(calls.multiple.load(Ordering::Relaxed), 1);
+    }
+
+    #[derive(Default)]
+    struct WriteProbe {
+        media: Mutex<Vec<u8>>,
+        requests: Mutex<Vec<(u64, usize)>>,
+        reads: AtomicUsize,
+        fail_at: AtomicUsize,
+    }
+
+    struct WriteDisk(Arc<WriteProbe>);
+
+    impl BlockDevice for WriteDisk {
+        fn read_block(&self, start: u64, buf: &mut [u8]) -> Result<(), BlockError> {
+            self.0.reads.fetch_add(1, Ordering::Relaxed);
+            let offset = start as usize * self.block_size();
+            buf.copy_from_slice(&self.0.media.lock()[offset..offset + buf.len()]);
+            Ok(())
+        }
+
+        fn write_block(&self, start: u64, buf: &[u8]) -> Result<(), BlockError> {
+            self.write_blocks(start, 1, buf)
+        }
+
+        fn write_blocks(&self, start: u64, count: usize, buf: &[u8]) -> Result<(), BlockError> {
+            self.0.requests.lock().push((start, count));
+            let mut media = self.0.media.lock();
+            let size = self.block_size();
+            for (i, bytes) in buf.chunks_exact(size).take(count).enumerate() {
+                let block = start as usize + i;
+                media[block * size..][..size].copy_from_slice(bytes);
+                if block == self.0.fail_at.load(Ordering::Relaxed) {
+                    return Err(BlockError::IoError);
+                }
+            }
+            Ok(())
+        }
+
+        fn block_size(&self) -> usize { 512 }
+        fn num_blocks(&self) -> u64 { 8 }
+        fn flush(&self) -> Result<(), BlockError> { Ok(()) }
+    }
+
+    #[test]
+    fn cached_ext2_write_reaches_media_in_one_request() {
+        use super::super::file::{read_ext2_block, write_ext2_block};
+
+        let probe = Arc::new(WriteProbe {
+            media: Mutex::new(alloc::vec![0; 4096]),
+            fail_at: AtomicUsize::new(2),
+            ..WriteProbe::default()
+        });
+        let disk = MountDevice::new(
+            Box::new(WriteDisk(probe.clone())),
+            Arc::new(AtomicBool::new(false)),
+            true,
+        );
+        let mut bytes = [0; 4096];
+        read_ext2_block(&disk, 0, bytes.len(), &mut bytes).unwrap();
+        assert_eq!(write_ext2_block(&disk, 0, 4096, &[1; 4096]), Err(BlockError::IoError));
+        read_ext2_block(&disk, 0, bytes.len(), &mut bytes).unwrap();
+        assert_eq!(bytes[..1536], [1; 1536]);
+        assert_eq!(bytes[1536..], [0; 2560]);
+
+        probe.fail_at.store(usize::MAX, Ordering::Relaxed);
+        probe.requests.lock().clear();
+        let mut replacement = [0; 4096];
+        for (i, sector) in replacement.chunks_exact_mut(512).enumerate() {
+            sector.fill((i + 2) as u8);
+        }
+        write_ext2_block(&disk, 0, 4096, &replacement).unwrap();
+        assert_eq!(&probe.media.lock()[..], &replacement);
+        probe.reads.store(0, Ordering::Relaxed);
+        read_ext2_block(&disk, 0, bytes.len(), &mut bytes).unwrap();
+        assert_eq!(bytes, replacement);
+        assert_eq!(probe.reads.load(Ordering::Relaxed), 0);
+        assert_eq!(&*probe.requests.lock(), &[(0, 8)]);
     }
 
     struct ReadOnlyDisk(Arc<AtomicUsize>);
