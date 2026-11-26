@@ -428,6 +428,9 @@ if [ "$BUILD" -eq 1 ]; then
         echo "==> Building the production kernel"
     fi
     # Ordinary production boots use the prod-profile gate's feature set.
+    if [ "$MILESTONE" = toolchain/kernel-assembly ]; then
+        export BREENIX_KERNEL_ASSEMBLER=bas
+    fi
     run_build cargo build --release ${KERNEL_BUILD_ARGS[@]+"${KERNEL_BUILD_ARGS[@]}"} \
         ${KERNEL_FEATURES[@]+"${KERNEL_FEATURES[@]}"} --target aarch64-breenix-kernel.json \
         -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64
@@ -519,12 +522,37 @@ if [[ ",$SUITE," == *,toolchain,* ]]; then
         bundle="$toolchain_scratch/bundle"
         milestone_args=()
         [ -z "$MILESTONE" ] || milestone_args=(--milestone "$MILESTONE")
+        receipt_args=()
+        if [ "$MILESTONE" = toolchain/kernel-assembly ]; then
+            record=$(python3 - "$ROOT" "$KERNEL" <<'PYRECORD'
+import importlib.util
+from pathlib import Path
+import sys
+root, elf = map(Path, sys.argv[1:])
+spec = importlib.util.spec_from_file_location("toolchain_image", root / "scripts/toolchain-image.py")
+image = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(image)
+records = list((elf.parent / "build").glob("kernel-*/out/kernel-assembly.record"))
+matches = []
+for record in records:
+    try:
+        image.verify_kernel_elf(record, elf, "aarch64")
+        matches.append(record)
+    except (OSError, ValueError):
+        pass
+if len(matches) != 1:
+    raise SystemExit("expected exactly one kernel assembly record matching the booted ELF digest")
+print(matches[0])
+PYRECORD
+            )
+            receipt_args=(--kernel-assembly-record "$record")
+        fi
         run_build "$ROOT/scripts/build-toolchain.sh" --arch aarch64 --output "$bundle" \
             --libc "$ROOT/libs/libbreenix-libc/target/aarch64-breenix/release/libc.a" \
-            ${milestone_args[@]+"${milestone_args[@]}"}
+            ${milestone_args[@]+"${milestone_args[@]}"} ${receipt_args[@]+"${receipt_args[@]}"}
         "$ROOT/scripts/create_ext2_disk.sh" --arch aarch64 --stage-from "$DISK" --output "$WRITABLE" \
             --suite "$SUITE" --toolchain-bundle "$bundle" ${milestone_args[@]+"${milestone_args[@]}"}
-        if [ "$MILESTONE" = toolchain/busybox-on-box ]; then
+        if [[ "$MILESTONE" = toolchain/busybox-on-box || "$MILESTONE" = toolchain/kernel-assembly ]]; then
             mv "$bundle/toolchain-scratch.img" "$(dirname "$WRITABLE")/toolchain-scratch.img"
         fi
         cp "$bundle/build.json" "$SERIAL_LOG.toolchain-build.json"
@@ -800,7 +828,7 @@ if [ "$MODE" = program ] && [ -n "$TERMINAL_PROFILE" ]; then
     WATCH_MODE=default
 fi
 WATCH_READY_ARGS=()
-if [ "$MILESTONE" = toolchain/busybox-on-box ] && [ "$GATE_TIMEOUT_EXPLICIT" -eq 0 ]; then
+if [[ "$MILESTONE" = toolchain/busybox-on-box || "$MILESTONE" = toolchain/kernel-assembly ]] && [ "$GATE_TIMEOUT_EXPLICIT" -eq 0 ]; then
     SUITE_DEADLINES=$(python3 "$ROOT/scripts/suite-deadlines.py" --arch aarch64 "$SUITE")
     WATCH_READY_ARGS+=(--suite-deadlines "$SUITE_DEADLINES")
 fi

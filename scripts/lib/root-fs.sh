@@ -18,7 +18,7 @@ root_fs_prepare() {
 root_fs_scratch() {
     BREENFS_SCRATCH_ARGS=()
     local scratch
-    if [ "$MODE" = suite ] && [ "${MILESTONE:-}" = toolchain/busybox-on-box ]; then
+    if [ "$MODE" = suite ] && [[ "${MILESTONE:-}" = toolchain/busybox-on-box || "${MILESTONE:-}" = toolchain/kernel-assembly ]]; then
         scratch="${WRITABLE%/*}/toolchain-scratch.img"
     elif [ "$MODE" = suite ] && [[ ",$SUITE," == *,filesystem,* ]]; then
         scratch="${WRITABLE%/*}/breenfs-scratch.img"
