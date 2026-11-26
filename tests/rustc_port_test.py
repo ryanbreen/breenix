@@ -25,13 +25,13 @@ NIX_PATCH = RECORDS.parent / 'k5/patches/nix-0.30.1-breenix.patch'
 ERRNO_PATCH = RECORDS.parent / 'k5/patches/errno-0.3.12-breenix.patch'
 
 
+sys.path.insert(0, str(ROOT / "scripts/rust-host"))
+from rustc_port import guest_environment
+
+
 def git(*args, tree=TREE):
     return subprocess.run(['git', '-C', str(tree), *args], text=True,
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True).stdout.strip()
-
-
-def guest_environment(targets):
-    return {"RUST_TARGET_PATH": str(targets)}
 
 
 class RustcPort(unittest.TestCase):

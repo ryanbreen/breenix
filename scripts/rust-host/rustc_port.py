@@ -25,6 +25,11 @@ VERSION_KEYS = ('release', 'commit-hash', 'commit-date', 'LLVM version')
 DRIVER_NAME = re.compile(r'librustc_driver-[0-9a-f]+\.so')
 
 
+def guest_environment(targets):
+    """Build the environment used by suite_rustc.rs for compiler spawns."""
+    return {"RUST_TARGET_PATH": str(targets)}
+
+
 def output(*args):
     return subprocess.check_output(args, text=True, timeout=30).strip()
 
