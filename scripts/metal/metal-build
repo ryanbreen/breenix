@@ -551,7 +551,9 @@ def inner(args):
                 return 1
             kernel_image = images[-1]
         shutil.copyfile(kernel_image, out / 'uefi.img')
-        shutil.copyfile(root, out / 'ext2.img')
+        # The self-host fixture already holds the hosted runtime and bundle.
+        # Keep the ordinary root artifact free of a second copy.
+        shutil.copyfile(seed if self_host else root, out / 'ext2.img')
         if args.features == 'testing':
             shutil.copyfile(clone / TEST_BINARIES, out / 'test-binaries.img')
         copied = []
