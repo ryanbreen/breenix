@@ -30,6 +30,8 @@ pub(crate) struct Script {
     pub(crate) base: u64,
     pub(crate) explicit: bool,
     pub(crate) tls: bool,
+    pub(crate) eh_frame: bool,
+    pub(crate) implicit_unwind_outputs: usize,
     pub(crate) rules: Vec<Rule>,
 }
 
@@ -40,6 +42,8 @@ impl Default for Script {
             base: IMAGE_BASE,
             explicit: false,
             tls: true,
+            eh_frame: true,
+            implicit_unwind_outputs: 0,
             rules: Vec::new(),
         }
     }
@@ -75,6 +79,47 @@ impl Script {
             ));
         }
         Ok(script)
+    }
+
+    pub(crate) fn unwind_output(&mut self, name: &[u8]) -> Result<(usize, usize)> {
+        let mut matching = self
+            .rules
+            .iter_mut()
+            .enumerate()
+            .filter(|(_, rule)| rule.name == name);
+        if let Some((index, rule)) = matching.next() {
+            if matching.next().is_some() {
+                return Err(format!(
+                    "bld: multiple {} output rules",
+                    crate::display(name)
+                ));
+            }
+            if rule.load != LoadRole::Rodata {
+                return Err(format!(
+                    "bld: {} must be in the read-only load",
+                    crate::display(name)
+                ));
+            }
+            let selector = rule.selectors.len();
+            rule.selectors.push(Selector {
+                patterns: Vec::new(),
+                keep: false,
+            });
+            return Ok((index, selector));
+        }
+        let index = self.rules.len();
+        self.implicit_unwind_outputs += 1;
+        self.rules.push(Rule {
+            name: name.to_vec(),
+            align: 0,
+            load: LoadRole::Rodata,
+            tls: false,
+            selectors: vec![Selector {
+                patterns: Vec::new(),
+                keep: false,
+            }],
+        });
+        Ok((index, 0))
     }
 
     pub(crate) fn match_section(&self, name: &[u8]) -> Option<(usize, usize)> {
@@ -182,10 +227,10 @@ impl<'a> Parser<'a> {
         Ok(value)
     }
 
-    fn phdrs(&mut self) -> Parsed<[Option<&'a [u8]>; 5]> {
+    fn phdrs(&mut self) -> Parsed<[Option<&'a [u8]>; 6]> {
         self.take(b"PHDRS")?;
         self.take(b"{")?;
-        let mut names = [None; 5];
+        let mut names = [None; 6];
         while self.token != b"}" {
             let name = self.word()?;
             let kind = self.word()?;
@@ -194,10 +239,15 @@ impl<'a> Parser<'a> {
                 self.take(b"FILEHDR")?;
                 self.take(b"PHDRS")?;
             }
-            self.take(b"FLAGS")?;
-            self.take(b"(")?;
-            let flags = self.number()?;
-            self.take(b")")?;
+            let flags = if kind == b"PT_GNU_EH_FRAME" && self.token == b";" {
+                4
+            } else {
+                self.take(b"FLAGS")?;
+                self.take(b"(")?;
+                let flags = self.number()?;
+                self.take(b")")?;
+                flags
+            };
             self.take(b";")?;
             let role = match (kind, flags, headers) {
                 (b"PT_LOAD", 5, true) => 0,
@@ -205,6 +255,7 @@ impl<'a> Parser<'a> {
                 (b"PT_LOAD", 6, false) => 2,
                 (b"PT_TLS", 4, false) => 3,
                 (b"PT_GNU_STACK", 6, false) => 4,
+                (b"PT_GNU_EH_FRAME", 4, false) => 5,
                 _ => return Err(()),
             };
             if names[role].is_some() || names.contains(&Some(name)) {
@@ -238,7 +289,7 @@ impl<'a> Parser<'a> {
         Ok(Selector { patterns, keep })
     }
 
-    fn rule(&mut self, names: [Option<&[u8]>; 5]) -> Parsed<Rule> {
+    fn rule(&mut self, names: [Option<&[u8]>; 6]) -> Parsed<Rule> {
         let name = self.word()?.to_vec();
         self.take(b":")?;
         let align = if self.token == b"ALIGN" {
@@ -266,13 +317,15 @@ impl<'a> Parser<'a> {
             .zip(names)
             .find_map(|(role, name)| (name == Some(segment)).then_some(role))
             .ok_or(())?;
-        let tls = self.token == b":";
-        if tls {
-            if load != LoadRole::Data {
-                return Err(());
-            }
+        let mut tls = false;
+        if self.token == b":" {
             self.take(b":")?;
-            self.take(names[3].ok_or(())?)?;
+            let segment = self.word()?;
+            match (load, name.as_slice()) {
+                (LoadRole::Data, _) if names[3] == Some(segment) => tls = true,
+                (LoadRole::Rodata, b".eh_frame_hdr") if names[5] == Some(segment) => {}
+                _ => return Err(()),
+            }
         }
         Ok(Rule {
             name,
@@ -310,6 +363,8 @@ impl<'a> Parser<'a> {
             base,
             explicit: true,
             tls: names[3].is_some(),
+            eh_frame: names[5].is_some(),
+            implicit_unwind_outputs: 0,
             rules,
         })
     }

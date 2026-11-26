@@ -11,6 +11,7 @@ use bobj::elf::{
     STB_LOCAL, STB_WEAK,
 };
 
+use crate::eh_frame::Frames;
 use crate::input::{read_file, ReadSource};
 use crate::script::Script;
 use crate::{align_up, display, Input, Machine, Result};
@@ -24,6 +25,8 @@ pub(crate) struct Section {
     pub(crate) output_offset: u64,
     pub(crate) live: bool,
     pub(crate) discarded: bool,
+    pub(crate) managed_frame: bool,
+    pub(crate) replacement_data: Option<Vec<u8>>,
     pub(crate) group: Option<usize>,
     pub(crate) relocation_tables: Vec<usize>,
 }
@@ -255,7 +258,10 @@ impl Object {
         Ok(())
     }
 
-    pub(crate) fn data(&self, section: &Section) -> Option<&[u8]> {
+    pub(crate) fn data<'a>(&'a self, section: &'a Section) -> Option<&'a [u8]> {
+        if let Some(data) = &section.replacement_data {
+            return Some(data);
+        }
         let (bytes, start) = self.backing.as_ref()?;
         // bobj has validated the payload range of each file-backed section.
         let offset = *start + section.header.offset as usize;
@@ -550,7 +556,7 @@ impl Link {
 
     fn mark_live(&mut self, id: SectionId, pending: &mut Vec<SectionId>) {
         let section = &mut self.objects[id.0].sections[id.1];
-        if !section.live && section.eligible() {
+        if !section.live && section.eligible() && !section.managed_frame {
             section.live = true;
             pending.push(id);
         }
@@ -580,11 +586,11 @@ impl Link {
         }
     }
 
-    pub(crate) fn select_live_sections(&mut self) {
+    pub(crate) fn select_live_sections(&mut self, frames: Option<&Frames>) {
         let mut pending = Vec::new();
         for (object_id, object) in self.objects.iter_mut().enumerate() {
             for (index, section) in object.sections.iter_mut().enumerate().skip(1) {
-                if !section.eligible() {
+                if !section.eligible() || section.managed_frame {
                     continue;
                 }
                 section.output = self.script.match_section(&section.name);
@@ -616,7 +622,13 @@ impl Link {
             }
         }
         let mut visited_groups = HashSet::new();
+        let mut visited_cies = HashSet::new();
         while let Some((object, section)) = pending.pop() {
+            if let Some(frames) = frames {
+                for (owner, symbol) in frames.dependencies((object, section), &mut visited_cies) {
+                    self.mark_symbol(owner, symbol as usize, &mut pending);
+                }
+            }
             if let Some(group) = self.objects[object].sections[section].group {
                 if visited_groups.insert((object, group)) {
                     for index in 0..self.objects[object].groups[group].members.len() {

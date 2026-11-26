@@ -2,6 +2,7 @@
 
 //! Static and relocatable ELF64 links from objects and common archives.
 
+mod eh_frame;
 mod input;
 mod layout;
 mod object;
@@ -55,7 +56,7 @@ impl Machine {
     }
 }
 
-const USAGE: &str = "usage: bld -o OUTPUT [-nostdlib] [-r | [-T SCRIPT] [--gc-sections]] [-Map FILE]\n\
+const USAGE: &str = "usage: bld -o OUTPUT [-nostdlib] [-r | [-T SCRIPT] [--gc-sections] [--eh-frame-hdr]] [-Map FILE]\n\
        \x20      [--whole-archive | --no-whole-archive | --start-group |\n\
        \x20       --end-group | OBJECT | ARCHIVE] ...";
 
@@ -71,6 +72,7 @@ struct Options {
     map: Option<PathBuf>,
     inputs: Vec<Vec<Input>>,
     gc: bool,
+    eh_frame_hdr: bool,
     relocatable: bool,
 }
 
@@ -97,6 +99,10 @@ impl Options {
                 // GNU ld 2.45 §2.1 disables implicit library search.
                 // bld opens only the input paths provided on the command line.
                 b"-nostdlib" => continue,
+                b"--eh-frame-hdr" => {
+                    options.eh_frame_hdr = true;
+                    continue;
+                }
                 b"--gc-sections" => {
                     options.gc = true;
                     continue;
@@ -158,6 +164,9 @@ impl Options {
         if options.relocatable && (options.script.is_some() || options.gc) {
             return Err("bld: -r cannot be combined with -T or --gc-sections".into());
         }
+        if options.relocatable && options.eh_frame_hdr {
+            return Err("bld: -r cannot be combined with --eh-frame-hdr".into());
+        }
         Ok(options)
     }
 }
@@ -215,12 +224,23 @@ fn link(options: Options, source: &mut dyn ReadSource) -> Result<()> {
             "relocatable object",
         )
     } else {
-        link.select_live_sections();
+        let frames = options
+            .eh_frame_hdr
+            .then(|| eh_frame::Frames::read(&mut link))
+            .transpose()?;
+        link.select_live_sections(frames.as_ref());
+        let index = frames
+            .map(|frames| frames.compact(&mut link))
+            .transpose()?
+            .flatten();
         link.allocate_common()?;
         link.allocate_got()?;
-        let mut image = layout::Image::new(&mut link)?;
+        let mut image = layout::Image::new(&mut link, index.as_ref())?;
         let entry = link.entry_address()?;
         link.relocate(&mut image)?;
+        if let Some(index) = index {
+            index.write(&link, &mut image)?;
+        }
         image.write_headers(&link, entry);
         (image.bytes, 0o777, "executable")
     };

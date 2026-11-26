@@ -8,6 +8,7 @@ use bobj::elf::{
     SHT_PROGBITS, SHT_STRTAB,
 };
 
+use crate::eh_frame::{self, Index, PT_GNU_EH_FRAME};
 use crate::object::{Link, Section, SectionId};
 use crate::relocate::{veneer_skip, VENEER_SIZE};
 use crate::script::LoadRole;
@@ -15,7 +16,7 @@ use crate::{align_up, Machine, Result, IMAGE_BASE, PAGE_SIZE};
 
 const SHF_MERGE: u64 = 0x10;
 const SHF_STRINGS: u64 = 0x20;
-const SHT_X86_64_UNWIND: u32 = 0x7000_0001; // AMD64 psABI §4.2.2, Table 4.2.
+pub(crate) const SHT_X86_64_UNWIND: u32 = 0x7000_0001; // AMD64 psABI §4.2.2, Table 4.2.
 const LOAD_COUNT: usize = 3;
 
 // One pool per caller input section, keyed by symbol and addend so a B and
@@ -77,7 +78,7 @@ struct Layout {
 }
 
 impl Layout {
-    fn prepare(link: &mut Link) -> Result<Self> {
+    fn prepare(link: &mut Link, index: Option<&Index>) -> Result<Self> {
         let mut layout = Self {
             outputs: (0..link.script.rules.len()).map(|_| None).collect(),
             orphans: std::array::from_fn(|_| Vec::new()),
@@ -92,6 +93,17 @@ impl Layout {
                     continue;
                 }
                 let id = (object_id, section_id);
+                if let (Some(_), Some((rule, selector))) = (index, section.output) {
+                    let rule = &link.script.rules[rule];
+                    if matches!(rule.name.as_slice(), eh_frame::FRAME | eh_frame::HEADER)
+                        && selector + 1 != rule.selectors.len()
+                    {
+                        return Err(object.section_error(
+                            &object.sections[section_id],
+                            "input would mix with a generated unwind section",
+                        ));
+                    }
+                }
                 let result = layout.include(&link.script, id, section);
                 if let Err(reason) = result {
                     return Err(object.section_error(&object.sections[section_id], reason));
@@ -99,7 +111,8 @@ impl Layout {
             }
         }
         let mut previous = Phase::Text;
-        for output in layout.outputs.iter().flatten() {
+        let scripted = layout.outputs.len() - link.script.implicit_unwind_outputs;
+        for output in layout.outputs[..scripted].iter().flatten() {
             if output.phase < previous {
                 let object = &link.objects[output.origin.0];
                 return Err(object.section_error(
@@ -273,10 +286,14 @@ impl Layout {
         }))
     }
 
-    fn place_loads(&mut self, link: &mut Link) -> Result<([Load; LOAD_COUNT], Option<Tls>)> {
+    fn place_loads(
+        &mut self,
+        link: &mut Link,
+        eh_frame: bool,
+    ) -> Result<([Load; LOAD_COUNT], Option<Tls>)> {
         let base = link.script.base;
         let overflow = "bld: cannot lay out executable";
-        let programs = LOAD_COUNT + 1 + usize::from(self.tls_align != 0);
+        let programs = LOAD_COUNT + 1 + usize::from(self.tls_align != 0) + usize::from(eh_frame);
         let mut position = (Header::SIZE + programs * ProgramHeader::SIZE) as u64;
         if !link.script.explicit {
             position = align_up(position, PAGE_SIZE).ok_or(overflow)?;
@@ -389,17 +406,21 @@ pub(crate) struct Image {
     layout: Layout,
     loads: [Load; LOAD_COUNT],
     tls: Option<Tls>,
+    eh_frame: Option<SectionId>,
     strings: usize,
     headers: usize,
     pub(crate) bytes: Vec<u8>,
 }
 
 impl Image {
-    pub(crate) fn new(link: &mut Link) -> Result<Self> {
-        let mut layout = Layout::prepare(link)?;
+    pub(crate) fn new(link: &mut Link, index: Option<&Index>) -> Result<Self> {
+        let eh_frame = index
+            .filter(|_| link.script.eh_frame)
+            .map(|index| index.header);
+        let mut layout = Layout::prepare(link, index)?;
         let overflow = "bld: cannot lay out executable";
         let (loads, tls) = loop {
-            let placed = layout.place_loads(link)?;
+            let placed = layout.place_loads(link, eh_frame.is_some())?;
             // Adding a pool can move a later source or destination across
             // the branch limit. Each pass reserves only newly needed entries.
             if link.machine() != Machine::Aarch64
@@ -444,6 +465,7 @@ impl Image {
             layout,
             loads,
             tls,
+            eh_frame,
             strings,
             headers,
             bytes,
@@ -468,7 +490,10 @@ impl Image {
         let mut header = Header::new(ET_EXEC, link.machine().elf());
         header.entry = entry;
         header.program_offset = Header::SIZE as u64;
-        header.program_count = (LOAD_COUNT + 1 + usize::from(self.tls.is_some())) as u16;
+        header.program_count = (LOAD_COUNT
+            + 1
+            + usize::from(self.tls.is_some())
+            + usize::from(self.eh_frame.is_some())) as u16;
         header.section_offset = self.headers as u64;
         header.section_count = count;
         header.section_names = count - 1;
@@ -488,13 +513,33 @@ impl Image {
             }
             header
         });
+        let eh_frame = self.eh_frame.map(|id| {
+            let (rule, _) = link.section(id).output.expect("index has an output rule");
+            let section = self.layout.outputs[rule]
+                .as_ref()
+                .expect("placed index")
+                .header;
+            let offset = section.offset;
+            let end = offset + section.size;
+            Load {
+                offset,
+                file_end: end,
+                memory_end: end,
+            }
+            .header(PT_GNU_EH_FRAME, PF_R, base, section.alignment)
+        });
         // LSB Core 5.0 §11.2: p_flags specifies stack permissions.
         let stack = ProgramHeader {
             kind: PT_GNU_STACK,
             flags: PF_R | PF_W,
             ..ProgramHeader::default()
         };
-        for (index, header) in programs.chain(tls).chain([stack]).enumerate() {
+        for (index, header) in programs
+            .chain(tls)
+            .chain(eh_frame)
+            .chain([stack])
+            .enumerate()
+        {
             let start = Header::SIZE + index * ProgramHeader::SIZE;
             self.bytes[start..start + ProgramHeader::SIZE].copy_from_slice(&header.to_bytes());
         }
