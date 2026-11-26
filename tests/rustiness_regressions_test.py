@@ -13,7 +13,7 @@ SYSCALL = ROOT / "kernel/src/syscall"
 BUILD = ROOT / "target/rustiness-host"
 TASKPOLICY = ["taskpolicy", "-b"] if sys.platform == "darwin" else []
 
-# All addresses refer to ordinary host allocations. The layout shim labels one
+# The test addresses are ordinary host allocations. The layout shim labels one
 # as kernel memory, and the uaccess shim reports bytes left at a simulated
 # mapping boundary, just as the architecture-specific copy routine would.
 UACCESS = r"""

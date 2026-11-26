@@ -194,8 +194,9 @@ pub fn load_elf_at_base(data: &[u8], base_offset: VirtAddr) -> Result<LoadedElf,
         return Err("ELF file too small");
     }
 
-    // SAFETY: The length check above covers the header. Its integer fields
-    // admit all bit patterns, and the byte slice may be unaligned.
+    // SAFETY: The length check above covers the header. Its fields are
+    // integers, so any bit pattern is a valid value, and read_unaligned
+    // accepts a byte slice with alignment 1.
     let header = unsafe { data.as_ptr().cast::<Elf64Header>().read_unaligned() };
 
     log::trace!("ELF header loaded");
@@ -250,8 +251,9 @@ pub fn load_elf_at_base(data: &[u8], base_offset: VirtAddr) -> Result<LoadedElf,
     for i in 0..ph_count {
         let ph_start = program_header_offset(&header, i, data.len())?;
 
-        // SAFETY: program_header_offset checked the full record. All fields
-        // are integers and read_unaligned does not borrow the source as a header.
+        // SAFETY: program_header_offset checked the full record. Its fields
+        // are integers, and read_unaligned copies out an owned value without
+        // borrowing the bytes as a header.
         let ph = unsafe { data[ph_start..].as_ptr().cast::<Elf64ProgramHeader>().read_unaligned() };
 
         // Check for PT_PHDR segment
@@ -456,8 +458,9 @@ pub fn load_elf_into_page_table(
         return Err("Data too small for ELF header");
     }
 
-    // SAFETY: The length check above covers the header. Its integer fields
-    // admit all bit patterns, and the byte slice may be unaligned.
+    // SAFETY: The length check above covers the header. Its fields are
+    // integers, so any bit pattern is a valid value, and read_unaligned
+    // accepts a byte slice with alignment 1.
     let header = unsafe { data.as_ptr().cast::<Elf64Header>().read_unaligned() };
 
     // Validate ELF header
@@ -487,8 +490,9 @@ pub fn load_elf_into_page_table(
     for i in 0..header.phnum {
         let ph_start = program_header_offset(&header, i as usize, data.len())?;
 
-        // SAFETY: program_header_offset checked the full record. All fields
-        // are integers and read_unaligned does not borrow the source as a header.
+        // SAFETY: program_header_offset checked the full record. Its fields
+        // are integers, and read_unaligned copies out an owned value without
+        // borrowing the bytes as a header.
         let ph = unsafe { data[ph_start..].as_ptr().cast::<Elf64ProgramHeader>().read_unaligned() };
 
         // Check for PT_PHDR segment
