@@ -1,0 +1,63 @@
+RUN /usr/bin/gpu_fault_acceptance START
+123456789SC
+[DATA_ABORT] FAR=0x700000000000 ELR=0xffff000040a82cd8 ESR=0x96000044 DFSC=0x4 TTBR0=0x1000049119000 from_el0=0
+
+[FATAL_REGS] label=DATA_ABORT cpu=1 spsr=0x62000305 esr=0x96000044 far=0x700000000000 elr=0xffff000040a82cd8 sp=0xffff0000583319f0
+  x0=0x2 x1=0x1 x2=0x1 x3=0x7ffff9fed030
+  x4=0x0 x5=0x0 x6=0x0 x7=0x0
+  x8=0x700000000000 x9=0xffff000011007000 x10=0x9000000 x11=0x0
+  x12=0xffffffff x13=0x0 x14=0x0 x15=0xe551
+  x16=0x51 x17=0x64 x18=0x0 x19=0xffff000058331d60
+  x20=0x7fff0000 x21=0xffff0000519eda10 x22=0x7fff0000 x23=0xffff000058331f10
+  x24=0xffff000058331ef0 x25=0x2 x26=0xffff000058331f08 x27=0x0
+  x28=0x9a x29=0xffff000058331ef8 x30=0xffff0000409d9fa4
+  DISPATCH_TRACE cpu=1:
+  [0] R old=12->tid=11 elr=0xffff0000408acab0 spsr=0x0 x30=0xffff0000408acab0 sp=0xffff0000582a9a50
+  [1] I old=11->tid=12 elr=0xffff0000408ada94 spsr=0x5 x30=0x0 sp=0xffff000043400000
+  [2] K old=12->tid=7 elr=0xffff0000408edb3c spsr=0xa0000005 x30=0xffff0000408edb40 sp=0xffff000058265f20
+  [3] I old=7->tid=12 elr=0xffff0000408ada94 spsr=0x5 x30=0x0 sp=0xffff000043400000
+  [4] R old=12->tid=18 elr=0xffff0000408acab0 spsr=0x0 x30=0xffff0000408acab0 sp=0xffff0000582ed700
+  [5] K old=18->tid=20 elr=0xffff000040890dbc spsr=0x82000305 x30=0xffff0000408acab0 sp=0xffff00005830e7e0
+  [6] I old=20->tid=12 elr=0xffff0000408ada94 spsr=0x5 x30=0x0 sp=0xffff000043400000
+  [7] U old=12->tid=23 elr=0x40005370 spsr=0x80000000 x30=0x40005304 sp=0xffff000058332000
+  cpu=1
+  x19=0xffff000058331d60 x20=0x7fff0000 x8=0x700000000000 x9=0xffff000011007000 x29=0xffff000058331ef8 x30=0xffff0000409d9fa4 sp=0xffff0000583319f0 tid=23 name=/usr/bin/gpu_fault_acceptance_main
+  percpu_kst=0xffff000058332000 user_rsp_scratch=0xffff0000583319f0 thread_kst=0xffff000058332000
+  AHCI arm port=4294967295 cmd=0 isr port=4294967295 cmd=0 waiter_tid=0
+  STACK=alloc_kstack slot=17 last_dispatched_tid=23
+[FATAL_POSTMORTEM] cpu=1 label=DATA_ABORT
+  [370] reason=1(IDLE_DISPATCH) idle_thread=1 current_thread=1->1
+GPU_FAULT_TEST user syscall=0x7fff0000 handoff=1
+  [371] reason=1(IDLE_DISPATCH) idle_thread=1 current_thread=1->1
+[DATA_ABORT] deferring process cleanup
+[DATA_ABORT] deferred_tid=23 queued=1
+GPU_FAULT_TEST recovered signal=11 kernel=running handoff=1
+[GPU_FAULT_TEST kernel privilege=kernel handoff=1]
+
+[DATA_ABORT] FAR=0x700000001000 ELR=0xffff000040a830a0 ESR=0x96000004 DFSC=0x4 TTBR0=0x1000045035000 from_el0=0
+
+[FATAL_REGS] label=DATA_ABORT cpu=3 spsr=0x60000005 esr=0x96000004 far=0x700000001000 elr=0xffff000040a830a0 sp=0xffff000058342b50
+  x0=0xffff000058342ae0 x1=0xffff000040e5c3a3 x2=0x33 x3=0x0
+  x4=0xffff000058342ac0 x5=0x0 x6=0x0 x7=0x0
+  x8=0x700000001000 x9=0x2334 x10=0x2335 x11=0x0
+  x12=0xa795d x13=0xa795d x14=0xb90ee x15=0xb
+  x16=0xffff000041bb3650 x17=0xffff000000000005 x18=0xffff000041bb3000 x19=0xffff000058342b60
+  x20=0x0 x21=0x0 x22=0x100 x23=0x0
+  x24=0x0 x25=0x0 x26=0x0 x27=0x0
+  x28=0x0 x29=0x0 x30=0xffff000040a82f64
+  DISPATCH_TRACE cpu=3:
+  [0] I old=11->tid=14 elr=0xffff0000408ada94 spsr=0x5 x30=0x0 sp=0xffff000043800000
+  [1] R old=14->tid=11 elr=0xffff0000408acab0 spsr=0x0 x30=0xffff0000408acab0 sp=0xffff0000582a9a50
+  [2] I old=11->tid=14 elr=0xffff0000408ada94 spsr=0x5 x30=0x0 sp=0xffff000043800000
+  [3] R old=14->tid=11 elr=0xffff0000408acab0 spsr=0x0 x30=0xffff0000408acab0 sp=0xffff0000582a9a50
+  [4] I old=11->tid=14 elr=0xffff0000408ada94 spsr=0x5 x30=0x0 sp=0xffff000043800000
+  [5] R old=14->tid=11 elr=0xffff0000408acab0 spsr=0x0 x30=0xffff0000408acab0 sp=0xffff0000582a9a50
+  [6] I old=11->tid=14 elr=0xffff0000408ada94 spsr=0x5 x30=0x0 sp=0xffff000043800000
+  [7] K old=14->tid=25 elr=0xffff000040855e4c spsr=0x5 x30=0xffff000040855e4c sp=0xffff000058343000
+  cpu=3
+  x19=0xffff000058342b60 x20=0x0 x8=0x700000001000 x9=0x2334 x29=0x0 x30=0xffff000040a82f64 sp=0xffff000058342b50 tid=25 name=gpu-fault-test
+  percpu_kst=0xffff000058343000 user_rsp_scratch=0xffff000058342b50 thread_kst=0xffff000058343000
+  AHCI arm port=4294967295 cmd=0 isr port=4294967295 cmd=0 waiter_tid=0
+  STACK=alloc_kstack slot=18 last_dispatched_tid=25
+[FATAL_POSTMORTEM] cpu=3 label=DATA_ABORT
+[GPU_PANIC_SCREEN shown=1 observed=1 pixels=4096000 mismatches=0]
