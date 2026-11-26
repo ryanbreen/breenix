@@ -102,7 +102,16 @@ class RustLinkImageStageTest(unittest.TestCase):
                       and path.rsplit('/', 1)[-1] not in ('bld', 'expect.json'))
         payload += sum((artifacts / name).stat().st_size for name in files)
         payload += (RECORDS / 'k6/expect.json').stat().st_size
-        self.assertEqual(image.stat().st_size - before, 2 * payload + 16 * 1024 * 1024)
+        dumpe2fs, = STAGE.require_e2fsprogs('dumpe2fs')
+        summary = subprocess.check_output([dumpe2fs, '-h', image], text=True,
+                                          stderr=subprocess.DEVNULL)
+        superblock = dict(line.split(':', 1) for line in summary.splitlines() if ':' in line)
+        block_size = int(superblock['Block size'])
+        headroom = 16 * 1024 * 1024
+        requested = before + 2 * payload + headroom
+        blocks, partial = divmod(requested, block_size)
+        self.assertEqual(image.stat().st_size, (blocks + bool(partial)) * block_size)
+        self.assertGreaterEqual(int(superblock['Free blocks']) * block_size, headroom)
 
         # Give staging the wrong unwinder without changing the retained capture.
         altered = self.root / 'altered'
