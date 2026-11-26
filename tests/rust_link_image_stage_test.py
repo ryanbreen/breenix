@@ -77,6 +77,9 @@ class RustLinkImageStageTest(unittest.TestCase):
         k5 = read_json(RECORDS / 'k5/x86_64.json')
         k6 = read_json(RECORDS / 'k6/x86_64.json')
         expect = read_json(RECORDS / 'k6/expect.json')
+        metadata = expect['metadata']['archive']
+        write(self.root / 'toolchain/rust-host/k6', metadata,
+              (RECORDS / 'k6' / metadata).read_bytes())
         prefix = f'{PREFIX}/rust-link'
         expected = {'/sbin/suite-rust-link': files['suite-rust-link'], f'{prefix}/bin/bld': files['bld']}
         expected.update({f'{prefix}/{name}': row['sha256'] for name, row in k6['inputs'].items()})
@@ -88,6 +91,7 @@ class RustLinkImageStageTest(unittest.TestCase):
             expected[f'{prefix}/links/{name}/argv.json'] = digest(argv.read_bytes())
             expected[f'{prefix}/links/{name}/reference.elf'] = link['reference_sha256']
         expected[f"{prefix}/{expect['control']['archive']}"] = expect['control']['sha256']
+        expected[f'{prefix}/{metadata}'] = expect['metadata']['sha256']
         for name in ('x86_64.json', 'expect.json'):
             expected[f'{prefix}/{name}'] = digest((RECORDS / 'k6' / name).read_bytes())
 
@@ -99,7 +103,9 @@ class RustLinkImageStageTest(unittest.TestCase):
                 self.assertEqual(self.readback(image, path), sha)
         payload = sum((FIXTURE / path.removeprefix(prefix + '/')).stat().st_size
                       for path in expected if path.startswith(prefix + '/')
-                      and path.rsplit('/', 1)[-1] not in ('bld', 'expect.json'))
+                      and path not in (f'{prefix}/bin/bld', f'{prefix}/expect.json',
+                                       f'{prefix}/{metadata}'))
+        payload += (RECORDS / 'k6' / metadata).stat().st_size
         payload += sum((artifacts / name).stat().st_size for name in files)
         payload += (RECORDS / 'k6/expect.json').stat().st_size
         dumpe2fs, = STAGE.require_e2fsprogs('dumpe2fs')

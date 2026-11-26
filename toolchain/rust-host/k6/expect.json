@@ -7,6 +7,10 @@
     "bld_sha256": "9175a1ccb666c2e2303898bd751b40f6747a7142829c3dadbe7ee0ce813e2548",
     "reference_sha256": "a1ae13708e4c1a8b63275894f375474b4a9d0479561a66ff7bd61043a50f64e1"
   },
+  "metadata": {
+    "archive": "control/raw-metadata.rlib",
+    "sha256": "fa0f50e5b861a18336a7062f9062db80331859d7e2f77f83be8a2be1be7043ff"
+  },
   "control": {
     "original": "sysroot/lib/rustlib/x86_64-breenix/lib/libstd-d5c991d6609a6050.rlib",
     "archive": "control/non-elf.rlib",

@@ -31,3 +31,28 @@ class RustLinkSuite(unittest.TestCase):
                 self.assertEqual(hashlib.sha256(output.read_bytes()).hexdigest(), expect[name]['bld_sha256'])
                 reference = FIXTURE / record['links'][name]['argv'][record['links'][name]['argv'].index('-o') + 1]
                 self.assertEqual(hashlib.sha256(reference.read_bytes()).hexdigest(), expect[name]['reference_sha256'])
+
+    def test_rlib_members_skipped(self):
+        records = ROOT / 'toolchain/rust-host/k6'
+        expect = json.loads((records / 'expect.json').read_text())
+        record = json.loads((records / 'x86_64.json').read_text())
+        bld = Path(os.environ.get('BREENIX_K6_BLD', ROOT / 'toolchain/target/release/bld')).resolve()
+        metadata = records / expect['metadata']['archive']
+        control = expect['control']
+        with tempfile.TemporaryDirectory() as directory:
+            args = record['links']['panic-abort']['argv'].copy()
+            destination = args.index('-o') + 1
+            positive = Path(directory) / 'positive'
+            args[destination] = str(positive)
+            subprocess.run([str(bld), *args, '--whole-archive', str(metadata), '--no-whole-archive'],
+                           cwd=FIXTURE, env={}, check=True)
+            self.assertEqual(hashlib.sha256(positive.read_bytes()).hexdigest(),
+                             expect['panic-abort']['bld_sha256'])
+
+            negative = Path(directory) / 'control'
+            args[destination] = str(negative)
+            args[args.index(control['original'])] = control['archive']
+            result = subprocess.run([str(bld), *args], cwd=FIXTURE, env={}, capture_output=True)
+            self.assertGreater(result.returncode, 0)
+            self.assertEqual(result.stderr, control['diagnostic'].encode())
+            self.assertFalse(negative.exists())
