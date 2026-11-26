@@ -1,6 +1,150 @@
 #![forbid(unsafe_code)]
 
 use bas::{assemble_for, Target};
+use bobj::elf::{Elf, SHN_UNDEF, STB_LOCAL, STT_NOTYPE};
+
+fn section_index(elf: &Elf<'_>, name: &[u8]) -> usize {
+    (1..elf.section_count())
+        .find(|&index| elf.section_name(index).unwrap() == name)
+        .unwrap_or_else(|| panic!("missing section {}", String::from_utf8_lossy(name)))
+}
+
+#[test]
+fn privileged_a64_encodings() {
+    let source = include_bytes!("../../corpus/kernel-asm/privileged-a64.s");
+    let expected: Vec<u8> = include_str!("../../corpus/kernel-asm/privileged-a64.hex")
+        .lines()
+        .flat_map(|line| line.split('#').next().unwrap().split_ascii_whitespace())
+        .map(|byte| u8::from_str_radix(byte, 16).unwrap())
+        .collect();
+    let actual = assemble_for(Target::Aarch64, source).expect("privileged A64 encodings");
+    let elf = Elf::parse(&actual).unwrap();
+    let text = elf
+        .section_data(section_index(&elf, b".text"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(text, expected);
+}
+
+#[test]
+fn literal_pool_load_relocates_abs64() {
+    let source = b"
+.extern external
+.equ VALUE, (1 << 63) | 0x42
+.section .text.boot
+    ldr x8, =external + 16
+    ldr x9, =VALUE
+.section .text.syscall
+    ldr x10, =local - 8
+    ret
+.section .text.boot
+    ret
+.section .rodata
+local:
+    .quad 0
+";
+    let actual = assemble_for(Target::Aarch64, source).expect("section-local literal pools");
+    let elf = Elf::parse(&actual).unwrap();
+    let boot = section_index(&elf, b".text.boot");
+    let syscall = section_index(&elf, b".text.syscall");
+    let rodata = section_index(&elf, b".rodata");
+    let symbols = elf.static_symbols().unwrap().unwrap();
+    // DDI 0487 M.b C6.2.216: imm19 is (slot - instruction) / 4.
+    let cases = [
+        (
+            boot,
+            b".rela.text.boot".as_slice(),
+            [
+                0x58000088_u32,
+                0x580000a9,
+                0xd65f03c0,
+                0,
+                0,
+                0,
+                0x42,
+                0x80000000,
+            ]
+            .as_slice(),
+            16,
+            b"external".as_slice(),
+            SHN_UNDEF,
+            16,
+            12,
+        ),
+        (
+            syscall,
+            b".rela.text.syscall".as_slice(),
+            [0x5800004a_u32, 0xd65f03c0, 0, 0].as_slice(),
+            8,
+            b"local".as_slice(),
+            rodata as u16,
+            -8,
+            8,
+        ),
+    ];
+    for (section, rela_name, words, slot, symbol_name, symbol_section, addend, data_start) in cases
+    {
+        let bytes: Vec<_> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        assert_eq!(elf.section(section).unwrap().alignment, 8);
+        assert_eq!(elf.section_data(section).unwrap().unwrap(), bytes);
+
+        let rela_index = section_index(&elf, rela_name);
+        assert_eq!(elf.section(rela_index).unwrap().info as usize, section);
+        let relocations = elf.relocations(rela_index).unwrap();
+        assert_eq!(relocations.len(), 1);
+        let relocation = relocations.get(0).unwrap();
+        // AAELF64 2025Q1 §5.7.5: R_AARCH64_ABS64 applies S + A to the slot.
+        assert_eq!(
+            (relocation.offset, relocation.kind, relocation.addend),
+            (slot, 257, addend)
+        );
+        let symbol = symbols.get(relocation.symbol as usize).unwrap();
+        assert_eq!((symbol.name, symbol.section), (symbol_name, symbol_section));
+
+        // AAELF64 2025Q1 §5.6.5: the pool and its zero padding are data.
+        let mappings: Vec<_> = (1..symbols.len())
+            .map(|index| symbols.get(index).unwrap())
+            .filter(|symbol| symbol.section as usize == section && symbol.name.starts_with(b"$"))
+            .map(|symbol| (symbol.name, symbol.value, symbol.binding, symbol.kind))
+            .collect();
+        assert_eq!(
+            mappings,
+            [
+                (b"$x".as_slice(), 0, STB_LOCAL, STT_NOTYPE),
+                (b"$d".as_slice(), data_start, STB_LOCAL, STT_NOTYPE)
+            ]
+        );
+    }
+
+    let error = assemble_for(Target::Aarch64, b"nop\n    ldr x1, =1\n    .skip 1048576\n")
+        .expect_err("literal pool must be within the signed imm19 displacement");
+    assert!(error.to_string().starts_with("2:"), "{error}");
+    assert!(
+        error.to_string().contains("literal target out of range"),
+        "{error}"
+    );
+}
+
+#[test]
+fn unsupported_a64_system_register_is_located() {
+    for (instruction, column, message) in [
+        ("mrs x0, unknown_el1", 11, "unsupported MRS system register"),
+        ("msr unknown_el1, x0", 7, "unsupported MSR system register"),
+        ("msr CurrentEL, x0", 7, "read-only system register"),
+        ("msr MPIDR_EL1, x0", 7, "read-only system register"),
+        ("msr CTR_EL0, x0", 7, "read-only system register"),
+        ("msr ID_AA64MMFR1_EL1, x0", 7, "read-only system register"),
+    ] {
+        let source = format!("nop\n  {instruction}\n");
+        let error = assemble_for(Target::Aarch64, source.as_bytes())
+            .expect_err("unsupported register access")
+            .to_string();
+        assert!(
+            error.starts_with(&format!("2:{column}:")) && error.contains(message),
+            "{instruction}: {error}"
+        );
+    }
+}
 
 #[test]
 fn equ_expressions_and_layout_directives() {
