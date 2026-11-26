@@ -4,82 +4,9 @@
 use std::collections::BTreeMap;
 
 use super::{starts_number, Parser, Token};
-use crate::object::Object;
-use crate::{check_source_line, Location, Result};
+use crate::Result;
 
-pub(super) type Constants<'src> = BTreeMap<&'src str, i128>;
-
-struct Repeat {
-    start: usize,
-    remaining: u64,
-    at: Location,
-}
-
-pub(crate) fn assemble(source: &[u8], object: &mut Object) -> Result<()> {
-    let lines: Vec<_> = source.split(|&byte| byte == b'\n').collect();
-    let mut constants = Constants::new();
-    let mut repeats = Vec::<Repeat>::new();
-    let mut skipped_depth = 0usize;
-    let mut cursor = 0;
-    // Bound expansion even when repeated lines emit no bytes or nest.
-    let mut expanded_lines = 0;
-    while let Some(&line) = lines.get(cursor) {
-        cursor += 1;
-        check_source_line(line, cursor)?;
-        let mut parser = Parser::new(line, cursor, object);
-        parser.constants = Some(&mut constants);
-        let op = parser.word();
-        let at = parser.location(op.column);
-        if !repeats.is_empty() {
-            expanded_lines += 1;
-            if expanded_lines > 1_048_576 {
-                return Err(at.error(".rept expansion exceeds the supported limit"));
-            }
-        }
-        if skipped_depth != 0 {
-            match op.text {
-                ".rept" => skipped_depth += 1,
-                ".endr" => skipped_depth -= 1,
-                _ => {}
-            }
-            if skipped_depth != 0 {
-                continue;
-            }
-        }
-        match op.text {
-            ".rept" => {
-                let remaining = parser.count()?;
-                parser.require_end()?;
-                repeats.push(Repeat {
-                    start: cursor,
-                    remaining,
-                    at,
-                });
-                skipped_depth = usize::from(remaining == 0);
-            }
-            ".endr" => {
-                parser.require_end()?;
-                let repeat = repeats
-                    .last_mut()
-                    .ok_or_else(|| at.error(".endr without .rept"))?;
-                if repeat.remaining > 1 {
-                    repeat.remaining -= 1;
-                    cursor = repeat.start;
-                } else {
-                    repeats.pop();
-                }
-            }
-            _ => {
-                parser.column = 0;
-                parser.assemble_line()?;
-            }
-        }
-    }
-    if let Some(repeat) = repeats.last() {
-        return Err(repeat.at.error(".rept without .endr"));
-    }
-    Ok(())
-}
+pub(super) type Constants = BTreeMap<String, i128>;
 
 #[derive(Clone, Copy)]
 enum Operator {
@@ -131,7 +58,7 @@ impl<'src> Parser<'src, '_> {
                 self.expect(b',', "expected ',' before constant expression")?;
                 let value = self.gnu_expression()?;
                 if let Some(constants) = &mut self.constants {
-                    constants.insert(name.text, value);
+                    constants.insert(name.text.to_owned(), value);
                 }
             }
             ".skip" => {

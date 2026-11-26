@@ -13,7 +13,9 @@ use crate::{Diagnostic, Location, Result, Target};
 
 #[path = "aarch64/gnu.rs"]
 mod gnu;
-pub(crate) use gnu::assemble as assemble_aarch64;
+#[path = "gnu_macros.rs"]
+mod gnu_macros;
+pub(crate) use gnu_macros::assemble as assemble_aarch64;
 
 #[derive(Clone, Copy)]
 pub(crate) struct Token<'a> {
@@ -53,7 +55,7 @@ pub(crate) struct Parser<'src, 'obj> {
     pub(crate) column: usize,
     pub(crate) object: &'obj mut Object,
     nasm: Option<&'obj mut Syntax>,
-    constants: Option<&'obj mut gnu::Constants<'src>>,
+    constants: Option<&'obj mut gnu::Constants>,
     origin: Option<Location>,
 }
 
