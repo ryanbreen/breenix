@@ -46,6 +46,8 @@ struct Process {
     heap_end: u64,
     mmap_hint: u64,
     memory_usage: MemoryUsage,
+    image_size: u64,
+    image_data_size: u64,
     user_stack_top: u64,
     user_stack_bottom: u64,
 }
@@ -140,6 +142,8 @@ fn worker_forks_with_its_shared_address_space_and_own_context() {
             address_space_lifetime: Some(lifetime.clone()),
             vmas: vec![0x3000],
             heap_end: 0x4000,
+            image_size: 0x5000,
+            image_data_size: 0x1000,
             user_stack_top: 0x8000,
             ..Process::default()
         }),
@@ -168,6 +172,8 @@ fn worker_forks_with_its_shared_address_space_and_own_context() {
     assert_eq!(fork.child_process.cwd.0, 6);
     assert_eq!(fork.child_process.fd_table.0, 7);
     assert_eq!(fork.child_process.heap_end, 0x4000);
+    assert_eq!(fork.child_process.image_size, 0x5000);
+    assert_eq!(fork.child_process.image_data_size, 0x1000);
     assert_eq!(fork.child_process.user_stack_top, 0x8000);
     assert_eq!(fork.vmas, [0x3000]);
     assert_eq!(fork.skip, [(0x3000, 0x4000)]);

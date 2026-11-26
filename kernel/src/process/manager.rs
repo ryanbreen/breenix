@@ -168,11 +168,10 @@ pub(crate) struct ForkCopy {
     /// The parent's ranges the child gets no page of (window mappings).
     skip: Vec<(u64, u64)>,
     child_page_table: crate::memory::process_memory::UnpublishedPageTable,
-    /// The parent's table. Only the parent's own row can free or replace it,
-    /// by exiting or exec'ing, and that row's thread is this fork, inside a
-    /// syscall a kill leaves to finish (`KillCustody`); a CLONE_VM sibling's
-    /// row does not own it. The claim keeps every other change off it while
-    /// `copy`, its only user, reads it.
+    /// The table of the address space the caller runs in. The calling thread
+    /// keeps the address space alive during the syscall (`KillCustody`).
+    /// The claim keeps changes off the table and makes ownership transfers
+    /// wait until `copy`, its only user, has finished.
     parent_page_table: *const ProcessPageTable,
     claim: crate::memory::fork_copy::CopyClaim,
     /// The child's share of the parent's SEM_UNDO adjustments (CLONE_SYSVSEM).
@@ -2657,6 +2656,9 @@ impl ProcessManager {
         else {
             return false;
         };
+        // The heir can be copying this table for fork. Copy releases its
+        // claim without PROCESS_MANAGER, before we move the owning Box.
+        crate::memory::fork_copy::wait(root);
         let Some(from) = self.processes.live_row_mut(&pid) else {
             return false;
         };
@@ -2990,6 +2992,8 @@ impl ProcessManager {
         child_process.exe_path = parent_row.exe_path.clone();
         child_process.cmdline = parent_row.cmdline.clone();
         child_process.cmdline_area = parent_row.cmdline_area;
+        child_process.image_size = parent_row.image_size;
+        child_process.image_data_size = parent_row.image_data_size;
         child_process.parent = Some(parent_pid);
         // POSIX: Child inherits parent's process group, session, and working directory
         child_process.pgid = parent_pgid;
@@ -3081,7 +3085,7 @@ impl ProcessManager {
     ) -> Result<ForkCopy, &'static str> {
         crate::tracing::providers::process::trace_fork_entry(parent_pid.as_u64() as u32);
 
-        let (parent_thread, parent_page_table) = {
+        let (parent_thread, address_space_pid, parent_page_table) = {
             let parent = self
                 .processes
                 .live_row(&parent_pid)
@@ -3091,11 +3095,25 @@ impl ProcessManager {
                 .as_ref()
                 .ok_or("Parent process has no main thread")?
                 .clone();
-            let table: *const ProcessPageTable = parent
+            // A CLONE_VM caller supplies its own thread and process state,
+            // but another row can own the table and its mapping metadata.
+            let (owner_pid, owner) = if parent.page_table.is_some() {
+                (parent_pid, parent)
+            } else {
+                parent.inherited_cr3
+                    .and_then(|root| self.find_process_by_cr3(root))
+                    .filter(|(_, owner)| {
+                        parent.address_space_lifetime.as_ref()
+                            .zip(owner.address_space_lifetime.as_ref())
+                            .is_some_and(|(caller, owner)| alloc::sync::Arc::ptr_eq(caller, owner))
+                    })
+                    .ok_or("Parent process has no page table")?
+            };
+            let table: *const ProcessPageTable = owner
                 .page_table
                 .as_deref()
                 .ok_or("Parent process has no page table")?;
-            (thread, table)
+            (thread, owner_pid, table)
         };
 
         // Allocate a new PID for the child
@@ -3104,10 +3122,16 @@ impl ProcessManager {
             .processes
             .live_row(&parent_pid)
             .ok_or("Parent process not found")?;
+        let address_space = if address_space_pid == parent_pid {
+            parent
+        } else {
+            self.processes.live_row(&address_space_pid)
+                .expect("the address space owner was found under this same guard")
+        };
 
         // Each file VMA needs its own binding in the child's address space.
-        let vmas = crate::memory::file_map::fork_vmas(&parent.vmas, child_pid, &child_page_table)?;
-        let skip = crate::memory::file_map::dontcopy_ranges(&parent.vmas)?;
+        let vmas = crate::memory::file_map::fork_vmas(&address_space.vmas, child_pid, &child_page_table)?;
+        let skip = crate::memory::file_map::dontcopy_ranges(&address_space.vmas)?;
 
         // The child starts at the parent's entry point, in the parent's
         // process group, session and working directory (POSIX), with the
@@ -3136,16 +3160,18 @@ impl ProcessManager {
             child_process.fd_table = parent.fd_table.share();
         }
         child_process.clear_child_tid = clone.child_clear_tid;
-        child_process.heap_start = parent.heap_start;
-        child_process.heap_end = parent.heap_end;
-        child_process.mmap_hint = parent.mmap_hint;
-        child_process.memory_usage.code_size = parent.memory_usage.code_size;
-        child_process.memory_usage.heap_size = parent.memory_usage.heap_size;
-        child_process.memory_usage.stack_size = parent.memory_usage.stack_size;
-        child_process.user_stack_top = parent.user_stack_top;
-        child_process.user_stack_bottom = parent.user_stack_bottom;
+        child_process.heap_start = address_space.heap_start;
+        child_process.heap_end = address_space.heap_end;
+        child_process.mmap_hint = address_space.mmap_hint;
+        child_process.memory_usage.code_size = address_space.memory_usage.code_size;
+        child_process.memory_usage.heap_size = address_space.memory_usage.heap_size;
+        child_process.memory_usage.stack_size = address_space.memory_usage.stack_size;
+        child_process.user_stack_top = address_space.user_stack_top;
+        child_process.user_stack_bottom = address_space.user_stack_bottom;
+        child_process.image_size = address_space.image_size;
+        child_process.image_data_size = address_space.image_data_size;
 
-        // SAFETY: the table is the parent row's, read under this guard.
+        // SAFETY: the row owning the table cannot move it under this guard.
         let root = unsafe { (*parent_page_table).level_4_frame().start_address().as_u64() };
         let child_space = child_page_table.address_space();
         let undo = if clone.share_undo {
@@ -3453,12 +3479,6 @@ impl ProcessManager {
         // Set the child process's main thread (also transitions Creating → Ready)
         child_process.set_main_thread(child_thread);
 
-        // Inherit parent's user stack bounds for demand-paged growth
-        if let Some(parent) = self.processes.live_row(&parent_pid) {
-            child_process.user_stack_top = parent.user_stack_top;
-            child_process.user_stack_bottom = parent.user_stack_bottom;
-        }
-
         // Copy all other process state (fd_table, signals, verify pgid/sid)
         if let Some(parent) = self.processes.live_row(&parent_pid) {
             if let Err(e) = super::fork::copy_process_state(parent, &mut child_process) {
@@ -3636,22 +3656,6 @@ impl ProcessManager {
         // Set the child process's main thread (also transitions Creating → Ready)
         child_process.set_main_thread(child_thread);
 
-        // Inherit parent's user stack bounds for demand-paged growth
-        child_process.user_stack_top = {
-            let parent = self
-                .processes
-                .live_row(&parent_pid)
-                .ok_or("Parent process not found for stack bounds")?;
-            parent.user_stack_top
-        };
-        child_process.user_stack_bottom = {
-            let parent = self
-                .processes
-                .live_row(&parent_pid)
-                .ok_or("Parent process not found for stack bounds")?;
-            parent.user_stack_bottom
-        };
-
         // Copy all other process state (fd_table, signals, verify pgid/sid)
         // This uses the centralized copy_process_state which handles:
         // - File descriptor table cloning (with proper pipe refcount handling)
@@ -3733,6 +3737,8 @@ impl ProcessManager {
         child_process.exe_path = parent.exe_path.clone();
         child_process.cmdline = parent.cmdline.clone();
         child_process.cmdline_area = parent.cmdline_area;
+        child_process.image_size = parent.image_size;
+        child_process.image_data_size = parent.image_data_size;
         child_process.parent = Some(parent_pid);
         // POSIX: Child inherits parent's process group, session, and working directory
         child_process.pgid = parent_pgid;

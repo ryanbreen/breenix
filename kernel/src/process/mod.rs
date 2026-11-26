@@ -509,22 +509,31 @@ pub fn manager_for_address_space(thread: u64) -> ProcessManagerGuard {
 /// that would change or read that address space holds neither the lock nor
 /// its CPU's interrupts while the fork copies. Called holding no lock.
 pub fn manager_once_copied(root_of: impl Fn(&ProcessManager) -> Option<u64>) -> ProcessManagerGuard {
-    loop {
-        let guard = manager();
-        let root = guard.as_ref().and_then(&root_of);
-        match root {
-            Some(root) if crate::memory::fork_copy::copying(root) => {
-                drop(guard);
-                let masked = !crate::arch_interrupts_enabled();
-                // SAFETY: no lock is held; the mask is restored below.
-                unsafe { crate::arch_enable_interrupts() };
-                crate::memory::fork_copy::wait(root);
-                if masked {
-                    // SAFETY: restores the caller's masked state.
-                    unsafe { crate::arch_disable_interrupts() };
-                }
+    manager().after_fork_copy(root_of)
+}
+
+impl ProcessManagerGuard {
+    /// Keep this guard if the address space is available. Otherwise release it,
+    /// wait for the copy, and acquire it again before rechecking the root.
+    pub(crate) fn after_fork_copy(
+        mut self,
+        root_of: impl Fn(&ProcessManager) -> Option<u64>,
+    ) -> Self {
+        loop {
+            let root = self.as_ref().and_then(&root_of);
+            let Some(root) = root.filter(|&root| crate::memory::fork_copy::copying(root)) else {
+                return self;
+            };
+            drop(self);
+            let masked = !crate::arch_interrupts_enabled();
+            // SAFETY: no lock is held; the mask is restored below.
+            unsafe { crate::arch_enable_interrupts() };
+            crate::memory::fork_copy::wait(root);
+            if masked {
+                // SAFETY: restores the caller's masked state.
+                unsafe { crate::arch_disable_interrupts() };
             }
-            _ => return guard,
+            self = manager();
         }
     }
 }
