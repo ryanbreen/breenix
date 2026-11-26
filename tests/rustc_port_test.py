@@ -44,11 +44,23 @@ class RustcPort(unittest.TestCase):
             shutil.copyfile(ROOT / 'x86_64-breenix.json', targets / 'x86_64-breenix.json')
             corpus = fixture / 'corpus'
             shutil.copytree(RECORDS.parent / 'k5/corpus', corpus)
+            host = json.loads((corpus / 'expect.json').read_text())['hosted_host']
+            shutil.copyfile(ROOT / f'{host}.json', targets / f'{host}.json')
+            # Translate the guest's explicit spawn environment to the host fixture.
+            environment = dict(os.environ)
+            environment.pop('RUST_TARGET_PATH', None)
+            if 'let envp = [target_path.as_ptr().cast(), null()];' in suite:
+                self.assertIn('CString::new(format!("RUST_TARGET_PATH={FIXTURE}/targets"))', suite)
+                environment['RUST_TARGET_PATH'] = str(targets)
+            host_lookup = subprocess.run(
+                [mac_rustc, '--target', host, '--print', 'cfg'], cwd=corpus, env=environment,
+                capture_output=True, text=True, timeout=15)
+            self.assertEqual(host_lookup.returncode, 0, host_lookup.stderr)
             output = fixture / 'uses-std.o'
             result = subprocess.run(
                 [mac_rustc, '--edition=2021', '--sysroot', sysroot, '-Dwarnings',
                  '--emit=obj', '--target', match[1], 'uses-std.rs', '-o', output],
-                cwd=corpus, env=dict(os.environ, RUST_TARGET_PATH=str(targets)),
+                cwd=corpus, env=environment,
                 capture_output=True, text=True, timeout=15)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertGreater(output.stat().st_size, 0)
