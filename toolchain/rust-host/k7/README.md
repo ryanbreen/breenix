@@ -138,8 +138,9 @@ contains the stage-1 Mac rlibs retained from the twin build.
 
 Select `cargo`, `rustc`, or `rustc,cargo` on the Mac metal builder. For Cargo,
 set `BREENIX_K7_STAGE` to the directory containing `bin/cargo`. Set `BREENIX_RUSTC_PORT_BUILDS`
-pointing at the retained K5 build. Set `BREENIX_K5_SYSROOT` and
-`BREENIX_K6_FIXTURE` for relocated copies of the K5 sysroot and the K6 capture.
+pointing at the retained K5 build. The [retained K8 fixture](../k6/README.md#retained-fixture-for-k8)
+contains the K5 sysroot and K6 linker capture. `BREENIX_K5_SYSROOT` selects the
+sysroot and `BREENIX_K6_FIXTURE` overrides the default capture location.
 The builder places the K5 driver in the compiler's `$ORIGIN/../lib`.
 It takes the soft-float archive and linker script
 from K6, and uses the guest `bld` from the Rust linker bundle build.

@@ -454,7 +454,8 @@ def main():
     records = ROOT / 'toolchain/rust-host'
     rustc = PROGRAMS / 'target/rustc' / args.arch
     rust_link = PROGRAMS / 'target/rust-link' / args.arch
-    fixture = Path(os.environ.get('BREENIX_K6_FIXTURE', cache / 'k6/fixture'))
+    retained = Path.home() / 'Library/Caches/breenix-e25/k6/fixture'
+    fixture = Path(os.environ.get('BREENIX_K6_FIXTURE', retained)).expanduser()
     if 'rustc' in suites or 'cargo' in suites:
         if args.arch != 'x86_64':
             parser.error('hosted rustc and Cargo staging requires x86-64')

@@ -23,7 +23,8 @@ testing kernel), and removes the clone. Every build also writes manager.efi, the
 for a cold readback or a boot manager probe, under a metal-build slot without a kernel or userspace build.
 For `--suite llvm`, the Mac prebuilt builder takes the K4 cross-builds from BREENIX_LLVM_BUILDS and the K3
 runtime from BREENIX_CXX_RUNTIME_BUILDS. `build.json` names the staged fixture digests by guest path.
-For `--suite rust-link`, set BREENIX_K6_FIXTURE to the retained K6 capture on the Mac builder.
+For `--suite rust-link`, BREENIX_K6_FIXTURE overrides the retained capture location
+documented in toolchain/rust-host/k6/README.md.
 For `--suite rustc` or `--suite cargo`, set BREENIX_HOSTED_LIBC to the pinned shared libc.so.
 For `--suite cargo`, also set BREENIX_K7_STAGE to the retained hosted Cargo.
 Exit 0 on success; 3 when the guard refuses the commit.
@@ -224,7 +225,7 @@ def inner(args):
         if sha256(pinned_libc) != pin['sha256']:
             raise ValueError(f'{pinned_libc}: SHA-256 differs from the hosted libc pin')
     if rust_link and sys.platform != 'darwin':
-        raise ValueError('rust-link requires a Mac prebuilt image and BREENIX_K6_FIXTURE')
+        raise ValueError('rust-link requires a Mac prebuilt image with the retained K6 capture')
     if llvm and sys.platform != 'darwin':
         raise ValueError('llvm requires a Mac prebuilt image and BREENIX_LLVM_BUILDS')
     if cxx_runtime and sys.platform != 'darwin':
