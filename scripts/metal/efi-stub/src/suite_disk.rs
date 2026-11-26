@@ -20,6 +20,9 @@ const HEADER_1: usize = 32 + 2 * SECTOR;
 const HEADER_2: usize = 48 + 2 * SECTOR;
 const HEADER_3: usize = HEADER_2 + 16;
 pub(super) const CHUNK: usize = 64 * 1024;
+// Leave one chunk and one sparse extent header of room before the byte limit.
+const PROGRESS_BYTES: usize = 8 * 1024 * 1024 - CHUNK - 16;
+const PROGRESS_TICKS: u64 = 50_000_000; // UEFI timer units are 100 ns.
 const RECORD: &[u8] = b"BREENIX-STORAGE 1\nroot ";
 
 /// Pool memory aligned for firmware Block I/O. Owned by a Drop guard.
@@ -152,9 +155,11 @@ unsafe fn operate(boot: &BootServices, root: *mut File, config: &[u8], image: Ha
     if request.action == 1 {
         say!("staging the suite fixture on its recorded disk");
         let filename = Wide::<16>::new("suite-root.img");
+        let mut progress = StageProgress::new(boot, request.geometry.wire)?;
         let mut file = null_mut();
         ok(((*root).open)(root, &mut file, filename.as_ptr(), FILE_MODE_READ, 0))?;
-        let result = install(boot, disk, file, request.geometry, request.record, &bytes);
+        let result = install(boot, disk, file, request.geometry, request.record, &bytes,
+                             |done| progress.advance(done));
         ((*file).close)(file);
         result?;
         say!("suite fixture verified: {} bytes", request.geometry.wire);
@@ -262,6 +267,48 @@ pub unsafe fn find_partition(boot: &BootServices, guid: &[u8; 16], size: usize) 
     Ok(found)
 }
 
+struct StageProgress<'a> {
+    boot: &'a BootServices,
+    timer: Event,
+    total: usize,
+    announced: usize,
+}
+
+impl<'a> StageProgress<'a> {
+    unsafe fn new(boot: &'a BootServices, wire: usize) -> Result<Self, Status> {
+        let total = wire.checked_mul(2).ok_or(INVALID_PARAMETER)?;
+        let mut timer = null_mut();
+        ok((boot.create_event)(EVT_TIMER, 0, None, null_mut(), &mut timer))?;
+        let progress = Self { boot, timer, total, announced: 0 };
+        ok((boot.set_timer)(timer, TIMER_RELATIVE, PROGRESS_TICKS))?;
+        Ok(progress)
+    }
+
+    unsafe fn advance(&mut self, done: usize) -> Result<(), Status> {
+        if done != self.total {
+            let expired = match (self.boot.check_event)(self.timer) {
+                SUCCESS => true,
+                NOT_READY => false,
+                status => return Err(status),
+            };
+            if done - self.announced < PROGRESS_BYTES && !expired {
+                return Ok(());
+            }
+            ok((self.boot.set_timer)(self.timer, TIMER_RELATIVE, PROGRESS_TICKS))?;
+        }
+        say!("suite staging progress: {}/{} bytes", done, self.total);
+        self.announced = done;
+        Ok(())
+    }
+}
+
+impl Drop for StageProgress<'_> {
+    fn drop(&mut self) {
+        // SAFETY: This event is owned by this guard.
+        unsafe { (self.boot.close_event)(self.timer); }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct StageGeometry {
     dense: usize,
@@ -288,18 +335,20 @@ unsafe fn walk_body(
     file: *mut File,
     geometry: StageGeometry,
     buffer: &Buffer<'_>,
-    mut extent: impl FnMut(u64, usize) -> Result<(), Status>,
+    mut extent: impl FnMut(u64, usize, usize) -> Result<(), Status>,
 ) -> Result<(), Status> {
-    let mut piece = |mut offset: usize, end: usize| -> Result<(), Status> {
+    let mut consumed = SECTOR;
+    let mut piece = |mut offset: usize, end: usize, consumed: &mut usize| -> Result<(), Status> {
         while offset < end {
             let wanted = CHUNK.min(end - offset);
             read_exact(file, buffer.data, wanted)?;
-            extent((offset / SECTOR) as u64, wanted)?;
+            *consumed += wanted;
+            extent((offset / SECTOR) as u64, wanted, *consumed)?;
             offset += wanted;
         }
         Ok(())
     };
-    piece(SECTOR, geometry.dense)?;
+    piece(SECTOR, geometry.dense, &mut consumed)?;
 
     // Packed records are little-endian scratch-relative byte offset and byte
     // length followed by the written blocks. Gaps are unreferenced free space.
@@ -319,7 +368,8 @@ unsafe fn walk_body(
         {
             return Err(LOAD_ERROR);
         }
-        piece(first, next)?;
+        consumed += header.len();
+        piece(first, next, &mut consumed)?;
         remaining -= length;
         end = next;
     }
@@ -338,6 +388,7 @@ unsafe fn install(
     geometry: StageGeometry,
     record: &[u8],
     buffer: &Buffer<'_>,
+    mut progress: impl FnMut(usize) -> Result<(), Status>,
 ) -> Result<(), Status> {
     let media_id = (*(*disk).media).media_id;
     read_exact(file, buffer.data, SECTOR)?;
@@ -349,19 +400,20 @@ unsafe fn install(
     ok(((*disk).write_blocks)(disk, media_id, 0, SECTOR, buffer.data.cast()))?;
     ok(((*disk).flush_blocks)(disk))?;
     let check = Buffer::new(boot, CHUNK, (*(*disk).media).io_align as usize)?;
-    walk_body(file, geometry, buffer, |lba, length| {
-        ok(((*disk).write_blocks)(disk, media_id, lba, length, buffer.data.cast()))
+    walk_body(file, geometry, buffer, |lba, length, consumed| {
+        ok(((*disk).write_blocks)(disk, media_id, lba, length, buffer.data.cast()))?;
+        progress(consumed)
     })?;
 
     // Verify the written blocks after the data barrier, then publish LBA 0.
     ok(((*disk).flush_blocks)(disk))?;
     ok(((*file).set_position)(file, SECTOR as u64))?;
-    walk_body(file, geometry, buffer, |lba, length| {
+    walk_body(file, geometry, buffer, |lba, length, consumed| {
         ok(((*disk).read_blocks)(disk, media_id, lba, length, check.data.cast()))?;
         if core::slice::from_raw_parts(check.data, length) != core::slice::from_raw_parts(buffer.data, length) {
             return Err(LOAD_ERROR);
         }
-        Ok(())
+        progress(geometry.wire + consumed - SECTOR)
     })?;
 
     core::slice::from_raw_parts_mut(buffer.data, SECTOR).copy_from_slice(record);
@@ -371,7 +423,7 @@ unsafe fn install(
     if core::slice::from_raw_parts(check.data, SECTOR) != record {
         return Err(LOAD_ERROR);
     }
-    Ok(())
+    progress(geometry.wire * 2)
 }
 
 /// The HTTP binding and IPv4 station address of the network port this image was loaded from (UEFI 2.10 sections 9.1

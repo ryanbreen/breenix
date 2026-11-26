@@ -235,6 +235,7 @@ CONSOLE_WAIT_SECONDS = 20
 DOWNLOAD_IDLE_SECONDS = 15
 DOWNLOAD_SECONDS = 60
 BOOTLOADER_SECONDS = 60
+STAGING_CAP_SECONDS = 600
 SILENCE_SECONDS = 120
 NMI_CAPTURE_SECONDS = 5
 FATAL_GRACE_SECONDS = 5
@@ -246,6 +247,7 @@ BOOTLOADER_LINE = 'UEFI bootloader started'
 HANDOFF_LINE = 'Jumping to kernel entry point at'
 HANG_LINE = 'metal-hang: interrupts masked, halting'
 STUB_LINE = 'metal-stub: started'
+SUITE_STAGING_PROGRESS = re.compile(r'metal-stub: suite staging progress: ([0-9]{1,20})/([0-9]{1,20}) bytes')
 STUB_FAILED_LINE = 'metal-stub: FAILED'
 # The boot manager's lines (docs/metal/README.md, "The boot manager").
 MANAGER_STARTED = 'breenix-manager: started: '
@@ -363,6 +365,8 @@ class Driver:
         self.input_clock_alive = None
         self.last_stage = None
         self.complete_at = None
+        self.staging_at = None
+        self.staging_bytes = 0
         self.first_byte_at = None
         self.last_progress = None
         self.request_at = None
@@ -1788,6 +1792,11 @@ class Driver:
                 self.seen.discard('bootloader')
             else:
                 raise Finish(m.EXIT_SHORT, 'the machine reset after the kernel started')
+        if self.kernel_started is None and 'bootloader' not in self.seen:
+            if progress := SUITE_STAGING_PROGRESS.fullmatch(line):
+                self.on_staging_progress(progress, observed_at)
+            if BOOTLOADER_LINE in line and self.staging_at is not None and self.complete_at is not None:
+                self.check_staging_deadline(observed_at)
         if BOOTLOADER_LINE in line and 'bootloader' not in self.seen:
             self.seen.add('bootloader')
             self.event('bootloader', observed_at=observed_at, seconds=seconds)
@@ -2550,6 +2559,28 @@ class Driver:
                 and len(ids) >= 2 and ids[0] != ids[-1] and receipt.get('bootId') == ids[-1]
                 and not assisted and not self.gap and self.fatal_at is None)
 
+    def on_staging_progress(self, progress, observed_at):
+        root = self.delivery.get('diskRoot')
+        if not root or 'stub' not in self.seen or self.args.payload != 'image':
+            return
+        done, total = map(int, progress.groups())
+        if (total != 2 * root.get('stagedBytes', root['bytes'])
+                or not self.staging_bytes < done <= total
+                or (self.staging_at is not None and observed_at < self.staging_at)):
+            return
+        # Serial can be drained just before the HTTP completion record.
+        if self.complete_at is not None:
+            self.check_staging_deadline(observed_at)
+        self.staging_at = observed_at
+        self.staging_bytes = done
+
+    def check_staging_deadline(self, now):
+        if now >= self.complete_at + STAGING_CAP_SECONDS:
+            raise Finish(m.EXIT_DELIVERY, 'the suite staging cap passed before bootloader start')
+        progress = max(self.complete_at, self.staging_at or self.complete_at)
+        if now >= progress + BOOTLOADER_SECONDS:
+            raise Finish(m.EXIT_DELIVERY, 'no bootloader after the image arrived')
+
     def check_deadlines(self):
         if self.watchdog_trigger is not None:
             receipt = m.read_json(self.dir / 'watchdog-ssh.json', {})
@@ -2607,12 +2638,13 @@ class Driver:
                 raise Finish(m.EXIT_HUNG, 'persistent export stopped reporting progress')
             return
         if self.kernel_started is None:
-            # An install's stub writes the layout and the test root first, reporting its progress.
-            limit = (INSTALL_STUB_SECONDS if self.args.mode == 'persistent-install' or self.migration_phase
-                     or self.args.payload == metal_persist.RECLAIM_PAYLOAD
-                     else BOOTLOADER_SECONDS)
-            if 'bootloader' not in self.seen and m.now() - self.complete_at > limit:
-                raise Finish(m.EXIT_DELIVERY, 'no bootloader after the image arrived')
+            if 'bootloader' not in self.seen:
+                if (self.args.mode == 'persistent-install' or self.migration_phase
+                        or self.args.payload == metal_persist.RECLAIM_PAYLOAD):
+                    if m.now() - self.complete_at > INSTALL_STUB_SECONDS:
+                        raise Finish(m.EXIT_DELIVERY, 'no bootloader after the image arrived')
+                else:
+                    self.check_staging_deadline(m.now())
             quiet = m.now() - (self.last_serial or self.complete_at)
             if 'bootloader' in self.seen and quiet > SILENCE_SECONDS:
                 raise Finish(m.EXIT_HUNG, f'silent for {SILENCE_SECONDS} s after the bootloader started', hung=True)

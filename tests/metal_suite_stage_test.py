@@ -142,7 +142,7 @@ fn stage_flushes_once_for_data_and_validates_before_publishing() {
         // SAFETY: All firmware callbacks are backed by the live fixture structs.
         let result = unsafe {
             let buffer = Buffer::new(&BootServices, CHUNK, 1).unwrap();
-            install(&BootServices, &mut dev.io, &mut source.file, StageGeometry::dense(size), record, &buffer)
+            install(&BootServices, &mut dev.io, &mut source.file, StageGeometry::dense(size), record, &buffer, |_| Ok(()))
         };
         if corrupt_at.is_some() {
             assert_eq!(result, Err(LOAD_ERROR));
@@ -181,22 +181,22 @@ fn sparse_body_reads_only_declared_blocks_and_bounds_the_last_extent() {
     // SAFETY: The file and buffer use the live host fixtures above.
     unsafe {
         let buffer = Buffer::new(&BootServices, CHUNK, 1).unwrap();
-        walk_body(&mut source.file, geometry, &buffer, |lba, count| {
-            ranges.push((lba, count));
+        walk_body(&mut source.file, geometry, &buffer, |lba, count, consumed| {
+            ranges.push((lba, count, consumed));
             Ok(())
         }).unwrap();
-        assert_eq!(ranges, [(1, SECTOR), (2, 4096), (18, 4096)]);
+        assert_eq!(ranges, [(1, SECTOR, dense), (2, 4096, dense + 16 + 4096), (18, 4096, geometry.wire)]);
         source.position = SECTOR;
         // Move the final extent beyond the recorded slice.
         let last_header = dense + 16 + 4096;
         source.bytes[last_header..last_header + 8].copy_from_slice(&(scratch as u64).to_le_bytes());
         ranges.clear();
-        let result = walk_body(&mut source.file, geometry, &buffer, |lba, count| {
-            ranges.push((lba, count));
+        let result = walk_body(&mut source.file, geometry, &buffer, |lba, count, consumed| {
+            ranges.push((lba, count, consumed));
             Ok(())
         });
         assert_eq!(result, Err(LOAD_ERROR));
-        assert_eq!(ranges, [(1, SECTOR), (2, 4096)]);
+        assert_eq!(ranges, [(1, SECTOR, dense), (2, 4096, dense + 16 + 4096)]);
     }
 }
 
