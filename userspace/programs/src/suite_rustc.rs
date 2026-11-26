@@ -39,7 +39,9 @@ fn run(path: &str, args: &[String], capture: bool) -> Result<(i32, Vec<u8>), Cas
         .map(CString::new).collect::<Result<_, _>>().map_err(fail)?;
     let mut argv: Vec<*const u8> = strings.iter().map(|s| s.as_ptr().cast()).collect();
     argv.push(null());
-    let envp = [null()];
+    // The compiler still resolves its own hosted target by name.
+    let target_path = CString::new(format!("RUST_TARGET_PATH={FIXTURE}/targets")).map_err(fail)?;
+    let envp = [target_path.as_ptr().cast(), null()];
     let mut actions = FileActions { head: null_mut(), tail: null_mut() };
     let mut reader = None;
     let mut writer = None;
