@@ -37,6 +37,10 @@ pub enum RegisterRule<'a> {
 pub struct Rules<'a, const N: usize> {
     pub cfa: Option<CfaRule<'a>>,
     pub registers: [RegisterRule<'a>; N],
+    /// Argument bytes pushed on the stack at this row, from
+    /// DW_CFA_GNU_args_size (LSB Core 5.0 §10.5.2). A landing pad in this
+    /// frame runs with them removed.
+    pub args_size: u64,
 }
 
 impl<const N: usize> Default for Rules<'_, N> {
@@ -44,6 +48,7 @@ impl<const N: usize> Default for Rules<'_, N> {
         Self {
             cfa: None,
             registers: [RegisterRule::Undefined; N],
+            args_size: 0,
         }
     }
 }
@@ -166,6 +171,7 @@ impl<'a> Program<'a> {
                         },
                         // The §6.4.2.4 erratum includes the CFA in saved state.
                         // The row address is independent of the remembered rules.
+                        Instruction::ArgsSize(size) => rules.args_size = size,
                         Instruction::RememberState => {
                             *saved.get_mut(depth).ok_or(ErrorKind::StateStackFull)? = rules;
                             depth += 1;
@@ -258,6 +264,8 @@ impl<'a> Program<'a> {
                 Reg::ValOffset(self.factored(i128::from(read_sleb128(input)?))?),
             ),
             0x16 => Register(read_uleb128(input)?, Reg::ValExpression(expression(input)?)),
+            // DW_CFA_GNU_args_size, LSB Core 5.0 §10.5.2: one ULEB128 operand.
+            0x2e => ArgsSize(read_uleb128(input)?),
             _ => return Err(ErrorKind::UnknownOpcode(opcode)),
         };
         Ok(instruction)
@@ -288,6 +296,7 @@ enum Instruction<'a> {
     Cfa(CfaRule<'a>),
     CfaRegister(u64),
     CfaOffset(i64),
+    ArgsSize(u64),
     RememberState,
     RestoreState,
 }

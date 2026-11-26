@@ -1,0 +1,17 @@
+{
+  "id": "rustc",
+  "title": "Rust compiler",
+  "area": "Toolchain",
+  "summary": "Checks the hosted Rust compiler and its staged sysroot.",
+  "binary": "/sbin/suite-rustc",
+  "timingSensitive": true,
+  "categories": [{
+    "id": "rustc",
+    "title": "Rust compiler",
+    "cases": [
+      {"id": "identity-and-sysroot", "title": "Compiler identity and sysroot"},
+      {"id": "hello-object-equals-mac", "title": "Hello object equals Mac"},
+      {"id": "diagnostic-located", "title": "Diagnostic is located"}
+    ]
+  }]
+}

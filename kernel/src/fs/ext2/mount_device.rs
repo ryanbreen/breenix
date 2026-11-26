@@ -101,15 +101,12 @@ impl BlockDevice for MountDevice {
 
     fn read_blocks(&self, start: u64, count: usize, buf: &mut [u8]) -> Result<(), BlockError> {
         cache_kernel::assert_io_context();
-        let bytes = self.span(start, count, buf.len())?;
-        if self.cache.is_none() {
-            return self.inner.read_blocks(start, count, buf);
+        self.span(start, count, buf.len())?;
+        match self.cache {
+            Some(cache) if count != 0 => cache.read_blocks(self.inner.as_ref(), start, count, buf),
+            Some(_) => Ok(()),
+            None => self.inner.read_blocks(start, count, buf),
         }
-        let size = self.inner.block_size();
-        for (i, chunk) in buf[..bytes].chunks_exact_mut(size).enumerate() {
-            self.read_block(start + i as u64, chunk)?;
-        }
-        Ok(())
     }
 
     fn write_block(&self, block: u64, buf: &[u8]) -> Result<(), BlockError> {
@@ -156,6 +153,56 @@ impl BlockDevice for MountDevice {
 mod tests {
     use super::*;
     use core::sync::atomic::AtomicUsize;
+
+    #[derive(Default)]
+    struct ReadCalls {
+        single: AtomicUsize,
+        multiple: AtomicUsize,
+    }
+
+    struct CountingDisk(Arc<ReadCalls>);
+
+    impl BlockDevice for CountingDisk {
+        fn read_block(&self, block: u64, buf: &mut [u8]) -> Result<(), BlockError> {
+            self.0.single.fetch_add(1, Ordering::Relaxed);
+            buf.fill(block as u8);
+            Ok(())
+        }
+
+        fn read_blocks(&self, start: u64, count: usize, buf: &mut [u8]) -> Result<(), BlockError> {
+            self.0.multiple.fetch_add(1, Ordering::Relaxed);
+            for (i, block) in buf.chunks_exact_mut(self.block_size()).take(count).enumerate() {
+                block.fill((start + i as u64) as u8);
+            }
+            Ok(())
+        }
+
+        fn write_block(&self, _block: u64, _buf: &[u8]) -> Result<(), BlockError> {
+            Err(BlockError::IoError)
+        }
+
+        fn block_size(&self) -> usize { 512 }
+        fn num_blocks(&self) -> u64 { 32 }
+        fn flush(&self) -> Result<(), BlockError> { Ok(()) }
+    }
+
+    #[test]
+    fn cached_mount_keeps_an_ext2_block_read_contiguous() {
+        let calls = Arc::new(ReadCalls::default());
+        let disk = MountDevice::new(Box::new(CountingDisk(calls.clone())), Arc::new(AtomicBool::new(false)), true);
+        let mut bytes = [0; 4096];
+        super::super::file::read_ext2_block(&disk, 1, bytes.len(), &mut bytes).unwrap();
+        for (i, sector) in bytes.chunks_exact(512).enumerate() {
+            assert!(sector.iter().all(|&b| b == (i + 8) as u8));
+        }
+        assert_eq!(calls.single.load(Ordering::Relaxed), 0);
+        assert_eq!(calls.multiple.load(Ordering::Relaxed), 1);
+        let mut cached = [0; 4096];
+        super::super::file::read_ext2_block(&disk, 1, cached.len(), &mut cached).unwrap();
+        assert_eq!(cached, bytes);
+        assert_eq!(calls.single.load(Ordering::Relaxed), 0);
+        assert_eq!(calls.multiple.load(Ordering::Relaxed), 1);
+    }
 
     struct ReadOnlyDisk(Arc<AtomicUsize>);
     impl BlockDevice for ReadOnlyDisk {

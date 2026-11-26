@@ -442,6 +442,15 @@ fn cleanup<const N: usize>(
             });
         match result {
             ReasonCode::InstallContext => {
+                // The pad expects the call's pushed arguments to be gone.
+                if frame.rules.args_size != 0 {
+                    let sp = source.stack_pointer_register();
+                    let popped = landing_pad
+                        .get_gr(sp)
+                        .and_then(|value| value.checked_add(frame.rules.args_size))
+                        .ok_or(ReasonCode::FatalPhase2Error)?;
+                    landing_pad.set_gr(sp, popped);
+                }
                 exception.continuation = (!handler).then_some(continuation);
                 return Ok(landing_pad);
             }

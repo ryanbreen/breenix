@@ -2327,3 +2327,23 @@ fn llvm_manifest_matches_table() {
         expected.iter().map(String::as_str).collect::<Vec<_>>());
     assert_eq!(guest, manifest.categories);
 }
+
+#[test]
+fn rustc_manifest_matches_table() {
+    let root = repo_root();
+    let mut errors = Vec::new();
+    let manifest = read_manifest(&root.join("docs/suites/rustc.json"), &mut errors).expect("rustc manifest");
+    assert!(errors.is_empty(), "{}", errors.join("\n"));
+    assert_eq!(manifest.id, "rustc");
+    assert_eq!(manifest.categories.len(), 1);
+    assert_eq!(manifest.categories[0].entry.id, "rustc");
+    assert_eq!(manifest.categories[0].cases.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+        ["identity-and-sysroot", "hello-object-equals-mac", "diagnostic-located"]);
+    let (_, files) = suite_files(&root, "rustc").expect("rustc source");
+    let source = fs::read_to_string(root.join("userspace/programs/src/suite_rustc.rs")).unwrap();
+    assert!(source.contains(".case_limit_ms(60_000)"), "rustc cases need provisional 60 s allowances");
+    let (suite, guest) = source_suite_files(&files).expect("rustc guest table");
+    assert_eq!(suite.id, manifest.id);
+    assert_eq!(suite.title, manifest.title);
+    assert_eq!(guest, manifest.categories);
+}

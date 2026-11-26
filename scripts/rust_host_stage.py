@@ -140,11 +140,61 @@ def stage_dynamic(image, selection, arch, artifacts):
     entries = [('/sbin/suite-dynamic', artifacts / 'suite-dynamic', '0755')]
     entries.extend((f'/lib/{name}', artifacts / name, '0755') for name in ('ld-breenix.so', 'libc.so'))
     entries.extend((f'{prefix}/{name}', artifacts / name, '0755')
-                   for name in ('dynamic-probe', 'missing-interp', 'libkd-probe.so'))
+                   for name in ('dynamic-probe', 'missing-interp', 'libkd-probe.so',
+                                'dynamic-panic-probe', 'libkd-panic.so'))
     return stage_files(image, ['/lib', prefix], entries)
 
 
-def stage_files(image, directories, entries):
+def stage_rustc(image, selection, arch, suite, artifacts, sysroot, targets, corpus, kd, k5, kd_record):
+    if 'rustc' not in selection.split(','):
+        return {}
+    if arch != 'x86_64':
+        raise ValueError('the hosted rustc is only built for x86-64')
+    prefix = '/usr/libexec/breenix/rustc'
+    driver = k5['hosted_link']['driver']
+    entries = [('/sbin/suite-rustc', suite, '0755'),
+               (f'{prefix}/bin/rustc', artifacts / 'rustc', '0755'),
+               (f'{prefix}/lib/{driver}', artifacts / driver, '0755'),
+               ('/lib/ld-breenix.so', kd / 'ld-breenix.so', '0755'),
+               ('/lib/libc.so', kd / 'libc.so', '0755')]
+    expected = {f'{prefix}/bin/rustc': k5['hosted_rustc_sha256'],
+                f'{prefix}/lib/{driver}': k5['hosted_driver_sha256'],
+                '/lib/ld-breenix.so': kd_record['ld-breenix.so'],
+                '/lib/libc.so': k5['hosted_link']['libc_sha256']}
+    if kd_record['libc.so'] != expected['/lib/libc.so']:
+        raise ValueError('KD libc differs from K5 build record')
+    files = k5['sysroot']['files_sha256']
+    for target in ('x86_64-breenix', 'x86_64-breenix-hosted'):
+        relative = f'lib/rustlib/{target}/lib'
+        archives = sorted((sysroot / relative).glob('*.rlib'))
+        if not archives or {str(p.relative_to(sysroot)) for p in archives} != {
+                name for name in files if name.startswith(relative + '/') }:
+            raise ValueError(f'{target} sysroot differs from K5 build record')
+        for source in archives:
+            path = f'{prefix}/sysroot/{source.relative_to(sysroot)}'
+            entries.append((path, source, '0444'))
+            expected[path] = files[str(source.relative_to(sysroot))]
+    for directory, sources in (('targets', [targets / f'{target}.json' for target in
+                                  ('x86_64-breenix', 'x86_64-breenix-hosted')]),
+                               ('corpus', sorted(p for p in corpus.iterdir() if p.is_file()))):
+        if not sources:
+            raise ValueError(f'empty rustc {directory}')
+        entries.extend((f'{prefix}/{directory}/{source.name}', source, '0444') for source in sources)
+    for path, source, _ in entries:
+        if path in expected:
+            with source.open('rb') as stream:
+                if hashlib.file_digest(stream, 'sha256').hexdigest() != expected[path]:
+                    raise ValueError(f'{path} differs from its build record')
+    directories = ['/lib', prefix, f'{prefix}/bin', f'{prefix}/lib', f'{prefix}/sysroot',
+                   f'{prefix}/sysroot/lib', f'{prefix}/sysroot/lib/rustlib']
+    for target in ('x86_64-breenix', 'x86_64-breenix-hosted'):
+        directories.extend([f'{prefix}/sysroot/lib/rustlib/{target}',
+                            f'{prefix}/sysroot/lib/rustlib/{target}/lib'])
+    directories.extend([f'{prefix}/targets', f'{prefix}/corpus'])
+    return stage_files(image, directories, entries, extra_headroom=16384)
+
+
+def stage_files(image, directories, entries, extra_headroom=0):
     expected = {}
     total_size = 0
     for path, source, mode in entries:
@@ -156,7 +206,7 @@ def stage_files(image, directories, entries):
         total_size += source.stat().st_size
     debugfs, resize2fs = require_e2fsprogs('debugfs', 'resize2fs')
     with image.open('r+b') as disk:
-        disk.truncate(image.stat().st_size + total_size * 2 + 16 * 1024 * 1024)
+        disk.truncate(image.stat().st_size + total_size * 2 + 16 * 1024 * 1024 + extra_headroom)
     subprocess.run([resize2fs, image], check=True, capture_output=True)
     with tempfile.TemporaryDirectory(prefix='hosted-suite-stage-') as temporary:
         commands = Path(temporary) / 'commands'
@@ -200,6 +250,15 @@ def main():
         args.image, args.suite, args.arch,
         Path(os.environ.get('BREENIX_KD_BUILD_DIR', PROGRAMS / 'target/kd')),
     ))
+    if 'rustc' in args.suite.split(','):
+        cache = Path(os.environ.get('BREENIX_RUSTC_PORT_BUILDS', ROOT / 'build/rustc-port'))
+        sysroot = Path(os.environ.get('BREENIX_K5_SYSROOT', cache / 'sysroot'))
+        kd = Path(os.environ.get('BREENIX_KD_BUILD_DIR', PROGRAMS / 'target/kd'))
+        k5 = json.loads((ROOT / 'toolchain/rust-host/k5/x86_64.json').read_text())
+        kd_record = json.loads((kd / 'build.json').read_text())
+        staged.update(stage_rustc(args.image, args.suite, args.arch, release / 'suite-rustc',
+                                  PROGRAMS / 'target/rustc' / args.arch, sysroot, ROOT,
+                                  ROOT / 'toolchain/rust-host/k5/corpus', kd, k5, kd_record))
     stage(args.image, args.suite, release / 'suite-rust-host',
           release / 'rust-host-startup-probe', release / 'rust-host-process-probe',
           release / 'rust-host-unwind-probe')

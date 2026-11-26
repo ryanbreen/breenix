@@ -14,6 +14,7 @@ hosted-link-probe = []
 rust-host = []
 cxx-runtime = []
 llvm = []
+rustc = []
 dynamic = ["breenix-suite/dynamic"]
 
 [dependencies]
@@ -1034,3 +1035,8 @@ required-features = ["llvm"]
 name = "suite-dynamic"
 path = "src/suite_dynamic.rs"
 required-features = ["dynamic"]
+
+[[bin]]
+name = "suite-rustc"
+path = "src/suite_rustc.rs"
+required-features = ["rustc"]

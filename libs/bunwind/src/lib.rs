@@ -11,6 +11,7 @@ mod loaded;
 pub mod cfi;
 pub mod ehframe;
 pub mod level1;
+pub mod report;
 
 #[cfg(test)]
 extern crate std;

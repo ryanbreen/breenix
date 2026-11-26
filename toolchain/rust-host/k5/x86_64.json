@@ -1,0 +1,114 @@
+{
+  "fork_commit": "a763a7dd70cc6bc97736aca5eabaf867b36477bf",
+  "compiler_tree": "fb2afea4e4c3798e49fe6d7c6e3242acb4b1e331",
+  "llvm_commit": "ed6566573eb21b00a3f87815e14ff766fd56ef42",
+  "llvm_versions": {
+    "aarch64-apple-darwin": "20.1.7",
+    "x86_64-breenix-hosted": "20.1.7"
+  },
+  "pinned_status_before": "",
+  "pinned_status_after": "",
+  "bootstrap": {
+    "command": [
+      "taskpolicy",
+      "-b",
+      "nice",
+      "-n",
+      "15",
+      "python3",
+      "x.py",
+      "build",
+      "--stage",
+      "1",
+      "compiler/rustc",
+      "library/std",
+      "--config",
+      "<cache>/bootstrap.toml",
+      "--verbose"
+    ],
+    "hosts": [
+      "aarch64-apple-darwin",
+      "x86_64-breenix-hosted"
+    ],
+    "targets": [
+      "x86_64-breenix",
+      "x86_64-breenix-hosted"
+    ],
+    "jobs": 4,
+    "attempts": {
+      "bootstrap-first": {
+        "budget_seconds": 10800,
+        "started": "2026-11-25T19:58:30.569911+00:00",
+        "exit_status": 1,
+        "time": "2026-11-25T20:17:28.100777+00:00",
+        "wall_seconds": 1137.521,
+        "log_sha256": "2a0b444b11b56ae92636bf83d5898958558205cbe003cbaf67a163bb56248a32"
+      },
+      "bootstrap": {
+        "budget_seconds": 9662,
+        "started": "2026-11-25T20:18:40.410096+00:00",
+        "exit_status": 0,
+        "time": "2026-11-25T20:19:37.630742+00:00",
+        "wall_seconds": 57.22,
+        "log_sha256": "031d3b02ca3bb7349d1c340849c50f09786b4bbe47672dfd6ded5982c16fba06"
+      }
+    }
+  },
+  "mac_rustc_sha256": "b3e90b74fd944e6812a0e4a23ad89f98cdc4887c17faf82e8f6e767300be10d6",
+  "hosted_rustc_sha256": "993e2776feeaf2012fe90e297bd01711e4334e041cf72c898990baa2572a6c7f",
+  "hosted_driver_sha256": "60eae0cc852624c63c7205ade4cb22a95955f0e15f9a8ab840e7bd4d14115d11",
+  "sysroot": {
+    "rustc_version": "rustc 1.90.0-dev (a763a7dd7 2026-11-24)",
+    "commit_hash": "a763a7dd70cc6bc97736aca5eabaf867b36477bf",
+    "files_sha256": {
+      "lib/rustlib/x86_64-breenix/lib/libaddr2line-ba37975f7d8adf35.rlib": "387b1c26d25ebe5b833827bc01bb161b459a9f58367aad057ba6bb686b8df04d",
+      "lib/rustlib/x86_64-breenix/lib/libadler2-dd423baddc1d50ec.rlib": "cc71d7a921a703070cee4804fb12681d6a361b93a69ebedaeb007fdb0667ea4f",
+      "lib/rustlib/x86_64-breenix/lib/liballoc-1161479d64262814.rlib": "cfd96588055d0852054609bfc9fe7088588989ecbb9bea4df6fa79a2b2c64e65",
+      "lib/rustlib/x86_64-breenix/lib/libcfg_if-11010efc6058d911.rlib": "6fa04125312db1c3759aba890be458c0b523a1435eadeecc5bba1b59bf0430f8",
+      "lib/rustlib/x86_64-breenix/lib/libcompiler_builtins-96c412bbf464e3d2.rlib": "f0df057c02e5ee952642fd45d961c736fec8decf27ce4e42fc63fc9f1e9c9f2f",
+      "lib/rustlib/x86_64-breenix/lib/libcore-5b00ff3053f7705b.rlib": "a4f70275b14ea875b4a2d83e87be6a6804c3646a4acd9034dbcf30b08ed4875c",
+      "lib/rustlib/x86_64-breenix/lib/libgimli-35cfc4a2e7e86fd2.rlib": "390fac8000cfe974d7b66a4d485cb94476dcd6cc05d2db5e2556a1ff68dd9372",
+      "lib/rustlib/x86_64-breenix/lib/libhashbrown-8dcd519fb7da6f51.rlib": "434d60ddf4ed9cd7b2ca5a73268a7179af368f24cb2ca7e738c6bb584d6e746f",
+      "lib/rustlib/x86_64-breenix/lib/liblibc-9636e9f58f5c6436.rlib": "e5c5d3890a11077d61fca130730be5e4f451141ec270492035b985ca0e5195e2",
+      "lib/rustlib/x86_64-breenix/lib/libmemchr-12a0ceda651a8dd9.rlib": "3975a83388094fd4d8b41b5692e8809012545d92f0922f12b96013950b28c63a",
+      "lib/rustlib/x86_64-breenix/lib/libminiz_oxide-14f58b3b3e778d83.rlib": "dce70b404f860ea7905efe5d33328c8f5eb6533a5bc7d564cf9c3c0c445708a6",
+      "lib/rustlib/x86_64-breenix/lib/libobject-dc264dd034f976fb.rlib": "8ad79185dcb42b0889399cebbbf1cae43d573d9608ce223ddf9833f2bedd075e",
+      "lib/rustlib/x86_64-breenix/lib/libpanic_abort-4915d6c5fd85623e.rlib": "3022cf5e7ef90c0403f9fb63ae0f6c02a864566fcd7c8ecca3feef22bcafbd8e",
+      "lib/rustlib/x86_64-breenix/lib/libpanic_unwind-c876b439e8fea62b.rlib": "2eee3e85e444e1175cb1a9a6ac8ef9140ca8325a04cd972b5796f39450ffc9c3",
+      "lib/rustlib/x86_64-breenix/lib/librustc_demangle-65c78af9312cb81f.rlib": "bf6679314b5abc5a4e5cbb89f95a991d3eb5f5e6138eb9c2da4dea21b102714d",
+      "lib/rustlib/x86_64-breenix/lib/librustc_std_workspace_alloc-7ade61cdb4713159.rlib": "e8a6e4fea05f063ae921679d2ea02b0dd74012374df8cd56d9b89b5b2d5a8d1a",
+      "lib/rustlib/x86_64-breenix/lib/librustc_std_workspace_core-1a46c4e57e8e3ea0.rlib": "139d40c736f1de78d6561e7b7133ac8dd61afad4d41c152a2c1687b1bd553535",
+      "lib/rustlib/x86_64-breenix/lib/libstd-d5c991d6609a6050.rlib": "c2ceb0c16c33565de5f40a3de7aece66a3c343f57785a99d18388c380603df79",
+      "lib/rustlib/x86_64-breenix/lib/libstd_detect-ec720b3dd175b489.rlib": "c1859948a7d62faac8c3a4bc5a46469722c370cfcb629d165449ba8d78c7fb46",
+      "lib/rustlib/x86_64-breenix/lib/libunwind-20e4e418da0d602f.rlib": "d3cc7a0ce06e14da201682e68720857055f877e9b82c5d9153f62e0a8bb70155",
+      "lib/rustlib/x86_64-breenix-hosted/lib/libaddr2line-08f4d3b2e2fc561a.rlib": "47d3d3bbd393af4dac44e28a321b657b74b77f1991b4a15646f4e09a8f272018",
+      "lib/rustlib/x86_64-breenix-hosted/lib/libadler2-fc26cad1601bcf27.rlib": "22aeeae93a310c83cc08700e4fd7cce92d7074af4333e6368ac6b5fbf44b8a6b",
+      "lib/rustlib/x86_64-breenix-hosted/lib/liballoc-8d8c55230ec6779a.rlib": "1d22579712facdcb73d04d99ac502b24d86a6db8adec97b41090ee870370d0e4",
+      "lib/rustlib/x86_64-breenix-hosted/lib/libcfg_if-7849917f56016e87.rlib": "95e0acf555844cae6b17a9b99d9f32ade14931dbfce85f9322eb0e7705e9316e",
+      "lib/rustlib/x86_64-breenix-hosted/lib/libcompiler_builtins-f341317c6d192fd4.rlib": "40af59ef167e33295d9750e1ed86b91ca4960c803bc6219cf14275259b1d32ae",
+      "lib/rustlib/x86_64-breenix-hosted/lib/libcore-362c45578282528b.rlib": "0678dd8c69067166b91ab91afbdc6ec9d73f5e5e180144e6e1f9b78967beb295",
+      "lib/rustlib/x86_64-breenix-hosted/lib/libgimli-20a21012686b6372.rlib": "8785e8e9397c23e0a080a9e462f9c28410ae2b548dc3380d470e1eefb315be69",
+      "lib/rustlib/x86_64-breenix-hosted/lib/libhashbrown-3a51e6f2fffa2247.rlib": "97d317fa89eab17202b99d096c40e8af75ca59b40a948d2579b4d3923331c2ce",
+      "lib/rustlib/x86_64-breenix-hosted/lib/liblibc-1381444901b7e40f.rlib": "ae1250c1a2612948612a41b5cc5d344f1f5243e14293ac4852a0f843bc0bc921",
+      "lib/rustlib/x86_64-breenix-hosted/lib/libmemchr-8c9388d9a0410e34.rlib": "3209e16041eb776fdae98e10f60c32afc552b26714a6b205643a39bca564111a",
+      "lib/rustlib/x86_64-breenix-hosted/lib/libminiz_oxide-1d23b874efeb2053.rlib": "c75d47c46f46cc5b2dfe3032c590f1d4459a72cf28c34cf4d04e2c6db6b60309",
+      "lib/rustlib/x86_64-breenix-hosted/lib/libobject-440d9deaf57df429.rlib": "55691cf4c848f692a09039d695f73999c839375e34be5b950803b4df98d629f9",
+      "lib/rustlib/x86_64-breenix-hosted/lib/libpanic_abort-a858dbf9ccc45056.rlib": "50a597cc691a9c28cfe3f8326f65f5899562737f6fa09d724c16dde6989fef72",
+      "lib/rustlib/x86_64-breenix-hosted/lib/libpanic_unwind-1efcfa545b344aa7.rlib": "a820022057e9911246772eee2112edd7136657ccb2ad8155e1f4d82933dd3d82",
+      "lib/rustlib/x86_64-breenix-hosted/lib/librustc_demangle-4323d449b5028a53.rlib": "191709e8a357c712f871cc5e602097e01ec0d7ce2c8fa35c0e39727ce01b9164",
+      "lib/rustlib/x86_64-breenix-hosted/lib/librustc_std_workspace_alloc-4726a4245d484b50.rlib": "fdad02a20332e7f58037ac3dc28bf5d1ca20ba650ee19320d50c668cf7b6a401",
+      "lib/rustlib/x86_64-breenix-hosted/lib/librustc_std_workspace_core-50adf3d8dc5babe4.rlib": "83ca494798b54bd1d54b0573ab9f8a9581050f8107a75b12d05731741190b573",
+      "lib/rustlib/x86_64-breenix-hosted/lib/libstd-f32a85bea434ce93.rlib": "640554a945e4204f3c467b9e1b0c1b951e5c493c19b6bd838ab6f63feef4224f",
+      "lib/rustlib/x86_64-breenix-hosted/lib/libstd_detect-accf65cf3a95f3f6.rlib": "06a1902d76b81c11fdd0d8924b2569a39f9cf9ac46ba484ba7ba2b30b8a4a961",
+      "lib/rustlib/x86_64-breenix-hosted/lib/libunwind-bb964b5abebcc773.rlib": "4cb72b3080571a61185001a5efce54c123798d26189444884795079c6e05c98e"
+    }
+  },
+  "hosted_link": {
+    "driver": "librustc_driver-2e1bf4637bebadba.so",
+    "libc_sha256": "d81da46633acbcf0c9ca33e976d9861fa607fc32e5736c042aa7a2b0d6a4fa35",
+    "maps_sha256": {
+      "rustc.map": "ee39b51660690fe050c99d3c872a3f7d002d3d004a427934d71874697e884282",
+      "librustc_driver-2e1bf4637bebadba.so.map": "ebf035851e84789e25a620ceb47bd08549efe12cb5eb760715362ea1f689a52d"
+    }
+  }
+}
