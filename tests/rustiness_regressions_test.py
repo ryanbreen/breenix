@@ -19,7 +19,7 @@ UACCESS = r"""
 #[derive(Debug, PartialEq)]
 pub enum SyscallResult { Ok(u64), Err(u64) }
 
-mod memory {
+pub mod memory {
     pub mod layout {
         use std::cell::Cell;
 
@@ -37,12 +37,42 @@ mod memory {
             addr != 0 && addr != KERNEL.get() && addr.checked_add(len as u64).is_some()
         }
 
+        pub fn is_valid_user_address(addr: u64) -> bool {
+            is_valid_user_range(addr, 1)
+        }
+
         pub fn mapped_prefix(addr: u64, len: usize) -> usize {
             let (base, size) = MAPPED.get();
             addr.checked_sub(base).map_or(0, |offset| size.saturating_sub(offset as usize)).min(len)
         }
     }
 }
+"""
+
+WRITE_FIXTURE = r"""
+extern crate self as log;
+#[macro_export]
+macro_rules! debug { ($($arg:tt)*) => {} }
+
+pub mod userptr {
+    use crate::memory::layout::mapped_prefix;
+
+    unsafe fn write(dst: *mut u8, src: *const u8, len: usize) -> usize {
+        let copied = mapped_prefix(dst as u64, len);
+        if copied != 0 {
+            unsafe { std::ptr::copy_nonoverlapping(src, dst, copied); }
+        }
+        len - copied
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    use write as breenix_uaccess_copy;
+    #[cfg(target_arch = "aarch64")]
+    use write as breenix_uaccess_write;
+
+    // CHECKED_COPY
+}
+
 """
 
 WRITE_COPY = (
@@ -80,30 +110,7 @@ class RustinessRegressions(unittest.TestCase):
         # The pending mask is a scheduler snapshot. Supply it directly and
         # execute the handler's production path from snapshot to syscall result.
         tail = handler[handler.index("    // Write pending signal set to userspace"):]
-        fixture = UACCESS + r"""
-extern crate self as log;
-#[macro_export]
-macro_rules! debug { ($($arg:tt)*) => {} }
-
-pub mod userptr {
-    use crate::memory::layout::mapped_prefix;
-
-    unsafe fn write(dst: *mut u8, src: *const u8, len: usize) -> usize {
-        let copied = mapped_prefix(dst as u64, len);
-        if copied != 0 {
-            unsafe { std::ptr::copy_nonoverlapping(src, dst, copied); }
-        }
-        len - copied
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    use write as breenix_uaccess_copy;
-    #[cfg(target_arch = "aarch64")]
-    use write as breenix_uaccess_write;
-
-    // CHECKED_COPY
-}
-
+        fixture = UACCESS + WRITE_FIXTURE + r"""
 #[allow(unused_imports)]
 use userptr::copy_to_user;
 
@@ -129,6 +136,57 @@ fn sigpending_output_respects_mapping() {
         fixture = fixture.replace("// CHECKED_COPY", checked_copy(WRITE_COPY))
         fixture = fixture.replace("// SIGNAL_TAIL", tail)
         run_test(fixture, "sigpending_output_respects_mapping")
+
+
+    def test_cow_stats(self):
+        source = (SYSCALL / "handlers.rs").read_text()
+        types = item(source, "/// CowStats structure returned by sys_cow_stats")
+        handler = item(source, "pub fn sys_cow_stats(")
+        fixture = UACCESS.replace("pub mod memory {", "pub mod memory { pub use crate::cow_stats;")
+        fixture += WRITE_FIXTURE + r"""
+#[macro_export]
+macro_rules! error { ($($arg:tt)*) => {} }
+
+pub mod syscall {
+    pub use crate::userptr;
+}
+
+pub mod cow_stats {
+    pub fn get_stats() -> super::CowStatsResult {
+        super::CowStatsResult {
+            total_faults: 13, manager_path: 11, direct_path: 2, pages_copied: 8, sole_owner_opt: 5,
+        }
+    }
+}
+
+// COW_STATS
+
+#[test]
+fn cow_stats_checks_all_output_bytes() {
+    use memory::layout::set_regions;
+
+    let mut valid = [0u64; 5];
+    let mut unmapped = [0u64; 5];
+    let mut kernel = [0u64; 5];
+    let valid_addr = valid.as_mut_ptr() as u64;
+    let unmapped_addr = unmapped.as_mut_ptr() as u64;
+    let kernel_addr = kernel.as_mut_ptr() as u64;
+
+    set_regions(valid_addr, size_of_val(&valid), kernel_addr);
+    assert_eq!(sys_cow_stats(valid_addr), SyscallResult::Ok(0));
+    assert_eq!(valid, [13, 11, 2, 8, 5]);
+    assert_eq!(sys_cow_stats(unmapped_addr), SyscallResult::Err(14));
+    assert_eq!(sys_cow_stats(kernel_addr), SyscallResult::Err(14));
+
+    set_regions(valid_addr, size_of::<u64>(), kernel_addr);
+    assert_eq!(sys_cow_stats(valid_addr), SyscallResult::Err(14));
+}
+"""
+        # Keep the production handler and ABI struct intact. The test supplies
+        # only the counters and the simulated user-copy backend.
+        fixture = fixture.replace("// CHECKED_COPY", checked_copy(WRITE_COPY))
+        fixture = fixture.replace("// COW_STATS", types + "\n" + handler)
+        run_test(fixture, "cow_stats_checks_all_output_bytes")
 
 
 if __name__ == "__main__":
