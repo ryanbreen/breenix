@@ -273,11 +273,6 @@ unsafe fn install(
             return Err(LOAD_ERROR);
         }
         ok(((*disk).write_blocks)(disk, media_id, (offset / SECTOR) as u64, wanted, buffer.data.cast()))?;
-        ok(((*disk).flush_blocks)(disk))?;
-        ok(((*disk).read_blocks)(disk, media_id, (offset / SECTOR) as u64, wanted, check.data.cast()))?;
-        if core::slice::from_raw_parts(check.data, wanted) != &wire[..wanted] {
-            return Err(LOAD_ERROR);
-        }
         offset += wanted;
     }
     let mut extra = 1;
@@ -285,6 +280,26 @@ unsafe fn install(
     if extra != 0 {
         return Err(LOAD_ERROR);
     }
+
+    // Flush the data together, then compare each extent with the read-only
+    // source. Keep LBA 0 invalid until the entire flushed body verifies.
+    ok(((*disk).flush_blocks)(disk))?;
+    ok(((*file).set_position)(file, SECTOR as u64))?;
+    let mut offset = SECTOR;
+    while offset < size {
+        let wanted = CHUNK.min(size - offset);
+        let mut read = wanted;
+        ok(((*file).read)(file, &mut read, buffer.data.cast()))?;
+        if read != wanted {
+            return Err(LOAD_ERROR);
+        }
+        ok(((*disk).read_blocks)(disk, media_id, (offset / SECTOR) as u64, wanted, check.data.cast()))?;
+        if core::slice::from_raw_parts(check.data, wanted) != &wire[..wanted] {
+            return Err(LOAD_ERROR);
+        }
+        offset += wanted;
+    }
+
     wire[..SECTOR].copy_from_slice(record);
     ok(((*disk).write_blocks)(disk, media_id, 0, SECTOR, buffer.data.cast()))?;
     ok(((*disk).flush_blocks)(disk))?;
