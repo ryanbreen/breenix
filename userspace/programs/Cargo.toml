@@ -16,6 +16,7 @@ cxx-runtime = []
 llvm = []
 rustc = []
 rust-link = []
+cargo-suite = []
 dynamic = ["breenix-suite/dynamic"]
 
 [dependencies]
@@ -1046,3 +1047,8 @@ required-features = ["rustc"]
 name = "suite-rust-link"
 path = "src/suite_rust_link.rs"
 required-features = ["rust-link"]
+
+[[bin]]
+name = "suite-cargo"
+path = "src/suite_cargo.rs"
+required-features = ["cargo-suite"]

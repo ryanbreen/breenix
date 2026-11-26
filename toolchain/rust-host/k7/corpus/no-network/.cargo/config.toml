@@ -1,0 +1,5 @@
+[source.crates-io]
+replace-with = "k7-registry"
+
+[source.k7-registry]
+registry = "sparse+http://127.0.0.1:1/"

@@ -34,6 +34,8 @@
 #     Link llc and llvm-mc into target/llvm/<arch>.
 #   ./userspace/programs/build.sh --rustc
 #     Stage the linked K5 twin compiler and maps into target/rustc/x86_64.
+#   ./userspace/programs/build.sh --cargo-suite
+#     Build the hosted Cargo suite into target/hosted.
 #   ./userspace/programs/build.sh --rust-link
 #     Build the hosted replay suite and guest bld into target/rust-link/x86_64.
 #   ./userspace/programs/build.sh --kd-libc
@@ -49,7 +51,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 usage() {
-    echo "Usage: $0 [--arch x86_64|aarch64] [--hosted-bin NAME [--features FEATURES] | --rust-host | --bunwind | --cxx-runtime | --llvm | --rustc | --rust-link | --dynamic | --kd-libc | --kd-loader]" >&2
+    echo "Usage: $0 [--arch x86_64|aarch64] [--hosted-bin NAME [--features FEATURES] | --rust-host | --bunwind | --cxx-runtime | --llvm | --rustc | --rust-link | --cargo-suite | --dynamic | --kd-libc | --kd-loader]" >&2
     exit 2
 }
 
@@ -62,6 +64,7 @@ CXX_RUNTIME=0
 LLVM=0
 RUSTC_PORT=0
 RUST_LINK=0
+CARGO_SUITE=0
 DYNAMIC=0
 KD_LIBC=0
 KD_LOADER=0
@@ -100,6 +103,10 @@ while [[ $# -gt 0 ]]; do
             RUST_LINK=1
             shift
             ;;
+        --cargo-suite)
+            CARGO_SUITE=1
+            shift
+            ;;
         --dynamic)
             DYNAMIC=1
             shift
@@ -122,6 +129,14 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+if [[ "$CARGO_SUITE" == 1 ]]; then
+    [[ "$RUST_LINK" == 0 && "$RUSTC_PORT" == 0 && "$DYNAMIC" == 0 &&
+       "$KD_LIBC" == 0 && "$KD_LOADER" == 0 && "$CXX_RUNTIME" == 0 &&
+       "$LLVM" == 0 && "$BUNWIND" == 0 && "$RUST_HOST" == 0 &&
+       -z "$HOSTED_BIN" && ${#HOSTED_FEATURES[@]} -eq 0 ]] || usage
+    HOSTED_BIN="suite-cargo"
+    HOSTED_FEATURES=(--features cargo-suite)
+fi
 if [[ "$RUST_LINK" == 1 ]]; then
     [[ "$ARCH" == x86_64 && "$RUSTC_PORT" == 0 && "$DYNAMIC" == 0 &&
        "$KD_LIBC" == 0 && "$KD_LOADER" == 0 && "$CXX_RUNTIME" == 0 &&
@@ -259,7 +274,7 @@ if [[ "$KD_LIBC" == 1 ]]; then
     "$rust_tools/llvm-objcopy" --rename-section \
         .rodata.breenix_dso_handle=.data.rel.ro.breenix_dso_handle,alloc,load,data,contents \
         "$kd_dir/libc/$TARGET_DIR-hosted/release/libc.a" "$kd_dir/libc-pic.a"
-    python3 "$PROJECT_ROOT/scripts/libc-clean-archive.py" --archive "$kd_dir/libc-pic.a" --tool-dir "$rust_tools"
+    python3 "$PROJECT_ROOT/scripts/libc-clean-archive.py" --archive "$kd_dir/libc-pic.a" --tool-dir "$rust_tools" --shared-libc
     "$rust_tools/gcc-ld/ld.lld" -shared --no-undefined --fatal-warnings --eh-frame-hdr --hash-style=sysv \
         -soname libc.so --version-script "$libc_dir/hosted-libc.exports" \
         -o "$kd_dir/libc.so" --whole-archive "$kd_dir/libc-pic.a" --no-whole-archive
@@ -538,7 +553,7 @@ build_rust_programs() (
         export RUSTFLAGS="$HOSTED_RUSTFLAGS -C metadata=breenix_std_$FORK_COMMIT"
         extra_link_flags=()
         case "$HOSTED_BIN" in
-            suite-dynamic)
+            suite-dynamic|suite-cargo)
                 extra_link_flags=(-Dwarnings) ;;
             suite-rust-host|rust-host-startup-probe|rust-host-process-probe|rust-host-unwind-probe)
                 extra_link_flags=(-Cforce-unwind-tables=yes) ;;

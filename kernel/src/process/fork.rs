@@ -459,8 +459,6 @@ pub fn copy_process_state(
     if let Some(thread) = child_process.main_thread.as_mut() {
         thread.resource_limits = Some(child_process.limits.clone());
     }
-    child_process.image_size = parent_process.image_size;
-    child_process.image_data_size = parent_process.image_data_size;
     // A CLONE_FILES child already holds the parent's own table.
     if !child_process.fd_table.is_same_table(&parent_process.fd_table) {
         child_process.fd_table = parent_process.fd_table.clone_for_fork();

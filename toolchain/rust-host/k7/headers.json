@@ -1,0 +1,18 @@
+[
+  {
+    "header": "libs/libbreenix-libc/include/dlfcn.h",
+    "declaration": "dlopen, dlsym, dlerror and dlclose",
+    "specification": "POSIX.1-2024",
+    "section": "Base Definitions, <dlfcn.h>; System Interfaces, dlopen, dlsym, dlerror and dlclose",
+    "step": "25.8g X1 g3",
+    "note": "Declare the existing hosted loader interfaces with C linkage."
+  },
+  {
+    "header": "libs/libbreenix-libc/include/syslog.h",
+    "declaration": "openlog, syslog and closelog",
+    "specification": "POSIX.1-2024",
+    "section": "Base Definitions, <syslog.h>; System Interfaces, syslog",
+    "step": "25.8g X1 g3",
+    "note": "Declare the hosted system logging interfaces with C linkage."
+  }
+]

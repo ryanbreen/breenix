@@ -1,0 +1,85 @@
+{
+  "target": "x86_64-breenix-hosted",
+  "mac_target": "aarch64-apple-darwin",
+  "cargo_commit": "84709f085062cbf3c51fa507527c1b2334015178",
+  "fork_commit": "a763a7dd70cc6bc97736aca5eabaf867b36477bf",
+  "compiler_tree": "fb2afea4e4c3798e49fe6d7c6e3242acb4b1e331",
+  "llvm_commit": "ed6566573eb21b00a3f87815e14ff766fd56ef42",
+  "features": [
+    "all-static"
+  ],
+  "cargo_sha256": "a3e8406845de4231f8bd74c6cb0f68a3e64d3624346a9324bf357d8734f29ab6",
+  "mac_cargo_sha256": "4af0de1d89b99abdf23e4164ee821af89e2b12ebd13b630eb27e05d37c14b6c9",
+  "libc_sha256": "0d7f32253bd912bdc56bbae0b21c4298e0f65a39223437e55ed7f6f87ab16c82",
+  "map_sha256": "7b5e21a469a02144507387128b1dbf86fd271cea7cf8a2b556074fda64fa1726",
+  "k5_compiler_digests": {
+    "hosted_rustc_sha256": "993e2776feeaf2012fe90e297bd01711e4334e041cf72c898990baa2572a6c7f",
+    "hosted_driver_sha256": "60eae0cc852624c63c7205ade4cb22a95955f0e15f9a8ab840e7bd4d14115d11",
+    "mac_rustc_sha256": "b3e90b74fd944e6812a0e4a23ad89f98cdc4887c17faf82e8f6e767300be10d6"
+  },
+  "bootstrap": {
+    "command": [
+      "taskpolicy",
+      "-b",
+      "nice",
+      "-n",
+      "15",
+      "python3",
+      "x.py",
+      "build",
+      "--stage",
+      "1",
+      "src/tools/cargo",
+      "--config",
+      "<cache>/bootstrap.toml",
+      "--keep-stage",
+      "0",
+      "--keep-stage",
+      "1",
+      "--keep-stage-std",
+      "0",
+      "--keep-stage-std",
+      "1",
+      "-j",
+      "4"
+    ],
+    "exit_status": 0,
+    "log_sha256": "e4cb2b3f644808447f6bf8940e0f746554fb73dfb775b4b54fb9ffa2ffdbc55d",
+    "started": "2026-11-26T07:34:13Z",
+    "ended": "2026-11-26T07:34:32Z",
+    "pinned_status_before": "",
+    "pinned_status_after": "",
+    "cargo_status_before": "",
+    "cargo_status_after": "",
+    "build_local_lockfile_sha256": "9176df7fb764c9791107b51ce30cb579acbc0b7887b3918696616dfeb1e46480",
+    "existing_rust_warnings": {
+      "libc": 138,
+      "openssl-src": 1
+    }
+  },
+  "patches_sha256": {
+    "openssl-src-300.5.0+3.5.0-breenix.patch": "c72c00959df8dfa82cbfcf87127fa5e90730fcf5fe1ad5736cb246f85d388ef7",
+    "rustix-1.0.7-breenix.patch": "598a61c08a340ffadc009076944bbcce7d7dab88e89bc1b85806481fb26cabe0",
+    "socket2-0.5.10-breenix.patch": "c8c5498fc03a78649a223a417e2443ffd6dc2a1b3e182d921e62fb60a1c37924"
+  },
+  "bunwind": {
+    "stage1_rlib_sha256": "362607145b05d21d841f4f2fe3fcb094fd781b9cf580c239e95cc90aff78875b",
+    "link_archive_sha256": "5a54c9c8111e5198f1f8243f3f4220347cbd24f7de9f2e4df4d12f8750095424"
+  },
+  "fixture_sha256": {
+    "cargo-home/config.toml": "9969ce8511482bd9f04d47859b6aa41a36fc4d4554e25e7f184c0598c140bf6b",
+    "corpus/expect.json": "1421090f7ad8bcf4c9e5411d6aa00d78d70bdc453e402712c5b19bb9d4414f9a",
+    "corpus/no-network/.cargo/config.toml": "9969ce8511482bd9f04d47859b6aa41a36fc4d4554e25e7f184c0598c140bf6b",
+    "corpus/no-network/Cargo.lock": "238b00f9ce0d80882f57dc67ce5f072724e76bf478714763c08ca3806fbbb431",
+    "corpus/no-network/Cargo.toml": "6feb9a6528dd1030c48cb82c6cbbf70d5d92da04b73635a2e0805268026d6349",
+    "corpus/no-network/src/main.rs": "536e506bb90914c243a12b397b9a998f85ae2cbd9ba02dfd03a9e155ca5ca0f4",
+    "corpus/offline-path-workspace/Cargo.lock": "84b210faa2b4de6441e5fe70fc1c1b1981c743dbc4b147bf827efe1e747f44a4",
+    "corpus/offline-path-workspace/Cargo.toml": "ac41957c08c17747e7611484fc0d56663493b80ecd7b2ed72b86941a94bd2dd2",
+    "corpus/offline-path-workspace/app/Cargo.toml": "80db9bf8e2d665626a0eea3326a26961231fcfdc08cfedc2041e446263c30882",
+    "corpus/offline-path-workspace/app/src/main.rs": "55753f2512c3f4d08e81958e7ef063165296562d471c8b018c69c4f0f1c36c6a",
+    "corpus/offline-path-workspace/words/Cargo.toml": "c740e6073340bd6f0fbc23259bd3adf346ce1ce097db6cbbb040c439869a27a0",
+    "corpus/offline-path-workspace/words/src/lib.rs": "23eedf4804e4e130d583c34de49ebac7a4769463d59958857dedb5bf35b51229",
+    "targets/x86_64-breenix-hosted.json": "38f171cfe64cc98f7d1b3e247916a6205158e9c024cafa7288fb3738b23e1a07",
+    "targets/x86_64-breenix.json": "052045da45c438f9b3616ad4af2ae961cc4e43e2ef986c31945d80aaf34803ec"
+  }
+}

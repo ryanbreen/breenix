@@ -1,11 +1,9 @@
 //! The per-address-space lock a fork holds while it copies its parent's tables.
 //!
-//! Fork builds the child's page tables from the parent's without
-//! PROCESS_MANAGER, so dispatch on every CPU and every other process carry on
-//! while it copies. What the copy needs instead is that nothing else changes
-//! the parent's tables until it is done. A fork claims the parent's address
-//! space under PROCESS_MANAGER, copies with the lock released, and gives the
-//! claim up under the lock again.
+//! Fork claims the parent's address space under PROCESS_MANAGER. It releases
+//! the lock for the copy so dispatch can continue while the claim protects
+//! the parent's tables. Fork gives up the claim on the parent before taking
+//! the lock to publish the child.
 //!
 //! Every change to a process's page tables is made under PROCESS_MANAGER, and
 //! a claim is taken under it, so a holder never sees a claim appear partway
@@ -29,13 +27,14 @@
 //! with its locks released, until the fork publishes or abandons the child
 //! (`forming`), so it never passes over a child that is about to appear.
 //!
-//! Only the row that owns an address space can fork it, and that row's thread
-//! is the one copying, inside its syscall. A CLONE_VM thread's row does not
-//! own its table, so the paths that can reach a claimed table are the ones that
-//! find a table by its root, by a thread's shared address space, or by another
-//! process's binding. `ProcessPageTable`'s mutating methods refuse a claimed
-//! table outright, so a path that reaches one without checking fails at once
-//! rather than changing a table the copy is reading.
+//! A CLONE_VM thread can fork the table it shares with another row. Fork
+//! checks its PROCESS_MANAGER guard with `after_fork_copy` to serialize
+//! copies of the same root. An owner's exit or exec can hand the table to
+//! another row on the root mid-copy without waiting: the copy may be this
+//! CPU's own, and the handoff moves the owning Box, not the table.
+//! `ProcessPageTable`'s mutating methods refuse a claimed table, so a path
+//! that reaches one without checking fails before changing a table the copy
+//! is reading.
 
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 

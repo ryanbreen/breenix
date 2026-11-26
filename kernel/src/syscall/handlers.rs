@@ -1658,7 +1658,9 @@ fn sys_fork_with_parent_context(
     // and claim the parent's address space for the copy (`begin_fork`,
     // `memory::fork_copy`).
     let fork = {
-        let mut manager_guard = crate::process::manager();
+        let mut manager_guard = crate::process::manager().after_fork_copy(|manager| {
+            manager.get_process(parent_pid).and_then(|parent| parent.cr3_value())
+        });
         match *manager_guard {
             Some(ref mut manager) => {
                 if !crate::process::limits::fork_allowed(manager, parent_pid) {

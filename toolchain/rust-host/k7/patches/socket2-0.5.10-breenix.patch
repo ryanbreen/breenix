@@ -1,0 +1,195 @@
+--- a/src/sys/unix.rs
++++ b/src/sys/unix.rs
+@@ -156,6 +156,7 @@
+     target_os = "espidf",
+     target_os = "vita",
+ )))]
++#[cfg_attr(target_os = "breenix", cfg(any()))]
+ pub(crate) use libc::IPV6_RECVTCLASS;
+ #[cfg(all(feature = "all", not(any(target_os = "redox", target_os = "espidf"))))]
+ pub(crate) use libc::IP_HDRINCL;
+@@ -175,6 +176,7 @@
+     target_os = "vita",
+     target_os = "cygwin",
+ )))]
++#[cfg_attr(target_os = "breenix", cfg(any()))]
+ pub(crate) use libc::IP_RECVTOS;
+ #[cfg(not(any(
+     target_os = "fuchsia",
+@@ -221,6 +223,7 @@
+     target_os = "espidf",
+     target_os = "vita",
+ )))]
++#[cfg_attr(target_os = "breenix", cfg(any()))]
+ pub(crate) use libc::{
+     ip_mreq_source as IpMreqSource, IP_ADD_SOURCE_MEMBERSHIP, IP_DROP_SOURCE_MEMBERSHIP,
+ };
+@@ -300,6 +303,7 @@
+     target_os = "watchos",
+     target_os = "vita",
+ )))]
++#[cfg_attr(target_os = "breenix", cfg(any()))]
+ use libc::TCP_KEEPIDLE as KEEPALIVE_TIME;
+
+ /// Helper macro to execute a system call that returns an `io::Result`.
+@@ -358,6 +362,9 @@
+     ),
+     target_os = "android",
+ ))]
+ type IovLen = usize;
++
++#[cfg(target_os = "breenix")]
++type IovLen = usize;
+
+ #[cfg(any(
+@@ -1257,6 +1264,7 @@
+         not(any(target_os = "haiku", target_os = "openbsd", target_os = "vita"))
+     )))
+ )]
++#[cfg_attr(target_os = "breenix", cfg(any()))]
+ pub(crate) fn keepalive_time(fd: Socket) -> io::Result<Duration> {
+     unsafe {
+         getsockopt::<c_int>(fd, IPPROTO_TCP, KEEPALIVE_TIME)
+@@ -1272,6 +1280,7 @@
+         target_os = "nto",
+         target_os = "vita"
+     )))]
++    #[cfg_attr(target_os = "breenix", cfg(any()))]
+     if let Some(time) = keepalive.time {
+         let secs = into_secs(time);
+         unsafe { setsockopt(fd, libc::IPPROTO_TCP, KEEPALIVE_TIME, secs)? }
+@@ -1320,6 +1329,7 @@
+     target_os = "nto",
+     target_os = "vita"
+ )))]
++#[cfg_attr(target_os = "breenix", cfg(any()))]
+ fn into_secs(duration: Duration) -> c_int {
+     min(duration.as_secs(), c_int::MAX as u64) as c_int
+ }
+@@ -1428,6 +1438,7 @@
+     target_os = "vita",
+     target_os = "cygwin",
+ )))]
++#[cfg_attr(target_os = "breenix", cfg(any()))]
+ pub(crate) const fn to_mreqn(
+     multiaddr: &Ipv4Addr,
+     interface: &crate::socket::InterfaceIndexOrAddress,
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -439,6 +439,7 @@
+         target_os = "vita",
+         target_os = "haiku",
+     )))]
++    #[cfg_attr(target_os = "breenix", cfg(any()))]
+     interval: Option<Duration>,
+     #[cfg(not(any(
+         target_os = "openbsd",
+@@ -450,6 +451,7 @@
+         target_os = "vita",
+         target_os = "haiku",
+     )))]
++    #[cfg_attr(target_os = "breenix", cfg(any()))]
+     retries: Option<u32>,
+ }
+
+@@ -468,6 +470,7 @@
+                 target_os = "vita",
+                 target_os = "haiku",
+             )))]
++            #[cfg_attr(target_os = "breenix", cfg(any()))]
+             interval: None,
+             #[cfg(not(any(
+                 target_os = "openbsd",
+@@ -479,6 +482,7 @@
+                 target_os = "vita",
+                 target_os = "haiku",
+             )))]
++            #[cfg_attr(target_os = "breenix", cfg(any()))]
+             retries: None,
+         }
+     }
+--- a/src/socket.rs
++++ b/src/socket.rs
+@@ -1324,6 +1324,7 @@
+         target_os = "vita",
+         target_os = "cygwin",
+     )))]
++    #[cfg_attr(target_os = "breenix", cfg(any()))]
+     pub fn join_multicast_v4_n(
+         &self,
+         multiaddr: &Ipv4Addr,
+@@ -1358,6 +1359,7 @@
+         target_os = "vita",
+         target_os = "cygwin",
+     )))]
++    #[cfg_attr(target_os = "breenix", cfg(any()))]
+     pub fn leave_multicast_v4_n(
+         &self,
+         multiaddr: &Ipv4Addr,
+@@ -1393,6 +1395,7 @@
+         target_os = "espidf",
+         target_os = "vita",
+     )))]
++    #[cfg_attr(target_os = "breenix", cfg(any()))]
+     pub fn join_ssm_v4(
+         &self,
+         source: &Ipv4Addr,
+@@ -1431,6 +1434,7 @@
+         target_os = "espidf",
+         target_os = "vita",
+     )))]
++    #[cfg_attr(target_os = "breenix", cfg(any()))]
+     pub fn leave_ssm_v4(
+         &self,
+         source: &Ipv4Addr,
+@@ -1651,6 +1655,7 @@
+         target_os = "vita",
+         target_os = "cygwin",
+     )))]
++    #[cfg_attr(target_os = "breenix", cfg(any()))]
+     pub fn set_recv_tos(&self, recv_tos: bool) -> io::Result<()> {
+         unsafe {
+             setsockopt(
+@@ -1683,6 +1688,7 @@
+         target_os = "vita",
+         target_os = "cygwin",
+     )))]
++    #[cfg_attr(target_os = "breenix", cfg(any()))]
+     pub fn recv_tos(&self) -> io::Result<bool> {
+         unsafe {
+             getsockopt::<c_int>(self.as_raw(), sys::IPPROTO_IP, sys::IP_RECVTOS)
+@@ -2003,6 +2009,7 @@
+         target_os = "espidf",
+         target_os = "vita",
+     )))]
++    #[cfg_attr(target_os = "breenix", cfg(any()))]
+     pub fn recv_tclass_v6(&self) -> io::Result<bool> {
+         unsafe {
+             getsockopt::<c_int>(self.as_raw(), sys::IPPROTO_IPV6, sys::IPV6_RECVTCLASS)
+@@ -2028,6 +2035,7 @@
+         target_os = "espidf",
+         target_os = "vita",
+     )))]
++    #[cfg_attr(target_os = "breenix", cfg(any()))]
+     pub fn set_recv_tclass_v6(&self, recv_tclass: bool) -> io::Result<()> {
+         unsafe {
+             setsockopt(
+@@ -2134,6 +2142,7 @@
+             ))
+         )))
+     )]
++    #[cfg_attr(target_os = "breenix", cfg(any()))]
+     pub fn keepalive_time(&self) -> io::Result<Duration> {
+         sys::keepalive_time(self.as_raw())
+     }
+@@ -2277,6 +2286,10 @@
+     /// ```
+     ///
+     pub fn set_tcp_keepalive(&self, params: &TcpKeepalive) -> io::Result<()> {
++        #[cfg(target_os = "breenix")]
++        if params.time.is_some() {
++            return Err(io::ErrorKind::Unsupported.into());
++        }
+         self.set_keepalive(true)?;
+         sys::set_tcp_keepalive(self.as_raw(), params)
+     }

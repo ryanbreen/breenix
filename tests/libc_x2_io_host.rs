@@ -23,6 +23,7 @@ thread_local! {
 const EINVAL: i32 = 22;
 const EACCES: i32 = 13;
 const ENOENT: i32 = 2;
+const ESRCH: i32 = 3;
 const ENOMEM: i32 = 12;
 const ESPIPE: i32 = 29;
 
@@ -81,6 +82,10 @@ mod raw {
         call(number, &[])
     }
 
+    pub unsafe fn syscall1(number: u64, a: u64) -> u64 {
+        call(number, &[a])
+    }
+
     pub unsafe fn syscall2(number: u64, a: u64, b: u64) -> u64 {
         call(number, &[a, b])
     }
@@ -101,6 +106,7 @@ mod raw {
 
 mod syscall {
     pub mod nr {
+        pub const GETSID: u64 = if cfg!(target_arch = "x86_64") { 124 } else { 156 };
         pub const DUP3: u64 = if cfg!(target_arch = "x86_64") {
             292
         } else {
@@ -145,6 +151,29 @@ mod libc_host {
     const PATH: *const u8 = c"entry".as_ptr().cast();
     const TARGET: *const u8 = c"destination".as_ptr().cast();
     const DIR: i32 = 17;
+
+    #[test]
+    fn getsid_queries_the_requested_process_and_propagates_esrch() {
+        setup(syscall::nr::GETSID, [0], 42);
+        assert_eq!(hosted_io::getsid(0), 42);
+        observed(71);
+        setup(syscall::nr::GETSID, [900], -i64::from(ESRCH));
+        assert_eq!(hosted_io::getsid(900), -1);
+        observed(ESRCH);
+    }
+
+    #[test]
+    fn mlock_passes_the_byte_range_to_the_kernel_and_propagates_enomem() {
+        let nr = if cfg!(target_arch = "x86_64") { 149 } else { 228 };
+        let mut bytes = [0u8; 31];
+        let address = bytes.as_mut_ptr().cast();
+        setup(nr, [bytes.as_ptr() as u64, 31], 0);
+        assert_eq!(unsafe { hosted_io::mlock(address, 31) }, 0);
+        observed(71);
+        setup(nr, [0, 31], -i64::from(ENOMEM));
+        assert_eq!(unsafe { hosted_io::mlock(std::ptr::null(), 31) }, -1);
+        observed(ENOMEM);
+    }
 
     #[test]
     fn dup3_returns_replaced_descriptor_with_cloexec() {

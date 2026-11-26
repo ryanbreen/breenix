@@ -1,0 +1,16 @@
+{
+  "id": "cargo",
+  "title": "Cargo",
+  "area": "Toolchain",
+  "summary": "Checks offline Cargo builds and registry isolation.",
+  "binary": "/sbin/suite-cargo",
+  "timingSensitive": true,
+  "categories": [{
+    "id": "cargo",
+    "title": "Offline Cargo",
+    "cases": [
+      {"id": "offline-path-workspace", "title": "Builds and runs a path workspace"},
+      {"id": "no-network", "title": "Refuses an uncached registry dependency"}
+    ]
+  }]
+}

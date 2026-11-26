@@ -1183,7 +1183,9 @@ fn sys_fork_aarch64(frame: &Aarch64ExceptionFrame, clone: crate::syscall::clone:
     // interrupts disabled by PM lock).
     crate::serial_line::Line::new().char(b'5'); // Fork phase 2: PM lock
     let fork = {
-        let mut manager_guard = crate::process::manager();
+        let mut manager_guard = crate::process::manager().after_fork_copy(|manager| {
+            manager.get_process(parent_pid).and_then(|parent| parent.cr3_value())
+        });
         crate::serial_line::Line::new().char(b'6'); // Fork: PM lock acquired
         if let Some(ref mut manager) = *manager_guard {
             if !crate::process::limits::fork_allowed(manager, parent_pid) {
