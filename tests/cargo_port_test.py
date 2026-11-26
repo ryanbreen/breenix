@@ -11,6 +11,60 @@ PIN = '84709f085062cbf3c51fa507527c1b2334015178'
 
 
 class CargoPort(unittest.TestCase):
+    def test_x1_c_dependency_inventory(self):
+        directory = ROOT / 'toolchain/rust-host'
+        inventory = directory / 'x1.json'
+        self.assertTrue(inventory.is_file(), 'missing hosted Cargo archive inventory x1.json')
+        record = json.loads(inventory.read_text())
+        licenses = json.loads((directory / 'x1-licenses.json').read_text())
+        self.assertEqual(record['cargo_commit'], PIN)
+        self.assertEqual(record['target'], 'x86_64-breenix-hosted')
+        self.assertEqual(record['features'], licenses['features'])
+        expected = {(p['name'], p['version']) for p in licenses['packages']
+                    if p['name'].endswith('-sys')}
+        observed = [(p['name'], p['version']) for p in record['crates']]
+        self.assertCountEqual(observed, expected)
+
+        libc = record['libc']
+        self.assertRegex(libc['sha256'], r'^[0-9a-f]{64}$')
+        exports = set(libc['exports'])
+        self.assertIn('__errno_location', exports)
+        self.assertIn('getentropy', exports)
+        classes = {'breenix-side', 'dependency-change'}
+        for crate in record['crates']:
+            with self.subTest(crate=crate['name']):
+                status = crate['exit_status']
+                self.assertIs(type(status), int)
+                error = crate['first_error']
+                if status == 0:
+                    self.assertIsNone(error)
+                else:
+                    self.assertIsInstance(error, str)
+                    self.assertTrue(error.strip())
+
+                undef = set()
+                archives = crate['archives']
+                if not archives:
+                    self.assertTrue(crate['archive_absence'].strip())
+                for archive in archives:
+                    self.assertRegex(archive['sha256'], r'^[0-9a-f]{64}$')
+                    self.assertTrue(archive['name'].endswith(('.a', '.rlib')))
+                    self.assertEqual(len(archive['undefined']), len(set(archive['undefined'])))
+                    undef.update(archive['undefined'])
+                if crate['name'] == 'libgit2-sys':
+                    self.assertEqual(status, 0)
+                    self.assertIn('libgit2.a', {a['name'] for a in archives})
+
+                gaps = crate['gaps']
+                self.assertEqual(set(gaps), undef - exports)
+                headers = crate['missing_headers']
+                if error:
+                    for header in re.findall(r"'([^']+\.h)' file not found", error):
+                        self.assertIn(header, headers)
+                for name, category in (gaps | headers).items():
+                    self.assertTrue(name.strip())
+                    self.assertIn(category, classes, name)
+
     def test_x1_licenses_recorded(self):
         cargo = CACHE / 'cargo'
         commit = subprocess.check_output(
