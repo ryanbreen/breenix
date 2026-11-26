@@ -24,6 +24,43 @@ def sha256(path):
 
 
 class CargoImageStageTest(unittest.TestCase):
+    def test_combined_selection_stages_one_toolchain(self):
+        mke2fs, = STAGE.require_e2fsprogs('mke2fs')
+        k5 = read_json(RECORDS / 'k5/x86_64.json')
+        k7 = read_json(RECORDS / 'k7/x86_64.json')
+        k6 = read_json(RECORDS / 'k6/x86_64.json')
+        with tempfile.TemporaryDirectory() as temporary:
+            image = Path(temporary) / 'combined.img'
+            subprocess.run([mke2fs, '-q', '-t', 'ext2', '-b', '4096', '-F', image, '16M'],
+                           check=True, capture_output=True)
+            stdout = io.StringIO()
+            argv = ['rust_host_stage.py', '--arch', 'x86_64', '--image', str(image),
+                    '--suite', 'rustc,cargo,d1', '--d1-tree', str(image.parent / 'd1')]
+            with patch('sys.argv', argv), redirect_stdout(stdout):
+                STAGE.main()
+
+            shared = '/usr/libexec/breenix/rustc'
+            staged = json.loads(stdout.getvalue())
+            for name in ('rustc', 'cargo', 'd1'):
+                self.assertIn(f'/sbin/suite-{name}', staged)
+            pins = {
+                f'{shared}/bin/rustc': k5['hosted_rustc_sha256'],
+                f'{shared}/lib/{k5["hosted_link"]["driver"]}': k5['hosted_driver_sha256'],
+                f'{shared}/bin/cargo': k7['cargo_sha256'],
+                f'{shared}/lib/libc.a': k6['inputs']['lib/tools/libc.a']['sha256'],
+                '/lib/libc.so': read_json(RECORDS / 'hosted-libc-x86_64.json')['sha256'],
+            }
+            for name, digest in k5['sysroot']['files_sha256'].items():
+                if name.startswith('lib/rustlib/x86_64-breenix/'):
+                    pins[f'{shared}/sysroot/{name}'] = digest
+            for path, digest in pins.items():
+                with self.subTest(path=path):
+                    self.assertEqual([name for name, value in staged.items() if value == digest],
+                                     [path])
+            self.assertFalse(any('/x86_64-breenix-hosted/' in path for path in staged))
+            self.assertEqual(list((image.parent / 'd1').rglob('*')), [],
+                             'D1 copied the shared toolchain')
+
     def test_d1_stages_both_target_specs(self):
         mke2fs, = STAGE.require_e2fsprogs('mke2fs')
         pins = read_json(RECORDS / 'k7/x86_64.json')['fixture_sha256']
