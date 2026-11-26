@@ -3,7 +3,7 @@
 #[cfg(target_arch = "aarch64")]
 fn main() {
     use libbreenix::process::{self, ForkResult};
-    use libbreenix::syscall::{nr, raw};
+    use libbreenix::syscall::raw;
     use std::time::{Duration, Instant};
 
     // Exists only with kernel feature gpu_fault_acceptance.
@@ -24,10 +24,10 @@ fn main() {
 
     match process::fork().expect("fork faulting child") {
         ForkResult::Child => {
-            println!("GPU_FAULT_TEST user syscall=500 handoff=1");
-            // CoW stats still uses a raw EL1 write to this unmapped user address.
+            println!("GPU_FAULT_TEST user syscall=0x7fff0000 handoff=1");
+            // Operation 2 makes a raw EL1 write to an unmapped user address.
             // EFAULT or a normal return cannot stand in for the requested abort.
-            unsafe { raw::syscall1(nr::COW_STATS, 0x7000_0000_0000) };
+            unsafe { raw::syscall1(PROFILE_SYSCALL, 2) };
             println!("GPU_FAULT_TEST user unexpectedly returned");
             process::exit(1);
         }

@@ -4,7 +4,7 @@ import runpy
 import unittest
 
 check = runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts/check-gpu-fault-routing.py"))["check"]
-VALID = ("GPU_FAULT_TEST user syscall=500 handoff=1\n"
+VALID = ("GPU_FAULT_TEST user syscall=0x7fff0000 handoff=1\n"
          "[DATA_ABORT] FAR=0x700000000000 ELR=0xffff000040200000 ESR=0x96000047 from_el0=0\n"
          "GPU_FAULT_TEST recovered signal=11 kernel=running handoff=1\n"
          "[GPU_FAULT_TEST kernel privilege=kernel handoff=1]\n"

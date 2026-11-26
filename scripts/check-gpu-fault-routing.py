@@ -8,7 +8,7 @@ import re
 
 def check(text):
     patterns = (
-        r"^GPU_FAULT_TEST user syscall=500 handoff=1\r?$",
+        r"^GPU_FAULT_TEST user syscall=0x7fff0000 handoff=1\r?$",
         r"^\[DATA_ABORT\] FAR=0x0*700000000000 .* from_el0=0\r?$",
         r"^GPU_FAULT_TEST recovered signal=11 kernel=running handoff=1\r?$",
         r"^\[GPU_FAULT_TEST kernel privilege=kernel handoff=1\]\r?$",

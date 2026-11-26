@@ -1,6 +1,6 @@
 //! ARM64 fault-routing acceptance, compiled only in its dedicated boot profile.
-//! The userspace driver faults through the existing CoW-stats syscall, reaps
-//! SIGSEGV, then asks this module to fault a real kernel thread after handoff.
+//! The userspace driver faults inside this module's syscall, reaps SIGSEGV,
+//! then asks this module to fault a real kernel thread after handoff.
 
 use crate::syscall::SyscallResult;
 use crate::task::thread::ThreadPrivilege;
@@ -18,8 +18,20 @@ pub fn dispatch(op: u64) -> SyscallResult {
             Ok(_) => SyscallResult::Ok(0),
             Err(_) => SyscallResult::Err(crate::syscall::errno::ENOMEM as u64),
         },
+        2 => fault_in_syscall(),
         _ => SyscallResult::Err(crate::syscall::errno::EINVAL as u64),
     }
+}
+
+fn fault_in_syscall() -> SyscallResult {
+    // A real EL1 write fault at an unmapped user address, taken in the calling
+    // thread's syscall. This is outside uaccess fixups, so routing must deliver
+    // SIGSEGV to the caller.
+    unsafe {
+        core::arch::asm!("str xzr, [{address}]", address = in(reg) 0x7000_0000_0000u64,
+            options(nostack));
+    }
+    SyscallResult::Ok(0)
 }
 
 fn fault_kernel_thread() {
