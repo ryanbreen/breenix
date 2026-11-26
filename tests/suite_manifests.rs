@@ -906,6 +906,10 @@ impl SuiteBuilds {
         let metal = metal.lines().filter(is_code).flat_map(str::split_whitespace)
             .collect::<Vec<_>>().join(" ");
         let hosted = staged.iter().filter(|entry| {
+            if entry.as_str() == "suite-dynamic" {
+                let call = r#""$SCRIPT_DIR/build.sh" --arch x86_64 --hosted-bin suite-dynamic --features dynamic"#;
+                return build.lines().any(|line| line.trim() == call);
+            }
             let shell_call = format!("--hosted-bin {entry} --features ");
             let metal_call = format!("'--hosted-bin', '{entry}', '--features',");
             let assignment = format!("HOSTED_BIN=\"{entry}\"");
