@@ -15,6 +15,7 @@ rust-host = []
 cxx-runtime = []
 llvm = []
 rustc = []
+rust-link = []
 dynamic = ["breenix-suite/dynamic"]
 
 [dependencies]
@@ -1040,3 +1041,8 @@ required-features = ["dynamic"]
 name = "suite-rustc"
 path = "src/suite_rustc.rs"
 required-features = ["rustc"]
+
+[[bin]]
+name = "suite-rust-link"
+path = "src/suite_rust_link.rs"
+required-features = ["rust-link"]

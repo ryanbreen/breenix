@@ -1,0 +1,19 @@
+{
+  "panic-abort": {
+    "bld_sha256": "c7bd7f561028221e62a53638bec6fd279c782d31193fc2ba77d83d1ec465cd1f",
+    "reference_sha256": "72db2c94bb01b070670f0c3a34d249a5e3259fbb3c13af4cfb44e9c2e47e1251"
+  },
+  "catch-unwind": {
+    "bld_sha256": "9175a1ccb666c2e2303898bd751b40f6747a7142829c3dadbe7ee0ce813e2548",
+    "reference_sha256": "a1ae13708e4c1a8b63275894f375474b4a9d0479561a66ff7bd61043a50f64e1"
+  },
+  "control": {
+    "original": "sysroot/lib/rustlib/x86_64-breenix/lib/libstd-d5c991d6609a6050.rlib",
+    "archive": "control/non-elf.rlib",
+    "member": "notes.bin",
+    "payload": "K6 archive control: non-ELF payload\n",
+    "payload_sha256": "81704b53e418b8831791e62fee8f0ef6ad9fcae0a0976227fc473480c597e96a",
+    "sha256": "1f8d2cac2c50e0c7a69de97d1b9b194280075352fbe60baaff17bfc99a6509a8",
+    "diagnostic": "control/non-elf.rlib(notes.bin): expected an ELF archive member\n"
+  }
+}
