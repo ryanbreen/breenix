@@ -8,7 +8,7 @@ use bobj::elf::{
 
 use crate::aarch64::Relocation;
 use crate::nasm::Syntax;
-use crate::object::{Endpoint, LabelDifference, Object};
+use crate::object::{Endpoint, LabelDifference, LiteralValue, Object};
 use crate::{Diagnostic, Location, Result, Target};
 
 #[path = "aarch64/gnu.rs"]
@@ -361,12 +361,36 @@ impl<'src, 'obj> Parser<'src, 'obj> {
         self.object.emit_aarch64(self.location(column), word)
     }
 
+    pub(crate) fn emit_aarch64_literal_load(&mut self, word: u32) -> Result<()> {
+        self.peek();
+        let at = self.location(self.column);
+        let value = if self.starts_gnu_expression() {
+            LiteralValue::Constant(self.integer(8, false)?)
+        } else {
+            let name = self.word();
+            let symbol = self.symbol(name)?;
+            LiteralValue::Symbol {
+                symbol,
+                addend: self.addend()?,
+            }
+        };
+        self.object.aarch64_literal_load(word, value, at)
+    }
+
     pub(crate) fn emit_aarch64_reference(
         &mut self,
         label: Token<'_>,
         kind: Relocation,
         word: u32,
     ) -> Result<()> {
+        if label.text == "." && matches!(kind, Relocation::Jump26) {
+            // DDI 0487 M.b C6.2.35: B measures its displacement from this
+            // instruction, so only the addend contributes to a branch to '.'.
+            let addend = self.addend()?;
+            let mut bytes = word.to_le_bytes();
+            kind.patch_local(&mut bytes, i128::from(addend), self.location(label.column))?;
+            return self.emit_aarch64(label.column, u32::from_le_bytes(bytes));
+        }
         let symbol = self.symbol(label)?;
         let addend = self.addend()?;
         if matches!(kind, Relocation::AdrGotPage | Relocation::Ld64GotLo12Nc) && addend != 0 {

@@ -221,11 +221,17 @@ pub(super) fn single(p: &mut Parser<'_, '_>, op: Token<'_>) -> Result<()> {
             Transfer::General(reg) => (u32::from(reg.wide), 0),
             Transfer::Fp(reg) => (reg.precision.pair_opc(), 1),
         };
-        return branch(
-            p,
-            Relocation::Literal,
-            0x1800_0000 | (opc << 30) | (v << 26) | rt.number(),
-        );
+        let word = 0x1800_0000 | (opc << 30) | (v << 26) | rt.number();
+        if p.take(b'=') {
+            if !matches!(rt, Transfer::General(reg) if reg.wide) {
+                return Err(p.error(
+                    rt.column(),
+                    "literal pool load requires a 64-bit integer register",
+                ));
+            }
+            return p.emit_aarch64_literal_load(word);
+        }
+        return branch(p, Relocation::Literal, word);
     }
 
     // C6.2.215–229, C6.2.258–263, C6.2.414–419, C6.2.445–447

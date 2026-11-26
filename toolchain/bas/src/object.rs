@@ -31,6 +31,7 @@ struct Section {
     size: u64,
     bytes: Vec<u8>,
     relocations: Vec<Rela>,
+    literal_loads: Vec<LiteralLoad>,
 }
 
 impl Section {
@@ -43,6 +44,7 @@ impl Section {
             size: 0,
             bytes: Vec::new(),
             relocations: Vec::new(),
+            literal_loads: Vec::new(),
         }
     }
 }
@@ -66,6 +68,17 @@ struct Reference {
     field: usize,
     kind: ReferenceKind,
     addend: i64,
+    at: Location,
+}
+
+pub(crate) enum LiteralValue {
+    Constant(u64),
+    Symbol { symbol: usize, addend: i64 },
+}
+
+struct LiteralLoad {
+    instruction: usize,
+    value: LiteralValue,
     at: Location,
 }
 
@@ -338,6 +351,46 @@ impl Object {
         text.alignment = text.alignment.max(4);
         self.map_text(b"$x");
         self.append_bytes(at, &word.to_le_bytes())
+    }
+
+    pub(crate) fn aarch64_literal_load(
+        &mut self,
+        word: u32,
+        value: LiteralValue,
+        at: Location,
+    ) -> Result<()> {
+        let instruction = self.sections[self.current].bytes.len();
+        self.emit_aarch64(at, word)?;
+        self.sections[self.current].literal_loads.push(LiteralLoad {
+            instruction,
+            value,
+            at,
+        });
+        Ok(())
+    }
+
+    fn finish_literal_pools(&mut self) -> Result<()> {
+        for section in 0..self.sections.len() {
+            let loads = std::mem::take(&mut self.sections[section].literal_loads);
+            let Some(first) = loads.first() else {
+                continue;
+            };
+            self.current = section;
+            self.align(first.at, 8, 0)?;
+            for load in loads {
+                let contents = &mut self.sections[section].bytes;
+                let displacement = contents.len() as i128 - load.instruction as i128;
+                let instruction = &mut contents[load.instruction..load.instruction + 4];
+                Relocation::Literal.patch_local(instruction, displacement, load.at)?;
+                match load.value {
+                    LiteralValue::Constant(value) => self.emit_bytes(load.at, &value.to_le_bytes())?,
+                    LiteralValue::Symbol { symbol, addend } => {
+                        self.aarch64_reference(symbol, Relocation::Abs64, addend, None, load.at)?;
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn aarch64_reference(
@@ -671,6 +724,7 @@ impl Object {
     }
 
     pub(crate) fn finish(mut self) -> Result<Vec<u8>> {
+        self.finish_literal_pools()?;
         self.resolve_sizes()?;
         self.resolve_aliases()?;
         self.resolve_constants()?;
