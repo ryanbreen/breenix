@@ -20,7 +20,8 @@ static SUITE: Suite = suite("rustc", "Rust compiler", &[category("rustc", "Rust 
 ])]).case_limit_ms(60_000);
 
 const FIXTURE: &str = "/usr/libexec/breenix/rustc";
-const TARGET: &str = "x86_64-breenix";
+// The twin rlibs carry the custom target identity from this JSON file.
+const TARGET: &str = "../targets/x86_64-breenix.json";
 #[repr(C)]
 struct FileActions { head: *mut c_void, tail: *mut c_void }
 extern "C" {
@@ -38,8 +39,7 @@ fn run(path: &str, args: &[String], capture: bool) -> Result<(i32, Vec<u8>), Cas
         .map(CString::new).collect::<Result<_, _>>().map_err(fail)?;
     let mut argv: Vec<*const u8> = strings.iter().map(|s| s.as_ptr().cast()).collect();
     argv.push(null());
-    let target_path = CString::new(format!("RUST_TARGET_PATH={FIXTURE}/targets")).map_err(fail)?;
-    let envp = [target_path.as_ptr().cast(), null()];
+    let envp = [null()];
     let mut actions = FileActions { head: null_mut(), tail: null_mut() };
     let mut reader = None;
     let mut writer = None;
