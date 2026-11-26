@@ -241,7 +241,7 @@ fn links_hosted_script_layout() {
     assert!(init.offset + init.size <= rw.offset + rw.file_size);
 }
 
-// Read the recorded argv and verify every input and the reference output
+// Verify the input and reference digests from the receipt
 // before replaying it. Stage the same relative paths under a second root.
 const PREPARE_REPLAY: &str = r#"
 import hashlib

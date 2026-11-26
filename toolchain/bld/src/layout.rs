@@ -1,21 +1,26 @@
 //! ELF gABI §§2, 3 and 7: static executable sections and program headers.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use bobj::elf::{
     Header, ProgramHeader, Rela, SectionHeader, ET_EXEC, PF_R, PF_W, PF_X, PT_GNU_STACK, PT_LOAD,
-    PT_TLS, SHF_ALLOC, SHF_EXECINSTR, SHF_GROUP, SHF_TLS, SHF_WRITE, SHN_LORESERVE, SHT_NOBITS,
-    SHT_PROGBITS, SHT_STRTAB,
+    PT_TLS, SHF_ALLOC, SHF_EXECINSTR, SHF_GROUP, SHF_TLS, SHF_WRITE, SHN_ABS, SHN_LORESERVE,
+    SHT_NOBITS, SHT_PROGBITS, SHT_STRTAB, STB_GLOBAL,
 };
 
 use crate::eh_frame::{self, Index, PT_GNU_EH_FRAME};
-use crate::object::{Link, Section, SectionId};
+use crate::object::{Definition, Link, ObjectSymbol, Section, SectionId};
 use crate::relocate::{veneer_skip, VENEER_SIZE};
-use crate::script::LoadRole;
+use crate::script::{LoadRole, Value};
 use crate::{align_up, Machine, Result, IMAGE_BASE, PAGE_SIZE};
 
 const SHF_MERGE: u64 = 0x10;
 const SHF_STRINGS: u64 = 0x20;
+// ELF gABI Tables 3.2 and 3.8, with ELF64 addresses in each array (Table 1.2).
+const SHT_INIT_ARRAY: u32 = 14;
+const SHT_FINI_ARRAY: u32 = 15;
+const SHT_PREINIT_ARRAY: u32 = 16;
+const ARRAY_ENTRY_SIZE: u64 = 8;
 pub(crate) const SHT_X86_64_UNWIND: u32 = 0x7000_0001; // AMD64 psABI §4.2.2, Table 4.2.
 const LOAD_COUNT: usize = 3;
 
@@ -41,6 +46,14 @@ impl Phase {
             _ => LoadRole::Data,
         }
     }
+
+    fn from_load(load: LoadRole) -> Self {
+        match load {
+            LoadRole::Text => Self::Text,
+            LoadRole::Rodata => Self::Rodata,
+            LoadRole::Data => Self::Data,
+        }
+    }
 }
 
 fn phase(section: &Section, load: Option<LoadRole>) -> Phase {
@@ -52,9 +65,7 @@ fn phase(section: &Section, load: Option<LoadRole>) -> Phase {
         return Phase::Bss;
     }
     match load {
-        Some(LoadRole::Text) => Phase::Text,
-        Some(LoadRole::Rodata) => Phase::Rodata,
-        Some(LoadRole::Data) => Phase::Data,
+        Some(load) => Phase::from_load(load),
         None if section.header.flags & SHF_EXECINSTR != 0 => Phase::Text,
         None if section.header.flags & SHF_WRITE != 0 => Phase::Data,
         None => Phase::Rodata,
@@ -70,6 +81,7 @@ struct Output {
 
 struct Layout {
     outputs: Vec<Option<Output>>,
+    selector_starts: Vec<Vec<u64>>,
     orphans: [Vec<SectionId>; 6],
     strings: Vec<u8>,
     section_count: u16,
@@ -81,6 +93,18 @@ impl Layout {
     fn prepare(link: &mut Link, index: Option<&Index>) -> Result<Self> {
         let mut layout = Self {
             outputs: (0..link.script.rules.len()).map(|_| None).collect(),
+            selector_starts: link
+                .script
+                .rules
+                .iter()
+                .map(|rule| {
+                    if rule.assignments.is_empty() {
+                        Vec::new()
+                    } else {
+                        vec![0; rule.selectors.len() + 1]
+                    }
+                })
+                .collect(),
             orphans: std::array::from_fn(|_| Vec::new()),
             strings: b"\0.shstrtab\0".to_vec(),
             section_count: 2,
@@ -122,6 +146,14 @@ impl Layout {
             }
             previous = output.phase;
         }
+        for (output, rule) in layout.outputs.iter_mut().zip(&link.script.rules) {
+            let Some(output) = output else { continue };
+            for (members, selector) in output.members.iter_mut().zip(&rule.selectors) {
+                if selector.sort_by_init_priority {
+                    members.sort_by_key(|&id| init_priority(&link.section(id).name));
+                }
+            }
+        }
         Ok(layout)
     }
 
@@ -148,16 +180,26 @@ impl Layout {
     ) -> std::result::Result<(), &'static str> {
         let header = section.header;
         let flags = header.flags;
+        let array = matches!(
+            header.kind,
+            SHT_INIT_ARRAY | SHT_FINI_ARRAY | SHT_PREINIT_ARRAY
+        );
         let allowed =
             SHF_ALLOC | SHF_WRITE | SHF_EXECINSTR | SHF_MERGE | SHF_STRINGS | SHF_GROUP | SHF_TLS;
         if flags & !allowed != 0
-            || !matches!(header.kind, SHT_PROGBITS | SHT_NOBITS | SHT_X86_64_UNWIND)
+            || !(array || matches!(header.kind, SHT_PROGBITS | SHT_NOBITS | SHT_X86_64_UNWIND))
             || header.link != 0
             || header.info != 0
             || (header.kind == SHT_NOBITS && flags & SHF_WRITE == 0)
             || flags & (SHF_WRITE | SHF_EXECINSTR) == SHF_WRITE | SHF_EXECINSTR
         {
             return Err("unsupported allocated section");
+        }
+        if array
+            && (header.size % ARRAY_ENTRY_SIZE != 0
+                || !matches!(header.entry_size, 0 | ARRAY_ENTRY_SIZE))
+        {
+            return Err("invalid startup array entry size");
         }
         if flags & (SHF_MERGE | SHF_STRINGS) != 0
             && (header.entry_size == 0 || header.size % header.entry_size != 0)
@@ -199,6 +241,7 @@ impl Layout {
                             0
                         },
                     alignment: rule.align,
+                    entry_size: if array { ARRAY_ENTRY_SIZE } else { 0 },
                     ..SectionHeader::default()
                 },
                 members: (0..rule.selectors.len()).map(|_| Vec::new()).collect(),
@@ -220,18 +263,38 @@ impl Layout {
 
     fn place_phase(&mut self, link: &mut Link, phase: Phase, cursor: &mut u64) -> Result<()> {
         let base = link.script.base;
-        for output in self
-            .outputs
-            .iter_mut()
-            .flatten()
-            .filter(|output| output.phase == phase)
-        {
+        for (rule_index, output) in self.outputs.iter_mut().enumerate() {
+            let rule = &link.script.rules[rule_index];
+            if output
+                .as_ref()
+                .map_or_else(|| Phase::from_load(rule.load), |o| o.phase)
+                != phase
+            {
+                continue;
+            }
+            if rule.advance != 0 {
+                place(base, cursor, rule.advance, 0)
+                    .ok_or("bld: script location counter alignment overflow")?;
+            }
+            let starts = &mut self.selector_starts[rule_index];
+            let Some(output) = output else {
+                starts.fill(base + *cursor);
+                continue;
+            };
             let offset = place(base, cursor, output.header.alignment, 0).ok_or_else(|| {
                 let object = &link.objects[output.origin.0];
                 object.section_error(link.section(output.origin), "section layout overflow")
             })?;
-            for &id in output.members.iter().flatten() {
-                place_input(link, id, cursor, &mut self.veneers)?;
+            for (index, members) in output.members.iter().enumerate() {
+                if let Some(start) = starts.get_mut(index) {
+                    *start = base + *cursor;
+                }
+                for &id in members {
+                    place_input(link, id, cursor, &mut self.veneers)?;
+                }
+            }
+            if let Some(end) = starts.last_mut() {
+                *end = base + *cursor;
             }
             output.header.offset = offset;
             output.header.address = base + offset;
@@ -332,6 +395,173 @@ impl Layout {
         };
         Ok(([text, rodata, data], tls))
     }
+
+    fn define_script_symbols(&self, link: &mut Link) -> Result<()> {
+        let script = &link.script;
+        let mut assignments = BTreeMap::new();
+        for (assignment, dot) in script
+            .assignments
+            .iter()
+            .map(|assignment| (assignment, 0))
+            .chain(
+                script
+                    .rules
+                    .iter()
+                    .zip(&self.selector_starts)
+                    .flat_map(|(rule, starts)| {
+                        rule.assignments
+                            .iter()
+                            .map(move |(index, assignment)| (assignment, starts[*index]))
+                    }),
+            )
+        {
+            if assignments
+                .insert(assignment.name.as_slice(), (assignment, dot))
+                .is_some()
+            {
+                return Err(symbol_error(&assignment.name, "duplicate assignment"));
+            }
+        }
+        let mut values = BTreeMap::new();
+        for (&name, &(assignment, _)) in &assignments {
+            let global = link.globals.get(name);
+            if assignment.provide
+                && global.is_none_or(|global| global.definition != Definition::Undefined)
+            {
+                continue;
+            }
+            if !assignment.provide
+                && global.is_some_and(|global| global.definition != Definition::Undefined)
+            {
+                return Err(symbol_error(name, "also defined by an input"));
+            }
+            let mut dependency = name;
+            let mut pending = BTreeSet::new();
+            let value = loop {
+                if let Some(&value) = values.get(dependency) {
+                    break value;
+                }
+                if let Some(value) = input_symbol_address(link, dependency)? {
+                    break value;
+                }
+                let (assignment, dot) = assignments
+                    .get(dependency)
+                    .ok_or_else(|| symbol_error(dependency, "undefined symbol in assignment"))?;
+                if !pending.insert(dependency) {
+                    return Err(symbol_error(dependency, "cyclic assignment"));
+                }
+                match &assignment.value {
+                    Value::Dot => break *dot,
+                    Value::Number(value) => break *value,
+                    Value::Symbol(symbol) => dependency = symbol,
+                    Value::SizedAddress {
+                        sized,
+                        addressed,
+                        fallback,
+                    } => {
+                        let output = |name: &[u8]| {
+                            script
+                                .rules
+                                .iter()
+                                .position(|rule| rule.name == name)
+                                .map(|index| self.outputs[index].as_ref())
+                                .ok_or_else(|| symbol_error(name, "unknown output section"))
+                        };
+                        if output(sized)?.is_none_or(|output| output.header.size == 0) {
+                            break *fallback;
+                        }
+                        break output(addressed)?
+                            .ok_or_else(|| {
+                                symbol_error(addressed, "output section has no address")
+                            })?
+                            .header
+                            .address;
+                    }
+                }
+            };
+            values.extend(pending.into_iter().map(|dependency| (dependency, value)));
+        }
+        if values.is_empty() {
+            return Ok(());
+        }
+        // These fixed addresses participate in the ordinary relocation path.
+        // STV_HIDDEN keeps them out of the exported executable symbol set.
+        let definitions: Vec<_> = values
+            .into_iter()
+            .map(|(name, value)| ObjectSymbol {
+                name: name.into(),
+                binding: STB_GLOBAL,
+                kind: 0,
+                other: 2,
+                section: SHN_ABS,
+                value,
+                size: 0,
+            })
+            .collect();
+        let (object, _) =
+            link.add_synthetic("bld (linker script symbols)", b"", SectionHeader::default());
+        for (index, symbol) in definitions.iter().enumerate() {
+            let global = link.globals.entry(symbol.name.clone()).or_default();
+            global.definition = Definition::Strong;
+            global.origin = (object, index);
+        }
+        link.objects[object].symbols = definitions;
+        Ok(())
+    }
+}
+
+fn symbol_error(name: &[u8], reason: &str) -> String {
+    format!("bld: linker script: {}: {reason}", crate::display(name))
+}
+
+fn input_symbol_address(link: &Link, name: &[u8]) -> Result<Option<u64>> {
+    let Some(global) = link
+        .globals
+        .get(name)
+        .filter(|g| g.definition != Definition::Undefined)
+    else {
+        return Ok(None);
+    };
+    let base = link.script.base;
+    let address = if global.definition == Definition::Common {
+        link.common
+            .map(|id| base + link.section(id).output_offset + global.common_offset)
+    } else {
+        let (object, index) = global.origin;
+        let object = &link.objects[object];
+        let symbol = &object.symbols[index];
+        if symbol.section == SHN_ABS {
+            Some(symbol.value)
+        } else {
+            object
+                .sections
+                .get(usize::from(symbol.section))
+                .filter(|section| section.live && symbol.value <= section.header.size)
+                .map(|section| base + section.output_offset + symbol.value)
+        }
+    };
+    address
+        .map(Some)
+        .ok_or_else(|| symbol_error(name, "input symbol has no address"))
+}
+
+// GNU ld §3.6.4.3: .init_array.N and .fini_array.N use a decimal
+// priority. The legacy constructor/destructor spelling stores 65535 - N.
+fn init_priority(name: &[u8]) -> u64 {
+    let Some(index) = name.iter().rposition(|&byte| byte == b'.') else {
+        return u64::MAX;
+    };
+    let Some(priority) = std::str::from_utf8(&name[index + 1..])
+        .ok()
+        .and_then(|number| number.parse::<u16>().ok())
+    else {
+        return u64::MAX;
+    };
+    match &name[..index] {
+        b".init_array" | b".fini_array" => u64::from(priority),
+        b".ctors" | b".dtors" => u64::from(u16::MAX - priority),
+        _ => u64::MAX,
+    }
 }
 
 fn place(base: u64, cursor: &mut u64, alignment: u64, size: u64) -> Option<u64> {
@@ -406,7 +636,7 @@ pub(crate) struct Image {
     layout: Layout,
     loads: [Load; LOAD_COUNT],
     tls: Option<Tls>,
-    eh_frame: Option<SectionId>,
+    eh_frame: Option<usize>,
     strings: usize,
     headers: usize,
     pub(crate) bytes: Vec<u8>,
@@ -414,10 +644,13 @@ pub(crate) struct Image {
 
 impl Image {
     pub(crate) fn new(link: &mut Link, index: Option<&Index>) -> Result<Self> {
-        let eh_frame = index
-            .filter(|_| link.script.eh_frame)
-            .map(|index| index.header);
         let mut layout = Layout::prepare(link, index)?;
+        let eh_frame = link
+            .script
+            .rules
+            .iter()
+            .zip(&layout.outputs)
+            .position(|(rule, output)| rule.eh_frame && output.is_some());
         let overflow = "bld: cannot lay out executable";
         let (loads, tls) = loop {
             let placed = layout.place_loads(link, eh_frame.is_some())?;
@@ -429,6 +662,7 @@ impl Image {
                 break placed;
             }
         };
+        layout.define_script_symbols(link)?;
         let file_end = loads[2].file_end;
         let strings = usize::try_from(file_end).map_err(|_| overflow)?;
         let headers = file_end
@@ -513,8 +747,7 @@ impl Image {
             }
             header
         });
-        let eh_frame = self.eh_frame.map(|id| {
-            let (rule, _) = link.section(id).output.expect("index has an output rule");
+        let eh_frame = self.eh_frame.map(|rule| {
             let section = self.layout.outputs[rule]
                 .as_ref()
                 .expect("placed index")

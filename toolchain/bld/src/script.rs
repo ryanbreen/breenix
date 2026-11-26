@@ -1,5 +1,5 @@
-//! GNU ld 2.45 §§3.4.1, 3.6.4, 3.6.8, 3.8 and 3.10: the subset used by
-//! Breenix's userspace linker script.
+//! GNU ld 2.45 §§3.4.1, 3.5, 3.6.4, 3.6.8, 3.8 and 3.10: the subset used
+//! by Breenix's userspace linker scripts.
 
 use std::path::Path;
 
@@ -15,14 +15,36 @@ pub(crate) enum LoadRole {
 pub(crate) struct Selector {
     patterns: Vec<Vec<u8>>,
     pub(crate) keep: bool,
+    pub(crate) sort_by_init_priority: bool,
+}
+
+pub(crate) enum Value {
+    Dot,
+    Symbol(Vec<u8>),
+    Number(u64),
+    SizedAddress {
+        sized: Vec<u8>,
+        addressed: Vec<u8>,
+        fallback: u64,
+    },
+}
+
+pub(crate) struct Assignment {
+    pub(crate) name: Vec<u8>,
+    pub(crate) value: Value,
+    pub(crate) provide: bool,
 }
 
 pub(crate) struct Rule {
     pub(crate) name: Vec<u8>,
     pub(crate) align: u64,
+    pub(crate) advance: u64,
     pub(crate) load: LoadRole,
     pub(crate) tls: bool,
+    pub(crate) eh_frame: bool,
     pub(crate) selectors: Vec<Selector>,
+    // Each assignment is evaluated before the selector at this index.
+    pub(crate) assignments: Vec<(usize, Assignment)>,
 }
 
 pub(crate) struct Script {
@@ -33,6 +55,7 @@ pub(crate) struct Script {
     pub(crate) eh_frame: bool,
     pub(crate) implicit_unwind_outputs: usize,
     pub(crate) rules: Vec<Rule>,
+    pub(crate) assignments: Vec<Assignment>,
 }
 
 impl Default for Script {
@@ -45,6 +68,7 @@ impl Default for Script {
             eh_frame: true,
             implicit_unwind_outputs: 0,
             rules: Vec::new(),
+            assignments: Vec::new(),
         }
     }
 }
@@ -104,6 +128,7 @@ impl Script {
             rule.selectors.push(Selector {
                 patterns: Vec::new(),
                 keep: false,
+                sort_by_init_priority: false,
             });
             return Ok((index, selector));
         }
@@ -112,12 +137,16 @@ impl Script {
         self.rules.push(Rule {
             name: name.to_vec(),
             align: 0,
+            advance: 0,
             load: LoadRole::Rodata,
             tls: false,
+            eh_frame: self.eh_frame && name == b".eh_frame_hdr",
             selectors: vec![Selector {
                 patterns: Vec::new(),
                 keep: false,
+                sort_by_init_priority: false,
             }],
+            assignments: Vec::new(),
         });
         Ok((index, 0))
     }
@@ -278,36 +307,99 @@ impl<'a> Parser<'a> {
         }
         self.take(b"*")?;
         self.take(b"(")?;
+        let sort_by_init_priority = self.token == b"SORT_BY_INIT_PRIORITY";
+        if sort_by_init_priority {
+            self.take(b"SORT_BY_INIT_PRIORITY")?;
+            self.take(b"(")?;
+        }
         let mut patterns = vec![self.word()?.to_vec()];
-        while self.token != b")" {
+        if sort_by_init_priority {
+            self.take(b")")?;
+        }
+        while !sort_by_init_priority && self.token != b")" {
             patterns.push(self.word()?.to_vec());
         }
         self.take(b")")?;
         if keep {
             self.take(b")")?;
         }
-        Ok(Selector { patterns, keep })
+        Ok(Selector {
+            patterns,
+            keep,
+            sort_by_init_priority,
+        })
     }
 
-    fn rule(&mut self, names: [Option<&[u8]>; 6]) -> Parsed<Rule> {
+    fn alignment(&mut self) -> Parsed<u64> {
+        self.take(b"ALIGN")?;
+        self.take(b"(")?;
+        let align = self.number()?;
+        self.take(b")")?;
+        align.is_power_of_two().then_some(align).ok_or(())
+    }
+
+    fn assignment(&mut self) -> Parsed<Assignment> {
+        let provide = self.token == b"PROVIDE_HIDDEN";
+        self.take(if provide {
+            b"PROVIDE_HIDDEN"
+        } else {
+            b"HIDDEN"
+        })?;
+        self.take(b"(")?;
+        let name = self.word()?.to_vec();
+        self.take(b"=")?;
+        let value = match self.token {
+            b"." => {
+                self.take(b".")?;
+                Value::Dot
+            }
+            b"SIZEOF" => {
+                self.take(b"SIZEOF")?;
+                self.take(b"(")?;
+                let sized = self.word()?.to_vec();
+                self.take(b")")?;
+                self.take(b"?")?;
+                self.take(b"ADDR")?;
+                self.take(b"(")?;
+                let addressed = self.word()?.to_vec();
+                self.take(b")")?;
+                self.take(b":")?;
+                let fallback = self.number()?;
+                Value::SizedAddress {
+                    sized,
+                    addressed,
+                    fallback,
+                }
+            }
+            token if token.first().is_some_and(u8::is_ascii_digit) => Value::Number(self.number()?),
+            _ => Value::Symbol(self.word()?.to_vec()),
+        };
+        self.take(b")")?;
+        self.take(b";")?;
+        Ok(Assignment {
+            name,
+            value,
+            provide,
+        })
+    }
+
+    fn rule(&mut self, names: [Option<&[u8]>; 6], advance: u64) -> Parsed<Rule> {
         let name = self.word()?.to_vec();
         self.take(b":")?;
         let align = if self.token == b"ALIGN" {
-            self.take(b"ALIGN")?;
-            self.take(b"(")?;
-            let align = self.number()?;
-            self.take(b")")?;
-            if !align.is_power_of_two() {
-                return Err(());
-            }
-            align
+            self.alignment()?
         } else {
             0
         };
         self.take(b"{")?;
         let mut selectors = Vec::new();
+        let mut assignments = Vec::new();
         while self.token != b"}" {
-            selectors.push(self.selector()?);
+            if matches!(self.token, b"HIDDEN" | b"PROVIDE_HIDDEN") {
+                assignments.push((selectors.len(), self.assignment()?));
+            } else {
+                selectors.push(self.selector()?);
+            }
         }
         self.take(b"}")?;
         self.take(b":")?;
@@ -318,21 +410,27 @@ impl<'a> Parser<'a> {
             .find_map(|(role, name)| (name == Some(segment)).then_some(role))
             .ok_or(())?;
         let mut tls = false;
+        let mut eh_frame = false;
         if self.token == b":" {
             self.take(b":")?;
             let segment = self.word()?;
             match (load, name.as_slice()) {
                 (LoadRole::Data, _) if names[3] == Some(segment) => tls = true,
-                (LoadRole::Rodata, b".eh_frame_hdr") if names[5] == Some(segment) => {}
+                (LoadRole::Rodata, b".eh_frame_hdr") if names[5] == Some(segment) => {
+                    eh_frame = true
+                }
                 _ => return Err(()),
             }
         }
         Ok(Rule {
             name,
             align,
+            advance,
             load,
             tls,
+            eh_frame,
             selectors,
+            assignments,
         })
     }
 
@@ -351,8 +449,28 @@ impl<'a> Parser<'a> {
         self.take(b"SIZEOF_HEADERS")?;
         self.take(b";")?;
         let mut rules = Vec::new();
+        let mut assignments = Vec::new();
+        let mut advance = 0;
         while self.token != b"}" {
-            rules.push(self.rule(names)?);
+            match self.token {
+                b"." => {
+                    self.take(b".")?;
+                    self.take(b"=")?;
+                    advance = advance.max(self.alignment()?);
+                    self.take(b";")?;
+                }
+                b"HIDDEN" | b"PROVIDE_HIDDEN" => {
+                    let assignment = self.assignment()?;
+                    if matches!(assignment.value, Value::Dot) {
+                        return Err(());
+                    }
+                    assignments.push(assignment);
+                }
+                _ => rules.push(self.rule(names, std::mem::take(&mut advance))?),
+            }
+        }
+        if advance != 0 {
+            return Err(());
         }
         self.take(b"}")?;
         if !self.token.is_empty() {
@@ -366,6 +484,7 @@ impl<'a> Parser<'a> {
             eh_frame: names[5].is_some(),
             implicit_unwind_outputs: 0,
             rules,
+            assignments,
         })
     }
 }
