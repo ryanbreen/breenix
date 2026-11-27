@@ -117,41 +117,41 @@ class BreenixCompileRows(unittest.TestCase):
         self.assertEqual(stage.HOSTED_TOOLCHAIN, self.FIXTURE)
 
 
-class BenchVolume(unittest.TestCase):
+class RootFilesystem(unittest.TestCase):
     """The disk rows run on the filesystems the R240 and the program target: BreenFS on
-    Breenix and ext4 on Linux, each on a second virtio disk of the same shape."""
-    MOUNTS = {"breenix": "/home/bench", "linux": "/mnt/bench"}
+    Breenix and ext4 on Linux. Each is the guest's root, on one virtio disk of the same
+    shape: BreenFS will not take Breenix's boot-time /home slot (fs/breenfs/boot.rs), and
+    explicit mounts beside an ext2 root would have to leave that root read-only."""
 
     def data_dir(self, system, case):
         argv = sampled_argv(self, system, case)
         return argv[argv.index("qemu-vol-" + case + "-1") - 2]
 
-    def test_disk_rows_use_the_bench_volume_and_other_rows_do_not(self):
-        for system, mount in self.MOUNTS.items():
-            for case in ("sequential", "small-files", "walk", "fsync"):
-                self.assertTrue(self.data_dir(system, case).startswith(mount + "/"), (system, case))
-            self.assertFalse(self.data_dir(system, "getpid").startswith(mount), system)
+    def test_disk_rows_write_under_the_home_directory_on_the_root(self):
+        for system in rig.SYSTEMS:
+            home = rig.LINUX_HOME if system == "linux" else "/etc/breenix/test-ssh/home"
+            for case in ("sequential", "small-files", "walk", "fsync", "getpid"):
+                self.assertEqual(self.data_dir(system, case), f"{home}/bbench/data/qemu-vol",
+                                 (system, case))
 
-    def test_both_guests_attach_the_bench_disk_in_the_same_shape(self):
+    def test_both_guests_attach_one_disk_in_the_same_shape(self):
         def drives(system):
             argv = [str(word) for word in rig.Guest(system, Path("/rig"), Path("/root.raw"),
-                                                    headed=False, bench=Path("/bench.raw")).argv()]
+                                                    headed=False).argv()]
             options = [argv[i + 1] for i, word in enumerate(argv) if word == "-drive"]
-            devices = [argv[i + 1] for i, word in enumerate(argv) if word == "-device"
-                       and argv[i + 1].startswith("virtio-blk-device")]
-            shape = [sorted(option for option in drive.split(",")
-                            if not option.startswith(("file=", "id=", "serial=")))
-                     for drive in options]
-            return shape, devices, options
+            return [sorted(option for option in drive.split(",")
+                           if not option.startswith(("file=", "id="))) for drive in options]
 
-        linux, breenix = drives("linux"), drives("breenix")
-        self.assertEqual(len(linux[0]), 2)
-        self.assertEqual(linux[0], breenix[0])
-        self.assertEqual(linux[0][0], linux[0][1])
-        # QEMU's virt machine numbers virtio-mmio devices in reverse command-line order,
-        # and Breenix mounts its second block device at /home: the bench disk comes first.
-        self.assertIn("file=/bench.raw", breenix[2][0])
-        self.assertIn("drive=bench", breenix[1][0])
+        self.assertEqual(len(drives("linux")), 1)
+        self.assertEqual(drives("linux"), drives("breenix"))
+
+    def test_setup_refuses_a_root_that_is_not_the_named_filesystem(self):
+        self.assertIsNone(rig.root_problem("breenix", "none / breenfs rw 0 0\n"
+                                                      "none /proc proc rw 0 0\n"))
+        self.assertIn("ext2", rig.root_problem("breenix", "none / ext2 rw,nosuid 0 0\n"))
+        self.assertIn("read-write", rig.root_problem("breenix", "none / breenfs ro 0 0\n"))
+        self.assertIsNone(rig.root_problem("linux", "/dev/vda1 / ext4 rw,relatime 0 0\n"))
+        self.assertIn("btrfs", rig.root_problem("linux", "/dev/vda1 / btrfs rw 0 0\n"))
 
     def test_each_disk_row_records_its_filesystem(self):
         names = {"breenix": "BreenFS", "linux": "ext4"}
