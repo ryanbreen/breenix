@@ -142,3 +142,17 @@ fn build_uses_current_and_the_selfhost_recipe() {
     );
     assert_eq!(elapsed_ms("real NaN\n"), None);
 }
+
+#[test]
+fn ssh_exec_starts_with_a_bare_program() {
+    let remote = BoxPaths {
+        host: "USER@HOST",
+        source: "/work/src/breenix",
+        cache: "/work/.cache/btest",
+    };
+    let command = remote.ssh(&["/bin/env", "-i", "RUSTFLAGS=one two"]);
+    assert_eq!(
+        command.get_args().last().unwrap(),
+        "/bin/env '-i' 'RUSTFLAGS=one two'"
+    );
+}
