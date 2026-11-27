@@ -9,6 +9,8 @@ from typing import NamedTuple
 
 SECOND = 10**9
 MILLISECOND = 10**6
+# A throughput row: the receipt's bytes metric over its summed time fields, in MB/s.
+THROUGHPUT = 0
 COLD_TARGET = "Cold target, natural file cache"
 COLD_BUILD = "Cold target, uncontrolled file cache / cold target, warm toolchain"
 DEFERRED = "Deferred to #3226"
@@ -75,13 +77,32 @@ ROWS = (
         "Recently dirtied file", "Deferred / recently dirtied file"),
     Row("network.bsync-upload", "bsync-upload", "8 MB upload, bsync", ("wall_ns",), SECOND,
         "Warm source, empty destination", "Warm source, empty destination / —"),
-    Row("network.scp-upload", "scp-upload", "100 MB upload, loopback SCP", ("wall_ns",), SECOND,
+    Row("network.scp-upload", "scp-upload", "SCP upload (Mac 100 MB, QEMU 8 MB)", ("wall_ns",), SECOND,
         "Warm source, empty destination", "— / warm source, empty destination"),
-    Row("network.scp-download", "download", "SCP download (R240 8 MB, Mac 100 MB)", ("wall_ns",), SECOND,
+    Row("network.scp-download", "download", "SCP download (R240 and QEMU 8 MB, Mac 100 MB)", ("wall_ns",), SECOND,
         "After upload and verification",
         "Recently uploaded and checked, file cache uncontrolled / warm loopback cache"),
     Row("ssh.round-trip", "ssh", "SSH round trip", ("wall_ns",), SECOND,
         "Fresh SSH connection", "Fresh SSH connection on both"),
+    # Attribution rows (audit step 0.5): each isolates one mechanism behind the rows above.
+    Row("process.getpid", "getpid", "getpid ×1M (ms)", ("getpid_ns",), MILLISECOND,
+        "One process, 1,000,000 calls", "One process, 1,000,000 calls"),
+    Row("memory.malloc-1t", "malloc-1t", "malloc/free 64 B ×1M, 1 thread (ms)", ("malloc_ns",),
+        MILLISECOND, "One allocate-free pair at a time", "One allocate-free pair at a time"),
+    Row("memory.malloc-4t", "malloc-4t", "malloc/free 64 B ×1M per thread, 4 threads (ms)",
+        ("malloc_ns",), MILLISECOND, "Four threads started together",
+        "Four threads started together"),
+    Row("network.tcp-guest-to-host", "tcp-send", "Raw TCP 32 MB, guest to host (MB/s)",
+        ("tcp_ns",), THROUGHPUT, "Fresh connection, delivery acknowledged by the host",
+        "Fresh connection, delivery acknowledged by the host"),
+    Row("network.tcp-host-to-guest", "tcp-recv", "Raw TCP 32 MB, host to guest (MB/s)",
+        ("tcp_ns",), THROUGHPUT, "Fresh connection, until the last byte is read",
+        "Fresh connection, until the last byte is read"),
+    *(Row(f"ssh.{name}-{level}", f"{case}-{level}", f"{title}, opt-level {level[1]} (MB/s)",
+          ("crypto_ns",), THROUGHPUT, "8 MiB in 32 KiB SSH packets", "8 MiB in 32 KiB SSH packets")
+      for name, case, title in (("aes256-gcm", "aes-gcm", "AES-256-GCM seal"),
+                                ("hmac-sha256", "hmac-sha256", "HMAC-SHA256"))
+      for level in ("oz", "o3")),
 )
 
 
@@ -118,11 +139,23 @@ def collect(prefix, directory, upload_case):
 
 
 def values(samples, fields, scale):
-    return [
-        sum(sample["wall_ns"] if field == "wall_ns" else sample["metrics"][field]
-            for field in fields) / scale
-        for sample in samples if sample["error"] is None
-    ]
+    def elapsed(sample):
+        return sum(sample["wall_ns"] if field == "wall_ns" else sample["metrics"][field]
+                   for field in fields)
+
+    if scale == THROUGHPUT:
+        # Bytes per microsecond is MB/s (10^6 bytes per second).
+        return [sample["metrics"]["bytes"] * 1000 / elapsed(sample)
+                for sample in samples if sample["error"] is None]
+    return [elapsed(sample) / scale for sample in samples if sample["error"] is None]
+
+
+def unit(row):
+    return {THROUGHPUT: "MB/s", SECOND: "s"}.get(row.scale, "ms")
+
+
+def better(row):
+    return "higher" if row.scale == THROUGHPUT else "lower"
 
 
 def summary(samples):

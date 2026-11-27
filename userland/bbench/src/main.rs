@@ -1,3 +1,4 @@
+mod attr_work;
 mod io_work;
 
 use bu_sys::bench;
@@ -42,6 +43,9 @@ fn counters() -> BTreeMap<&'static str, String> {
         "/proc/block/cache",
         "/proc/trace/rx_counters",
         "/proc/uptime",
+        "/proc/net/snmp",
+        "/proc/net/netstat",
+        "/proc/net/tcp_stats",
     ]
     .into_iter()
     .filter_map(|path| fs::read_to_string(path).ok().map(|value| (path, value)))
@@ -156,6 +160,16 @@ fn workload(dir: &Path, args: &[String], metrics: &mut Metrics) -> io::Result<()
         ["small-files", files] => io_work::small_files(dir, count(files, 10_000)?, metrics),
         ["walk", files] => io_work::walk(dir, count(files, 10_000)?, metrics),
         ["fsync", calls] => io_work::sync_latency(dir, count(calls, 1000)?, metrics),
+        ["getpid", loops] => attr_work::getpid(count(loops, 100_000_000)?, metrics),
+        ["malloc", threads, loops] => {
+            attr_work::malloc(count(threads, 64)?, count(loops, 100_000_000)?, metrics)
+        }
+        ["tcp", direction, address, bytes] => {
+            attr_work::tcp(direction, address, count(bytes, 1024 * MIB)?, metrics)
+        }
+        ["aes-gcm", bytes] => attr_work::aes_gcm(count(bytes, 1024 * MIB)?, metrics),
+        ["hmac-sha256", bytes] => attr_work::hmac_sha256(count(bytes, 1024 * MIB)?, metrics),
+        ["fixture", path, bytes] => attr_work::fixture(path, count(bytes, 1024 * MIB)?),
         _ => Err(invalid("unknown workload or argument count")),
     }
 }

@@ -50,10 +50,23 @@ median was 1.171 s with 7,931–7,986 device reads.
 | Walk target tree | Deferred to #3226 | 0.0047 [0.0046, 0.0051] | — | Deferred / warm from fixture creation |
 | Fsync 4 KiB append, per call (ms) | Deferred to #3226 | 3.764 [3.464, 4.181] | — | Deferred / recently dirtied file |
 | 8 MB upload, bsync | 8.947 [8.670, 9.421] | — | 5/5 | Warm source, empty destination / — |
-| 100 MB upload, loopback SCP | — | 0.280 [0.274, 0.308] | — | — / warm source, empty destination |
-| SCP download (R240 8 MB, Mac 100 MB) | 2.628 [2.307, 2.859] | 0.284 [0.262, 0.294] | 5/5 | Recently uploaded and checked, file cache uncontrolled / warm loopback cache |
+| SCP upload (Mac 100 MB, QEMU 8 MB) | — | 0.280 [0.274, 0.308] | — | — / warm source, empty destination |
+| SCP download (R240 and QEMU 8 MB, Mac 100 MB) | 2.628 [2.307, 2.859] | 0.284 [0.262, 0.294] | 5/5 | Recently uploaded and checked, file cache uncontrolled / warm loopback cache |
 | SSH round trip | 0.337 [0.286, 0.360] | 0.104 [0.103, 0.108] | 5/5 | Fresh SSH connection on both |
+| getpid ×1M (ms) | — | — | — | One process, 1,000,000 calls |
+| malloc/free 64 B ×1M, 1 thread (ms) | — | — | — | One allocate-free pair at a time |
+| malloc/free 64 B ×1M per thread, 4 threads (ms) | — | — | — | Four threads started together |
+| Raw TCP 32 MB, guest to host (MB/s) | — | — | — | Fresh connection, delivery acknowledged by the host |
+| Raw TCP 32 MB, host to guest (MB/s) | — | — | — | Fresh connection, until the last byte is read |
+| AES-256-GCM seal, opt-level z (MB/s) | — | — | — | 8 MiB in 32 KiB SSH packets |
+| AES-256-GCM seal, opt-level 3 (MB/s) | — | — | — | 8 MiB in 32 KiB SSH packets |
+| HMAC-SHA256, opt-level z (MB/s) | — | — | — | 8 MiB in 32 KiB SSH packets |
+| HMAC-SHA256, opt-level 3 (MB/s) | — | — | — | 8 MiB in 32 KiB SSH packets |
 <!-- bbench results end -->
+
+The attribution rows from getpid down were added for the ARM64 QEMU rig
+(`rig.py`, DEV-31). Neither column above has run them yet; their
+Breenix and Linux medians live in the arm64-qemu series files.
 
 On the R240, `rustc -vV` had a faster, lower-I/O mode at 4.63–7.31 s
 (12,704–20,324 device reads) and a slower, device-backed mode at

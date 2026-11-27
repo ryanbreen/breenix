@@ -21,6 +21,11 @@ lto = "thin"
 overflow-checks = true
 incremental = false
 
+# bbench built again at opt-level 3 for the crypto rows; the shipped release profile uses z.
+[profile.bench-o3]
+inherits = "release"
+opt-level = 3
+
 [profile.dev-box]
 inherits = "release"
 opt-level = 1
