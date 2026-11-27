@@ -1,6 +1,15 @@
 use std::path::Path;
 
-fn run(root: &Path, _args: &[String]) -> Result<(), String> {
+fn run(root: &Path, args: &[String]) -> Result<(), String> {
+    match args {
+        [flag] if flag == "--enable-wheel-nopass" => {
+            libbreenix::etc_reconcile::enable_wheel_nopass(root)?;
+            println!("etc-reconcile: passwordless wheel policy active");
+            return Ok(());
+        }
+        [] => {}
+        _ => return Err("usage: etc-reconcile [--enable-wheel-nopass]".into()),
+    }
     for name in libbreenix::etc_reconcile::reconcile_selected(root)? {
         println!("[etc-reconcile] kept local /etc/{}; wrote .factory sibling", name);
     }

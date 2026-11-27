@@ -333,7 +333,7 @@ fn read_file(root: &Path, name: &str, mode: u32) -> Result<String> {
     }
     Ok(out)
 }
-/// Write `<file>+` with final metadata, fsync, rename, then fsync `/etc`.
+/// Write an account or policy file with final metadata, fsync, rename, then fsync `/etc`.
 /// The caller must hold Lock until this and its other publications finish.
 pub fn replace(
     root: &Path,
@@ -344,7 +344,7 @@ pub fn replace(
 ) -> Result<()> {
     if !matches!(
         (name, mode),
-        ("passwd", 0o644) | ("group", 0o644) | ("shadow", 0o600)
+        ("passwd", 0o644) | ("group", 0o644) | ("shadow", 0o600) | ("sudo.policy", 0o440)
     ) {
         return Err("invalid account file".into());
     }

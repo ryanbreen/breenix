@@ -1119,6 +1119,21 @@ The session shell opens the staged file as the operator. The installed `/etc/sud
 and whether sudo prompts on the terminal. bput verifies the length and digest and publishes the root-owned file
 by same-directory rename. SSH continues to refuse root login. Kernel flashes preserve the live policy file.
 
+**Enable DEV-12 during the writable-root cutover.** After the kernel flash, use the existing sudo
+password to deliver the cutover build's `sudo` and `etc-reconcile` over SSH. Stage sudo with bput
+at a temporary path in `/usr/bin` with mode 0755. As root, set the verified file to mode 4755 and
+rename it over `/usr/bin/sudo`. Publish `etc-reconcile` at `/sbin/etc-reconcile` with mode 0755
+using the root-owned delivery above. Then activate and verify the policy from separate sessions.
+
+```sh
+ssh -t "$host" '/usr/bin/sudo /sbin/etc-reconcile --enable-wheel-nopass'
+ssh -T "$host" '/usr/bin/sudo -n /bin/id -u'
+```
+
+The first command upgrades the exact older stock policy and accepts an already active stock rule.
+It refuses a missing, edited or unsafe policy file. For a locally managed policy, the administrator
+decides which rules to edit. The second command must print `0` without prompting.
+
 Test images carry a test-only key pair generated at image build (not committed), authorized for the `sshtest`
 account (uid 2000, home `/etc/breenix/test-ssh/home`, since `/home` is a separate disk) and for root. init's loopback
 oracle logs in with it: `[BSSH_PUBKEY_ORACLE:right=ok:wrong=refused:PASS]` for the key and a forged signature, and
