@@ -56,7 +56,7 @@ const LEFT_BEHIND: [&str; 4] = ["etc/breenix/test-ssh", "etc/breenix/test-users"
 const ROOT_LEFT_BEHIND: &str = "root/.ssh";
 
 #[derive(Default)]
-struct Totals {
+pub(crate) struct Totals {
     files: u64,
     dirs: u64,
     links: u64,
@@ -576,7 +576,7 @@ fn install_tree(source: &Path, target: &Path, id: &str, checkpoint: &mut dyn FnM
     install_tree_from(source, target, id, None, checkpoint)
 }
 
-fn install_tree_from(source: &Path, target: &Path, id: &str, previous: Option<&str>, checkpoint: &mut dyn FnMut() -> std::io::Result<()>) -> Result<Totals, String> {
+pub(crate) fn install_tree_from(source: &Path, target: &Path, id: &str, previous: Option<&str>, checkpoint: &mut dyn FnMut() -> std::io::Result<()>) -> Result<Totals, String> {
     if id.is_empty() || id.len() > 64 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
         return Err(String::from("invalid userland generation"));
     }
