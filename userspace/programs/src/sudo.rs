@@ -5,7 +5,7 @@
 //! Breenix's own.
 //!
 //! - The policy must be a regular root:root file at mode 0440 with one link.
-//!   An unavailable or invalid policy leaves wheel with its password rule.
+//!   An unavailable or invalid policy grants no authorization.
 //! - The command resolves to an absolute path (through PATH
 //!   `/usr/sbin:/usr/bin:/sbin:/bin` when it has no `/`) before the policy check.
 //! - A caller other than root types its own password unless the rule says

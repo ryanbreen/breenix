@@ -990,15 +990,16 @@ fn sudo_bad_policy_mode() -> CaseResult {
     ok("chmod", chmod("/etc/sudo.policy", 0o466))?;
     let run = as_caller(&caller, &["/usr/bin/sudo", "-n", PROBE], &[], "/", &[])?;
     run.exited(1)?;
-    run.says("a password is required")?;
-    want(run.probe().is_err(), "sudo ran passwordless under a policy any user may write")?;
-    logged("sudo", &caller.name, "root", "refused:password-required")?;
+    run.says("may not run")?;
+    want(run.probe().is_err(), "sudo ran under a policy any user may write")?;
+    logged("sudo", &caller.name, "root", "refused:policy")?;
     ok("chmod", chmod("/etc/sudo.policy", 0o440))?;
     append_etc("/etc/sudo.policy", "permit %wheel as")?;
     let run = as_caller(&caller, &["/usr/bin/sudo", "-n", PROBE], &[], "/", &[])?;
     run.exited(1)?;
     run.says("line 2 does not parse")?;
-    want(run.probe().is_err(), "sudo ran passwordless under a policy that does not parse")?;
+    run.says("may not run")?;
+    want(run.probe().is_err(), "sudo ran under a policy that does not parse")?;
     // The shipped policy, at its mode, permits the same call.
     drop(_etc);
     Ok(report_has(&as_caller(&caller, &["/usr/bin/sudo", "-n", PROBE], &[], "/", &[])?.probe()?, &[("uid", "0,0,0".into())])?)

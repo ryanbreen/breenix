@@ -424,7 +424,7 @@
         },
         {
           "id": "sudo-bad-policy-mode-refused",
-          "title": "An unsafe mode or malformed policy cannot waive the password"
+          "title": "An unsafe mode or malformed policy grants no authorization"
         },
         {
           "id": "sudo-cache-session",

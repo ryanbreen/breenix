@@ -149,8 +149,7 @@ impl Authentication {
     }
 }
 
-/// An unavailable policy falls back to the original wheel password rule.
-/// A valid policy, including an empty one, supplies its own authorizations.
+/// Only a matching rule from a successfully loaded policy grants authority.
 pub fn authentication(
     rules: Option<&[Rule]>,
     caller: &str,
@@ -159,11 +158,7 @@ pub fn authentication(
     command: &str,
 ) -> Authentication {
     let Some(rules) = rules else {
-        return if target == "root" && groups.iter().any(|group| group == "wheel") {
-            Authentication::Password
-        } else {
-            Authentication::Denied
-        };
+        return Authentication::Denied;
     };
     match decide(rules, caller, groups, target, command) {
         Some(rule) if rule.nopass => Authentication::Passwordless,
@@ -205,16 +200,21 @@ mod tests {
     }
 
     #[test]
-    fn sudo_policy_missing_or_invalid_uses_legacy_password_requirement() {
+    fn sudo_policy_missing_or_invalid_grants_no_authority() {
         let missing = std::path::Path::new("/dev/null").join("sudo.policy");
         let rules = read_policy(&missing);
         assert!(rules.is_err());
         let wheel = vec!["wheel".to_string()];
-        assert_eq!(authentication(rules.as_deref().ok(), "member", &wheel, "root", "/usr/bin/id"), Authentication::Password);
-        assert_eq!(authentication(rules.as_deref().ok(), "other", &[], "root", "/usr/bin/id"), Authentication::Denied);
-        assert_eq!(authentication(None, "member", &wheel, "fixture", "/usr/bin/id"), Authentication::Denied);
         let malformed = parse_policy("# defaults\npermit %wheel nopass\n\npermit %wheel as\n");
-        assert_eq!(malformed.unwrap_err(), "line 4 does not parse");
+        assert_eq!(malformed.as_ref().unwrap_err(), "line 4 does not parse");
+        for unusable in [rules, malformed] {
+            assert_eq!(
+                authentication(unusable.as_deref().ok(), "member", &wheel, "root", "/usr/bin/id"),
+                Authentication::Denied,
+            );
+        }
+        assert_eq!(authentication(None, "other", &[], "root", "/usr/bin/id"), Authentication::Denied);
+        assert_eq!(authentication(None, "member", &wheel, "fixture", "/usr/bin/id"), Authentication::Denied);
     }
 
     #[test]

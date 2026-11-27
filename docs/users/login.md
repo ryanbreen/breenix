@@ -44,8 +44,8 @@ Group rules require membership in the named group. The shipped rule `permit %whe
 allows wheel to run any command as root without a password. Remove `nopass` to require a password.
 
 Keep `/etc/sudo.policy` a regular root:root file at mode 0440 with one link. A missing, unreadable,
-unsafe or malformed file falls back to wheel's original password rule for running as root. A syntax
-diagnostic includes the file and line number. With a valid policy, a request without a matching
+unsafe or malformed file grants no authorization. A syntax diagnostic includes the file and line
+number. With a valid policy, a request without a matching
 rule is refused even after password authentication. Root can invoke sudo directly.
 
 ## The authentication log

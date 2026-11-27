@@ -161,7 +161,7 @@ without a shadow line cannot log in.
 no sudoers compatibility.
 
 - **Policy file** `/etc/sudo.policy` must be a regular root:root file at 0440 with one link. If it
-  cannot be used, wheel can run as root with password authentication.
+  cannot be used, it grants no authorization.
 - **Grammar** `permit (user|%group) [as user] [cmd /abs/path] [nopass]`, first match wins. The shipped
   policy is `permit %wheel as root nopass`. A valid policy authorizes only matching rules.
 - **Authentication:** the caller's own password, cached 5 minutes in `/run/sudo/<uid>/<session>` for that session

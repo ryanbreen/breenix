@@ -135,7 +135,7 @@ static SUITE: Suite = suite(
         case("sudo-nonwheel-refused", "A valid password cannot authorize a caller who has no matching rule", sudo_nonwheel_refused),
         case("sudo-wrong-password", "sudo refuses a wrong password", sudo_wrong_password),
         case("sudo-env-reset", "The command gets a reset environment, the secure PATH and umask 022", sudo_env_reset),
-        case("sudo-bad-policy-mode-refused", "An unsafe mode or malformed policy cannot waive the password", sudo_bad_policy_mode),
+        case("sudo-bad-policy-mode-refused", "An unsafe mode or malformed policy grants no authorization", sudo_bad_policy_mode),
         case("sudo-cache-session", "An authentication is remembered for the session and terminal only", sudo_cache_session),
         case("sudo-policy-rules", "A rule's target and command decide", sudo_policy_rules),
         case("sudo-first-match", "Of two rules that both permit the call, the first decides, in each order", sudo_first_match),
