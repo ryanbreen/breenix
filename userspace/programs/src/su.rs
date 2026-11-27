@@ -94,7 +94,7 @@ fn run() -> Result<std::convert::Infallible, String> {
         .filter(|(key, _)| !replaced.contains(&key.as_str()))
         .map(|(key, value)| format!("{key}={value}"))
         .collect();
-    let path = if target.uid == 0 { session::SECURE_PATH.to_string() } else { std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into()) };
+    let path = if target.uid == 0 { session::SECURE_PATH.to_string() } else { std::env::var("PATH").unwrap_or_else(|_| "/usr/local/sbin:/usr/local/bin:/usr/bin:/bin".into()) };
     environment.extend([
         format!("HOME={}", target.home),
         format!("SHELL={}", target.shell),

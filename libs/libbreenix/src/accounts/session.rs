@@ -22,7 +22,7 @@ pub const TTY_GROUP: u32 = 5;
 /// The group whose members may become root through su and the default sudo policy.
 pub const WHEEL_GROUP: u32 = 10;
 /// The PATH an administrative command receives (sudo resets to it).
-pub const SECURE_PATH: &str = "/usr/sbin:/usr/bin:/sbin:/bin";
+pub const SECURE_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
 /// `/etc/login.defs`: one `KEY value` per line, `#` comments. A missing or
 /// unreadable file, or a malformed value, keeps the secure default.
@@ -322,9 +322,9 @@ pub fn become_account(account: &Account, defs: &LoginDefs, terminal: Option<i32>
 /// PATH and a TERM made of printable characters.
 pub fn login_environment(account: &Account, term: Option<&str>) -> Vec<String> {
     let path = if account.uid == 0 {
-        "/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/bin"
+        "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     } else {
-        "/usr/bin:/bin:/usr/local/bin"
+        "/usr/local/sbin:/usr/local/bin:/usr/bin:/bin"
     };
     let mut environment = vec![
         format!("HOME={}", account.home),
@@ -481,7 +481,7 @@ mod tests {
         };
         let env = login_environment(&account, Some("xterm"));
         assert!(env.contains(&"HOME=/home/ua".to_string()) && env.contains(&"TERM=xterm".to_string()));
-        assert!(env.iter().any(|e| e == "PATH=/usr/bin:/bin:/usr/local/bin"));
+        assert!(env.iter().any(|e| e == "PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin"));
         assert!(!login_environment(&account, Some("bad term")).iter().any(|e| e.starts_with("TERM=")));
     }
 }

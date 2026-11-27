@@ -957,7 +957,7 @@ impl ProcessManager {
 
         // --- argv/envp/auxv (exec_process_with_argv's setup_argv_on_stack call) ---
         let default_env: [&[u8]; 5] = [
-            b"PATH=/bin:/sbin:/usr/local/cbin\0",
+            b"PATH=/usr/local/sbin:/usr/local/bin:/bin:/sbin:/usr/local/cbin\0",
             b"HOME=/home\0",
             b"TERM=breenix\0",
             b"USER=root\0",
@@ -1422,7 +1422,7 @@ impl ProcessManager {
         // Set up argc/argv/envp/auxv on the stack following Linux ABI
         // The stack is now mapped, so we can write to it via physical addresses
         let default_env: [&[u8]; 5] = [
-            b"PATH=/bin:/sbin:/usr/local/cbin\0",
+            b"PATH=/usr/local/sbin:/usr/local/bin:/bin:/sbin:/usr/local/cbin\0",
             b"HOME=/home\0",
             b"TERM=breenix\0",
             b"USER=root\0",

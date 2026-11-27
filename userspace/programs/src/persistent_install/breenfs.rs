@@ -170,13 +170,16 @@ fn copy_generation(source: &Path, staged: &Path, id: &str, local_files: &local::
                    previous: &str, scratch: Option<&Path>) -> Result<Totals, String> {
     let fixtures = read_fixtures(source)?;
     let mut copier = Copier {
-        totals: Totals::default(), skip: Default::default(), linked: HashMap::new(),
+        totals: Totals::default(), skip: vec![source.join("usr/local")], linked: HashMap::new(),
         buffer: vec![0; 64 * 1024], checkpoint: &mut || Ok(()),
     };
     for name in ["bin", "sbin", "usr"] {
         require_directory(&source.join(name))?;
         copier.copy_tree(&source.join(name), &staged.join(name))?;
     }
+    // Only the mount point belongs to this generation. The kernel manages
+    // the live tree in the system volume's separate shared store.
+    copier.ensure_directory(&staged.join("usr/local"), 0o755)?;
     let factory = staged.join("usr/share/factory");
     super::drop_test_account(&mut copier, &factory.join("etc"), &fixtures)?;
     copier.write_file(&factory.join("generation"), id, 0o644)?;

@@ -310,7 +310,7 @@ fn login_user() -> CaseResult {
         ("HOME", user.home.clone()), ("USER", user.name.clone()), ("LOGNAME", user.name.clone()),
         ("SHELL", PROBE.to_string()), ("cwd", user.home.clone()),
         ("argv0", "-users-login-probe_test".to_string()), ("TERM", "breenix".to_string()),
-        ("PATH", "/usr/bin:/bin:/usr/local/bin".to_string()),
+        ("PATH", "/usr/local/sbin:/usr/local/bin:/usr/bin:/bin".to_string()),
     ]);
     report_has(&report, &expected)?;
     want(user.groups.contains(&2100) && user.groups.contains(&100), "the account lacks its supplementary groups")?;

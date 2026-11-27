@@ -223,7 +223,11 @@ impl LocalFiles {
         }
         for path in self.copy_roots() {
             let actual = staged.join(path);
-            let target = if !layout::SHARED.contains(&top_level(path)) && install_at(copier, staged, path)? {
+            // The BreenFS draft's /usr/local is a mount point. Keep changes
+            // from legacy image generations in the carry archive.
+            let mount_point = layout::SHARED.contains(&top_level(path))
+                || in_draft && path.starts_with("usr/local");
+            let target = if !mount_point && install_at(copier, staged, path)? {
                 actual
             } else {
                 // Keep both files when the new image owns the same path.

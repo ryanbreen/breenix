@@ -7,7 +7,7 @@
 //! - The policy must be a regular file, root's, mode 0440, one link, and must
 //!   parse, or sudo refuses to run anything.
 //! - The command resolves to an absolute path (through PATH
-//!   `/usr/sbin:/usr/bin:/sbin:/bin` when it has no `/`) before the policy check.
+//!   `session::SECURE_PATH` when it has no `/`) before the policy check.
 //! - A caller other than root types its own password unless the rule says
 //!   `nopass`. A success is remembered for 5 minutes for that session and
 //!   terminal in `/run/sudo/<uid>/<session>`. `-n` does not ask: it fails when a

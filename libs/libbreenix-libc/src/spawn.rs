@@ -453,7 +453,7 @@ unsafe fn spawn(
     let path = if search {
         let p = crate::env::getenv(b"PATH\0".as_ptr());
         Some(if p.is_null() {
-            &b"/usr/local/bin:/bin:/sbin"[..]
+            &b"/usr/local/sbin:/usr/local/bin:/bin:/sbin"[..]
         } else {
             c_bytes(p)
         })

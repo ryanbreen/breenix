@@ -10,7 +10,10 @@
 
 mod bsh_words;
 
+use std::fs;
 use std::io::{self, Read, Write};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::path::{Path, PathBuf};
 
 use breenish_js::error::{JsError, JsResult};
 use breenish_js::object::{JsObject, ObjectHeap, ObjectKind};
@@ -1057,10 +1060,10 @@ fn native_env(
 fn default_path() -> String {
     if let Ok(content) = std::fs::read_to_string("/proc/breenix/testing") {
         if content.trim() == "1" {
-            return String::from("/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/bin:/usr/libexec/breenix");
+            return String::from("/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/libexec/breenix");
         }
     }
-    String::from("/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/bin")
+    String::from("/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
 }
 
 /// Resolve a command name to a full path by searching PATH directories.
@@ -2189,6 +2192,21 @@ fn prepare_shell_context() -> Context {
 
     // Load startup scripts
     load_rc_file(&mut ctx, "/etc/bshrc");
+    let uid = libbreenix::accounts::session::real_uid();
+    extern "C" {
+        fn geteuid() -> u32;
+    }
+    if uid == unsafe { geteuid() } {
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute());
+        if let Some(home) = home {
+            let path = home.join(".bshrc");
+            if let Some(contents) = read_user_rc(&path, uid) {
+                eval_rc(&mut ctx, &path, &contents);
+            }
+        }
+    }
     ctx
 }
 
@@ -2413,19 +2431,40 @@ fn auto_exec_wrap(line: &str) -> String {
     format!(r#"let __ec = run({args}); if (__ec === 127) {{ console.error({} + ": command not found"); }} else if (__ec >= 128) {{ console.error("[bsh] command failed status=" + __ec); }}"#, bsh_words::js_string(&parts[0]))
 }
 
-/// Load and evaluate an RC (startup) file, silently ignoring missing files.
-/// Errors during evaluation are printed to stderr but do not abort the shell.
+// O_NOFOLLOW is architecture-specific in the Breenix fcntl ABI.
+#[cfg(target_arch = "x86_64")]
+const USER_RC_OPEN_FLAGS: i32 = libbreenix::fs::O_NONBLOCK as i32 | 0x20000;
+#[cfg(target_arch = "aarch64")]
+const USER_RC_OPEN_FLAGS: i32 = libbreenix::fs::O_NONBLOCK as i32 | 0x8000;
+
+fn read_user_rc(path: &Path, uid: u32) -> Option<String> {
+    // Check the descriptor we read so replacing the pathname cannot bypass
+    // the ownership and mode checks. A FIFO cannot block shell startup.
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(USER_RC_OPEN_FLAGS)
+        .open(path)
+        .ok()?;
+    let metadata = file.metadata().ok()?;
+    if !metadata.is_file() || metadata.uid() != uid || metadata.mode() & 0o022 != 0 {
+        return None;
+    }
+    let mut contents = String::new();
+    file.read_to_string(&mut contents).ok()?;
+    Some(contents)
+}
+
+/// Load and evaluate a system RC file, silently ignoring unreadable files.
 fn load_rc_file(ctx: &mut Context, path: &str) {
-    match std::fs::read_to_string(path) {
-        Ok(contents) => {
-            if let Err(e) = ctx.eval(&contents) {
-                let msg = format!("bsh: error in {}: {}\n", path, e);
-                let _ = io::stderr().write_all(msg.as_bytes());
-            }
-        }
-        Err(_) => {
-            // File doesn't exist or can't be read -- silently ignore
-        }
+    if let Ok(contents) = fs::read_to_string(path) {
+        eval_rc(ctx, Path::new(path), &contents);
+    }
+}
+
+fn eval_rc(ctx: &mut Context, path: &Path, contents: &str) {
+    if let Err(error) = ctx.eval(contents) {
+        let message = format!("bsh: error in {}: {}\n", path.display(), error);
+        let _ = io::stderr().write_all(message.as_bytes());
     }
 }
 

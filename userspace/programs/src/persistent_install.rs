@@ -163,7 +163,7 @@ impl Copier<'_> {
             for name in names {
                 let child = source.join(&name);
                 if self.skip.contains(&child) {
-                    println!("[persistent] left out {}: test or staging credentials", child.display());
+                    println!("[persistent] left out {}: excluded from this install", child.display());
                     continue;
                 }
                 if usable(&name, source, &mut self.totals) {

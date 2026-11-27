@@ -28,7 +28,7 @@ const S_IFCHR: u32 = 0o020000;
 /// The shell execvp runs a file the kernel will not execute (POSIX: ENOEXEC).
 const SHELL: &[u8] = b"/bin/sh\0";
 /// PATH when the environment has none.
-const DEFAULT_PATH: &[u8] = b"/usr/local/bin:/bin:/sbin";
+const DEFAULT_PATH: &[u8] = b"/usr/local/sbin:/usr/local/bin:/bin:/sbin";
 
 mod nr {
     #[cfg(target_arch = "aarch64")]

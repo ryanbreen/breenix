@@ -188,9 +188,15 @@ pub fn prepare(root: &Path) -> Result<Vec<String>> {
         let mode = u32::from_str_radix(row[2], 8).map_err(|_| "invalid layout mode")?;
         if row[0] == "dir" {
             if !exists(&path)? { io(fs::create_dir(&path), &path)?; }
-            if !io(fs::symlink_metadata(&path), &path)?.is_dir() { return Err("layout directory is not a directory".into()); }
-            io(fs::set_permissions(&path, fs::Permissions::from_mode(mode)), &path)?;
-            io(std::os::unix::fs::chown(&path, Some(0), Some(0)), &path)?;
+            let metadata = io(fs::symlink_metadata(&path), &path)?;
+            if !metadata.is_dir() { return Err("layout directory is not a directory".into()); }
+            // Image directories already have these attributes and may be read-only.
+            if metadata.mode() & 0o7777 != mode {
+                io(fs::set_permissions(&path, fs::Permissions::from_mode(mode)), &path)?;
+            }
+            if metadata.uid() != 0 || metadata.gid() != 0 {
+                io(std::os::unix::fs::chown(&path, Some(0), Some(0)), &path)?;
+            }
         } else if row[1].starts_with("var/") {
             if !exists(&path)? { io(OpenOptions::new().write(true).create_new(true).mode(mode).open(&path), &path)?; }
             if !io(fs::symlink_metadata(&path), &path)?.is_file() { return Err("layout log is not a regular file".into()); }

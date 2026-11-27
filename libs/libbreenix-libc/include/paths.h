@@ -4,8 +4,8 @@
 
 #define _PATH_BSHELL "/bin/sh"
 #define _PATH_CONSOLE "/dev/console"
-#define _PATH_DEFPATH "/usr/local/bin:/bin:/sbin"
-#define _PATH_STDPATH "/usr/local/bin:/bin:/sbin"
+#define _PATH_DEFPATH "/usr/local/sbin:/usr/local/bin:/bin:/sbin"
+#define _PATH_STDPATH "/usr/local/sbin:/usr/local/bin:/bin:/sbin"
 #define _PATH_DEV "/dev/"
 #define _PATH_DEVNULL "/dev/null"
 #define _PATH_TTY "/dev/tty"

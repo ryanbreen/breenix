@@ -182,18 +182,7 @@ fn mount_cutover(
     let mut entries = Vec::new();
     entries.push(point.entry(view.clone())?);
     let writer: Arc<dyn FileSystem> = writer;
-    for (path, source_parent) in [
-        ("/root", default),
-        ("/etc", shared),
-        ("/var", shared),
-        ("/opt", shared),
-        ("/srv", shared),
-        ("/tmp", shared),
-        ("/run", shared),
-    ] {
-        let name = &path.as_bytes()[1..];
-        let source = writer.lookup(source_parent, name)?;
-        let cover = view.lookup(root, name)?;
+    let mut bind = |path: &str, source, cover_parent, cover| -> Result<(), Errno> {
         if writer.getattr(source)?.kind != NodeKind::Directory
             || view.getattr(cover)?.kind != NodeKind::Directory
         {
@@ -208,14 +197,64 @@ fn mount_cutover(
             registry::Backend::Fs(writer.clone()),
             source,
             Some((point.id, cover)),
-            Some((point.id, root)),
+            Some((point.id, cover_parent)),
         );
         entry.bind = Some((writer_id, source));
         entry.custody = Some(writer.open(source)?);
         entries.push(entry);
+        Ok(())
+    };
+    for (path, source_parent) in [
+        ("/root", default),
+        ("/etc", shared),
+        ("/var", shared),
+        ("/opt", shared),
+        ("/srv", shared),
+        ("/tmp", shared),
+        ("/run", shared),
+    ] {
+        let name = &path.as_bytes()[1..];
+        let source = writer.lookup(source_parent, name)?;
+        let cover = view.lookup(root, name)?;
+        bind(path, source, root, cover)?;
+    }
+    // A rollback may select an old image without a cover. New generations
+    // reserve it, and an existing cover also works with a kernel-only flash.
+    match view.lookup(root, b"usr").and_then(|usr| {
+        view.lookup(usr, b"local").map(|cover| (usr, cover))
+    }) {
+        Ok((usr, cover)) => {
+            let source = ensure_usr_local(writer.as_ref(), shared)?;
+            bind("/usr/local", source, usr, cover)?;
+        }
+        Err(Errno(ENOENT)) => {}
+        Err(error) => return Err(error),
     }
     registry::register_cutover(entries, writer_id)?;
     Ok(view)
+}
+
+/// Initialize the live layer in the writer's default root, outside OS snapshots.
+fn ensure_usr_local(writer: &dyn FileSystem, shared: u64) -> Result<u64, Errno> {
+    use crate::fs::{
+        attrs::InodeAttrs,
+        vfs::{NewNode, NodeKind},
+    };
+
+    // The system account layout assigns wheel GID 10.
+    const WHEEL_GID: u32 = 10;
+    let ensure_directory = |parent, name: &[u8], attrs| match writer.lookup(parent, name) {
+        Ok(ino) if writer.getattr(ino)?.kind == NodeKind::Directory => Ok(ino),
+        Ok(_) => Err(Errno(ENOTDIR)),
+        Err(Errno(ENOENT)) => writer.create(parent, name, NewNode::Directory { attrs }),
+        Err(error) => Err(error),
+    };
+    let local = ensure_directory(shared, b"usr-local", InodeAttrs::new(0o755, 0, 0))?;
+    for name in [b"bin".as_slice(), b"sbin", b"lib"] {
+        ensure_directory(local, name, InodeAttrs::new(0o2775, 0, WHEEL_GID))?;
+    }
+    // The normal commit worker starts in init_services, after root publication.
+    Ok(local)
 }
 
 impl ExplicitMount<'_> {

@@ -1358,7 +1358,7 @@ fn launch(def: &Service, account: &Account, capture: bool) -> Result<(i32, Vec<O
         format!("HOME={}", account.home),
         format!("USER={}", account.name),
         format!("LOGNAME={}", account.name),
-        "PATH=/usr/sbin:/usr/bin:/sbin:/bin".to_string(),
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_string(),
     ];
     if capture && login_terminal(def).is_some() {
         environment.push("BREENIX_SERVICE_LOG=1".into());
