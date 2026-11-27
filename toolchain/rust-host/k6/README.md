@@ -1,4 +1,4 @@
-# K6 x86-64 Rust linker capture
+# K6 Rust linker capture
 
 E25 plan §5.4 K6 and ruling 115 call for the Mac twin's real linker
 arguments. [x86_64.json](x86_64.json) records the six `selfhost` tool links,
@@ -84,5 +84,25 @@ Whole-archive selection exercises the skip during both archive validation
 and member extraction. The negative control uses the same payload under
 the name `notes.bin` and requires the recorded diagnostic.
 
-This unit captures the x86-64 reference links on the host. ARM64 K6
-still needs its own twin capture and bld replay.
+## AArch64 capture
+
+[aarch64.json](aarch64.json) records the ARM K5 twin and its eight links.
+Build and clean the ordinary ARM `libc.a` as `userspace/programs/build.sh`
+does; it serves both ARM targets. Build hosted bunwind with
+`userspace/programs/build.sh --arch aarch64 --bunwind`. Supply those paths,
+the K5 ARM Mac twin and its staged sysroot to the recorder:
+
+```sh
+export CARGO_BUILD_JOBS=4
+taskpolicy -b python3 scripts/rust-host/k6_record.py --arch aarch64 \
+    --rustc "$arm_twin_rustc" --sysroot "$arm_twin_sysroot" \
+    --tools-libc "$arm_libc" --hosted-libc "$arm_libc" --bunwind "$arm_bunwind"
+```
+
+The output is `build/rustc-port/k6/aarch64`; retain a copy at
+`~/Library/Caches/breenix-e25/k6/aarch64`, or set
+`BREENIX_K6_AARCH64_FIXTURE` to its location. Verify it with
+`python3 scripts/rust-host/check-k6-fixture.py --arch aarch64`. The record
+lists `R_AARCH64_PREL64` in `needs_bld`; ARM bld replay remains to be done.
+The hosted reference is static and carries `PT_GNU_EH_FRAME`. The observed
+arguments introduce no new linker argument kind beyond the x86 capture.

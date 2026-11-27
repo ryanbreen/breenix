@@ -1,0 +1,2034 @@
+{
+  "rustc_sha256": "b3e90b74fd944e6812a0e4a23ad89f98cdc4887c17faf82e8f6e767300be10d6",
+  "rustc_commit": "a763a7dd70cc6bc97736aca5eabaf867b36477bf",
+  "cargo_channel": "nightly-2025-06-24",
+  "cargo_version": "cargo 1.90.0-nightly (84709f085 2025-06-22)",
+  "rust_lld_sha256": "088c5a892106ffb2a17fb1381cc081c6b80889fabcb6dcb885c9b1eb7868c8cc",
+  "cargo_argv": [
+    "build",
+    "--offline",
+    "--frozen",
+    "--jobs",
+    "4",
+    "--profile",
+    "selfhost",
+    "--target",
+    "targets/aarch64-breenix.json",
+    "--manifest-path",
+    "src/toolchain/Cargo.toml",
+    "-p",
+    "bas",
+    "-p",
+    "bld",
+    "-p",
+    "bar",
+    "-p",
+    "bnm",
+    "-p",
+    "bcc",
+    "-p",
+    "bmake",
+    "--target-dir",
+    "target"
+  ],
+  "cargo_environment": {
+    "RUSTC": "<k5>/mac/bin/rustc",
+    "RUST_TARGET_PATH": "targets",
+    "CARGO_HOME": "cargo-home",
+    "CARGO_ENCODED_RUSTFLAGS": "--sysroot=sysroot\u001f-Clinker=bin/k6-linker\u001f-Clink-arg=-Tlib/tools/linker.ld\u001f-Lnative=lib/tools\u001f-Clink-arg=--allow-multiple-definition\u001f-Cdefault-linker-libraries=no\u001f--remap-path-prefix=src=/breenix-src"
+  },
+  "rlib_metadata_member": "lib.rmeta",
+  "links": {
+    "bas": {
+      "argv": [
+        "-flavor",
+        "gnu",
+        "links/bas/inputs/1-symbols.o",
+        "links/bas/inputs/2-bas-7febe3ef33422474.bas.4511542a6e89ba4-cgu.0.rcgu.o",
+        "links/bas/inputs/3-bas-7febe3ef33422474.aek7wqe0o5st8z0b4j4zezg82.rcgu.o",
+        "--as-needed",
+        "-Bstatic",
+        "links/bas/inputs/6-libbas-90058a3b5ba7a9db.rlib",
+        "links/bas/inputs/7-libbobj-d945e8c040fb5780.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libstd-0e8040b4e1a0bc8a.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libpanic_abort-855fa6204188a543.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libobject-d525ea299d24a54e.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libmemchr-106ccfc875cb201b.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libaddr2line-a62ad53d350efe1b.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libgimli-897f6144c775d6d8.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_demangle-d034108d2ca632bb.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libstd_detect-34c29095c2c12f04.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libhashbrown-684bf49084a02754.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_std_workspace_alloc-b69acd07e02e3096.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libminiz_oxide-a9ac466d9ad81589.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libadler2-a8c5aa1e1b886ba1.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libunwind-ec088ece3d595b0f.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libcfg_if-58c2b3c838b4116f.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/liblibc-aaedd0c661ec0bb5.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_std_workspace_core-bc08819eabacb217.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/liballoc-3af0907a558e478a.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libcore-0c0c46514d9fd5cc.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libcompiler_builtins-d5c0b641b715fcd5.rlib",
+        "-Bdynamic",
+        "-lc",
+        "-L",
+        "links/bas/search/0",
+        "--eh-frame-hdr",
+        "-z",
+        "noexecstack",
+        "-L",
+        "lib/tools",
+        "-o",
+        "links/bas/reference.elf",
+        "--gc-sections",
+        "-O1",
+        "--strip-debug",
+        "-Tlib/tools/linker.ld",
+        "--allow-multiple-definition"
+      ],
+      "argument_kinds": [
+        "driver-flavor",
+        "file",
+        "file",
+        "file",
+        "as-needed",
+        "static-libraries",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "shared-libraries",
+        "library",
+        "search",
+        "eh-frame-header",
+        "elf-option",
+        "search",
+        "output",
+        "section-gc",
+        "linker-optimization",
+        "strip-debug",
+        "script",
+        "multiple-definitions"
+      ],
+      "inputs": [
+        "lib/tools/libc.a",
+        "lib/tools/linker.ld",
+        "links/bas/inputs/1-symbols.o",
+        "links/bas/inputs/2-bas-7febe3ef33422474.bas.4511542a6e89ba4-cgu.0.rcgu.o",
+        "links/bas/inputs/3-bas-7febe3ef33422474.aek7wqe0o5st8z0b4j4zezg82.rcgu.o",
+        "links/bas/inputs/6-libbas-90058a3b5ba7a9db.rlib",
+        "links/bas/inputs/7-libbobj-d945e8c040fb5780.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libaddr2line-a62ad53d350efe1b.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libadler2-a8c5aa1e1b886ba1.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/liballoc-3af0907a558e478a.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libcfg_if-58c2b3c838b4116f.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libcompiler_builtins-d5c0b641b715fcd5.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libcore-0c0c46514d9fd5cc.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libgimli-897f6144c775d6d8.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libhashbrown-684bf49084a02754.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/liblibc-aaedd0c661ec0bb5.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libmemchr-106ccfc875cb201b.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libminiz_oxide-a9ac466d9ad81589.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libobject-d525ea299d24a54e.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libpanic_abort-855fa6204188a543.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_demangle-d034108d2ca632bb.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_std_workspace_alloc-b69acd07e02e3096.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_std_workspace_core-bc08819eabacb217.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libstd-0e8040b4e1a0bc8a.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libstd_detect-34c29095c2c12f04.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libunwind-ec088ece3d595b0f.rlib"
+      ],
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_CONDBR19",
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_LDST128_ABS_LO12_NC",
+        "R_AARCH64_LDST16_ABS_LO12_NC",
+        "R_AARCH64_LDST32_ABS_LO12_NC",
+        "R_AARCH64_LDST64_ABS_LO12_NC",
+        "R_AARCH64_LDST8_ABS_LO12_NC",
+        "R_AARCH64_PREL32"
+      ],
+      "needs_bld": [],
+      "reference_sha256": "47b3d0e0369db3ab8960af6848b2c8b1bda3f9771957cb27d9f5de157082cafa"
+    },
+    "bld": {
+      "argv": [
+        "-flavor",
+        "gnu",
+        "links/bld/inputs/1-symbols.o",
+        "links/bld/inputs/2-bld-a5a92cba4f328092.bld.573ef2b887c09f80-cgu.0.rcgu.o",
+        "links/bld/inputs/3-bld-a5a92cba4f328092.be7goi5kjenub5ayfb0lhslhq.rcgu.o",
+        "--as-needed",
+        "-Bstatic",
+        "links/bld/inputs/6-libbld-7d70794edf81ed29.rlib",
+        "links/bld/inputs/7-libbobj-d945e8c040fb5780.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libstd-0e8040b4e1a0bc8a.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libpanic_abort-855fa6204188a543.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libobject-d525ea299d24a54e.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libmemchr-106ccfc875cb201b.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libaddr2line-a62ad53d350efe1b.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libgimli-897f6144c775d6d8.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_demangle-d034108d2ca632bb.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libstd_detect-34c29095c2c12f04.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libhashbrown-684bf49084a02754.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_std_workspace_alloc-b69acd07e02e3096.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libminiz_oxide-a9ac466d9ad81589.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libadler2-a8c5aa1e1b886ba1.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libunwind-ec088ece3d595b0f.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libcfg_if-58c2b3c838b4116f.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/liblibc-aaedd0c661ec0bb5.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_std_workspace_core-bc08819eabacb217.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/liballoc-3af0907a558e478a.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libcore-0c0c46514d9fd5cc.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libcompiler_builtins-d5c0b641b715fcd5.rlib",
+        "-Bdynamic",
+        "-lc",
+        "-L",
+        "links/bld/search/0",
+        "--eh-frame-hdr",
+        "-z",
+        "noexecstack",
+        "-L",
+        "lib/tools",
+        "-o",
+        "links/bld/reference.elf",
+        "--gc-sections",
+        "-O1",
+        "--strip-debug",
+        "-Tlib/tools/linker.ld",
+        "--allow-multiple-definition"
+      ],
+      "argument_kinds": [
+        "driver-flavor",
+        "file",
+        "file",
+        "file",
+        "as-needed",
+        "static-libraries",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "shared-libraries",
+        "library",
+        "search",
+        "eh-frame-header",
+        "elf-option",
+        "search",
+        "output",
+        "section-gc",
+        "linker-optimization",
+        "strip-debug",
+        "script",
+        "multiple-definitions"
+      ],
+      "inputs": [
+        "lib/tools/libc.a",
+        "lib/tools/linker.ld",
+        "links/bld/inputs/1-symbols.o",
+        "links/bld/inputs/2-bld-a5a92cba4f328092.bld.573ef2b887c09f80-cgu.0.rcgu.o",
+        "links/bld/inputs/3-bld-a5a92cba4f328092.be7goi5kjenub5ayfb0lhslhq.rcgu.o",
+        "links/bld/inputs/6-libbld-7d70794edf81ed29.rlib",
+        "links/bld/inputs/7-libbobj-d945e8c040fb5780.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libaddr2line-a62ad53d350efe1b.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libadler2-a8c5aa1e1b886ba1.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/liballoc-3af0907a558e478a.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libcfg_if-58c2b3c838b4116f.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libcompiler_builtins-d5c0b641b715fcd5.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libcore-0c0c46514d9fd5cc.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libgimli-897f6144c775d6d8.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libhashbrown-684bf49084a02754.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/liblibc-aaedd0c661ec0bb5.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libmemchr-106ccfc875cb201b.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libminiz_oxide-a9ac466d9ad81589.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libobject-d525ea299d24a54e.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libpanic_abort-855fa6204188a543.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_demangle-d034108d2ca632bb.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_std_workspace_alloc-b69acd07e02e3096.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_std_workspace_core-bc08819eabacb217.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libstd-0e8040b4e1a0bc8a.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libstd_detect-34c29095c2c12f04.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libunwind-ec088ece3d595b0f.rlib"
+      ],
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_CONDBR19",
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_LDST128_ABS_LO12_NC",
+        "R_AARCH64_LDST16_ABS_LO12_NC",
+        "R_AARCH64_LDST32_ABS_LO12_NC",
+        "R_AARCH64_LDST64_ABS_LO12_NC",
+        "R_AARCH64_LDST8_ABS_LO12_NC",
+        "R_AARCH64_PREL32"
+      ],
+      "needs_bld": [],
+      "reference_sha256": "d50efd07bf229c9d88caa7897ce72f3a4fd8f7942ac8a8b487b7a63696c6b3cc"
+    },
+    "bar": {
+      "argv": [
+        "-flavor",
+        "gnu",
+        "links/bar/inputs/1-symbols.o",
+        "links/bar/inputs/2-bar-afeceb3862c8dc27.bar.d084161cde870a2-cgu.0.rcgu.o",
+        "links/bar/inputs/3-bar-afeceb3862c8dc27.3v02oyq4kc2rzrkbpmx9ii1ue.rcgu.o",
+        "--as-needed",
+        "-Bstatic",
+        "links/bar/inputs/6-libbar-8081dbb324be76f6.rlib",
+        "links/bar/inputs/7-libbobj-d945e8c040fb5780.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libstd-0e8040b4e1a0bc8a.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libpanic_abort-855fa6204188a543.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libobject-d525ea299d24a54e.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libmemchr-106ccfc875cb201b.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libaddr2line-a62ad53d350efe1b.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libgimli-897f6144c775d6d8.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_demangle-d034108d2ca632bb.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libstd_detect-34c29095c2c12f04.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libhashbrown-684bf49084a02754.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_std_workspace_alloc-b69acd07e02e3096.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libminiz_oxide-a9ac466d9ad81589.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libadler2-a8c5aa1e1b886ba1.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libunwind-ec088ece3d595b0f.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libcfg_if-58c2b3c838b4116f.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/liblibc-aaedd0c661ec0bb5.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_std_workspace_core-bc08819eabacb217.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/liballoc-3af0907a558e478a.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libcore-0c0c46514d9fd5cc.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libcompiler_builtins-d5c0b641b715fcd5.rlib",
+        "-Bdynamic",
+        "-lc",
+        "-L",
+        "links/bar/search/0",
+        "--eh-frame-hdr",
+        "-z",
+        "noexecstack",
+        "-L",
+        "lib/tools",
+        "-o",
+        "links/bar/reference.elf",
+        "--gc-sections",
+        "-O1",
+        "--strip-debug",
+        "-Tlib/tools/linker.ld",
+        "--allow-multiple-definition"
+      ],
+      "argument_kinds": [
+        "driver-flavor",
+        "file",
+        "file",
+        "file",
+        "as-needed",
+        "static-libraries",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "shared-libraries",
+        "library",
+        "search",
+        "eh-frame-header",
+        "elf-option",
+        "search",
+        "output",
+        "section-gc",
+        "linker-optimization",
+        "strip-debug",
+        "script",
+        "multiple-definitions"
+      ],
+      "inputs": [
+        "lib/tools/libc.a",
+        "lib/tools/linker.ld",
+        "links/bar/inputs/1-symbols.o",
+        "links/bar/inputs/2-bar-afeceb3862c8dc27.bar.d084161cde870a2-cgu.0.rcgu.o",
+        "links/bar/inputs/3-bar-afeceb3862c8dc27.3v02oyq4kc2rzrkbpmx9ii1ue.rcgu.o",
+        "links/bar/inputs/6-libbar-8081dbb324be76f6.rlib",
+        "links/bar/inputs/7-libbobj-d945e8c040fb5780.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libaddr2line-a62ad53d350efe1b.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libadler2-a8c5aa1e1b886ba1.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/liballoc-3af0907a558e478a.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libcfg_if-58c2b3c838b4116f.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libcompiler_builtins-d5c0b641b715fcd5.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libcore-0c0c46514d9fd5cc.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libgimli-897f6144c775d6d8.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libhashbrown-684bf49084a02754.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/liblibc-aaedd0c661ec0bb5.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libmemchr-106ccfc875cb201b.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libminiz_oxide-a9ac466d9ad81589.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libobject-d525ea299d24a54e.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libpanic_abort-855fa6204188a543.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_demangle-d034108d2ca632bb.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_std_workspace_alloc-b69acd07e02e3096.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_std_workspace_core-bc08819eabacb217.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libstd-0e8040b4e1a0bc8a.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libstd_detect-34c29095c2c12f04.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libunwind-ec088ece3d595b0f.rlib"
+      ],
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_CONDBR19",
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_LDST128_ABS_LO12_NC",
+        "R_AARCH64_LDST16_ABS_LO12_NC",
+        "R_AARCH64_LDST32_ABS_LO12_NC",
+        "R_AARCH64_LDST64_ABS_LO12_NC",
+        "R_AARCH64_LDST8_ABS_LO12_NC",
+        "R_AARCH64_PREL32"
+      ],
+      "needs_bld": [],
+      "reference_sha256": "ea59fe146a9f471deea886322c19c99b2e78f2b896b42476f909e55e96857c9c"
+    },
+    "bnm": {
+      "argv": [
+        "-flavor",
+        "gnu",
+        "links/bnm/inputs/1-symbols.o",
+        "links/bnm/inputs/2-bnm-a605e43e24e51a2f.bnm.fc7daa285f3da8da-cgu.0.rcgu.o",
+        "links/bnm/inputs/3-bnm-a605e43e24e51a2f.cebrhxzpxqcfnaqll2xhognff.rcgu.o",
+        "--as-needed",
+        "-Bstatic",
+        "links/bnm/inputs/6-libbnm-09f3c53a2f6f5bda.rlib",
+        "links/bnm/inputs/7-libbobj-d945e8c040fb5780.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libstd-0e8040b4e1a0bc8a.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libpanic_abort-855fa6204188a543.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libobject-d525ea299d24a54e.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libmemchr-106ccfc875cb201b.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libaddr2line-a62ad53d350efe1b.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libgimli-897f6144c775d6d8.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_demangle-d034108d2ca632bb.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libstd_detect-34c29095c2c12f04.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libhashbrown-684bf49084a02754.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_std_workspace_alloc-b69acd07e02e3096.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libminiz_oxide-a9ac466d9ad81589.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libadler2-a8c5aa1e1b886ba1.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libunwind-ec088ece3d595b0f.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libcfg_if-58c2b3c838b4116f.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/liblibc-aaedd0c661ec0bb5.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_std_workspace_core-bc08819eabacb217.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/liballoc-3af0907a558e478a.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libcore-0c0c46514d9fd5cc.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libcompiler_builtins-d5c0b641b715fcd5.rlib",
+        "-Bdynamic",
+        "-lc",
+        "-L",
+        "links/bnm/search/0",
+        "--eh-frame-hdr",
+        "-z",
+        "noexecstack",
+        "-L",
+        "lib/tools",
+        "-o",
+        "links/bnm/reference.elf",
+        "--gc-sections",
+        "-O1",
+        "--strip-debug",
+        "-Tlib/tools/linker.ld",
+        "--allow-multiple-definition"
+      ],
+      "argument_kinds": [
+        "driver-flavor",
+        "file",
+        "file",
+        "file",
+        "as-needed",
+        "static-libraries",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "shared-libraries",
+        "library",
+        "search",
+        "eh-frame-header",
+        "elf-option",
+        "search",
+        "output",
+        "section-gc",
+        "linker-optimization",
+        "strip-debug",
+        "script",
+        "multiple-definitions"
+      ],
+      "inputs": [
+        "lib/tools/libc.a",
+        "lib/tools/linker.ld",
+        "links/bnm/inputs/1-symbols.o",
+        "links/bnm/inputs/2-bnm-a605e43e24e51a2f.bnm.fc7daa285f3da8da-cgu.0.rcgu.o",
+        "links/bnm/inputs/3-bnm-a605e43e24e51a2f.cebrhxzpxqcfnaqll2xhognff.rcgu.o",
+        "links/bnm/inputs/6-libbnm-09f3c53a2f6f5bda.rlib",
+        "links/bnm/inputs/7-libbobj-d945e8c040fb5780.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libaddr2line-a62ad53d350efe1b.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libadler2-a8c5aa1e1b886ba1.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/liballoc-3af0907a558e478a.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libcfg_if-58c2b3c838b4116f.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libcompiler_builtins-d5c0b641b715fcd5.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libcore-0c0c46514d9fd5cc.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libgimli-897f6144c775d6d8.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libhashbrown-684bf49084a02754.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/liblibc-aaedd0c661ec0bb5.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libmemchr-106ccfc875cb201b.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libminiz_oxide-a9ac466d9ad81589.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libobject-d525ea299d24a54e.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libpanic_abort-855fa6204188a543.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_demangle-d034108d2ca632bb.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_std_workspace_alloc-b69acd07e02e3096.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_std_workspace_core-bc08819eabacb217.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libstd-0e8040b4e1a0bc8a.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libstd_detect-34c29095c2c12f04.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libunwind-ec088ece3d595b0f.rlib"
+      ],
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_CONDBR19",
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_LDST128_ABS_LO12_NC",
+        "R_AARCH64_LDST16_ABS_LO12_NC",
+        "R_AARCH64_LDST32_ABS_LO12_NC",
+        "R_AARCH64_LDST64_ABS_LO12_NC",
+        "R_AARCH64_LDST8_ABS_LO12_NC",
+        "R_AARCH64_PREL32"
+      ],
+      "needs_bld": [],
+      "reference_sha256": "c0220e85c5939b06a8213e7fe06aaf1bb8d8dc766c65f84767095a9958c2cefb"
+    },
+    "bcc": {
+      "argv": [
+        "-flavor",
+        "gnu",
+        "links/bcc/inputs/1-symbols.o",
+        "links/bcc/inputs/2-bcc-c6e8ab71e90cc350.bcc.e1f5016e590aaee5-cgu.0.rcgu.o",
+        "links/bcc/inputs/3-bcc-c6e8ab71e90cc350.0zyx3367f942p00ixqayielbi.rcgu.o",
+        "--as-needed",
+        "-Bstatic",
+        "links/bcc/inputs/6-libbcc-ad2b81d4733b5328.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libstd-0e8040b4e1a0bc8a.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libpanic_abort-855fa6204188a543.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libobject-d525ea299d24a54e.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libmemchr-106ccfc875cb201b.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libaddr2line-a62ad53d350efe1b.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libgimli-897f6144c775d6d8.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_demangle-d034108d2ca632bb.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libstd_detect-34c29095c2c12f04.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libhashbrown-684bf49084a02754.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_std_workspace_alloc-b69acd07e02e3096.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libminiz_oxide-a9ac466d9ad81589.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libadler2-a8c5aa1e1b886ba1.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libunwind-ec088ece3d595b0f.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libcfg_if-58c2b3c838b4116f.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/liblibc-aaedd0c661ec0bb5.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_std_workspace_core-bc08819eabacb217.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/liballoc-3af0907a558e478a.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libcore-0c0c46514d9fd5cc.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libcompiler_builtins-d5c0b641b715fcd5.rlib",
+        "-Bdynamic",
+        "-lc",
+        "-L",
+        "links/bcc/search/0",
+        "--eh-frame-hdr",
+        "-z",
+        "noexecstack",
+        "-L",
+        "lib/tools",
+        "-o",
+        "links/bcc/reference.elf",
+        "--gc-sections",
+        "-O1",
+        "--strip-debug",
+        "-Tlib/tools/linker.ld",
+        "--allow-multiple-definition"
+      ],
+      "argument_kinds": [
+        "driver-flavor",
+        "file",
+        "file",
+        "file",
+        "as-needed",
+        "static-libraries",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "shared-libraries",
+        "library",
+        "search",
+        "eh-frame-header",
+        "elf-option",
+        "search",
+        "output",
+        "section-gc",
+        "linker-optimization",
+        "strip-debug",
+        "script",
+        "multiple-definitions"
+      ],
+      "inputs": [
+        "lib/tools/libc.a",
+        "lib/tools/linker.ld",
+        "links/bcc/inputs/1-symbols.o",
+        "links/bcc/inputs/2-bcc-c6e8ab71e90cc350.bcc.e1f5016e590aaee5-cgu.0.rcgu.o",
+        "links/bcc/inputs/3-bcc-c6e8ab71e90cc350.0zyx3367f942p00ixqayielbi.rcgu.o",
+        "links/bcc/inputs/6-libbcc-ad2b81d4733b5328.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libaddr2line-a62ad53d350efe1b.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libadler2-a8c5aa1e1b886ba1.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/liballoc-3af0907a558e478a.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libcfg_if-58c2b3c838b4116f.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libcompiler_builtins-d5c0b641b715fcd5.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libcore-0c0c46514d9fd5cc.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libgimli-897f6144c775d6d8.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libhashbrown-684bf49084a02754.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/liblibc-aaedd0c661ec0bb5.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libmemchr-106ccfc875cb201b.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libminiz_oxide-a9ac466d9ad81589.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libobject-d525ea299d24a54e.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libpanic_abort-855fa6204188a543.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_demangle-d034108d2ca632bb.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_std_workspace_alloc-b69acd07e02e3096.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_std_workspace_core-bc08819eabacb217.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libstd-0e8040b4e1a0bc8a.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libstd_detect-34c29095c2c12f04.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libunwind-ec088ece3d595b0f.rlib"
+      ],
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_CONDBR19",
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_LDST128_ABS_LO12_NC",
+        "R_AARCH64_LDST16_ABS_LO12_NC",
+        "R_AARCH64_LDST32_ABS_LO12_NC",
+        "R_AARCH64_LDST64_ABS_LO12_NC",
+        "R_AARCH64_LDST8_ABS_LO12_NC",
+        "R_AARCH64_PREL32"
+      ],
+      "needs_bld": [],
+      "reference_sha256": "bdeba208141ec28f36e17c99592622b4afcd0ee4f95a55f3b05055781a9d45fd"
+    },
+    "bmake": {
+      "argv": [
+        "-flavor",
+        "gnu",
+        "links/bmake/inputs/1-symbols.o",
+        "links/bmake/inputs/2-bmake-d90f422daf6760be.bmake.53217227694a004e-cgu.0.rcgu.o",
+        "links/bmake/inputs/3-bmake-d90f422daf6760be.0lafra9t55vdvhrgtykd99bl2.rcgu.o",
+        "--as-needed",
+        "-Bstatic",
+        "links/bmake/inputs/6-libbmake-d12aef06b22e4a8f.rlib",
+        "links/bmake/inputs/7-libbobj-d945e8c040fb5780.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libstd-0e8040b4e1a0bc8a.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libpanic_abort-855fa6204188a543.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libobject-d525ea299d24a54e.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libmemchr-106ccfc875cb201b.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libaddr2line-a62ad53d350efe1b.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libgimli-897f6144c775d6d8.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_demangle-d034108d2ca632bb.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libstd_detect-34c29095c2c12f04.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libhashbrown-684bf49084a02754.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_std_workspace_alloc-b69acd07e02e3096.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libminiz_oxide-a9ac466d9ad81589.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libadler2-a8c5aa1e1b886ba1.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libunwind-ec088ece3d595b0f.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libcfg_if-58c2b3c838b4116f.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/liblibc-aaedd0c661ec0bb5.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_std_workspace_core-bc08819eabacb217.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/liballoc-3af0907a558e478a.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libcore-0c0c46514d9fd5cc.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libcompiler_builtins-d5c0b641b715fcd5.rlib",
+        "-Bdynamic",
+        "-lc",
+        "-L",
+        "links/bmake/search/0",
+        "--eh-frame-hdr",
+        "-z",
+        "noexecstack",
+        "-L",
+        "lib/tools",
+        "-o",
+        "links/bmake/reference.elf",
+        "--gc-sections",
+        "-O1",
+        "--strip-debug",
+        "-Tlib/tools/linker.ld",
+        "--allow-multiple-definition"
+      ],
+      "argument_kinds": [
+        "driver-flavor",
+        "file",
+        "file",
+        "file",
+        "as-needed",
+        "static-libraries",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "shared-libraries",
+        "library",
+        "search",
+        "eh-frame-header",
+        "elf-option",
+        "search",
+        "output",
+        "section-gc",
+        "linker-optimization",
+        "strip-debug",
+        "script",
+        "multiple-definitions"
+      ],
+      "inputs": [
+        "lib/tools/libc.a",
+        "lib/tools/linker.ld",
+        "links/bmake/inputs/1-symbols.o",
+        "links/bmake/inputs/2-bmake-d90f422daf6760be.bmake.53217227694a004e-cgu.0.rcgu.o",
+        "links/bmake/inputs/3-bmake-d90f422daf6760be.0lafra9t55vdvhrgtykd99bl2.rcgu.o",
+        "links/bmake/inputs/6-libbmake-d12aef06b22e4a8f.rlib",
+        "links/bmake/inputs/7-libbobj-d945e8c040fb5780.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libaddr2line-a62ad53d350efe1b.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libadler2-a8c5aa1e1b886ba1.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/liballoc-3af0907a558e478a.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libcfg_if-58c2b3c838b4116f.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libcompiler_builtins-d5c0b641b715fcd5.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libcore-0c0c46514d9fd5cc.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libgimli-897f6144c775d6d8.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libhashbrown-684bf49084a02754.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/liblibc-aaedd0c661ec0bb5.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libmemchr-106ccfc875cb201b.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libminiz_oxide-a9ac466d9ad81589.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libobject-d525ea299d24a54e.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libpanic_abort-855fa6204188a543.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_demangle-d034108d2ca632bb.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_std_workspace_alloc-b69acd07e02e3096.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_std_workspace_core-bc08819eabacb217.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libstd-0e8040b4e1a0bc8a.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libstd_detect-34c29095c2c12f04.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libunwind-ec088ece3d595b0f.rlib"
+      ],
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_CONDBR19",
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_LDST128_ABS_LO12_NC",
+        "R_AARCH64_LDST16_ABS_LO12_NC",
+        "R_AARCH64_LDST32_ABS_LO12_NC",
+        "R_AARCH64_LDST64_ABS_LO12_NC",
+        "R_AARCH64_LDST8_ABS_LO12_NC",
+        "R_AARCH64_PREL32"
+      ],
+      "needs_bld": [],
+      "reference_sha256": "a5ff701a481f2a3dcc78ee2b9491cc0a56f285e80e2f516e67d8a238502499bb"
+    },
+    "panic-abort": {
+      "argv": [
+        "-flavor",
+        "gnu",
+        "links/panic-abort/inputs/1-symbols.o",
+        "links/panic-abort/inputs/2-panic-abort.panic_abort.32030fe9b922af72-cgu.0.rcgu.o",
+        "links/panic-abort/inputs/3-panic-abort.17sm7p667wbxnhdydda8nah4f.rcgu.o",
+        "--as-needed",
+        "-Bstatic",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libstd-0e8040b4e1a0bc8a.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libpanic_abort-855fa6204188a543.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libobject-d525ea299d24a54e.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libmemchr-106ccfc875cb201b.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libaddr2line-a62ad53d350efe1b.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libgimli-897f6144c775d6d8.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_demangle-d034108d2ca632bb.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libstd_detect-34c29095c2c12f04.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libhashbrown-684bf49084a02754.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_std_workspace_alloc-b69acd07e02e3096.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libminiz_oxide-a9ac466d9ad81589.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libadler2-a8c5aa1e1b886ba1.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libunwind-ec088ece3d595b0f.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libcfg_if-58c2b3c838b4116f.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/liblibc-aaedd0c661ec0bb5.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_std_workspace_core-bc08819eabacb217.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/liballoc-3af0907a558e478a.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libcore-0c0c46514d9fd5cc.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libcompiler_builtins-d5c0b641b715fcd5.rlib",
+        "-Bdynamic",
+        "-lc",
+        "-L",
+        "links/panic-abort/search/0",
+        "--eh-frame-hdr",
+        "-z",
+        "noexecstack",
+        "-L",
+        "lib/tools",
+        "-o",
+        "links/panic-abort/reference.elf",
+        "--gc-sections",
+        "-Tlib/tools/linker.ld",
+        "--allow-multiple-definition"
+      ],
+      "argument_kinds": [
+        "driver-flavor",
+        "file",
+        "file",
+        "file",
+        "as-needed",
+        "static-libraries",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "shared-libraries",
+        "library",
+        "search",
+        "eh-frame-header",
+        "elf-option",
+        "search",
+        "output",
+        "section-gc",
+        "script",
+        "multiple-definitions"
+      ],
+      "inputs": [
+        "lib/tools/libc.a",
+        "lib/tools/linker.ld",
+        "links/panic-abort/inputs/1-symbols.o",
+        "links/panic-abort/inputs/2-panic-abort.panic_abort.32030fe9b922af72-cgu.0.rcgu.o",
+        "links/panic-abort/inputs/3-panic-abort.17sm7p667wbxnhdydda8nah4f.rcgu.o",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libaddr2line-a62ad53d350efe1b.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libadler2-a8c5aa1e1b886ba1.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/liballoc-3af0907a558e478a.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libcfg_if-58c2b3c838b4116f.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libcompiler_builtins-d5c0b641b715fcd5.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libcore-0c0c46514d9fd5cc.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libgimli-897f6144c775d6d8.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libhashbrown-684bf49084a02754.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/liblibc-aaedd0c661ec0bb5.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libmemchr-106ccfc875cb201b.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libminiz_oxide-a9ac466d9ad81589.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libobject-d525ea299d24a54e.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libpanic_abort-855fa6204188a543.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_demangle-d034108d2ca632bb.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_std_workspace_alloc-b69acd07e02e3096.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_std_workspace_core-bc08819eabacb217.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libstd-0e8040b4e1a0bc8a.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libstd_detect-34c29095c2c12f04.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix/lib/libunwind-ec088ece3d595b0f.rlib"
+      ],
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_CONDBR19",
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_LDST128_ABS_LO12_NC",
+        "R_AARCH64_LDST16_ABS_LO12_NC",
+        "R_AARCH64_LDST32_ABS_LO12_NC",
+        "R_AARCH64_LDST64_ABS_LO12_NC",
+        "R_AARCH64_LDST8_ABS_LO12_NC",
+        "R_AARCH64_PREL32"
+      ],
+      "needs_bld": [],
+      "reference_sha256": "a48f088261123bffb5664ec966cedf0fb58e2f460f70638ff54e2d7124d6fcbb"
+    },
+    "catch-unwind": {
+      "argv": [
+        "-flavor",
+        "gnu",
+        "links/catch-unwind/inputs/1-symbols.o",
+        "links/catch-unwind/inputs/2-catch-unwind.catch_unwind.97f45e5e84843892-cgu.0.rcgu.o",
+        "links/catch-unwind/inputs/3-catch-unwind.cijvti2t77wtkg6wucg8ryt3q.rcgu.o",
+        "--as-needed",
+        "-Bstatic",
+        "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libstd-72375f68e2b88265.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libpanic_unwind-1b942d2e1fd53d04.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libobject-e58a221ef75236de.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libmemchr-ab90733f64d9d9fa.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libaddr2line-68fe07ad22513d68.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libgimli-3754a5a1d5c4751a.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/librustc_demangle-25a9abb5407f72ce.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libstd_detect-b3faec4098fed33b.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libhashbrown-225a67b4f4074587.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/librustc_std_workspace_alloc-dfd155565da1d9ec.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libminiz_oxide-cf73b3a04f047740.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libadler2-a77417f6b37a7fec.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libunwind-bd50e6b6d0a875fb.rlib",
+        "-lbunwind",
+        "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libcfg_if-ff1a97e7eb4545df.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/liblibc-d613cda31f8fb908.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/librustc_std_workspace_core-ddd44772a330babc.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/liballoc-4c4b1a0b0b522106.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libcore-78666adbb848cbfb.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libcompiler_builtins-3182ba5cda57f44e.rlib",
+        "-Bdynamic",
+        "-lc",
+        "-L",
+        "links/catch-unwind/search/0",
+        "--eh-frame-hdr",
+        "-z",
+        "noexecstack",
+        "-L",
+        "lib/hosted",
+        "-o",
+        "links/catch-unwind/reference.elf",
+        "--gc-sections",
+        "-Tlib/hosted/linker-hosted.ld",
+        "--allow-multiple-definition"
+      ],
+      "argument_kinds": [
+        "driver-flavor",
+        "file",
+        "file",
+        "file",
+        "as-needed",
+        "static-libraries",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "library",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "file",
+        "shared-libraries",
+        "library",
+        "search",
+        "eh-frame-header",
+        "elf-option",
+        "search",
+        "output",
+        "section-gc",
+        "script",
+        "multiple-definitions"
+      ],
+      "inputs": [
+        "lib/hosted/libbunwind.a",
+        "lib/hosted/libc.a",
+        "lib/hosted/linker-hosted.ld",
+        "links/catch-unwind/inputs/1-symbols.o",
+        "links/catch-unwind/inputs/2-catch-unwind.catch_unwind.97f45e5e84843892-cgu.0.rcgu.o",
+        "links/catch-unwind/inputs/3-catch-unwind.cijvti2t77wtkg6wucg8ryt3q.rcgu.o",
+        "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libaddr2line-68fe07ad22513d68.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libadler2-a77417f6b37a7fec.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/liballoc-4c4b1a0b0b522106.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libcfg_if-ff1a97e7eb4545df.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libcompiler_builtins-3182ba5cda57f44e.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libcore-78666adbb848cbfb.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libgimli-3754a5a1d5c4751a.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libhashbrown-225a67b4f4074587.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/liblibc-d613cda31f8fb908.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libmemchr-ab90733f64d9d9fa.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libminiz_oxide-cf73b3a04f047740.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libobject-e58a221ef75236de.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libpanic_unwind-1b942d2e1fd53d04.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/librustc_demangle-25a9abb5407f72ce.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/librustc_std_workspace_alloc-dfd155565da1d9ec.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/librustc_std_workspace_core-ddd44772a330babc.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libstd-72375f68e2b88265.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libstd_detect-b3faec4098fed33b.rlib",
+        "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libunwind-bd50e6b6d0a875fb.rlib"
+      ],
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_GOT_PAGE",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_CONDBR19",
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_LD64_GOT_LO12_NC",
+        "R_AARCH64_LDST128_ABS_LO12_NC",
+        "R_AARCH64_LDST16_ABS_LO12_NC",
+        "R_AARCH64_LDST32_ABS_LO12_NC",
+        "R_AARCH64_LDST64_ABS_LO12_NC",
+        "R_AARCH64_LDST8_ABS_LO12_NC",
+        "R_AARCH64_PREL32",
+        "R_AARCH64_PREL64"
+      ],
+      "needs_bld": [
+        "R_AARCH64_PREL64"
+      ],
+      "reference_sha256": "3872642372d99e5f919df43596d3d9b23540fb4e60f06c5e733e88d414286afc"
+    }
+  },
+  "inputs": {
+    "lib/hosted/libbunwind.a": {
+      "sha256": "788fe4120252da668d470e1f67a9f7af5100c6432a1136592e174a32073e1710",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_LDST128_ABS_LO12_NC",
+        "R_AARCH64_LDST16_ABS_LO12_NC",
+        "R_AARCH64_LDST64_ABS_LO12_NC",
+        "R_AARCH64_PREL32"
+      ],
+      "metadata_members": []
+    },
+    "lib/hosted/libc.a": {
+      "sha256": "7cabb7f6ca6b93f5fca4fe888586380dd40151fcff0a30d2ad333fd487385418",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_CONDBR19",
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_LDST128_ABS_LO12_NC",
+        "R_AARCH64_LDST16_ABS_LO12_NC",
+        "R_AARCH64_LDST32_ABS_LO12_NC",
+        "R_AARCH64_LDST64_ABS_LO12_NC",
+        "R_AARCH64_LDST8_ABS_LO12_NC"
+      ],
+      "metadata_members": []
+    },
+    "lib/hosted/linker-hosted.ld": {
+      "sha256": "0359801889d7e27c9c783a430ac67562360c804784fc852915620ea20c82ad70",
+      "relocations": [],
+      "metadata_members": []
+    },
+    "lib/tools/libc.a": {
+      "sha256": "7cabb7f6ca6b93f5fca4fe888586380dd40151fcff0a30d2ad333fd487385418",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_CONDBR19",
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_LDST128_ABS_LO12_NC",
+        "R_AARCH64_LDST16_ABS_LO12_NC",
+        "R_AARCH64_LDST32_ABS_LO12_NC",
+        "R_AARCH64_LDST64_ABS_LO12_NC",
+        "R_AARCH64_LDST8_ABS_LO12_NC"
+      ],
+      "metadata_members": []
+    },
+    "lib/tools/linker.ld": {
+      "sha256": "84cb49304763022d1d369cf625ed1bc95ed82c3bbcff13c3af83df0c63317033",
+      "relocations": [],
+      "metadata_members": []
+    },
+    "links/bar/inputs/1-symbols.o": {
+      "sha256": "713d2125cb421e5fd029ec8a622eaabc6bbd7465a31c4e1f09ccc0f01738b4d1",
+      "relocations": [],
+      "metadata_members": []
+    },
+    "links/bar/inputs/2-bar-afeceb3862c8dc27.bar.d084161cde870a2-cgu.0.rcgu.o": {
+      "sha256": "3416d307ac8a4fde530593d722b10060da808ab99a0ced82a8a4cd1ae8e481a0",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_JUMP26"
+      ],
+      "metadata_members": []
+    },
+    "links/bar/inputs/3-bar-afeceb3862c8dc27.3v02oyq4kc2rzrkbpmx9ii1ue.rcgu.o": {
+      "sha256": "e51826619ab1c922be74ae4a4f229c65e9da9be813d1fafe478b5be8542abae2",
+      "relocations": [
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_PREL32"
+      ],
+      "metadata_members": []
+    },
+    "links/bar/inputs/6-libbar-8081dbb324be76f6.rlib": {
+      "sha256": "4c1f47a61012cf99cb36ce32e1bf7ab80e2334cd30d1fc84740694f5a7b07da9",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_LDST64_ABS_LO12_NC"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "links/bar/inputs/7-libbobj-d945e8c040fb5780.rlib": {
+      "sha256": "ed31ea42c61417d7796c1d125cdc34a322fc3758546bc92576a71d6ef2e16eba",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_LDST128_ABS_LO12_NC",
+        "R_AARCH64_LDST64_ABS_LO12_NC"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "links/bas/inputs/1-symbols.o": {
+      "sha256": "713d2125cb421e5fd029ec8a622eaabc6bbd7465a31c4e1f09ccc0f01738b4d1",
+      "relocations": [],
+      "metadata_members": []
+    },
+    "links/bas/inputs/2-bas-7febe3ef33422474.bas.4511542a6e89ba4-cgu.0.rcgu.o": {
+      "sha256": "b72b45a03011f0ee9ad75afeb8ded7468f4e7fe4221f20c5260a90de21474f36",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_JUMP26"
+      ],
+      "metadata_members": []
+    },
+    "links/bas/inputs/3-bas-7febe3ef33422474.aek7wqe0o5st8z0b4j4zezg82.rcgu.o": {
+      "sha256": "5c82015a451c4a41aa7eee67a14ef2cc398abb0267f36a7d16149961be5fafff",
+      "relocations": [
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_PREL32"
+      ],
+      "metadata_members": []
+    },
+    "links/bas/inputs/6-libbas-90058a3b5ba7a9db.rlib": {
+      "sha256": "8a94475f1355a212823bf089d80c9e5d13c2fe02d8c3a2dbaf711287d9963095",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_LDST128_ABS_LO12_NC",
+        "R_AARCH64_LDST64_ABS_LO12_NC"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "links/bas/inputs/7-libbobj-d945e8c040fb5780.rlib": {
+      "sha256": "ed31ea42c61417d7796c1d125cdc34a322fc3758546bc92576a71d6ef2e16eba",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_LDST128_ABS_LO12_NC",
+        "R_AARCH64_LDST64_ABS_LO12_NC"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "links/bcc/inputs/1-symbols.o": {
+      "sha256": "713d2125cb421e5fd029ec8a622eaabc6bbd7465a31c4e1f09ccc0f01738b4d1",
+      "relocations": [],
+      "metadata_members": []
+    },
+    "links/bcc/inputs/2-bcc-c6e8ab71e90cc350.bcc.e1f5016e590aaee5-cgu.0.rcgu.o": {
+      "sha256": "61f11770e158deb48b533563be60abbe22b1370292e2f921be7e2e5a2c0e344e",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_LDST128_ABS_LO12_NC"
+      ],
+      "metadata_members": []
+    },
+    "links/bcc/inputs/3-bcc-c6e8ab71e90cc350.0zyx3367f942p00ixqayielbi.rcgu.o": {
+      "sha256": "957a22811bfa989feb0032a1906edb52424869bf31c32a552d3ac7a14c6f07ca",
+      "relocations": [
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_PREL32"
+      ],
+      "metadata_members": []
+    },
+    "links/bcc/inputs/6-libbcc-ad2b81d4733b5328.rlib": {
+      "sha256": "dc229b91fd86efecc1a27f1e05ce03505ad9168940800087c6623e662b4c9c1b",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_LDST128_ABS_LO12_NC",
+        "R_AARCH64_LDST64_ABS_LO12_NC"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "links/bld/inputs/1-symbols.o": {
+      "sha256": "713d2125cb421e5fd029ec8a622eaabc6bbd7465a31c4e1f09ccc0f01738b4d1",
+      "relocations": [],
+      "metadata_members": []
+    },
+    "links/bld/inputs/2-bld-a5a92cba4f328092.bld.573ef2b887c09f80-cgu.0.rcgu.o": {
+      "sha256": "8c566f99e9f9acdc90dce79d7fbafbd1b4fde61f093435c693e9c679e9031f13",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_LDST128_ABS_LO12_NC"
+      ],
+      "metadata_members": []
+    },
+    "links/bld/inputs/3-bld-a5a92cba4f328092.be7goi5kjenub5ayfb0lhslhq.rcgu.o": {
+      "sha256": "c8068b5210012a6f9db7d5826f03b5b68f0dc15694215057b43cd890252cdd37",
+      "relocations": [
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_PREL32"
+      ],
+      "metadata_members": []
+    },
+    "links/bld/inputs/6-libbld-7d70794edf81ed29.rlib": {
+      "sha256": "20138b979eac2d37d2a9528558090972119ad70dfe78305b0de6a5aa8c0e54c3",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_LDST128_ABS_LO12_NC",
+        "R_AARCH64_LDST64_ABS_LO12_NC"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "links/bld/inputs/7-libbobj-d945e8c040fb5780.rlib": {
+      "sha256": "ed31ea42c61417d7796c1d125cdc34a322fc3758546bc92576a71d6ef2e16eba",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_LDST128_ABS_LO12_NC",
+        "R_AARCH64_LDST64_ABS_LO12_NC"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "links/bmake/inputs/1-symbols.o": {
+      "sha256": "713d2125cb421e5fd029ec8a622eaabc6bbd7465a31c4e1f09ccc0f01738b4d1",
+      "relocations": [],
+      "metadata_members": []
+    },
+    "links/bmake/inputs/2-bmake-d90f422daf6760be.bmake.53217227694a004e-cgu.0.rcgu.o": {
+      "sha256": "d34dfe213fe7207d53d7ef6415ce5e40c3336be0332563b2b94faedadf7959b2",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_LDST128_ABS_LO12_NC"
+      ],
+      "metadata_members": []
+    },
+    "links/bmake/inputs/3-bmake-d90f422daf6760be.0lafra9t55vdvhrgtykd99bl2.rcgu.o": {
+      "sha256": "dfd9e0dde313ee2e9bf63b93cd0635c999c01b33bce9bec7de909d3686b19f31",
+      "relocations": [
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_PREL32"
+      ],
+      "metadata_members": []
+    },
+    "links/bmake/inputs/6-libbmake-d12aef06b22e4a8f.rlib": {
+      "sha256": "6fc4d5cfafb7ef5bf6265e245bf7a5bf659090490b005d9833c9f7cb3b62897b",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_LDST128_ABS_LO12_NC",
+        "R_AARCH64_LDST32_ABS_LO12_NC",
+        "R_AARCH64_LDST64_ABS_LO12_NC"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "links/bmake/inputs/7-libbobj-d945e8c040fb5780.rlib": {
+      "sha256": "ed31ea42c61417d7796c1d125cdc34a322fc3758546bc92576a71d6ef2e16eba",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_LDST128_ABS_LO12_NC",
+        "R_AARCH64_LDST64_ABS_LO12_NC"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "links/bnm/inputs/1-symbols.o": {
+      "sha256": "713d2125cb421e5fd029ec8a622eaabc6bbd7465a31c4e1f09ccc0f01738b4d1",
+      "relocations": [],
+      "metadata_members": []
+    },
+    "links/bnm/inputs/2-bnm-a605e43e24e51a2f.bnm.fc7daa285f3da8da-cgu.0.rcgu.o": {
+      "sha256": "a487b635e89eb118f380c697d70c095cb63aa2488a812966aeb913a443bec7cd",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_JUMP26"
+      ],
+      "metadata_members": []
+    },
+    "links/bnm/inputs/3-bnm-a605e43e24e51a2f.cebrhxzpxqcfnaqll2xhognff.rcgu.o": {
+      "sha256": "10c27b12d466fba8881e360d7999c22f2835693dad6d7ffa2ff8578c12563418",
+      "relocations": [
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_PREL32"
+      ],
+      "metadata_members": []
+    },
+    "links/bnm/inputs/6-libbnm-09f3c53a2f6f5bda.rlib": {
+      "sha256": "757e127852f8d4a812e5bae44bfa504b5dc8b8b391c716c735b226772cc6f3a4",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "links/bnm/inputs/7-libbobj-d945e8c040fb5780.rlib": {
+      "sha256": "ed31ea42c61417d7796c1d125cdc34a322fc3758546bc92576a71d6ef2e16eba",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_LDST128_ABS_LO12_NC",
+        "R_AARCH64_LDST64_ABS_LO12_NC"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "links/catch-unwind/inputs/1-symbols.o": {
+      "sha256": "090d683a0c83cc0ccd667160303242d68f4f637a949ae8fc56979b2abe9d1b21",
+      "relocations": [],
+      "metadata_members": []
+    },
+    "links/catch-unwind/inputs/2-catch-unwind.catch_unwind.97f45e5e84843892-cgu.0.rcgu.o": {
+      "sha256": "2ae473a31d792fba4fb313796d40d45972368d1e0ee4d73616367fa34341e01f",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_PREL32",
+        "R_AARCH64_PREL64"
+      ],
+      "metadata_members": []
+    },
+    "links/catch-unwind/inputs/3-catch-unwind.cijvti2t77wtkg6wucg8ryt3q.rcgu.o": {
+      "sha256": "bda8bcda888dbe0c871a896263309981c3e82a0a6e1e376d9c3aa31996cf3781",
+      "relocations": [
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_PREL32"
+      ],
+      "metadata_members": []
+    },
+    "links/panic-abort/inputs/1-symbols.o": {
+      "sha256": "713d2125cb421e5fd029ec8a622eaabc6bbd7465a31c4e1f09ccc0f01738b4d1",
+      "relocations": [],
+      "metadata_members": []
+    },
+    "links/panic-abort/inputs/2-panic-abort.panic_abort.32030fe9b922af72-cgu.0.rcgu.o": {
+      "sha256": "21c24d72e93ad4e6bc1a01bf1f6ac4531a96fda9860e89385abb5542b006708b",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_PREL32"
+      ],
+      "metadata_members": []
+    },
+    "links/panic-abort/inputs/3-panic-abort.17sm7p667wbxnhdydda8nah4f.rcgu.o": {
+      "sha256": "76fe51eaa847f09bddf0e1fc2dd78e91d06854fce9d28dbd138d28707a270265",
+      "relocations": [
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_PREL32"
+      ],
+      "metadata_members": []
+    },
+    "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libaddr2line-68fe07ad22513d68.rlib": {
+      "sha256": "0bba7c314e2db55032a2dd050423d0b12e3454da6620c80f6c4ee546ae962fe5",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_PREL32",
+        "R_AARCH64_PREL64"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libadler2-a77417f6b37a7fec.rlib": {
+      "sha256": "85abd24b0e94a8dba8b3176913053e345a3fdca3de5337dad2052b29c8a73744",
+      "relocations": [
+        "R_AARCH64_CALL26",
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_PREL32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/liballoc-4c4b1a0b0b522106.rlib": {
+      "sha256": "ce08c3643678c260c0c41e03bad5eb2f5636351434fc1c6a8748c9615fd94a7a",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_GOT_PAGE",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_LD64_GOT_LO12_NC",
+        "R_AARCH64_LDST128_ABS_LO12_NC",
+        "R_AARCH64_PREL32",
+        "R_AARCH64_PREL64"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libcfg_if-ff1a97e7eb4545df.rlib": {
+      "sha256": "4104e8385635ff3880623b4117d20c974f45dacefbee075c7bab5693db18e11c",
+      "relocations": [],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libcompiler_builtins-3182ba5cda57f44e.rlib": {
+      "sha256": "1a56a23f46f9e963b7d5a0d17e3224793220dafea33db0b9e876582691ece986",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_LDST128_ABS_LO12_NC",
+        "R_AARCH64_PREL32",
+        "R_AARCH64_PREL64"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libcore-78666adbb848cbfb.rlib": {
+      "sha256": "34dd5bf15cfeed5615d022a22edae459ea7a43a842ec4f0ad18f385bcc9ed318",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_GOT_PAGE",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_LD64_GOT_LO12_NC",
+        "R_AARCH64_LDST128_ABS_LO12_NC",
+        "R_AARCH64_LDST16_ABS_LO12_NC",
+        "R_AARCH64_LDST64_ABS_LO12_NC",
+        "R_AARCH64_PREL32",
+        "R_AARCH64_PREL64"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libgimli-3754a5a1d5c4751a.rlib": {
+      "sha256": "4610dedea06a9f131ae499c84c800730c9eeba67bec8db5cc6c7725b95beeac5",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_GOT_PAGE",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_LD64_GOT_LO12_NC",
+        "R_AARCH64_PREL32",
+        "R_AARCH64_PREL64"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libhashbrown-225a67b4f4074587.rlib": {
+      "sha256": "b84a2fa9235a7c50221441615062b29ea5f919e8d5e8afbd34f74fd216656aa4",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_PREL32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/liblibc-d613cda31f8fb908.rlib": {
+      "sha256": "40cc42570bc7674318f9eb4cd095964c4a60ee6b4638550e9372cea30709be3c",
+      "relocations": [
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_PREL32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libmemchr-ab90733f64d9d9fa.rlib": {
+      "sha256": "6011d160cc007e1cc568f816642b37521af5d2dda5bbd6bab9a92ba5dd04c7a2",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_PREL32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libminiz_oxide-cf73b3a04f047740.rlib": {
+      "sha256": "876106b379c56b8389c3e286d5170701cedd8b5af05d1695acbe65ac9c6804bf",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_PREL32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libobject-e58a221ef75236de.rlib": {
+      "sha256": "f0ec64e4ad244146c36749a741d60d342ba09305308ef477fb51aab5aa8a52b7",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_GOT_PAGE",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_LD64_GOT_LO12_NC",
+        "R_AARCH64_PREL32",
+        "R_AARCH64_PREL64"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libpanic_unwind-1b942d2e1fd53d04.rlib": {
+      "sha256": "14836ed5368920fdd8fa5851e602c69ab12ea9840194b8466625bc51fffbb3de",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_PREL32",
+        "R_AARCH64_PREL64"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/librustc_demangle-25a9abb5407f72ce.rlib": {
+      "sha256": "d94bec0a367b01925a1339eb5e39138c5d481b54ea6ed213d507fddb33eeca51",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_GOT_PAGE",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_LD64_GOT_LO12_NC",
+        "R_AARCH64_PREL32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/librustc_std_workspace_alloc-dfd155565da1d9ec.rlib": {
+      "sha256": "1b8b24696534e1bf707d4175157d37c63e7892bbcfd79c255c97dd95550bbf3a",
+      "relocations": [],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/librustc_std_workspace_core-ddd44772a330babc.rlib": {
+      "sha256": "e630d85f26a7ab7d5ac1a95706dff2e0485c9d9916ddfcbd85708d454f705b50",
+      "relocations": [],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libstd-72375f68e2b88265.rlib": {
+      "sha256": "94a7e558ac996ae034760f53ea3cb8d7ce86159c5bd9ce6ebcb719b775c1e673",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_GOT_PAGE",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_LD64_GOT_LO12_NC",
+        "R_AARCH64_LDST128_ABS_LO12_NC",
+        "R_AARCH64_LDST64_ABS_LO12_NC",
+        "R_AARCH64_LDST8_ABS_LO12_NC",
+        "R_AARCH64_PREL32",
+        "R_AARCH64_PREL64"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libstd_detect-b3faec4098fed33b.rlib": {
+      "sha256": "4120ddc0db77bfcd1b68191a0875fcb42aa8d8d2fa936abb5df99113569a337a",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_GOT_PAGE",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_LD64_GOT_LO12_NC",
+        "R_AARCH64_PREL32"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libunwind-bd50e6b6d0a875fb.rlib": {
+      "sha256": "e0ed07fe7e7045341e436afbaa5f93d3a68a499de65b79904243a4f693af20ac",
+      "relocations": [],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/aarch64-breenix/lib/libaddr2line-a62ad53d350efe1b.rlib": {
+      "sha256": "80fe24918e239aceab59e72f8a5f515aee0a2800a9b81cc36ad1c285c83028b3",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_JUMP26"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/aarch64-breenix/lib/libadler2-a8c5aa1e1b886ba1.rlib": {
+      "sha256": "ef04c5ea281f3a914a2d2f8b000471f1c3a455f366124796a20bb65f0388cbb3",
+      "relocations": [
+        "R_AARCH64_CALL26",
+        "R_AARCH64_JUMP26"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/aarch64-breenix/lib/liballoc-3af0907a558e478a.rlib": {
+      "sha256": "d6b72f60c2f34866b477e2ce189b1e3aff225b91d4c3e11ff7a664240ac64176",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_LDST128_ABS_LO12_NC",
+        "R_AARCH64_LDST8_ABS_LO12_NC"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/aarch64-breenix/lib/libcfg_if-58c2b3c838b4116f.rlib": {
+      "sha256": "efac304ed66f18ef5541b02bfdb7f4f4130630b4366008fe672868d52d295798",
+      "relocations": [],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/aarch64-breenix/lib/libcompiler_builtins-d5c0b641b715fcd5.rlib": {
+      "sha256": "c198173ccb07213a5ea17eaebe81916e0243c6ae1732582345be4973331bd442",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_LDST128_ABS_LO12_NC"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/aarch64-breenix/lib/libcore-0c0c46514d9fd5cc.rlib": {
+      "sha256": "652b5b6b21cbbf1edbad6ed07a0b43f65ab19c03c622b9a6444dd3c0732ee988",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_LDST128_ABS_LO12_NC",
+        "R_AARCH64_LDST16_ABS_LO12_NC",
+        "R_AARCH64_LDST64_ABS_LO12_NC"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/aarch64-breenix/lib/libgimli-897f6144c775d6d8.rlib": {
+      "sha256": "e7227e3ef96543dd478f09db1a260537d3e69c42e487d9ed140bcd165afb5bc4",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_JUMP26"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/aarch64-breenix/lib/libhashbrown-684bf49084a02754.rlib": {
+      "sha256": "5e88a6ceddd72dc31fff67bae03a34d98937f4f102466824ba6bb64e8670341a",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_JUMP26"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/aarch64-breenix/lib/liblibc-aaedd0c661ec0bb5.rlib": {
+      "sha256": "ad9938e3bff8ed66d2795b28f747184f5b0faa5bc0c56d5a9a5b348cf60aa395",
+      "relocations": [
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/aarch64-breenix/lib/libmemchr-106ccfc875cb201b.rlib": {
+      "sha256": "8486f7f4a046566bf6be842d810c01b1b230b07ab83eead1193bd65f42979245",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_JUMP26"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/aarch64-breenix/lib/libminiz_oxide-a9ac466d9ad81589.rlib": {
+      "sha256": "f1de345c5856d665075b52e118fb4820935212624fe65950acc55cfe000cf33d",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_JUMP26"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/aarch64-breenix/lib/libobject-d525ea299d24a54e.rlib": {
+      "sha256": "5c29960fa00e58a522b334b5b661650e9f622ebcfdf4f8f659d32b7ac59723f6",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_JUMP26"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/aarch64-breenix/lib/libpanic_abort-855fa6204188a543.rlib": {
+      "sha256": "ef3530acf2d8eae903b3a0d0226d35cccbcc13bc39cf08bf42d5e5388fd729d1",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_demangle-d034108d2ca632bb.rlib": {
+      "sha256": "70648b240fa3efdf87585d0e65fd8094c51ebf8ae1e472eb396abd29f788356c",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_JUMP26"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_std_workspace_alloc-b69acd07e02e3096.rlib": {
+      "sha256": "3ce25491c6f0d26acb8432ea41de51ea7fd4274a7e29312027449c856e6ddb20",
+      "relocations": [],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_std_workspace_core-bc08819eabacb217.rlib": {
+      "sha256": "3232e783100b9ef7bbe76f2569cf6fbb5787b73d41ad91adc3068ccdc522a109",
+      "relocations": [],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/aarch64-breenix/lib/libstd-0e8040b4e1a0bc8a.rlib": {
+      "sha256": "b1a3fac35fd0a330eff001050ff4f5d2d58aa418d036f4c9d9b610157bfd2685",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26",
+        "R_AARCH64_JUMP26",
+        "R_AARCH64_LDST128_ABS_LO12_NC",
+        "R_AARCH64_LDST64_ABS_LO12_NC",
+        "R_AARCH64_LDST8_ABS_LO12_NC"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/aarch64-breenix/lib/libstd_detect-34c29095c2c12f04.rlib": {
+      "sha256": "d851dfb204e2abed927584eeb366633c7721499dee4620ac5e726658a73329c6",
+      "relocations": [
+        "R_AARCH64_ABS64",
+        "R_AARCH64_ADD_ABS_LO12_NC",
+        "R_AARCH64_ADR_PREL_PG_HI21",
+        "R_AARCH64_CALL26"
+      ],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    },
+    "sysroot/lib/rustlib/aarch64-breenix/lib/libunwind-ec088ece3d595b0f.rlib": {
+      "sha256": "a4b1f41d94b826220c70bbbe4af08d0c8917bd5b991faea2e46113f402cd8f78",
+      "relocations": [],
+      "metadata_members": [
+        "lib.rmeta"
+      ]
+    }
+  },
+  "relocations": {
+    "observed": [
+      "R_AARCH64_ABS64",
+      "R_AARCH64_ADD_ABS_LO12_NC",
+      "R_AARCH64_ADR_GOT_PAGE",
+      "R_AARCH64_ADR_PREL_PG_HI21",
+      "R_AARCH64_CALL26",
+      "R_AARCH64_CONDBR19",
+      "R_AARCH64_JUMP26",
+      "R_AARCH64_LD64_GOT_LO12_NC",
+      "R_AARCH64_LDST128_ABS_LO12_NC",
+      "R_AARCH64_LDST16_ABS_LO12_NC",
+      "R_AARCH64_LDST32_ABS_LO12_NC",
+      "R_AARCH64_LDST64_ABS_LO12_NC",
+      "R_AARCH64_LDST8_ABS_LO12_NC",
+      "R_AARCH64_PREL32",
+      "R_AARCH64_PREL64"
+    ],
+    "supported_by_bld": [
+      "R_AARCH64_ABS64",
+      "R_AARCH64_ADD_ABS_LO12_NC",
+      "R_AARCH64_ADR_GOT_PAGE",
+      "R_AARCH64_ADR_PREL_PG_HI21",
+      "R_AARCH64_CALL26",
+      "R_AARCH64_CONDBR19",
+      "R_AARCH64_JUMP26",
+      "R_AARCH64_LD64_GOT_LO12_NC",
+      "R_AARCH64_LDST128_ABS_LO12_NC",
+      "R_AARCH64_LDST16_ABS_LO12_NC",
+      "R_AARCH64_LDST32_ABS_LO12_NC",
+      "R_AARCH64_LDST64_ABS_LO12_NC",
+      "R_AARCH64_LDST8_ABS_LO12_NC",
+      "R_AARCH64_PREL32"
+    ],
+    "needs_bld": [
+      "R_AARCH64_PREL64"
+    ]
+  }
+}
