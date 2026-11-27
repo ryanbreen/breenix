@@ -3,6 +3,9 @@
 //!
 //! Pure computation, so the host tests compile this file as is.
 
+use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicU8, Ordering};
+
 use crate::random::blake2s::Blake2s;
 
 /// Bytes in the ISN key, drawn once from the kernel's random pool.
@@ -45,15 +48,40 @@ pub trait Pool {
     fn fill(&self, out: &mut [u8]) -> bool;
 }
 
-/// The ISN key, drawn from the pool the first time a connection needs one.
-pub struct IsnKey(spin::Once<[u8; ISN_SECRET_LEN]>);
+/// `IsnKey` states.
+const KEY_UNSET: u8 = 0;
+const KEY_WRITING: u8 = 1;
+const KEY_SET: u8 = 2;
+
+/// The ISN key (RFC 6528 section 3: a secret the attacker cannot guess). It is
+/// drawn the first time a connection needs one once the pool is ready, and no
+/// context ever waits for it:
+/// - Until the pool is ready there is no key: each ISN's offset is a draw of
+///   its own, so nothing taken from an unready pool outlives one connection.
+/// - The context that claims the key draws and publishes it. A context that
+///   asks meanwhile, including a handshake that interrupted the claimer on its
+///   own CPU, takes a draw of its own instead.
+pub struct IsnKey {
+    state: AtomicU8,
+    key: UnsafeCell<[u8; ISN_SECRET_LEN]>,
+}
+
+// SAFETY: `key` is written only by the one context that moved `state` from
+// KEY_UNSET to KEY_WRITING, and read only after an Acquire load sees KEY_SET,
+// which that context stores with Release once the key is written.
+unsafe impl Sync for IsnKey {}
 
 impl IsnKey {
     pub const fn new() -> Self {
-        Self(spin::Once::new())
+        Self {
+            state: AtomicU8::new(KEY_UNSET),
+            key: UnsafeCell::new([0; ISN_SECRET_LEN]),
+        }
     }
 
-    /// The ISN for a connection on this 4-tuple at `now_us` (`isn`).
+    /// The ISN for a connection on this 4-tuple at `now_us`: `isn` under the
+    /// key once it is set, and before that the 4-microsecond clock plus a
+    /// fresh draw.
     pub fn isn(
         &self,
         pool: &impl Pool,
@@ -63,18 +91,49 @@ impl IsnKey {
         remote_port: u16,
         now_us: u64,
     ) -> u32 {
-        let secret = self.0.call_once(|| {
-            let mut key = [0u8; ISN_SECRET_LEN];
-            pool.fill(&mut key);
-            key
-        });
-        isn(secret, local_ip, local_port, remote_ip, remote_port, now_us)
+        match self.key(pool) {
+            Ok(secret) => isn(secret, local_ip, local_port, remote_ip, remote_port, now_us),
+            Err(offset) => ((now_us / 4) as u32).wrapping_add(offset),
+        }
+    }
+
+    /// The key, or a fresh offset from the pool when there is none to use yet.
+    fn key(&self, pool: &impl Pool) -> Result<&[u8; ISN_SECRET_LEN], u32> {
+        if self.state.load(Ordering::Acquire) == KEY_SET {
+            // SAFETY: KEY_SET is stored after the key is written, and it is
+            // not written again.
+            return Ok(unsafe { &*self.key.get() });
+        }
+        let mut offset = [0u8; 4];
+        let ready = pool.fill(&mut offset);
+        if ready
+            && self
+                .state
+                .compare_exchange(KEY_UNSET, KEY_WRITING, Ordering::Acquire, Ordering::Acquire)
+                .is_ok()
+        {
+            // SAFETY: this context holds KEY_WRITING, so no other writes the
+            // key or reads it until KEY_SET. The pool was ready before the
+            // offset's draw and stays ready, so the key is drawn from it ready.
+            pool.fill(unsafe { &mut *self.key.get() });
+            self.state.store(KEY_SET, Ordering::Release);
+            // SAFETY: as above; this context has just set it.
+            return Ok(unsafe { &*self.key.get() });
+        }
+        if self.state.load(Ordering::Acquire) == KEY_SET {
+            // SAFETY: as above.
+            return Ok(unsafe { &*self.key.get() });
+        }
+        Err(u32::from_le_bytes(offset))
     }
 }
 
 /// Bind a socket that has no port to the first free one of a search that
 /// starts at a fresh draw from `pool` (`ephemeral_candidates`). `bind(port)`
-/// takes the port: true if it did, false if another socket holds it.
+/// takes the port: true if it did, false if another socket holds it. The draw
+/// is used for this search only and is not kept, and the search does not wait
+/// for the pool to be ready: port randomization (RFC 6056 section 1) makes a
+/// port harder to guess, and a connection must not block on it.
 /// `Ok(None)` when the range has no free port; `bind`'s error otherwise.
 pub fn bind_ephemeral(
     pool: &impl Pool,
