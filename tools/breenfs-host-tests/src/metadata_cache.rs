@@ -219,9 +219,11 @@ fn metadata_cache_keeps_an_unrelated_inode_through_write_and_install() {
     };
     check();
     fs.sync().unwrap();
-    check();
+    // Process the writer's bounded install refresh before measuring the
+    // unrelated lookup. The refresh reads its newly allocated block count.
     let attrs = fs.getattr(inodes[1]).unwrap();
     assert_eq!((attrs.size, attrs.blocks), (8, 8));
+    check();
 }
 
 #[test]
