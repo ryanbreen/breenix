@@ -41,6 +41,10 @@ with tempfile.TemporaryDirectory(prefix="breenix-string-check-") as temporary:
     assembly = output.read_text()
 
     def instructions(name):
+        alias = re.search(rf"^\.set[ \t]+_?breenix_{name},[ \t]+_?breenix_(\w+)$",
+                          assembly, flags=re.M)
+        if alias:
+            name = alias[1]
         label = re.search(rf"^_?breenix_{name}:[ \t]*(?:[#/].*)?$", assembly, flags=re.M)
         assert label, name
         return re.split(r"\.(?:cfi_endproc|section|globl)", assembly[label.end():], 1)[0]
