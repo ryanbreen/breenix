@@ -10470,6 +10470,10 @@ fn drain_wake_inbox(cpu: usize, apply: impl FnMut(u64, u64)) {
 
 #[inline]
 fn wake_inbox_pending_here() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    if !crate::per_cpu::is_initialized() {
+        return false;
+    }
     WAKE_INBOXES.get(current_cpu_id_raw()).is_some_and(WakeInbox::has_work)
 }
 
