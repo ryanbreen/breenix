@@ -193,6 +193,36 @@ pub mod icmp {
     }
 }
 
+/// The ISN key and ephemeral-port search tcp.rs uses since #3240's RFC 6528 /
+/// RFC 6056 change, at the path tcp.rs names it by.
+#[allow(dead_code)]
+#[path = "../kernel/src/net/tcp_ident.rs"]
+mod tcp_ident;
+
+/// The kernel's keyed hash, which `tcp_ident` names as `crate::random::blake2s`
+/// and which wipes its state through its sibling `erase`.
+#[allow(dead_code)]
+#[path = "../kernel/src/random/blake2s.rs"]
+mod blake2s;
+#[path = "../kernel/src/random/erase.rs"]
+mod erase;
+
+/// The hash, and a random pool whose `is_ready` returns true and whose `fill`
+/// writes a fixed byte pattern, so these checks are deterministic.
+mod random {
+    pub(crate) use super::blake2s;
+
+    pub fn is_ready() -> bool {
+        true
+    }
+
+    pub fn fill(out: &mut [u8]) {
+        for (index, byte) in out.iter_mut().enumerate() {
+            *byte = index as u8;
+        }
+    }
+}
+
 #[allow(dead_code)]
 #[path = "../kernel/src/net/tcp.rs"]
 pub mod tcp;
