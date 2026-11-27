@@ -23,6 +23,7 @@ mod rx_poll;
 // TCP and UDP protocol implementations - architecture-independent
 // The socket syscall layer handles arch-specific details
 pub mod tcp;
+mod tcp_ident;
 pub mod udp;
 
 pub use loopback_pump::{
@@ -52,7 +53,7 @@ const E1000_CARRIER_POLL_MS: u32 = 50;
 
 /// Per-context exclusion for the network tables.
 ///
-/// This guard protects `TCP_CONNECTIONS`, `TCP_LISTENERS`, `SEQ_COUNTER`,
+/// This guard protects `TCP_CONNECTIONS`, `TCP_LISTENERS`,
 /// `DEFERRED_TX_QUEUE`, `ARP_CACHE`, `NET_CONFIG`, `LOOPBACK_QUEUE`,
 /// `ARP_PENDING_QUEUE`, and `CURRENT_PACKET_SRC_MAC` from same-CPU re-entry. On
 /// x86_64 it disables bottom halves rather than clearing IF: the hardirq handlers
