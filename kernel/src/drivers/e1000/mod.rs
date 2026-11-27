@@ -516,11 +516,22 @@ pub fn link_up() -> bool {
     }
 }
 
+/// Queue one frame. On x86-64 a send also raises NetRx when a received frame
+/// is waiting: an interrupt before `net::init` registered the NetRx handler
+/// raised it to no one, and the frame would otherwise wait for the next
+/// receive interrupt. The stack's first send drains it. ARM64 polls instead.
 pub fn transmit(data: &[u8]) -> Result<(), &'static str> {
-    let _guard = crate::net::net_lock_guard();
-    let mut slot = DRIVER.lock();
-    let driver = slot.as_mut().ok_or("e1000 not initialized")?;
-    let sent = driver.nic.transmit(&mut driver.hw, data).map_err(nic::TxError::as_str);
+    let (sent, waiting) = {
+        let _guard = crate::net::net_lock_guard();
+        let mut slot = DRIVER.lock();
+        let driver = slot.as_mut().ok_or("e1000 not initialized")?;
+        let sent = driver.nic.transmit(&mut driver.hw, data).map_err(nic::TxError::as_str);
+        let waiting = cfg!(target_arch = "x86_64") && driver.nic.can_receive(&mut driver.hw);
+        (sent, waiting)
+    };
+    if waiting {
+        crate::task::softirqd::raise_softirq(crate::task::softirqd::SoftirqType::NetRx);
+    }
     sent
 }
 

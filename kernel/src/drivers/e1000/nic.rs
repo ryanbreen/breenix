@@ -220,7 +220,9 @@ impl TxDescriptor {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InitError {
+    MasterDrainTimeout,
     ResetTimeout,
+    NvmLoadTimeout,
     NvmOwnershipTimeout,
     NvmReadTimeout,
     NoStationAddress,
@@ -229,7 +231,9 @@ pub enum InitError {
 impl InitError {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::MasterDrainTimeout => "e1000: bus-master requests did not drain",
             Self::ResetTimeout => "e1000: CTRL.RST did not clear",
+            Self::NvmLoadTimeout => "e1000: the NVM auto-read did not finish",
             Self::NvmOwnershipTimeout => "e1000: the NVM semaphore was not granted",
             Self::NvmReadTimeout => "e1000: EERD read did not complete",
             Self::NoStationAddress => "e1000: no valid station address",
@@ -450,9 +454,10 @@ fn poll<R: Registers>(regs: &mut R, polls: u32, mut done: impl FnMut(&mut R) -> 
 /// RCTL.EN and TCTL.EN. On the 82574 by the master-disable handshake, the
 /// procedure DS 10.2.2.1 names for this; TCTL is not touched, because firmware
 /// may leave its queue with TDH != TDT and DS 10.2.6.1 (MULR) forbids
-/// modifying TCTL then. DS 3.1.3.10 lets the drain time out. The reset still
-/// follows a timeout: it is the only means left to stop the DMA engine, and
-/// it clears the master-disable bit.
+/// modifying TCTL then. DS 3.1.3.10 lets the drain time out. On a timeout the
+/// function is refused without a reset: DS 10.2.2.1 requires TX and RX
+/// stopped first, and the master disable, which a reset would clear, stays
+/// set and keeps blocking new requests.
 fn reset<R: Registers>(regs: &mut R, model: Model) -> Result<(), InitError> {
     regs.write(IMC, model.all_causes());
     match model {
@@ -465,9 +470,11 @@ fn reset<R: Registers>(regs: &mut R, model: Model) -> Result<(), InitError> {
         Model::Pcie82574 => {
             let ctrl = regs.read(CTRL);
             regs.write(CTRL, ctrl | CTRL_GIO_MASTER_DISABLE);
-            poll(regs, MASTER_DISABLE_POLLS, |regs| {
+            if !poll(regs, MASTER_DISABLE_POLLS, |regs| {
                 regs.read(STATUS) & STATUS_GIO_MASTER_ENABLE == 0
-            });
+            }) {
+                return Err(InitError::MasterDrainTimeout);
+            }
         }
     }
     let ctrl = regs.read(CTRL);
@@ -478,11 +485,14 @@ fn reset<R: Registers>(regs: &mut R, model: Model) -> Result<(), InitError> {
     regs.write(IMC, model.all_causes());
     acknowledge_interrupt(regs, model);
     if model == Model::Pcie82574 {
-        // The reset reloads RAL0/RAH0 and other fields from the NVM (DS
-        // 6.1.1.1); EEC.Auto_RD reports the load done, and is set also with
-        // no valid NVM (DS 10.2.2.3). If it never sets, RAH0 is not trusted
-        // to be loaded and the station address comes through EERD.
-        poll(regs, NVM_POLLS, |regs| regs.read(EEC) & EEC_AUTO_RD != 0);
+        // The reset reloads RAL0/RAH0, CTRL fields and others from the NVM
+        // (DS 4.2, 6.1.1); EEC.Auto_RD reports the load done, and is set also
+        // with no valid NVM (DS 10.2.2.3). Configuring before then would let
+        // a late load rewrite CTRL, so a load that does not finish refuses
+        // the function.
+        if !poll(regs, NVM_POLLS, |regs| regs.read(EEC) & EEC_AUTO_RD != 0) {
+            return Err(InitError::NvmLoadTimeout);
+        }
     }
     Ok(())
 }
@@ -521,12 +531,11 @@ fn configure_general(regs: &mut impl Registers, model: Model) {
 }
 
 /// The station address: RAL0/RAH0 when an NVM load left it valid (SDM 5.6.1;
-/// DS 6.1.1.1), otherwise NVM words 0-2 through EERD. On the 82574 RAH0 is
-/// read only once EEC.Auto_RD reports the load done. On the 8254x a global
-/// reset clears RAH0's valid bit (SDM 14.7), so EERD is the usual path there.
+/// DS 6.1.1.1), otherwise NVM words 0-2 through EERD. On the 82574 `reset`
+/// has already waited for EEC.Auto_RD. On the 8254x a global reset clears
+/// RAH0's valid bit (SDM 14.7), so EERD is the usual path there.
 fn station_address<R: Registers>(regs: &mut R, model: Model) -> Result<[u8; 6], InitError> {
-    let loaded = model == Model::Pci8254x || regs.read(EEC) & EEC_AUTO_RD != 0;
-    let high = if loaded { regs.read(RAH0) } else { 0 };
+    let high = regs.read(RAH0);
     if high & RAH_AV != 0 {
         let mac = address_from_registers(regs.read(RAL0), high);
         if is_station_address(mac) {
