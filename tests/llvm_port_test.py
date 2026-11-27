@@ -129,6 +129,40 @@ class LlvmPortTest(unittest.TestCase):
                     self.assertEqual(hashlib.sha256(output.read_bytes()).hexdigest(),
                                      entry['sha256'])
 
+    def test_aarch64_corpus_objects_match_mac_llc(self):
+        corpus = ROOT / 'toolchain/rust-host/k4/corpus'
+        x86 = json.loads((corpus / 'expect.json').read_text())
+        manifest = json.loads((corpus / 'expect-aarch64.json').read_text())
+        self.assertEqual(manifest['producer'], x86['producer'])
+        self.assertEqual(manifest['program'], x86['program'])
+        x86_entries = {entry['input']: entry for entry in x86['objects']}
+        entries = manifest['objects']
+        self.assertEqual(len(entries), len(x86_entries))
+        self.assertEqual({entry['input'] for entry in entries}, set(x86_entries))
+        self.assertEqual({p.name for p in corpus.glob('*.ll')}, set(x86_entries))
+        llc = Path(os.environ.get(
+            'BREENIX_MAC_LLC',
+            Path.home() / 'Library/Caches/breenix-e25/k4/x86_64/native-llc/bin/llc'))
+        self.assertEqual(hashlib.sha256(llc.read_bytes()).hexdigest(),
+                         manifest['producer']['sha256'])
+        with tempfile.TemporaryDirectory(prefix='breenix-aarch64-llc-corpus-') as temp:
+            for entry in entries:
+                with self.subTest(input=entry['input']):
+                    expected_args = x86_entries[entry['input']]['arguments'].copy()
+                    index = expected_args.index('-mtriple=x86_64-unknown-elf')
+                    expected_args[index:index + 1] = [
+                        '-mtriple=aarch64-unknown-elf', '-mattr=+v8a,+strict-align']
+                    self.assertEqual(entry['arguments'], expected_args)
+                    output = Path(temp) / (entry['input'] + '.o')
+                    args = [str(corpus / entry['input']) if arg == '<input>' else
+                            str(output) if arg == '<output>' else arg
+                            for arg in entry['arguments']]
+                    subprocess.run([str(llc), *args], check=True, timeout=10)
+                    data = output.read_bytes()
+                    self.assertEqual(hashlib.sha256(data).hexdigest(), entry['sha256'])
+                    self.assertEqual(data[:6], b'\x7fELF\x02\x01')
+                    self.assertEqual(struct.unpack_from('<HH', data, 16), (1, 183))
+
     def test_llc_is_static_breenix_elf(self):
         from cxx_runtime import LLVM_BIN
 
