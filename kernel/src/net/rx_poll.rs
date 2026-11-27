@@ -1,34 +1,70 @@
-//! Receive polling for the ARM64 e1000 (VMware).
+//! The e1000's maintenance thread: receive polling on ARM64 (VMware), and the
+//! DHCP client on x86-64 where the e1000 is the interface and takes DHCP.
 //!
-//! VMware's ARM64 platform has no GICv2m frame, and Breenix drives neither a
-//! GICv3 ITS nor legacy INTx routing, so the e1000 there raises no interrupt;
-//! AHCI and xHCI poll on VMware for the same reason. Without one, a frame from
-//! outside the VM sat in the receive ring until an unrelated NetRx raise (a
-//! loopback send, say) drained it, and a DNS reply was read only after the
-//! resolver had given up. ke1000rxd checks the ring once per timer tick and
+//! ARM64: VMware's ARM64 platform has no GICv2m frame, and Breenix drives
+//! neither a GICv3 ITS nor legacy INTx routing, so the e1000 there raises no
+//! interrupt; AHCI and xHCI poll on VMware for the same reason. Without one, a
+//! frame from outside the VM sat in the receive ring until an unrelated NetRx
+//! raise (a loopback send, say) drained it, and a DNS reply was read only after
+//! the resolver had given up. ke1000rxd checks the ring once per timer tick and
 //! raises NetRx when a frame is waiting, so delivery takes the softirq path an
 //! interrupt-driven NIC takes.
+//!
+//! x86-64: the e1000 interrupts, by MSI or INTx, so its frames need no poller.
+//! Without fw_cfg the stack takes its address from DHCP (`net::uses_dhcp`),
+//! whose client runs from a thread: the BCM5720 runs it on its own worker,
+//! and for an e1000 ke1000dhcp calls `dhcp::maintain` every
+//! `DHCP_INTERVAL_MS`, which keeps the lease state machine's retry, renew and
+//! rebind deadlines.
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::drivers::e1000;
+use crate::task::kthread;
+#[cfg(target_arch = "aarch64")]
+use crate::task::scheduler;
+#[cfg(target_arch = "aarch64")]
 use crate::task::softirqd::{raise_softirq, SoftirqType};
-use crate::task::{kthread, scheduler};
 
 static RX_POLL_TID: AtomicU64 = AtomicU64::new(0);
 
-/// Start the poller when the e1000 is the interface (VMware); other ARM64
-/// network devices interrupt.
+/// How often the x86 worker gives the DHCP client a turn.
+#[cfg(target_arch = "x86_64")]
+const DHCP_INTERVAL_MS: u64 = 100;
+
+/// Start the thread when the e1000 is the interface: on ARM64 always (other
+/// ARM64 network devices interrupt); on x86-64 when it takes DHCP and no
+/// BCM5720, whose worker owns the one DHCP client, is attached.
 pub fn init_rx_poll() {
     if !super::active_tx_driver_is_e1000() || RX_POLL_TID.load(Ordering::Acquire) != 0 {
         return;
     }
-    match kthread::kthread_run(rx_poll_fn, "ke1000rxd") {
+    #[cfg(target_arch = "x86_64")]
+    let (worker, name): (fn(), &str) = {
+        if !super::uses_dhcp() || crate::drivers::bcm5720::is_initialized() {
+            return;
+        }
+        (dhcp_worker_fn, "ke1000dhcp")
+    };
+    #[cfg(target_arch = "aarch64")]
+    let (worker, name): (fn(), &str) = (rx_poll_fn, "ke1000rxd");
+    match kthread::kthread_run(worker, name) {
         Ok(handle) => RX_POLL_TID.store(handle.tid(), Ordering::Release),
-        Err(error) => crate::serial_println!("[net] failed to start ke1000rxd: {:?}", error),
+        Err(error) => crate::serial_println!("[net] failed to start {}: {:?}", name, error),
     }
 }
 
+#[cfg(target_arch = "x86_64")]
+fn dhcp_worker_fn() {
+    loop {
+        if let Some(mac) = super::get_mac_address() {
+            super::dhcp::maintain(mac, e1000::link_up());
+        }
+        crate::drivers::bcm5720::sleep_ms(DHCP_INTERVAL_MS);
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
 fn rx_poll_fn() {
     loop {
         if e1000::can_receive() {
@@ -43,6 +79,7 @@ fn rx_poll_fn() {
 
 /// Block on the timer for one tick: the block/yield/halt sequence of
 /// `sys_nanosleep` and the dispatch census thread's `sleep_one_interval`.
+#[cfg(target_arch = "aarch64")]
 fn sleep_one_tick() {
     use crate::task::thread::ThreadState;
 
