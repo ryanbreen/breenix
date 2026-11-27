@@ -105,7 +105,7 @@ pub const INT_RXDMT0: u32 = 1 << 4;
 pub const INT_RXO: u32 = 1 << 6;
 #[cfg(any(target_arch = "x86_64", test))]
 pub const INT_RXT0: u32 = 1 << 7;
-/// Every cause, for masking them through IMC: all 32 bits on the 8254x (SDM
+/// Each cause, for masking them through IMC: 32 of 32 bits on the 8254x (SDM
 /// 13.4.21); bits 24:0 on the 82574, whose bits 31:25 are written as 0b (DS
 /// 10.2.4.6).
 pub const INT_ALL_8254X: u32 = 0xFFFF_FFFF;
@@ -119,7 +119,7 @@ pub const RCTL_MPE: u32 = 1 << 4;
 pub const RCTL_LPE: u32 = 1 << 5;
 pub const RCTL_LBM_MASK: u32 = 0b11 << 6;
 pub const RCTL_RDMTS_MASK: u32 = 0b11 << 8;
-/// 82574 descriptor type; reserved (zero) on the 8254x.
+/// 82574 descriptor type; reserved (0b) on the 8254x.
 pub const RCTL_DTYP_MASK: u32 = 0b11 << 10;
 pub const RCTL_MO_MASK: u32 = 0b11 << 12;
 pub const RCTL_BAM: u32 = 1 << 15;

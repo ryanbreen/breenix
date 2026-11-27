@@ -7,7 +7,7 @@
 //! "DS" the 82574 datasheet. The bring-up is the order DS 4.6 gives, which the
 //! SDM's section 14 matches for the 82540EM:
 //!
-//! 1. mask every interrupt (DS 4.6.1); stop receive and transmit, on the
+//! 1. mask the interrupt causes (DS 4.6.1); stop receive and transmit, on the
 //!    82574 by draining bus-master requests (DS 10.2.2.1, 3.1.3.10);
 //! 2. global reset through CTRL.RST, waiting before the next access (SDM
 //!    13.4.1; DS 10.2.2.1), then mask interrupts again (DS 4.6.1) and, on the
@@ -92,7 +92,7 @@ impl Model {
         (ct << TCTL_CT_SHIFT) | (cold << TCTL_COLD_SHIFT)
     }
 
-    /// The IMC value that masks every cause (regs.rs: SDM 13.4.21; DS
+    /// The IMC value that masks each cause (regs.rs: SDM 13.4.21; DS
     /// 10.2.4.6).
     fn all_causes(self) -> u32 {
         match self {
@@ -101,7 +101,7 @@ impl Model {
         }
     }
 
-    /// Receive-address entries the driver owns: all 16 on the 8254x (SDM
+    /// Receive-address entries the driver owns: 16 of 16 on the 8254x (SDM
     /// 13.5.2); 0-14 on the 82574, whose entry 15 belongs to manageability
     /// firmware (DS 10.2.5.23).
     fn receive_addresses(self) -> u32 {
@@ -119,7 +119,7 @@ impl Model {
 #[cfg(any(target_arch = "x86_64", test))]
 pub const INTERRUPT_MASK: u32 = INT_RXT0 | INT_RXO | INT_RXDMT0 | INT_LSC;
 
-/// Register access and a delay, all the reset, configuration and interrupt
+/// Register access and a delay: what the reset, configuration and interrupt
 /// paths need.
 pub trait Registers {
     fn read(&mut self, offset: u32) -> u32;
@@ -279,7 +279,7 @@ pub fn link_up(regs: &mut impl Registers) -> bool {
 }
 
 /// Read and clear the pending interrupt causes. The 8254x clears ICR on read
-/// (SDM 13.4.17). The 82574 clears on read only in some states and always on
+/// (SDM 13.4.17). The 82574 clears on read only in some states and on each
 /// a write of 1b (DS 10.2.4.1), so the causes read are written back.
 pub fn acknowledge_interrupt(regs: &mut impl Registers, model: Model) -> u32 {
     let causes = regs.read(ICR);
@@ -315,7 +315,7 @@ pub struct Nic {
 }
 
 impl Nic {
-    /// Reset and configure the function, with every interrupt masked. Call
+    /// Reset and configure the function, with its interrupt causes masked. Call
     /// [`enable_interrupts`] afterwards to take interrupts.
     pub fn bring_up(hw: &mut impl Rings, model: Model) -> Result<Self, InitError> {
         reset(hw, model)?;
@@ -356,7 +356,7 @@ impl Nic {
     /// Copy the next good frame into `out` and return its length. Frames the
     /// device marked in error, and frames that spanned more than one buffer,
     /// are dropped (SDM 3.2.3.1: only the EOP descriptor carries status and
-    /// errors). Every descriptor examined goes back to the device.
+    /// errors). Each descriptor examined goes back to the device.
     pub fn receive(&mut self, hw: &mut impl Rings, out: &mut [u8]) -> Result<usize, RxError> {
         for _ in 0..RX_RING {
             let index = self.rx_next;
@@ -386,7 +386,7 @@ impl Nic {
 
     /// Re-arm descriptor `index` and hand it back. RDT names one past the last
     /// descriptor the device may fill (SDM 3.2.6), so writing the index just
-    /// consumed gives the device every descriptor up to the one before it.
+    /// consumed gives the device the descriptors up to the one before it.
     fn return_rx_descriptor(&mut self, hw: &mut impl Rings, index: usize) {
         let fresh = RxDescriptor {
             buffer: hw.rx_buffer_address(index),
@@ -425,7 +425,7 @@ impl Nic {
         Ok(())
     }
 
-    /// Advance past every descriptor the device has finished.
+    /// Advance past the descriptors the device has finished.
     fn reclaim_transmitted(&mut self, hw: &mut impl Rings) {
         while self.tx_clean != self.tx_tail {
             let descriptor = TxDescriptor::from_words(hw.tx_descriptor(self.tx_clean));
@@ -518,7 +518,7 @@ fn configure_general(regs: &mut impl Registers, model: Model) {
         Model::Pcie82574 => ctrl = (ctrl & !CTRL_ASDE) | CTRL_BIT3,
     }
     regs.write(CTRL, ctrl);
-    // No flow control: these are written with zero (SDM 14.3; DS 4.6.2).
+    // No flow control: these are written as 0 (SDM 14.3; DS 4.6.2).
     for offset in [FCAL, FCAH, FCT, FCTTV] {
         regs.write(offset, 0);
     }
@@ -603,7 +603,7 @@ fn address_from_registers(low: u32, high: u32) -> [u8; 6] {
     [low[0], low[1], low[2], low[3], high[0], high[1]]
 }
 
-/// A unicast address that is not all zeros.
+/// A unicast address other than 00:00:00:00:00:00.
 fn is_station_address(mac: [u8; 6]) -> bool {
     mac != [0; 6] && mac[0] & 1 == 0
 }
@@ -625,8 +625,8 @@ fn program_receive_addresses(regs: &mut impl Registers, model: Model, mac: [u8; 
     }
 }
 
-/// Step 5. Every descriptor gets its buffer; head 0 and tail at the last
-/// descriptor hand all but one to the device (SDM 14.4). Then RCTL: broadcast
+/// Step 5. Each descriptor gets its buffer; head 0 and tail at the last
+/// descriptor hand RX_RING - 1 of them to the device (SDM 14.4). Then RCTL: broadcast
 /// accepted, CRC stripped, 2048-byte buffers, legacy descriptors, no loopback,
 /// promiscuity, long packets or VLAN filter, and the receiver enabled last.
 fn initialize_receive(hw: &mut impl Rings) {

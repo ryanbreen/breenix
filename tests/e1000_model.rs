@@ -11,7 +11,7 @@
 //! semaphore with a hardware owner; both EERD layouts; ICR clear-on-read and
 //! write-1-to-clear, with the 82574's INT_ASSERTED and its read-side rules;
 //! the receive-address entries a reset clears and the one the 82574 reserves
-//! for manageability; and descriptor-ring DMA. Every rule a "must" in the
+//! for manageability; and descriptor-ring DMA. Each rule a "must" in the
 //! manuals states is a recorded violation when the driver breaks it.
 
 #[path = "../kernel/src/drivers/e1000/regs.rs"]
@@ -127,7 +127,7 @@ fn tx_words(words: [u64; 2]) -> (u64, u16, u8, u8) {
 struct Device {
     model: Model,
     registers: HashMap<u32, u32>,
-    /// Every register write, in order: (offset, value).
+    /// Each register write, in order: (offset, value).
     log: Vec<(u32, u32)>,
     now_ns: u64,
     reset_at: Option<u64>,
@@ -135,10 +135,10 @@ struct Device {
     auto_read_at: Option<u64>,
     /// Whether the 82574's auto-read loads RAL0/RAH0 from the NVM.
     loads_address: bool,
-    /// Until when hardware owns the NVM semaphore; `u64::MAX` for always.
+    /// Until when hardware owns the NVM semaphore; `u64::MAX` for the whole run.
     hardware_owns_nvm_until: u64,
-    /// An 82574 whose master requests never drain, or whose NVM auto-read
-    /// never finishes.
+    /// An 82574 whose master requests stay pending, or whose NVM auto-read
+    /// does not finish.
     master_stuck: bool,
     auto_read_stuck: bool,
     nvm: [u16; 3],
@@ -204,7 +204,7 @@ impl Device {
     }
 
     /// Power-on values (SDM 13.4.1, 13.4.33; DS 10.2.2.1, 10.2.6.1). A reset
-    /// clears the receive-address valid bits it covers (SDM 14.7: every
+    /// clears the receive-address valid bits it covers (SDM 14.7: each
     /// entry; DS 10.2.5.23: entries 0-14, not 15) but no other address bits.
     fn power_on(&mut self) {
         let addresses: Vec<(u32, u32)> = (0..16)
@@ -343,7 +343,7 @@ impl Device {
         pieces.iter().enumerate().all(|(index, piece)| self.fill(piece, index + 1 == count, errors))
     }
 
-    /// The transmit DMA engine (SDM 3.3): every descriptor from TDH to TDT,
+    /// The transmit DMA engine (SDM 3.3): each descriptor from TDH to TDT,
     /// writing DD back for those with RS.
     fn run_transmit(&mut self) {
         if self.transmit_paused || self.reg(TCTL) & TCTL_EN == 0 {
@@ -396,13 +396,13 @@ impl Registers for Device {
             ICR => {
                 let icr = self.reg(ICR);
                 match self.model {
-                    // SDM 13.4.17: all bits clear on read.
+                    // SDM 13.4.17: reading clears the register.
                     Model::Pci8254x => {
                         self.set(ICR, 0);
                         icr
                     }
                     // DS 10.2.4.1: INT_ASSERTED reads set while an unmasked
-                    // cause is pending. Reading clears only with every cause
+                    // cause is pending. Reading clears only with each cause
                     // masked; otherwise it has no side effect (auto-mask is
                     // off: CTRL_EXT.IAME is 0 after reset).
                     Model::Pcie82574 => {
@@ -678,7 +678,7 @@ fn station_address_comes_through_the_nvm_and_its_semaphore() {
     assert!(reads[2].0 < released, "released after the reads");
     assert_eq!(device.reg(EXTCNF_CTRL) & EXTCNF_SW, 0, "released");
 
-    // Hardware never lets go: the fallback fails without touching EERD.
+    // Hardware keeps the semaphore: the fallback fails without touching EERD.
     let mut held = Device::new(Model::Pcie82574, false);
     held.hardware_owns_nvm_until = u64::MAX;
     let refused = Nic::bring_up(&mut held, Model::Pcie82574).err();
@@ -695,7 +695,7 @@ fn station_address_comes_through_the_nvm_and_its_semaphore() {
 
 #[test]
 fn bring_up_refuses_an_82574_that_does_not_quiesce_or_load_its_nvm() {
-    // Master requests never drain: no reset while they may be in flight (DS
+    // Master requests stay pending: no reset while they may be in flight (DS
     // 10.2.2.1), and the master disable stays set, blocking new requests.
     let mut stuck = Device::new(Model::Pcie82574, true);
     stuck.master_stuck = true;
@@ -707,8 +707,8 @@ fn bring_up_refuses_an_82574_that_does_not_quiesce_or_load_its_nvm() {
     assert_eq!(stuck.reg(IMS), 0, "interrupts masked");
     assert!(stuck.violations.is_empty(), "{:?}", stuck.violations);
 
-    // The NVM auto-read never finishes: a late load could rewrite CTRL after
-    // configuration (DS 4.2, 10.2.2.1), so nothing is configured.
+    // The NVM auto-read does not finish: a late load could rewrite CTRL after
+    // configuration (DS 4.2, 10.2.2.1), so configuration is skipped.
     let mut unloaded = Device::new(Model::Pcie82574, true);
     unloaded.auto_read_stuck = true;
     let refused = Nic::bring_up(&mut unloaded, Model::Pcie82574).err();

@@ -16,10 +16,10 @@
 //! Interrupts: on x86-64 the function interrupts by MSI where it can, or on
 //! IRQ 10/11 (`drivers::init`). Its causes stay masked until the driver state
 //! is published. `handle_interrupt` acknowledges ICR through the register
-//! window, without a lock, and raises NetRx. On ARM64 every cause stays masked
+//! window, without a lock, and raises NetRx. On ARM64 the causes stay masked
 //! and `net::rx_poll` polls `can_receive` once per tick.
 //!
-//! Memory, none of it on the kernel heap:
+//! Memory, taken from outside the kernel heap:
 //! - The descriptor rings share one page. The device writes descriptors back
 //!   next to ones the CPU writes, four to a 64-byte line, so on ARM64 they
 //!   live in the kernel's non-cacheable `.dma` section (the linker script and
@@ -31,7 +31,7 @@
 //!   whole number of cache lines and belongs to one descriptor, so on ARM64
 //!   the CPU cleans one after writing it and invalidates one before reading
 //!   it (DC CIVAC by the CTR_EL0 line size).
-//! All of it stays with the device for the kernel's lifetime.
+//! The memory stays with the device for the kernel's lifetime.
 
 mod nic;
 mod regs;
@@ -60,7 +60,7 @@ const TX_RING_OFFSET: usize = nic::RX_RING * nic::DESCRIPTOR_BYTES;
 const _: () = assert!(TX_RING_OFFSET + nic::TX_RING * nic::DESCRIPTOR_BYTES <= PAGE);
 
 /// Counter rate assumed while x86's TSC rate is not yet known: above any TSC,
-/// so a delay is never shorter than asked.
+/// so a delay is not shorter than asked.
 #[cfg(target_arch = "x86_64")]
 const UNCALIBRATED_COUNTER_HZ: u64 = 10_000_000_000;
 
@@ -89,7 +89,7 @@ struct Window {
 
 impl Registers for Window {
     fn read(&mut self, offset: u32) -> u32 {
-        // SAFETY: `base` maps the function's whole BAR0 and every offset in
+        // SAFETY: `base` maps the function's BAR0 and each offset in
         // regs.rs lies inside it.
         unsafe { core::ptr::read_volatile((self.base + offset as usize) as *const u32) }
     }
@@ -461,7 +461,7 @@ pub fn init() -> Result<(), &'static str> {
     REGISTER_BASE.store(base, Ordering::Release);
     INITIALIZED.store(true, Ordering::Release);
     // Only now can a cause reach a consumer: an interrupt before this point
-    // would be acknowledged by `handle_interrupt` with nothing to drain it.
+    // would be acknowledged by `handle_interrupt` and no consumer to drain it.
     #[cfg(target_arch = "x86_64")]
     nic::enable_interrupts(&mut Window { base });
     Ok(())
