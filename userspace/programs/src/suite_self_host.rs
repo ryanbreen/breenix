@@ -1,4 +1,4 @@
-//! E25 25.8 builds and checks the Rust toolchain on the x86-64 fixture.
+//! E25 25.8 builds and checks the Rust toolchain on the guest fixture.
 #[path = "suite_support/d1.rs"]
 mod d1;
 #[path = "suite_support/self_host_behave.rs"]
@@ -11,7 +11,7 @@ use breenix_suite::suite::{
 };
 use libbreenix::crypto::{rand::getrandom_bytes, sha256};
 use libbreenix::fs as sysfs;
-use self_host_chain::{snapshot, verify, verify_noop, Digests, Snapshot, PROFILE, TOOLS};
+use self_host_chain::{snapshot, verify, verify_noop, Digests, Snapshot, TOOLS};
 use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -25,10 +25,23 @@ const SOURCE: &str = "/src";
 const FIXTURE: &str = "/usr/libexec/breenix/rustc";
 const LINKER: &str = "/opt/breenix-dev/25.2/bin/ld";
 const MARKER: &str = "/src/breenix-self-host";
+#[cfg(target_arch = "x86_64")]
+const PROFILE: &str = "x86_64-breenix/selfhost";
+#[cfg(target_arch = "aarch64")]
+const PROFILE: &str = "aarch64-breenix/selfhost";
+#[cfg(target_arch = "x86_64")]
+const TARGET: &str = "x86_64-breenix";
+#[cfg(target_arch = "aarch64")]
+const TARGET: &str = "aarch64-breenix";
+#[cfg(target_arch = "x86_64")]
 const MAC_REFERENCE: &str = include_str!("../../../toolchain/rust-host/selfhost/x86_64-mac.json");
+#[cfg(target_arch = "aarch64")]
+const MAC_REFERENCE: &str = include_str!("../../../toolchain/rust-host/selfhost/aarch64-mac.json");
 const MAC_MATCH: &str = "tools-equal-mac.sha256.json";
 const BUILDS: [(&str, u64); 7] = [
-    // Ruling 133(2) gives the D1 wall times. Round 1.5x up to milliseconds.
+    // Ruling 133(2) gives the x86 D1 wall times, rounded up at 1.5x.
+    // K7 offline-path-workspace took 8,358 ms on ARM versus 12,068 ms on
+    // x86 (ledger line 959), so ARM was not slower for this workload.
     ("bobj", 17_235),
     ("bas", 34_158),
     ("bld", 60_002),
@@ -81,9 +94,6 @@ fn prepare_scratch(completed: usize, _: usize, _: &str) {
 }
 
 fn mount_fixture() -> Result<PathBuf, String> {
-    if !cfg!(target_arch = "x86_64") {
-        return Err("The self-host fixture targets x86-64".into());
-    }
     if std::env::args_os().any(|arg| arg == "--case") {
         return Err("The self-host chain requires an explicit full-suite run".into());
     }
@@ -169,7 +179,7 @@ fn cargo(run: &Path, package: &str) -> Command {
         Path::new(LINKER),
         run,
         package,
-        "x86_64-breenix",
+        TARGET,
     )
 }
 
@@ -351,7 +361,7 @@ fn check_cargo_noop(run: &Path) -> CaseResult {
     let cargo_output =
         fs::read_to_string(log).map_err(|error| format!("read Cargo log: {error}"))?;
     check_fresh(&cargo_output)?;
-    verify_noop(&before, &artifact_snapshot(run)?).map_err(Into::into)
+    verify_noop(&before, &artifact_snapshot(run)?, PROFILE).map_err(Into::into)
 }
 
 fn main() {

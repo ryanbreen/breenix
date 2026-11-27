@@ -25,6 +25,7 @@ fn noop_exempts_only_aarch64_tool_dep_info() {
         verify_noop(
             &BTreeMap::from([(path.to_owned(), original.clone())]),
             &BTreeMap::from([(path.to_owned(), touched.clone())]),
+            "aarch64-breenix/selfhost",
         )
     };
     check("aarch64-breenix/selfhost/libbcc.d").unwrap();
@@ -81,7 +82,7 @@ fn noop_rejects_mtime_changes_outside_top_level_tool_dep_info() {
     };
     let before = BTreeMap::from([(DEP_INFO.to_owned(), original.clone())]);
     let after = BTreeMap::from([(DEP_INFO.to_owned(), touched.clone())]);
-    verify_noop(&before, &after).unwrap();
+    verify_noop(&before, &after, "x86_64-breenix/selfhost").unwrap();
 
     for path in [
         "x86_64-breenix/selfhost/libbcc.rlib",
@@ -95,7 +96,7 @@ fn noop_rejects_mtime_changes_outside_top_level_tool_dep_info() {
         let mut after = after.clone();
         before.insert(path.to_owned(), original.clone());
         after.insert(path.to_owned(), touched.clone());
-        assert!(verify_noop(&before, &after).unwrap_err().contains(path));
+        assert!(verify_noop(&before, &after, "x86_64-breenix/selfhost").unwrap_err().contains(path));
     }
 }
 
@@ -110,7 +111,7 @@ fn noop_rejects_changed_contents_in_exempt_dep_info() {
     let after = self_host_chain::snapshot(&target).unwrap();
     fs::remove_dir_all(&target).unwrap();
 
-    assert!(self_host_chain::verify_noop(&before, &after)
+    assert!(self_host_chain::verify_noop(&before, &after, "x86_64-breenix/selfhost")
         .unwrap_err()
         .contains(DEP_INFO));
 }
