@@ -25,6 +25,7 @@ class RemoteSeries(unittest.TestCase):
             cases=None, count=1,
         )
         self.workloads = []
+        self.workload_args = []
 
     def ssh(self, command, **kwargs):
         self.assertEqual(command[0], "/usr/bin/ssh")
@@ -36,6 +37,7 @@ class RemoteSeries(unittest.TestCase):
         if words[0] == "/bin/env":
             sample, workload = words[5:7]
             self.workloads.append(workload)
+            self.workload_args.append(words[6:])
             record = {"sample": sample, "error": None}
             return subprocess.CompletedProcess(command, 0, stdout=json.dumps(record).encode())
         return subprocess.CompletedProcess(command, 0, stdout=b"")
@@ -56,6 +58,13 @@ class RemoteSeries(unittest.TestCase):
             self.args.cases = "sequential,small-files,walk,fsync"
             self.assertEqual(runner.main(self.args), 0)
             self.assertEqual(self.workloads, ["sequential", "small-files", "walk", "fsync"])
+
+    def test_malloc_series_dispatches_one_and_four_workers(self):
+        self.args.cases = "malloc-1t,malloc-4t"
+        with patch.object(runner.subprocess, "run", side_effect=self.ssh), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(runner.main(self.args), 0)
+        self.assertEqual(self.workload_args, [["malloc-free", "1"], ["malloc-free", "4"]])
 
     def test_network_resolves_alias_before_running_workloads(self):
         self.args.host = "bench-box"
