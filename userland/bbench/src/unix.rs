@@ -1,5 +1,5 @@
 //! POSIX operations shared by the guest and the native reference probe.
-use std::ffi::{c_void, CString};
+use std::ffi::{c_char, c_void, CString};
 use std::fs::File;
 use std::io;
 use std::os::fd::AsRawFd;
@@ -9,7 +9,7 @@ use std::ptr::{self, NonNull};
 
 extern "C" {
     fn fork() -> i32;
-    fn execv(path: *const i8, argv: *const *const i8) -> i32;
+    fn execv(path: *const c_char, argv: *const *const c_char) -> i32;
     fn _exit(status: i32) -> !;
     fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
     fn getpagesize() -> i32;
