@@ -15,9 +15,9 @@ BREENIX_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$BREENIX_ROOT/docker/qemu/lib/qemu-host-lock.sh"
 
 case "${1:-}" in
-    fetch-linux) exec python3 "$BREENIX_ROOT/userland/bbench/rig.py" "$@" ;;
+    fetch-linux|ratios) exec python3 "$BREENIX_ROOT/userland/bbench/rig.py" "$@" ;;
     run|provision-linux) ;;
-    *) echo "usage: $0 run --run ID [...] | provision-linux | fetch-linux" >&2; exit 2 ;;
+    *) echo "usage: $0 run --run ID [...] | provision-linux | fetch-linux | ratios LINUX BREENIX" >&2; exit 2 ;;
 esac
 
 host_slot_acquire mac-boot

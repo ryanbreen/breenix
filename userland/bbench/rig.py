@@ -765,6 +765,37 @@ def parse_tcp_counters(system, text):
             "TCPTimeouts": int(tables.get("TcpExt", {}).get("TCPTimeouts", -1))}
 
 
+def ratios(linux, breenix):
+    """Per-row Breenix/Linux ratio, chosen so that above 1 means Breenix is slower
+    (DEV-28(1)). None unless both systems measured the row."""
+    reference = {row["id"]: row for row in linux["rows"]}
+    for row in breenix["rows"]:
+        other = reference.get(row["id"])
+        ratio = None
+        if other and row["median"] and other["median"]:
+            ratio = (row["median"] / other["median"] if row["better"] == "lower"
+                     else other["median"] / row["median"])
+        yield {"id": row["id"], "title": row["title"], "unit": row["unit"],
+               "breenix": row, "linux": other, "ratio": ratio}
+
+
+def ratio_table(linux_path, breenix_path):
+    linux, breenix = (json.loads(Path(path).read_text()) for path in (linux_path, breenix_path))
+
+    def cell(row):
+        if row is None or row["median"] is None:
+            return f"{row['state']}: {row['reason']}" if row else "—"
+        return (f"{row['median']:.4g} [{row['min']:.4g}, {row['max']:.4g}] "
+                f"{row['completed']}/{row['attempts']}")
+
+    lines = ["| Row | Unit | Linux | Breenix | Breenix/Linux |", "| --- | --- | --- | --- | ---: |"]
+    for entry in ratios(linux, breenix):
+        ratio = f"{entry['ratio']:.2f}" if entry["ratio"] is not None else "—"
+        lines.append(f"| {entry['title']} (`{entry['id']}`) | {entry['unit']} | "
+                     f"{cell(entry['linux'])} | {cell(entry['breenix'])} | {ratio} |")
+    return "\n".join(lines)
+
+
 def check_breenix_inputs():
     missing = [path for path in (BREENIX_KERNEL, BREENIX_IMAGE, BREENIX_RELEASE / "bbench",
                                  BREENIX_RELEASE / "bbench-exit", BREENIX_O3 / "bbench",
@@ -783,6 +814,9 @@ def cli(argv):
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("fetch-linux")
     commands.add_parser("provision-linux")
+    table = commands.add_parser("ratios", help="Markdown table of a run's two series")
+    table.add_argument("linux", type=Path)
+    table.add_argument("breenix", type=Path)
     run = commands.add_parser("run")
     run.add_argument("--run", required=True, help="run ID (letters, digits, hyphens)")
     run.add_argument("--count", type=int, default=RUNS, choices=range(1, RUNS + 1))
@@ -792,6 +826,9 @@ def cli(argv):
     args = parser.parse_args(argv)
     if args.command == "fetch-linux":
         fetch_linux()
+        return 0
+    if args.command == "ratios":
+        print(ratio_table(args.linux, args.breenix))
         return 0
     if args.command == "provision-linux":
         provision_linux()
