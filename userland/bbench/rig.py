@@ -480,7 +480,8 @@ class Rig:
                                               for name in ("bbench", "bbench-exit", "bbench-o3"))])
         else:
             self.sync_source(guest)
-            cargo = f"cd {home}/src/userland && {LINUX_TOOLCHAIN}/cargo build -q --offline --frozen -p bbench"
+            cargo = (f"cd {home}/src/userland && PATH={LINUX_TOOLCHAIN}:/usr/bin:/bin "
+                     f"{LINUX_TOOLCHAIN}/cargo build -q --offline --frozen -p bbench")
             guest.ssh(f"{cargo} --profile release --target-dir {home}/bbench/target", timeout=1800)
             guest.ssh(f"{cargo} --profile bench-o3 --target-dir {home}/bbench/target", timeout=1800)
             guest.ssh(f"cp {home}/bbench/target/release/bbench {home}/bbench/target/release/bbench-exit "
