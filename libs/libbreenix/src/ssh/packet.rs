@@ -29,11 +29,21 @@ const RELAY_HIGH_WATER: usize = 64 * 1024;
 /// Room offered to each receive: enough for two full 32 KiB channel packets.
 const RECEIVE_ROOM: usize = 64 * 1024 + 512;
 
+/// Packets that one set of keys may protect in one direction. The sequence
+/// number is 32 bits (RFC 4253 section 6.4) and is chacha20-poly1305's
+/// nonce, so the 2^32nd packet under the same keys would reuse number 0's
+/// keystream and Poly1305 key. The connection ends there unless new keys
+/// were installed (RFC 4344 section 3.1 asks for a rekey before then).
+const PACKETS_PER_KEY: u64 = 1 << 32;
+
 /// Packet framing and protection for both directions of one connection.
 pub struct Framer {
     rng: Csprng,
     seq_send: u32,
     seq_recv: u32,
+    /// Packets protected by the current keys, in each direction.
+    sent_under_keys: u64,
+    received_under_keys: u64,
     cipher_send: Option<SshCipher>,
     cipher_recv: Option<SshCipher>,
     /// Received bytes are `rx[rx_start..rx_end]`; the rest is free room.
@@ -50,6 +60,8 @@ impl Framer {
             rng,
             seq_send: 0,
             seq_recv: 0,
+            sent_under_keys: 0,
+            received_under_keys: 0,
             cipher_send: None,
             cipher_recv: None,
             rx: Vec::new(),
@@ -61,10 +73,12 @@ impl Framer {
 
     pub fn set_cipher_send(&mut self, cipher: SshCipher) {
         self.cipher_send = Some(cipher);
+        self.sent_under_keys = 0;
     }
 
     pub fn set_cipher_recv(&mut self, cipher: SshCipher) {
         self.cipher_recv = Some(cipher);
+        self.received_under_keys = 0;
     }
 
     /// Test support: behave as if `packets` more packets had passed each
@@ -73,6 +87,8 @@ impl Framer {
     pub fn advance_sequence_numbers(&mut self, packets: u32) {
         self.seq_send = self.seq_send.wrapping_add(packets);
         self.seq_recv = self.seq_recv.wrapping_add(packets);
+        self.sent_under_keys += u64::from(packets);
+        self.received_under_keys += u64::from(packets);
     }
 
     /// Strict KEX: both sequence numbers restart at 0 once NEWKEYS has
@@ -84,6 +100,9 @@ impl Framer {
 
     /// Append one complete wire packet for `payload` to `out`.
     pub fn seal(&mut self, payload: &[u8], out: &mut Vec<u8>) -> Result<(), Error> {
+        if self.cipher_send.is_some() && self.sent_under_keys >= PACKETS_PER_KEY {
+            return Err(Error::Os(Errno::EBADMSG));
+        }
         let (block, aad, tag_len) = match &self.cipher_send {
             Some(cipher) => (cipher.block_size(), cipher.length_is_aad(), cipher.tag_len()),
             None => (8, false, 0),
@@ -114,6 +133,7 @@ impl Framer {
             }
         }
         self.seq_send = self.seq_send.wrapping_add(1);
+        self.sent_under_keys += 1;
         Ok(())
     }
 
@@ -150,6 +170,9 @@ impl Framer {
     /// Returns the bytes the whole packet needs, header included.
     fn next_packet_size(&mut self) -> Result<Option<usize>, Error> {
         if self.rx_length.is_none() {
+            if self.cipher_recv.is_some() && self.received_under_keys >= PACKETS_PER_KEY {
+                return Err(Error::Os(Errno::EBADMSG));
+            }
             let head = self.cipher_recv.as_ref().map_or(4, SshCipher::length_bytes);
             if self.rx_end - self.rx_start < head {
                 return Ok(None);
@@ -201,6 +224,7 @@ impl Framer {
         let payload = packet[5..4 + length - padding].to_vec();
         self.rx_start += size;
         self.seq_recv = self.seq_recv.wrapping_add(1);
+        self.received_under_keys += 1;
         Ok(Some(payload))
     }
 }
