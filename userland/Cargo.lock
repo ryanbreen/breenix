@@ -3,6 +3,13 @@
 version = 4
 
 [[package]]
+name = "bbench"
+version = "0.1.0"
+dependencies = [
+ "bu-sys",
+]
+
+[[package]]
 name = "btest"
 version = "0.1.0"
 dependencies = [
