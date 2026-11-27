@@ -13,3 +13,9 @@ Ruling 100 limits its target list to X86 and AArch64 because the Mac SDK headers
 reject a Hexagon backend file; the box build retains the full target list. Both
 use the same pinned source. `BREENIX_MAC_LLC` can select the recorded executable
 at another path for the host check.
+
+`expect-aarch64.json` keeps the same inputs, Mac producer and `hello.ll` output
+contract. It replaces the x86 triple with `-mtriple=aarch64-unknown-elf` and
+adds `-mattr=+v8a,+strict-align` from `aarch64-breenix.json`, keeping the x86
+optimization and relocation settings. It records the SHA-256 and Mac compile
+time for each AArch64 ELF relocatable object.
