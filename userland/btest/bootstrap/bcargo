@@ -1,0 +1,37 @@
+#!/bin/sh
+# The installed bcargo can replace this launcher when the image carries it.
+# Resolve Cargo, rustc, bld, and the target from a single CURRENT snapshot.
+set -eu
+
+if [ "${1##*/}" = rustc ]; then
+    # Work around the installed loader's intermittent first RUNPATH open
+    # failure (#3208), as in the PR 3 measurements.
+    driver=
+    for candidate in "${1%/*}/../lib"/librustc_driver-*.so; do
+        [ -f "$candidate" ] && [ -z "$driver" ] || exit 1
+        driver=$candidate
+    done
+    /bin/head -c 4 "$driver" > /dev/null
+    exec "$@"
+fi
+
+source=$(pwd -P)
+cache="$HOME/.cache/btest"
+wrapper="$HOME/bin/bcargo"
+root=/opt/breenix/rust
+id=$(/bin/cat "$root/CURRENT")
+case "$id" in
+    ''|*[!a-zA-Z0-9_-]*) echo 'bcargo: invalid CURRENT' >&2; exit 2 ;;
+esac
+toolchain="$root/$id"
+/bin/mkdir -p "$cache/cargo-home/registry" "$cache/tmp" "$cache/target"
+flags=$(printf '%s\037' "--sysroot=$toolchain/sysroot" "-Clinker=$toolchain/bin/bld" \
+    "-Clink-arg=-T$toolchain/lib/linker.ld" "-Lnative=$toolchain/lib" \
+    -Clink-arg=--allow-multiple-definition -Cdefault-linker-libraries=no \
+    "--remap-path-prefix=${source%/*}=/breenix-src")
+exec /bin/env -i PATH=/bin HOME="$cache/cargo-home" CARGO_HOME="$cache/cargo-home" \
+    TMPDIR="$cache/tmp" CARGO_BUILD_JOBS=4 CARGO_TERM_COLOR=never \
+    RUSTC="$toolchain/bin/rustc" RUSTC_WRAPPER="$wrapper" RUST_TARGET_PATH="$toolchain/targets" \
+    CARGO_ENCODED_RUSTFLAGS="${flags}-Dwarnings" \
+    "$toolchain/bin/cargo" -Z unstable-options -C "$source" "$@" \
+    --target "$toolchain/targets/${id%%-*}-breenix.json"

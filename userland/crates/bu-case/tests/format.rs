@@ -1,14 +1,17 @@
-use bu_case::{Fixture, first_difference};
+use bu_case::{first_difference, Fixture};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
 #[test]
 fn materializes_bytes_mode_time_and_symlink() {
-    let fixture = Fixture::parse(r#"{"entries":[
+    let fixture = Fixture::parse(
+        r#"{"entries":[
         {"path":"dir/link","kind":"symlink","target":"file"},
         {"path":"dir","kind":"directory","mode":"0750"},
         {"path":"dir/file","kind":"file","hex":"00ff","repeat":2,"mode":"0640","mtime":12345}
-    ]}"#).unwrap();
+    ]}"#,
+    )
+    .unwrap();
     let root = std::env::temp_dir().join(format!("bu-case-format-{}", std::process::id()));
     fs::create_dir(&root).unwrap();
     fixture.materialize(&root).unwrap();
@@ -20,7 +23,15 @@ fn materializes_bytes_mode_time_and_symlink() {
 
     assert_eq!(contents, [0, 255, 0, 255]);
     assert_eq!(metadata.permissions().mode() & 0o777, 0o640);
-    assert_eq!(metadata.modified().unwrap().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(), 12345);
+    assert_eq!(
+        metadata
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+        12345
+    );
     assert_eq!(link, std::path::Path::new("file"));
 }
 
