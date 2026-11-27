@@ -13,6 +13,10 @@ struct Fixture {
     dest: Vec<u8>,
     temp: Option<Vec<u8>>,
     stdin: &'static [u8],
+    /// A file an SFTP upload left in the staging directory, and how much of
+    /// it has been read.
+    staged: Option<Vec<u8>>,
+    staged_read: usize,
     fault: Option<&'static str>,
     calls: Vec<&'static str>,
 }
@@ -23,8 +27,17 @@ impl Fixture {
             dest: OLD.to_vec(),
             temp: None,
             stdin,
+            staged: None,
+            staged_read: 0,
             fault,
             calls: Vec::new(),
+        }
+    }
+
+    fn staged(bytes: &[u8], fault: Option<&'static str>) -> Self {
+        Self {
+            staged: Some(bytes.to_vec()),
+            ..Self::new(b"", fault)
         }
     }
 
@@ -93,6 +106,27 @@ impl PublishIo for Fixture {
     fn unlink_temp(&mut self) -> io::Result<()> {
         self.step("unlink")?;
         assert!(self.temp.take().is_some());
+        Ok(())
+    }
+
+    fn open_staged(&mut self) -> io::Result<()> {
+        self.step("open staged file")?;
+        assert!(self.staged.is_some());
+        Ok(())
+    }
+
+    fn read_staged(&mut self, _: &mut (), buf: &mut [u8]) -> io::Result<usize> {
+        self.step("read staged file")?;
+        let staged = self.staged.as_ref().unwrap();
+        let n = buf.len().min(staged.len() - self.staged_read).min(2);
+        buf[..n].copy_from_slice(&staged[self.staged_read..self.staged_read + n]);
+        self.staged_read += n;
+        Ok(n)
+    }
+
+    fn rename_staged(&mut self) -> io::Result<()> {
+        self.step("rename staged file")?;
+        self.dest = self.staged.take().unwrap();
         Ok(())
     }
 }
@@ -176,4 +210,35 @@ fn empty_artifact_replaces_destination() {
     publish(&mut fs, 0, digest, 0o755).unwrap();
     assert!(fs.dest.is_empty());
     assert!(fs.temp.is_none());
+}
+
+#[test]
+fn adopting_a_staged_upload_publishes_it_without_writing_it_again() {
+    let mut fs = Fixture::staged(NEW, None);
+    adopt(&mut fs, 3, DIGEST, 0o755).unwrap();
+    assert_eq!(fs.dest, NEW);
+    assert!(fs.staged.is_none());
+    assert!(!fs.calls.contains(&"write"), "{:?}", fs.calls);
+    assert!(!fs.calls.contains(&"open temporary file"), "{:?}", fs.calls);
+    assert!(fs.calls.ends_with(&["chmod", "file fsync", "rename staged file", "directory sync"]));
+}
+
+#[test]
+fn a_staged_upload_that_does_not_verify_is_not_published() {
+    for (staged, reason) in [(&b"ab"[..], "short"), (&b"abcd"[..], "long"), (&b"xyz"[..], "SHA-256")] {
+        let mut fs = Fixture::staged(staged, None);
+        let error = adopt(&mut fs, 3, DIGEST, 0o755).unwrap_err();
+        assert_eq!(error.status, 1);
+        assert!(error.reason.contains(reason), "{error:?}");
+        assert_eq!(fs.dest, OLD);
+        // The staging directory's owner removes the file; bput leaves it.
+        assert_eq!(fs.staged.as_deref(), Some(staged));
+        assert!(!fs.calls.contains(&"rename staged file"));
+    }
+    for step in ["open directory", "open staged file", "read staged file", "chmod", "file fsync", "rename staged file"] {
+        let mut fs = Fixture::staged(NEW, Some(step));
+        let error = adopt(&mut fs, 3, DIGEST, 0o755).unwrap_err();
+        assert_eq!(error.status, 1, "{step}: {error:?}");
+        assert_eq!(fs.dest, OLD, "{step}");
+    }
 }

@@ -139,3 +139,7 @@ fn string(fields: &mut Vec<u8>, bytes: &[u8]) {
     fields.extend((bytes.len() as u32).to_be_bytes());
     fields.extend_from_slice(bytes);
 }
+
+#[cfg(test)]
+#[path = "sftp_model_tests.rs"]
+mod model_tests;
