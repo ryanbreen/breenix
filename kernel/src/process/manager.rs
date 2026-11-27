@@ -1636,6 +1636,7 @@ impl ProcessManager {
 
         let thread = Thread {
             id: thread_id,
+            wake: None,
             name: String::from(&process.name),
             state: crate::task::thread::ThreadState::Ready,
             context,
@@ -1733,6 +1734,7 @@ impl ProcessManager {
 
         let thread = Thread {
             id: thread_id,
+            wake: None,
             name: String::from(&process.name),
             state: crate::task::thread::ThreadState::Ready,
             context,
@@ -3899,6 +3901,7 @@ impl ProcessManager {
             // Create the child thread manually to use specific ID
             let mut child_thread = Thread {
                 id: child_thread_id,
+                wake: None,
                 name: child_name,
                 state: crate::task::thread::ThreadState::Ready,
                 #[cfg(target_arch = "aarch64")]
