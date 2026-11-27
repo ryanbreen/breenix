@@ -44,7 +44,7 @@ pub(super) enum Request<'a> {
     Rename(&'a [u8], &'a [u8]),
     Readlink(&'a [u8]),
     Symlink(&'a [u8], &'a [u8]),
-    Extended,
+    Unsupported,
 }
 
 #[derive(Clone, Copy)]
@@ -169,9 +169,11 @@ pub(super) fn decode(kind: u8, mut fields: &[u8]) -> Option<Request<'_>> {
         20 => Request::Symlink(fields.path()?, fields.path()?),
         200 => {
             fields.string()?;
-            return Some(Request::Extended); // Remaining fields depend on the extension.
+            return Some(Request::Unsupported); // Remaining fields depend on the extension.
         }
-        _ => return None,
+        // VERSION and the response packet types are invalid as client requests.
+        2 | 101..=105 | 201 => return None,
+        _ => return Some(Request::Unsupported),
     };
     fields.is_empty().then_some(request)
 }

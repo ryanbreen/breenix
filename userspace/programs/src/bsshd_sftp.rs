@@ -172,7 +172,7 @@ impl Session {
                 unix::symlink(OsStr::from_bytes(target), path(link))?;
                 Ok(Reply::Status(Status::Ok))
             }
-            Request::Extended => Ok(Reply::Status(Status::Unsupported)),
+            Request::Unsupported => Ok(Reply::Status(Status::Unsupported)),
         }
     }
 
@@ -233,11 +233,13 @@ fn fs_status(error: &io::Error) -> Status {
 }
 
 fn open(path: &Path, flags: u32, mut attrs: Attrs) -> io::Result<File> {
+    let append = flags & APPEND != 0;
+    let truncate = flags & TRUNCATE != 0;
     let mut options = OpenOptions::new();
     options
         .read(flags & READ != 0)
         .write(flags & WRITE != 0)
-        .append(flags & APPEND != 0);
+        .append(append);
     // A client opening a named pipe must not block the connection during open,
     // and opening a terminal must not acquire it as a controlling terminal.
     #[cfg(target_os = "breenix")]
@@ -257,9 +259,14 @@ fn open(path: &Path, flags: u32, mut attrs: Attrs) -> io::Result<File> {
             Err(error) => return Err(error),
         }
     }
-    let file = options.truncate(flags & TRUNCATE != 0).open(path)?;
+    let file = options.truncate(truncate && !append).open(path)?;
     if !file.metadata()?.is_file() {
         return Err(ErrorKind::InvalidInput.into());
+    }
+    // OpenOptions rejects append and truncate together. Truncate the opened
+    // inode before returning its handle and keep O_APPEND for later writes.
+    if append && truncate {
+        file.set_len(0)?;
     }
     Ok(file)
 }
