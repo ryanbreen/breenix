@@ -23,8 +23,8 @@ def function(source, name):
 class Regression(unittest.TestCase):
     def test_race(self):
         source = (ROOT / "kernel/src/drivers/ahci/mod.rs").read_text()
-        functions = "\n".join(function(source, name) for name in ("detect_completed_slots", "poll_ports", "trace_command_event", "trace_retirement"))
-        constants = "\n".join(re.findall(r"const PORT_IRQ_[\s\S]*?;", source))
+        functions = "\n".join(function(source, name) for name in ("slot0_can_retire", "poll_ports", "trace_command_event", "trace_retirement"))
+        constants = "\n".join(re.findall(r"const PORT_(?:IRQ|TFD)_[\s\S]*?;", source))
         harness = r'''
 
 use std::sync::{Mutex, MutexGuard, atomic::{AtomicU32, AtomicBool, Ordering}, mpsc};
@@ -33,6 +33,7 @@ const MAX_PORTS: usize = 1;
 const AHCI_TRACKED_SLOT_MASK:u32 = 1;
 const PORT_IS:u32 = 0;
 const PORT_CI:u32 = 1;
+const PORT_TFD:u32 = 2;
 struct Lock(Mutex<()>);
 impl Lock { fn try_lock(&self)->Option<MutexGuard<'_, ()>> { self.0.try_lock().ok() } }
 static PORT_POLL:[Lock;1] = [Lock(Mutex::new(()))];
@@ -60,13 +61,19 @@ fn complete(&self, cmd:u32) {
     PORT_ACTIVE_MASK[0].store(1,Ordering::Release);
 } }
 fn port_read(_:u32, _:usize, reg:u32)->u32 {
-    let value = if reg == PORT_IS { IS.load(Ordering::Acquire) } else { CI.load(Ordering::Acquire) };
+    let value = match reg {
+        PORT_IS => IS.load(Ordering::Acquire),
+        PORT_CI => CI.load(Ordering::Acquire),
+        PORT_TFD => 0x50,
+        _ => unreachable!(),
+    };
     if reg == PORT_CI && std::thread::current().name() == Some("delayed") && PAUSE.swap(false,Ordering::AcqRel) {
         SAMPLED.lock().unwrap().take().unwrap().send(()).unwrap();
         RELEASE.lock().unwrap().take().unwrap().recv_timeout(Duration::from_secs(5)).unwrap();
     }
     value
 }
+fn save_command_errors(_:usize, _:u32, _:u32) {}
 fn ack_port_interrupt(_:u32, _:usize, _:u32) { IS.store(0,Ordering::Release); }
 mod task { pub mod scheduler { pub fn yield_current() {} } }
 fn main() {

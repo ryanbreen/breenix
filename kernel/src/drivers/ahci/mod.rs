@@ -308,9 +308,19 @@ static AHCI_CMD_COUNT: AtomicU32 = AtomicU32::new(0);
 /// IRQs and pollers skip a busy port. The timeout holder handles that command.
 static PORT_POLL: [crate::irq_safe_mutex::IrqSafeMutex<()>; MAX_PORTS] =
     [const { crate::irq_safe_mutex::IrqSafeMutex::new(()) }; MAX_PORTS];
-/// Errors W1C-cleared while the slot was armed, for a waiter racing the ISR.
+/// Error evidence saved before the ISR or poller acknowledges PxIS. The
+/// completion token publishes this evidence to the waiter.
 static PORT_ACKED_ERRORS: [AlignedAtomicU32; MAX_PORTS] =
     [const { AlignedAtomicU32::new(0) }; MAX_PORTS];
+static PORT_ACKED_TFD: [AlignedAtomicU32; MAX_PORTS] =
+    [const { AlignedAtomicU32::new(0) }; MAX_PORTS];
+
+const PORT_READY: u8 = 0;
+const PORT_STOPPING: u8 = 1;
+const PORT_RESET_REQUIRED: u8 = 2;
+const PORT_OFFLINE: u8 = 3;
+static PORT_RECOVERY: [AtomicU8; MAX_PORTS] =
+    [const { AtomicU8::new(PORT_READY) }; MAX_PORTS];
 
 /// Per-port token for the command currently issued in slot 0. 0 = none.
 static PORT_ACTIVE_CMD_NUM: [AlignedAtomicU32; MAX_PORTS] =
@@ -443,6 +453,17 @@ fn begin_port_io(
         let owner = PORT_IO_OWNER[port].load(Ordering::Acquire);
         if owner == 0 {
             PORT_IO_OWNER[port].store(io_tid().unwrap_or(OWNER_WITHOUT_TID), Ordering::Release);
+            if PORT_RECOVERY[port].load(Ordering::Acquire) == PORT_READY {
+                return Ok(guard);
+            }
+            // Keep logical ownership without holding a lock during recovery.
+            drop(guard);
+            let result = ensure_port_ready(AHCI_ABAR.load(Ordering::Relaxed), port);
+            let guard = PORT_IO_LOCK[port].lock();
+            if let Err(error) = result {
+                end_port_io(port, guard);
+                return Err((AhciReadError::Setup(error), 0));
+            }
             return Ok(guard);
         }
         drop(guard);
@@ -627,7 +648,7 @@ const PORT_TFD_DF: u32 = 1 << 5; // Device fault
 const PORT_TFD_DRQ: u32 = 1 << 3; // Data Request
 const PORT_TFD_ERR: u32 = 1; // Task file error
 
-/// PORT_IS interrupt status bits (from Linux libahci.h)
+/// PxIS interrupt status bits (AHCI 1.3.1, section 3.3.5)
 const PORT_IRQ_D2H_REG_FIS: u32 = 1 << 0; // D2H Register FIS received (command complete)
 const PORT_IRQ_PIO_FIS: u32 = 1 << 1; // PIO Setup FIS received
 const PORT_IRQ_DMA_FIS: u32 = 1 << 2; // DMA Setup FIS received
@@ -656,16 +677,15 @@ const PORT_IRQ_ERROR: u32 = PORT_IRQ_FREEZE
     | PORT_IRQ_IF_NONFATAL
     | PORT_IRQ_OVERFLOW;
 
-/// Completion mask: any of these PORT_IS bits signals a command finished.
-/// D2H Register FIS = normal completion; PIO FIS = PIO command completion.
+/// FIS interrupts that identify a candidate for command retirement. PxCI
+/// determines whether a non-queued command has actually completed.
 const PORT_IRQ_COMPLETE: u32 = PORT_IRQ_D2H_REG_FIS | PORT_IRQ_PIO_FIS | PORT_IRQ_SDB_FIS;
+const PORT_IRQ_ENABLE: u32 = PORT_IRQ_COMPLETE | PORT_IRQ_ERROR;
 
 /// SATA Status (SSTS) - device detection
 const SSTS_DET_MASK: u32 = 0x0F;
 /// PxSCTL.DET: 1 performs interface initialization (COMRESET), 0 ends it (AHCI 1.3.1, 3.3.11).
-#[cfg(target_arch = "x86_64")]
 const SCTL_DET_MASK: u32 = 0x0F;
-#[cfg(target_arch = "x86_64")]
 const SCTL_DET_COMRESET: u32 = 0x01;
 const SSTS_DET_PRESENT: u32 = 0x03; // Device detected, Phy communication established
 
@@ -928,9 +948,12 @@ fn port_write(abar: u64, port: usize, offset: usize, value: u32) {
 #[inline]
 fn ack_port_interrupt(abar: u64, port: usize, port_is: u32) {
     if port_is != 0 {
-        let errors = port_is & PORT_IRQ_ERROR;
-        if errors != 0 && PORT_ACTIVE_MASK[port].load(Ordering::Acquire) & 1 != 0 {
-            PORT_ACKED_ERRORS[port].fetch_or(errors, Ordering::Relaxed);
+        // PxIS.PCS, PRCS and UFS are cleared through their PxSERR sources.
+        let serr = ((port_is & PORT_IRQ_CONNECT != 0) as u32) << 26
+            | ((port_is & PORT_IRQ_UNK_FIS != 0) as u32) << 25
+            | ((port_is & PORT_IRQ_PHYRDY != 0) as u32) << 16;
+        if serr != 0 {
+            port_write(abar, port, PORT_SERR, serr);
         }
         port_write(abar, port, PORT_IS, port_is);
     }
@@ -948,6 +971,144 @@ fn ack_port_interrupt(abar: u64, port: usize, port_is: u32) {
     }
 }
 
+/// Preserve the interrupt status and the device's task-file error before W1C.
+fn save_command_errors(port: usize, port_is: u32, tfd: u32) {
+    PORT_ACKED_ERRORS[port].fetch_or(port_is & PORT_IRQ_ERROR, Ordering::Relaxed);
+    if tfd & (PORT_TFD_ERR | PORT_TFD_DF) != 0 {
+        PORT_ACKED_TFD[port].store(tfd, Ordering::Relaxed);
+    }
+}
+
+fn command_receipt(abar: u64, port: usize) -> CommandReceipt {
+    let ci = port_read(abar, port, PORT_CI);
+    let saved_tfd = PORT_ACKED_TFD[port].load(Ordering::Relaxed);
+    CommandReceipt {
+        port_is: PORT_ACKED_ERRORS[port].load(Ordering::Relaxed) | port_read(abar, port, PORT_IS),
+        tfd: if saved_tfd != 0 { saved_tfd } else { port_read(abar, port, PORT_TFD) },
+        ci,
+    }
+}
+
+struct CommandReceipt {
+    port_is: u32,
+    tfd: u32,
+    ci: u32,
+}
+
+impl CommandReceipt {
+    fn validate(&self) -> Result<(), &'static str> {
+        if self.port_is & PORT_IRQ_ERROR != 0 || self.tfd & (PORT_TFD_ERR | PORT_TFD_DF) != 0 {
+            return Err("AHCI: command error status");
+        }
+        if self.ci & 1 != 0 || self.tfd & (PORT_TFD_BSY | PORT_TFD_DRQ) != 0 {
+            return Err("AHCI: command still active");
+        }
+        Ok(())
+    }
+}
+
+/// PxCI also clears when ST is turned off. CR must be clear before that
+/// change is evidence that the command engine has stopped touching DMA memory.
+fn port_quiescent(abar: u64, port: usize) -> bool {
+    port_read(abar, port, PORT_CMD) & (PORT_CMD_ST | PORT_CMD_CR) == 0
+        && port_read(abar, port, PORT_CI) == 0
+        && port_read(abar, port, PORT_SACT) == 0
+}
+
+fn link_ready(abar: u64, port: usize) -> bool {
+    port_read(abar, port, PORT_SSTS) & SSTS_DET_MASK == SSTS_DET_PRESENT
+        && port_read(abar, port, PORT_TFD) & (PORT_TFD_BSY | PORT_TFD_DRQ) == 0
+}
+
+fn wait_for_recovery(ticks: u64, ready: impl Fn() -> bool) -> bool {
+    let start = read_cntpct();
+    loop {
+        if ready() {
+            return true;
+        }
+        if read_cntpct().wrapping_sub(start) >= ticks {
+            return false;
+        }
+        core::hint::spin_loop();
+    }
+}
+
+/// AHCI 1.3.1 sections 6.2.2.1 and 10.4.2. Called with logical port ownership
+/// and no locks. In masked contexts only an immediate restart is permitted.
+/// If a wait or COMRESET is needed, the next unmasked owner can finish it.
+#[cold]
+fn ensure_port_ready(abar: u64, port: usize) -> Result<(), &'static str> {
+    let state = PORT_RECOVERY[port].load(Ordering::Acquire);
+    if state == PORT_READY {
+        return Ok(());
+    }
+    if state == PORT_OFFLINE {
+        return Err("AHCI: port offline after failed recovery");
+    }
+    let ready = || port_quiescent(abar, port) && link_ready(abar, port);
+    let needs_reset = state == PORT_RESET_REQUIRED;
+    if !crate::arch_interrupts_enabled() {
+        if needs_reset || !ready() {
+            return Err("AHCI: port recovery pending");
+        }
+    } else if needs_reset || !ready() {
+        let (_, freq) = read_cntpct_and_freq();
+        // Allow 500 ms for the HBA to stop before attempting a port reset.
+        let stopped = wait_for_recovery(freq.div_ceil(2), || port_quiescent(abar, port));
+        if port_read(abar, port, PORT_CMD) & PORT_CMD_ST != 0 {
+            PORT_RECOVERY[port].store(PORT_OFFLINE, Ordering::Release);
+            return Err("AHCI: port did not clear ST");
+        }
+        if needs_reset || !stopped || !link_ready(abar, port) {
+            let control = port_read(abar, port, PORT_SCTL) & !SCTL_DET_MASK;
+            let serr = port_read(abar, port, PORT_SERR);
+            port_write(abar, port, PORT_SERR, serr);
+            port_write(abar, port, PORT_SCTL, control | SCTL_DET_COMRESET);
+            let _ = port_read(abar, port, PORT_SCTL);
+            wait_for_recovery(freq.div_ceil(1000), || false);
+            port_write(abar, port, PORT_SCTL, control);
+            if !wait_for_recovery(freq.saturating_mul(AHCI_TIMEOUT_SECS), ready) {
+                PORT_RECOVERY[port].store(PORT_OFFLINE, Ordering::Release);
+                return Err("AHCI: port did not quiesce or link did not return");
+            }
+        }
+    }
+
+    let _status_guard = PORT_POLL[port].lock();
+    // This is the last check before restarting. FRE remains enabled throughout
+    // recovery; the controller retains the same received-FIS area.
+    if !ready() {
+        PORT_RECOVERY[port].store(PORT_OFFLINE, Ordering::Release);
+        return Err("AHCI: port lost quiescence before restart");
+    }
+    let serr = port_read(abar, port, PORT_SERR);
+    port_write(abar, port, PORT_SERR, serr);
+    ack_port_interrupt(abar, port, port_read(abar, port, PORT_IS));
+    let cmd = port_read(abar, port, PORT_CMD);
+    port_write(abar, port, PORT_CMD, cmd | PORT_CMD_ST);
+    PORT_RECOVERY[port].store(PORT_READY, Ordering::Release);
+    drop(_status_guard);
+    port_write(abar, port, PORT_IE, PORT_IRQ_ENABLE);
+    Ok(())
+}
+
+#[cold]
+fn recover_failed_command(abar: u64, port: usize, force_reset: bool) {
+    {
+        let _status_guard = PORT_POLL[port].lock();
+        PORT_RECOVERY[port].store(
+            if force_reset { PORT_RESET_REQUIRED } else { PORT_STOPPING },
+            Ordering::Release,
+        );
+        PORT_ACTIVE_MASK[port].store(0, Ordering::Release);
+        PORT_ACTIVE_CMD_NUM[port].store(0, Ordering::Release);
+        port_write(abar, port, PORT_IE, 0);
+        let cmd = port_read(abar, port, PORT_CMD);
+        port_write(abar, port, PORT_CMD, cmd & !PORT_CMD_ST);
+    }
+    let _ = ensure_port_ready(abar, port);
+}
+
 // =============================================================================
 // Command Token + Wait
 // =============================================================================
@@ -957,6 +1118,8 @@ fn ack_port_interrupt(abar: u64, port: usize, port_is: u32) {
 struct CmdToken {
     port: usize,
     cmd_num: u32,
+    dma_index: usize,
+    expected_bytes: u32,
     has_irq: bool,
     scheduler_running: bool,
     /// No completion interrupt: this CPU's completion poller completes the
@@ -991,24 +1154,26 @@ fn resolve_wait_timeout(abar: u64, port: usize, cmd_num: u32) -> Result<(), &'st
         };
         let completion = &AHCI_COMPLETIONS[port][0];
         let done = completion.done.load(Ordering::Acquire) == cmd_num;
-        let armed = PORT_ACTIVE_CMD_NUM[port].load(Ordering::Acquire) == cmd_num
-            && PORT_ACTIVE_MASK[port].load(Ordering::Acquire) & 1 != 0;
+        let armed = PORT_ACTIVE_MASK[port].load(Ordering::Acquire) & 1 != 0;
         let recovered = (armed || done)
             && regs.ci & 1 == 0
             && (regs.port_is | regs.acked_errors) & PORT_IRQ_ERROR == 0
             && regs.tfd & (PORT_TFD_BSY | PORT_TFD_DF | PORT_TFD_DRQ | PORT_TFD_ERR) == 0
+            && PORT_ACKED_TFD[port].load(Ordering::Relaxed) == 0
             && port_read(abar, port, PORT_CMD) & PORT_CMD_ST != 0;
 
         if armed {
             // The ISR can have skipped this port while we held the lock.
             PORT_ACTIVE_MASK[port].fetch_and(!1, Ordering::AcqRel);
-            PORT_ACTIVE_CMD_NUM[port].store(0, Ordering::Release);
             if recovered {
                 ack_port_interrupt(abar, port, regs.port_is);
                 // Read behind the posted W1Cs before permitting slot reuse.
                 let _ = hba_read(abar, HBA_IS);
-                completion.complete(cmd_num);
+                if PORT_ACTIVE_CMD_NUM[port].load(Ordering::Relaxed) == cmd_num {
+                    completion.complete(cmd_num);
+                }
             }
+            PORT_ACTIVE_CMD_NUM[port].store(0, Ordering::Release);
         }
         (regs, recovered)
     };
@@ -1072,16 +1237,25 @@ fn scheduler_sleep_ready(has_irq: bool) -> bool {
 ///   The ISR calls `complete()` → `unblock_for_io()` to wake us.
 ///   This is the path that eliminates SCHED_RESCUE and lockup reports.
 ///
-/// PORT_CI POLLING (scheduler not running — early boot):
-///   Polls PORT_CI directly until the command clears.  Completions are NOT
-///   armed, so the ISR (which still fires on SPI34) sees cmd_num==0 and
-///   takes the fast path without calling complete() or isr_unblock_for_io.
-///   This matches Linux's AHCI driver which masks device-level interrupts
-///   during polling mode.
+/// Early boot polls PxCI directly and does not arm a scheduler wake.
 fn wait_cmd_slot0(token: CmdToken) -> Result<(), &'static str> {
-    #[cfg(target_arch = "x86_64")]
+    let abar = AHCI_ABAR.load(Ordering::Relaxed);
     let port = token.port;
-    wait_cmd_slot0_inner(token)?;
+    if let Err(error) = wait_cmd_slot0_inner(&token) {
+        recover_failed_command(abar, port, true);
+        return Err(error);
+    }
+    let receipt = command_receipt(abar, port);
+    if let Err(error) = receipt.validate() {
+        recover_failed_command(abar, port, receipt.ci & 1 != 0 && receipt.port_is & PORT_IRQ_ERROR == 0);
+        return Err(error);
+    }
+    if read_prdbc(token.dma_index)? != token.expected_bytes {
+        // PxCI already proves that DMA is over. Report the bad transfer
+        // without touching the bounce buffer or issuing a retry.
+        return Err("AHCI: unexpected transfer byte count");
+    }
+
     #[cfg(target_arch = "x86_64")]
     PORT_IO_COMPLETED[port].fetch_add(1, Ordering::Relaxed);
     Ok(())
@@ -1111,7 +1285,7 @@ pub(crate) fn report_watchdog_port(port: usize) {
     );
 }
 
-fn wait_cmd_slot0_inner(token: CmdToken) -> Result<(), &'static str> {
+fn wait_cmd_slot0_inner(token: &CmdToken) -> Result<(), &'static str> {
     let abar = AHCI_ABAR.load(Ordering::Relaxed);
     let port = token.port;
     let cmd_num = token.cmd_num;
@@ -1131,26 +1305,9 @@ fn wait_cmd_slot0_inner(token: CmdToken) -> Result<(), &'static str> {
         let wait_result =
             AHCI_COMPLETIONS[port][0].wait_timeout_uninterruptible_observed(cmd_num, TIMEOUT_NS, |stage| trace_wait_event(port, cmd_num, stage));
         match wait_result {
-            Ok(true) => {
-                let tfd = port_read(abar, port, PORT_TFD);
-                if (tfd & 1) != 0 {
-                    return Err("AHCI: task file error");
-                }
-                return Ok(());
-            }
-            Ok(false) => {
-                return resolve_wait_timeout(abar, port, cmd_num);
-            }
-            Err(_eintr) => {
-                if token.polled {
-                    let _poll_guard = PORT_POLL[port].lock();
-                    PORT_ACTIVE_MASK[port].fetch_and(!1, Ordering::AcqRel);
-                    let _ = PORT_ACTIVE_CMD_NUM[port].compare_exchange(
-                        cmd_num, 0, Ordering::AcqRel, Ordering::Acquire,
-                    );
-                }
-                return Err("AHCI: command wait failed");
-            }
+            Ok(true) => return Ok(()),
+            Ok(false) => return resolve_wait_timeout(abar, port, cmd_num),
+            Err(_) => return Err("AHCI: command wait failed"),
         }
     } else {
         if token.has_irq {
@@ -1162,42 +1319,26 @@ fn wait_cmd_slot0_inner(token: CmdToken) -> Result<(), &'static str> {
             }
         }
         AHCI_POLLED_COMPLETION_COUNT.fetch_add(1, Ordering::Relaxed);
-        // ============================================================
-        // PORT_CI POLLING PATH (scheduler not running, or no interrupt and
-        // no completion poller on this CPU yet)
-        //
-        // Completions are NOT armed (setup_cmd_slot0 skips arming when
-        // !scheduler_running). The ISR still fires but sees cmd_num==0
-        // and returns without calling complete() or setting NEED_RESCHED.
-        // We poll PORT_CI directly for completion.
-        // ============================================================
         let (start, freq) = read_cntpct_and_freq();
         let deadline = start + freq * AHCI_TIMEOUT_SECS;
-        // P12-Site-2 allowlist: AHCI analog of P18 early-boot fallback.
-        // Used before completion registration, including x86 IDENTIFY after scheduler init.
-        // Cap: AHCI_TIMEOUT_SECS counter deadline (CNTPCT/TSC); see polling allowlist.
+        // P12-Site-2: existing bounded early-boot polling. Take the status
+        // lock only to retire the slot and acknowledge the sampled event.
         loop {
             let ci = port_read(abar, port, PORT_CI);
-            if (ci & 1) == 0 {
-                let is = port_read(abar, port, PORT_IS);
+            let is = port_read(abar, port, PORT_IS);
+            if ci & 1 == 0 || is & PORT_IRQ_ERROR != 0
+                || PORT_ACTIVE_MASK[port].load(Ordering::Acquire) & 1 == 0
+            {
+                let _status_guard = PORT_POLL[port].lock();
                 let tfd = port_read(abar, port, PORT_TFD);
+                save_command_errors(port, is, tfd);
                 ack_port_interrupt(abar, port, is);
-                if (is & PORT_IRQ_ERROR) != 0 || (tfd & 1) != 0 {
-                    return Err("AHCI: task file error");
-                }
+                PORT_ACTIVE_MASK[port].store(0, Ordering::Release);
                 return Ok(());
             }
 
-            let is = port_read(abar, port, PORT_IS);
-            if (is & PORT_IRQ_ERROR) != 0 {
-                ack_port_interrupt(abar, port, is);
-                return Err("AHCI: task file error");
-            }
-
-            let now = read_cntpct();
-            if now >= deadline {
-                dump_timeout_state_free(port, cmd_num, None);
-                return Err("AHCI: command timeout");
+            if read_cntpct() >= deadline {
+                return resolve_wait_timeout(abar, port, cmd_num);
             }
 
             #[cfg(target_arch = "aarch64")]
@@ -1282,19 +1423,21 @@ fn poll_ports() -> bool {
         if active & 1 == 0 {
             continue;
         }
-        let is = port_read(abar, port, PORT_IS);
         let ci = port_read(abar, port, PORT_CI);
-        if detect_completed_slots(active, ci, is) & 1 == 0 {
+        let is = port_read(abar, port, PORT_IS);
+        let tfd = port_read(abar, port, PORT_TFD);
+        if !slot0_can_retire(ci, is, tfd) {
             active_left = true;
             continue;
         }
+        save_command_errors(port, is, tfd);
         ack_port_interrupt(abar, port, is);
         if PORT_ACTIVE_MASK[port].fetch_and(!1, Ordering::AcqRel) & 1 != 0 {
             let cmd_num = PORT_ACTIVE_CMD_NUM[port].swap(0, Ordering::AcqRel);
             if cmd_num != 0 {
                 trace_retirement(port, cmd_num, 0, active, ci, is, false);
                 AHCI_COMPLETIONS[port][0].complete(cmd_num);
-                trace_command_event(port, cmd_num, 0, EventKind::ReceiptRecorded, ci, is, 0, 0);
+                trace_command_event(port, cmd_num, 0, EventKind::ReceiptRecorded, ci, is, tfd, 0);
                 completed_any = true;
             }
         }
@@ -1677,12 +1820,7 @@ impl AhciController {
         port_write(abar, port_num, PORT_IS, 0xFFFF_FFFF);
         port_write(abar, port_num, PORT_SERR, 0xFFFF_FFFF);
 
-        // Enable port interrupt sources.
-        // Linux uses AHCI_DEF_PORT_IRQ which covers D2H, PIO FIS, DMA FIS,
-        // SDB FIS, and all error bits.  We enable the same set so the HBA
-        // will fire an MSI when any of these events occur.
-        let port_ie = PORT_IRQ_COMPLETE | PORT_IRQ_ERROR;
-        port_write(abar, port_num, PORT_IE, port_ie);
+        port_write(abar, port_num, PORT_IE, PORT_IRQ_ENABLE);
 
         // Start command engine
         self.start_cmd(port_num);
@@ -1802,34 +1940,16 @@ impl AhciController {
     /// Prepare slot 0 and write PORT_CI = 1; return a token for the caller
     /// to pass to `wait_cmd_slot0` after releasing any locks.
     ///
-    /// Does NOT wait.  The caller must call `wait_cmd_slot0(port, token)`
+    /// Does NOT wait.  The caller must call `wait_cmd_slot0(token)`
     /// with NO LOCKS HELD to block until the command completes or times out.
     ///
     /// # Preconditions
     /// DMA structures must be fully set up and cache-cleaned before calling.
-    fn setup_cmd_slot0(&self, port: usize) -> Result<CmdToken, &'static str> {
+    fn setup_cmd_slot0(
+        &self, port: usize, dma_index: usize, expected_bytes: u32,
+    ) -> Result<CmdToken, &'static str> {
         let abar = self.abar_virt;
-
-        // --- Error recovery: clear ERR:Fatal state ---
-        {
-            let is = port_read(abar, port, PORT_IS);
-            let tfd = port_read(abar, port, PORT_TFD);
-            if (is & PORT_IRQ_TF_ERR) != 0 || (tfd & 1) != 0 {
-                self.stop_cmd(port);
-                port_write(abar, port, PORT_SERR, 0xFFFF_FFFF);
-                ack_port_interrupt(abar, port, 0xFFFF_FFFF);
-                self.start_cmd(port);
-                self.wait_ready(port)?;
-            }
-        }
-
-        // --- Clear stale interrupt status ---
-        let stale_is = port_read(abar, port, PORT_IS);
-        ack_port_interrupt(abar, port, stale_is);
-
-        // --- Verify command engine ---
-        let cmd = port_read(abar, port, PORT_CMD);
-        if (cmd & PORT_CMD_ST) == 0 {
+        if port_read(abar, port, PORT_CMD) & PORT_CMD_ST == 0 {
             return Err("AHCI: command engine not running");
         }
 
@@ -1838,36 +1958,31 @@ impl AhciController {
 
         let scheduler_running = scheduler_sleep_ready(has_irq);
 
-        // --- Arm completion tracking ONLY for scheduler-sleep mode ---
-        //
-        // During polling (scheduler not running), we do NOT arm
-        // PORT_ACTIVE_CMD_NUM. The ISR still fires (hardware raises SPI34
-        // on command completion), but sees cmd_num==0, so it skips
-        // complete() and isr_unblock_for_io(). This prevents the
-        // check_need_resched storm (1184 context-switch attempts during
-        // boot) that kills CPU 0's timer delivery on Parallels/HVF.
-        //
-        // The polling path uses PORT_CI polling directly and does not
-        // need ISR-driven completion.  This matches Linux's AHCI driver,
-        // which masks device-level interrupts during polling mode.
-        // Without an interrupt, this CPU's completion poller completes the command
-        // once it runs, and the waiter parks as it would for the interrupt.
         let polled = !has_irq && port < MAX_PORTS && poller_on_this_cpu() && scheduler_sleep_ready(true);
-        let arm_completion = (has_irq && scheduler_running) || polled;
         let scheduler_running = scheduler_running || polled;
-        let poll_guard = polled.then(|| PORT_POLL[port].lock());
-        if arm_completion {
-            AHCI_COMPLETIONS[port][0].reset();
-            PORT_ACTIVE_CMD_NUM[port].store(0, Ordering::Release);
-            PORT_ACKED_ERRORS[port].store(0, Ordering::Relaxed);
+
+        // Suppress device interrupts until the status lock is released. A
+        // completion during publication is latched in PxIS and raises the
+        // IRQ when PxIE is restored (AHCI 1.3.1, section 10.7.2).
+        if has_irq {
+            port_write(abar, port, PORT_IE, 0);
         }
+        let status_guard = PORT_POLL[port].lock();
+        let stale_is = port_read(abar, port, PORT_IS);
+        ack_port_interrupt(abar, port, stale_is);
+        AHCI_COMPLETIONS[port][0].reset();
+        PORT_ACKED_ERRORS[port].store(0, Ordering::Relaxed);
+        PORT_ACKED_TFD[port].store(0, Ordering::Relaxed);
         let cmd_num = next_cmd_num();
-        if arm_completion {
+        PORT_ACTIVE_CMD_NUM[port].store(0, Ordering::Relaxed);
+        if scheduler_running {
             AHCI_LAST_ARMED_PORT.store(port as u32, Ordering::Relaxed);
             AHCI_LAST_ARMED_CMD.store(cmd_num, Ordering::Relaxed);
             PORT_ACTIVE_CMD_NUM[port].store(cmd_num, Ordering::Release);
-            PORT_ACTIVE_MASK[port].fetch_or(1, Ordering::Release);
         }
+        // Track early polling too, so an ISR that acknowledges PxIS can
+        // still save errors. A zero command token suppresses the wake.
+        PORT_ACTIVE_MASK[port].store(1, Ordering::Release);
 
         trace_command_event(port, cmd_num, 0, EventKind::Issue,
             port_read(abar, port, PORT_CI), port_read(abar, port, PORT_IS),
@@ -1890,10 +2005,15 @@ impl AhciController {
         trace_command_event(port, cmd_num, 0, EventKind::Issued,
             port_read(abar, port, PORT_CI), port_read(abar, port, PORT_IS),
             port_read(abar, port, PORT_TFD), 0);
-        drop(poll_guard);
+        drop(status_guard);
+        if has_irq {
+            port_write(abar, port, PORT_IE, PORT_IRQ_ENABLE);
+        }
         Ok(CmdToken {
             port,
             cmd_num,
+            dma_index,
+            expected_bytes,
             has_irq,
             scheduler_running,
             polled,
@@ -1902,12 +2022,12 @@ impl AhciController {
 
     /// Issue a command on slot 0 and wait for completion (combined path).
     ///
-    /// Used by early-boot callers (identify_device, probe_platform_irq) where
+    /// Used by early-boot IDENTIFY where
     /// no lock must be released before waiting.  Hot I/O callers (read_block,
     /// write_block, flush) use setup_cmd_slot0 + wait_cmd_slot0 instead so
     /// the AHCI lock is NOT held during the wait.
-    fn issue_cmd_slot0(&self, port: usize) -> Result<(), &'static str> {
-        let token = self.setup_cmd_slot0(port)?;
+    fn issue_cmd_slot0(&self, port: usize, dma_index: usize, expected_bytes: u32) -> Result<(), &'static str> {
+        let token = self.setup_cmd_slot0(port, dma_index, expected_bytes)?;
         wait_cmd_slot0(token)
     }
 
@@ -2402,6 +2522,7 @@ impl AhciController {
     fn identify_device(&self, port: usize, dma_index: usize) -> Result<(u64, bool, bool), &'static str> {
         self.wait_ready(port)?;
 
+        ensure_port_ready(self.abar_virt, port)?;
         let mut dma_lock = PORT_DMA.lock();
         let dma = dma_lock[dma_index].as_mut().ok_or("AHCI: no DMA memory")?;
 
@@ -2441,7 +2562,7 @@ impl AhciController {
         drop(dma_lock);
 
         // Issue the command
-        self.issue_cmd_slot0(port)?;
+        self.issue_cmd_slot0(port, dma_index, SECTOR_SIZE as u32)?;
 
         // Order completion before consuming device-written data.
         #[cfg(target_arch = "x86_64")]
@@ -2550,7 +2671,8 @@ impl AhciController {
             dma_cache_clean(dma_ptr, core::mem::size_of::<PortDmaMem>());
         } // DMA lock released
 
-        let token = self.setup_cmd_slot0(port).map_err(AhciReadError::Issue)?;
+        let token = self.setup_cmd_slot0(port, dma_index, byte_count as u32)
+            .map_err(AhciReadError::Issue)?;
         Ok((token, byte_count))
     }
 
@@ -2612,7 +2734,7 @@ impl AhciController {
             dma_cache_clean(dma_ptr, core::mem::size_of::<PortDmaMem>());
         } // DMA lock released
 
-        self.setup_cmd_slot0(port)
+        self.setup_cmd_slot0(port, dma_index, buffer.len() as u32)
     }
 
     /// Set up a FLUSH CACHE EXT command and issue PORT_CI.
@@ -2645,8 +2767,27 @@ impl AhciController {
             dma_cache_clean(dma_ptr, core::mem::size_of::<PortDmaMem>());
         } // DMA lock released
 
-        self.setup_cmd_slot0(port)
+        self.setup_cmd_slot0(port, dma_index, 0)
     }
+}
+
+/// The HBA writes PRDBC before dropping PxCI for a non-queued command
+/// (AHCI 1.3.1, section 5.4.1). Order the register read before the DMA read.
+fn read_prdbc(dma_index: usize) -> Result<u32, &'static str> {
+    #[cfg(target_arch = "x86_64")]
+    core::sync::atomic::fence(Ordering::SeqCst);
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+    }
+
+    let dma_lock = PORT_DMA.lock();
+    let dma = dma_lock[dma_index].as_ref().ok_or("AHCI: no DMA command header")?;
+    let prdbc = &raw const dma.cmd_list[0].prdbc;
+    // Although CmdHeader is packed, PRDBC is a dword at offset 4 in the
+    // page-aligned PortDmaMem command list.
+    dma_cache_invalidate(prdbc.cast(), core::mem::size_of::<u32>());
+    Ok(unsafe { core::ptr::read_volatile(prdbc) })
 }
 
 /// Copy read data from the DMA buffer to the caller's buffer, with cache
@@ -2819,6 +2960,10 @@ fn probe_platform_irq(ctrl: &AhciController) {
         dma_index
     );
 
+    if ensure_port_ready(abar, port_num).is_err() {
+        return;
+    }
+
     // Ensure the port is clean before probing.
     ack_port_interrupt(abar, port_num, 0xFFFF_FFFF);
 
@@ -2904,7 +3049,7 @@ fn probe_platform_irq(ctrl: &AhciController) {
             ci,
             tfd
         );
-        ack_port_interrupt(abar, port_num, 0xFFFF_FFFF);
+        recover_failed_command(abar, port_num, true);
         return;
     }
 
@@ -2923,8 +3068,14 @@ fn probe_platform_irq(ctrl: &AhciController) {
         port_is
     );
 
+    let receipt = command_receipt(abar, port_num);
+    if receipt.validate().is_err() || read_prdbc(dma_index) != Ok(SECTOR_SIZE as u32) {
+        recover_failed_command(abar, port_num, false);
+        return;
+    }
+
     // NOW clear PORT_IS to de-assert the interrupt line.
-    ack_port_interrupt(abar, port_num, 0xFFFF_FFFF);
+    ack_port_interrupt(abar, port_num, port_is);
 
     // Diff: find SPIs that are newly pending.
     let known_spis: &[u32] = &[33, 53, 54, 55]; // UART, GPU, NET, XHCI
@@ -2992,6 +3143,13 @@ fn probe_platform_irq(ctrl: &AhciController) {
 /// This function must be lock-free and allocation-free (called from IRQ context).
 const AHCI_CI_COMPLETION_LOOP_LIMIT: u32 = 8;
 const AHCI_TRACKED_SLOT_MASK: u32 = (1u32 << AHCI_MAX_CONCURRENT) - 1;
+
+#[inline]
+fn slot0_can_retire(ci: u32, port_is: u32, tfd: u32) -> bool {
+    ci & 1 == 0
+        || port_is & PORT_IRQ_ERROR != 0
+        || (port_is & PORT_IRQ_COMPLETE != 0 && tfd & (PORT_TFD_ERR | PORT_TFD_DF) != 0)
+}
 
 #[inline]
 fn detect_completed_slots(active: u32, ci_after: u32, port_is: u32) -> u32 {
@@ -3134,6 +3292,7 @@ pub fn handle_interrupt() {
         }
 
         let mut loop_iterations = 0u32;
+        let mut observed_is = 0;
         // Slot 0 is the only issued slot today. Defer the wake until after
         // PORT_IS has been acknowledged and the CI drain loop is stable, so the
         // woken thread cannot issue the next command while this interrupt line
@@ -3148,15 +3307,26 @@ pub fn handle_interrupt() {
         loop {
             loop_iterations += 1;
 
-            let sampled_is = is;
+            let ci = port_read(abar, port, PORT_CI);
+            let sampled_is = is | port_read(abar, port, PORT_IS);
+            observed_is |= sampled_is;
+            let tfd = port_read(abar, port, PORT_TFD);
+            let active_mask =
+                PORT_ACTIVE_MASK[port].load(Ordering::Acquire) & AHCI_TRACKED_SLOT_MASK;
+            if (active_mask & 1 != 0 || pending_cmd_num != 0)
+                && (ci & 1 == 0 || sampled_is & PORT_IRQ_ENABLE != 0)
+            {
+                save_command_errors(port, sampled_is, tfd);
+            }
             if sampled_is != 0 {
                 ack_port_interrupt(abar, port, sampled_is);
             }
 
-            let ci = port_read(abar, port, PORT_CI);
-            let active_mask =
-                PORT_ACTIVE_MASK[port].load(Ordering::Acquire) & AHCI_TRACKED_SLOT_MASK;
-            let completed_slots = detect_completed_slots(active_mask, ci, sampled_is);
+            let completed_slots = if slot0_can_retire(ci, observed_is, tfd) {
+                detect_completed_slots(active_mask, ci, observed_is)
+            } else {
+                0
+            };
 
             let mut remaining = completed_slots;
             while remaining != 0 {
@@ -3182,7 +3352,7 @@ pub fn handle_interrupt() {
                     if cmd_num != 0 {
                         pending_cmd_num = cmd_num;
                         pending_waiter_tid = AHCI_COMPLETIONS[port][slot].waiter_tid();
-                        trace_command_event(port, cmd_num, slot as u8, EventKind::ReceiptDeferred, ci, sampled_is, 0, hba_is);
+                        trace_command_event(port, cmd_num, slot as u8, EventKind::ReceiptDeferred, ci, sampled_is, tfd, hba_is);
                     }
                 }
             }

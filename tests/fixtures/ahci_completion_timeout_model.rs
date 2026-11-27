@@ -2,7 +2,7 @@
 #![allow(dead_code)]
 
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 const MAX_PORTS: usize = 2;
@@ -97,6 +97,8 @@ static PORT_IO_COMPLETED: [AtomicU64; MAX_PORTS] = [const { AtomicU64::new(0) };
 static PORT_ACTIVE_MASK: [AtomicU32; MAX_PORTS] = atomics();
 static PORT_ACTIVE_CMD_NUM: [AtomicU32; MAX_PORTS] = atomics();
 static PORT_ACKED_ERRORS: [AtomicU32; MAX_PORTS] = atomics();
+static PORT_ACKED_TFD: [AtomicU32; MAX_PORTS] = atomics();
+static PORT_RECOVERY: [AtomicU8; MAX_PORTS] = [const { AtomicU8::new(PORT_READY) }; MAX_PORTS];
 static PORT_POLL: [Lock; MAX_PORTS] = [const { Lock(Mutex::new(())) }; MAX_PORTS];
 static PORT_IO_LOCK: [Lock; MAX_PORTS] = [const { Lock(Mutex::new(())) }; MAX_PORTS];
 static LOST_NOTIFICATIONS: [Notice; MAX_PORTS] = [const { Notice }; MAX_PORTS];
@@ -161,6 +163,8 @@ impl Completion {
 struct CmdToken {
     port: usize,
     cmd_num: u32,
+    dma_index: usize,
+    expected_bytes: u32,
     has_irq: bool,
     scheduler_running: bool,
     polled: bool,
@@ -185,7 +189,10 @@ fn read_cntpct() -> u64 {
     })
 }
 fn read_cntpct_and_freq() -> (u64, u64) { (read_cntpct(), 1000) }
-fn interrupts_enabled() -> bool { MODEL.with_borrow(|device| device.interrupts_enabled) }
+fn arch_interrupts_enabled() -> bool { MODEL.with_borrow(|device| device.interrupts_enabled) }
+fn read_prdbc(_: usize) -> Result<u32, &'static str> {
+    Ok(MODEL.with_borrow(|device| device.prdbc))
+}
 fn hba_read(_: u64, register: usize) -> u32 {
     assert_eq!(register, HBA_IS);
     MODEL.with_borrow_mut(|device| {
@@ -268,6 +275,8 @@ fn reset() {
         PORT_ACTIVE_CMD_NUM[port].store(0, Ordering::Relaxed);
         PORT_ACTIVE_MASK[port].store(0, Ordering::Relaxed);
         PORT_ACKED_ERRORS[port].store(0, Ordering::Relaxed);
+        PORT_ACKED_TFD[port].store(0, Ordering::Relaxed);
+        PORT_RECOVERY[port].store(PORT_READY, Ordering::Relaxed);
         AHCI_COMPLETIONS[port][0].done.store(0, Ordering::Relaxed);
     }
     PORT_ACTIVE_CMD_NUM[0].store(FIRST, Ordering::Relaxed);
@@ -343,7 +352,8 @@ fn same_vector_can_be_pending_before_previous_eoi() {
 
 fn wait_for_first() -> Result<(), &'static str> {
     wait_cmd_slot0(CmdToken {
-        port: 0, cmd_num: FIRST, has_irq: true, scheduler_running: true, polled: false,
+        port: 0, cmd_num: FIRST, dma_index: 0, expected_bytes: 512,
+        has_irq: true, scheduler_running: true, polled: false,
     })
 }
 
