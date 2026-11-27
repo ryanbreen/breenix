@@ -12,8 +12,9 @@ bdev --host "$BOX_LOGIN" --source "$BOX_SOURCE" --cache "$BOX_CACHE" build bobj
 Use a single writer for the checkout on the box. Run long syncs as a
 detached Mac process with a log. The source directory must be dedicated to
 the sync. If a preflight finds a path that would require deletion or a
-file type change, it stops before transferring files. After an interrupted
-sync, rerun sync to completion before building.
+file type change, it stops before transferring files. After preflight,
+the driver removes the previous tree stamp before applying any changes.
+If an interruption leaves no stamp, builds refuse until a sync completes.
 
 The sync stages tracked and unignored files from the allowlisted roots
 and uses the bsync engine once per root. `sync.json` lists the roots and

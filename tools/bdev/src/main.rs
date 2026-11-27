@@ -234,6 +234,7 @@ struct BoxPaths<'a> {
     host: &'a str,
     source: &'a str,
     cache: &'a str,
+    ssh_program: &'a Path,
 }
 
 impl BoxPaths<'_> {
@@ -250,7 +251,7 @@ impl BoxPaths<'_> {
             request.push(' ');
             request.push_str(&format!("'{}'", argument.replace('\'', "'\\''")));
         }
-        let mut command = Command::new("/usr/bin/ssh");
+        let mut command = Command::new(self.ssh_program);
         command.args(["-T", "-o", "BatchMode=yes", "--", self.host, &request]);
         command.stdin(Stdio::null());
         command
@@ -317,18 +318,29 @@ fn sync(checkout: &Path, remote: &BoxPaths<'_>) -> Result<()> {
         let actions = source_plan(&tree, &listing.entries, &excludes)?;
         work.push((root, source, tree, destination, listing, actions));
     }
-    for (root, source, tree, destination, listing, actions) in work {
-        eprintln!("bsync {root} ({} changes)", actions.len());
-        for action in &actions {
-            eprintln!("{} {:?}", action.label(), action.path());
+    publish_source(remote, || {
+        for (root, source, tree, destination, listing, actions) in work {
+            eprintln!("bsync {root} ({} changes)", actions.len());
+            for action in &actions {
+                eprintln!("{} {:?}", action.label(), action.path());
+            }
+            destination.apply(&listing, &source, &tree, &actions, false)?;
+            stamp.roots.insert(root, root_digest(&tree));
         }
-        destination.apply(&listing, &source, &tree, &actions, false)?;
-        stamp.roots.insert(root, root_digest(&tree));
-    }
+        Ok(stamp)
+    })
+}
 
+fn publish_source(
+    remote: &BoxPaths<'_>,
+    transfer: impl FnOnce() -> Result<TreeStamp>,
+) -> Result<()> {
+    let path = format!("{}/{STAMP}", remote.source);
+    remote.run(&["/bin/rm", "-f", &path])?;
+    let stamp = transfer()?;
     let mut bytes = serde_json::to_vec_pretty(&stamp)?;
     bytes.push(b'\n');
-    remote.put(&format!("{}/{STAMP}", remote.source), &bytes)?;
+    remote.put(&path, &bytes)?;
     io::stdout().write_all(&bytes)?;
     Ok(())
 }
@@ -421,8 +433,10 @@ fn build(remote: &BoxPaths<'_>, package: &str) -> Result<ExitCode> {
     {
         return Err("invalid Cargo package name".into());
     }
-    let stamp: TreeStamp =
-        serde_json::from_slice(&remote.run(&["/bin/cat", &format!("{}/{STAMP}", remote.source)])?)?;
+    let stamp_bytes = remote
+        .run(&["/bin/cat", &format!("{}/{STAMP}", remote.source)])
+        .map_err(|error| format!("sync the source tree before building: {error}"))?;
+    let stamp: TreeStamp = serde_json::from_slice(&stamp_bytes)?;
     if !stamp.roots.contains_key("toolchain") {
         return Err("the source stamp has no toolchain root".into());
     }
@@ -549,6 +563,7 @@ fn run() -> Result<ExitCode> {
         host,
         source,
         cache,
+        ssh_program: Path::new("/usr/bin/ssh"),
     };
     remote.destination(source)?;
     match command {

@@ -149,10 +149,54 @@ fn ssh_exec_starts_with_a_bare_program() {
         host: "USER@HOST",
         source: "/work/src/breenix",
         cache: "/work/.cache/btest",
+        ssh_program: Path::new("/usr/bin/ssh"),
     };
     let command = remote.ssh(&["/bin/env", "-i", "RUSTFLAGS=one two"]);
     assert_eq!(
         command.get_args().last().unwrap(),
         "/bin/env '-i' 'RUSTFLAGS=one two'"
     );
+}
+
+#[test]
+fn interrupted_transfer_invalidates_stamp_before_writes() {
+    let files = tempfile::tempdir().unwrap();
+    let source = files.path().join("source");
+    let cache = files.path().join("cache");
+    let ssh_program = files.path().join("ssh");
+    fs::create_dir(&source).unwrap();
+    fs::write(
+        &ssh_program,
+        "#!/bin/sh\nfor request do :; done\nexec /bin/sh -c \"$request\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&ssh_program, fs::Permissions::from_mode(0o700)).unwrap();
+    let remote = BoxPaths {
+        host: "USER@HOST",
+        source: source.to_str().unwrap(),
+        cache: cache.to_str().unwrap(),
+        ssh_program: &ssh_program,
+    };
+    let stamp = source.join(STAMP);
+    let old_stamp =
+        br#"{"commit":"old","origin_main":"old","ancestor_of_main":true,"dirty":false,"roots":{"toolchain":"old-digest"}}"#;
+    fs::write(&stamp, old_stamp).unwrap();
+
+    let mut stamp_existed_at_transfer = None;
+    let result = publish_source(&remote, || {
+        stamp_existed_at_transfer = Some(stamp.exists());
+        fs::write(source.join("changed.rs"), b"new")?;
+        Err("connection lost before the next upload".into())
+    });
+    assert_eq!(
+        result.unwrap_err().to_string(),
+        "connection lost before the next upload"
+    );
+    assert_eq!(stamp_existed_at_transfer, Some(false));
+    assert!(!stamp.exists());
+    assert!(build(&remote, "bobj")
+        .unwrap_err()
+        .to_string()
+        .contains("sync the source tree before building"));
+    assert!(!cache.exists());
 }
