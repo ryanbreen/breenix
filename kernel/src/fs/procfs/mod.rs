@@ -689,9 +689,12 @@ pub fn lookup(name: &str) -> Option<ProcEntry> {
 
         for entry in &procfs.entries {
             let entry_path = entry.entry_type.path();
-            // Check if the full path matches or the relative path matches
             let relative = entry_path.trim_start_matches("/proc/");
-            if relative == normalized || entry.entry_type.name() == normalized {
+            // The receive counters' open permissions apply at their registered path.
+            if relative == normalized
+                || (entry.entry_type != ProcEntryType::TraceReceiveCounters
+                    && entry.entry_type.name() == normalized)
+            {
                 return Some(entry.clone());
             }
         }
