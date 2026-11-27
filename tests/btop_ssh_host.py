@@ -56,13 +56,14 @@ class BtopSsh(unittest.TestCase):
         transport = source("libs/libbreenix/src/ssh/transport.rs")
         channel = source("libs/libbreenix/src/ssh/channel.rs")
         wire = source("libs/libbreenix/src/ssh/mod.rs")
-        daemon = source("userspace/programs/src/bsshd.rs")
+        daemon = source("userland/bsshd/src/bsshd.rs")
         check(
             "relay", *args,
             CONSTANTS="\n".join(line for line in wire.splitlines() if "const SSH_MSG_" in line),
             BUFFER=wire[wire.index("pub struct SshBuf;"):],
             HANDLER=function(transport, "handle_channel_packet"),
             WAIT_FOR_CHANNEL="pub " + function(transport, "wait_for_channel"),
+            CHANNEL_CLOSED=function(transport, "channel_closed"),
             CHANNEL_TYPES=channel[channel.index("pub enum SessionCommand"):
                                   channel.index("/// Handle an incoming")],
             CHANNEL_STARTS=(FIXTURES / "channel_starts.rs").read_text(),
@@ -79,7 +80,7 @@ class BtopSsh(unittest.TestCase):
             HANGUP=function(ctty, "hangup_ref"),
             LEADER_EXIT=function(ctty, "finish_session_exit"),
         )
-        daemon = source("userspace/programs/src/bsshd.rs")
+        daemon = source("userland/bsshd/src/bsshd.rs")
         shell = daemon[daemon.index("// Fork a child for the shell"):daemon.index("// Parent: shuttle")]
         self.assertIn("signal::SIGHUP", shell, "login must reset init's inherited SIGHUP ignore")
         self.assertIn("Sigaction::default_action()", shell)

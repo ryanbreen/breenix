@@ -1,0 +1,16 @@
+[package]
+name = "bsshd"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "bsshd"
+path = "src/bsshd.rs"
+
+[dependencies]
+libbreenix = { path = "../../libs/libbreenix", features = ["std"] }
+
+[lints.rust]
+# The existing daemon and its SFTP worker use Breenix's low-level C ABI.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("breenix"))'] }

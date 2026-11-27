@@ -74,14 +74,13 @@ pub(super) enum ChannelRequestPhase {
     Running,
 }
 
-/// Handle an incoming "session" channel open request (server side).
-///
-/// Returns the new Channel on success.
+/// Confirm an incoming session or send a channel-open failure. A missing
+/// local ID means this connection already has an open channel.
 pub fn server_handle_channel_open(
     io: &mut PacketIo,
     msg: &[u8],
-    local_id: u32,
-) -> Result<Channel, SshError> {
+    local_id: Option<u32>,
+) -> Result<Option<Channel>, SshError> {
     let mut pos = 1; // skip message type
     let channel_type =
         SshBuf::get_string(msg, &mut pos).ok_or(SshError::Protocol("bad channel type"))?;
@@ -91,21 +90,28 @@ pub fn server_handle_channel_open(
         SshBuf::get_u32(msg, &mut pos).ok_or(SshError::Protocol("bad initial window"))?;
     let max_packet = SshBuf::get_u32(msg, &mut pos).ok_or(SshError::Protocol("bad max packet"))?;
 
-    if channel_type != b"session" {
-        // Send channel open failure
+    let refusal = if channel_type != b"session" {
+        Some((3, b"unsupported channel type".as_slice())) // SSH_OPEN_UNKNOWN_CHANNEL_TYPE
+    } else if local_id.is_none() {
+        Some((4, b"session channel already open".as_slice())) // SSH_OPEN_RESOURCE_SHORTAGE
+    } else {
+        None
+    };
+    if let Some((reason, description)) = refusal {
         let mut fail = Vec::with_capacity(32);
-        fail.push(SSH_MSG_CHANNEL_OPEN_CONFIRMATION + 1); // CHANNEL_OPEN_FAILURE = 92
+        fail.push(SSH_MSG_CHANNEL_OPEN_FAILURE);
         SshBuf::put_u32(&mut fail, sender_channel);
-        SshBuf::put_u32(&mut fail, 3); // SSH_OPEN_UNKNOWN_CHANNEL_TYPE
-        SshBuf::put_string(&mut fail, b"unsupported channel type");
+        SshBuf::put_u32(&mut fail, reason);
+        SshBuf::put_string(&mut fail, description);
         SshBuf::put_string(&mut fail, b"");
         io.send_packet(&fail).map_err(|_| SshError::Io)?;
-        return Err(SshError::Protocol("unsupported channel type"));
+        return Ok(None);
     }
 
     if max_packet == 0 {
         return Err(SshError::Protocol("zero channel max packet"));
     }
+    let local_id = local_id.unwrap();
     let channel = Channel::new(local_id, sender_channel, initial_window, max_packet);
 
     // Send CHANNEL_OPEN_CONFIRMATION
@@ -117,7 +123,7 @@ pub fn server_handle_channel_open(
     SshBuf::put_u32(&mut confirm, MAX_PACKET_SIZE); // maximum packet size
     io.send_packet(&confirm).map_err(|_| SshError::Io)?;
 
-    Ok(channel)
+    Ok(Some(channel))
 }
 
 /// Handle a channel request, returning the accepted program during setup.

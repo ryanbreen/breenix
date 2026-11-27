@@ -1,4 +1,4 @@
-// Run with: rustc --edition=2021 --test userspace/programs/src/bsshd_sftp/host_tests.rs
+// Run with: rustc --edition=2021 --test userland/bsshd/src/bsshd_sftp/host_tests.rs
 #[path = "../bsshd_sftp.rs"]
 mod sftp;
 

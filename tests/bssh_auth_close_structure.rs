@@ -6,7 +6,7 @@ fn source(path: &str) -> String {
 #[test]
 fn termination_waits_for_peer_and_preserves_shell_status() {
     let transport = source("libs/libbreenix/src/ssh/transport.rs");
-    let server = source("userspace/programs/src/bsshd.rs");
+    let server = source("userland/bsshd/src/bsshd.rs");
     assert!(transport.contains("pub fn finish(&mut self, status: i32)"));
     assert!(source("libs/libbreenix/src/ssh/channel.rs").contains("channel.close_sent"));
     assert!(transport.contains("ch.closed"));
