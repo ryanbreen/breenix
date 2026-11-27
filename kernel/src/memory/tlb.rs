@@ -52,8 +52,10 @@
 //! With one CPU online every entry point costs one atomic load beyond the
 //! local invalidation.
 //!
-//! On aarch64 the `tlbi ...is` forms broadcast in hardware; nothing here
-//! changes that path.
+//! On aarch64 the `tlbi ...is` forms broadcast in hardware. Each user address
+//! space has its own ASID (`arch_impl::aarch64::asid`), so a flush of one
+//! space invalidates by that ASID when it has one in the current generation,
+//! and across ASIDs when it has no current one.
 
 #[cfg(not(target_arch = "x86_64"))]
 use crate::memory::arch_stub::{tlb, VirtAddr};
@@ -78,44 +80,55 @@ pub fn flush_page(addr: VirtAddr) {
 ///
 /// The caller has already changed the descriptor: a CPU that announces `root`
 /// after this looks finds the new one when it walks the table.
+///
+/// ARM64: invalidate by VA for that space's ASID when it has one in the
+/// current generation (`ttbr0::user_asid`), otherwise by VA across ASIDs.
 #[inline]
 pub fn flush_user_page(root: u64, addr: VirtAddr) {
-    tlb::flush(addr);
     #[cfg(target_arch = "x86_64")]
-    shootdown::request_for_root(shootdown::Request::Page(addr.as_u64()), root);
-    #[cfg(not(target_arch = "x86_64"))]
-    let _ = root;
+    {
+        tlb::flush(addr);
+        shootdown::request_for_root(shootdown::Request::Page(addr.as_u64()), root);
+    }
+    #[cfg(target_arch = "aarch64")]
+    match crate::arch_impl::aarch64::ttbr0::user_asid(root) {
+        Some(asid) => tlb::flush_asid_pages(asid, &[addr.as_u64()]),
+        None => tlb::flush(addr),
+    }
 }
 
 /// Flush every translation of the user address space whose page-table root is
 /// `root`, on every CPU that may cache one of them.
+///
+/// ARM64: invalidate that space's ASID when it has one in the current
+/// generation, otherwise the EL1&0 translations of each ASID.
 #[inline]
 pub fn flush_user_all(root: u64) {
-    tlb::flush_all();
     #[cfg(target_arch = "x86_64")]
-    shootdown::request_for_root(shootdown::Request::All, root);
-    #[cfg(not(target_arch = "x86_64"))]
-    let _ = root;
+    {
+        tlb::flush_all();
+        shootdown::request_for_root(shootdown::Request::All, root);
+    }
+    #[cfg(target_arch = "aarch64")]
+    match crate::arch_impl::aarch64::ttbr0::user_asid(root) {
+        Some(asid) => tlb::flush_asid(asid),
+        None => tlb::flush_all(),
+    }
 }
 
 /// Invalidate intermediate table descriptors before returning their frames.
 /// x86's root-targeted full shootdown reloads CR3 on CPUs that may cache the
 /// root, dropping paging-structure caches as well as leaf translations.
-/// ARM64 broadcasts an ASID invalidation including intermediate walk entries;
-/// process roots use the shared dispatch ASID (see `ttbr0::USER_ASID_TTBR0`).
+/// ARM64 invalidates by ASID, which covers cached entries from each level of
+/// the walk, for the space's current ASID (`flush_user_all`).
 pub fn flush_user_tables(root: u64) {
-    #[cfg(target_arch = "x86_64")]
     flush_user_all(root);
-    #[cfg(target_arch = "aarch64")]
-    {
-        let _ = root;
-        tlb::flush_asid((crate::arch_impl::aarch64::ttbr0::USER_ASID_TTBR0 >> 48) as u16);
-    }
 }
 
 /// Invalidate removed user leaves before their frames can be released.
 /// x86 uses one root-targeted full shootdown for a multi-page set; ARM64
-/// broadcasts the addresses for all ASIDs with one pair of data barriers.
+/// broadcasts the addresses, for the space's ASID or across ASIDs, with one
+/// pair of data barriers.
 pub fn flush_user_pages(root: u64, pages: &[u64]) {
     if let [page] = pages {
         flush_user_page(root, VirtAddr::new(*page));
@@ -132,8 +145,13 @@ pub fn flush_user_pages(root: u64, pages: &[u64]) {
     }
     #[cfg(target_arch = "aarch64")]
     {
-        tlb::flush_pages(pages);
-        let _ = root;
+        if pages.is_empty() {
+            return;
+        }
+        match crate::arch_impl::aarch64::ttbr0::user_asid(root) {
+            Some(asid) => tlb::flush_asid_pages(asid, pages),
+            None => tlb::flush_pages(pages),
+        }
     }
 }
 

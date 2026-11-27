@@ -32,6 +32,10 @@
 .equ DESC_BLOCK,        (1 << 0)       // 0b01 for L1 block
 .equ DESC_TABLE,        (1 << 0) | (1 << 1) // 0b11
 .equ DESC_AF,           (1 << 10)
+// nG: TTBR0 identity blocks are tagged with the kernel ASID (0), so no user
+// ASID matches them; the kernel root stays in TTBR0 while CPUs idle and the
+// switch back to a user root does not invalidate the TLB. TTBR1 stays global.
+.equ DESC_NG,           (1 << 11)
 .equ DESC_SH_INNER,     (0b11 << 8)
 .equ DESC_SH_NONE,      (0b00 << 8)
 .equ DESC_ATTR_DEVICE,  (0 << 2)
@@ -320,10 +324,10 @@ setup_mmu:
     orr x1, x1, #DESC_TABLE
     str x1, [x0]
 
-    // TTBR0 L1[0] = device (0x0000_0000 - 0x3FFF_FFFF)
+    // TTBR0 L1[0] = device (0x0000_0000 - 0x3FFF_FFFF), non-global
     ldr x0, =ttbr0_l1
     ldr x1, =0x00000000
-    ldr x2, =BLOCK_FLAGS_DEVICE
+    ldr x2, =(BLOCK_FLAGS_DEVICE | DESC_NG)
     orr x1, x1, x2
     str x1, [x0, #0]
 
@@ -333,8 +337,10 @@ setup_mmu:
     orr x1, x1, #DESC_TABLE
     str x1, [x0, #8]
 
-    // Fill TTBR0 L2: 512 x 2MB blocks, index NC_L2_INDEX = NC, rest = Normal
+    // Fill TTBR0 L2: 512 x 2MB blocks, index NC_L2_INDEX = NC, rest = Normal,
+    // every block non-global
     ldr x0, =ttbr0_l2_ram
+    ldr x2, =DESC_NG
     bl fill_l2_ram
 
     // TTBR1 L0[0] -> L1
@@ -356,8 +362,9 @@ setup_mmu:
     orr x1, x1, #DESC_TABLE
     str x1, [x0, #8]
 
-    // Fill TTBR1 L2: same layout as TTBR0
+    // Fill TTBR1 L2: same layout as TTBR0, global
     ldr x0, =ttbr1_l2_ram
+    mov x2, #0
     bl fill_l2_ram
 
     // TTBR1 L1[2] = normal (high-half direct map)
@@ -464,6 +471,7 @@ zero_table_loop:
 // Fill L2 table at x0 with 512 x 2MB block entries for 0x4000_0000 - 0x7FFF_FFFF.
 // Kernel image blocks receive section-specific W^X permissions. Entry
 // NC_L2_INDEX (physical 0x5000_0000) is writable, non-cacheable, and XN.
+// x2 holds attribute bits or-ed into every entry (DESC_NG for TTBR0, 0 for TTBR1).
 fill_l2_ram:
     mov x1, #0                // i = 0
     ldr x3, =0x40000000       // base physical address
@@ -499,6 +507,7 @@ fill_l2_loop:
     cmp x1, #NC_L2_INDEX
     csel x7, x5, x7, eq       // .dma: writable NC, PXN+UXN
     orr x6, x6, x7            // entry = phys | flags
+    orr x6, x6, x2            // entry |= caller's extra attributes (nG)
     str x6, [x0, x1, lsl #3]  // L2[i] = entry
     add x1, x1, #1
     cmp x1, #512

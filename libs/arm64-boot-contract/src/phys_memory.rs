@@ -258,6 +258,64 @@ pub fn frame_pool_from_fdt(
 
 pub use fdt::FdtError;
 
+/// Smallest kernel heap: the fixed budgets the kernel carves out of its heap
+/// (BreenFS's dirty and cache budgets are one eighth of this) assume it.
+pub const KERNEL_HEAP_MIN: u64 = 64 << 20;
+/// Largest kernel heap. The heap is one fixed reservation taken out of the
+/// frame pool for the whole boot, and its largest measured user (legacy
+/// VirGL at 1280x960, about 52 MiB, #1914) plus the console fit in this.
+/// Above it, more heap would only be frames the pool loses.
+pub const KERNEL_HEAP_MAX: u64 = 128 << 20;
+/// Alignment of the heap and kernel-stack pool: one L2 block.
+pub const KERNEL_POOL_ALIGN: u64 = 2 << 20;
+
+/// The heap size for a frame pool describing `pool_bytes` of RAM: one eighth
+/// of it, rounded down to `KERNEL_POOL_ALIGN`, within
+/// [`KERNEL_HEAP_MIN`, `KERNEL_HEAP_MAX`].
+pub const fn kernel_heap_size(pool_bytes: u64) -> u64 {
+    let eighth = (pool_bytes / 8) & !(KERNEL_POOL_ALIGN - 1);
+    if eighth < KERNEL_HEAP_MIN {
+        KERNEL_HEAP_MIN
+    } else if eighth > KERNEL_HEAP_MAX {
+        KERNEL_HEAP_MAX
+    } else {
+        eighth
+    }
+}
+
+/// Where the kernel heap and kernel-stack pool live, in physical memory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KernelPools {
+    pub heap: PhysRange,
+    pub stacks: PhysRange,
+}
+
+/// The lowest `KERNEL_POOL_ALIGN`-aligned run of `size` bytes inside one
+/// range of `pool`.
+fn first_fit(pool: &RangeSet, size: u64) -> Option<PhysRange> {
+    pool.as_slice().iter().find_map(|range| {
+        let start = range.start.checked_add(KERNEL_POOL_ALIGN - 1)? & !(KERNEL_POOL_ALIGN - 1);
+        let end = start.checked_add(size)?;
+        (end <= range.end).then_some(PhysRange::new(start, end))
+    })
+}
+
+/// Carve the kernel heap (sized by [`kernel_heap_size`] from what `pool`
+/// describes) and a `stack_bytes` kernel-stack pool out of `pool`, each the
+/// lowest aligned run that fits, and take both out of it. `pool` is what the
+/// frame allocator may hand out, so what this returns is RAM the firmware
+/// described that no other kernel range covers. When either does not fit it
+/// places neither and leaves `pool` as it was.
+pub fn place_kernel_pools(pool: &mut RangeSet, stack_bytes: u64) -> Option<KernelPools> {
+    let mut rest = *pool;
+    let heap = first_fit(&rest, kernel_heap_size(pool.total_bytes()))?;
+    rest.subtract(heap);
+    let stacks = first_fit(&rest, stack_bytes)?;
+    rest.subtract(stacks);
+    *pool = rest;
+    Some(KernelPools { heap, stacks })
+}
+
 /// A reader for the parts of a flattened device tree (Devicetree
 /// Specification v0.4, chapter 5) that describe physical memory and PCI hosts.
 pub mod fdt {
@@ -1003,5 +1061,83 @@ mod tests {
         let mut t = Fdt::new();
         t.begin("").end().token(7);
         assert_eq!(regions(&t.build()), Err(FdtError::BadToken));
+    }
+
+    const MIB: u64 = 1 << 20;
+    const STACKS: u64 = 32 * MIB;
+
+    fn set(ranges: &[PhysRange]) -> RangeSet {
+        let mut out = RangeSet::new();
+        for &range in ranges {
+            out.insert(range);
+        }
+        out
+    }
+
+    fn inside(pool: &RangeSet, range: PhysRange) -> bool {
+        pool.as_slice().iter().any(|r| r.start <= range.start && range.end <= r.end)
+    }
+
+    /// The heap is sized from the RAM the frame pool describes, not from which
+    /// platform the kernel booted on.
+    #[test]
+    fn kernel_heap_size_follows_the_ram_described() {
+        assert_eq!(kernel_heap_size(446 * MIB), KERNEL_HEAP_MIN);
+        assert_eq!(kernel_heap_size(768 * MIB), 96 * MIB);
+        assert_eq!(kernel_heap_size(770 * MIB), 96 * MIB, "rounded down to 2 MiB");
+        assert_eq!(kernel_heap_size(2 * 1024 * MIB), KERNEL_HEAP_MAX);
+        assert_eq!(kernel_heap_size(0), KERNEL_HEAP_MIN);
+        assert_eq!(KERNEL_HEAP_MIN, 64 * MIB);
+        assert_eq!(KERNEL_HEAP_MAX, 128 * MIB);
+    }
+
+    /// QEMU virt with 512 MiB: the pool the device tree leaves once the image,
+    /// boot stacks and DMA block are out. The heap and kernel-stack pool come
+    /// from it, 2 MiB aligned, disjoint, and leave the pool.
+    #[test]
+    fn kernel_pools_come_from_the_memory_map() {
+        let mut pool = set(&[r(0x4400_0000, 0x5000_0000), r(0x5020_0000, 0x6000_0000)]);
+        let before = pool;
+        let pools = place_kernel_pools(&mut pool, STACKS).expect("512 MiB holds the pools");
+        assert_eq!(pools.heap.len(), KERNEL_HEAP_MIN);
+        assert_eq!(pools.stacks.len(), STACKS);
+        for placed in [pools.heap, pools.stacks] {
+            assert_eq!(placed.start % KERNEL_POOL_ALIGN, 0);
+            assert!(inside(&before, placed), "{placed:x?} is not RAM the map describes");
+            assert!(!inside(&pool, PhysRange::new(placed.start, placed.start + PAGE_SIZE)));
+        }
+        assert!(pools.heap.end <= pools.stacks.start || pools.stacks.end <= pools.heap.start);
+        assert_eq!(pool.total_bytes(), before.total_bytes() - KERNEL_HEAP_MIN - STACKS);
+        // Lowest fit first: the 192 MiB below the DMA block holds both.
+        assert_eq!(pools.heap, r(0x4400_0000, 0x4800_0000));
+        assert_eq!(pools.stacks, r(0x4800_0000, 0x4a00_0000));
+    }
+
+    /// A map whose low ranges are too small, unaligned or split places each
+    /// pool in the first range that holds it whole.
+    #[test]
+    fn kernel_pools_skip_ranges_that_cannot_hold_them() {
+        let mut pool = set(&[
+            r(0x4400_0000, 0x4500_0000),   // 16 MiB: too small for either
+            r(0x4560_1000, 0x4a60_0000),   // 80 MiB, unaligned start: 64 MiB heap fits at 0x4580_0000
+            r(0x8000_0000, 0x8c00_0000),   // 192 MiB
+        ]);
+        let pools = place_kernel_pools(&mut pool, STACKS).expect("the map holds the pools");
+        assert_eq!(pools.heap.len(), KERNEL_HEAP_MIN, "one eighth of 288 MiB is below the floor");
+        assert_eq!(pools.heap.start, 0x4580_0000, "skips 16 MiB, aligns the next start up");
+        assert_eq!(pools.stacks.start, 0x8000_0000, "14 MiB is left below; the stacks need 32");
+        for placed in [pools.heap, pools.stacks] {
+            assert_eq!(placed.start % KERNEL_POOL_ALIGN, 0);
+        }
+    }
+
+    /// A map with no room says so instead of placing a pool over memory it
+    /// does not describe.
+    #[test]
+    fn kernel_pools_refuse_a_map_without_room() {
+        let mut pool = set(&[r(0x4400_0000, 0x4800_0000), r(0x4a00_0000, 0x4b00_0000)]);
+        let before = pool;
+        assert_eq!(place_kernel_pools(&mut pool, STACKS), None);
+        assert_eq!(pool.as_slice(), before.as_slice(), "a refused placement takes nothing");
     }
 }
