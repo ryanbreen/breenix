@@ -1276,8 +1276,7 @@ fn wait_cmd_slot0(token: CmdToken) -> Result<(), &'static str> {
         return Err(error);
     }
     if read_prdbc(token.dma_index)? != token.expected_bytes {
-        // PxCI already proves that DMA is over. Report the bad transfer
-        // without touching the bounce buffer or issuing a retry.
+        // The HBA has cleared PxCI. Reject the transfer before copy-out.
         return Err("AHCI: unexpected transfer byte count");
     }
 
@@ -2006,7 +2005,7 @@ impl AhciController {
             PORT_ACTIVE_CMD_NUM[port].store(cmd_num, Ordering::Release);
         }
         // Track early polling too, so an ISR that acknowledges PxIS can
-        // still save errors. A zero command token suppresses the wake.
+        // still save errors. Schedule wakes only for armed command tokens.
         PORT_ACTIVE_MASK[port].store(1, Ordering::Release);
 
         trace_command_event(port, cmd_num, 0, EventKind::Issue,
