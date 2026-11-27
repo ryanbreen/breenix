@@ -62,8 +62,16 @@ DEV-37 set the scope.
 Identical storage work can therefore succeed, park, poll or fail depending on who is asking. DEV-24 was
 the result: init, at preemption level 2, was refused while `breenfs-commit` owned port 0, and the box came
 up with no `/sbin/init`. #3228 moved the x86 init load into a kthread (`kernel/src/main.rs:2140`). ARM64
-boot still holds a level from `kernel_main` until init is launched (`kernel/src/main_aarch64.rs:2146`),
-and the AHCI comment at `mod.rs:424-426` says this is why ARM64 has to poll.
+boot still holds a level from `kernel_main` (`kernel/src/main_aarch64.rs:1277`) until init is launched,
+and the AHCI comment at `mod.rs:424-426` says this is why ARM64 has to poll. Two more ARM64 boot paths
+read storage at a level:
+
+- the production fallbacks run on the boot continuation after SMP bring-up: a late `read_init_from_ext2`
+  and `run_userspace_from_disk("init_shell")` (`main_aarch64.rs:2039-2109`), and PID 1 is then launched
+  from that context rather than through the scheduler;
+- the testing profile's `test-loader` kthread takes a level on purpose across its ELF reads
+  (`main_aarch64.rs:2138-2154`), so that the test processes it creates cannot take its CPU between
+  binaries. Its reads park today because the AHCI and completion predicates accept one level.
 
 ### 1.3 Page faults
 
@@ -158,6 +166,11 @@ records it instead. Each thread gets `park_baseline: u8` and `baseline_irqs_mask
 
 - syscall entry sets the baseline to 1 for a braked class and 0 for a preemptible one (§4.4);
 - kthreads and workers run with baseline 0;
+- a kthread that needs a syscall's shape, holding its CPU except while it sleeps, takes a
+  `park::Braked` guard. The guard raises the depth and the baseline together by one, and dropping it
+  lowers both. A park inside the guard releases that level as it does for a braked syscall. The ARM64
+  `test-loader` pin (§1.2) becomes this guard in E2.4. Without it, the loader's reads would be
+  `LocksHeld(1)` at baseline 0 and would fail;
 - the mask flag is true for an x86 syscall until §4.3.
 
 `LocksHeld(n)` means the depth exceeds the baseline by n. A park releases exactly the baseline before it
@@ -417,10 +430,29 @@ does not make mmap lazy, so the 157,671x `memory.driver-mmap` ratio (§10) stays
   exclusively: it asserts the port has no owner, issues one command at a time, polls the port's
   command-issue and interrupt-status registers (AHCI 1.3.1, PxCI and PxIS) against a deadline, and returns
   `Timeout` when the deadline passes. <!-- claim-lint:ok: normative requirement of docs/plans/e2-sleepable-contexts.md under ruling DEV-37(2), not a measured result. -->
-- **Boot order.** ARM64 moves its init load out of the braked boot continuation into a sleepable kthread,
-  as #3228 did for x86, so nothing reads storage on the boot thread after the scheduler starts. This may
-  also bear on the ARM64 `-smp 1` boot wedge (#617, #620), because CPU 0 stops being held through init.
-  That PR's code reading has to settle whether it does. This plan makes no claim. <!-- claim-lint:ok: normative requirement of docs/plans/e2-sleepable-contexts.md under ruling DEV-37(2), not a measured result. -->
+- **Boot order.** The boot thread reads no storage after the scheduler first dispatches. On ARM64 that
+  takes three moves, which E2.4 makes together: <!-- claim-lint:ok: normative requirement of docs/plans/e2-sleepable-contexts.md under ruling DEV-37(2), not a measured result. -->
+  - the production init path moves into a sleepable `init-loader` kthread, as #3228 did for x86. It
+    takes the pre-loaded image if the early-boot read got one. Otherwise it does the late
+    `read_init_from_ext2` and the `init_shell` fallback itself (§1.2), and it starts PID 1 through the
+    scheduler. `spawn_as_current` from the boot continuation goes. The boot continuation drops its
+    level and becomes CPU 0's idle loop, as the testing path already does (`main_aarch64.rs:2005-2025`);
+  - the testing `test-loader` keeps its pin's purpose under a `park::Braked` guard (§3.2). E2.11 deletes
+    baselines, so it also deletes this guard. The loader then creates its test processes unqueued and
+    enqueues them once its reads end, which keeps them off its CPU without a level;
+  - the pre-timer read of `/sbin/init` in `kernel_main` (`main_aarch64.rs:1405-1420`) stays. It runs
+    before the first dispatch, so it is early-boot I/O and uses the token.
+
+  This may also bear on the ARM64 `-smp 1` boot wedge (#617, #620), because CPU 0 stops being held
+  through init. That PR's code reading has to settle whether it does. This plan makes no claim. <!-- claim-lint:ok: normative requirement of docs/plans/e2-sleepable-contexts.md under ruling DEV-37(2), not a measured result. -->
+- **Completion readiness before revocation.** A sleepable caller can park only if something will
+  complete its command. So the token is revoked at the first dispatch, and before that point E2.4 puts
+  two things in place on both architectures: the timer is running (the ARM64 predicate checks this
+  today, `ahci/mod.rs:428`), and each attached block device's completion source is armed, meaning its
+  interrupt is routed and unmasked or its poller kthread exists. E2.4 reads the boot order on each
+  architecture and moves whatever is late ahead of the first dispatch. At revocation it asserts
+  readiness for each attached device. A device that is not ready gets a receipt naming it, and its
+  requests return an error until it is ready, rather than polling. <!-- claim-lint:ok: normative requirement of docs/plans/e2-sleepable-contexts.md under ruling DEV-37(2), not a measured result. -->
 - **Completion mode.** The mode collapses to one question: does the device raise a usable interrupt? If
   it does, the waiter parks on its `Completion`. If it does not (VMware ARM64 with no GICv2m), the CPU's
   poller kthread completes the command (`mod.rs:1382-1400`) and the waiter still parks. The caller's
@@ -589,12 +621,24 @@ should own each, not several agents on one PR (DEV-30(3)).
   - the early-boot token is refused after revocation, and polled I/O with the token while the port has an
     owner is refused;
   - the updated expectations in `tools/breenfs-host-tests` and `tools/vfs-host-tests`;
-  - a structure test that `CannotPark`, the admission `yield` loop and the level arithmetic are gone.
+  - a structure test that `CannotPark`, the admission `yield` loop and the level arithmetic are gone;
+  - a `park::context` table case for the testing loader: one level held at baseline 0 is
+    `LocksHeld(1)`, and the same level held as `park::Braked` is `Sleepable`;
+  - a structure test that `kernel_main` on ARM64 reaches no storage read and no `spawn_as_current`
+    after the first dispatch, and that `run_test_loader` takes `park::Braked` and no bare
+    `preempt_disable`;
+  - the revocation assertion: a host test that revoking the token while an attached device's
+    completion source is unarmed yields that device's receipt and an error for its requests, not a poll.
 - **Risk retired.** DEV-24 and its family (#3209). Context-dependent I/O modes.
 - **Rows.** No QEMU row: the rig's disks are virtio-blk and its disk rows run on ext2. On the R240 the
   effect is boot and dev-loop reliability, read from the next kernel-only flash.
-- **Boot.** One ARM64 QEMU boot, because the ARM64 init load moves to a kthread and that changes boot
-  order. x86's part reaches hardware at the coordinator's flash.
+- **Boot.** Boot order is a hardware-timing effect the host tests cannot settle, and E2.4 changes it on
+  two ARM64 paths. So it gets two ARM64 QEMU boots with the repo's standard scripts, one per path:
+  - the testing boot (`test-loader` under `park::Braked`), which must load its whole roster;
+  - the production-profile boot (`docker/qemu/run-aarch64-prod-profile-boot-test.sh`), where
+    `init-loader` starts PID 1.
+
+  x86's part reaches hardware at the coordinator's flash.
 
 ### E2.5: BreenFS lock order
 
