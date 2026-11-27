@@ -90,6 +90,7 @@ DEFERRED = {
     "linux": {**{case: "The QEMU rig does not build the toolchain workspace" for case in SELFHOST},
               "bsync-upload": "bsync is measured on the R240 only"},
 }
+NETWORK = ("network", "tcp-send", "tcp-recv")
 TCP_BYTES = 32_000_000
 CRYPTO_BYTES = 8 * MIB
 SCP_BYTES = 8_000_000
@@ -579,7 +580,16 @@ class Rig:
             self.save(system, name, receipt)
             return
         if case == "network":
-            self.network(system, number)
+            try:
+                self.network(system, number)
+            except (RuntimeError, subprocess.TimeoutExpired, IndexError) as error:
+                for part in ("scp-upload", "download", "ssh"):
+                    sample = f"{self.args.run}-{part}-{number}"
+                    if not (self.out[system] / f"{sample}.json").exists():
+                        self.save(system, sample, failure_receipt(sample, [part], str(error)))
+                if not guest.alive() or guest.ssh(["/bin/true"], timeout=30,
+                                                  check=False).returncode != 0:
+                    self.restart(system)
             return
         if case == "cargo-noop" and number == 1:
             seed = f"{self.args.run}-noop-seed"
@@ -589,11 +599,16 @@ class Rig:
         self.save(system, name, receipt)
         if receipt["error"]:
             print(f"{system} {name} failed: {receipt['error']}", flush=True)
-            if not guest.alive():
+            # A guest that stopped, or no longer answers SSH, is booted again.
+            if not guest.alive() or guest.ssh(["/bin/true"], timeout=30,
+                                              check=False).returncode != 0:
                 self.restart(system)
 
     def restart(self, system):
         guest = self.guests[system]
+        if guest.boots > 2:
+            guest.stop()
+            return
         tail = self.serial_tail(system)
         self.notes[system].append(f"VM restarted after boot {guest.boots}")
         print(f"{system}: VM down; serial tail:\n{tail}", flush=True)
@@ -669,9 +684,17 @@ class Rig:
         unknown = set(cases) - set(CASES)
         if unknown:
             raise ValueError(f"unknown cases: {', '.join(sorted(unknown))}")
-        for case, number, system in schedule(cases, self.args.count, SYSTEMS, SKIP):
+        order = schedule(cases, self.args.count, SYSTEMS, SKIP)
+        # Read the retransmission counters right after the last network sample, before
+        # a later row can restart a guest and reset its kernel's counters.
+        network = [index for index, (case, _, _) in enumerate(order) if case in NETWORK]
+        last_network = network[-1] if network else len(order) - 1
+        after = None
+        for index, (case, number, system) in enumerate(order):
             self.sample(case, number, system)
-        after = {system: self.tcp_counters(system) for system in SYSTEMS}
+            if index == last_network:
+                after = {system: self.tcp_counters(system) for system in SYSTEMS}
+        after = after or dict.fromkeys(SYSTEMS)
         facts = {system: self.facts(system) for system in SYSTEMS}
         for guest in self.guests.values():
             guest.stop()
@@ -705,9 +728,11 @@ class Rig:
                          "Breenix std fork via build-std")
             note = (f"Production kernel and system image at {short}; bbench uploaded over SSH "
                     "and run as sshtest on the root ext2 disk.")
-        note += (f" Samples alternate Linux then Breenix per case; both VMs stay up, the idle "
-                 f"one quiescent. Fixture for the driver-map rows: a {FIXTURE_BYTES // MIB} MiB "
-                 f"file written in the guest. TCP counters before/after the run: "
+        note += (f" Samples alternate Linux then Breenix per case; both VMs stay up and "
+                 f"one runs a sample at a time. Fixture for the driver-map rows: a "
+                 f"{FIXTURE_BYTES // MIB} MiB "
+                 f"file written in the guest. TCP retransmission counters at boot / after the "
+                 f"network rows: "
                  f"{json.dumps(before)} / {json.dumps(after)}.")
         if self.notes[system]:
             note += " " + "; ".join(self.notes[system]) + "."
