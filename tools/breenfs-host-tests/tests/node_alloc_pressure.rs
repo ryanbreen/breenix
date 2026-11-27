@@ -2,28 +2,33 @@ use breenfs_host_tests::{
     block::{BlockDevice, BlockError},
     btree::{self, Error, NodeStore, ReadCause, ReadFailure},
     commit::DeviceStore,
-    format::{BlockPtr, Key, BLOCK_SIZE, NODE_SIZE},
+    format::{BlockPtr, Key, Pending, BLOCK_SIZE, NODE_SIZE, PENDING},
     scrub::Scrub,
+    space,
 };
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,
+    collections::BTreeMap,
     ptr,
     sync::atomic::{AtomicUsize, Ordering},
 };
 
 thread_local! {
     static REFUSE_NODE_BUFFER: Cell<bool> = const { Cell::new(false) };
+    static REFUSE_RANGE_GROWTH: Cell<bool> = const { Cell::new(false) };
 }
 
 struct Allocator;
 
 unsafe impl GlobalAlloc for Allocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if layout.size() == NODE_SIZE
-            && layout.align() == 1
-            && REFUSE_NODE_BUFFER.try_with(|armed| armed.replace(false)).unwrap_or(false)
-        {
+        let refuse = match (layout.size(), layout.align()) {
+            (NODE_SIZE, 1) => REFUSE_NODE_BUFFER.try_with(|armed| armed.replace(false)),
+            (393_216, 8) => REFUSE_RANGE_GROWTH.try_with(|armed| armed.replace(false)),
+            _ => Ok(false),
+        };
+        if refuse.unwrap_or(false) {
             return ptr::null_mut();
         }
         unsafe { System.alloc(layout) }
@@ -36,6 +41,47 @@ unsafe impl GlobalAlloc for Allocator {
 
 #[global_allocator]
 static ALLOCATOR: Allocator = Allocator;
+
+#[derive(Default)]
+struct RangeStore {
+    nodes: BTreeMap<u64, Vec<u8>>,
+    last_addr: u64,
+}
+
+impl NodeStore for RangeStore {
+    fn get(&self, addr: u64) -> Result<Vec<u8>, Error> {
+        self.nodes.get(&addr).cloned().ok_or(Error::Store)
+    }
+
+    fn put(&mut self, addr: u64, bytes: Vec<u8>) -> Result<(), Error> {
+        self.nodes.insert(addr, bytes);
+        Ok(())
+    }
+
+    fn alloc(&mut self) -> Result<u64, Error> {
+        self.last_addr = self.last_addr.max(20) + 4;
+        Ok(self.last_addr)
+    }
+}
+
+#[test]
+fn pending_promotion_reports_failed_384_kib_range_growth() {
+    let mut store = RangeStore::default();
+    let mut root = btree::create(&mut store, 2, [1; 16], 2).unwrap();
+    let pending = Pending { length: 1, released_generation: 1 }.encode();
+    for offset in 1_000..1_000 + 4_097 {
+        let key = Key { object: 0xffff_ffff_ffff_ff30, item_type: PENDING, offset };
+        btree::insert(&mut store, &mut root, key, &pending).unwrap();
+    }
+    let before = root;
+    REFUSE_RANGE_GROWTH.set(true);
+    let result = space::promote_pending(&mut store, &mut root, 2);
+    assert!(matches!(result, Err(space::Error::Tree(Error::Read(ReadFailure {
+        cause: ReadCause::Allocation, addr,
+    }))) if addr == before.addr));
+    assert_eq!(root, before);
+    assert_eq!(space::promote_pending(&mut store, &mut root, 2).unwrap().census(), Some((4_097, 1)));
+}
 
 #[derive(Default)]
 struct ReadDevice(AtomicUsize);
