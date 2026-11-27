@@ -960,8 +960,9 @@ fn init_common() {
     net_log!("Network stack initialized");
 
     if active_tx_driver_is_e1000() {
-        // Linux e1000e only wakes TX/carrier after link is confirmed:
-        // drivers/net/ethernet/intel/e1000e/netdev.c:5197-5304.
+        // Wait for carrier before the first ARP: STATUS.LU reports the PHY's
+        // link once auto-negotiation resolves, and frames sent before then
+        // are lost (8254x SDM 13.4.2; 82574 datasheet 10.2.2.2, 4.6.3.2).
         let mut elapsed_ms = 0;
         while !e1000::link_up() && elapsed_ms < E1000_CARRIER_WAIT_MS {
             for _ in 0..2_500_000u32 {
