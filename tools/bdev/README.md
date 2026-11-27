@@ -30,7 +30,7 @@ bdev test --changed
 `--changed` uses `git diff --name-only origin/main...HEAD` and includes
 uncommitted paths. Mac-side Cargo metadata maps those paths to suites
 and follows transitive path dependencies. Workspace manifest, lockfile
-and bu-sys changes select all available suites. With no selected suites,
+and bu-sys changes select the full set of available suites. With no selected suites,
 the command exits successfully without connecting. The explicit form
 accepts multiple packages and sends them in one btest invocation.
 
