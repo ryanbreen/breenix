@@ -123,7 +123,6 @@ impl<'a> Compiler<'a> {
             self.code.code.pop();
         }
         self.code.emit_op(Op::Halt);
-        self.code.local_count = self.next_slot;
         Ok((self.code, self.strings, self.functions))
     }
 
@@ -1198,8 +1197,6 @@ impl<'a> Compiler<'a> {
         }
         self.code.emit_op(Op::Return);
 
-        self.code.local_count = self.next_slot;
-
         // Collect this function's upvalues
         let func_upvalues = core::mem::take(&mut self.upvalues);
 
@@ -2076,6 +2073,8 @@ impl<'a> Compiler<'a> {
     fn declare_local(&mut self, name: String, is_const: bool) -> u16 {
         let slot = self.next_slot;
         self.next_slot += 1;
+        // Popping a scope frees slots for reuse, but its bytecode still needs them.
+        self.code.local_count = self.code.local_count.max(self.next_slot);
         if let Some(scope) = self.scopes.last_mut() {
             scope.locals.push(Local {
                 name,
@@ -2326,8 +2325,6 @@ impl<'a> Compiler<'a> {
             self.code.emit_op(Op::Return);
         }
 
-        self.code.local_count = self.next_slot;
-
         // Collect upvalues
         let func_upvalues = core::mem::take(&mut self.upvalues);
 
@@ -2407,8 +2404,6 @@ impl<'a> Compiler<'a> {
             self.compile_assignment()?;
             self.code.emit_op(Op::Return);
         }
-
-        self.code.local_count = self.next_slot;
 
         // Collect upvalues
         let func_upvalues = core::mem::take(&mut self.upvalues);
@@ -2506,8 +2501,6 @@ impl<'a> Compiler<'a> {
             self.code.emit_op(Op::WrapPromise);
             self.code.emit_op(Op::Return);
         }
-
-        self.code.local_count = self.next_slot;
 
         // Collect upvalues
         let func_upvalues = core::mem::take(&mut self.upvalues);
