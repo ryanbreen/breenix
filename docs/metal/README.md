@@ -1606,18 +1606,20 @@ A fixed KCS SPMI table is also supported when firmware provides one. A CPU-pinne
 Device ID, Get Watchdog Timer, Set Watchdog Timer and Reset Watchdog Timer only
 ([IPMI 2.0](https://www.intel.com/content/dam/www/public/us/en/documents/product-specifications/ipmi-v2-rev1-1-spec-errata-6-markup.pdf),
 sections 9 and 27, Appendix C3). The SMS/OS timer is 120 seconds, action hard
-reset, no pretimeout. Configuration and running state are read back. Each
-20-second round must complete uncached root superblock/group reads and root
-inode validation before feeding. A failed round retries without feeding; a blocked
-round or repeated failures let the timer expire. Timer readback detects lost
-configuration after a BMC restart and rearms only after successful health I/O.
+reset, no pretimeout. Configuration and running state are read back. On a
+persistent boot, the feeder uses a 20-second scheduler heartbeat. It can feed
+while a writable root is busy or its storage is unavailable. A stalled feeder
+or repeated transport failures can still let the timer expire. Timer readback
+detects lost configuration after a BMC restart and rearms it.
 Ordinary supervised boots do not arm KCS, retaining the driver’s silence/NMI capture;
 the persistent target and explicit watchdog fault builds enable it. The
 BMC's expiry flag is reported before configuration clears it. No interrupt or
 syscall path feeds the timer.
 
 `boot --inject watchdog-feeder-hang|watchdog-health-hang` builds a watchdog
-fault-test kernel and stages its intent on a disposable RAM root. The production
+fault-test kernel and stages its intent on a disposable RAM root. This build
+requires each feed to complete uncached root metadata and inode checks so the
+health-hang case can exercise expiry during a filesystem wedge. The production
 kernel has no fault-intent reader. After its trigger the driver keeps capturing
 for the 600-second SSH deadline, keeps the lease alive, and tells the manager to
 choose current persistent on the next boot. It sends no recovery power command

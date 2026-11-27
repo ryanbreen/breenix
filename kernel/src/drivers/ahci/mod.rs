@@ -410,27 +410,18 @@ fn relax_port_io_wait() {
     }
 }
 
-/// Whether the current thread can sleep on a port's waitqueue: a thread other
-/// than idle, inside a syscall (the preemption brake alone held), outside
-/// interrupt context, once the timer runs. ARM64 boot holds the same brake
-/// before it starts the timer, while it pre-loads PID 1's image; a thread
-/// parked then is never switched back in.
+/// A running non-idle thread may sleep outside interrupt context with at most
+/// one preemption brake. ARM64 boot holds a brake while loading PID 1's image
+/// before the timer starts, so it still needs to poll.
 fn can_park_for_port_io() -> bool {
     #[cfg(target_arch = "aarch64")]
     if !crate::arch_impl::aarch64::timer_interrupt::timer_is_running() {
         return false;
     }
-    #[cfg(target_arch = "x86_64")]
-    let (preempt_count, in_interrupt) =
-        (crate::per_cpu::preempt_count(), crate::per_cpu::in_interrupt());
-    #[cfg(target_arch = "aarch64")]
-    let (preempt_count, in_interrupt) = (
-        crate::per_cpu_aarch64::preempt_count(),
-        crate::per_cpu_aarch64::in_interrupt(),
-    );
+    let (preempt_count, in_interrupt) = (io_cpu::preempt_count(), io_cpu::in_interrupt());
     let tid = crate::task::scheduler::current_thread_id();
     let idle = crate::task::scheduler::with_current(|sched| Some(sched.idle_thread()) == tid);
-    tid.is_some() && idle == Some(false) && preempt_count == 1 && !in_interrupt
+    tid.is_some() && idle == Some(false) && preempt_count <= 1 && !in_interrupt
 }
 
 /// Acquire exclusive ownership of a port's slot-0 I/O lifecycle.
@@ -456,8 +447,7 @@ fn begin_port_io(
         }
         drop(guard);
         if !can_park_for_port_io() {
-            // A caller that cannot sleep is refused on x86; on ARM64 it is
-            // preemptible (kernel threads) and keeps polling.
+            // Refuse this context on x86 and retain ARM64's polling fallback.
             #[cfg(target_arch = "x86_64")]
             return Err((AhciReadError::CannotPark, owner));
             #[cfg(target_arch = "aarch64")]
@@ -470,9 +460,15 @@ fn begin_port_io(
         if secs * 1_000_000_000 + nanos >= deadline {
             return Err((AhciReadError::AdmissionTimeout, owner));
         }
+        // schedule_current_wait releases and restores one brake. A preemptible
+        // kernel thread must supply it before publishing its blocked state.
+        let add_brake = io_cpu::preempt_count() == 0;
+        if add_brake {
+            io_cpu::preempt_disable();
+        }
         // x86 syscall entry keeps IF clear; schedule_current_wait enables
         // interrupts around HLT, so IF is not a prerequisite for parking.
-        match PORT_IO_WAITERS[port].prepare_to_wait_checked(
+        let result = match PORT_IO_WAITERS[port].prepare_to_wait_checked(
             crate::task::thread::ThreadState::BlockedOnIO,
             Some(deadline),
             || PORT_IO_OWNER[port].load(Ordering::Acquire) != 0,
@@ -480,26 +476,32 @@ fn begin_port_io(
             crate::task::waitqueue::PrepareOutcome::Queued => {
                 crate::task::waitqueue::schedule_current_wait();
                 PORT_IO_WAITERS[port].finish_wait();
+                Ok(())
             }
-            crate::task::waitqueue::PrepareOutcome::Mismatch => {}
-            outcome => {
-                if read {
-                    if crate::task::thread::current_wait_must_unwind() {
-                        return Err((AhciReadError::Interrupted, owner));
-                    }
+            crate::task::waitqueue::PrepareOutcome::Mismatch => Ok(()),
+            _ if read => {
+                if crate::task::thread::current_wait_must_unwind() {
+                    Err((AhciReadError::Interrupted, owner))
+                } else {
                     // The waiter entry is gone. Let the port owner run and
                     // retry admission within the original deadline.
                     crate::block::cache_kernel::park_for_wait_retry();
-                } else {
-                    let error = if outcome == crate::task::waitqueue::PrepareOutcome::OutOfMemory {
-                        AhciReadError::WaiterAllocation
-                    } else {
-                        AhciReadError::WaitPublication
-                    };
-                    return Err((error, owner));
+                    Ok(())
                 }
             }
+            outcome => {
+                let error = if outcome == crate::task::waitqueue::PrepareOutcome::OutOfMemory {
+                    AhciReadError::WaiterAllocation
+                } else {
+                    AhciReadError::WaitPublication
+                };
+                Err((error, owner))
+            }
+        };
+        if add_brake {
+            io_cpu::preempt_enable();
         }
+        result?;
     }
 }
 

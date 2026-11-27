@@ -1,5 +1,5 @@
-//! A health round may feed only after I/O succeeds. Readback detects
-//! lost configuration before the next reset command.
+//! Feed after the caller's health check. Readback detects lost configuration
+//! before the next reset command.
 pub trait Transport {
     type State;
     fn configured(state: &Self::State) -> bool;
