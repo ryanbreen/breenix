@@ -11,6 +11,32 @@ use std::time::{Duration, SystemTime};
 const DEP_INFO: &str = "x86_64-breenix/selfhost/libbcc.d";
 
 #[test]
+fn noop_exempts_only_aarch64_tool_dep_info() {
+    use self_host_chain::{verify_noop, Artifact};
+    let original = Artifact {
+        sha256: "same".into(),
+        modified: SystemTime::UNIX_EPOCH,
+    };
+    let touched = Artifact {
+        modified: original.modified + Duration::from_secs(1),
+        ..original.clone()
+    };
+    let check = |path: &str| {
+        verify_noop(
+            &BTreeMap::from([(path.to_owned(), original.clone())]),
+            &BTreeMap::from([(path.to_owned(), touched.clone())]),
+        )
+    };
+    check("aarch64-breenix/selfhost/libbcc.d").unwrap();
+    for path in [
+        "aarch64-breenix/selfhost/libbcc.rlib",
+        "x86_64-breenix/selfhost/libbcc.d",
+    ] {
+        assert!(check(path).unwrap_err().contains(path));
+    }
+}
+
+#[test]
 fn rejects_changed_file_set_or_contents() {
     let target = std::env::temp_dir().join(format!("breenix-self-host-chain-{}", std::process::id()));
     fs::create_dir(&target).unwrap();
