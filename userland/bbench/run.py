@@ -155,12 +155,25 @@ def main(args):
             # The native probe writes directly to the local receipt directory.
             if not receipt.exists() or receipt.read_bytes() != result.stdout:
                 raise RuntimeError(f"native receipt missing or different for {sample}")
+            failed = bool(result.returncode)
         else:
-            value = json.loads(result.stdout)
-            if value["sample"] != sample or bool(value["error"]) != bool(result.returncode):
+            recovered = result.returncode == 255 and not result.stdout
+            payload = result.stdout
+            if recovered:
+                with (args.out / f"{sample}.log").open("ab") as log:
+                    payload = run(["/bin/cat", reports / receipt.name],
+                                  check=False, log=log).stdout
+            try:
+                value = json.loads(payload)
+            except ValueError as error:
+                raise RuntimeError(
+                    f"no usable receipt for {sample}. Check its log and the box report directory."
+                ) from error
+            failed = bool(value["error"])
+            if value["sample"] != sample or (not recovered and failed != bool(result.returncode)):
                 raise RuntimeError(f"invalid remote receipt for {sample}")
-            receipt.write_bytes(result.stdout)
-        if result.returncode:
+            receipt.write_bytes(payload)
+        if failed:
             failures += 1
             print(f"{sample} failed, see its JSON and log", flush=True)
 
