@@ -796,6 +796,11 @@ Notes on the table:
 - **E9 (scheduler) and brief B3.** E9 owns the preemption-count layout and softirqs. E2 reaches them only
   through `preempt::depth()`, the guard types and `park::context()`. E9's shootdowns as ordinary IPIs
   depend on E2.7, so that CPUs no longer spin in syscalls with IF clear.
+- **E6 (userspace ABI, `docs/plans/e6-userspace-abi.md`).** E6 changes what a signal frame holds: an
+  XSAVE standard image, plus validation on sigreturn. E2.8 changes where and in what context the frame is
+  written: outside PROCESS_MANAGER, on the sleepable return-to-user path. The two touch the same delivery
+  code. Whichever lands second merges the other's change and keeps both properties. A larger XSAVE frame
+  is also more likely to fault on the user stack, which E2.8 lets sleep and restart.
 - **R17 (#3238, merged).** The durable interrupt wake transport E2.1 calls.
 
 ## 12. Decisions for the coordinator
