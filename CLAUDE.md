@@ -14,6 +14,7 @@ ratchet and evidence-document requirements elsewhere in this file.
 - The R240 is build-and-test only (ruling S27). Never run `install-persistent`, and never leave a persistent or resting session running. If one appears, stop it and find out what started it.
 - No GPL or other copyleft code, and nothing from NVIDIA's proprietary driver. Permissive sources (nouveau's MIT files, envytools, Mesa) may be cited. Never commit VBIOS contents or other card firmware dumps.
 - The C library is clean-room, written from ISO C, POSIX and the Linux man pages. Never port, vendor or read musl, glibc, newlib or bionic.
+- Follow the [clean-room OS research rule](.claude/skills/os-research/SKILL.md), which prohibits reading other OS implementations, copyleft emulator source, or other libc implementations.
 - Never change a shared suite, case, runner or threshold to make one backend pass. Fix the defect at its source.
 
 
