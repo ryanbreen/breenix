@@ -1,8 +1,8 @@
-use super::{publish, Failure, PublishIo};
+use super::{adopt, publish, Failure, PublishIo};
 use libbreenix::{fs, io as sysio, signal, Fd};
 use std::ffi::{c_char, CString};
 use std::fs::{File, OpenOptions, Permissions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::{
     ffi::OsStrExt,
@@ -17,6 +17,13 @@ extern "C" {
     fn renameat(oldfd: i32, old: *const c_char, newfd: i32, new: *const c_char) -> i32;
     fn unlinkat(dirfd: i32, path: *const c_char, flags: i32) -> i32;
 }
+
+/// Kernel open flag: fail rather than follow a final symbolic link.
+#[cfg(target_arch = "x86_64")]
+const O_NOFOLLOW: i32 = 0x20000;
+#[cfg(target_arch = "aarch64")]
+const O_NOFOLLOW: i32 = 0x8000;
+const AT_FDCWD: i32 = -100;
 
 static CANCELLED: AtomicBool = AtomicBool::new(false);
 
@@ -38,6 +45,8 @@ struct Guest {
     parent: PathBuf,
     dest: CString,
     temp: CString,
+    /// With --adopt, the staged upload's path.
+    staged: Option<CString>,
     dir: Option<File>,
 }
 
@@ -122,6 +131,30 @@ impl PublishIo for Guest {
         self.dir.as_ref().expect("directory open").sync_all()
     }
 
+    fn open_staged(&mut self) -> io::Result<File> {
+        check_cancelled()?;
+        let path = self.staged.as_ref().expect("staged path");
+        let flags = fs::O_RDONLY as i32 | O_NOFOLLOW | sysio::status_flags::O_CLOEXEC as i32;
+        let fd = status(unsafe { openat(AT_FDCWD, path.as_ptr(), flags, 0) })?;
+        let file = unsafe { File::from_raw_fd(fd) };
+        if !file.metadata()?.is_file() {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "staged upload is not a regular file"));
+        }
+        Ok(file)
+    }
+
+    fn read_staged(&mut self, file: &mut File, buf: &mut [u8]) -> io::Result<usize> {
+        check_cancelled()?;
+        file.read(buf)
+    }
+
+    fn rename_staged(&mut self) -> io::Result<()> {
+        check_cancelled()?;
+        let path = self.staged.as_ref().expect("staged path");
+        status(unsafe { renameat(AT_FDCWD, path.as_ptr(), self.dir_fd(), self.dest.as_ptr()) })?;
+        Ok(())
+    }
+
     fn unlink_temp(&mut self) -> io::Result<()> {
         let result = || status(unsafe { unlinkat(self.dir_fd(), self.temp.as_ptr(), 0) });
         loop {
@@ -146,9 +179,20 @@ fn parse_digest(digest: &str) -> Option<[u8; 32]> {
 }
 
 fn arguments() -> Result<(Guest, u64, [u8; 32], u32), String> {
-    let args: Vec<_> = std::env::args_os().skip(1).collect();
+    const USAGE: &str = "usage: bput [--adopt STAGED] DEST LENGTH SHA256 MODE";
+    let mut args: Vec<_> = std::env::args_os().skip(1).collect();
+    let staged = if args.first().is_some_and(|arg| arg == "--adopt") {
+        if args.len() < 2 {
+            return Err(USAGE.into());
+        }
+        let path = args.remove(1);
+        args.remove(0);
+        Some(CString::new(path.as_bytes()).map_err(|error| error.to_string())?)
+    } else {
+        None
+    };
     let [dest, length, digest, mode] = args.as_slice() else {
-        return Err("usage: bput DEST LENGTH SHA256 MODE".into());
+        return Err(USAGE.into());
     };
     let length = length
         .to_str()
@@ -197,6 +241,7 @@ fn arguments() -> Result<(Guest, u64, [u8; 32], u32), String> {
         parent: parent.to_owned(),
         dest: CString::new(name).map_err(|error| error.to_string())?,
         temp: CString::new(temp).map_err(|error| error.to_string())?,
+        staged,
         dir: None,
     };
     Ok((guest, length, digest, mode))
@@ -205,7 +250,13 @@ fn arguments() -> Result<(Guest, u64, [u8; 32], u32), String> {
 pub(super) fn main() -> ExitCode {
     let result = arguments()
         .map_err(|reason| Failure { status: 1, reason })
-        .and_then(|(mut guest, length, digest, mode)| publish(&mut guest, length, digest, mode));
+        .and_then(|(mut guest, length, digest, mode)| {
+            if guest.staged.is_some() {
+                adopt(&mut guest, length, digest, mode)
+            } else {
+                publish(&mut guest, length, digest, mode)
+            }
+        });
     match result {
         Ok(()) => {
             let _ = writeln!(io::stdout().lock(), "published");

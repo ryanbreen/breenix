@@ -390,7 +390,12 @@ impl Destination {
                     } else {
                         let file = open_source(source, relative)?;
                         if !sudo {
-                            self.send_sftp(base, &name, &bput, file)
+                            // Publish the staged upload itself: its bytes are
+                            // read to verify them but not written again.
+                            let adopt = format!(
+                                "/bin/bput --adopt \"$stage/payload\" {name} {size} {digest} {mode:o}"
+                            );
+                            self.send_sftp(base, &name, &adopt, file)
                                 .map_err(|error| format!("upload {relative:?}: {error}"))?;
                             continue;
                         }
@@ -411,7 +416,7 @@ impl Destination {
         Ok(())
     }
 
-    fn send_sftp(&self, base: &str, name: &str, bput: &str, file: File) -> Result<()> {
+    fn send_sftp(&self, base: &str, name: &str, adopt: &str, file: File) -> Result<()> {
         let mut nonce = [0u8; 16];
         File::open("/dev/urandom")?.read_exact(&mut nonce)?;
         let stage = format!(".bsync-{:032x}", u128::from_be_bytes(nonce));
@@ -419,10 +424,9 @@ impl Destination {
             "{GUARD}\nbase={}\nstage=./{stage}\nstage_path={}\n{STAGE}\n\
              enter \"$stage_path\"\n\
              [ -f ./ready ] && [ ! -L ./ready ] && [ -f ./payload ] && [ ! -L ./payload ] || fail 'upload was not completed'\n\
-             exec 3< ./payload || exit 1\n\
              enter \"$base\"\n\
              regular_or_absent {name}\n\
-             {bput} <&3",
+             {adopt}",
             quote(base),
             quote(&format!("{}/{stage}", base.trim_end_matches('/'))),
         );
@@ -436,8 +440,9 @@ impl Destination {
             ssh.stdout.as_mut().unwrap(),
             file,
         );
-        // EOF ends the worker. The enclosing shell then publishes the file
-        // and returns bput's status after cleaning up the staging directory.
+        // EOF ends the worker. The enclosing shell then has bput adopt the
+        // staged file and returns bput's status after cleaning up the
+        // staging directory.
         let output = ssh.wait_with_output()?;
         sent?;
         if !output.status.success() {
