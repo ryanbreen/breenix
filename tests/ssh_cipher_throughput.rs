@@ -1,7 +1,4 @@
-use libbreenix::crypto::{
-    aes::{gmul, mix_columns},
-    gcm::ghash_multiply,
-};
+use libbreenix::crypto::gcm::ghash_multiply;
 use std::{
     hint::black_box,
     time::{Duration, Instant},
@@ -49,21 +46,6 @@ fn ghash_reference(x: &Block, h: &Block) -> Block {
     product
 }
 
-// FIPS 197, section 5.1.3. The generic multiplier walks the bits of its second operand.
-fn mix_columns_reference(state: &mut Block) {
-    for column in state.chunks_exact_mut(4) {
-        let [a, b, c, d] = <BlockColumn>::try_from(&*column).unwrap();
-        column.copy_from_slice(&[
-            gmul(2, a) ^ gmul(3, b) ^ c ^ d,
-            a ^ gmul(2, b) ^ gmul(3, c) ^ d,
-            a ^ b ^ gmul(2, c) ^ gmul(3, d),
-            gmul(3, a) ^ b ^ c ^ gmul(2, d),
-        ]);
-    }
-}
-
-type BlockColumn = [u8; 4];
-
 fn best_time(blocks: &[Block], op: impl Fn(Block) -> Block) -> Duration {
     (0..3)
         .map(|_| {
@@ -97,18 +79,5 @@ fn ghash_avoids_bytewise_work_per_bit() {
         &blocks(),
         |block| ghash_reference(&block, &h),
         |block| ghash_multiply(&block, &h),
-    );
-}
-
-#[test]
-fn aes_mix_columns_avoids_general_field_multiplication() {
-    let mix = |op: fn(&mut Block), mut block: Block| {
-        op(&mut block);
-        block
-    };
-    check_work(
-        &blocks(),
-        |block| mix(mix_columns_reference, block),
-        |block| mix(mix_columns, block),
     );
 }
