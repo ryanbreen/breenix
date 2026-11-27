@@ -9,7 +9,8 @@
 
 #[cfg(target_arch = "aarch64")]
 use arm64_boot_contract::phys_memory::{
-    self, fdt, frame_pool_from_fdt, FdtError, PhysRange, RangeSet,
+    self, fdt, frame_pool_from_fdt, place_kernel_pools, FdtError, KernelPools, PhysRange,
+    RangeSet,
 };
 #[cfg(target_arch = "aarch64")]
 use core::sync::atomic::{AtomicU64, AtomicU8, Ordering};
@@ -103,19 +104,43 @@ static FIRMWARE_CPU_COUNT: AtomicU64 = AtomicU64::new(0);
 // Kernel image:   0x4020_0000 - 0x42E0_0000 (image + BSS incl. PCI_3D_FRAMEBUFFER)
 // Loader stack:   0x42E0_0000 - 0x4300_0000
 // SMP stacks:     0x4300_0000 - 0x4400_0000 (16 MB, 8 CPUs × 2 MB each)
-// DMA (NC):       0x5000_0000 - 0x501F_FFFF (2 MB, Non-Cacheable for xHCI)
-// Heap:           0x5020_0000 - 0x581F_FFFF (128 MB native, 64 MB QEMU)
-// Kernel stacks:  0x5820_0000 - 0x5A1F_FFFF (32 MB)
-// The rest of the RAM the firmware describes is the frame pool.
+// DMA (NC):       0x5000_0000 - 0x501F_FFFF (2 MB, Non-Cacheable for xHCI;
+//                 both boot paths map this one L2 block non-cacheable)
+// The heap and the kernel-stack pool are not fixed: `with_kernel_pools`
+// carves them out of the RAM the firmware describes, sized by how much there
+// is (`phys_memory::kernel_heap_size`). The rest is the frame pool.
 
 /// The kernel's fixed physical ranges at a RAM base of 0x4000_0000: the DTB,
-/// image, boot stacks and per-CPU stacks below, and the DMA block, heap and
-/// kernel-stack pool above.
+/// image, boot stacks and per-CPU stacks below, and the DMA block above.
 #[cfg(target_arch = "aarch64")]
 const KERNEL_FIXED_RANGES: [PhysRange; 2] = [
     PhysRange::new(arm64_boot_contract::LINKED_RAM_START, 0x4400_0000),
-    PhysRange::new(0x5000_0000, 0x5A20_0000),
+    PhysRange::new(0x5000_0000, 0x5020_0000),
 ];
+
+/// Where the heap and the kernel-stack pool were placed, in physical memory.
+#[cfg(target_arch = "aarch64")]
+static KERNEL_POOLS: spin::Once<KernelPools> = spin::Once::new();
+
+/// The heap and kernel-stack pool placement, once a frame pool exists.
+#[cfg(target_arch = "aarch64")]
+pub fn kernel_pools() -> Option<&'static KernelPools> {
+    KERNEL_POOLS.get()
+}
+
+/// Take the heap and the kernel-stack pool out of `ranges` (free RAM inside
+/// the direct map) and record where they went. Without room for both, no
+/// frame pool is safe to hand out either.
+#[cfg(target_arch = "aarch64")]
+fn with_kernel_pools(mut ranges: RangeSet, source: FramePoolSource) -> FramePool {
+    match place_kernel_pools(&mut ranges, crate::memory::kernel_stack::ARM64_KERNEL_STACK_POOL_SIZE) {
+        Some(pools) => {
+            KERNEL_POOLS.call_once(|| pools);
+            FramePool { ranges, source }
+        }
+        None => unavailable_pool("no room in RAM for the kernel heap and stacks"),
+    }
+}
 
 #[cfg(target_arch = "aarch64")]
 const _: () = {
@@ -123,19 +148,14 @@ const _: () = {
         HHDM_BASE, MAX_CPUS, PERCPU_STACK_REGION_BASE_DEFAULT, PERCPU_STACK_STRIDE,
     };
     let low = KERNEL_FIXED_RANGES[0];
-    let high = KERNEL_FIXED_RANGES[1];
     assert!(arm64_boot_contract::LOADER_BOOT_STACK_TOP_PHYS <= PERCPU_STACK_REGION_BASE_DEFAULT - HHDM_BASE);
     assert!(
         PERCPU_STACK_REGION_BASE_DEFAULT - HHDM_BASE + MAX_CPUS as u64 * PERCPU_STACK_STRIDE
             <= low.end
     );
-    let heap = crate::memory::heap::HEAP_START - HHDM_BASE;
-    assert!(crate::memory::heap::QEMU_HEAP_SIZE <= crate::memory::heap::HEAP_SIZE);
-    assert!(heap >= high.start);
-    assert!(heap + crate::memory::heap::HEAP_SIZE
-        <= crate::memory::kernel_stack::ARM64_KERNEL_STACK_BASE - HHDM_BASE);
-    assert!(crate::memory::kernel_stack::ARM64_KERNEL_STACK_BASE - HHDM_BASE >= high.start);
-    assert!(crate::memory::kernel_stack::ARM64_KERNEL_STACK_END - HHDM_BASE <= high.end);
+    // The DMA block is the one L2 block boot.S maps non-cacheable.
+    assert!(KERNEL_FIXED_RANGES[1].start == 0x4000_0000 + 128 * 0x20_0000);
+    assert!(KERNEL_FIXED_RANGES[1].end - KERNEL_FIXED_RANGES[1].start == 0x20_0000);
 };
 
 /// Physical memory both boot paths map as normal memory in the high-half
@@ -219,18 +239,8 @@ fn qemu_dtb() -> Result<&'static [u8], FdtError> {
 
 #[cfg(target_arch = "aarch64")]
 fn frame_pool_from_qemu_dtb() -> Result<RangeSet, FdtError> {
-    use crate::arch_impl::aarch64::constants::HHDM_BASE;
     let blob = qemu_dtb()?;
-    // The native legacy VirGL buffers need the larger heap. QEMU's GPU core
-    // uses frames instead, so its unused heap tail stays in the frame pool.
-    let heap = crate::memory::heap::HEAP_START - HHDM_BASE;
-    let stacks = crate::memory::kernel_stack::ARM64_KERNEL_STACK_BASE - HHDM_BASE;
-    let fixed = [
-        KERNEL_FIXED_RANGES[0],
-        PhysRange::new(KERNEL_FIXED_RANGES[1].start, heap + crate::memory::heap::QEMU_HEAP_SIZE),
-        PhysRange::new(stacks, KERNEL_FIXED_RANGES[1].end),
-    ];
-    frame_pool_from_fdt(blob, QEMU_DTB_PHYS, fixed, direct_map_ram_window(0))
+    frame_pool_from_fdt(blob, QEMU_DTB_PHYS, KERNEL_FIXED_RANGES, direct_map_ram_window(0))
 }
 
 /// The frame allocator's free memory: the pages the firmware describes as
@@ -240,10 +250,7 @@ fn frame_pool_from_qemu_dtb() -> Result<RangeSet, FdtError> {
 #[cfg(target_arch = "aarch64")]
 pub fn frame_pool() -> &'static FramePool {
     FRAME_POOL.call_once(|| match frame_pool_from_qemu_dtb() {
-        Ok(ranges) => FramePool {
-            ranges,
-            source: FramePoolSource::DeviceTree,
-        },
+        Ok(ranges) => with_kernel_pools(ranges, FramePoolSource::DeviceTree),
         Err(error) => unavailable_pool(error.as_str()),
     })
 }
@@ -903,19 +910,13 @@ pub fn init_from_parallels(config: &HardwareConfig) -> bool {
             runtime,
             direct_map_ram_window(offset),
         );
-        // Heap and stack storage is written directly, outside the frame allocator.
-        // Admit it only from conventional RAM too, before excluding it from frames.
-        use crate::arch_impl::aarch64::constants::HHDM_BASE;
-        let heap_start = crate::memory::heap::HEAP_START - HHDM_BASE + offset;
-        let stacks_end = crate::memory::kernel_stack::ARM64_KERNEL_STACK_END - HHDM_BASE + offset;
-        let pool = if ranges.as_slice().iter().any(|r| r.start <= heap_start && r.end >= stacks_end) {
-            for fixed in kernel_fixed_ranges(offset) {
-                ranges.subtract(fixed);
-            }
-            FramePool { ranges, source: FramePoolSource::UefiMemoryMap }
-        } else {
-            unavailable_pool("heap and stack storage is not conventional RAM")
-        };
+        // The heap and kernel stacks are written directly, outside the frame
+        // allocator, so they come out of conventional RAM, after the fixed
+        // ranges are excluded.
+        for fixed in kernel_fixed_ranges(offset) {
+            ranges.subtract(fixed);
+        }
+        let pool = with_kernel_pools(ranges, FramePoolSource::UefiMemoryMap);
         FRAME_POOL.call_once(|| pool);
     } else {
         FRAME_POOL.call_once(|| {

@@ -34,6 +34,13 @@ mod attr {
     /// Access flag (must be set, or access fault)
     pub const AF: u64 = 1 << 10;
 
+    /// Not global: the entry is tagged with the ASID it is walked under. The
+    /// kernel keeps this identity map as its TTBR0 root and runs it under ASID
+    /// 0, while each user address space has its own ASID above 0 and the
+    /// switch between them does not invalidate the TLB; a global identity
+    /// block would match a user VA under any ASID. TTBR1 blocks stay global.
+    pub const NG: u64 = 1 << 11;
+
     /// Shareability
     pub const ISH: u64 = 3 << 8; // Inner Shareable
     pub const OSH: u64 = 2 << 8; // Outer Shareable
@@ -399,7 +406,7 @@ pub fn build_page_tables(
         } else {
             attr::DEVICE_BLOCK
         };
-        write_entry(ttbr0_l2_dev, i as usize, phys | block_attr);
+        write_identity_block(ttbr0_l2_dev, i as usize, phys | block_attr);
         write_entry(ttbr1_l2_dev, i as usize, phys | block_attr);
     }
 
@@ -442,7 +449,7 @@ pub fn build_page_tables(
                 continue;
             }
             let ipa = config.ecam_ipa + (i as u64) * L2_BLOCK_SIZE;
-            write_entry(ttbr0_l2_dev, l2_idx, ipa | attr::DEVICE_BLOCK);
+            write_identity_block(ttbr0_l2_dev, l2_idx, ipa | attr::DEVICE_BLOCK);
             write_entry(ttbr1_l2_dev, l2_idx, ipa | attr::DEVICE_BLOCK);
         }
     }
@@ -484,15 +491,15 @@ pub fn build_page_tables(
                         non_kernel_ram_attr(ipa, loader_phys, handoff_phys, vectors_phys)
                     })
                 };
-                write_entry(ttbr0_l2_ram, i, ipa | block_attr);
+                write_identity_block(ttbr0_l2_ram, i, ipa | block_attr);
                 write_entry(ttbr1_l2_ram, i, ipa | block_attr);
             } else if i >= fb_l2_start && i < fb_l2_end {
                 // Framebuffer: identity map with NC for write-combining
-                write_entry(ttbr0_l2_ram, i, va | attr::NC_BLOCK);
+                write_identity_block(ttbr0_l2_ram, i, va | attr::NC_BLOCK);
                 write_entry(ttbr1_l2_ram, i, va | attr::NC_BLOCK);
             } else {
                 // Other device MMIO: identity map as device memory
-                write_entry(ttbr0_l2_ram, i, va | attr::DEVICE_BLOCK);
+                write_identity_block(ttbr0_l2_ram, i, va | attr::DEVICE_BLOCK);
                 write_entry(ttbr1_l2_ram, i, va | attr::DEVICE_BLOCK);
             }
         }
@@ -534,7 +541,7 @@ pub fn build_page_tables(
                     non_kernel_ram_attr(phys, loader_phys, handoff_phys, vectors_phys)
                 })
             };
-            write_entry(ttbr0_l2_ram, i as usize, phys | block_attr);
+            write_identity_block(ttbr0_l2_ram, i as usize, phys | block_attr);
             write_entry(ttbr1_l2_ram, i as usize, phys | block_attr);
         }
     }
@@ -556,14 +563,14 @@ pub fn build_page_tables(
                 non_kernel_ram_attr(phys, loader_phys, handoff_phys, vectors_phys)
             })
         };
-        write_entry(ttbr0_l2_ram2, i as usize, phys | block_attr);
+        write_identity_block(ttbr0_l2_ram2, i as usize, phys | block_attr);
         write_entry(ttbr1_l2_ram2, i as usize, phys | block_attr);
     }
 
     // L1[3] = VA 0xC0000000-0xFFFFFFFF → IPA 0xC0000000 (always identity)
     // Required for VMware Fusion: UEFI firmware places the loader at ~0xFBCExxxx.
     // The MMU re-enable instruction must be able to fetch from this region.
-    write_entry(ttbr0_l1, 3, 0xC000_0000 | attr::NORMAL_BLOCK);
+    write_identity_block(ttbr0_l1, 3, 0xC000_0000 | attr::NORMAL_BLOCK);
     write_entry(ttbr1_l1, 3, 0xC000_0000 | attr::NORMAL_BLOCK);
 
     // --- High-RAM identity map for loader code and page table storage ---
@@ -594,7 +601,7 @@ pub fn build_page_tables(
             let ttbr0_l1_ptr = ttbr0_l1 as *const u64;
             let existing = unsafe { core::ptr::read_volatile(ttbr0_l1_ptr.add(idx)) };
             if existing == 0 {
-                write_entry(ttbr0_l1, idx, phys | attr::NORMAL_BLOCK);
+                write_identity_block(ttbr0_l1, idx, phys | attr::NORMAL_BLOCK);
             }
             // TTBR1 (HHDM) — keeps the HHDM contiguous into high RAM
             let ttbr1_l1_ptr = ttbr1_l1 as *const u64;
@@ -609,6 +616,13 @@ pub fn build_page_tables(
     flush_page_tables();
 
     (ttbr0_l0, ttbr1_l0)
+}
+
+/// Write a TTBR0 identity-map block: the same as `write_entry`, with nG set
+/// (see `attr::NG`).
+#[inline]
+fn write_identity_block(table_phys: u64, index: usize, value: u64) {
+    write_entry(table_phys, index, value | attr::NG);
 }
 
 /// Write a page table entry and clean the cache line to ensure

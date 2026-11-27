@@ -254,6 +254,8 @@ pub fn generate_counters() -> String {
     // run progresses rather than only once before userspace.
     #[cfg(target_arch = "aarch64")]
     crate::arch_impl::aarch64::ttbr0::emit_asid_census();
+    #[cfg(target_arch = "aarch64")]
+    crate::arch_impl::aarch64::ttbr0::emit_asid_state();
 
     let mut output = String::new();
 
