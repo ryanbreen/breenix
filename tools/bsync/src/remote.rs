@@ -3,7 +3,7 @@ use crate::tree::{Action, Entry, Excludes, Tree};
 use crate::{normal_relative, parent, Result};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 const GUARD: &str = r#"
@@ -324,6 +324,45 @@ impl Destination {
         self
     }
 
+    /// Open one SSH connection (an OpenSSH ControlMaster) that the listing
+    /// and each action of this sync then share as channels, instead of a
+    /// connection and key exchange per command. A caller whose SSH options
+    /// already name a control socket keeps its own and gets no
+    /// SharedConnection back.
+    pub fn share_connection(&mut self) -> Result<Option<SharedConnection>> {
+        if self
+            .ssh_args
+            .iter()
+            .any(|arg| arg == "-S" || arg.starts_with("ControlPath"))
+        {
+            return Ok(None);
+        }
+        let directory = private_directory()?;
+        let socket = directory.join("sock");
+        let socket_arg = socket.to_str().ok_or("control socket path must be UTF-8")?.to_owned();
+        let status = Command::new("/usr/bin/ssh")
+            .args(&self.ssh_args)
+            .args(["-S", &socket_arg, "-MNf", "-o", "ControlPersist=no", "-o", "ClearAllForwardings=yes"])
+            .args(["--", &self.peer])
+            .stdin(Stdio::null())
+            .status();
+        let connection = SharedConnection {
+            directory,
+            socket: socket_arg.clone(),
+            peer: self.peer.clone(),
+        };
+        let status = status?;
+        if !status.success() {
+            return Err(format!("open SSH connection to {} ({status})", self.peer).into());
+        }
+        // A command may only use this connection: if the socket is lost,
+        // fail instead of quietly opening a fresh connection midway.
+        self.ssh_args.extend(
+            ["-o", "ControlMaster=no", "-o", "ProxyCommand=false", "-S", &socket_arg].map(String::from),
+        );
+        Ok(Some(connection))
+    }
+
     fn command(&self, script: &str, sudo: bool) -> Command {
         let prefix = if sudo { "/usr/bin/sudo -n " } else { "" };
         let mut command = Command::new("/usr/bin/ssh");
@@ -390,7 +429,12 @@ impl Destination {
                     } else {
                         let file = open_source(source, relative)?;
                         if !sudo {
-                            self.send_sftp(base, &name, &bput, file)
+                            // Publish the staged upload itself: its bytes are
+                            // read to verify them but not written again.
+                            let adopt = format!(
+                                "/bin/bput --adopt \"$stage/payload\" {name} {size} {digest} {mode:o}"
+                            );
+                            self.send_sftp(base, &name, &adopt, file)
                                 .map_err(|error| format!("upload {relative:?}: {error}"))?;
                             continue;
                         }
@@ -411,7 +455,7 @@ impl Destination {
         Ok(())
     }
 
-    fn send_sftp(&self, base: &str, name: &str, bput: &str, file: File) -> Result<()> {
+    fn send_sftp(&self, base: &str, name: &str, adopt: &str, file: File) -> Result<()> {
         let mut nonce = [0u8; 16];
         File::open("/dev/urandom")?.read_exact(&mut nonce)?;
         let stage = format!(".bsync-{:032x}", u128::from_be_bytes(nonce));
@@ -419,10 +463,9 @@ impl Destination {
             "{GUARD}\nbase={}\nstage=./{stage}\nstage_path={}\n{STAGE}\n\
              enter \"$stage_path\"\n\
              [ -f ./ready ] && [ ! -L ./ready ] && [ -f ./payload ] && [ ! -L ./payload ] || fail 'upload was not completed'\n\
-             exec 3< ./payload || exit 1\n\
              enter \"$base\"\n\
              regular_or_absent {name}\n\
-             {bput} <&3",
+             {adopt}",
             quote(base),
             quote(&format!("{}/{stage}", base.trim_end_matches('/'))),
         );
@@ -436,8 +479,9 @@ impl Destination {
             ssh.stdout.as_mut().unwrap(),
             file,
         );
-        // EOF ends the worker. The enclosing shell then publishes the file
-        // and returns bput's status after cleaning up the staging directory.
+        // EOF ends the worker. The enclosing shell then has bput adopt the
+        // staged file and returns bput's status after cleaning up the
+        // staging directory.
         let output = ssh.wait_with_output()?;
         sent?;
         if !output.status.success() {
@@ -445,6 +489,37 @@ impl Destination {
         }
         Ok(())
     }
+}
+
+/// The shared connection of one sync. Dropping it closes the connection
+/// and removes its socket directory.
+pub struct SharedConnection {
+    directory: PathBuf,
+    socket: String,
+    peer: String,
+}
+
+impl Drop for SharedConnection {
+    fn drop(&mut self) {
+        let _ = Command::new("/usr/bin/ssh")
+            .args(["-S", &self.socket, "-O", "exit", "--", &self.peer])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        let _ = std::fs::remove_dir_all(&self.directory);
+    }
+}
+
+/// A new directory only this user can enter, for the control socket. It is
+/// short because macOS limits UNIX socket paths to 104 bytes.
+fn private_directory() -> Result<PathBuf> {
+    use std::os::unix::fs::DirBuilderExt;
+    let mut nonce = [0u8; 8];
+    File::open("/dev/urandom")?.read_exact(&mut nonce)?;
+    let directory = PathBuf::from(format!("/tmp/bsync-{:016x}", u64::from_be_bytes(nonce)));
+    std::fs::DirBuilder::new().mode(0o700).create(&directory)?;
+    Ok(directory)
 }
 
 const STAGE: &str = r#"

@@ -131,6 +131,29 @@ pub trait MappingIo: Any {
     fn size(&self) -> u64;
     /// The file bytes at `offset`, at most `length`; fewer past EOF.
     fn read(&self, offset: u64, length: usize) -> Result<Vec<u8>, Errno>;
+    /// The file bytes at `offset` into `bytes`, returning how many there
+    /// were; the rest of `bytes` (past EOF) is 00. One call may cover several
+    /// pages, so a backend can read them as one run. The default asks `read`
+    /// for at most one page at a time, as population did before runs: a
+    /// backend's `read` may refuse a larger request (ext2 refuses one larger
+    /// than its volume) that its page reads would satisfy.
+    fn read_into(&self, offset: u64, bytes: &mut [u8]) -> Result<usize, Errno> {
+        const PAGE: usize = 4096;
+        let mut done = 0;
+        while done < bytes.len() {
+            let want = (bytes.len() - done).min(PAGE);
+            let at = offset.checked_add(done as u64).ok_or(Errno(crate::syscall::errno::EINVAL))?;
+            let read = self.read(at, want)?;
+            let length = read.len().min(want);
+            bytes[done..done + length].copy_from_slice(&read[..length]);
+            done += length;
+            if length < want {
+                break;
+            }
+        }
+        bytes[done..].fill(0);
+        Ok(done)
+    }
     fn needs_flush(&self) -> bool;
     /// Generation that accepted the most recent writeback run, for
     /// backends that publish staged data in transactions.
