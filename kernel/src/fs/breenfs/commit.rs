@@ -431,6 +431,16 @@ impl PreparedCommit {
     pub fn node(&self, addr: u64) -> Option<&[u8]> {
         self.nodes.get(&addr).map(Vec::as_slice)
     }
+    /// Whether this publication writes any block of a cached four-block node.
+    /// Preparation has already checked that the write ranges are disjoint.
+    pub fn overwrites_node(&self, addr: u64) -> bool {
+        let node_blocks = (NODE_SIZE / BLOCK_SIZE) as u64;
+        let end = addr.saturating_add(node_blocks);
+        self.nodes.range(..end).next_back().is_some_and(|(&start, _)| start + node_blocks > addr)
+            || self.data.range(..end).next_back().is_some_and(|(&start, bytes)| {
+                start + (bytes.len() / BLOCK_SIZE) as u64 > addr
+            })
+    }
     fn write_direct(
         &self,
         device: &dyn BlockDevice,

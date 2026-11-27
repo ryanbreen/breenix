@@ -828,7 +828,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         Ok(value)
     }
     #[cfg(test)]
-    pub(super) fn read_node_for_test(&self, ptr: BlockPtr) -> Result<Arc<btree::Node>, btree::Error> {
+    pub fn read_node_for_test(&self, ptr: BlockPtr) -> Result<Arc<btree::Node>, btree::Error> {
         self.txn.view().read_node(ptr)
     }
     pub fn root_growth(&self, root: BlockPtr) -> Result<btree::RootGrowth, Error> {
