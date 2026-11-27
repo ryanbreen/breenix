@@ -74,6 +74,9 @@ static RX_CHECKSUM_REJECTED: AtomicU64 = AtomicU64::new(0);
 static RX_OUTSIDE_WINDOW: AtomicU64 = AtomicU64::new(0);
 static RX_GAP_SEGMENTS: AtomicU64 = AtomicU64::new(0);
 static RX_ACK_OUTPUT_FAILED: AtomicU64 = AtomicU64::new(0);
+/// Retransmission timeouts that sent again: a SYN, a SYN+ACK or unacknowledged data.
+/// Zero-window probes and retries of output IP refused are not retransmissions.
+static TX_RETRANSMIT_TIMEOUTS: AtomicU64 = AtomicU64::new(0);
 
 pub struct ReceiveCounters {
     pub checksum_rejected: u64,
@@ -1630,6 +1633,11 @@ impl TcpConnection {
         self.rto_ms = (self.rto_ms * 2).min(RTO_MAX_MS);
         self.rtx_deadline_ms = now + self.rto_ms;
         note_timer_deadline(self.rtx_deadline_ms);
+        if matches!(self.state, TcpState::SynSent | TcpState::SynReceived)
+            || self.send_unack != self.send_max
+        {
+            TX_RETRANSMIT_TIMEOUTS.fetch_add(1, Ordering::Relaxed);
+        }
         match self.state {
             TcpState::SynSent => {
                 let seg = self.segment(self.send_initial, TcpFlags::syn());
@@ -2053,6 +2061,19 @@ fn reap_expired(connections: &mut ConnTable, force: bool) {
     }
     LAST_REAP_MS.store(now, Ordering::Relaxed);
     connections.retain(|conn| !conn.expired(now));
+}
+
+/// `/proc/net/tcp_stats`: transmit-side counters since boot, one `name: value` line each.
+pub fn proc_net_tcp_stats() -> Result<alloc::string::String, i32> {
+    use core::fmt::Write;
+    let mut text = alloc::string::String::new();
+    text.try_reserve_exact(64).map_err(|_| ENOMEM)?;
+    let _ = writeln!(
+        text,
+        "retransmit_timeouts: {}",
+        TX_RETRANSMIT_TIMEOUTS.load(Ordering::Relaxed)
+    );
+    Ok(text)
 }
 
 /// `/proc/net/tcp`: the first four columns of Linux's format, one line per listener and
