@@ -17,7 +17,7 @@ log: `docs/planning/ralph-roadmap.html`.
 ## Current Development Status
 
 The on-box development loop adds a dedicated `userland/` workspace with
-`yes` as its first command. PR 3 records [Mac build and run evidence](../../userland/BUILD-TIMES.md).
+`yes` as its first command. PR 3 records [R240 and Mac build and run evidence](../../userland/BUILD-TIMES.md).
 The per-program `btest` runner is the next step in the plan.
 
 E24 checksum and scrub acceptance is recorded in

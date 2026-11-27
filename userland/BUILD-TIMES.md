@@ -1,7 +1,7 @@
 # `yes` build times
 
-Measured on an Apple M5 Max (Mac17,6) running macOS 27.0.1 (26A434).
-Each entry is the wall time from `/usr/bin/time -p` for one offline, frozen
+The Mac was an Apple M5 Max (Mac17,6) running macOS 27.0.1 (26A434).
+Each entry is a single `time -p` wall measurement for an offline, frozen
 build with four jobs and warnings denied. The Darwin builds used the checkout's
 `nightly-2025-06-24` toolchain. The Breenix builds used the retained E25 Mac
 twins of rustc (`1.90.0-dev`, `a763a7dd7`) and Cargo (`1.90.0-dev`,
@@ -9,21 +9,23 @@ twins of rustc (`1.90.0-dev`, `a763a7dd7`) and Cargo (`1.90.0-dev`,
 
 | Profile | Build | Mac, ARM64 Darwin | Mac, x86-64 Breenix | R240 |
 | --- | --- | ---: | ---: | --- |
-| `release` | Cold | 1.24 s | 0.81 s | not measured: R240 out of scope for this run |
-| `release` | No-op | 0.02 s | 0.01 s | not measured: R240 out of scope for this run |
-| `release` | One-line rebuild | 1.17 s | 0.52 s | not measured: R240 out of scope for this run |
-| `dev-box` | Cold | 0.13 s | 0.11 s | not measured: R240 out of scope for this run |
-| `dev-box` | No-op | 0.02 s | 0.01 s | not measured: R240 out of scope for this run |
-| `dev-box` | One-line rebuild | 0.10 s | 0.07 s | not measured: R240 out of scope for this run |
+| `release` | Cold | 1.24 s | 0.81 s | 55.06 s |
+| `release` | No-op | 0.02 s | 0.01 s | 1.10 s |
+| `release` | One-line rebuild | 1.17 s | 0.52 s | 28.82 s |
+| `dev-box` | Cold | 0.13 s | 0.11 s | 40.11 s |
+| `dev-box` | No-op | 0.02 s | 0.01 s | 1.08 s |
+| `dev-box` | One-line rebuild | 0.10 s | 0.07 s | 9.62 s |
 
 Cold builds started with an empty Cargo cache for the target and profile.
 Cargo marked both `bu-sys` and `yes` fresh in each no-op build. After changing
 the default word from `y` to `Y` in a scratch copy, Cargo rebuilt only `yes`.
+On the R240, `dev-box` saved 19.20 s on that edit and left the no-op time
+near 1.1 s. That favors `dev-box` for the PR 4 `btest` edit-and-test loop.
 
-## Build commands
+## Mac build commands
 
 Run from the checkout root in Bash. The retained E25 fixture and `bld` are
-inputs. Cargo writes all outputs under `proof`.
+inputs. Cargo uses a scratch directory for its outputs.
 
 ```bash
 mkdir -p target
@@ -69,9 +71,9 @@ arm_rustc="$HOME/Library/Caches/breenix-e25/ak5/build/aarch64-apple-darwin/stage
 breenix_build "$arm_fixture" "$arm_rustc" aarch64-breenix release > "$proof/guest-aarch64-release.log" 2>&1
 ```
 
-The release binary for each Darwin target was a Mach-O executable. The
-release binary for each Breenix target was a statically linked ELF executable.
-All four release builds completed with warnings denied.
+The two Darwin release binaries were Mach-O executables. The two Breenix
+release binaries were statically linked ELFs. Each of the four release builds
+completed with warnings denied.
 
 ## Mac execution
 
@@ -100,5 +102,57 @@ for profile in release dev-box; do
 done
 ```
 
-No on-box evidence was gathered in this run. DEV-14(2d)'s cross-box SHA-256
-comparison remains open.
+## R240 run
+
+The persistent session was `20261127T090032Z-metal` (DEV-19). The box used
+toolchain `x86_64-a763a7dd-e231546f` from `/opt/breenix/rust/CURRENT`.
+`bdev sync --delete` used `bsync` to sync `userland`, `toolchain`,
+`libs/libbreenix`, `libs/input-abi`, `libs/breengel-abi` and `libs/gpu-abi`.
+The box's tree stamp matched the clean stamp for `4ca49412` from the sync.
+The timed builds used a scratch copy of the synced workspace and a fresh
+target directory on the home partition. Release ran first. The profiles
+had separate artifact directories and shared Cargo's compiler probe cache.
+The one-line edit was confined to the scratch copy.
+
+The installed system lacked a `bcargo` executable, so the timing script
+ran a temporary `bcargo` wrapper using PR 2's Cargo recipe. It read `CURRENT`
+and used the selected Cargo and compiler, the same linker flags shown in
+the Mac commands, and `-Z unstable-options -C "$source/userland"` to set
+the working directory. The environment was cleared with `env -i` and set
+to `PATH=/bin`, a scratch `HOME`, `CARGO_HOME` and `TMPDIR`, and the selected
+toolchain's `RUSTC` and `RUST_TARGET_PATH`. The wrapper ran `/bin/time -p`
+around `env -i` and Cargo.
+
+Two attempts stopped at Cargo's compiler probe with a loader
+`MissingDependency` for `librustc_driver`, the symptom tracked in [#3208].
+Reading the expanded RUNPATH candidate returned the ELF magic, and the
+standalone installed compiler reported its expected version. For the timed
+run, `bcargo` set `RUSTC_WRAPPER` to the following launcher. Its time is
+included in the R240 measurements.
+
+```sh
+#!/bin/sh
+set -eu
+compiler=$1
+/bin/head -c 4 "${compiler%/*}/../lib/librustc_driver-2e1bf4637bebadba.so" > /dev/null
+exec "$@"
+```
+
+Before the edit, the release binary printed `y` on each of three lines
+through `head -n 3`. With operands `a b`, it printed `a b` on each of three
+lines.
+
+## Release SHA-256 comparison
+
+The unedited x86-64 Breenix `yes` built on the Mac with the E25 compiler
+and `bld` twins matched the R240 binary byte for byte (DEV-14(2d)). The
+Mac sysroot, target spec, libc archive and linker script matched the
+files listed in the CURRENT toolchain manifest. This compared the Mac
+image build recipe's artifact directly, before packaging an image.
+
+| Builder | SHA-256 |
+| --- | --- |
+| Mac, x86-64 Breenix | `1fd1ca8f4f393505513b097c8ef4b4deb35756c804a681e2a3dc53da5a8148a9` |
+| R240, x86-64 Breenix | `1fd1ca8f4f393505513b097c8ef4b4deb35756c804a681e2a3dc53da5a8148a9` |
+
+[#3208]: https://github.com/ryanbreen/breenix/issues/3208
