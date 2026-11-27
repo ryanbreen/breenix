@@ -1,885 +1,581 @@
-//! Intel 82540EM (e1000) Gigabit Ethernet Driver
+//! Intel 82540EM (e1000) and 82574 (e1000e) Gigabit Ethernet.
 //!
-//! This driver supports the Intel 82540EM NIC which is the default network
-//! card emulated by QEMU. It implements basic packet transmission and reception
-//! using memory-mapped I/O and descriptor rings.
+//! Clean room: written only from Intel's "PCI/PCI-X Family of Gigabit Ethernet
+//! Controllers Software Developer's Manual" (317453006, revision 4.0), the
+//! "Intel 82574 GbE Controller Family Datasheet" (317694, revision 3.3), the
+//! PCI Local Bus 3.0 specification and the Arm Architecture Reference Manual
+//! (cache maintenance and barriers). No other driver's source was read.
+//! `nic.rs` holds the MAC programming with its section references; this file
+//! attaches it to the kernel: PCI discovery, the register window, DMA memory,
+//! locking and the interrupt entry.
 //!
-//! # References
-//! - Intel PCI/PCI-X Family of Gigabit Ethernet Controllers Software Developer's Manual
-//! - OSDev Wiki: https://wiki.osdev.org/Intel_8254x
+//! The functions this binds: the 82540EM (8086:100E), QEMU's default x86-64
+//! NIC, and the 82574L (8086:10D3), which VMware Fusion presents to ARM64
+//! guests as `e1000e`.
+//!
+//! Interrupts: on x86-64 the function interrupts by MSI where it can, or on
+//! the IRQ 10 or 11 line its Interrupt Line register names (`drivers::init`). Its causes stay masked until the driver state
+//! is published. `handle_interrupt` acknowledges ICR through the register
+//! window, without a lock, and raises NetRx. On ARM64 the causes stay masked
+//! and `net::rx_poll` polls `can_receive` once per tick.
+//!
+//! Memory, taken from outside the kernel heap:
+//! - The descriptor rings share one page. The device writes descriptors back
+//!   next to ones the CPU writes, four to a 64-byte line, so on ARM64 they
+//!   live in the kernel's non-cacheable `.dma` section (the linker script and
+//!   the loader map it Normal Non-Cacheable), where no CPU cache line can
+//!   overwrite a write-back; barriers order them against the tail writes. On
+//!   x86-64, whose DMA is cache-coherent, the page is a frame from the frame
+//!   allocator.
+//! - Buffers: each further frame holds two 2048-byte buffers. A buffer is a
+//!   whole number of cache lines and belongs to one descriptor, so on ARM64
+//!   the CPU cleans one after writing it and invalidates one before reading
+//!   it (DC CIVAC by the CTR_EL0 line size).
+//! The memory stays with the device for the kernel's lifetime.
 
+mod nic;
 mod regs;
 
-use alloc::boxed::Box;
-use alloc::vec::Vec;
-use core::ptr::{read_volatile, write_volatile};
-use core::sync::atomic::{AtomicBool, Ordering};
-#[cfg(target_arch = "x86_64")]
-use core::sync::atomic::AtomicUsize;
+use core::sync::atomic::{compiler_fence, AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use spin::Mutex;
 
-use crate::drivers::pci::{self, Device, INTEL_VENDOR_ID};
-use crate::memory::PhysAddrWrapper as PhysAddr;
-
-pub use regs::*;
-
-/// Intel 82540EM device ID (QEMU default)
-#[allow(dead_code)] // Used in init() for device detection
-pub const E1000_DEVICE_ID: u16 = 0x100E;
-
-/// Intel 82574L device ID (VMware e1000e)
-#[allow(dead_code)] // Used in init() for device detection
-pub const E1000E_DEVICE_ID: u16 = 0x10D3;
-
-/// Number of receive descriptors (must be multiple of 8)
-const RX_RING_SIZE: usize = 32;
-/// Number of transmit descriptors (must be multiple of 8)
-const TX_RING_SIZE: usize = 32;
-/// Size of each receive buffer
-const RX_BUFFER_SIZE: usize = 2048;
-
-/// Maximum Ethernet frame size (including header and CRC)
-#[allow(dead_code)] // Public API for network stack
-pub const ETH_FRAME_MAX: usize = 1518;
-
-/// Receive descriptor (16 bytes)
-#[repr(C, align(16))]
-#[derive(Clone, Copy, Debug)]
-pub struct RxDesc {
-    /// Physical address of the receive buffer
-    pub addr: u64,
-    /// Length of received data
-    pub length: u16,
-    /// Checksum
-    pub checksum: u16,
-    /// Status bits
-    pub status: u8,
-    /// Error bits
-    pub errors: u8,
-    /// Special/VLAN tag
-    pub special: u16,
-}
-
-impl RxDesc {
-    const fn new() -> Self {
-        RxDesc {
-            addr: 0,
-            length: 0,
-            checksum: 0,
-            status: 0,
-            errors: 0,
-            special: 0,
-        }
-    }
-
-    /// Check if this descriptor has been filled by hardware
-    /// Uses volatile read since hardware writes to this field asynchronously
-    pub fn is_done(&self) -> bool {
-        let status = unsafe { read_volatile(&self.status) };
-        status & RXD_STAT_DD != 0
-    }
-
-    /// Check if this is the end of a packet
-    #[allow(dead_code)] // Part of RX descriptor API for multi-packet handling
-    pub fn is_eop(&self) -> bool {
-        self.status & RXD_STAT_EOP != 0
-    }
-}
-
-/// Transmit descriptor (16 bytes)
-#[repr(C, align(16))]
-#[derive(Clone, Copy, Debug)]
-pub struct TxDesc {
-    /// Physical address of the transmit buffer
-    pub addr: u64,
-    /// Length of data to transmit
-    pub length: u16,
-    /// Checksum offset
-    pub cso: u8,
-    /// Command bits
-    pub cmd: u8,
-    /// Status bits
-    pub status: u8,
-    /// Checksum start
-    pub css: u8,
-    /// Special/VLAN tag
-    pub special: u16,
-}
-
-impl TxDesc {
-    const fn new() -> Self {
-        TxDesc {
-            addr: 0,
-            length: 0,
-            cso: 0,
-            cmd: 0,
-            status: 0,
-            css: 0,
-            special: 0,
-        }
-    }
-
-    /// Check if this descriptor has been processed by hardware
-    /// Uses volatile read since hardware writes to this field asynchronously
-    pub fn is_done(&self) -> bool {
-        // Memory barrier to ensure we see the latest value from RAM
-        core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
-        let status = unsafe { read_volatile(&self.status) };
-        status & TXD_STAT_DD != 0
-    }
-}
-
-/// E1000 driver state
-pub struct E1000 {
-    /// PCI device information
-    #[cfg_attr(target_arch = "aarch64", allow(dead_code))] // ARM64 uses polling.
-    pci_device: Device,
-    /// PCI device ID (0x100E = 82540EM, 0x10D3 = 82574L)
-    device_id: u16,
-    /// Base address of MMIO registers
-    mmio_base: usize,
-    /// Receive descriptor ring
-    rx_ring: Box<[RxDesc; RX_RING_SIZE]>,
-    /// Receive buffers
-    rx_buffers: Vec<Box<[u8; RX_BUFFER_SIZE]>>,
-    /// Transmit descriptor ring
-    tx_ring: Box<[TxDesc; TX_RING_SIZE]>,
-    /// Transmit buffers (pre-allocated, reused for DMA)
-    tx_buffers: Vec<Box<[u8; ETH_FRAME_MAX]>>,
-    /// Current receive descriptor index
-    rx_cur: usize,
-    /// Current transmit descriptor index
-    tx_cur: usize,
-    /// MAC address
-    mac_addr: [u8; 6],
-}
-
-impl E1000 {
-    /// Read a 32-bit register
-    fn read_reg(&self, reg: u32) -> u32 {
-        unsafe { read_volatile((self.mmio_base + reg as usize) as *const u32) }
-    }
-
-    /// Write a 32-bit register
-    fn write_reg(&self, reg: u32, value: u32) {
-        unsafe { write_volatile((self.mmio_base + reg as usize) as *mut u32, value) }
-    }
-
-    /// Poll MDIC until the MAC finishes a PHY transaction.
-    ///
-    /// Linux e1000e does the same bounded READY poll in
-    /// drivers/net/ethernet/intel/e1000e/phy.c:141-156 and :195-210.
-    fn poll_mdic_ready(&self) -> Result<u32, &'static str> {
-        for _ in 0..100_000 {
-            let mdic = self.read_reg(REG_MDIC);
-            if mdic & MDIC_READY != 0 {
-                return Ok(mdic);
-            }
-            core::hint::spin_loop();
-        }
-
-        Err("MDIC timeout")
-    }
-
-    /// Read one PHY register through MDIC.
-    ///
-    /// Matches Linux e1000e's MDIC read command shape in
-    /// drivers/net/ethernet/intel/e1000e/phy.c:119-170.
-    fn read_phy_reg(&self, reg: u32) -> Result<u16, &'static str> {
-        if reg > 0x1f {
-            return Err("PHY register out of range");
-        }
-
-        let mdic = (reg << MDIC_REG_SHIFT) | (PHY_ADDR_82574 << MDIC_PHY_SHIFT) | MDIC_OP_READ;
-        self.write_reg(REG_MDIC, mdic);
-
-        let mdic = self.poll_mdic_ready()?;
-        if mdic & MDIC_ERROR != 0 {
-            return Err("MDIC read error");
-        }
-        if ((mdic & MDIC_REG_MASK) >> MDIC_REG_SHIFT) != reg {
-            return Err("MDIC read offset mismatch");
-        }
-
-        Ok((mdic & MDIC_DATA_MASK) as u16)
-    }
-
-    /// Write one PHY register through MDIC.
-    ///
-    /// Matches Linux e1000e's MDIC write command shape in
-    /// drivers/net/ethernet/intel/e1000e/phy.c:176-224.
-    fn write_phy_reg(&self, reg: u32, data: u16) -> Result<(), &'static str> {
-        if reg > 0x1f {
-            return Err("PHY register out of range");
-        }
-
-        let mdic = (data as u32)
-            | (reg << MDIC_REG_SHIFT)
-            | (PHY_ADDR_82574 << MDIC_PHY_SHIFT)
-            | MDIC_OP_WRITE;
-        self.write_reg(REG_MDIC, mdic);
-
-        let mdic = self.poll_mdic_ready()?;
-        if mdic & MDIC_ERROR != 0 {
-            return Err("MDIC write error");
-        }
-        if ((mdic & MDIC_REG_MASK) >> MDIC_REG_SHIFT) != reg {
-            return Err("MDIC write offset mismatch");
-        }
-
-        Ok(())
-    }
-
-    /// Restart copper PHY autoneg on VMware's 82574L.
-    ///
-    /// This is the minimal BM/M88 setup path from Linux e1000e:
-    /// MDIC transactions from phy.c:119-232, copper setup from phy.c:675-812,
-    /// and autoneg start/check flow from phy.c:1135-1175 and :1728-1762.
-    fn init_phy_82574(&self) {
-        let control = match self.read_phy_reg(PHY_CONTROL) {
-            Ok(control) => control,
-            Err(err) => {
-                #[cfg(target_arch = "x86_64")]
-                log::warn!("E1000: 82574 PHY control read failed: {}", err);
-                #[cfg(target_arch = "aarch64")]
-                crate::serial_println!("[e1000] 82574 PHY control read failed: {}", err);
-                return;
-            }
-        };
-
-        let new_control = control | PHY_CONTROL_AUTONEG_EN | PHY_CONTROL_RESTART_AUTONEG;
-        if let Err(err) = self.write_phy_reg(PHY_CONTROL, new_control) {
-            #[cfg(target_arch = "x86_64")]
-            log::warn!("E1000: 82574 PHY autoneg restart failed: {}", err);
-            #[cfg(target_arch = "aarch64")]
-            crate::serial_println!("[e1000] 82574 PHY autoneg restart failed: {}", err);
-            return;
-        }
-
-        let status = self.read_phy_reg(PHY_STATUS).unwrap_or(0);
-        #[cfg(target_arch = "x86_64")]
-        log::info!(
-            "E1000: 82574 PHY autoneg restarted (PHY_CONTROL={:#x}, PHY_STATUS={:#x})",
-            new_control,
-            status
-        );
-        #[cfg(target_arch = "aarch64")]
-        crate::serial_println!(
-            "[e1000] 82574 PHY autoneg restarted (PHY_CONTROL={:#x}, PHY_STATUS={:#x})",
-            new_control,
-            status
-        );
-    }
-
-    /// Read MAC address from EEPROM (with timeout)
-    /// Returns None if the EEPROM doesn't respond within the timeout.
-    fn read_eeprom(&self, addr: u8) -> Option<u16> {
-        if self.device_id == E1000E_DEVICE_ID {
-            // 82574L (e1000e): DONE=bit 1, ADDR_SHIFT=2
-            self.write_reg(REG_EERD, ((addr as u32) << 2) | EERD_START);
-            for _ in 0..100_000 {
-                let val = self.read_reg(REG_EERD);
-                if val & (1 << 1) != 0 {
-                    return Some(((val >> EERD_DATA_SHIFT) & 0xFFFF) as u16);
-                }
-                core::hint::spin_loop();
-            }
-        } else {
-            // 82540EM: DONE=bit 4, ADDR_SHIFT=8
-            self.write_reg(REG_EERD, ((addr as u32) << EERD_ADDR_SHIFT) | EERD_START);
-            for _ in 0..100_000 {
-                let val = self.read_reg(REG_EERD);
-                if val & EERD_DONE != 0 {
-                    return Some(((val >> EERD_DATA_SHIFT) & 0xFFFF) as u16);
-                }
-                core::hint::spin_loop();
-            }
-        }
-        None
-    }
-
-    /// Read MAC address from RAL/RAH registers (works on all Intel NICs)
-    fn read_mac_from_ral(&self) -> [u8; 6] {
-        let ral = self.read_reg(REG_RAL);
-        let rah = self.read_reg(REG_RAH);
-        [
-            (ral & 0xFF) as u8,
-            ((ral >> 8) & 0xFF) as u8,
-            ((ral >> 16) & 0xFF) as u8,
-            ((ral >> 24) & 0xFF) as u8,
-            (rah & 0xFF) as u8,
-            ((rah >> 8) & 0xFF) as u8,
-        ]
-    }
-
-    /// Read MAC address from EEPROM, falling back to RAL/RAH registers
-    fn read_mac_address(&self) -> [u8; 6] {
-        // Try EEPROM first
-        if let (Some(word0), Some(word1), Some(word2)) = (
-            self.read_eeprom(0),
-            self.read_eeprom(1),
-            self.read_eeprom(2),
-        ) {
-            let mac = [
-                (word0 & 0xFF) as u8,
-                ((word0 >> 8) & 0xFF) as u8,
-                (word1 & 0xFF) as u8,
-                ((word1 >> 8) & 0xFF) as u8,
-                (word2 & 0xFF) as u8,
-                ((word2 >> 8) & 0xFF) as u8,
-            ];
-            // Validate MAC (not all zeros or all FFs)
-            if mac != [0; 6] && mac != [0xFF; 6] {
-                return mac;
-            }
-        }
-        // Fallback: read from RAL/RAH registers (pre-loaded by hardware/VMware)
-        self.read_mac_from_ral()
-    }
-
-    /// The physical address the device is given for a kernel buffer. An
-    /// address with no translation is refused rather than programmed as is.
-    fn virt_to_phys(virt: usize) -> Result<u64, &'static str> {
-        PhysAddr::from_kernel_virt(virt).map_err(|_| "E1000: DMA buffer has no physical translation")
-    }
-
-    /// Reset the device
-    fn reset(&self) {
-        // Disable interrupts
-        self.write_reg(REG_IMC, 0xFFFF_FFFF);
-
-        // Reset the device
-        let ctrl = self.read_reg(REG_CTRL);
-        self.write_reg(REG_CTRL, ctrl | CTRL_RST);
-
-        // Wait for reset to complete (typically < 1ms)
-        for _ in 0..1000 {
-            if self.read_reg(REG_CTRL) & CTRL_RST == 0 {
-                break;
-            }
-            // Small delay
-            for _ in 0..1000 {
-                core::hint::spin_loop();
-            }
-        }
-
-        // Disable interrupts again after reset
-        self.write_reg(REG_IMC, 0xFFFF_FFFF);
-    }
-
-    /// Initialize receive functionality
-    fn init_rx(&mut self, rx_ring_phys: u64) {
-        // Set up receive descriptor ring physical address
-        self.write_reg(REG_RDBAL, rx_ring_phys as u32);
-        self.write_reg(REG_RDBAH, (rx_ring_phys >> 32) as u32);
-
-        // Set receive descriptor ring length
-        self.write_reg(
-            REG_RDLEN,
-            (RX_RING_SIZE * core::mem::size_of::<RxDesc>()) as u32,
-        );
-
-        // Set head and tail pointers
-        self.write_reg(REG_RDH, 0);
-        self.write_reg(REG_RDT, (RX_RING_SIZE - 1) as u32);
-
-        // Configure receive control register
-        // Enable receiver, accept broadcast, 2KB buffers, strip CRC
-        // Note: BSEX is NOT set — it changes buffer size semantics
-        self.write_reg(REG_RCTL, RCTL_EN | RCTL_BAM | RCTL_SZ_2048 | RCTL_SECRC);
-
-        #[cfg(target_arch = "x86_64")]
-        log::info!("E1000: RX initialized with {} descriptors", RX_RING_SIZE);
-        #[cfg(target_arch = "aarch64")]
-        crate::serial_println!("[e1000] RX initialized with {} descriptors", RX_RING_SIZE);
-    }
-
-    /// Initialize transmit functionality
-    fn init_tx(&mut self, tx_ring_phys: u64) {
-        // Set up transmit descriptor ring physical address
-        self.write_reg(REG_TDBAL, tx_ring_phys as u32);
-        self.write_reg(REG_TDBAH, (tx_ring_phys >> 32) as u32);
-
-        // Set transmit descriptor ring length
-        let tdlen = (TX_RING_SIZE * core::mem::size_of::<TxDesc>()) as u32;
-        self.write_reg(REG_TDLEN, tdlen);
-
-        // Set head and tail pointers
-        self.write_reg(REG_TDH, 0);
-        self.write_reg(REG_TDT, 0);
-
-        // Configure transmit control register
-        // Enable transmitter, pad short packets, collision threshold, collision distance
-        let tctl = TCTL_EN | TCTL_PSP | (0x10 << TCTL_CT_SHIFT) | (0x40 << TCTL_COLD_SHIFT);
-        self.write_reg(REG_TCTL, tctl);
-
-        // Set inter-packet gap
-        // IPG transmit time: 10 + 8 + 6 (for IEEE 802.3 standard)
-        self.write_reg(REG_TIPG, 10 | (8 << 10) | (6 << 20));
-
-        if self.device_id == E1000E_DEVICE_ID {
-            let threshold_mask = TXDCTL_PTHRESH | TXDCTL_HTHRESH | TXDCTL_WTHRESH;
-            let mut txdctl = self.read_reg(REG_TXDCTL);
-            txdctl &= !threshold_mask;
-            txdctl |= TXDCTL_MAX_TX_DESC_PREFETCH | TXDCTL_FULL_TX_DESC_WB | TXDCTL_COUNT_DESC;
-            self.write_reg(REG_TXDCTL, txdctl);
-            self.write_reg(REG_TXDCTL1, txdctl);
-
-            #[cfg(target_arch = "x86_64")]
-            log::info!("E1000: 82574 TXDCTL writeback policy {:#x}", txdctl);
-            #[cfg(target_arch = "aarch64")]
-            crate::serial_println!("[e1000] 82574 TXDCTL writeback policy {:#x}", txdctl);
-        }
-
-        #[cfg(target_arch = "x86_64")]
-        log::info!("E1000: TX initialized with {} descriptors", TX_RING_SIZE);
-        #[cfg(target_arch = "aarch64")]
-        crate::serial_println!("[e1000] TX initialized with {} descriptors", TX_RING_SIZE);
-    }
-
-    /// Set up the MAC address filter
-    fn init_mac_filter(&self) {
-        let mac = &self.mac_addr;
-
-        // Write to Receive Address Low (RAL)
-        let ral = (mac[0] as u32)
-            | ((mac[1] as u32) << 8)
-            | ((mac[2] as u32) << 16)
-            | ((mac[3] as u32) << 24);
-        self.write_reg(REG_RAL, ral);
-
-        // Write to Receive Address High (RAH) with Address Valid bit
-        let rah = (mac[4] as u32) | ((mac[5] as u32) << 8) | RAH_AV;
-        self.write_reg(REG_RAH, rah);
-
-        // Clear Multicast Table Array
-        for i in 0..128 {
-            self.write_reg(REG_MTA + (i * 4), 0);
-        }
-    }
-
-    /// Enable link
-    fn enable_link(&self) {
-        let ctrl = self.read_reg(REG_CTRL);
-        // Set Link Up and Auto-Speed Detection Enable, matching Linux
-        // drivers/net/ethernet/intel/e1000e/82571.c:1421-1429.
-        self.write_reg(REG_CTRL, ctrl | CTRL_SLU | CTRL_ASDE);
-
-        if self.device_id == E1000E_DEVICE_ID {
-            self.init_phy_82574();
-        }
-    }
-
-    /// Check if link is up
-    pub fn link_up(&self) -> bool {
-        self.read_reg(REG_STATUS) & STATUS_LU != 0
-    }
-
-    /// Get link speed in Mbps
-    pub fn link_speed(&self) -> u32 {
-        let status = self.read_reg(REG_STATUS);
-        match (status >> 6) & 0x3 {
-            0b00 => 10,
-            0b01 => 100,
-            _ => 1000,
-        }
-    }
-
-    /// Get MAC address
-    pub fn mac_address(&self) -> &[u8; 6] {
-        &self.mac_addr
-    }
-
-    /// Transmit a packet
-    pub fn transmit(&mut self, data: &[u8]) -> Result<(), &'static str> {
-        if data.len() > ETH_FRAME_MAX {
-            return Err("Packet too large");
-        }
-
-        let idx = self.tx_cur;
-
-        // Check if the descriptor is available
-        // The buffer can be reused once the descriptor's DD bit is set
-        if !self.tx_ring[idx].is_done() {
-            let cmd = unsafe { read_volatile(&self.tx_ring[idx].cmd) };
-            if cmd & TXD_CMD_RS != 0 {
-                return Err("TX ring full");
-            }
-        }
-
-        // Copy data to the pre-allocated buffer at this index
-        // This buffer is reused - no allocation needed
-        let tx_buffer = &mut self.tx_buffers[idx];
-        tx_buffer[..data.len()].copy_from_slice(data);
-        let buf_virt = tx_buffer.as_ptr() as usize;
-        let phys_addr = Self::virt_to_phys(buf_virt)?;
-
-        // Set up the descriptor using volatile writes to ensure hardware sees the values
-        let desc = &mut self.tx_ring[idx];
-        unsafe {
-            write_volatile(&mut desc.addr, phys_addr);
-            write_volatile(&mut desc.length, data.len() as u16);
-            write_volatile(&mut desc.cso, 0);
-            write_volatile(&mut desc.css, 0);
-            write_volatile(&mut desc.special, 0);
-            write_volatile(&mut desc.status, 0);
-            // Write cmd last - this signals the descriptor is ready
-            write_volatile(&mut desc.cmd, TXD_CMD_EOP | TXD_CMD_IFCS | TXD_CMD_RS);
-        }
-
-        // Memory barrier to ensure all descriptor writes are visible before tail update
-        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
-
-        // Advance tail pointer
-        self.tx_cur = (self.tx_cur + 1) % TX_RING_SIZE;
-        self.write_reg(REG_TDT, self.tx_cur as u32);
-
-        // Wait for transmit to complete (polling for now)
-        for _ in 0..100000 {
-            if self.tx_ring[idx].is_done() {
-                // Buffer remains allocated in tx_buffers[idx] for reuse
-                return Ok(());
-            }
-            core::hint::spin_loop();
-        }
-
-        // Check status after timeout
-        let _tdh_after = self.read_reg(REG_TDH);
-        let _tdt_after = self.read_reg(REG_TDT);
-        let _status = unsafe { read_volatile(&self.tx_ring[idx].status) };
-        #[cfg(target_arch = "x86_64")]
-        log::warn!(
-            "E1000: TX timeout TDH={} TDT={} desc.status={:#x}",
-            _tdh_after,
-            _tdt_after,
-            _status
-        );
-        #[cfg(target_arch = "aarch64")]
-        crate::serial_println!(
-            "[e1000] TX timeout TDH={} TDT={} desc.status={:#x}",
-            _tdh_after,
-            _tdt_after,
-            _status
-        );
-
-        Err("TX timeout")
-    }
-
-    /// Check if a packet is available to receive
-    pub fn can_receive(&self) -> bool {
-        self.rx_ring[self.rx_cur].is_done()
-    }
-
-    /// Receive a packet
-    /// Returns the number of bytes received and copies data to the provided buffer
-    pub fn receive(&mut self, buffer: &mut [u8]) -> Result<usize, &'static str> {
-        let idx = self.rx_cur;
-
-        if !self.rx_ring[idx].is_done() {
-            return Err("No packet available");
-        }
-
-        let desc = &self.rx_ring[idx];
-        let len = desc.length as usize;
-
-        if len > buffer.len() {
-            return Err("Buffer too small");
-        }
-
-        // Check for errors
-        if desc.errors != 0 {
-            // Reset the descriptor for reuse
-            self.rx_ring[idx].status = 0;
-            self.rx_ring[idx].errors = 0;
-            let old_tail = self.read_reg(REG_RDT);
-            self.write_reg(REG_RDT, (old_tail + 1) % RX_RING_SIZE as u32);
-            self.rx_cur = (self.rx_cur + 1) % RX_RING_SIZE;
-            return Err("Receive error");
-        }
-
-        // Copy data from the receive buffer
-        let rx_buf = &self.rx_buffers[idx];
-        buffer[..len].copy_from_slice(&rx_buf[..len]);
-
-        // Reset the descriptor for reuse
-        self.rx_ring[idx].status = 0;
-        self.rx_ring[idx].length = 0;
-
-        // Advance tail pointer to give buffer back to hardware
-        let old_tail = self.read_reg(REG_RDT);
-        self.write_reg(REG_RDT, (old_tail + 1) % RX_RING_SIZE as u32);
-
-        // Advance our current index
-        self.rx_cur = (self.rx_cur + 1) % RX_RING_SIZE;
-
-        Ok(len)
-    }
-
-    /// Enable interrupts
-    pub fn enable_interrupts(&self) {
-        // Enable RX timer, TX descriptor written back, and link status change
-        self.write_reg(REG_IMS, IMS_RXT0 | IMS_TXDW | IMS_LSC);
-
-        // Set receive delay timer to 0 for immediate interrupts
-        self.write_reg(REG_RDTR, 0);
-        self.write_reg(REG_RADV, 0);
-    }
-
-    /// Disable interrupts
-    #[allow(dead_code)] // Will be used when interrupt handler is wired up
-    pub fn disable_interrupts(&self) {
-        self.write_reg(REG_IMC, 0xFFFF_FFFF);
-    }
-}
-
-/// Global E1000 driver instance
-static E1000_DRIVER: Mutex<Option<E1000>> = Mutex::new(None);
-static E1000_INITIALIZED: AtomicBool = AtomicBool::new(false);
-/// The register window the interrupt handler acknowledges through, published
-/// before `E1000_INITIALIZED`, so the handler never takes `E1000_DRIVER`.
+#[cfg(target_arch = "aarch64")]
+use crate::arch_impl::aarch64::timer as counter;
 #[cfg(target_arch = "x86_64")]
-static IRQ_MMIO_BASE: AtomicUsize = AtomicUsize::new(0);
+use crate::arch_impl::x86_64::timer as counter;
+use crate::drivers::pci::{self, Device, INTEL_VENDOR_ID};
+use nic::{Model, Nic, Registers, Rings};
 
-/// Run `f` on the driver with interrupts masked, so no interrupt or preemption
-/// reaches a holder. On x86 the NetRx softirq takes this lock at interrupt
-/// exit on the CPU that took the interrupt. A holder preempted there that can
-/// run only on that CPU (a pinned kernel thread such as ksoftirqd) would leave
-/// the CPU spinning on the lock with interrupts off for good, and every device
-/// interrupt routed to it undelivered (#1442).
-fn with_driver<R>(f: impl FnOnce(&mut E1000) -> R) -> Option<R> {
-    crate::arch_without_interrupts(|| E1000_DRIVER.lock().as_mut().map(f))
+/// Intel 82540EM device ID (SDM 5.2, Table 5-1).
+pub const E1000_DEVICE_ID: u16 = nic::I82540EM_DEVICE_ID;
+/// Intel 82574L device ID (DS 9.1.2.2).
+pub const E1000E_DEVICE_ID: u16 = nic::I82574_DEVICE_ID;
+
+const PAGE: usize = 4096;
+const BUFFERS_PER_PAGE: usize = PAGE / nic::BUFFER_SIZE;
+const RX_PAGES: usize = nic::RX_RING / BUFFERS_PER_PAGE;
+const TX_PAGES: usize = nic::TX_RING / BUFFERS_PER_PAGE;
+/// The transmit ring follows the receive ring in the ring page.
+const TX_RING_OFFSET: usize = nic::RX_RING * nic::DESCRIPTOR_BYTES;
+const _: () = assert!(TX_RING_OFFSET + nic::TX_RING * nic::DESCRIPTOR_BYTES <= PAGE);
+
+/// Counter rate assumed while x86's TSC rate is not yet known: above any TSC,
+/// so a delay is not shorter than asked.
+#[cfg(target_arch = "x86_64")]
+const UNCALIBRATED_COUNTER_HZ: u64 = 10_000_000_000;
+
+static DRIVER: Mutex<Option<Driver>> = Mutex::new(None);
+static INITIALIZED: AtomicBool = AtomicBool::new(false);
+/// The mapped register window, published once the function is running; the
+/// interrupt entry and `link_up` use it without taking `DRIVER`.
+static REGISTER_BASE: AtomicUsize = AtomicUsize::new(0);
+/// The model, for the interrupt entry.
+#[cfg(target_arch = "x86_64")]
+static IS_82574: AtomicBool = AtomicBool::new(false);
+/// The station address, bytes 0-5 in bits 0-47.
+static STATION_ADDRESS: AtomicU64 = AtomicU64::new(0);
+
+struct Driver {
+    nic: Nic,
+    hw: Hardware,
+    #[cfg(target_arch = "x86_64")]
+    device: Device,
 }
 
-/// Initialize the E1000 driver
-pub fn init() -> Result<(), &'static str> {
-    // Find the E1000 device on the PCI bus (try 82540EM then 82574L)
-    let (device, found_device_id) = pci::find_device(INTEL_VENDOR_ID, E1000_DEVICE_ID)
-        .map(|d| (d, E1000_DEVICE_ID))
-        .or_else(|| {
-            pci::find_device(INTEL_VENDOR_ID, E1000E_DEVICE_ID).map(|d| (d, E1000E_DEVICE_ID))
-        })
-        .ok_or("E1000 device not found on PCI bus")?;
+/// BAR0's register window (SDM 13.1; DS 10.1).
+struct Window {
+    base: usize,
+}
 
+impl Registers for Window {
+    fn read(&mut self, offset: u32) -> u32 {
+        // SAFETY: `base` maps the function's BAR0 and each offset in
+        // regs.rs lies inside it.
+        unsafe { core::ptr::read_volatile((self.base + offset as usize) as *const u32) }
+    }
+
+    fn write(&mut self, offset: u32, value: u32) {
+        // Descriptor and buffer stores before a tail write must not move
+        // after it. On ARM64 those stores already ended in `dsb sy`.
+        compiler_fence(Ordering::SeqCst);
+        // SAFETY: as for `read`.
+        unsafe { core::ptr::write_volatile((self.base + offset as usize) as *mut u32, value) }
+    }
+
+    fn delay_us(&mut self, us: u32) {
+        delay_us(us)
+    }
+}
+
+/// Spin for at least `us` microseconds of the architecture's counter: the
+/// TSC on x86-64, CNTVCT_EL0 at CNTFRQ_EL0 on ARM64.
+fn delay_us(us: u32) {
+    let hz = counter::frequency_hz();
     #[cfg(target_arch = "x86_64")]
-    log::info!(
-        "E1000: Found device {:04x} at {:02x}:{:02x}.{} IRQ={}",
-        found_device_id,
+    let hz = if hz == 0 { UNCALIBRATED_COUNTER_HZ } else { hz };
+    let ticks = (u128::from(hz) * u128::from(us)).div_ceil(1_000_000) as u64;
+    let begin = counter::rdtsc();
+    while counter::rdtsc().wrapping_sub(begin) < ticks {
+        core::hint::spin_loop();
+    }
+}
+
+/// One frame from the frame allocator: its device address and its direct-map
+/// address.
+#[derive(Clone, Copy)]
+struct Page {
+    phys: u64,
+    virt: usize,
+}
+
+impl Page {
+    const NONE: Self = Self { phys: 0, virt: 0 };
+
+    fn allocate() -> Result<Self, &'static str> {
+        let frame = crate::memory::frame_allocator::allocate_frame()
+            .ok_or("e1000: out of DMA frames")?;
+        let phys = frame.start_address().as_u64();
+        let virt = (crate::memory::physical_memory_offset().as_u64() + phys) as usize;
+        // SAFETY: a frame the allocator just handed out, mapped by the direct map.
+        unsafe { core::ptr::write_bytes(virt as *mut u8, 0, PAGE) };
+        clean(virt, PAGE);
+        Ok(Self { phys, virt })
+    }
+
+    fn release(self) {
+        #[cfg(target_arch = "aarch64")]
+        use crate::memory::arch_stub::{PhysAddr, PhysFrame};
+        #[cfg(target_arch = "x86_64")]
+        use x86_64::{structures::paging::PhysFrame, PhysAddr};
+        if self.virt != 0 {
+            crate::memory::frame_allocator::deallocate_frame(PhysFrame::containing_address(
+                PhysAddr::new(self.phys),
+            ));
+        }
+    }
+}
+
+/// The ring page in ARM64's non-cacheable `.dma` section.
+#[cfg(target_arch = "aarch64")]
+#[repr(C, align(4096))]
+struct RingPage(core::cell::UnsafeCell<[u8; PAGE]>);
+
+// SAFETY: only the one attached driver uses the page: `init`, before the
+// driver is published, then holders of `DRIVER`.
+#[cfg(target_arch = "aarch64")]
+unsafe impl Sync for RingPage {}
+
+#[cfg(target_arch = "aarch64")]
+#[link_section = ".dma"]
+static RING_PAGE: RingPage = RingPage(core::cell::UnsafeCell::new([0; PAGE]));
+
+/// The page holding both descriptor rings.
+#[cfg(target_arch = "aarch64")]
+fn ring_page() -> Result<Page, &'static str> {
+    let virt = RING_PAGE.0.get() as usize;
+    // SAFETY: the page is the driver's alone (see `RingPage`); kernel start-up
+    // zeroed the section, and the device has not been given its address yet.
+    unsafe { core::ptr::write_bytes(virt as *mut u8, 0, PAGE) };
+    dma_barrier();
+    let phys = crate::platform_config::kernel_va_to_ipa(virt as u64);
+    Ok(Page { phys, virt })
+}
+
+#[cfg(target_arch = "x86_64")]
+fn ring_page() -> Result<Page, &'static str> {
+    Page::allocate()
+}
+
+/// The register window and the DMA memory the rings use.
+struct Hardware {
+    window: Window,
+    rings: Page,
+    rx: [Page; RX_PAGES],
+    tx: [Page; TX_PAGES],
+}
+
+impl Hardware {
+    fn new(base: usize) -> Result<Self, &'static str> {
+        let mut hw = Self {
+            window: Window { base },
+            rings: ring_page()?,
+            rx: [Page::NONE; RX_PAGES],
+            tx: [Page::NONE; TX_PAGES],
+        };
+        let allocated = (|| -> Result<(), &'static str> {
+            for page in hw.rx.iter_mut().chain(hw.tx.iter_mut()) {
+                *page = Page::allocate()?;
+            }
+            Ok(())
+        })();
+        match allocated {
+            Ok(()) => Ok(hw),
+            Err(error) => {
+                hw.release();
+                Err(error)
+            }
+        }
+    }
+
+    /// Return the frames. Only before the device has been given their
+    /// addresses. ARM64's ring page is a static and stays.
+    fn release(&self) {
+        #[cfg(target_arch = "x86_64")]
+        self.rings.release();
+        for page in self.rx.iter().chain(&self.tx) {
+            page.release();
+        }
+    }
+
+    fn rx_descriptor_at(&self, index: usize) -> usize {
+        self.rings.virt + index * nic::DESCRIPTOR_BYTES
+    }
+
+    fn tx_descriptor_at(&self, index: usize) -> usize {
+        self.rings.virt + TX_RING_OFFSET + index * nic::DESCRIPTOR_BYTES
+    }
+
+    fn buffer(pages: &[Page], index: usize) -> (u64, usize) {
+        let page = pages[index / BUFFERS_PER_PAGE];
+        let offset = (index % BUFFERS_PER_PAGE) * nic::BUFFER_SIZE;
+        (page.phys + offset as u64, page.virt + offset)
+    }
+}
+
+/// Read a descriptor the device may have written back, before reading the
+/// buffer it describes.
+fn read_descriptor(at: usize) -> [u64; 2] {
+    let words = at as *const u64;
+    // SAFETY: `at` is a 16-byte-aligned descriptor inside the ring page.
+    let value = unsafe { [core::ptr::read_volatile(words), core::ptr::read_volatile(words.add(1))] };
+    dma_barrier();
+    value
+}
+
+/// Write a descriptor software owns, visible to the device before the next
+/// register write.
+fn write_descriptor(at: usize, value: [u64; 2]) {
+    let words = at as *mut u64;
+    // SAFETY: as for `read_descriptor`; software owns this descriptor.
+    unsafe {
+        core::ptr::write_volatile(words, value[0]);
+        core::ptr::write_volatile(words.add(1), value[1]);
+    }
+    dma_barrier();
+}
+
+impl Registers for Hardware {
+    fn read(&mut self, offset: u32) -> u32 {
+        self.window.read(offset)
+    }
+
+    fn write(&mut self, offset: u32, value: u32) {
+        self.window.write(offset, value)
+    }
+
+    fn delay_us(&mut self, us: u32) {
+        delay_us(us)
+    }
+}
+
+impl Rings for Hardware {
+    fn rx_ring_address(&self) -> u64 {
+        self.rings.phys
+    }
+
+    fn tx_ring_address(&self) -> u64 {
+        self.rings.phys + TX_RING_OFFSET as u64
+    }
+
+    fn rx_buffer_address(&self, index: usize) -> u64 {
+        Self::buffer(&self.rx, index).0
+    }
+
+    fn tx_buffer_address(&self, index: usize) -> u64 {
+        Self::buffer(&self.tx, index).0
+    }
+
+    fn rx_descriptor(&mut self, index: usize) -> [u64; 2] {
+        read_descriptor(self.rx_descriptor_at(index))
+    }
+
+    fn set_rx_descriptor(&mut self, index: usize, words: [u64; 2]) {
+        write_descriptor(self.rx_descriptor_at(index), words)
+    }
+
+    fn tx_descriptor(&mut self, index: usize) -> [u64; 2] {
+        read_descriptor(self.tx_descriptor_at(index))
+    }
+
+    fn set_tx_descriptor(&mut self, index: usize, words: [u64; 2]) {
+        write_descriptor(self.tx_descriptor_at(index), words)
+    }
+
+    fn read_rx_buffer(&mut self, index: usize, out: &mut [u8]) {
+        let (_, virt) = Self::buffer(&self.rx, index);
+        let length = out.len().min(nic::BUFFER_SIZE);
+        invalidate(virt, length);
+        // SAFETY: the buffer is `BUFFER_SIZE` bytes and the device has
+        // finished with it (its descriptor's DD bit was set).
+        unsafe { core::ptr::copy_nonoverlapping(virt as *const u8, out.as_mut_ptr(), length) };
+    }
+
+    fn write_tx_buffer(&mut self, index: usize, data: &[u8]) {
+        let (_, virt) = Self::buffer(&self.tx, index);
+        let length = data.len().min(nic::BUFFER_SIZE);
+        // SAFETY: software owns this slot until its descriptor is queued.
+        unsafe { core::ptr::copy_nonoverlapping(data.as_ptr(), virt as *mut u8, length) };
+        clean(virt, length);
+    }
+}
+
+/// Complete prior memory accesses before later ones and before the next
+/// device register access (Arm ARM, DSB).
+#[cfg(target_arch = "aarch64")]
+fn dma_barrier() {
+    // SAFETY: a barrier.
+    unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)) };
+}
+
+/// The smallest data cache line, from CTR_EL0.DminLine (log2 of its words).
+#[cfg(target_arch = "aarch64")]
+fn cache_line() -> usize {
+    let ctr: u64;
+    // SAFETY: CTR_EL0 is readable at EL1.
+    unsafe { core::arch::asm!("mrs {}, ctr_el0", out(reg) ctr, options(nomem, nostack)) };
+    4 << ((ctr >> 16) & 0xF)
+}
+
+/// Clean and invalidate by VA to the point of coherency (Arm ARM, DC CIVAC):
+/// after the CPU writes a buffer, so the device reads it; before the CPU reads
+/// one the device wrote, so no stale line is used.
+#[cfg(target_arch = "aarch64")]
+fn clean(start: usize, length: usize) {
+    let line = cache_line();
+    let mut at = start & !(line - 1);
+    while at < start + length {
+        // SAFETY: cache maintenance on mapped kernel memory.
+        unsafe { core::arch::asm!("dc civac, {}", in(reg) at, options(nostack)) };
+        at += line;
+    }
+    dma_barrier();
+}
+
+#[cfg(target_arch = "aarch64")]
+fn invalidate(start: usize, length: usize) {
+    clean(start, length)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn dma_barrier() {}
+
+#[cfg(target_arch = "x86_64")]
+fn clean(_start: usize, _length: usize) {}
+
+#[cfg(target_arch = "x86_64")]
+fn invalidate(_start: usize, _length: usize) {}
+
+#[cfg(target_arch = "x86_64")]
+fn map_registers(bar: &pci::Bar) -> Result<usize, &'static str> {
+    crate::memory::map_mmio(bar.address, bar.size as usize)
+}
+
+#[cfg(target_arch = "aarch64")]
+fn map_registers(bar: &pci::Bar) -> Result<usize, &'static str> {
+    Ok((crate::arch_impl::aarch64::constants::HHDM_BASE + bar.address) as usize)
+}
+
+fn find_function() -> Option<(Device, Model)> {
+    pci::get_devices()?.into_iter().find_map(|device| {
+        if device.vendor_id != INTEL_VENDOR_ID {
+            return None;
+        }
+        Model::from_device_id(device.device_id).map(|model| (device, model))
+    })
+}
+
+#[cfg(target_arch = "x86_64")]
+fn model() -> Model {
+    if IS_82574.load(Ordering::Acquire) {
+        Model::Pcie82574
+    } else {
+        Model::Pci8254x
+    }
+}
+
+fn window() -> Option<Window> {
+    let base = REGISTER_BASE.load(Ordering::Acquire);
+    (base != 0).then_some(Window { base })
+}
+
+/// Find, reset and start the first supported function. On x86-64 its
+/// interrupt causes are unmasked once the driver is published; the caller
+/// then connects MSI or INTx.
+pub fn init() -> Result<(), &'static str> {
+    if INITIALIZED.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    let (device, model) = find_function().ok_or("no Intel 82540EM or 82574 found")?;
+    let bar = *device.get_mmio_bar().ok_or("e1000: no memory BAR")?;
+    device.enable_memory_space();
+    device.enable_bus_master();
+    let base = map_registers(&bar)?;
+    let mut hw = Hardware::new(base)?;
+    let nic = match Nic::bring_up(&mut hw, model) {
+        Ok(nic) => nic,
+        Err(error) => {
+            hw.release();
+            return Err(error.as_str());
+        }
+    };
+    let mac = nic.mac();
+    crate::serial_println!(
+        "[e1000] {:?} {:02x}:{:02x}.{} mac {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} link {}",
+        model,
         device.bus,
         device.device,
         device.function,
-        device.interrupt_line
+        mac[0],
+        mac[1],
+        mac[2],
+        mac[3],
+        mac[4],
+        mac[5],
+        if nic::link_up(&mut hw) { "up" } else { "down" }
     );
-    #[cfg(target_arch = "aarch64")]
-    crate::serial_println!(
-        "[e1000] Found device {:04x} at {:02x}:{:02x}.{}",
-        found_device_id,
-        device.bus,
-        device.device,
-        device.function
-    );
-
-    // Get the MMIO BAR
-    let mmio_bar = device.get_mmio_bar().ok_or("E1000: No MMIO BAR found")?;
-
+    let mut address = [0u8; 8];
+    address[..6].copy_from_slice(&mac);
+    STATION_ADDRESS.store(u64::from_le_bytes(address), Ordering::Release);
     #[cfg(target_arch = "x86_64")]
-    log::info!(
-        "E1000: MMIO at {:#x} size {:#x}",
-        mmio_bar.address,
-        mmio_bar.size
-    );
-    #[cfg(target_arch = "aarch64")]
-    crate::serial_println!(
-        "[e1000] MMIO at {:#x} size {:#x}",
-        mmio_bar.address,
-        mmio_bar.size
-    );
-
-    // Map the MMIO region
-    // x86_64: use map_mmio (allocates VA from MMIO pool, creates page table entries)
-    // aarch64: use HHDM direct mapping (boot page tables already cover all physical addresses)
-    #[cfg(target_arch = "x86_64")]
-    let mmio_base = crate::memory::map_mmio(mmio_bar.address, mmio_bar.size as usize)?;
-    #[cfg(target_arch = "aarch64")]
-    let mmio_base = (crate::memory::physical_memory_offset().as_u64() + mmio_bar.address) as usize;
-
-    #[cfg(target_arch = "x86_64")]
-    log::info!("E1000: Mapped MMIO to {:#x}", mmio_base);
-    #[cfg(target_arch = "aarch64")]
-    crate::serial_println!("[e1000] Mapped MMIO to {:#x}", mmio_base);
-
-    // Enable bus mastering and memory space
-    device.enable_bus_master();
-    device.enable_memory_space();
-
-    // Allocate descriptor rings
-    let rx_ring = Box::new([RxDesc::new(); RX_RING_SIZE]);
-    let tx_ring = Box::new([TxDesc::new(); TX_RING_SIZE]);
-
-    // Allocate receive buffers
-    let mut rx_buffers = Vec::with_capacity(RX_RING_SIZE);
-    for _ in 0..RX_RING_SIZE {
-        rx_buffers.push(Box::new([0u8; RX_BUFFER_SIZE]));
+    IS_82574.store(model == Model::Pcie82574, Ordering::Release);
+    {
+        let _guard = crate::net::net_lock_guard();
+        let mut slot = DRIVER.lock();
+        *slot = Some(Driver {
+            nic,
+            hw,
+            #[cfg(target_arch = "x86_64")]
+            device,
+        });
     }
-
-    // Allocate transmit buffers (pre-allocated for reuse, prevents memory leaks)
-    let mut tx_buffers = Vec::with_capacity(TX_RING_SIZE);
-    for _ in 0..TX_RING_SIZE {
-        tx_buffers.push(Box::new([0u8; ETH_FRAME_MAX]));
-    }
-
-    // Create driver instance
-    let mut driver = E1000 {
-        pci_device: device,
-        device_id: found_device_id,
-        mmio_base,
-        rx_ring,
-        rx_buffers,
-        tx_ring,
-        tx_buffers,
-        rx_cur: 0,
-        tx_cur: 0,
-        mac_addr: [0; 6],
-    };
-
-    // Initialize the device
-    driver.reset();
-
-    // Read MAC address
-    driver.mac_addr = driver.read_mac_address();
+    REGISTER_BASE.store(base, Ordering::Release);
+    INITIALIZED.store(true, Ordering::Release);
+    // Only now can a cause reach a consumer: an interrupt before this point
+    // would be acknowledged by `handle_interrupt` and no consumer to drain it.
     #[cfg(target_arch = "x86_64")]
-    log::info!(
-        "E1000: MAC address {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-        driver.mac_addr[0],
-        driver.mac_addr[1],
-        driver.mac_addr[2],
-        driver.mac_addr[3],
-        driver.mac_addr[4],
-        driver.mac_addr[5]
-    );
-    #[cfg(target_arch = "aarch64")]
-    crate::serial_println!(
-        "[e1000] MAC address {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-        driver.mac_addr[0],
-        driver.mac_addr[1],
-        driver.mac_addr[2],
-        driver.mac_addr[3],
-        driver.mac_addr[4],
-        driver.mac_addr[5]
-    );
-
-    // Set up MAC address filter
-    driver.init_mac_filter();
-
-    // Set up receive buffer addresses in descriptors
-    // Translate both rings and the RX buffers before the device is told any
-    // address, so a refusal leaves neither ring enabled over buffers that are
-    // then freed.
-    let rx_ring_phys = E1000::virt_to_phys(driver.rx_ring.as_ptr() as usize)?;
-    let tx_ring_phys = E1000::virt_to_phys(driver.tx_ring.as_ptr() as usize)?;
-    for (i, buf) in driver.rx_buffers.iter().enumerate() {
-        driver.rx_ring[i].addr = E1000::virt_to_phys(buf.as_ptr() as usize)?;
-    }
-
-    // Initialize RX and TX
-    driver.init_rx(rx_ring_phys);
-    driver.init_tx(tx_ring_phys);
-
-    // Enable link
-    driver.enable_link();
-
-    // Check link status
-    #[cfg(target_arch = "x86_64")]
-    if driver.link_up() {
-        log::info!("E1000: Link up at {} Mbps", driver.link_speed());
-    } else {
-        log::info!("E1000: Link down (waiting for link...)");
-    }
-    #[cfg(target_arch = "aarch64")]
-    if driver.link_up() {
-        crate::serial_println!("[e1000] Link up at {} Mbps", driver.link_speed());
-    } else {
-        crate::serial_println!("[e1000] Link down (waiting for link...)");
-    }
-
-    // Enable interrupts on the device (x86 uses IRQ-driven RX, aarch64 uses polling)
-    #[cfg(target_arch = "x86_64")]
-    driver.enable_interrupts();
-
-    // Store driver instance
-    #[cfg(target_arch = "x86_64")]
-    IRQ_MMIO_BASE.store(driver.mmio_base, Ordering::Relaxed);
-    crate::arch_without_interrupts(|| *E1000_DRIVER.lock() = Some(driver));
-    E1000_INITIALIZED.store(true, Ordering::Release);
-
-    #[cfg(target_arch = "x86_64")]
-    log::info!("E1000 driver initialized");
-    #[cfg(target_arch = "aarch64")]
-    crate::serial_println!("[e1000] Driver initialized");
+    nic::enable_interrupts(&mut Window { base });
     Ok(())
 }
 
-/// Deliver the initialized function's interrupts by MSI, where it has the
-/// capability and the platform allows it (the 82574L does; the 82540EM has no
-/// MSI capability). Returns the vector, or why the caller keeps INTx.
+/// Deliver the function's interrupts by MSI (PCI Local Bus 3.0, 6.8.1) and
+/// return the vector. A cause pending when the message was enabled sent no
+/// message, and holds off the next one, so the hand-off acknowledges it and
+/// raises NetRx for any frame already waiting.
 #[cfg(target_arch = "x86_64")]
 pub fn interrupt_by_msi() -> Result<u8, &'static str> {
-    with_driver(|driver| {
-        crate::arch_impl::x86_64::msi::enable(&driver.pci_device, handle_interrupt)
-    })
-    .ok_or("E1000 driver not initialized")?
+    let device = {
+        let _guard = crate::net::net_lock_guard();
+        let slot = DRIVER.lock();
+        slot.as_ref().map(|driver| driver.device.clone())
+    };
+    let device = device.ok_or("e1000 not initialized")?;
+    let vector = crate::arch_impl::x86_64::msi::enable(&device, handle_interrupt)?;
+    let owed = {
+        let _guard = crate::net::net_lock_guard();
+        let mut slot = DRIVER.lock();
+        let owed = match slot.as_mut() {
+            Some(driver) => driver.nic.interrupts_routed(&mut driver.hw, model()),
+            None => false,
+        };
+        owed
+    };
+    if owed {
+        crate::task::softirqd::raise_softirq(crate::task::softirqd::SoftirqType::NetRx);
+    }
+    Ok(vector)
 }
 
-/// Check if the E1000 driver is initialized
-#[allow(dead_code)] // Public API for network stack
+/// The line the function's Interrupt Line register names (SDM 4.1; DS
+/// 9.1.2.16), for the INTx fallback.
+#[cfg(target_arch = "x86_64")]
+pub fn irq_line() -> Option<u8> {
+    let _guard = crate::net::net_lock_guard();
+    let slot = DRIVER.lock();
+    let line = slot.as_ref().map(|driver| driver.device.interrupt_line);
+    line
+}
+
 pub fn is_initialized() -> bool {
-    E1000_INITIALIZED.load(Ordering::Acquire)
+    INITIALIZED.load(Ordering::Acquire)
 }
 
-/// Get the MAC address
-#[allow(dead_code)] // Public API for network stack
 pub fn mac_address() -> Option<[u8; 6]> {
-    with_driver(|d| *d.mac_address())
+    if !is_initialized() {
+        return None;
+    }
+    let bytes = STATION_ADDRESS.load(Ordering::Acquire).to_le_bytes();
+    let mut mac = [0; 6];
+    mac.copy_from_slice(&bytes[..6]);
+    Some(mac)
 }
 
-/// Check if link is up
-#[allow(dead_code)] // Public API for network stack
 pub fn link_up() -> bool {
-    with_driver(|d| d.link_up()).unwrap_or(false)
+    match window() {
+        Some(mut window) => nic::link_up(&mut window),
+        None => false,
+    }
 }
 
-/// Transmit a packet
-#[allow(dead_code)] // Public API for network stack
+/// Queue one frame. On x86-64 a send also raises NetRx when a received frame
+/// is waiting: an interrupt before `net::init` registered the NetRx handler
+/// raised it to no one, and the frame would otherwise wait for the next
+/// receive interrupt. The stack's first send drains it. ARM64 polls instead.
 pub fn transmit(data: &[u8]) -> Result<(), &'static str> {
-    with_driver(|d| d.transmit(data)).unwrap_or(Err("E1000 not initialized"))
+    let (sent, waiting) = {
+        let _guard = crate::net::net_lock_guard();
+        let mut slot = DRIVER.lock();
+        let driver = slot.as_mut().ok_or("e1000 not initialized")?;
+        let sent = driver.nic.transmit(&mut driver.hw, data).map_err(nic::TxError::as_str);
+        let waiting = cfg!(target_arch = "x86_64") && driver.nic.can_receive(&mut driver.hw);
+        (sent, waiting)
+    };
+    if waiting {
+        crate::task::softirqd::raise_softirq(crate::task::softirqd::SoftirqType::NetRx);
+    }
+    sent
 }
 
-/// Receive a packet
-#[allow(dead_code)] // Public API for network stack
 pub fn receive(buffer: &mut [u8]) -> Result<usize, &'static str> {
-    with_driver(|d| d.receive(buffer)).unwrap_or(Err("E1000 not initialized"))
+    let _guard = crate::net::net_lock_guard();
+    let mut slot = DRIVER.lock();
+    let driver = slot.as_mut().ok_or("e1000 not initialized")?;
+    let received = driver.nic.receive(&mut driver.hw, buffer).map_err(nic::RxError::as_str);
+    received
 }
 
-/// Check if a packet is available to receive
-#[allow(dead_code)] // Public API for network stack
 pub fn can_receive() -> bool {
-    with_driver(|d| d.can_receive()).unwrap_or(false)
+    if !is_initialized() {
+        return false;
+    }
+    let _guard = crate::net::net_lock_guard();
+    let mut slot = DRIVER.lock();
+    let waiting = match slot.as_mut() {
+        Some(driver) => driver.nic.can_receive(&mut driver.hw),
+        None => false,
+    };
+    waiting
 }
 
-/// Handle E1000 interrupt (called from the IRQ 10 and IRQ 11 handlers)
-/// aarch64 uses polling mode instead of interrupts
-///
-/// Reading ICR acknowledges the interrupt. It takes no lock: a thread on
-/// another CPU may hold `E1000_DRIVER` across a transmit's completion poll.
+/// The interrupt entry for MSI and for IRQ 10/11, which other devices share.
+/// Takes no lock: it acknowledges ICR through the register window and leaves
+/// the rings to the NetRx bottom half.
 #[cfg(target_arch = "x86_64")]
 pub fn handle_interrupt() {
-    if E1000_INITIALIZED.load(Ordering::Acquire) {
-        let icr = IRQ_MMIO_BASE.load(Ordering::Relaxed) + REG_ICR as usize;
-        // SAFETY: the device's own interrupt cause register, mapped at init.
-        unsafe { read_volatile(icr as *const u32) };
+    let Some(mut window) = window() else {
+        return;
+    };
+    let causes = nic::acknowledge_interrupt(&mut window, model());
+    if nic::needs_receive_work(causes) {
+        crate::task::softirqd::raise_softirq(crate::task::softirqd::SoftirqType::NetRx);
     }
-
-    // Defer RX processing to softirq context
-    // This allows packet processing to run with interrupts enabled,
-    // preventing interrupt latency issues from long packet processing
-    crate::task::softirqd::raise_softirq(crate::task::softirqd::SoftirqType::NetRx);
 }

@@ -17,7 +17,6 @@ pub mod icmp;
 pub mod ipv4;
 pub(crate) mod loopback_pump;
 mod rx_claim;
-#[cfg(target_arch = "aarch64")]
 mod rx_poll;
 
 // TCP and UDP protocol implementations - architecture-independent
@@ -30,7 +29,6 @@ pub use loopback_pump::{
     init_loopback_pump, loopback_pump_passes, loopback_pump_rearms, loopback_pump_tid,
     loopback_pump_wake_already_awake, loopback_pump_wake_rejected, loopback_pump_wakes,
 };
-#[cfg(target_arch = "aarch64")]
 pub use rx_poll::init_rx_poll;
 
 use alloc::vec::Vec;
@@ -869,6 +867,11 @@ pub fn init() {
     // Register NET_RX softirq handler FIRST - before any network operations
     // This ensures the handler is ready before e1000 can raise the softirq
     register_net_softirq();
+    // drivers::init may already have raised NetRx, from the e1000's interrupt
+    // or its MSI hand-off, before this handler existed. The e1000 acknowledged
+    // that cause, so the waiting frame raises no second interrupt; raise NetRx
+    // again now that the handler can drain it.
+    crate::task::softirqd::raise_softirq(SoftirqType::NetRx);
 
     log::info!("NET: Initializing network stack...");
 
@@ -961,8 +964,9 @@ fn init_common() {
     net_log!("Network stack initialized");
 
     if active_tx_driver_is_e1000() {
-        // Linux e1000e only wakes TX/carrier after link is confirmed:
-        // drivers/net/ethernet/intel/e1000e/netdev.c:5197-5304.
+        // Wait for carrier before the first ARP: STATUS.LU reports the PHY's
+        // link once auto-negotiation resolves, and frames sent before then
+        // are lost (8254x SDM 13.4.2; 82574 datasheet 10.2.2.2, 4.6.3.2).
         let mut elapsed_ms = 0;
         while !e1000::link_up() && elapsed_ms < E1000_CARRIER_WAIT_MS {
             for _ in 0..2_500_000u32 {
@@ -1183,8 +1187,9 @@ pub fn process_rx_budgeted(budget: u32) -> PollOutcome {
 
 /// Wait between two receive polls of a client awaiting a reply (DHCP).
 ///
-/// On x86 that client runs on the BCM5720's network worker, whose receive
-/// interrupt also delivers replies through the NetRx softirq, so it sleeps.
+/// On x86 that client runs on a network worker (the BCM5720's, or the e1000's
+/// ke1000dhcp), whose receive interrupt also delivers replies through the
+/// NetRx softirq, so it sleeps.
 /// Spinning there held a CPU for the seconds an exchange and the address probe
 /// last. The loop is mostly the receive drain, which runs with bottom halves
 /// off, and a timer tick that lands there does not preempt it: that CPU went
