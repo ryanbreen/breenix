@@ -8,6 +8,7 @@ full provenance the caller gives, goes to a sidecar beside the series,
 
 import json
 from pathlib import Path
+import re
 from statistics import median
 from tempfile import NamedTemporaryFile
 import unicodedata
@@ -16,6 +17,29 @@ from tables import DEFERRED_DISK, RETIRED, ROWS, better, unit, values
 import vigil_rules
 
 ELLIPSIS = "…"
+# What to remove for each kind of text vigil_rules.CREDENTIALS detects. Detection only
+# needs a credential's start; removal takes all of it: a private key through its END
+# marker (or the end of the text), an assigned value to its closing quote or the next
+# space, and a bearer or GitHub token to the next space.
+CREDENTIAL_TEXT = re.compile(
+    r"-----begin [a-z ]*private key-----.*?(?:-----end [a-z ]*private key-----|\Z)"
+    r"|\b(?:password|passwd|secret|api[_-]?key|access[_-]?token|token)\s*[:=]\s*"
+    r"(?:\"[^\"]*\"?|'[^']*'?|\S+)"
+    r"|\bbearer\s+\S+|\b(?:gh[pousr]_|github_pat_)\S+|\b[a-z0-9._+-]+@[a-z0-9.-]+",
+    re.IGNORECASE | re.DOTALL)
+REDACTED = "[redacted]"
+
+
+def redact(value):
+    """`value` with every credential-like text removed whole. Strings inside lists and
+    dicts are redacted too, so the sidecar can carry originals without the secrets."""
+    if isinstance(value, str):
+        return CREDENTIAL_TEXT.sub(REDACTED, value)
+    if isinstance(value, dict):
+        return {key: redact(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [redact(item) for item in value]
+    return value
 
 
 def series_rows(groups, system, target, deferred=None, cache=None):
@@ -63,12 +87,13 @@ def fit(value, limit):
     literals, host names and credential-like text replaced by a placeholder."""
     if value is None:
         return None
-    text = "".join(" " if unicodedata.category(ch) == "Cc" else ch for ch in value)
+    # Credentials go first and whole, before the line is folded or anything is shortened.
+    text = redact(value)
+    text = "".join(" " if unicodedata.category(ch) == "Cc" else ch for ch in text)
     text = " ".join(text.split())
     text = vigil_rules.IPV4.sub(
         lambda match: match.group(0) if vigil_rules.VERSION_PREFIX.search(
             text[:match.start()]) else "an address", text)
-    text = vigil_rules.CREDENTIALS.sub("[redacted]", text)
     text = vigil_rules.HOST.sub("a host", text)
     text = vigil_rules.APP_HOST.sub("an app", text)
     if len(text) > limit:
@@ -137,8 +162,8 @@ def write_series(directory, series_id, at, metadata, groups, deferred=None, prov
         raise ValueError(f"series {series_id} would be refused by Vigil: {'; '.join(problems)}")
     directory.mkdir(parents=True, exist_ok=True)
     if provenance is not None or shortened:
-        sidecar = {"version": 1, "series": series_id, "provenance": provenance or {},
-                   "shortened": shortened}
+        sidecar = redact({"version": 1, "series": series_id, "provenance": provenance or {},
+                          "shortened": shortened})
         atomic_write(directory, directory / sidecar_name,
                      json.dumps(sidecar, indent=2, allow_nan=False) + "\n")
     path = directory / f"{series_id}.series.json"
