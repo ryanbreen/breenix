@@ -372,7 +372,7 @@ fn sync(
         let path = format!("{}/{root}", remote.source);
         let (parent, _) = path.rsplit_once('/').ok_or("source root has no parent")?;
         remote.run(&["/bin/mkdir", "-p", parent])?;
-        let source = snapshot.path().join(&root);
+        let source = snapshot.path().join(root);
         let tree = source_tree(&source, &excludes)?;
         let destination = remote.destination(&path)?;
         let listing = destination.inventory(false, &excludes)?;
