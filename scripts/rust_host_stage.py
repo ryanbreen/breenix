@@ -497,8 +497,10 @@ def main():
     records = ROOT / 'toolchain/rust-host'
     rustc = PROGRAMS / 'target/rustc' / args.arch
     rust_link = PROGRAMS / 'target/rust-link' / args.arch
-    retained = Path.home() / 'Library/Caches/breenix-e25/k6' / ('fixture' if args.arch == 'x86_64' else args.arch)
-    fixture = Path(os.environ.get('BREENIX_K6_FIXTURE', retained)).expanduser()
+    fixture_dir, fixture_env = (('fixture', 'BREENIX_K6_FIXTURE') if args.arch == 'x86_64'
+                                else ('aarch64', 'BREENIX_K6_AARCH64_FIXTURE'))
+    retained = Path.home() / 'Library/Caches/breenix-e25/k6' / fixture_dir
+    fixture = Path(os.environ.get(fixture_env, retained)).expanduser()
     cargo_needed = bool({'cargo', 'd1', 'self-host'}.intersection(suites))
     hosted_toolchain = 'rustc' in suites or cargo_needed
     if hosted_toolchain:
