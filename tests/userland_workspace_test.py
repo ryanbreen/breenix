@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+from tempfile import TemporaryDirectory
 import tomllib
 import unittest
 
@@ -47,6 +48,28 @@ class UserlandWorkspaceTest(unittest.TestCase):
     def test_workspace_builds_without_host_packages(self):
         problems = check_workspace(WORKSPACE)
         self.assertFalse(problems, "\n".join(problems))
+
+    def test_dependency_feature_cannot_enable_a_proc_macro(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "Cargo.toml").write_text(
+                '[workspace]\nresolver = "2"\nmembers = ["app"]\n'
+                'exclude = ["helper", "macros"]\n', encoding="utf-8"
+            )
+            for name, extra in {
+                "app": '[dependencies]\nrenamed = { package = "helper", path = "../helper" }\n',
+                "helper": '[dependencies]\nmacros = { path = "../macros", optional = true }\n',
+                "macros": '[lib]\nproc-macro = true\n',
+            }.items():
+                (root / name / "src").mkdir(parents=True)
+                (root / name / "src/lib.rs").touch()
+                (root / name / "Cargo.toml").write_text(
+                    f'[package]\nname = "{name}"\nversion = "0.1.0"\nedition = "2021"\n'
+                    f'{extra}', encoding="utf-8"
+                )
+            subprocess.run(["cargo", "generate-lockfile", "--offline", "--quiet"],
+                           cwd=root, check=True)
+            self.assertIn("package macros is a proc macro", check_workspace(root))
 
 
 if __name__ == "__main__":
