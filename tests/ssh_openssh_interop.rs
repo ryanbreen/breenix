@@ -1,14 +1,16 @@
 //! A stock OpenSSH client (/usr/bin/ssh) against a minimal server built on
-//! this crate's packet Framer, cipher negotiation, key derivation and strict
-//! KEX, over loopback TCP. For each cipher the client pipes 200 KiB through
+//! this crate's packet Framer and its production server key exchange
+//! (kex::server_key_exchange: negotiation, key derivation, strict KEX and
+//! the key installation bsshd uses), over loopback TCP. For each cipher the client pipes 200 KiB through
 //! an exec channel that echoes it back, so both directions carry bulk data
 //! in full-size packets. Host-key checking stays strict, against a known
 //! hosts file holding the test's own key.
 
-use libbreenix::crypto::{rand::Csprng, sha256::sha256, x25519};
-use libbreenix::ssh::cipher::CipherKind;
+use libbreenix::crypto::rand::Csprng;
+use libbreenix::error::Error;
+use libbreenix::ssh::cipher::{CipherKind, SshCipher};
 use libbreenix::ssh::keys::Ed25519Key;
-use libbreenix::ssh::packet::Framer;
+use libbreenix::ssh::packet::{Framer, KexTransport};
 use libbreenix::ssh::{kex, SshBuf};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -49,6 +51,21 @@ impl Wire {
     }
 }
 
+impl KexTransport for Wire {
+    fn send_packet(&mut self, payload: &[u8]) -> Result<(), Error> {
+        self.send(payload);
+        Ok(())
+    }
+
+    fn recv_packet(&mut self) -> Result<Vec<u8>, Error> {
+        Ok(self.recv())
+    }
+
+    fn install_keys(&mut self, recv: SshCipher, send: SshCipher, strict: bool) {
+        self.framer.install_keys(recv, send, strict);
+    }
+}
+
 fn u32_at(message: &[u8], pos: &mut usize) -> u32 {
     SshBuf::get_u32(message, pos).unwrap()
 }
@@ -77,45 +94,12 @@ fn serve(stream: TcpStream, host_key: &Ed25519Key) -> Transcript {
     }
     client_version.truncate(client_version.len() - 2);
 
-    let server_kexinit = kex::build_kexinit(&mut rng(5));
-    wire.send(&server_kexinit);
-    let client_kexinit = wire.recv();
-    assert_eq!(client_kexinit[0], 20, "KEXINIT first");
-    let init = wire.recv();
-    assert_eq!(init[0], 30, "KEX_ECDH_INIT");
-    let client_public: [u8; 32] = string_at(&init, &mut 1).try_into().unwrap();
-
-    let secret = [0x77u8; 32];
-    let server_public = x25519::x25519_basepoint(&secret);
-    let shared = x25519::x25519(&secret, &client_public);
-    let host_blob = host_key.public_key_blob();
-    let mut hashed = Vec::new();
-    SshBuf::put_string(&mut hashed, &client_version);
-    SshBuf::put_string(&mut hashed, SERVER_VERSION.as_bytes());
-    SshBuf::put_string(&mut hashed, &client_kexinit);
-    SshBuf::put_string(&mut hashed, &server_kexinit);
-    SshBuf::put_string(&mut hashed, &host_blob);
-    SshBuf::put_string(&mut hashed, &client_public);
-    SshBuf::put_string(&mut hashed, &server_public);
-    SshBuf::put_mpint(&mut hashed, &shared);
-    let exchange_hash = sha256(&hashed);
-
-    let mut reply = vec![31];
-    SshBuf::put_string(&mut reply, &host_blob);
-    SshBuf::put_string(&mut reply, &server_public);
-    SshBuf::put_string(&mut reply, &host_key.sign(&exchange_hash));
-    wire.send(&reply);
-    wire.send(&[21]);
-    assert_eq!(wire.recv(), [21], "NEWKEYS");
-
-    let kinds = kex::negotiate_ciphers(&client_kexinit, &server_kexinit).unwrap();
-    let (c2s, s2c) = kex::derive_keys(&shared, &exchange_hash, &exchange_hash, false, kinds.0, kinds.1);
-    wire.framer.set_cipher_recv(c2s);
-    wire.framer.set_cipher_send(s2c);
-    let strict = kex::strict_kex(&client_kexinit, &server_kexinit);
-    if strict {
-        wire.framer.reset_sequence_numbers();
-    }
+    let client_version = String::from_utf8(client_version).unwrap();
+    let mut state = kex::KexState::new();
+    kex::server_key_exchange(&mut wire, &mut rng(5), host_key, &mut state, &client_version, SERVER_VERSION)
+        .unwrap();
+    let kinds = kex::negotiate_ciphers(&state.peer_kexinit, &state.my_kexinit).unwrap();
+    let strict = kex::strict_kex(&state.peer_kexinit, &state.my_kexinit);
 
     // The client answers the server's ext-info-s with its own EXT_INFO.
     let mut request = wire.recv();

@@ -4,9 +4,12 @@
 //! draft-ietf-sshm-chacha20-poly1305 appendix A.
 
 use libbreenix::crypto::rand::Csprng;
+use libbreenix::error::Error;
 use libbreenix::ssh::cipher::{CipherKind, SshCipher};
 use libbreenix::ssh::kex;
-use libbreenix::ssh::packet::Framer;
+use libbreenix::ssh::keys::Ed25519Key;
+use libbreenix::ssh::packet::{Framer, KexTransport};
+use libbreenix::Errno;
 
 fn hex(text: &str) -> Vec<u8> {
     let digits: Vec<u8> = text.bytes().filter(u8::is_ascii_hexdigit).collect();
@@ -252,5 +255,83 @@ fn no_sequence_number_is_used_twice_under_one_set_of_keys() {
         sender.seal(b"rekeyed", &mut stream).unwrap();
         feed(&mut receiver, &stream);
         assert_eq!(receiver.open().unwrap().as_deref(), Some(&b"rekeyed"[..]), "{kind:?}");
+    }
+}
+
+/// A scripted client for the production server key exchange: the packets
+/// it will receive, the message types it sent, and the key installation.
+struct Script {
+    incoming: std::collections::VecDeque<Vec<u8>>,
+    sent: Vec<u8>,
+    /// Some(strict) once keys were installed.
+    installed: Option<bool>,
+}
+
+impl KexTransport for Script {
+    fn send_packet(&mut self, payload: &[u8]) -> Result<(), Error> {
+        self.sent.push(payload[0]);
+        Ok(())
+    }
+
+    fn recv_packet(&mut self) -> Result<Vec<u8>, Error> {
+        self.incoming.pop_front().ok_or(Error::Os(Errno::ECONNRESET))
+    }
+
+    fn install_keys(&mut self, _recv: SshCipher, _send: SshCipher, strict: bool) {
+        assert!(self.installed.is_none(), "keys installed once");
+        self.installed = Some(strict);
+    }
+}
+
+fn ecdh_init() -> Vec<u8> {
+    let public = libbreenix::crypto::x25519::x25519_basepoint(&[0x31; 32]);
+    let mut init = vec![30u8];
+    init.extend(32u32.to_be_bytes());
+    init.extend_from_slice(&public);
+    init
+}
+
+fn server_exchange(incoming: Vec<Vec<u8>>) -> (Result<(), libbreenix::ssh::SshError>, Script) {
+    let host_key = Ed25519Key::from_seed(&[0x42; 32]);
+    let mut script = Script { incoming: incoming.into(), sent: Vec::new(), installed: None };
+    let mut state = kex::KexState::new();
+    let result = kex::server_key_exchange(
+        &mut script, &mut rng(6), &host_key, &mut state, "SSH-2.0-Script_1.0", "SSH-2.0-BreenixTest_1.0",
+    );
+    (result, script)
+}
+
+#[test]
+fn the_server_key_exchange_admits_only_key_exchange_messages() {
+    let client = kex::build_client_kexinit(&mut rng(2));
+    let mut legacy = client.clone();
+    let needle = b"kex-strict-c";
+    while let Some(at) = legacy.windows(needle.len()).position(|w| w == needle) {
+        legacy[at..at + needle.len()].copy_from_slice(b"kex-strict-x");
+    }
+    let (newkeys, ignore) = (vec![21u8], vec![2u8, 0, 0, 0, 0]);
+
+    // Strict KEX: keys go in with both sequence numbers restarted.
+    let (result, script) = server_exchange(vec![client.clone(), ecdh_init(), newkeys.clone()]);
+    result.unwrap();
+    assert_eq!(script.sent, [20, 31, 21], "KEXINIT, KEX_ECDH_REPLY, NEWKEYS");
+    assert_eq!(script.installed, Some(true));
+    // A client without strict KEX keeps counting from its KEXINIT.
+    let (result, script) = server_exchange(vec![legacy, ecdh_init(), newkeys.clone()]);
+    result.unwrap();
+    assert_eq!(script.installed, Some(false));
+
+    // Anything else in the initial exchange ends it before any keys exist:
+    // a first packet other than KEXINIT, a message slipped in before
+    // KEX_ECDH_INIT (it would shift the sequence numbers strict KEX
+    // relies on), or a packet other than NEWKEYS after the reply.
+    for incoming in [
+        vec![ignore.clone(), client.clone(), ecdh_init(), newkeys.clone()],
+        vec![client.clone(), ignore.clone(), ecdh_init(), newkeys.clone()],
+        vec![client.clone(), ecdh_init(), ignore.clone(), newkeys.clone()],
+    ] {
+        let (result, script) = server_exchange(incoming);
+        assert!(result.is_err());
+        assert_eq!(script.installed, None);
     }
 }
