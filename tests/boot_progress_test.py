@@ -231,16 +231,24 @@ class ProgressTest(unittest.TestCase):
         cases = {f"{category['id']}/{case['id']}" for category in manifest['categories']
                  for case in category['cases']}
         # CASE durations from R240 boot 20261124T191342Z-metal, in milliseconds.
-        measured_ms = {
+        x86_ms = {
             'cxx-runtime/static-init-order': 12,
             'cxx-runtime/guarded-static-8-threads': 20,
             'cxx-runtime/containers-and-threads': 20,
         }
-        self.assertEqual(cases, measured_ms.keys())
+        # CASE durations from ARM64 QEMU boot 20261127T032459Z-qemu-29851.
+        arm_ms = {
+            'cxx-runtime/static-init-order': 4,
+            'cxx-runtime/guarded-static-8-threads': 5,
+            'cxx-runtime/containers-and-threads': 4,
+        }
+        self.assertEqual(cases, x86_ms.keys())
+        self.assertEqual(cases, arm_ms.keys())
         self.assertEqual(len(named), len(entries))
         self.assertLessEqual(named.keys(), cases)
+        longest_ms = {case: max(x86_ms[case], arm_ms[case]) for case in cases}
         expected = {case: min(60_000, ((2 * ms + 9_999) // 10_000) * 10_000)
-                    for case, ms in measured_ms.items()}
+                    for case, ms in longest_ms.items()}
         self.assertEqual({case: named.get(case, default) for case in cases}, expected)
         driver = (ROOT / 'scripts/metal/metal-boot').read_text()
         deadline = int(re.search(r"MODE_DEADLINE_SECONDS = \{[^\n]*'suite': (\d+)", driver)[1])
