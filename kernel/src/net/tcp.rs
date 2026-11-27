@@ -40,6 +40,7 @@ use spin::Mutex;
 #[path = "tcp/receive.rs"]
 mod receive;
 
+use super::icmp::TcpMtuQuote;
 use super::ipv4::{Ipv4Packet, PROTOCOL_TCP};
 use crate::socket::object::Socket;
 use crate::syscall::errno::{
@@ -2361,7 +2362,36 @@ pub fn tcp_set_listener_owner(id: ListenerId, owner: Weak<Socket>) {
     });
 }
 
-/// Handle an incoming TCP packet
+/// Resegment outstanding data when an ICMP report confirms a smaller path MTU.
+pub(crate) fn handle_path_mtu(quote: TcpMtuQuote) {
+    let id = ConnectionId {
+        local_ip: quote.src,
+        local_port: quote.src_port,
+        remote_ip: quote.dst,
+        remote_port: quote.dst_port,
+    };
+    with_tcp_connections(|connections| {
+        let Some(conn) = connections.get_mut(&id) else {
+            return;
+        };
+        let sent = conn.send_max.wrapping_sub(conn.send_unack) as usize;
+        let outstanding = conn.tx_buffer.len().min(sent);
+        let Some(mss) = quote.smaller_mss(conn.mss, conn.send_unack, outstanding) else {
+            return;
+        };
+
+        // Preserve send_max so ACKs for already sent data remain valid.
+        // Retry from the oldest byte, using the smaller segments after RX drains.
+        conn.mss = mss;
+        conn.send_next = conn.send_unack;
+        conn.tx_sent = 0;
+        conn.rtt_probe = None;
+        conn.restart_retransmit();
+        TX_RETRY.store(true, Ordering::Release);
+    });
+}
+
+/// Handle an incoming TCP packet.
 pub fn handle_tcp(ip: &Ipv4Packet, data: &[u8]) {
     // A segment whose checksum does not hold over the pseudo-header is dropped
     // unread (RFC 9293 3.1).

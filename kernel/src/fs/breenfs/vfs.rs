@@ -1919,22 +1919,51 @@ impl<W: Wait + 'static> BreenFs<W> {
     }
 
     fn check_durable_roots(&self, generation: Option<u64>) -> Result<(), Errno> {
-        use super::{btree, commit};
-
         // Keep this durable generation pinned against install and reuse while
         // reading it. An in-flight publication still protects its blocks.
         let state = self.inner.state.lock_interruptible()?;
-        let sb = &state.durable;
+        #[cfg(all(not(test), target_arch = "x86_64"))]
+        let progress = match self.inner.device.hardware_disk() {
+            Some(crate::block::HardwareDisk::Ahci(port)) => {
+                Some((port, crate::drivers::ahci::completed_io(port)))
+            }
+            _ => None,
+        };
+        let result = self.probe_durable_roots(&state.durable, generation);
+        // A probe starved at admission can defer verification for this round
+        // if the same disk completed another command during the probe.
+        #[cfg(all(not(test), target_arch = "x86_64"))]
+        if result == Err(Errno(ETIMEDOUT)) && progress.is_some_and(|(port, before)| {
+            crate::drivers::ahci::completed_io(port) != before
+        }) {
+            return Ok(());
+        }
+        result
+    }
+
+    fn probe_durable_roots(&self, sb: &Superblock, generation: Option<u64>) -> Result<(), Errno> {
+        use super::{btree, commit};
+
         let device = self.inner.device.as_ref();
+        let mut superblock_error = Errno(EIO);
         let has_superblock = (0..2).any(|ring| {
             let slot = commit::slot_block(sb.total_blocks, ring, sb.slot);
-            let Ok(bytes) = commit::read(device, slot, BLOCK_SIZE) else { return false };
+            let bytes = match commit::read(device, slot, BLOCK_SIZE) {
+                Ok(bytes) => bytes,
+                Err(commit::Error::BlockRead(BlockError::AhciRead(
+                    crate::block::read_failure::AhciReadError::AdmissionTimeout,
+                ))) => {
+                    superblock_error = Errno(ETIMEDOUT);
+                    return false;
+                }
+                Err(_) => return false,
+            };
             let mut expected = sb.clone();
             expected.ring = ring;
             Superblock::decode(&bytes) == Ok(expected)
         });
         if !has_superblock {
-            return Err(Errno(EIO));
+            return Err(superblock_error);
         }
 
         let store = commit::DeviceStore(device);
@@ -1942,9 +1971,9 @@ impl<W: Wait + 'static> BreenFs<W> {
         // Both trees used by the namespace must have valid durable roots.
         let default = self.inner.default_root.as_ref().map(|root| root.id);
         for id in [Some(self.inner.root_id), default, generation].into_iter().flatten() {
-            let root = ops::persisted_root(&store, sb, id).map_err(|_| Errno(EIO))?;
+            let root = ops::persisted_root(&store, sb, id).map_err(errno)?;
             let bytes = btree::search(&store, root.root, ops::key(2, format::INODE, 0))
-                .map_err(|_| Errno(EIO))?
+                .map_err(|error| errno(error.into()))?
                 .ok_or(Errno(EIO))?;
             let inode = Inode::decode(&bytes).map_err(|_| Errno(EIO))?;
             if inode.mode & 0o170000 != 0o040000 || inode.parent != 2 || inode.nlink < 2 {

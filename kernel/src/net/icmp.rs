@@ -26,6 +26,77 @@ pub const ICMP_ECHO_REQUEST: u8 = 8;
 /// ICMP header size
 pub const ICMP_HEADER_SIZE: usize = 8;
 
+// TCP data sent by this stack has a base IPv4 header and a base TCP header.
+const TCP_IPV4_HEADERS: u16 = ipv4::IPV4_HEADER_MIN_SIZE as u16 + 20;
+const MIN_IPV4_MTU: u16 = 68;
+// Keep ICMP-driven TCP sizing at or above the default IPv4 path MTU floor
+// used by Linux. The wire minimum still determines whether a report is valid.
+const MIN_TCP_PATH_MTU: u16 = 552;
+
+/// An IPv4 fragmentation-needed report quoting a TCP segment.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TcpMtuQuote {
+    pub src: [u8; 4],
+    pub dst: [u8; 4],
+    pub src_port: u16,
+    pub dst_port: u16,
+    sequence: u32,
+    packet_len: u16,
+    next_hop_mtu: u16,
+}
+
+impl TcpMtuQuote {
+    fn parse(icmp: &IcmpPacket<'_>, local_ip: [u8; 4]) -> Option<Self> {
+        let ip_len = ipv4::IPV4_HEADER_MIN_SIZE;
+        let quote = icmp.payload.get(..ip_len + 8)?;
+        // RFC 1191 puts the next-hop MTU in the field used by echo's sequence.
+        let next_hop_mtu = icmp.sequence;
+        let packet_len = u16::from_be_bytes([quote[2], quote[3]]);
+        let flags = u16::from_be_bytes([quote[6], quote[7]]);
+        if icmp.code != 4
+            || quote[0] != 0x45
+            || quote[9] != ipv4::PROTOCOL_TCP
+            || quote[12..16] != local_ip
+            || flags != 0x4000
+            || next_hop_mtu < MIN_IPV4_MTU
+            || next_hop_mtu >= packet_len
+        {
+            return None;
+        }
+        let data = &quote[ip_len..];
+        Some(Self {
+            src: local_ip,
+            dst: [quote[16], quote[17], quote[18], quote[19]],
+            src_port: u16::from_be_bytes([data[0], data[1]]),
+            dst_port: u16::from_be_bytes([data[2], data[3]]),
+            sequence: u32::from_be_bytes([data[4], data[5], data[6], data[7]]),
+            packet_len,
+            next_hop_mtu,
+        })
+    }
+
+    /// Accept a reduction only for a segment's data still in flight.
+    pub(crate) fn smaller_mss(
+        &self,
+        current_mss: u16,
+        first_unacked: u32,
+        outstanding: usize,
+    ) -> Option<u16> {
+        let offset = self.sequence.wrapping_sub(first_unacked) as usize;
+        let quoted_data = self.packet_len.checked_sub(TCP_IPV4_HEADERS)?;
+        let candidate = self.next_hop_mtu.max(MIN_TCP_PATH_MTU) - TCP_IPV4_HEADERS;
+        if offset < outstanding
+            && usize::from(quoted_data) <= outstanding - offset
+            && quoted_data <= current_mss
+            && candidate < current_mss
+        {
+            Some(candidate)
+        } else {
+            None
+        }
+    }
+}
+
 /// Parsed ICMP packet
 #[derive(Debug)]
 #[allow(dead_code)] // Protocol fields - all are part of ICMP specification
@@ -143,7 +214,9 @@ pub fn handle_icmp(ip: &Ipv4Packet, icmp: &IcmpPacket) -> Handled {
             }
         }
         ICMP_DEST_UNREACHABLE => {
-            if let Some((src, src_port, dst, dst_port, errno)) = udp_error_quote(icmp) {
+            if let Some(quote) = TcpMtuQuote::parse(icmp, ip.dst_ip) {
+                super::tcp::handle_path_mtu(quote);
+            } else if let Some((src, src_port, dst, dst_port, errno)) = udp_error_quote(icmp) {
                 return super::udp::udp_icmp_error(src, src_port, dst, dst_port, errno);
             }
         }

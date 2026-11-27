@@ -177,6 +177,23 @@ pub fn send_ipv4_from(_: [u8; 4], _: [u8; 4], _: u8, _: u8, data: &[u8]) -> Resu
     Ok(())
 }
 
+#[allow(dead_code)]
+pub mod icmp {
+    #[derive(Clone, Copy, Debug)]
+    pub(crate) struct TcpMtuQuote {
+        pub src: [u8; 4],
+        pub dst: [u8; 4],
+        pub src_port: u16,
+        pub dst_port: u16,
+    }
+    impl TcpMtuQuote {
+        pub(crate) fn smaller_mss(&self, _: u16, _: u32, _: usize) -> Option<u16> {
+            None
+        }
+    }
+}
+
+#[allow(dead_code)]
 #[path = "../kernel/src/net/tcp.rs"]
 pub mod tcp;
 use tcp::{ConnectionId, TcpFlags, TcpHeader};
