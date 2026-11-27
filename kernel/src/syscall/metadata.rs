@@ -179,10 +179,7 @@ fn by_fd(fd: i32, change: Change) -> SyscallResult {
             match result { Ok(()) => SyscallResult::Ok(0), Err(e) => SyscallResult::Err(e) }
         }
         FdKind::RegularFile(file) => {
-            let file = file.lock();
-            let (fs, node) = (file.open.fs.clone(), file.open.node.clone());
-            drop(file);
-            update(fs.as_ref(), node.ino, change, &cred)
+            update(file.open.fs.as_ref(), file.open.node.ino, change, &cred)
         }
         FdKind::Directory(dir) => {
             let dir = dir.lock();
