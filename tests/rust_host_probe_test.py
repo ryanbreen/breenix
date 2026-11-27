@@ -76,7 +76,8 @@ class StartupProbeTest(unittest.TestCase):
 
     def test_arm_rust_host_build_matches_sequence_elf(self):
         build = ROOT / 'userspace/programs/build.sh'
-        for args in (('--arch', 'aarch64'), ('--arch', 'aarch64', '--rust-host')):
+        for args in (('--arch', 'aarch64'), ('--arch', 'aarch64', '--rust-host'),
+                     ('--arch', 'x86_64', '--rust-host')):
             result = subprocess.run([build, *args], cwd=ROOT, stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT, text=True)
             self.assertEqual(result.returncode, 0, result.stdout)
