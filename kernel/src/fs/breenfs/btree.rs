@@ -599,11 +599,19 @@ pub fn range_limit<S: NodeStore>(
 ) -> Result<Vec<(Key, Vec<u8>)>, Error> {
     let mut out = Vec::new();
     if limit != 0 {
+        let allocation_failure = Error::Read(ReadFailure {
+            addr: root.addr,
+            cause: ReadCause::Allocation,
+        });
         visit_range(store, root, lower, upper, &mut |key, bytes| {
             preemption_point();
             #[cfg(test)]
             measurement::publication(if key.item_type < 0x80 { 1 } else { 2 }, 0, 1);
-            out.push((key, bytes.to_vec()));
+            out.try_reserve(1).map_err(|_| allocation_failure)?;
+            let mut value = Vec::new();
+            value.try_reserve_exact(bytes.len()).map_err(|_| allocation_failure)?;
+            value.extend_from_slice(bytes);
+            out.push((key, value));
             Ok::<_, Error>(out.len() < limit)
         })?;
     }
