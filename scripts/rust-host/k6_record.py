@@ -180,14 +180,14 @@ def llvm_tools():
     return pinned_tools()[2]
 
 
-def inspect_input(path, tools):
+def inspect_input(path, tools, arch="x86_64"):
     kinds = []
     metadata = []
     if path.suffix != ".ld":
         relocations = run([tools / "llvm-readobj", "--elf-output-style=GNU", "-Wr", path], timeout=15)
         kinds = sorted(set(re.findall(r"^\s*[0-9a-fA-F]{16}\s+[0-9a-fA-F]{16}\s+(\S+)",
                                       relocations, re.M)))
-        if any(not kind.startswith("R_X86_64_") for kind in kinds):
+        if any(not kind.startswith("R_X86_64_" if arch == "x86_64" else "R_AARCH64_") for kind in kinds):
             raise ValueError(f"{path}: unexpected relocation type in {kinds}")
     if path.suffix == ".rlib":
         metadata = [name for name in run([tools / "llvm-ar", "t", path], timeout=15).splitlines()
@@ -195,17 +195,20 @@ def inspect_input(path, tools):
     return {"sha256": sha256(path), "relocations": kinds, "metadata_members": metadata}
 
 
-def reference_headers(path, tools):
+def reference_headers(path, tools, arch="x86_64"):
     headers = run([tools / "llvm-readobj", "--file-headers", "--program-headers", path], timeout=15)
-    if not all(field in headers for field in ("Type: Executable", "Machine: EM_X86_64")):
-        raise ValueError(f"{path}: expected an x86-64 executable")
+    if not all(field in headers for field in ("Type: Executable", "Machine: EM_X86_64" if arch == "x86_64" else "Machine: EM_AARCH64")):
+        raise ValueError(f"{path}: expected an {arch} executable")
     if "Type: PT_INTERP" in headers or "Type: PT_DYNAMIC" in headers:
         raise ValueError(f"{path}: expected a static executable")
     return "Type: PT_GNU_EH_FRAME" in headers
 
 
-def bld_relocations():
+def bld_relocations(arch="x86_64"):
     source = (WORKSPACE / "bld/src/relocate.rs").read_text()
+    if arch == "aarch64":
+        dispatch = source.split("fn apply_aarch64_relocation(", 1)[1].split('let offset = field_offset', 1)[0]
+        return set(re.findall(r"\bR_AARCH64_[A-Z0-9_]+\b", dispatch)) - {"R_AARCH64_NONE_LEGACY"}
     field_width = source.split("fn amd64_field_width(", 1)[1].split("\n}", 1)[0]
     return {f"R_X86_64_{kind}" for kind in re.findall(r"\bR_([A-Z0-9_]+)\b", field_width)}
 
@@ -223,7 +226,7 @@ def prepare(args, root, tools):
 
     workspace = root / "src/toolchain"
     shutil.copytree(WORKSPACE, workspace, ignore=shutil.ignore_patterns("target", "rust-host"))
-    k5 = json.loads((K5 / "x86_64.json").read_text())
+    k5 = json.loads((K5 / f"{args.arch}.json").read_text())
     if sha256(args.rustc) != k5["mac_rustc_sha256"]:
         raise ValueError("rustc is not the recorded K5 Mac twin")
     for name, digest in k5["sysroot"]["files_sha256"].items():
@@ -265,7 +268,7 @@ def capture(args):
     # The explicit spec preserves the K5 target identity in the staged rlibs.
     cargo_args = [
         "build", "--offline", "--frozen", "--jobs", "4", "--profile", "selfhost",
-        "--target", "targets/x86_64-breenix.json", "--manifest-path", "src/toolchain/Cargo.toml",
+        "--target", f"targets/{TOOL}.json", "--manifest-path", "src/toolchain/Cargo.toml",
         *(part for package in PACKAGES for part in ("-p", package)), "--target-dir", "target",
     ]
     run([cargo, *cargo_args], cwd=root, env=cargo_env, timeout=300)
@@ -279,7 +282,7 @@ def capture(args):
 
     links = {}
     inputs = {}
-    bld = bld_relocations()
+    bld = bld_relocations(args.arch)
     observed = set()
     for name in (*PACKAGES, *PROBES):
         directory = root / "links" / name
@@ -287,11 +290,11 @@ def capture(args):
         sources = sorted(link_inputs(argv, root))
         for path in sources:
             if path not in inputs:
-                inputs[path] = inspect_input(root / path, tools)
+                inputs[path] = inspect_input(root / path, tools, args.arch)
         kinds = {kind for path in sources for kind in inputs[path]["relocations"]}
         observed.update(kinds)
         reference = directory / "reference.elf"
-        if reference_headers(reference, tools) != (name == "catch-unwind"):
+        if reference_headers(reference, tools, args.arch) != (name == "catch-unwind"):
             raise ValueError(f"{name}: unexpected unwind header")
         links[name] = {
             "argv": argv,
@@ -324,7 +327,7 @@ def capture(args):
             "needs_bld": sorted(observed - bld),
         },
     }
-    write_json(root / "x86_64.json", record)
+    write_json(root / f"{args.arch}.json", record)
     print(f"Recorded {len(links)} links and {len(inputs)} inputs in {root}")
 
 
@@ -333,13 +336,23 @@ def main():
         capture_link(Path(sys.argv[2]), sys.argv[3:])
         return
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--fixture", type=Path, default=BUILD / "fixture")
+    parser.add_argument("--arch", choices=("x86_64", "aarch64"), default="x86_64")
+    parser.add_argument("--fixture", type=Path)
     parser.add_argument("--rustc", type=Path, default=CACHE / "mac/bin/rustc")
     parser.add_argument("--sysroot", type=Path, default=CACHE / "sysroot")
     parser.add_argument("--tools-libc", type=Path, required=True)
     parser.add_argument("--hosted-libc", type=Path, required=True)
     parser.add_argument("--bunwind", type=Path, required=True)
-    capture(parser.parse_args())
+    args = parser.parse_args()
+    global TOOL, HOSTED, PROBES, LIB, SCRIPT
+    if args.arch == "aarch64":
+        TOOL, HOSTED = "aarch64-breenix", "aarch64-breenix-hosted"
+        PROBES = {"panic-abort": TOOL, "catch-unwind": HOSTED}
+        LIB = {TOOL: "lib/tools", HOSTED: "lib/hosted"}
+        SCRIPT = {TOOL: "linker.ld", HOSTED: "linker-hosted.ld"}
+    if args.fixture is None:
+        args.fixture = BUILD / ("fixture" if args.arch == "x86_64" else "aarch64")
+    capture(args)
 
 
 if __name__ == "__main__":

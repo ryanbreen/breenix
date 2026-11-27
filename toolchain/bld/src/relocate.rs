@@ -14,6 +14,8 @@ use crate::object::{Definition, Link, Object, ObjectSymbol, Section, SectionId, 
 use crate::{display, Machine, Result};
 
 const GOT_ENTRY_SIZE: u64 = 8;
+// AAELF64 2025Q1 §5.7.5, static data relocations.
+pub(crate) const R_AARCH64_PREL64: u32 = 260;
 // AAELF64 2025Q1 §5.7.6, GOT-relative instruction relocations.
 const R_AARCH64_ADR_GOT_PAGE: u32 = 311;
 const R_AARCH64_LD64_GOT_LO12_NC: u32 = 312;
@@ -498,6 +500,7 @@ impl Link {
         let (width, instruction, pc_relative) = match kind {
             R_AARCH64_NONE | R_AARCH64_NONE_LEGACY => return Ok(()),
             R_AARCH64_ABS64 => (8, false, false),
+            R_AARCH64_PREL64 => (8, false, true),
             R_AARCH64_ABS32 => (4, false, false),
             R_AARCH64_PREL32 => (4, false, true),
             R_AARCH64_ADD_ABS_LO12_NC
@@ -558,6 +561,7 @@ impl Link {
         // bits, then insert them in the fields from Arm ARM DDI 0487 M.b.
         match kind {
             R_AARCH64_ABS64 => field.copy_from_slice(&(sum as u64).to_le_bytes()),
+            R_AARCH64_PREL64 => field.copy_from_slice(&((sum - place) as u64).to_le_bytes()),
             R_AARCH64_ABS32 | R_AARCH64_PREL32 => {
                 let value = if pc_relative { sum - place } else { sum };
                 if !(-(1 << 31)..(1 << 32)).contains(&value) {

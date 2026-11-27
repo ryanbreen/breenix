@@ -37,7 +37,7 @@
 #   ./userspace/programs/build.sh --cargo-suite
 #     Build the hosted Cargo suite into target/hosted.
 #   ./userspace/programs/build.sh --rust-link
-#     Build the hosted replay suite and guest bld into target/rust-link/x86_64.
+#     Build the hosted replay suite and guest bld into target/rust-link/<arch>.
 #   ./userspace/programs/build.sh --arch x86_64|aarch64 --kd-libc
 #     Link the hosted compiler's libc.so and executable CRT.
 #   ./userspace/programs/build.sh --dynamic
@@ -138,7 +138,7 @@ if [[ "$CARGO_SUITE" == 1 ]]; then
     HOSTED_FEATURES=(--features cargo-suite)
 fi
 if [[ "$RUST_LINK" == 1 ]]; then
-    [[ "$ARCH" == x86_64 && "$RUSTC_PORT" == 0 && "$DYNAMIC" == 0 &&
+    [[ ( "$ARCH" == x86_64 || "$ARCH" == aarch64 ) && "$RUSTC_PORT" == 0 && "$DYNAMIC" == 0 &&
        "$KD_LIBC" == 0 && "$KD_LOADER" == 0 && "$CXX_RUNTIME" == 0 &&
        "$LLVM" == 0 && "$BUNWIND" == 0 && "$RUST_HOST" == 0 &&
        -z "$HOSTED_BIN" && ${#HOSTED_FEATURES[@]} -eq 0 ]] || usage

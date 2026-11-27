@@ -159,6 +159,27 @@ class BootInteractiveQmpTest(unittest.TestCase):
         args, _ = self.launch("--no-display", mode=("--mode", "suite", "--suite", "smoke"))
         self.assertEqual([args[i + 1] for i, arg in enumerate(args) if arg == "-m"], ["512"])
 
+    def test_rust_link_sequence_verifies_the_hosted_suite_binaries(self):
+        scripts = self.root / "scripts"
+        shutil.copy2(ROOT / "scripts/write-boot-target.sh", scripts / "write-boot-target.sh")
+        (scripts / "rust_host_stage.py").write_text("")
+        programs = self.root / "userspace/programs"
+        hosted = programs / "target/hosted/aarch64-breenix-hosted/release"
+        hosted.mkdir(parents=True)
+        sbin = self.root / "disk-root/sbin"
+        sbin.mkdir(parents=True)
+        (sbin.parent / "etc").mkdir()
+        for suite in ("rust-link", "llvm"):
+            binary = f"suite-{suite}"
+            (hosted / binary).write_bytes(f"{suite} suite binary".encode())
+            shutil.copyfile(hosted / binary, sbin / binary)
+        path = os.pathsep.join(("/opt/homebrew/opt/e2fsprogs/sbin", os.environ["PATH"]))
+        with patch.dict(os.environ, PATH=path):
+            subprocess.run(["mke2fs", "-q", "-t", "ext2", "-F", "-d", sbin.parent,
+                            self.root / "target/ext2-aarch64.img", "8M"], check=True)
+            args, _ = self.launch("--no-display", mode=("--mode", "suite", "--suite", "rust-link,llvm"))
+        self.assertEqual([args[i + 1] for i, arg in enumerate(args) if arg == "-m"], ["512"])
+
     def test_suite_memory_uses_largest_declared_minimum(self):
         for suite, size in (("smoke", 1024), ("rust-std", 2048)):
             path = self.root / f"docs/suites/{suite}.json"

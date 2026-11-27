@@ -49,9 +49,9 @@ class RustLinkImageStageTest(unittest.TestCase):
                        check=True, capture_output=True)
         return path
 
-    def stage(self, root, image, selection, **environment):
+    def stage(self, root, image, selection, arch='x86_64', **environment):
         stdout = io.StringIO()
-        argv = ['rust_host_stage.py', '--arch', 'x86_64', '--image', str(image), '--suite', selection]
+        argv = ['rust_host_stage.py', '--arch', arch, '--image', str(image), '--suite', selection]
         with (patch.object(STAGE, 'ROOT', root),
               patch.object(STAGE, 'PROGRAMS', root / 'userspace/programs'),
               patch.dict(os.environ, environment, clear=True),
@@ -136,6 +136,76 @@ class RustLinkImageStageTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, r'libbunwind\.a.*build record'):
             self.stage(self.root, another, 'rust-link', BREENIX_K6_FIXTURE=str(altered))
         self.assertEqual(another.stat().st_size, before)
+
+    def test_stage_rust_link_matches_records_aarch64(self):
+        arm_fixture = Path(os.environ.get(
+            'BREENIX_K6_AARCH64_FIXTURE', Path.home() / 'Library/Caches/breenix-e25/k6/aarch64'))
+        image = self.image('rust-link-arm.img')
+        artifacts = self.root / 'userspace/programs/target/rust-link/aarch64'
+        files = {name: write(artifacts, name, b'\x7fELF' + name.encode())
+                 for name in ('bld', 'suite-rust-link')}
+        write(artifacts, 'build.json', json.dumps({'files_sha256': files}).encode())
+        for name in ('k5/aarch64.json', 'k6/aarch64.json', 'k6/expect-aarch64.json'):
+            write(self.root / 'toolchain/rust-host', name, (RECORDS / name).read_bytes())
+        k5 = read_json(RECORDS / 'k5/aarch64.json')
+        k6 = read_json(RECORDS / 'k6/aarch64.json')
+        expect = read_json(RECORDS / 'k6/expect-aarch64.json')
+        metadata = expect['metadata']['archive']
+        write(self.root / 'toolchain/rust-host/k6', metadata,
+              (RECORDS / 'k6' / metadata).read_bytes())
+        prefix = f'{PREFIX}/rust-link'
+        expected = {'/sbin/suite-rust-link': files['suite-rust-link'], f'{prefix}/bin/bld': files['bld']}
+        expected.update({f'{prefix}/{name}': row['sha256'] for name, row in k6['inputs'].items()})
+        expected.update({f'{prefix}/sysroot/{name}': sha
+                         for name, sha in k5['sysroot']['files_sha256'].items()})
+        for name, link in k6['links'].items():
+            argv = arm_fixture / 'links' / name / 'argv.json'
+            self.assertEqual(read_json(argv), link['argv'])
+            expected[f'{prefix}/links/{name}/argv.json'] = digest(argv.read_bytes())
+            expected[f'{prefix}/links/{name}/reference.elf'] = link['reference_sha256']
+        expected[f"{prefix}/{expect['control']['archive']}"] = expect['control']['sha256']
+        expected[f'{prefix}/{metadata}'] = expect['metadata']['sha256']
+        for name in ('aarch64.json', 'expect-aarch64.json'):
+            expected[f'{prefix}/{name}'] = digest((RECORDS / 'k6' / name).read_bytes())
+
+        before = image.stat().st_size
+        with patch.object(Path, 'home', return_value=self.root / 'empty-home'):
+            staged = self.stage(
+                self.root, image, 'rust-link', arch='aarch64',
+                BREENIX_K6_AARCH64_FIXTURE=str(arm_fixture),
+                BREENIX_K6_FIXTURE=str(self.root / 'wrong-arch-fixture'),
+            )
+        self.assertEqual(staged, expected)
+        for path, sha in expected.items():
+            with self.subTest(path=path):
+                self.assertEqual(self.readback(image, path), sha)
+        payload = sum((arm_fixture / path.removeprefix(prefix + '/')).stat().st_size
+                      for path in expected if path.startswith(prefix + '/')
+                      and path not in (f'{prefix}/bin/bld', f'{prefix}/expect-aarch64.json',
+                                       f'{prefix}/{metadata}'))
+        payload += (RECORDS / 'k6' / metadata).stat().st_size
+        payload += sum((artifacts / name).stat().st_size for name in files)
+        payload += (RECORDS / 'k6/expect-aarch64.json').stat().st_size
+        dumpe2fs, = STAGE.require_e2fsprogs('dumpe2fs')
+        summary = subprocess.check_output([dumpe2fs, '-h', image], text=True,
+                                          stderr=subprocess.DEVNULL)
+        superblock = dict(line.split(':', 1) for line in summary.splitlines() if ':' in line)
+        block_size = int(superblock['Block size'])
+        headroom = 16 * 1024 * 1024
+        requested = before + 2 * payload + headroom
+        blocks, partial = divmod(requested, block_size)
+        self.assertEqual(image.stat().st_size, (blocks + bool(partial)) * block_size)
+        self.assertGreaterEqual(int(superblock['Free blocks']) * block_size, headroom)
+
+    def test_arm_launcher_builds_and_stages_rust_link(self):
+        launcher = (ROOT / 'scripts/boot-interactive.sh').read_text()
+        build = launcher.split('if [ "$BUILD" -eq 1 ]; then', 1)[1].split('echo "==> Building the ext2 disk"', 1)[0]
+        stage = launcher.split('    SEQUENCE=\n', 1)[1].split('"$ROOT/scripts/write-boot-target.sh"', 1)[0]
+        for selection in ('rust-link', 'llvm,rust-link'):
+            script = 'MODE=suite\nSUITE="$1"\nROOT=/probe\nrun_build() { printf "build %s\\n" "$*"; }\npython3() { printf "stage %s\\n" "$*"; }\n' + build + '\nSEQUENCE=\n' + stage + '\n'
+            result = subprocess.run(['bash', '-c', script, 'test', selection], capture_output=True, text=True, check=True)
+            self.assertIn('--arch aarch64 --rust-link', result.stdout)
+            self.assertIn('rust_host_stage.py --arch aarch64', result.stdout)
 
     def test_other_selections_stage_unchanged(self):
         # These are the file sets staged by f06b3116, including rust-host's

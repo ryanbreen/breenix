@@ -26,6 +26,14 @@ static SUITE: Suite = suite(
 
 const FIXTURE: &str = "/usr/libexec/breenix/rust-link";
 const BLD: &str = "/usr/libexec/breenix/rust-link/bin/bld";
+#[cfg(target_arch = "x86_64")]
+const RECORD: &str = "x86_64.json";
+#[cfg(target_arch = "aarch64")]
+const RECORD: &str = "aarch64.json";
+#[cfg(target_arch = "x86_64")]
+const EXPECT: &str = "expect.json";
+#[cfg(target_arch = "aarch64")]
+const EXPECT: &str = "expect-aarch64.json";
 
 struct Scratch(PathBuf);
 
@@ -87,7 +95,7 @@ fn link(
     replacement: Option<(&str, &str)>,
     extra_args: &[&str],
 ) -> Result<Output, CaseError> {
-    let receipt = read_json("x86_64.json")?;
+    let receipt = read_json(RECORD)?;
     let line = receipt["links"][name]["argv"]
         .as_array()
         .ok_or_else(|| format!("{name}: missing argv"))?;
@@ -142,7 +150,7 @@ fn link_verified(
 }
 
 fn probe(name: &str) -> Result<(Output, Output), CaseError> {
-    let expect = read_json("expect.json")?;
+    let expect = read_json(EXPECT)?;
     let scratch = Scratch::new()?;
     let candidate = scratch.0.join(name);
     link_verified(name, &candidate, &expect[name], &[])?;
@@ -187,7 +195,7 @@ fn links_hosted_unwind() -> CaseResult {
 
 fn rlib_members_skipped() -> CaseResult {
     let scratch = Scratch::new()?;
-    let expect = read_json("expect.json")?;
+    let expect = read_json(EXPECT)?;
     let metadata = &expect["metadata"];
     let archive = field(metadata, "archive")?;
     verify_digest(

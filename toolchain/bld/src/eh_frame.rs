@@ -6,11 +6,13 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use bobj::elf::{
-    amd64, Rela, SectionHeader, SHF_ALLOC, SHF_EXECINSTR, SHF_GROUP, SHT_PROGBITS, STB_LOCAL,
+    aarch64, amd64, Rela, SectionHeader, SHF_ALLOC, SHF_EXECINSTR, SHF_GROUP, SHT_PROGBITS,
+    STB_LOCAL,
 };
 
 use crate::layout::{Image, SHT_X86_64_UNWIND};
 use crate::object::{Link, Object, Section, SectionId};
+use crate::relocate::R_AARCH64_PREL64;
 use crate::{align_up, display, Machine, Result};
 
 pub(crate) const FRAME: &[u8] = b".eh_frame";
@@ -63,8 +65,11 @@ impl Encoding {
             ),
             Machine::Aarch64 => matches!(
                 (self.0, kind),
-                (0x00 | 0x04 | 0x0c, 257) | (0x03 | 0x0b, 258) | (0x1b, 261)
-            ), // AAELF64 §5.7.5, ABS64, ABS32, PREL32.
+                (0x00 | 0x04 | 0x0c, aarch64::R_AARCH64_ABS64)
+                    | (0x03 | 0x0b, aarch64::R_AARCH64_ABS32)
+                    | (0x1b, aarch64::R_AARCH64_PREL32)
+                    | (0x1c, R_AARCH64_PREL64)
+            ), // AAELF64 §5.7.5, static data relocations.
         }
     }
 }
@@ -407,8 +412,8 @@ fn frame_relocation_width(machine: Machine, kind: u32) -> Option<u64> {
             _ => None,
         },
         Machine::Aarch64 => match kind {
-            257 => Some(8),
-            258 | 261 => Some(4),
+            aarch64::R_AARCH64_ABS64 | R_AARCH64_PREL64 => Some(8),
+            aarch64::R_AARCH64_ABS32 | aarch64::R_AARCH64_PREL32 => Some(4),
             _ => None,
         },
     }

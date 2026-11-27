@@ -426,6 +426,9 @@ if [ "$BUILD" -eq 1 ]; then
         run_build "$ROOT/userspace/programs/build.sh" --arch aarch64 --hosted-bin suite-llvm --features llvm
         run_build "$ROOT/userspace/programs/build.sh" --arch aarch64 --llvm
     fi
+    if [ "$MODE" = suite ] && [[ ",$SUITE," == *,rust-link,* ]]; then
+        run_build "$ROOT/userspace/programs/build.sh" --arch aarch64 --rust-link
+    fi
     if [ "$MODE" = suite ] && [[ ",$SUITE," == *,rustc,* ]]; then
         KD_ARM_DIR="${BREENIX_KD_BUILD_DIR:-$ROOT/userspace/programs/target/kd/aarch64}"
         K5_CACHE="${BREENIX_RUSTC_PORT_BUILDS:-$ROOT/build/rustc-port}"
@@ -613,7 +616,7 @@ if [ "$MODE" = suite ]; then
     # The first suite runs from fw_cfg; the list on the disk tells each suite which runs next.
     SEQUENCE=
     if [[ "$SUITE" == *,* ]]; then SEQUENCE="$SUITE"; fi
-    if [[ ",$SUITE," == *,rust-host,* || ",$SUITE," == *,cxx-runtime,* || ",$SUITE," == *,llvm,* || ",$SUITE," == *,dynamic,* || ",$SUITE," == *,rustc,* ]]; then
+    if [[ ",$SUITE," == *,rust-host,* || ",$SUITE," == *,cxx-runtime,* || ",$SUITE," == *,llvm,* || ",$SUITE," == *,dynamic,* || ",$SUITE," == *,rustc,* || ",$SUITE," == *,rust-link,* ]]; then
         python3 "$ROOT/scripts/rust_host_stage.py" --arch aarch64 --image "$WRITABLE" --suite "$SUITE"
     fi
     "$ROOT/scripts/write-boot-target.sh" "$WRITABLE" "${SUITE%%,*}" \
