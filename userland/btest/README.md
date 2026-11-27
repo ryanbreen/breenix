@@ -13,6 +13,9 @@ or report publication failed. Goldens are compared in stdout, stderr, status
 order. The result includes the first differing stream as a unified diff for
 text, or an offset and hex bytes for binary data. The advisory run lock lives
 under `/var/lib/btest` so the initial provision also covers subsequent boots.
+Pass `--json` after the package names to stream a JSON line for each completed
+case before the summary. Case lines carry `kind: "case"` and the package
+name. The report file contains the summary with its full case results.
 
 ## Provision the box once
 
@@ -55,8 +58,8 @@ group. The build, fixture setup and report writer run outside the case caps.
 
 Sync the source roots and tree stamp using the Mac driver documented in
 [tools/bdev](../../tools/bdev/README.md). Then run the following on the box.
-The fallback launcher uses the PR 2 Cargo recipe with the PR 3 workaround
-for the loader's first RUNPATH open. Once the image carries `/usr/bin/bcargo`,
+The fallback launcher selects Cargo, rustc, bld and the target from
+`/opt/breenix/rust/CURRENT`. Once the image carries `/usr/bin/bcargo`,
 use it directly and skip the fallback launcher.
 
 ```sh

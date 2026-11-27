@@ -14,13 +14,15 @@ use std::path::Path;
 use std::process::{Command, ExitCode, Output, Stdio};
 use std::time::{Duration, Instant};
 
+mod testing;
 #[cfg(test)]
 mod tests;
 
+const SSH: &str = "/usr/bin/ssh";
 const STAMP: &str = ".btest-tree.json";
 const TOOLCHAIN: &str = "/opt/breenix/rust";
 const USAGE: &str =
-    "usage: bdev --host USER@HOST --source /BOX/SOURCE --cache /BOX/CACHE sync [--delete] | build PACKAGE";
+    "usage: bdev [--config FILE] test <prog>... | test --changed\n       bdev --host USER@HOST --source /BOX/SOURCE --cache /BOX/CACHE sync [--delete] | build PACKAGE";
 
 #[derive(Deserialize)]
 struct SyncManifest {
@@ -28,12 +30,17 @@ struct SyncManifest {
     excludes: Vec<String>,
 }
 
+struct SourceLayout {
+    roots: BTreeSet<String>,
+    suites: BTreeMap<String, BTreeSet<String>>,
+}
+
 impl SyncManifest {
     fn load() -> Result<Self> {
         Ok(serde_json::from_str(include_str!("../sync.json"))?)
     }
 
-    fn roots(&self, checkout: &Path) -> Result<BTreeSet<String>> {
+    fn layout(&self, checkout: &Path) -> Result<SourceLayout> {
         let userland = checkout.join("userland/Cargo.toml");
         let mut roots = self
             .roots
@@ -41,15 +48,28 @@ impl SyncManifest {
             .filter(|root| *root != "userland" || userland.is_file())
             .cloned()
             .collect::<BTreeSet<_>>();
+        let mut suites = BTreeMap::new();
         if userland.is_file() {
             #[derive(Deserialize)]
-            struct Package {
-                manifest_path: String,
-                source: Option<String>,
+            struct Metadata {
+                packages: Vec<MetadataPackage>,
+                resolve: Resolve,
             }
             #[derive(Deserialize)]
-            struct Metadata {
-                packages: Vec<Package>,
+            struct Resolve {
+                nodes: Vec<ResolveNode>,
+            }
+            #[derive(Deserialize)]
+            struct ResolveNode {
+                id: String,
+                dependencies: Vec<String>,
+            }
+            #[derive(Deserialize)]
+            struct MetadataPackage {
+                id: String,
+                name: String,
+                manifest_path: String,
+                source: Option<String>,
             }
             let output = checked(
                 Command::new("cargo")
@@ -61,11 +81,15 @@ impl SyncManifest {
                 "cargo metadata",
             )?;
             let metadata: Metadata = serde_json::from_slice(&output)?;
-            for package in metadata
-                .packages
-                .into_iter()
-                .filter(|pkg| pkg.source.is_none())
-            {
+            let graph: BTreeMap<_, _> = metadata
+                .resolve
+                .nodes
+                .iter()
+                .map(|node| (node.id.as_str(), node.dependencies.as_slice()))
+                .collect();
+            let mut directories = BTreeMap::new();
+            let mut runnable = Vec::new();
+            for package in metadata.packages.iter().filter(|pkg| pkg.source.is_none()) {
                 let directory = Path::new(&package.manifest_path)
                     .parent()
                     .ok_or("package manifest has no parent directory")?
@@ -79,6 +103,32 @@ impl SyncManifest {
                         format!("path dependency outside the sync roots: {directory}").into(),
                     );
                 }
+                directories.insert(package.id.as_str(), directory);
+                if Path::new(directory).parent() == Some(Path::new("userland"))
+                    && checkout
+                        .join(directory)
+                        .join("suite/manifest.json")
+                        .is_file()
+                {
+                    runnable.push(package);
+                }
+            }
+            for package in runnable {
+                let mut pending = vec![package.id.as_str()];
+                let mut seen = BTreeSet::new();
+                let mut inputs = BTreeSet::new();
+                while let Some(id) = pending.pop() {
+                    if seen.insert(id) {
+                        inputs.extend(directories.get(id).map(|path| (*path).to_owned()));
+                        pending.extend(
+                            graph
+                                .get(id)
+                                .iter()
+                                .flat_map(|deps| deps.iter().map(String::as_str)),
+                        );
+                    }
+                }
+                suites.insert(package.name.clone(), inputs);
             }
         }
         let included = roots.clone();
@@ -89,7 +139,7 @@ impl SyncManifest {
                     .is_some_and(|path| included.contains(path))
             })
         });
-        Ok(roots)
+        Ok(SourceLayout { roots, suites })
     }
 }
 
@@ -240,11 +290,12 @@ struct BoxPaths<'a> {
     source: &'a str,
     cache: &'a str,
     ssh_program: &'a Path,
+    ssh_args: &'a [String],
 }
 
 impl BoxPaths<'_> {
     fn destination(&self, path: &str) -> Result<Destination> {
-        Destination::parse(&format!("{}:{path}", self.host))
+        Ok(Destination::parse(&format!("{}:{path}", self.host))?.with_ssh_args(self.ssh_args))
     }
 
     fn ssh(&self, words: &[&str]) -> Command {
@@ -257,6 +308,7 @@ impl BoxPaths<'_> {
             request.push_str(&format!("'{}'", argument.replace('\'', "'\\''")));
         }
         let mut command = Command::new(self.ssh_program);
+        command.args(self.ssh_args);
         command.args(["-T", "-o", "BatchMode=yes", "--", self.host, &request]);
         command.stdin(Stdio::null());
         command
@@ -272,6 +324,7 @@ impl BoxPaths<'_> {
         let mut child = self
             .ssh(&["/bin/bput", path, &size, &digest, "644"])
             .stdin(Stdio::piped())
+            .stdout(Stdio::null())
             .spawn()?;
         let written = child.stdin.take().unwrap().write_all(bytes);
         let status = child.wait()?;
@@ -295,13 +348,17 @@ fn checked(output: Output, step: &str) -> Result<Vec<u8>> {
     Ok(output.stdout)
 }
 
-fn sync(checkout: &Path, remote: &BoxPaths<'_>, delete: bool) -> Result<()> {
-    let git = git_state(checkout)?;
-    let manifest = SyncManifest::load()?;
-    let roots = manifest.roots(checkout)?;
+fn sync(
+    checkout: &Path,
+    remote: &BoxPaths<'_>,
+    delete: bool,
+    manifest: &SyncManifest,
+    roots: &BTreeSet<String>,
+    git: GitState,
+) -> Result<Vec<u8>> {
     let excludes = Excludes::new(&manifest.excludes)?;
     let snapshot = tempfile::tempdir()?;
-    stage(checkout, snapshot.path(), &roots)?;
+    stage(checkout, snapshot.path(), roots)?;
     if git_state(checkout)? != git {
         return Err("Git state changed while preparing the source snapshot".into());
     }
@@ -316,7 +373,7 @@ fn sync(checkout: &Path, remote: &BoxPaths<'_>, delete: bool) -> Result<()> {
         let path = format!("{}/{root}", remote.source);
         let (parent, _) = path.rsplit_once('/').ok_or("source root has no parent")?;
         remote.run(&["/bin/mkdir", "-p", parent])?;
-        let source = snapshot.path().join(&root);
+        let source = snapshot.path().join(root);
         let tree = source_tree(&source, &excludes)?;
         let destination = remote.destination(&path)?;
         let listing = destination.inventory(false, &excludes)?;
@@ -330,7 +387,7 @@ fn sync(checkout: &Path, remote: &BoxPaths<'_>, delete: bool) -> Result<()> {
                 eprintln!("{} {:?}", action.label(), action.path());
             }
             destination.apply(&listing, &source, &tree, &actions, false)?;
-            stamp.roots.insert(root, root_digest(&tree));
+            stamp.roots.insert(root.clone(), root_digest(&tree));
         }
         Ok(stamp)
     })
@@ -339,15 +396,14 @@ fn sync(checkout: &Path, remote: &BoxPaths<'_>, delete: bool) -> Result<()> {
 fn publish_source(
     remote: &BoxPaths<'_>,
     transfer: impl FnOnce() -> Result<TreeStamp>,
-) -> Result<()> {
+) -> Result<Vec<u8>> {
     let path = format!("{}/{STAMP}", remote.source);
     remote.run(&["/bin/rm", "-f", &path])?;
     let stamp = transfer()?;
     let mut bytes = serde_json::to_vec_pretty(&stamp)?;
     bytes.push(b'\n');
     remote.put(&path, &bytes)?;
-    io::stdout().write_all(&bytes)?;
-    Ok(())
+    Ok(bytes)
 }
 
 fn toolchain_id(contents: &str) -> Result<&str> {
@@ -551,6 +607,13 @@ fn run() -> Result<ExitCode> {
         println!("{USAGE}");
         return Ok(ExitCode::SUCCESS);
     }
+    match args.as_slice() {
+        [verb, options @ ..] if verb == "test" => return testing::test(None, options),
+        [option, config, verb, options @ ..] if option == "--config" && verb == "test" => {
+            return testing::test(Some(Path::new(config)), options);
+        }
+        _ => {}
+    }
     let [host_option, host, source_option, source, cache_option, cache, command @ ..] =
         args.as_slice()
     else {
@@ -568,7 +631,8 @@ fn run() -> Result<ExitCode> {
         host,
         source,
         cache,
-        ssh_program: Path::new("/usr/bin/ssh"),
+        ssh_program: Path::new(SSH),
+        ssh_args: &[],
     };
     remote.destination(source)?;
     match command {
@@ -577,11 +641,18 @@ fn run() -> Result<ExitCode> {
         {
             let directory =
                 String::from_utf8(git(Path::new("."), &["rev-parse", "--show-toplevel"])?)?;
-            sync(
-                Path::new(directory.trim_end_matches('\n')),
+            let checkout = Path::new(directory.trim_end_matches('\n'));
+            let manifest = SyncManifest::load()?;
+            let layout = manifest.layout(checkout)?;
+            let stamp = sync(
+                checkout,
                 &remote,
                 !options.is_empty(),
+                &manifest,
+                &layout.roots,
+                git_state(checkout)?,
             )?;
+            io::stdout().write_all(&stamp)?;
             Ok(ExitCode::SUCCESS)
         }
         [verb, package] if verb == "build" => build(&remote, package),

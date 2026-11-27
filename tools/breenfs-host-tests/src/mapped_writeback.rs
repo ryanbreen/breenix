@@ -329,6 +329,88 @@ fn healthy_cache_returns_to_baseline_after_unmap_and_close() {
     fs.shutdown("healthy-cache-cleanup", u64::MAX).unwrap();
 }
 
+// #3208: mmap populates the cache, then publishes its binding under the mount
+// guard. A worker eviction pass in that gap, requested when an earlier mapping
+// of the same file was unmapped, must not retire the populated pages: a fault
+// on a bound page that is not cached maps a fresh page of 00 bytes. That is
+// one way to produce the ELF header of 00 bytes #3208's capture shows; the
+// capture does not record an eviction, so it does not establish this as its cause.
+#[test]
+fn populated_pages_survive_eviction_until_the_binding_is_published() {
+    use crate::memory::file_map::{bind_host, bind_populated, populate};
+    let (fs, _disk, node) = fixture();
+    let bytes = expected(0x7f);
+    let length = bytes.len() as u64;
+    let req = WriteReq { at: WriteAt::Offset(0), limit: u64::MAX, clear_setid: false };
+    assert_eq!(fs.write(&node, req, &bytes).unwrap().bytes, bytes.len());
+    fs.fsync(&node, false).unwrap();
+    // An earlier process mapped the file and exited: its unmap leaves the
+    // cached pages unbound and asks the worker to retire them.
+    drop(bind_host(node.clone(), length, false, false, true));
+    assert!(node.map.eviction_pending());
+    let Ok(population) = populate(&node, 0, length / 4096) else {
+        panic!("population failed");
+    };
+    // The worker's pass runs before the new binding is published.
+    fs.commit_due(0).unwrap();
+    let binding = bind_populated(node.clone(), &*population, length);
+    let seen: Vec<u8> = (0..length).map(|offset| binding.load(offset).unwrap()).collect();
+    let zero_pages = seen.chunks(4096).zip(bytes.chunks(4096))
+        .filter(|(seen, want)| seen != want && seen.iter().all(|byte| *byte == 0)).count();
+    assert!(seen == bytes, "the new mapping read {zero_pages} evicted pages as zeros");
+    // Once mapping and population are gone the pages are retired as before.
+    drop(binding);
+    drop(population);
+    for _ in 0..2 {
+        fs.commit_due(0).unwrap();
+    }
+    assert_eq!(node.map.cache_counts(), (0, 0, 0), "a finished population kept its pages");
+    fs.shutdown("population-eviction-cleanup", u64::MAX).unwrap();
+}
+
+// #3232 review: population reads pages without the mount guard and merges
+// them into the cache later. A truncate before a page's read makes that read
+// return 0 bytes; if the writer restores the file before the merge, the
+// restore cannot reach the staged page. Neither the mapping nor an ordinary
+// read may then see the truncated read's zeros.
+#[test]
+fn population_does_not_publish_a_page_read_while_the_file_was_truncated() {
+    use crate::memory::file_map::{bind_populated, on_cache_allocation, populate};
+    let (fs, _disk, node) = fixture();
+    let bytes = expected(0x5a);
+    let length = bytes.len() as u64;
+    let req = WriteReq { at: WriteAt::Offset(0), limit: u64::MAX, clear_setid: false };
+    assert_eq!(fs.write(&node, req, &bytes).unwrap().bytes, bytes.len());
+    fs.fsync(&node, false).unwrap();
+    // Population allocates a frame before each page read: the first
+    // allocation precedes page 0's read and the second follows it.
+    let (writer, file, restored) = (fs.clone(), node.clone(), bytes.clone());
+    on_cache_allocation(Some(Box::new(move |count| match count {
+        1 => writer.resize(&file, 0, false, &|_| Ok(())).unwrap(),
+        2 => {
+            let req = WriteReq { at: WriteAt::Offset(0), limit: u64::MAX, clear_setid: false };
+            assert_eq!(writer.write(&file, req, &restored).unwrap().bytes, restored.len());
+        }
+        _ => {}
+    })));
+    let population = populate(&node, 0, length / 4096);
+    on_cache_allocation(None);
+    let Ok(population) = population else {
+        panic!("population failed");
+    };
+    let binding = bind_populated(node.clone(), &*population, length);
+    let seen: Vec<u8> = (0..length).map(|offset| binding.load(offset).unwrap()).collect();
+    let zero_pages = seen.chunks(4096).zip(bytes.chunks(4096))
+        .filter(|(seen, want)| seen != want && seen.iter().all(|byte| *byte == 0)).count();
+    assert!(seen == bytes, "the mapping read {zero_pages} pages as the truncated read's zeros");
+    let mut read = vec![0; bytes.len()];
+    assert_eq!(fs.read(&node, 0, &mut read).unwrap(), bytes.len());
+    assert!(read == bytes, "an ordinary read returned the cached zeros");
+    drop(binding);
+    drop(population);
+    fs.shutdown("population-truncate-cleanup", u64::MAX).unwrap();
+}
+
 fn mapped_batch_fixture() -> (Arc<BreenFs<NoWait>>, Arc<Disk>, Vec<Arc<VNode>>) {
     let disk = Arc::new(Disk::new());
     let sb = Superblock { fs_uuid: [0x84; 16], generation: 1, slot: 1,

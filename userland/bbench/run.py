@@ -116,7 +116,6 @@ def run_workloads(args, source, data, remote, requested, bsync_host, metadata):
         metadata["toolchain"] = lines[0] if lines else None
 
     rustc = str(fixture / "bin/rustc")
-    compiler = [args.bcargo, rustc] if args.wrap_rustc else [rustc]
     target = str(fixture / "targets/x86_64-breenix.json")
     sysroot = str(fixture / "sysroot")
     env = os.environ.copy()
@@ -149,9 +148,9 @@ def run_workloads(args, source, data, remote, requested, bsync_host, metadata):
     noop_target = Path(args.noop_target) if args.noop_target else data / "noop-artifacts"
     noop = cargo("userland", "yes", "dev-box", noop_target)
     cases = {
-        "rustc-version": lambda _: ["command", data, *compiler, "-vV"],
+        "rustc-version": lambda _: ["command", data, rustc, "-vV"],
         "hello-object": lambda sample: [
-            "command", source / "toolchain/rust-host/k5/corpus", *compiler,
+            "command", source / "toolchain/rust-host/k5/corpus", rustc,
             "--edition=2021", "--sysroot", sysroot, "-Dwarnings", "--emit=obj",
             "--target", target, "--crate-type=lib", "hello.rs", "-o", data / f"{sample}.o",
         ],
@@ -416,8 +415,6 @@ def cli(argv):
     parser.add_argument("--data", help="absolute path to the scratch directory on Breenix")
     parser.add_argument("--noop-target", help="absolute target directory from a completed dev-box build of yes")
     parser.add_argument("--bcargo", help="absolute path to bcargo on Breenix")
-    parser.add_argument("--wrap-rustc", action="store_true",
-                        help="use the PR 3 bcargo loader workaround for direct rustc probes")
     parser.add_argument("--fixture", type=Path, help="Mac E25 twin fixture")
     parser.add_argument("--linker", type=Path, help="Mac E25 bld")
     parser.add_argument("--driver", help="absolute path to the matching Breenix driver ELF")
@@ -426,8 +423,6 @@ def cli(argv):
     args = parser.parse_args(argv)
     if args.host and not args.bcargo:
         parser.error("remote runs require --bcargo")
-    if args.wrap_rustc and not args.host:
-        parser.error("--wrap-rustc requires a Breenix endpoint")
     if args.target and (args.target == "mac") == bool(args.host):
         parser.error("--target must match the selected native or SSH run")
     return main(args)

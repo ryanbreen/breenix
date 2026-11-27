@@ -228,10 +228,21 @@ impl FileSet<'_> {
         {
             return Ok(Some(entry.object));
         }
+        // A missing candidate is an ordinary search step and stays quiet. Any
+        // other outcome names the candidate, so a failed load says which one.
         let fd = match OpenFile::open(path) {
             Ok(fd) => fd,
             Err(SysError::Os(Errno::ENOENT | Errno::ENOTDIR)) => return Ok(None),
-            Err(error) => return Err(syscall(main, "open", error)),
+            Err(error) => {
+                let SysError::Os(errno) = error;
+                let _ = writeln!(
+                    Stderr,
+                    "ld-breenix: open {:?} failed: errno {}",
+                    display(path),
+                    errno as i32
+                );
+                return Err(syscall(main, "open", error));
+            }
         };
         let stat = fs::fstat(fd.0).map_err(|error| syscall(main, "fstat", error))?;
         let identity = (stat.st_dev, stat.st_ino);
@@ -272,7 +283,19 @@ impl FileSet<'_> {
             | Err(Error {
                 kind: ErrorKind::UnsupportedElf,
                 ..
-            }) => return Ok(None),
+            }) => {
+                // The candidate opened but is not a shared object. Its ELF
+                // header bytes tell a wrong file from unreadable contents.
+                let header = &view.bytes()[..view.bytes().len().min(64)];
+                let _ = writeln!(
+                    Stderr,
+                    "ld-breenix: rejected {:?} dev={} ino={} header={header:02x?}",
+                    display(path),
+                    identity.0,
+                    identity.1
+                );
+                return Ok(None);
+            }
             Err(error) => return Err(stable(error)),
         };
         let mut absolute = [0u8; PATH_MAX];
@@ -311,6 +334,10 @@ impl FileSet<'_> {
             .find(|file| file.name.path() == object.name() && file.bias == object.bias())
             .map(|file| file.identity)
     }
+}
+
+fn display(path: &[u8]) -> &str {
+    core::str::from_utf8(path).unwrap_or("<non-UTF-8 path>")
 }
 
 fn syscall<'a>(file: Bytes<'a>, op: &'static str, error: SysError) -> Error<'a> {

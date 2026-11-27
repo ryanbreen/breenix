@@ -129,6 +129,7 @@ impl core::fmt::Debug for VNode {
 pub trait MappingIo: Any {
     fn as_any(&self) -> &dyn Any;
     fn size(&self) -> u64;
+    /// The file bytes at `offset`, at most `length`; fewer past EOF.
     fn read(&self, offset: u64, length: usize) -> Result<Vec<u8>, Errno>;
     fn needs_flush(&self) -> bool;
     /// Generation that accepted the most recent writeback run, for

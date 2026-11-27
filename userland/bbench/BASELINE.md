@@ -88,9 +88,9 @@ of the allocation that failed in that boot remains under investigation.
   offline and frozen. Cold builds use fresh target directories. The
   no-op uses the same warmed `yes` target for each timed invocation.
   `yes` uses `dev-box` and `release`. The other packages use `selfhost`.
-  The R240 wrapper reads four bytes from the expanded driver RUNPATH
-  before compiler exec. Timings include that work and the launcher.
-  The intermittent loader failure is tracked in [#3208](https://github.com/ryanbreen/breenix/issues/3208).
+  The recorded R240 runs used a wrapper that read four bytes from the
+  expanded driver RUNPATH before compiler exec. Those timings include
+  the read and the launcher. The workaround was for [#3208](https://github.com/ryanbreen/breenix/issues/3208).
 - First output from `rustc -vV` includes fork and exec, dynamic loading,
   constructors and early compiler work. The static control runs 100
   fork/exec/wait cycles per sample using an empty Rust main.
@@ -226,19 +226,12 @@ a fresh receipt directory. The remote defaults exclude `sequential`,
 ```sh
 python3 userland/bbench/run.py --run "$RUN_ID" --out "$BOX_RECEIPTS" \
     --host "$BOX_LOGIN" --source "$BOX_SOURCE" --data "$BOX_DATA" \
-    --bcargo "$BOX_BCARGO" --probe "$BOX_PROBE" --wrap-rustc
+    --bcargo "$BOX_BCARGO" --probe "$BOX_PROBE"
 ```
 
-The historical no-op retry reused the artifacts from the second
-`yes` dev-box attempt.
-
-```sh
-python3 userland/bbench/run.py --run r240-20261127-wrapped-retry1 \
-    --out "$RETRY_RECEIPTS" --host "$BOX_LOGIN" --source "$BOX_SOURCE" \
-    --data "$BOX_DATA" --bcargo "$BOX_BCARGO" --probe "$BOX_PROBE" --wrap-rustc \
-    --cases cargo-noop --count 5 \
-    --noop-target "$BOX_DATA/r240-20261127-wrapped/r240-20261127-wrapped-yes-dev-box-2-artifacts"
-```
+The historical no-op retry reused the second `yes` dev-box attempt's
+target directory,
+`$BOX_DATA/r240-20261127-wrapped/r240-20261127-wrapped-yes-dev-box-2-artifacts`.
 
 For the Mac reference, set `MAC_FIXTURE` to the E25 Mac twin fixture,
 `MAC_BLD` to its native linker and `DRIVER_ELF` to a local copy of the

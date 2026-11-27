@@ -1883,12 +1883,11 @@ impl<W: Wait + 'static> BreenFs<W> {
             tables[table_count] = Some(table);
             table_count += 1;
             for kind in table.kinds() {
-                let FdKind::RegularFile(description) = kind else { continue };
-                let file = description.try_lock()?;
+                let FdKind::RegularFile(file) = kind else { continue };
                 if file.mount_id != self.inner.id { continue; }
                 let Some(slot) = inodes.iter().position(|ino| *ino == Some(file.inode_num)) else { continue };
                 counts[slot].0 += 1;
-                let identity = Arc::as_ptr(description);
+                let identity = Arc::as_ptr(file);
                 if !descriptions.contains(&identity) {
                     if descriptions.len() == MAX_DESCRIPTIONS { return None; }
                     descriptions.push(identity);
@@ -4678,7 +4677,10 @@ impl<W: Wait + 'static> MappingIo for Mapping<W> {
         let mut bytes = Vec::new();
         bytes.try_reserve_exact(length).map_err(|_| Errno(ENOMEM))?;
         bytes.resize(length, 0);
-        self.node.filesystem.read(&self.node, offset, &mut bytes)?;
+        let read = self.node.filesystem.read(&self.node, offset, &mut bytes)?;
+        // A read cut short by a truncate returns only the bytes it read, so
+        // population can tell it from file bytes of 00.
+        bytes.truncate(read);
         Ok(bytes)
     }
     fn needs_flush(&self) -> bool {
