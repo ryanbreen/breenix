@@ -1,7 +1,7 @@
 // Pinned host frames for the production file_map writeback entry points.
 use crate::{
     errno::Errno,
-    vfs::{FileSystem, MappingRead, VNode},
+    vfs::{FileSystem, MappingIo, MappingRead, VNode},
 };
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -30,6 +30,7 @@ struct MapInner {
     pages: PageVec<CachePage>,
     poisoned: PageVec<()>,
     bindings: Vec<BindingRec>,
+    populating: Vec<Claim>,
     writable_shared: usize,
     writeback_cursor: u64,
     writeback_epoch: u64,
@@ -77,8 +78,33 @@ struct CachePage {
     gen: u64,
     written: Option<WritebackReceipt>,
 }
+std::thread_local! {
+    static ALLOCATION_HOOK: core::cell::RefCell<(usize, Option<Box<dyn FnMut(usize)>>)> =
+        core::cell::RefCell::new((0, None));
+}
+/// Run `hook(n)` before this thread's nth cache-frame allocation from now on,
+/// so a test can mutate a file between population's page reads. An empty
+/// option clears the hook.
+pub fn on_cache_allocation(hook: Option<Box<dyn FnMut(usize)>>) {
+    ALLOCATION_HOOK.with(|slot| *slot.borrow_mut() = (0, hook));
+}
 impl CachePage {
     fn allocate() -> Result<Self, &'static str> {
+        let hook = ALLOCATION_HOOK.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            slot.0 += 1;
+            let count = slot.0;
+            slot.1.take().map(|hook| (count, hook))
+        });
+        if let Some((count, mut hook)) = hook {
+            hook(count);
+            ALLOCATION_HOOK.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                if slot.1.is_none() {
+                    slot.1 = Some(hook);
+                }
+            });
+        }
         let storage = Box::new([0; 4096]);
         Ok(Self { frame: PhysFrame(storage.as_ptr() as usize), _storage: storage,
             dirty: false, gen: 0, written: None })
@@ -102,6 +128,7 @@ impl MapState {
                         entries: Vec::new(),
                     },
                     bindings: Vec::new(),
+                    populating: Vec::new(),
                     writable_shared: 0,
                     writeback_cursor: 0,
                     writeback_epoch: 0,
@@ -196,6 +223,16 @@ pub fn bind_host(node: Arc<VNode>, length: u64, shared: bool, writable: bool, po
         }
         node.map.refresh(&inner);
     }
+    let id = publish_host(&node, &*io, length, shared, writable);
+    HostBinding(Arc::new(HostBindingOwner { node, id }))
+}
+/// Publish a read-only private binding through the transfer that production
+/// `populate` returned, as mmap's `map_file` does after population.
+pub fn bind_populated(node: Arc<VNode>, io: &dyn MappingIo, length: u64) -> HostBinding {
+    let id = publish_host(&node, io, length, false, false);
+    HostBinding(Arc::new(HostBindingOwner { node, id }))
+}
+fn publish_host(node: &VNode, io: &dyn MappingIo, length: u64, shared: bool, writable: bool) -> u64 {
     let mut id = 0;
     io.publish(&mut |_| {
         let mut inner = node.map.state.inner.lock();
@@ -205,7 +242,7 @@ pub fn bind_host(node: Arc<VNode>, length: u64, shared: bool, writable: bool, po
         inner.writable_shared += usize::from(shared && writable);
         Ok(())
     }).unwrap();
-    HostBinding(Arc::new(HostBindingOwner { node, id }))
+    id
 }
 impl HostBinding {
     pub fn load(&self, offset: u64) -> Result<u8, HostFault> {
