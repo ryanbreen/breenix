@@ -178,3 +178,40 @@ fn negotiation_prefers_chacha20_and_detects_strict_kex() {
     }
     assert!(!kex::strict_kex(&legacy, &server));
 }
+
+/// A KEXINIT payload offering `kex` and `ciphers` in both directions.
+fn kexinit(kex: &str, ciphers: &str) -> Vec<u8> {
+    let mut payload = vec![20u8];
+    payload.extend_from_slice(&[0x11; 16]);
+    let lists = [kex, "ssh-ed25519", ciphers, ciphers, "hmac-sha2-256", "hmac-sha2-256", "none", "none", "", ""];
+    for list in lists {
+        payload.extend((list.len() as u32).to_be_bytes());
+        payload.extend_from_slice(list.as_bytes());
+    }
+    payload.push(0);
+    payload.extend(0u32.to_be_bytes());
+    payload
+}
+
+#[test]
+fn chacha20_is_negotiated_only_under_strict_kex() {
+    // Without strict KEX an attacker can delete packets from the start of
+    // the encrypted stream undetected (the Terrapin attack), so a client
+    // that prefers chacha20 but lacks kex-strict-c gets the next cipher.
+    let server = kex::build_kexinit(&mut rng(1));
+    let chacha_first = "chacha20-poly1305@openssh.com,aes256-gcm@openssh.com";
+    let legacy = kexinit("curve25519-sha256", chacha_first);
+    assert!(!kex::strict_kex(&legacy, &server));
+    assert_eq!(
+        kex::negotiate_ciphers(&legacy, &server).unwrap(),
+        (CipherKind::Aes256Gcm, CipherKind::Aes256Gcm)
+    );
+    let chacha_only = kexinit("curve25519-sha256", "chacha20-poly1305@openssh.com");
+    assert!(kex::negotiate_ciphers(&chacha_only, &server).is_err());
+    // The same client with strict KEX keeps its first choice.
+    let strict = kexinit("curve25519-sha256,kex-strict-c-v00@openssh.com", chacha_first);
+    assert_eq!(
+        kex::negotiate_ciphers(&strict, &server).unwrap(),
+        (CipherKind::ChaCha20Poly1305, CipherKind::ChaCha20Poly1305)
+    );
+}
