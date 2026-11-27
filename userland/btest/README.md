@@ -8,7 +8,7 @@ workspace. The build cache is `$HOME/.cache/btest/target`.
 
 The runner writes one JSON line to stdout and saves those same bytes in
 `/var/lib/btest/runs/<UTC epoch seconds>-<nanoseconds>-<pid>.json`. Exit 0
-means all cases passed, 1 means a build or suite failed, and 2 means startup
+means suite success, 1 means a build or suite failed, and 2 means startup
 or report publication failed. Goldens are compared in stdout, stderr, status
 order. The result includes the first differing stream as a unified diff for
 text, or an offset and hex bytes for binary data. The advisory run lock lives
@@ -81,8 +81,8 @@ for deterministic data. Directories and files accept an octal string
 including dangling targets. The materializer creates links without
 following them and applies directory modes and mtimes after their children.
 
-`inputs/<id>.in` is optional stdin. Every case supplies
-`golden/<id>.{out,err,status}`. Stdout and stderr are bytes, with a leading
+Use `inputs/<id>.in` for optional stdin and
+`golden/<id>.{out,err,status}` for the expected result. Stdout and stderr are bytes, with a leading
 program name before `:` normalized to `{prog}` in stderr. Status is an exit
 code or `signal:N`, followed by a newline. `stdout_prefix_bytes` closes the
 read end of the capture pipe after that many bytes, for producers such as

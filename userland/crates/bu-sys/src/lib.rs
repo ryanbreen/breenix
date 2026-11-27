@@ -102,3 +102,20 @@ pub fn nonblocking(fd: std::os::fd::BorrowedFd<'_>) -> io::Result<()> {
     }
     Ok(())
 }
+
+extern "C" {
+    fn flock(fd: i32, operation: i32) -> i32;
+}
+
+/// Acquire a nonblocking exclusive lock until the caller closes this file.
+pub fn lock_exclusive(fd: std::os::fd::BorrowedFd<'_>) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    const LOCK_EX: i32 = 2;
+    const LOCK_NB: i32 = 4;
+    // SAFETY: the descriptor is borrowed and flock takes no pointer.
+    if unsafe { flock(fd.as_raw_fd(), LOCK_EX | LOCK_NB) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}

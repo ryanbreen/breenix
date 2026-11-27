@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs::{self, File, OpenOptions, Permissions};
 use std::io::{self, Write};
+use std::os::fd::AsFd;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{self, Command, ExitCode};
@@ -64,7 +65,7 @@ fn report(packages: &[String]) -> ExitCode {
         .open(Path::new(STATE).join("run.lock"))
         .map_err(|e| format!("open btest run lock: {e}"))
         .and_then(|file| {
-            file.try_lock()
+            bu_sys::lock_exclusive(file.as_fd())
                 .map_err(|e| format!("acquire btest run lock: {e}"))?;
             Ok(file)
         });
