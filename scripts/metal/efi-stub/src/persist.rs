@@ -1065,10 +1065,9 @@ unsafe fn report_slot(
     Ok(())
 }
 
-/// Carries out persist.cfg when the boot disk has one.
 fn check_replace_usr_slots(mut size: impl FnMut(&str) -> Result<u64, Status>) -> Result<(), Status> {
-    for path in [r"\EFI\BREENIX\SLOT.TXN", r"\EFI\BREENIX\SLOT0.OK", r"\EFI\BREENIX\SLOT1.OK",
-                 r"\EFI\BREENIX\SLOT2.OK", r"\EFI\BREENIX\SWAP.IMG",
+    // The transaction removes its journal after all moves finish. Completion markers can remain.
+    for path in [r"\EFI\BREENIX\SLOT.TXN", r"\EFI\BREENIX\SWAP.IMG",
                  r"\EFI\BREENIX\SWAP.TXT", r"\EFI\BREENIX\NEXT.IMG", r"\EFI\BREENIX\NEXT.TXT"] {
         if !matches!(size(path), Err(NOT_FOUND)) {
             return Err(VOLUME_CORRUPTED);
@@ -1077,6 +1076,7 @@ fn check_replace_usr_slots(mut size: impl FnMut(&str) -> Result<u64, Status>) ->
     Ok(())
 }
 
+/// Carries out persist.cfg when the boot disk has one.
 pub(super) unsafe fn run(boot: &BootServices, runtime: &RuntimeServices, volume: *const u8, image: Handle) -> Result<(), Status> {
     let mut path = volume;
     let mut handle = null_mut();

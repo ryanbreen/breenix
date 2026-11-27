@@ -1119,7 +1119,8 @@ class Driver:
         if breenfs:
             try:
                 cycle = metal_migration.require_closed(the_layout)
-                metal_migration.require_upgrade_next(the_layout, slots)
+                metal_migration.require_upgrade_next(the_layout, slots,
+                    retry_kernel=self.args.commit if kernel_only and not self.args.inject else None)
             except ValueError as error:
                 raise Finish(m.EXIT_CANCELLED, str(error)) from error
             self.args.breenfs_upgrade = cycle['closed']
@@ -2150,6 +2151,12 @@ class Driver:
             return
         entry, commit = found.groups()
         requested = getattr(self.args, 'entry', None) or 'current'
+        if getattr(self.args, 'upgrade_parent', None):
+            action = self.args.slot_action
+            receipt = f'breenix-manager: slot {action}: current {commit}, previous '
+            if (entry != requested or commit != self.args.commit
+                    or not any(line.startswith(receipt) for line in self.slot_confirmations)):
+                raise Finish(m.EXIT_SHORT, 'the manager did not confirm the requested slot action and kernel')
         if entry != requested and ('rescue' in (entry, requested) or getattr(self.args, 'ext2_reclaimed', None)):
             raise BootManagerAbort(line, observed_at)
         slot = metal_persist.read_disk().get('slots', {}).get(entry, {})
