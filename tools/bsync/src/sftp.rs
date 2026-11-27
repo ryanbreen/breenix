@@ -2,6 +2,7 @@
 //! https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02
 
 use crate::Result;
+use std::collections::VecDeque;
 use std::io::{Read, Write};
 
 const INIT: u8 = 1;
@@ -13,6 +14,13 @@ const STATUS: u8 = 101;
 const HANDLE: u8 = 102;
 const CREATE_EXCLUSIVE: u32 = 0x02 | 0x08 | 0x20;
 const MAX_REPLY: usize = 256 * 1024;
+const CHUNK: usize = 32 * 1024;
+
+/// WRITE requests in flight before waiting for a status. 16 x 32 KiB is
+/// 512 KiB, half of bsshd's 1 MiB channel window, so the window does not
+/// stall the pipeline. Status replies are small, so the pending replies
+/// cannot fill the pipe back from ssh while we are still writing.
+pub(crate) const WINDOW: usize = 16;
 
 pub fn send(input: &mut impl Write, output: &mut impl Read, mut file: impl Read) -> Result<()> {
     let mut sftp = Client {
@@ -28,18 +36,25 @@ pub fn send(input: &mut impl Write, output: &mut impl Read, mut file: impl Read)
 
     let handle = sftp.create(b"payload")?;
     let mut offset = 0u64;
-    let mut bytes = [0; 32 * 1024];
+    let mut bytes = vec![0; CHUNK];
+    let mut in_flight = VecDeque::with_capacity(WINDOW);
     loop {
         let count = file.read(&mut bytes)?;
         if count == 0 {
             break;
         }
-        let mut fields = Vec::new();
+        if in_flight.len() == WINDOW {
+            sftp.complete(&mut in_flight, WRITE)?;
+        }
+        let mut fields = Vec::with_capacity(handle.len() + count + 16);
         string(&mut fields, &handle);
         fields.extend(offset.to_be_bytes());
         string(&mut fields, &bytes[..count]);
-        sftp.request_ok(WRITE, &fields)?;
+        in_flight.push_back(sftp.start(WRITE, &fields)?);
         offset += count as u64;
+    }
+    while !in_flight.is_empty() {
+        sftp.complete(&mut in_flight, WRITE)?;
     }
     sftp.close(&handle)?;
     // This marker tells the shell that the client received every write and
@@ -77,12 +92,34 @@ impl<W: Write, R: Read> Client<'_, W, R> {
         Ok(frame)
     }
 
-    fn request(&mut self, kind: u8, fields: &[u8]) -> Result<Vec<u8>> {
+    /// Send a request and return its ID without waiting for the reply.
+    fn start(&mut self, kind: u8, fields: &[u8]) -> Result<[u8; 4]> {
         self.id = self.id.wrapping_add(1);
         let id = self.id.to_be_bytes();
-        let mut body = Vec::from(id);
+        let mut body = Vec::with_capacity(4 + fields.len());
+        body.extend_from_slice(&id);
         body.extend_from_slice(fields);
         self.packet(kind, &body)?;
+        Ok(id)
+    }
+
+    /// Read one status reply for any request in flight and require success.
+    /// Servers may answer requests out of order, so match it by ID.
+    fn complete(&mut self, in_flight: &mut VecDeque<[u8; 4]>, kind: u8) -> Result<()> {
+        let reply = self.reply()?;
+        let index = in_flight
+            .iter()
+            .position(|id| reply.get(1..5) == Some(id.as_slice()))
+            .ok_or("unexpected SFTP reply ID")?;
+        in_flight.remove(index);
+        if reply[0] == STATUS && number(reply.get(5..9))? == 0 {
+            return Ok(());
+        }
+        Err(reply_error(kind, &reply).into())
+    }
+
+    fn request(&mut self, kind: u8, fields: &[u8]) -> Result<Vec<u8>> {
+        let id = self.start(kind, fields)?;
         let reply = self.reply()?;
         if reply.get(1..5) != Some(&id) {
             return Err("unexpected SFTP reply ID".into());
