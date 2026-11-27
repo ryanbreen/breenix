@@ -2,6 +2,10 @@
 
 #[path = "../../../kernel/src/memory/table_reclaim.rs"]
 mod table_reclaim;
+#[path = "../../../kernel/src/memory/kernel_walk.rs"]
+mod kernel_walk;
+
+mod kernel_walk_checks;
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
