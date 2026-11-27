@@ -484,6 +484,11 @@ class Driver:
             run['transferInput'] = transfer_input
         if closed := getattr(self.args, 'breenfs_upgrade', None):
             run['breenfsUpgrade'] = closed
+        if self.args.mode == 'persistent-install':
+            if getattr(self.args, 'kernel_only', False):
+                run['kernelOnly'] = True
+            if getattr(self.args, 'carry_local', False):
+                run['carryLocal'] = True
         if getattr(self.args, 'case', None) is not None:
             run['onlyCase'] = self.args.case
         if getattr(self.args, 'root_fs', None) is not None:
@@ -700,6 +705,9 @@ class Driver:
             m.write_json(self.dir / 'metal-run.json', run)
         if build.get('commit') != self.args.commit or build.get('profile') != profile or build.get('features') != features:
             raise Finish(m.EXIT_CANCELLED, f'build provenance differs from the requested {profile} commit')
+        if getattr(self.args, 'kernel_only', False) and (
+                build.get('kernelOnly') is not True or (inputs / 'ext2.img').exists()):
+            raise Finish(m.EXIT_CANCELLED, 'kernel-only flash needs a kernel-only build')
         root_fs = getattr(self.args, 'root_fs', None)
         tools = build.get('breenfsTools')
         if root_fs == 'breenfs' or tools is not None:
@@ -809,6 +817,9 @@ class Driver:
         if self.args.mode == 'persistent-install':
             if metal_migration.in_progress():
                 raise Finish(m.EXIT_CANCELLED, 'the E24 migration has parked the persistent install in the test loop')
+            if (not getattr(self.args, 'kernel_only', False) and metal_persist.layout()
+                    and build.get('localUserlandGuard') is not True):
+                raise Finish(m.EXIT_CANCELLED, 'the commit lacks the installer that protects on-box files')
             files, extracted = self.prepare_install(inputs, build)
             self.assemble(inputs, files, extracted, root_ramdisk=False)
             return
@@ -1079,6 +1090,14 @@ class Driver:
         test root, and the migration's intent. Returns the boot disk's files."""
         the_layout = metal_persist.layout()
         slots = metal_persist.read_disk().get('slots') or {}
+        kernel_only = getattr(self.args, 'kernel_only', False)
+        generation = self.id
+        if kernel_only:
+            generation = metal_persist.slot_userland(slots.get('current'))
+            if not the_layout or generation is None:
+                raise Finish(m.EXIT_CANCELLED, 'the CURRENT slot has no recorded userland ID')
+            if (slots.get('previous') or {}).get('migration') == 'rescue' and not slots.get('rescue'):
+                raise Finish(m.EXIT_CANCELLED, 'the previous ext2 rescue must be archived before a kernel-only flash')
         breenfs = bool(the_layout and the_layout['version'] in (2, 3))
         if breenfs:
             try:
@@ -1098,7 +1117,7 @@ class Driver:
             the_layout = metal_persist.new_layout()
             expect = metal_disk.record(previous)
         manager = inputs / 'manager.efi'
-        if not manager.is_file() or build.get('manager', {}).get('sha256') != metal_image.sha256(manager):
+        if not kernel_only and (not manager.is_file() or build.get('manager', {}).get('sha256') != metal_image.sha256(manager)):
             raise Finish(m.EXIT_CANCELLED, 'the boot manager differs from its build record')
         self.phase('Assembling the ' + action)
         extracted = self.stage / 'esp'
@@ -1111,43 +1130,33 @@ class Driver:
             broken = scratch / 'broken-loader.efi'
             broken.write_bytes(b'deliberately invalid verification bootloader\n')
             slot_files['efi/boot/bootx64.efi'] = broken
-        metal_persist.slot_image(slot, slot_files, the_layout, scratch, self.id)
+        metal_persist.slot_image(slot, slot_files, the_layout, scratch, generation)
         note = scratch / 'next.txt'
         note.write_text(metal_persist.slot_note(self.args.commit, self.id))
-        manager_files = {'efi/breenix/bootmgr.efi': manager, 'efi/boot/bootx64.efi': manager}
-        # The new userland, staged as a default boot's root (console account included) with the operator's account
-        # and SSH public key for the installer's machine state store, for the stub to write onto the test root once
-        # the request is done.
-        facts, suite_files = metal_disk.stage(self.dir, inputs, self.id, self.args.commit, self.site, build,
-                                              mode='persistent-install' if breenfs else 'default', the_layout=the_layout,
-                                              operator=None if breenfs else metal_root.operator_account(self.site),
-                                              no_ssh=self.args.inject == 'upgrade-service-down')
-        self.delivery['diskRoot'] = facts
-        files = dict(esp_files)
-        files.update(suite_files)
-        intent = self.stage / 'boot-intent'
-        if breenfs:
-            boot_intent = metal_persist.breenfs_upgrade_intent(the_layout, self.id)
+        if kernel_only:
+            files = {}
+            config, request = metal_persist.upgrade_request(scratch, the_layout, {}, slot, note, self.site,
+                                                            breenfs=breenfs, kernel_only=generation)
         else:
-            system, _ = metal_persist.persistent_partition_guids(the_layout)
-            boot_intent = metal_persist.intent('persistent-install', root=the_layout['partitions']['test']['guid'],
-                                               home=system, userland=self.id,
-                                               previous_userland=(slots.get('current') or {}).get('installedBy'))
-        intent.write_bytes(boot_intent)
-        files['ramdisk'] = intent
-        if action == 'install':
-            config, request = metal_persist.install_request(scratch, the_layout, expect, manager_files, slot, note,
-                                                            self.site, scratch)
-        else:
-            config, request = metal_persist.upgrade_request(scratch, the_layout, manager_files, slot, note, self.site,
-                                                            breenfs=breenfs)
+            files = dict(esp_files)
+            files.update(self.stage_install_userland(inputs, build, the_layout, slots, breenfs))
+            manager_files = {'efi/breenix/bootmgr.efi': manager, 'efi/boot/bootx64.efi': manager}
+            if action == 'install':
+                config, request = metal_persist.install_request(scratch, the_layout, expect, manager_files, slot,
+                                                                note, self.site, scratch)
+            else:
+                config, request = metal_persist.upgrade_request(scratch, the_layout, manager_files, slot, note,
+                                                                self.site, breenfs=breenfs)
         files['persist.cfg'] = config
         files['persist.dat'] = request.data
         self.persist = {'action': action, 'layout': the_layout,
-                        'slot': dict(metal_persist.file_facts(slot), commit=self.args.commit, installedBy=self.id),
+                        'slot': dict(metal_persist.file_facts(slot), commit=self.args.commit, installedBy=self.id,
+                                     userland=generation),
                         'request': {'extents': request.extents, 'bytes': request.written,
                                     'payload': request.data.stat().st_size}}
-        if breenfs:
+        if kernel_only:
+            self.persist['kernelOnly'] = True
+        elif breenfs:
             previous = slots.get('previous') or {}
             if previous.get('migration') == 'rescue':
                 self.persist['rescue'] = previous
@@ -1156,6 +1165,26 @@ class Driver:
         self.event('persist-requested', action=action, extents=request.extents, bytes=request.written,
                    payload=request.data.stat().st_size)
         return files, extracted
+
+    def stage_install_userland(self, inputs, build, the_layout, slots, breenfs):
+        # The new userland, staged as a default boot's root (console account included) with the operator's account
+        # and SSH public key for the installer's machine state store, for the stub to write onto the test root once
+        # the request is done.
+        facts, suite_files = metal_disk.stage(self.dir, inputs, self.id, self.args.commit, self.site, build,
+                                              mode='persistent-install' if breenfs else 'default', the_layout=the_layout,
+                                              operator=None if breenfs else metal_root.operator_account(self.site),
+                                              no_ssh=self.args.inject == 'upgrade-service-down')
+        self.delivery['diskRoot'] = facts
+        intent = self.stage / 'boot-intent'
+        if breenfs:
+            boot_intent = metal_persist.breenfs_upgrade_intent(the_layout, self.id)
+        else:
+            system, _ = metal_persist.persistent_partition_guids(the_layout)
+            boot_intent = metal_persist.intent('persistent-install', root=the_layout['partitions']['test']['guid'],
+                                               home=system, userland=self.id,
+                                               previous_userland=metal_persist.slot_userland(slots.get('current')))
+        intent.write_bytes(boot_intent)
+        return dict(suite_files, ramdisk=intent)
 
     # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
     def load_definition(self):
@@ -1224,6 +1253,8 @@ class Driver:
 
     # Read-only checks before power-on.
     def preflight(self):
+        if self.args.inject in WATCHDOG_FAULTS and metal_persist.layout():
+            raise Finish(m.EXIT_CANCELLED, 'the watchdog fault would boot the writable persistent install after reset')
         self.phase_name = 'preflight'
         self.phase('Checking the machine')
         try:
@@ -1239,7 +1270,7 @@ class Driver:
         self.progress_key = progress_key(baseline.get('bootProgress'))
         if baseline.get('power') != 'Off':
             if (self.args.payload in (metal_export.PAYLOAD, metal_persist.RECLAIM_PAYLOAD) or self.migration_phase
-                    or getattr(self.args, 'breenfs_upgrade', None)):
+                    or getattr(self.args, 'breenfs_upgrade', None) or getattr(self.args, 'kernel_only', False)):
                 raise Finish(m.EXIT_CANCELLED, 'this persistent operation requires a powered-off machine')
             if getattr(self.args, 'resting', False):
                 raise Finish(m.EXIT_CANCELLED, 'an existing power-on is left for boot manager adoption')
@@ -1975,11 +2006,17 @@ class Driver:
                 if not self.slot_userlands_complete:
                     raise Finish(m.EXIT_SHORT, 'installer has no recovered slot references')
                 refs = 'BREENIX-SLOTS-1 ' + ' '.join(self.slot_userlands[k] for k in ('CURRENT', 'PREVIOUS', 'NEXT'))
+                if getattr(self.args, 'carry_local', False):
+                    refs += ' carry-local'
                 self.console_send(refs, paced=True)
                 self.slot_refs_sent = True
         if self.persist and PERSIST_DONE in line and 'persist-written' not in self.seen:
-            self.seen.add('persist-written')
             slot = self.persist['slot']
+            if self.persist.get('kernelOnly') and (line != PERSIST_DONE or 'stub' not in self.seen
+                    or self.kernel_started is not None or not self.slot_userlands_complete
+                    or any(self.slot_userlands.get(key) != slot['userland'] for key in ('CURRENT', 'NEXT'))):
+                raise Finish(m.EXIT_SHORT, 'the firmware did not confirm the same userland in CURRENT and NEXT')
+            self.seen.add('persist-written')
             record = metal_persist.read_disk()
             slots = dict(record.get('slots') or {}, next=slot)
             if rescue := self.persist.get('rescue'):
@@ -1995,9 +2032,22 @@ class Driver:
                 metal_persist.update_disk(slots=slots)
             self.event('persist-written', observed_at=observed_at, action=self.persist['action'], commit=slot['commit'])
             self.phase('Persistent install: the request is written')
+            if self.persist.get('kernelOnly'):
+                raise Finish(m.EXIT_DONE, 'the kernel-only NEXT slot was staged')
         if self.args.mode == 'persistent-install' and self.kernel_started and INSTALL_FAILED in line:
+            if 'local-userland-refused' in self.seen and 'persist-written' in self.seen:
+                # NEXT has no userland and cannot be promoted. A retry with
+                # --carry-local can replace it while still holding the old pair.
+                slots = metal_persist.read_disk().get('slots', {})
+                if slots.get('next') == self.persist['slot']:
+                    slots.pop('next')
+                    metal_persist.update_disk(slots=slots)
+                self.event('persistent-install-refused-local', observed_at=observed_at)
+                raise Finish(m.EXIT_SHORT, 'the installer refused on-box changes; see the serial listing')
             self.event('persistent-install-failed', observed_at=observed_at)
             raise Finish(m.EXIT_SHORT, 'the migration onto the system partition failed')
+        if self.args.mode == 'persistent-install' and self.kernel_started and line == '[persistent] on-box changes refused before copy':
+            self.seen.add('local-userland-refused')
         if self.args.mode == 'persistent-install' and INSTALL_DONE in line:
             self.event('persistent-install-complete', observed_at=observed_at)
 
@@ -3091,8 +3141,8 @@ class Driver:
         """Promote, probe over SSH, and restore the previous paired slot on failure (S21)."""
         slots = metal_persist.read_disk().get('slots', {})
         result = dict(install=self.id, toolsCommit=tools_commit(), recoveredReferences=self.slot_userlands,
-                      candidateGeneration=(slots.get('next') or {}).get('installedBy'),
-                      previousGeneration=(slots.get('current') or {}).get('installedBy'))
+                      candidateGeneration=metal_persist.slot_userland(slots.get('next')),
+                      previousGeneration=metal_persist.slot_userland(slots.get('current')))
         last = self.id
         try:
             for action in ('commit', 'rollback'):
@@ -3275,6 +3325,8 @@ def main():
         p.add_argument('--slot-action', choices=('commit', 'rollback'), help='what the manager does to the slots first')
         p.add_argument('--run', action='append', help='a persistent boot logs in over SOL and runs this; repeatable')
         p.add_argument('--upgrade-parent', help='install whose S21 probe owns this verification')
+        p.add_argument('--kernel-only', action='store_true', help=argparse.SUPPRESS)
+        p.add_argument('--carry-local', action='store_true', help=argparse.SUPPRESS)
         p.add_argument('--verify', action='store_true', help='a persistent boot that ends at the login prompt')
         p.add_argument('--resting', action='store_true', help=argparse.SUPPRESS)
         p.add_argument('--adopt', action='store_true', help=argparse.SUPPRESS)
@@ -3298,6 +3350,9 @@ def main():
     sub.add_parser('status')
     args, _ = parser.parse_known_args()
     if args.command in ('launch', 'run'):
+        if (args.kernel_only or args.carry_local) and (
+                args.mode != 'persistent-install' or args.kernel_only and (args.carry_local or args.inject)):
+            parser.error('invalid persistent flash options')
         transfer = transfer_fixture.selected(args.suite)
         if transfer:
             facts = args.transfer_input
@@ -3391,7 +3446,7 @@ def main():
         if args.input and args.mode != 'console':
             parser.error('--input needs console mode')
     if (args.command in ('launch', 'run') and args.payload == 'image' and not args.disk
-            and not xhci_fault(args) and args.inject not in WATCHDOG_FAULTS):
+            and not xhci_fault(args) and not args.kernel_only and args.inject not in WATCHDOG_FAULTS):
         args.disk = 'root'
     if args.command in ('launch', 'run') and args.inject == 'disk-before-mount' and (args.payload != 'image' or args.disk != 'root'):
         parser.error('disk-before-mount needs a disk-root image boot')

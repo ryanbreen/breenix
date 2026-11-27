@@ -6,7 +6,7 @@
                  [--ramdisk] [--mode default|shell|probe|suite|console|tests] [--disk install|root] [--session [--idle-minutes N]]
                  [--suite ID | --suite ID,ID,... | --suite all] [--catchup]
   metal-run boot --persistent [--entry previous|rescue] [--run CMD ...] [--verify]
-  metal-run install-persistent [--sha SHA | --branch NAME] [--add-breenfs] | --rollback
+  metal-run install-persistent [--sha SHA | --branch NAME] [--kernel-only | --carry-local | --add-breenfs] | --rollback
   metal-run migrate-persistent migrate|readback|cutover|rescue|return --sha SHA --branch NAME
   metal-run close-migration RETURN_BOOT
   metal-run record-breenfs-upgrades FIRST SECOND --sha SHA
@@ -260,6 +260,11 @@ def install_persistent(args):
                   input=None, wait=None, session=False, idle_minutes=30, source_boot=None,
                   serve_as=None, content_type=None, linux_directory=None, catchup=False, run=None, verify=False,
                   entry=None, slot_action=None, persistent=False)
+    kernel_only = getattr(args, 'kernel_only', False)
+    carry_local = getattr(args, 'carry_local', False)
+    if (kernel_only or carry_local) and (args.rollback or getattr(args, 'add_breenfs', False)
+                                         or kernel_only and (carry_local or args.inject)):
+        raise SystemExit('invalid persistent flash options')
     if getattr(args, 'add_breenfs', False):
         if args.rollback or args.inject or not args.branch or not args.sha:
             raise SystemExit('--add-breenfs needs a pinned branch and commit, without other install actions')
@@ -270,7 +275,9 @@ def install_persistent(args):
         return boot(argparse.Namespace(**dict(common, payload='persistent', mode='persistent', persistent=True,
                                               slot_action='rollback', verify=True)))
     options = argparse.Namespace(**dict(common, payload='image', mode='persistent-install', sha=args.sha,
-                                            branch=args.branch, disk='root', inject=getattr(args, 'inject', None)))
+                                            branch=args.branch, disk=None if kernel_only else 'root',
+                                            inject=getattr(args, 'inject', None), kernel_only=kernel_only,
+                                            carry_local=carry_local))
     status = boot(options)
     if status == 0:
         logs = Path.home() / '.local/state/breenix-metal'
@@ -370,7 +377,8 @@ def boot(args):
         raise SystemExit('tests mode needs a disk-root image boot without --inject or --suite')
     if args.inject in WATCHDOG_FAULTS and (args.payload != 'image' or args.mode != 'default' or args.disk or args.nmi):
         raise SystemExit('watchdog faults need a default image boot without --disk or --nmi')
-    if args.payload == 'image' and not args.disk and args.inject not in (*XHCI_FAULTS, *WATCHDOG_FAULTS):
+    if (args.payload == 'image' and not args.disk and args.inject not in (*XHCI_FAULTS, *WATCHDOG_FAULTS)
+            and not getattr(args, 'kernel_only', False)):
         args.disk = 'root'
     if args.inject == 'disk-before-mount' and (args.payload != 'image' or args.disk != 'root'):
         raise SystemExit('disk-before-mount needs a disk-root image boot')
@@ -437,6 +445,9 @@ def boot(args):
     boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
     command = ['python3', f'{TOOLS}/metal-boot', 'launch', '--id', boot_id, '--payload', payload]
     command += ['--mode', args.mode, '--wait', str(wait)]
+    for flag in ('kernel_only', 'carry_local'):
+        if getattr(args, flag, False):
+            command.append('--' + flag.replace('_', '-'))
     if transfer_input:
         command += ['--transfer-input', json.dumps(transfer_input)]
     if migration:
@@ -540,7 +551,8 @@ def boot(args):
             subprocess.Popen([sys.executable, str(Path(__file__).resolve()), *build_command] + features + suite +
                              build_selection +
                              tools_only + (['--smb-helper'] if smb else []) + (['--catchup'] if catchup else [])
-                             + (['--migration-build'] if migration else []),
+                             + (['--migration-build'] if migration else [])
+                             + (['--kernel-only'] if getattr(args, 'kernel_only', False) else []),
                              stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         print(json.dumps({'id': boot_id, 'build': 'started', 'commit': sha}), flush=True)
         if toolchain_ssh:
@@ -664,7 +676,7 @@ def stub_sources(stub):
 
 
 def build(boot_id, sha, features=None, suite=None, tools_profile=None, catchup=False, smb_helper=False,
-          migration=False, milestone=None):
+          migration=False, milestone=None, kernel_only=False):
     """Detached: build in the metal build container, stream the inputs into the boot's stage folder, signal the driver."""
     validate_id(boot_id)
     env = host_env()
@@ -716,6 +728,7 @@ def build(boot_id, sha, features=None, suite=None, tools_profile=None, catchup=F
                       *(['--suite', suite] if suite else []),
                       *(['--milestone', milestone] if milestone else []),
                       *(['--stub-only', '--tools-profile', tools_profile] if tools_profile else []),
+                      *(['--kernel-only'] if kernel_only else []),
                       *(['--catchup'] if catchup else [])).returncode
     print(f'[metal-run] build exit {status} after {time.time() - started:.0f} s', flush=True)
     if status == 3:
@@ -815,6 +828,9 @@ def argument_parser(automatic=False):
     p.add_argument('--add-breenfs', action='store_true', help='append the two BreenFS GPT partitions')
     p.add_argument('--rollback', action='store_true', help='swap the current and previous kernel slots')
     p.add_argument('--inject', choices=('upgrade-no-ssh', 'upgrade-service-down'), help='stage an unbootable or bootable SSH-less candidate to exercise automatic rollback')
+    options = p.add_mutually_exclusive_group()
+    options.add_argument('--kernel-only', action='store_true', help='flash the kernel and keep CURRENT userland')
+    options.add_argument('--carry-local', action='store_true', help='carry on-box files into the new userland')
     p = sub.add_parser('migrate-persistent', help='run one phase of the E24 persistent migration')
     p.add_argument('phase', choices=('migrate', 'readback', 'cutover', 'rescue', 'return'))
     p.add_argument('--sha', required=True)
@@ -837,6 +853,7 @@ def argument_parser(automatic=False):
         sub.add_parser(name).add_argument('id')
     sub.add_parser('status')
     p = sub.add_parser('_build')
+    p.add_argument('--kernel-only', action='store_true')
     p.add_argument('id')
     p.add_argument('sha')
     p.add_argument('--features', choices=(FAULT_FEATURE, FENCE_FEATURE, PANIC_FEATURE, TESTING_FEATURE, 'capture_panic_oracle', 'gt710_core_probe', 'gt710_clock_probe', 'watchdog_fault_inject', *metal_power_cut.FEATURES))
@@ -904,7 +921,7 @@ def main():
         return install_persistent(args)
     if args.command == '_build':
         return build(args.id, args.sha, args.features, args.suite, args.tools_profile, args.catchup, args.smb_helper,
-                     args.migration_build, args.milestone)
+                     args.migration_build, args.milestone, args.kernel_only)
     if args.command == '_prebuilt':
         return deliver_prebuilt(args.id, args.sha, args.prebuilt, args.mode, args.features, args.suite, args.catchup, args.smb_helper)
     env = host_env()

@@ -337,6 +337,10 @@ class QemuUpgrade(UpgradeSuite):
         files = ('userspace/programs/src/persistent_install.rs', 'libs/libbreenix/src/layout.rs',
                  'libs/libbreenix/src/layout.tsv', 'kernel/src/fs/ext2/generation.rs',
                  'scripts/metal/efi-stub/src/slot_transaction.rs')
+        guard = ('userspace/programs/src/persistent_install/local.rs', 'libs/libbreenix/src/crypto/sha256.rs')
+        if subprocess.run(['git', '-C', str(ROOT), 'cat-file', '-e', self.args.sha + ':' + guard[0]],
+                          capture_output=True).returncode == 0:
+            files += guard
         tests = (
             ('interruption_enospc_and_io_error_at_each_operation_keep_current_bootable', ('enospc', 'io', 'interruption')),
             ('promotion_and_rollback_recover_paired_trees_byte_for_byte', ('paired-rollback',)),

@@ -904,6 +904,8 @@ which fetches the boot URL as before. The stub's suite-disk request (format 2) n
 the stub writes the image through that partition's own Block I/O, so its writes cannot leave the partition, with the
 storage record in the partition's first sector written last, as before. A cold disk readback reads the test root
 partition. A tests boot's RAM disk is its intent followed by the BXTEST image.
+The kernel opens its write fence for the test root's LBA range. The metal watchdog fault boots are refused on
+a persistent layout because their recovery path would start writable CURRENT after the reset.
 
 Filesystem suite boots append the ARM64 QEMU fixture images to the staged root image. The root record
 keeps the root image's own length. The format-2 intent records each partition-relative range as
@@ -994,6 +996,15 @@ incomplete, preserve the evidence and stop the acceptance for diagnosis.
 
 ### Install and upgrade
 
+`metal-run install-persistent --sha <commit> --kernel-only` builds the production kernel without userland.
+The delivery stub recovers any pending slot transaction, checks the requested userland ID against the boot
+intent in the physical CURRENT slot, and writes only `NEXT.IMG` and `NEXT.TXT` to the EFI system partition.
+NEXT names the same userland generation as CURRENT. The firmware ends the staging boot, then the usual
+SSH verification boot promotes NEXT. A failed verification restores the previous kernel and checks it over
+SSH. The flash stages no test root and copies no files on the system or home partitions. Those partitions
+are available to the verification boot as they are in a regular persistent boot. A missing or unreadable
+CURRENT userland ID refuses the flash.
+
 `metal-run install-persistent --sha <commit>` (with `--branch` for a pushed branch) installs or upgrades the
 persistent install with one leased run of two boots. The kernel slot and its userland share an immutable install
 ID (the install boot's ID), recorded as `userland <id>` in the slot's format-2 intent. The installation path is:
@@ -1051,6 +1062,19 @@ CURRENT, PREVIOUS and NEXT from the physical disk. An unreadable slot or malform
 The stub prints these recovered identities; the leased driver supplies them to the installer's console request,
 `BREENIX-SLOTS-1 <current> <previous> <next>`. The installer validates retained completion records and protects
 those generations and the in-flight generation. The host's `disk.json` does not authorize deletion.
+
+Before copying the new userland or reclaiming generations, `/sbin/persistent-install` checks the selected
+generation offline. It compares regular files and symlinks by path, contents or link target, mode and owner
+against the pristine manifest recorded at install and against the incoming image. It lists local paths in the
+install boot's serial log and refuses publication. For an older generation without a manifest, every difference
+from the incoming image is a possible local change.
+
+Rerun with `--carry-local` to install the new image and retain the listed paths. A path the new image leaves
+available keeps its original location. A conflict is saved under `/.breenix-carried/<previous-id>/` with its
+original relative path and any set-ID bits cleared. The installer carries earlier archives forward. Shared machine directories, `/root`
+and `/home` already live outside the replaced tree. On BreenFS, the carry-forward uses a private clone of the
+selected generation on the system partition as its draft. The old slot and its generation stay available
+for rollback.
 
 Reclamation discovers directory identities before changing paths. It removes unreferenced published trees and
 unpublished scratch, with checked directory barriers, while retaining trees that share directory identities with
@@ -1771,6 +1795,8 @@ python3 ~/.local/share/breenix-metal/metal-run boot --payload hang-iso [--serve-
     [--content-type application/octet-stream]                           # ... in a small El Torito ISO
 python3 ~/.local/share/breenix-metal/metal-run boot --payload manager    # the boot manager in probe mode, over HTTP
 python3 ~/.local/share/breenix-metal/metal-run install-persistent --branch NAME --sha SHA   # install or upgrade, then verify
+python3 ~/.local/share/breenix-metal/metal-run install-persistent --sha SHA --kernel-only   # upgrade the kernel using CURRENT userland
+python3 ~/.local/share/breenix-metal/metal-run install-persistent --sha SHA --carry-local    # upgrade userland, retaining local files
 python3 ~/.local/share/breenix-metal/metal-run install-persistent --rollback                # swap the kernel slots
 python3 ~/.local/share/breenix-metal/metal-run boot --persistent          # an operator session on the persistent install
 python3 ~/.local/share/breenix-metal/metal-run boot --persistent --run 'CMD' [--run 'CMD' ...]   # log in over SOL, run, power off

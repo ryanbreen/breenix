@@ -334,7 +334,7 @@ class DriverPersistentTest(unittest.TestCase):
             self.assertIn('kernel-only live-generation', request)
             self.assertFalse(any(line.startswith(('partition ', 'extent ')) for line in request))
             self.assertEqual([line.split()[1] for line in request if line.startswith('esp-file ')],
-                             ['efi/breenix/next.img', 'efi/breenix/next.txt'])
+                             [r'\EFI\BREENIX\NEXT.IMG', r'\EFI\BREENIX\NEXT.TXT'])
             self.assertIn(b'userland live-generation\n', (d.stage / 'persist/next.img').read_bytes())
             self.assertEqual(d.persist['slot']['userland'], 'live-generation')
             metal_persist.update_disk(slots={'current': {'commit': current['commit']}})

@@ -4,7 +4,7 @@
 #[path = "../userspace/programs/src/persistent_install.rs"]
 mod installer;
 
-use std::{fs, path::Path};
+use std::{fs, os::unix::fs::PermissionsExt, path::Path};
 
 fn image(root: &Path, name: &str) {
     fs::create_dir(root).unwrap();
@@ -28,6 +28,7 @@ fn main() {
     assert!(result.is_ok(), "{:?}", result.err());
     let live = system.join(".breenix-generations/old");
     fs::write(live.join("bin/payload"), b"delivered on the box").unwrap();
+    fs::set_permissions(live.join("bin/payload"), fs::Permissions::from_mode(0o4755)).unwrap();
     fs::write(live.join("bin/local"), b"created on the box").unwrap();
     fs::write(live.join("bin/adopted"), b"identical to new image").unwrap();
     fs::write(new.join("bin/adopted"), b"identical to new image").unwrap();
@@ -40,4 +41,15 @@ fn main() {
     assert!(!error.contains("/bin/retired"), "{error}");
     assert!(!error.contains("/bin/adopted"), "{error}");
     assert!(!system.join(".breenix-generations/new.new").exists());
+
+    let result = installer::install_tree_with_local(&new, &system, "new", Some("old"), true, None, &mut || Ok(()));
+    assert!(result.is_ok(), "{:?}", result.err());
+    let next = system.join(".breenix-generations/new");
+    assert_eq!(fs::read(next.join("bin/payload")).unwrap(), b"new image");
+    assert_eq!(fs::read(next.join("bin/local")).unwrap(), b"created on the box");
+    let archived = next.join(".breenix-carried/old/bin/payload");
+    assert_eq!(fs::read(&archived).unwrap(), b"delivered on the box");
+    assert_eq!(fs::metadata(archived).unwrap().permissions().mode() & 0o7777, 0o755);
+    assert!(!next.join("bin/retired").exists());
+    assert_eq!(fs::read(live.join("bin/payload")).unwrap(), b"delivered on the box");
 }

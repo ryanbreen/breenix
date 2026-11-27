@@ -169,6 +169,7 @@ class UpgradeSuite:
         files = ('userspace/programs/src/persistent_install.rs', 'libs/libbreenix/src/layout.rs',
                  'libs/libbreenix/src/layout.tsv', 'kernel/src/fs/ext2/generation.rs',
                  'scripts/metal/efi-stub/src/slot_transaction.rs')
+        guard = ('userspace/programs/src/persistent_install/local.rs', 'libs/libbreenix/src/crypto/sha256.rs')
         base = self.env['BUILD_ROOT'] + '/upgrade-cases-' + self.anchor
         call = lambda *cmd, **kw: self.runner['in_build'](self.env, *cmd, capture_output=True, text=True, **kw)
         proof = {}
@@ -177,6 +178,8 @@ class UpgradeSuite:
             made = call('mkdir', base)
             if made.returncode: raise ValueError('private generation test directory already exists')
             owned = True
+            if call('git', '-C', self.env['BUILD_REPO'], 'cat-file', '-e', self.args.sha + ':' + guard[0]).returncode == 0:
+                files += guard
             for name in files:
                 value = call('git', '-C', self.env['BUILD_REPO'], 'show', self.args.sha + ':' + name)
                 if value.returncode: raise ValueError('cannot read exact-head installer source')
