@@ -34,12 +34,31 @@ def inputs(args):
     return ROOT, args.out / "data", []
 
 
+def bsync_login(host):
+    if "@" in host:
+        return host
+    config = subprocess.run(["/usr/bin/ssh", "-G", "-T", "--", host],
+                            check=True, stdout=subprocess.PIPE, text=True)
+    for line in config.stdout.splitlines():
+        key, _, value = line.partition(" ")
+        if key == "user" and value:
+            # Keep the alias so bsync's SSH calls use its configured connection settings.
+            return f"{value}@{host}"
+    raise ValueError(f"cannot resolve the SSH user for {host!r}; use --host USER@HOST")
+
+
 def main(args):
     if args.host and args.mac_ssh:
         raise ValueError("choose Breenix SSH or the macOS loopback reference")
     args.out = args.out.resolve()
-    args.out.mkdir(parents=True, exist_ok=True)
     source, data, remote = inputs(args)
+    requested = args.cases.split(",") if args.cases else None
+    bsync_host = None
+    if remote and (requested is None or "network" in requested):
+        if not args.bsync:
+            raise ValueError("network requires a Mac bsync executable")
+        bsync_host = bsync_login(args.host)
+    args.out.mkdir(parents=True, exist_ok=True)
     reports = Path("/var/lib/bbench") if remote else args.out
     data = data / args.run
 
@@ -130,9 +149,7 @@ def main(args):
     defaults = [case for case in cases if not remote or case not in ("sequential", "walk")]
     if args.host or args.mac_ssh:
         defaults.append("network")
-    selected = args.cases.split(",") if args.cases else defaults
-    if args.host and "network" in selected and not args.bsync:
-        raise ValueError("network requires a Mac bsync executable")
+    selected = requested if requested is not None else defaults
     unknown = set(selected) - cases.keys() - {"network"}
     if unknown:
         raise ValueError(f"unknown cases: {', '.join(sorted(unknown))}")
@@ -181,7 +198,7 @@ def main(args):
         if case == "network":
             if not remote and not args.mac_ssh:
                 raise ValueError("native network reference requires --mac-ssh localhost")
-            network_series(args, data, run)
+            network_series(args, data, run, bsync_host)
             continue
         if case == "cargo-noop":
             if args.noop_target:
@@ -200,7 +217,7 @@ def main(args):
     return int(failures != 0)
 
 
-def network_series(args, data, run):
+def network_series(args, data, run, bsync_host):
     local = args.out / "network"
     local.mkdir(exist_ok=True)
     payload = local / "payload"
@@ -248,7 +265,7 @@ def network_series(args, data, run):
             print(sample, flush=True)
             before = counters()
             returned = args.out / f"{sample}.download"
-            upload = ([args.bsync, str(local), f"{host}:{destination}"] if args.host
+            upload = ([args.bsync, str(local), f"{bsync_host}:{destination}"] if args.host
                       else ["/usr/bin/scp", *ssh_options, str(payload), remote_file])
             commands = {
                 "upload": upload,

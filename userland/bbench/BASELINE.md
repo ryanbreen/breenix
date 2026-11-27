@@ -165,6 +165,9 @@ through a read-only sudo call. Global counter deltas include background activity
 
 Set `BOX_LOGIN`, `BOX_SOURCE`, `BOX_DATA`, `BOX_BCARGO` and `BOX_PROBE`
 to the configured SSH destination and absolute paths on the box.
+`BOX_LOGIN` accepts `USER@HOST` or an SSH alias. For network cases, the
+runner reads the alias's effective SSH user before starting any workloads
+and passes the user and original alias to `bsync`.
 `BOX_DATA` is the benchmark cache under the SSH account's home.
 Create `/var/lib/bbench` with `sudo -n mkdir` and give the SSH account
 ownership. Sync the six source roots with `bdev sync`. Build package
