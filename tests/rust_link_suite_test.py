@@ -22,7 +22,9 @@ class RustLinkSuite(unittest.TestCase):
         record = json.loads((output / 'build.json').read_text())
         rustc = Path(subprocess.check_output(['rustup', 'which', 'rustc'],
                                              cwd=ROOT / 'toolchain', text=True).strip())
-        digest = lambda path: hashlib.file_digest(path.open('rb'), 'sha256').hexdigest()
+        def digest(path):
+            with path.open('rb') as stream:
+                return hashlib.file_digest(stream, 'sha256').hexdigest()
         pin = tomllib.loads((ROOT / 'rust-fork.toml').read_text())['commit']
         self.assertEqual(record['target'], 'aarch64-breenix')
         self.assertEqual(record['cargo_package'], 'bld')
