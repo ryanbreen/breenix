@@ -45,6 +45,7 @@ PIN = json.loads(BENCH.joinpath("linux-arm64.json").read_text())
 SYSTEMS = ("linux", "breenix")
 RUNS = 5
 MIB = 1024 * 1024
+GIB = 1024 * MIB
 
 # The repository's standard ARM64 Breenix QEMU shape (run.sh and the production-
 # profile boot test): virt with GICv3, scripts/qemu-arm64.py's accelerator (HVF
@@ -197,11 +198,38 @@ def host_description():
     return f"{chip.strip()} ({model.strip()}), macOS {platform.mac_ver()[0]}"
 
 
-def hardware():
+def vm_shape():
+    """The full VM shape, for the provenance sidecar."""
     return (f"QEMU {qemu_version()} virt,gic-version=3, HVF -cpu host, {CPUS} vCPUs, "
             f"{MEMORY[:-1]} MiB, one {DISK_BYTES // MIB} MiB raw virtio-blk-device at QEMU's "
             f"default cache (writeback), virtio-net-device on user networking; host "
             f"{host_description()}")
+
+
+def hardware():
+    """The series' one-line hardware field (Vigil allows 200 characters)."""
+    return (f"QEMU {qemu_version()} virt GICv3, HVF, {CPUS} vCPUs, {MEMORY[:-1]} MiB, "
+            f"{DISK_BYTES // GIB} GiB raw virtio-blk (writeback), virtio-net user; "
+            f"{host_description()}")
+
+
+def kernel_release(uname):
+    """'Linux 6.8.0-147-generic #147-Ubuntu SMP ...' -> 'Linux 6.8.0-147-generic'."""
+    words = uname.split()
+    return " ".join(words[:2]) if words else None
+
+
+def tcp_summary(system, before, after):
+    """Retransmissions during the run, in a few words: the series note's share of the
+    counters (the sidecar keeps them all)."""
+    keys = ("RetransSegs", "TCPTimeouts") if system == "linux" else ("retransmit_timeouts",)
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        return "TCP counters unread"
+    parts = []
+    for key in keys:
+        if isinstance(before.get(key), int) and isinstance(after.get(key), int):
+            parts.append(f"{key} +{after[key] - before[key]}")
+    return "TCP " + ", ".join(parts) if parts else "TCP counters unread"
 
 
 class Guest:
@@ -750,30 +778,36 @@ class Rig:
         return {}
 
     def write(self, system, commit, before, after, facts):
+        """Write the system's series inside Vigil's limits, with the full provenance in
+        its sidecar (series.write_series)."""
         groups = collect_receipts(self.out[system], [self.args.run], "scp-upload")
         short = commit[:8]
         if system == "linux":
-            kernel = facts.get("kernel") or "unknown"
+            kernel = kernel_release(facts.get("kernel") or "") or "unknown"
             toolchain = facts.get("toolchain") or f"rustc {FORK_BASE['channel']}"
-            note = (f"Stock {PIN['distribution']} ({PIN['url']}, SHA-256 {PIN['sha256']}), "
-                    f"kernel unmodified; bbench built in the guest from {short} with "
-                    f"{FORK_BASE['channel']} ({FORK_BASE['commit'][:9]}), the upstream base of "
-                    "the Breenix Rust fork (a763a7dd7, 16 commits ahead). "
-                    "apt timers and cloud-init are disabled after provisioning.")
+            note = (f"Stock {PIN['distribution']} {PIN['release']}, kernel unmodified; bbench "
+                    f"built in the guest from {short} with {FORK_BASE['channel']} "
+                    f"({FORK_BASE['commit'][:9]}), the Breenix fork's upstream base.")
         else:
             kernel = short
             toolchain = (f"rustc {FORK_BASE['channel']} ({FORK_BASE['commit'][:9]}) with the "
                          "Breenix std fork via build-std")
-            note = (f"Production kernel and system image at {short}; bbench uploaded over SSH "
-                    "and run as sshtest on the root ext2 disk.")
-        note += (f" Samples alternate Linux then Breenix per case; both VMs stay up and "
-                 f"one runs a sample at a time. Fixture for the driver-map rows: a "
-                 f"{FIXTURE_BYTES // MIB} MiB "
-                 f"file written in the guest. TCP retransmission counters at boot / after the "
-                 f"network rows: "
-                 f"{json.dumps(before)} / {json.dumps(after)}.")
+            note = f"Production kernel and system image at {short}; bbench run as sshtest."
+        note += f" Samples alternate Linux then Breenix. {tcp_summary(system, before, after)}."
         if self.notes[system]:
-            note += " " + "; ".join(self.notes[system]) + "."
+            note += f" {len(self.notes[system])} VM restart(s)."
+        provenance = {
+            "system": system, "commit": commit, "vmShape": vm_shape(),
+            "samples": "Linux then Breenix per sample of each case; both VMs stay up and one "
+                       "runs a sample at a time",
+            "fixture": f"{FIXTURE_BYTES // MIB} MiB file written in the guest for the "
+                       "driver-map rows",
+            "tcpCounters": {"atBoot": before, "afterNetworkRows": after},
+            "notes": self.notes[system], "facts": facts,
+        }
+        if system == "linux":
+            provenance["image"] = PIN
+            provenance["toolchain"] = FORK_BASE
         metadata = {
             "system": system, "target": "arm64-qemu", "hardware": hardware(),
             "kernelCommit": kernel, "userlandCommit": short, "toolchain": toolchain,
@@ -781,7 +815,7 @@ class Rig:
         }
         path = write_series(SERIES_DIR, f"{self.args.run}-{system}",
                             self.started.isoformat().replace("+00:00", "Z"), metadata, groups,
-                            deferred=DEFERRED[system])
+                            deferred=DEFERRED[system], provenance=provenance)
         print(f"Series: {path}", flush=True)
         return path
 
