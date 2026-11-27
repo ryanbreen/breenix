@@ -3,7 +3,7 @@
 //! provides the authoritative links for rebuilding the indexes after fork.
 use core::ptr::{self, null_mut};
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering::*};
-use libbreenix::syscall::{nr, raw};
+use libbreenix::{raw, syscall::nr};
 
 pub(super) const ALIGNMENT: usize = 16;
 pub(super) const HEADER: usize = 2 * size_of::<usize>();
