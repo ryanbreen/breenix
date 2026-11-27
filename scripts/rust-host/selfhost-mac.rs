@@ -17,9 +17,45 @@ fn checked(command: &mut Command) -> io::Result<()> {
     }
 }
 
+fn verify_digest(
+    repo: &std::path::Path,
+    arch: &str,
+    component: &str,
+    binary: &std::path::Path,
+) -> io::Result<()> {
+    let (record, key) = if component == "rustc" {
+        ("k5", "mac_rustc_sha256")
+    } else {
+        ("k7", "mac_cargo_sha256")
+    };
+    let json = fs::read_to_string(repo.join(format!("toolchain/rust-host/{record}/{arch}.json")))?;
+    let marker = format!("\"{key}\": \"");
+    let expected = json
+        .split(&marker)
+        .nth(1)
+        .and_then(|s| s.split('"').next())
+        .ok_or_else(|| io::Error::other("missing digest"))?;
+    let output = Command::new("/usr/bin/shasum")
+        .arg("-a")
+        .arg("256")
+        .arg(binary)
+        .output()?;
+    let digest = String::from_utf8_lossy(&output.stdout);
+    if !output.status.success() || digest.split_whitespace().next() != Some(expected) {
+        return Err(io::Error::other(format!(
+            "{component} digest does not match {record}/{arch}.json"
+        )));
+    }
+    Ok(())
+}
+
 fn main() -> io::Result<()> {
     assert_eq!(d1::PACKAGES.len(), 7);
     let mut args = std::env::args_os().skip(1);
+    let arch = args.next().expect("architecture");
+    let arch = arch.to_str().expect("architecture is UTF-8");
+    assert!(matches!(arch, "x86_64" | "aarch64"));
+    let target = format!("{arch}-breenix");
     let repo = fs::canonicalize(args.next().expect("repository"))?;
     let fixture = fs::canonicalize(args.next().expect("K6 fixture"))?;
     let work = fs::canonicalize(args.next().expect("work directory"))?;
@@ -29,6 +65,8 @@ fn main() -> io::Result<()> {
     let cargo = fs::canonicalize(
         std::env::var_os("BREENIX_MAC_CARGO").expect("set BREENIX_MAC_CARGO to the K7 Mac Cargo"),
     )?;
+    verify_digest(&repo, arch, "rustc", &rustc)?;
+    verify_digest(&repo, arch, "cargo", &cargo)?;
     let host_target = work.join("host-target");
     checked(
         Command::new("cargo")
@@ -80,8 +118,24 @@ fn main() -> io::Result<()> {
         fs::create_dir(run.join("tmp"))?;
         fs::create_dir_all(run.join("cargo-home/registry"))?;
         for package in ["bobj", "bas", "bld", "bar", "bnm", "bmake", "bcc"] {
+            let cargo_command = d1::cargo(&source, &staged, &linker, &run, package, &target);
+            let mut timed = Command::new("/usr/bin/time");
+            timed
+                .arg("-l")
+                .arg(cargo_command.get_program())
+                .args(cargo_command.get_args());
+            timed.env_clear().envs(
+                cargo_command
+                    .get_envs()
+                    .filter_map(|(key, value)| value.map(|value| (key, value))),
+            );
+            timed.current_dir(
+                cargo_command
+                    .get_current_dir()
+                    .expect("cargo working directory"),
+            );
             let result = d1::measure(
-                &mut d1::cargo(&source, &staged, &linker, &run, package),
+                &mut timed,
                 &source.join(format!("{package}.log")),
                 Duration::from_secs(600),
                 |_, _| Ok(0),
@@ -97,6 +151,16 @@ fn main() -> io::Result<()> {
                     result.first_error
                 )));
             }
+            let log = fs::read_to_string(source.join(format!("{package}.log")))?;
+            let rss = log
+                .lines()
+                .find_map(|line| {
+                    line.trim()
+                        .strip_suffix("  maximum resident set size")
+                        .and_then(|n| n.trim().parse::<u64>().ok())
+                })
+                .ok_or_else(|| io::Error::other("missing time peak RSS"))?;
+            println!("{name} {package}: peak RSS {rss} bytes");
             let _ = result.peak_rss_bytes;
         }
     }

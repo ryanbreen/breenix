@@ -171,6 +171,7 @@ fn measure_package() -> CaseResult {
             &Path::new(FIXTURE).join("bin/bld"),
             run,
             package,
+            "x86_64-breenix",
         ),
         &log,
         Duration::from_secs(600),

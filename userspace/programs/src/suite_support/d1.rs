@@ -8,7 +8,14 @@ use std::time::{Duration, Instant};
 
 pub const PACKAGES: [&str; 7] = ["bobj", "bas", "bld", "bar", "bnm", "bcc", "bmake"];
 
-pub fn cargo(source: &Path, fixture: &Path, linker: &Path, run: &Path, package: &str) -> Command {
+pub fn cargo(
+    source: &Path,
+    fixture: &Path,
+    linker: &Path,
+    run: &Path,
+    package: &str,
+    target: &str,
+) -> Command {
     let flags = [
         format!("--sysroot={}", fixture.join("sysroot").display()),
         format!("-Clinker={}", linker.display()),
@@ -39,7 +46,7 @@ pub fn cargo(source: &Path, fixture: &Path, linker: &Path, run: &Path, package: 
             "selfhost",
             "--target",
         ])
-        .arg(fixture.join("targets/x86_64-breenix.json"))
+        .arg(fixture.join("targets").join(format!("{target}.json")))
         .arg("--manifest-path")
         .arg(source.join("toolchain/Cargo.toml"))
         .args(["-p", package, "--target-dir"])

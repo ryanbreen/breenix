@@ -7,6 +7,8 @@ import json
 import os
 from pathlib import Path
 import re
+import runpy
+import struct
 import subprocess
 import tempfile
 import unittest
@@ -32,8 +34,41 @@ class CargoImageStageTest(unittest.TestCase):
     def test_arm_rustc_and_cargo_share_hosted_libc(self):
         self.check_arm_image('rustc,cargo')
 
+    def test_arm_self_host_image_matches_records_and_size(self):
+        self.check_arm_image('self-host')
+
+    def test_arm_self_host_fixture_keeps_raw_image(self):
+        fixture = runpy.run_path(str(ROOT / 'scripts/rust-host/selfhost-fixture.py'))['main']
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = root / 'repo'
+            (repo / 'toolchain/rust-host/selfhost').mkdir(parents=True)
+            (repo / 'toolchain/Cargo.toml').write_text('workspace')
+            subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+            subprocess.run(['git', '-C', str(repo), 'add', 'toolchain/Cargo.toml'], check=True)
+            subprocess.run(['git', '-C', str(repo), '-c', 'user.name=Fixture',
+                            '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'Fixture'], check=True)
+            tree_id = subprocess.check_output(['git', '-C', str(repo), 'rev-parse',
+                                               'HEAD:toolchain/Cargo.toml'], text=True).strip()
+            (repo / 'toolchain/rust-host/selfhost/aarch64-mac.json').write_text(
+                json.dumps({'workspace': {'Cargo.toml': tree_id}}))
+            formatter = root / 'mkfs'
+            formatter.write_text("#!/bin/sh\nsize=$3\npython3 -c 'import sys; open(sys.argv[1], \"wb\").truncate(int(sys.argv[2]))' \"$6\" \"$size\"\nprintf '0 1\\n%s 1\\n' \"$((size / 4096 - 1))\"\n")
+            formatter.chmod(0o755)
+            disk = root / 'scratch.dat'
+            with patch.dict(fixture.__globals__, ROOT=repo):
+                fixture(root / 'tree', formatter, disk, 'aarch64')
+            record = json.loads((root / 'self-host-build.json').read_text())
+            image = root / 'tree.img'
+            self.assertEqual(image.stat().st_size, record['scratchBytes'])
+            packed = disk.read_bytes()
+            self.assertEqual(struct.unpack_from('<QQ', packed), (0, 4096))
+            self.assertEqual(packed[16:4112], image.read_bytes()[:4096])
+            self.assertEqual(record['mac_replay']['sha256'], sha256(
+                repo / 'toolchain/rust-host/selfhost/aarch64-mac.json'))
+
     def test_arm_cargo_selection_rejects_unported_suites(self):
-        for suite in ('d1', 'self-host'):
+        for suite in ('d1',):
             with self.subTest(suite=suite), redirect_stderr(io.StringIO()) as stderr:
                 argv = ['rust_host_stage.py', '--arch', 'aarch64', '--image', 'unused.img',
                         '--suite', f'cargo,{suite}']
@@ -72,15 +107,16 @@ class CargoImageStageTest(unittest.TestCase):
                 f'{PREFIX}/bin/cargo': k7['cargo_sha256'],
                 f'{PREFIX}/bin/rustc': k5['hosted_rustc_sha256'],
                 f'{PREFIX}/lib/{driver}': k5['hosted_driver_sha256'],
-                f'{PREFIX}/bin/bld': read_json(rust_link / 'build.json')['files_sha256']['bld'],
             }
+            if 'self-host' not in selection.split(','):
+                expected[f'{PREFIX}/bin/bld'] = read_json(rust_link / 'build.json')['files_sha256']['bld']
             for name in ('libc.a', 'linker.ld'):
                 expected[f'{PREFIX}/lib/{name}'] = k6['inputs'][f'lib/tools/{name}']['sha256']
             for name, digest in k5['sysroot']['files_sha256'].items():
                 if name.startswith('lib/rustlib/aarch64-breenix/'):
                     expected[f'{PREFIX}/sysroot/{name}'] = digest
             for name, digest in k7['fixture_sha256'].items():
-                if name.startswith('corpus/'):
+                if name.startswith('corpus/') and 'cargo' in selection.split(','):
                     expected[f'{CORPUS}/{name.removeprefix("corpus/")}'] = digest
                 if name.startswith('targets/'):
                     expected[f'{PREFIX}/{name}'] = digest

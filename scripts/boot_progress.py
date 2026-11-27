@@ -22,6 +22,8 @@ DIAGNOSTIC = re.compile(
 ANNOUNCEMENT = re.compile(r"(?:kernel::test_exec:|Userspace will emit|will (?:print|emit)|expected marker|Missing marker|checkHint)", re.I)
 USER = re.compile(r"^(?:SUITE |SUITE_SEQUENCE |PROBE |RUN \S+ |TEST_TALLY:|[A-Z][A-Z0-9_]*(?:_TEST|_PASSED|_START|_COMPLETE)\b)")
 TAG = re.compile(r"^\[([A-Za-z][A-Za-z0-9_-]*)\]")
+SUITE_START = re.compile(r"^SUITE (\S+) START cases=")
+SELF_HOST_CARGO_PROGRESS = re.compile(r"SELF_HOST Cargo elapsed_ms=([1-9][0-9]{0,5})")
 
 def userspace_tags(root=ROOT):
     staged = root / "docs/boot-progress-userspace.json"
@@ -52,6 +54,7 @@ class BootProgress:
         self.last_user_line = None
         self.last_user_source = None
         self.last_user_epoch = None
+        self.self_host_elapsed_ms = None
         self.stages = set()
         self.streams = {}
         self.file_streams = {}
@@ -81,6 +84,21 @@ class BootProgress:
         tag = TAG.match(line)
         user = not kernel and (bool(USER.match(line)) or
                                bool(tag and tag[1].lower() in self.user_tags))
+        if not kernel:
+            if start := SUITE_START.match(line):
+                self.self_host_elapsed_ms = 0 if start[1] == "self-host" else None
+            elif line.startswith(("SUITE self-host DONE ", "SUITE_SEQUENCE STALLED self-host ")):
+                self.self_host_elapsed_ms = None
+            elif self.self_host_elapsed_ms is not None:
+                if line.startswith("SUITE self-host CASE "):
+                    self.self_host_elapsed_ms = 0
+                elif heartbeat := SELF_HOST_CARGO_PROGRESS.fullmatch(line):
+                    # Only advancing reports from the active Cargo case count.
+                    # The guest case limit and the host suite deadline still apply.
+                    elapsed_ms = int(heartbeat[1])
+                    if elapsed_ms > self.self_host_elapsed_ms:
+                        self.self_host_elapsed_ms = elapsed_ms
+                        user = True
         stages = set()
         for marker in self.markers - self.stages:
             if marker not in line:

@@ -14,7 +14,7 @@ def check_file(path, expected):
         sys.exit(f"{path}: expected {expected}, got {actual}")
 
 
-def check_receipt(receipt_path, work, outputs):
+def check_receipt(receipt_path, work, arch, outputs):
     receipt = json.loads(receipt_path.read_text())
     inputs = receipt["inputs"]
     check_file(work / "host-target/release/bld", inputs["host-bld"])
@@ -22,11 +22,11 @@ def check_receipt(receipt_path, work, outputs):
         root = work / build
         check_file(root / "fixture/bin/rustc", inputs["mac-twin-rustc"])
         check_file(root / "fixture/bin/cargo", inputs["mac-cargo"])
-        profile = root / "run/target/x86_64-breenix/selfhost"
+        profile = root / f"run/target/{arch}-breenix/selfhost"
         for name in outputs:
             check_file(profile / name, receipt["outputs"][name])
 
 
 if __name__ == "__main__":
     receipt_path, work = map(Path, sys.argv[1:3])
-    check_receipt(receipt_path, work, sys.argv[3:])
+    check_receipt(receipt_path, work, sys.argv[3], sys.argv[4:])
