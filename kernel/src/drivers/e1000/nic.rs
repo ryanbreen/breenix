@@ -15,15 +15,22 @@
 //! 3. general configuration: set link up and let the MAC follow the speed and
 //!    duplex the PHY resolves, no flow control (SDM 14.3; DS 4.6.2, 4.6.3.2),
 //!    and the 82574's GCR and GCR2 bits (DS 4.6.2, 10.2.3.12);
-//! 4. the station address in RAL0/RAH0, the other receive addresses the
+//! 4. the PHY: auto-negotiation turned back on where firmware left it off
+//!    (DS 4.6 step 3, 4.6.3.1; SDM 14.6), through MDIC;
+//! 5. the station address in RAL0/RAH0, the other receive addresses the
 //!    driver owns and the multicast table cleared (SDM 14.4; DS 4.6.5);
-//! 5. the receive ring, then RCTL with the receiver enabled last (SDM 14.4;
+//! 6. the receive ring, then RCTL with the receiver enabled last (SDM 14.4;
 //!    DS 4.6.5.1);
-//! 6. the transmit ring, TIPG, and TCTL enabled last (SDM 14.5; DS 4.6.6).
+//! 7. the transmit ring, TIPG, and TCTL enabled last (SDM 14.5; DS 4.6.6).
 //!
-//! The PHY is left as reset left it: it auto-negotiates by default (SDM 14.6)
-//! and the MAC takes the resolved link from it. No PHY register is written, so
-//! no MDIO ownership protocol is needed (DS 4.5.2).
+//! The MAC takes the resolved link from the PHY. A global reset does not reset
+//! the PHY (SDM 14.7: "PHY: No effect"; DS 4.2 Table 29, whose SW Reset column
+//! leaves the PHY row unmarked), so the PHY keeps the state boot firmware or
+//! an earlier driver left it in. Step 4 reads its control register and writes
+//! it only when that state rules out a negotiated link; a PHY already
+//! negotiating is not restarted, which would drop its link. On the 82574 the
+//! MDIC accesses, like EERD, are made holding the MDIO/NVM semaphore (DS
+//! 4.5.2).
 
 use super::regs::*;
 
@@ -47,6 +54,8 @@ const RESET_POLLS: u32 = 1000;
 const MASTER_DISABLE_POLLS: u32 = 1000;
 /// Polls of EERD.DONE for one NVM word, and of the ownership grant.
 const NVM_POLLS: u32 = 1000;
+/// Polls of MDIC.R for one MDI cycle: 64 MDC clocks, well under 10 ms.
+const MDI_POLLS: u32 = 1000;
 const POLL_US: u32 = 10;
 
 /// The 82540EM's device ID (SDM 5.2, Table 5-1).
@@ -226,6 +235,9 @@ pub enum InitError {
     NvmOwnershipTimeout,
     NvmReadTimeout,
     NoStationAddress,
+    MdioOwnershipTimeout,
+    PhyAccessTimeout,
+    PhyAccessError,
 }
 
 impl InitError {
@@ -237,6 +249,9 @@ impl InitError {
             Self::NvmOwnershipTimeout => "e1000: the NVM semaphore was not granted",
             Self::NvmReadTimeout => "e1000: EERD read did not complete",
             Self::NoStationAddress => "e1000: no valid station address",
+            Self::MdioOwnershipTimeout => "e1000: the MDIO semaphore was not granted",
+            Self::PhyAccessTimeout => "e1000: an MDIC cycle did not complete",
+            Self::PhyAccessError => "e1000: the PHY did not answer an MDIC read",
         }
     }
 }
@@ -321,6 +336,7 @@ impl Nic {
         reset(hw, model)?;
         configure_general(hw, model);
         let mac = station_address(hw, model)?;
+        setup_phy(hw, model)?;
         program_receive_addresses(hw, model, mac);
         initialize_receive(hw);
         initialize_transmit(hw, model);
@@ -554,45 +570,102 @@ fn station_address<R: Registers>(regs: &mut R, model: Model) -> Result<[u8; 6], 
     }
 }
 
+/// Run `access` holding the 82574's MDIO/NVM semaphore (DS 4.5.2): a request
+/// registers only when written while no other agent holds it, so it is
+/// written again until it reads back granted. Without the grant `access` is
+/// not run and `refused` is returned; with it, the semaphore is released
+/// afterwards. The 8254x has no semaphore.
+fn with_software_ownership<R: Registers, T>(
+    regs: &mut R,
+    model: Model,
+    refused: InitError,
+    access: impl FnOnce(&mut R) -> Result<T, InitError>,
+) -> Result<T, InitError> {
+    if model == Model::Pci8254x {
+        return access(regs);
+    }
+    if !poll(regs, NVM_POLLS, |regs| {
+        let extcnf = regs.read(EXTCNF_CTRL);
+        regs.write(EXTCNF_CTRL, extcnf | EXTCNF_CTRL_SW_OWNERSHIP);
+        regs.read(EXTCNF_CTRL) & EXTCNF_CTRL_SW_OWNERSHIP != 0
+    }) {
+        return Err(refused);
+    }
+    let result = access(regs);
+    let extcnf = regs.read(EXTCNF_CTRL);
+    regs.write(EXTCNF_CTRL, extcnf & !EXTCNF_CTRL_SW_OWNERSHIP);
+    result
+}
+
 /// NVM words 0-2. Each holds two address bytes, the first byte in the low half
 /// (SDM 5.6.1: 12-34-56-78-90-AB is stored as 3412, 7856, AB90). On the 82574
-/// software holds the NVM semaphore around EERD (DS 4.5.2): a request
-/// registers only when written while no other agent holds it, so it is
-/// written again until it reads back granted. Without the grant the read is
-/// not attempted; with it, it is released afterwards.
+/// software holds the NVM semaphore around EERD (DS 4.5.2).
 fn read_nvm_words<R: Registers>(regs: &mut R, model: Model) -> Result<[u16; 3], InitError> {
     let (done, shift) = match model {
         Model::Pci8254x => (EERD_8254X_DONE, EERD_8254X_ADDR_SHIFT),
         Model::Pcie82574 => (EERD_82574_DONE, EERD_82574_ADDR_SHIFT),
     };
-    if model == Model::Pcie82574
-        && !poll(regs, NVM_POLLS, |regs| {
-            let extcnf = regs.read(EXTCNF_CTRL);
-            regs.write(EXTCNF_CTRL, extcnf | EXTCNF_CTRL_SW_OWNERSHIP);
-            regs.read(EXTCNF_CTRL) & EXTCNF_CTRL_SW_OWNERSHIP != 0
-        })
-    {
-        return Err(InitError::NvmOwnershipTimeout);
-    }
-    let mut words = [0u16; 3];
-    let mut result = Ok(());
-    for (address, word) in words.iter_mut().enumerate() {
-        regs.write(EERD, EERD_START | ((address as u32) << shift));
-        let mut value = 0;
-        if !poll(regs, NVM_POLLS, |regs| {
-            value = regs.read(EERD);
-            value & done != 0
-        }) {
-            result = Err(InitError::NvmReadTimeout);
-            break;
+    with_software_ownership(regs, model, InitError::NvmOwnershipTimeout, |regs| {
+        let mut words = [0u16; 3];
+        for (address, word) in words.iter_mut().enumerate() {
+            regs.write(EERD, EERD_START | ((address as u32) << shift));
+            let mut value = 0;
+            if !poll(regs, NVM_POLLS, |regs| {
+                value = regs.read(EERD);
+                value & done != 0
+            }) {
+                return Err(InitError::NvmReadTimeout);
+            }
+            *word = (value >> EERD_DATA_SHIFT) as u16;
         }
-        *word = (value >> EERD_DATA_SHIFT) as u16;
+        Ok(words)
+    })
+}
+
+/// Step 4 (DS 4.6 step 3 and 4.6.3.1; SDM 14.6). The internal PHY's control
+/// register is read. Unless auto-negotiation is enabled with the PHY powered,
+/// not isolated and not looped back, it is written with negotiation enabled
+/// and restarted and those three cleared, keeping its other bits. The enable
+/// takes effect only together with a restart, a PHY reset or a return from
+/// power down (SDM 11.1.3; DS 10.2.11.1, "Update" in the SW Rst column). A
+/// PHY that does not answer refuses the function.
+fn setup_phy<R: Registers>(regs: &mut R, model: Model) -> Result<(), InitError> {
+    const BLOCKING: u16 = PHY_CONTROL_POWER_DOWN | PHY_CONTROL_ISOLATE | PHY_CONTROL_LOOPBACK;
+    with_software_ownership(regs, model, InitError::MdioOwnershipTimeout, |regs| {
+        let control = mdi_read(regs, PHY_CONTROL)?;
+        if control & PHY_CONTROL_AN_ENABLE != 0 && control & BLOCKING == 0 {
+            return Ok(());
+        }
+        let control = (control | PHY_CONTROL_AN_ENABLE | PHY_CONTROL_RESTART_AN) & !BLOCKING;
+        mdi_write(regs, PHY_CONTROL, control)
+    })
+}
+
+/// One MDI cycle to the internal PHY: the command is written with Ready and
+/// Error clear, then Ready is polled (SDM 13.4.7; DS 10.2.2.7). Returns the
+/// MDIC value at completion.
+fn mdi_cycle<R: Registers>(regs: &mut R, command: u32) -> Result<u32, InitError> {
+    regs.write(MDIC, command | (PHY_ADDRESS << MDIC_PHY_SHIFT));
+    let mut value = 0;
+    if !poll(regs, MDI_POLLS, |regs| {
+        value = regs.read(MDIC);
+        value & MDIC_READY != 0
+    }) {
+        return Err(InitError::PhyAccessTimeout);
     }
-    if model == Model::Pcie82574 {
-        let extcnf = regs.read(EXTCNF_CTRL);
-        regs.write(EXTCNF_CTRL, extcnf & !EXTCNF_CTRL_SW_OWNERSHIP);
+    Ok(value)
+}
+
+fn mdi_read<R: Registers>(regs: &mut R, register: u32) -> Result<u16, InitError> {
+    let value = mdi_cycle(regs, MDIC_OP_READ | (register << MDIC_REG_SHIFT))?;
+    if value & MDIC_ERROR != 0 {
+        return Err(InitError::PhyAccessError);
     }
-    result.map(|()| words)
+    Ok((value & MDIC_DATA_MASK) as u16)
+}
+
+fn mdi_write<R: Registers>(regs: &mut R, register: u32, data: u16) -> Result<(), InitError> {
+    mdi_cycle(regs, MDIC_OP_WRITE | (register << MDIC_REG_SHIFT) | u32::from(data)).map(|_| ())
 }
 
 /// RAL holds address bytes 0-3 and RAH bits 15:0 bytes 4-5, first byte lowest:

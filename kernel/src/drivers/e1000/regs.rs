@@ -12,6 +12,8 @@ pub const STATUS: u32 = 0x0008;
 /// 82574: EEPROM/Flash Control (DS 10.2.2.3).
 pub const EEC: u32 = 0x0010;
 pub const EERD: u32 = 0x0014;
+/// MDI Control (SDM 13.4.7; DS 10.2.2.7).
+pub const MDIC: u32 = 0x0020;
 pub const FCAL: u32 = 0x0028;
 pub const FCAH: u32 = 0x002C;
 pub const FCT: u32 = 0x0030;
@@ -81,6 +83,29 @@ pub const EERD_8254X_ADDR_SHIFT: u32 = 8;
 pub const EERD_82574_DONE: u32 = 1 << 1;
 pub const EERD_82574_ADDR_SHIFT: u32 = 2;
 pub const EERD_DATA_SHIFT: u32 = 16;
+
+// MDIC fields (SDM 13.4.7 Table 13-14; DS 10.2.2.7). Bit 31 is reserved and
+// written as 0b; bit 29 (interrupt on completion) is left 0b.
+pub const MDIC_DATA_MASK: u32 = 0xFFFF;
+pub const MDIC_REG_SHIFT: u32 = 16;
+pub const MDIC_PHY_SHIFT: u32 = 21;
+pub const MDIC_OP_WRITE: u32 = 0b01 << 26;
+pub const MDIC_OP_READ: u32 = 0b10 << 26;
+pub const MDIC_READY: u32 = 1 << 28;
+pub const MDIC_ERROR: u32 = 1 << 30;
+/// The internal PHY's MDI address: 0001b on the 8254x (SDM 13.4.7), "1 =
+/// Gigabit PHY" on the 82574 (DS 10.2.2.7).
+pub const PHY_ADDRESS: u32 = 1;
+
+// PHY Control, PHY register 0 (SDM 13.4.7.1.1 Table 13-16; DS 10.2.11.1).
+pub const PHY_CONTROL: u32 = 0;
+pub const PHY_CONTROL_LOOPBACK: u16 = 1 << 14;
+pub const PHY_CONTROL_AN_ENABLE: u16 = 1 << 12;
+pub const PHY_CONTROL_POWER_DOWN: u16 = 1 << 11;
+/// Read/write on the 8254x; read-only with no effect on the 82574.
+pub const PHY_CONTROL_ISOLATE: u16 = 1 << 10;
+/// Self-clearing.
+pub const PHY_CONTROL_RESTART_AN: u16 = 1 << 9;
 
 /// 82574: NVM auto-read done (DS 10.2.2.3).
 pub const EEC_AUTO_RD: u32 = 1 << 9;
