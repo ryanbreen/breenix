@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
-"""Build both arches with build.sh --rust-host before running this check."""
+"""Build both arches with build.sh --rust-host before running these checks.
+
+The ARM sequence check also needs the seed from create_ext2_disk.sh --arch aarch64.
+"""
 import hashlib
 import importlib.util
 import json
 import os
 from pathlib import Path
+import re
+import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -18,6 +24,108 @@ READELF = os.environ.get('LLVM_READELF', 'llvm-readelf')
 
 
 class StartupProbeTest(unittest.TestCase):
+    def test_arm_sequence_image_ready(self):
+        SPEC.loader.exec_module(STAGE)
+        debugfs, = STAGE.require_e2fsprogs('debugfs')
+        suites = ('rust-host', 'libc', 'utilities', 'rust-std', 'threads', 'memory', 'processes', 'signals')
+        sequence = ','.join(suites)
+        elfs = ROOT / 'userspace/programs/aarch64'
+        seed = ROOT / 'target/ext2-aarch64.img'
+        self.assertTrue(seed.is_file(), 'run scripts/create_ext2_disk.sh --arch aarch64 first')
+
+        with tempfile.TemporaryDirectory() as directory:
+            image = Path(directory) / 'sequence.img'
+            shutil.copyfile(seed, image)
+            cxx_suite = HOSTED / 'aarch64-breenix-hosted/release/suite-cxx-runtime'
+            for command in (
+                [sys.executable, ROOT / 'scripts/rust_host_stage.py',
+                 '--arch', 'aarch64', '--image', image, '--suite', sequence],
+                [ROOT / 'scripts/write-boot-target.sh', image, suites[0], elfs / 'suite-rust-host.elf',
+                 sequence, '', '', 'ext2', cxx_suite],
+            ):
+                result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+            def read_image(command):
+                return subprocess.check_output([debugfs, '-R', command, image],
+                                               stderr=subprocess.DEVNULL, timeout=10)
+
+            self.assertEqual(read_image('cat /etc/breenix/boot-target'), b'suite rust-host\n')
+            self.assertEqual(read_image('cat /etc/breenix/suite-sequence'), (sequence + '\n').encode())
+            for suite in suites:
+                with self.subTest(suite=suite):
+                    self.assertEqual(read_image(f'cat /sbin/suite-{suite}'),
+                                     (elfs / f'suite-{suite}.elf').read_bytes())
+
+            probes = '/usr/libexec/breenix/rust-host'
+            for name, mode in (('startup-probe', b'0755'), ('process-probe', b'0755'),
+                               ('unwind-probe', b'0755'), ('mmap-fixture', b'0444')):
+                with self.subTest(file=name):
+                    stat = read_image(f'stat {probes}/{name}')
+                    self.assertIn(b'Type: regular    Mode:  ' + mode, stat)
+                    self.assertRegex(stat, rb'User:\s+0\s+Group:\s+0\s')
+
+            fixture = Path(directory) / 'mmap-fixture'
+            read_image(f'dump {probes}/mmap-fixture "{fixture}"')
+            self.assertEqual(fixture.stat().st_size, 163_067_344)
+            with fixture.open('rb') as stream:
+                self.assertEqual(
+                    hashlib.file_digest(stream, 'sha256').hexdigest(),
+                    '641a09f91a4a48c8fad03a45411ab8e714f1612914175abae70e74d09b92427f',
+                )
+
+    def test_arm_rust_host_build_matches_sequence_elf(self):
+        build = ROOT / 'userspace/programs/build.sh'
+        for args in (('--arch', 'aarch64'), ('--arch', 'aarch64', '--rust-host'),
+                     ('--arch', 'x86_64', '--rust-host')):
+            result = subprocess.run([build, *args], cwd=ROOT, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertIsNone(re.search(r'(?im)^\s*warning(?:\[|:)', result.stdout), result.stdout)
+
+        release = HOSTED / 'aarch64-breenix-hosted/release'
+        suite = release / 'suite-rust-host'
+        self.assertEqual((ROOT / 'userspace/programs/aarch64/suite-rust-host.elf').read_bytes(),
+                         suite.read_bytes())
+        x86_release = HOSTED / 'x86_64-breenix-hosted/release'
+        for name in ('suite-rust-host', 'rust-host-startup-probe', 'rust-host-process-probe',
+                     'rust-host-unwind-probe'):
+            with self.subTest(elf=name):
+                arm_elf = release / name
+                x86_elf = x86_release / name
+                arm_machine, arm_headers = self.elf_headers(arm_elf)
+                x86_machine, x86_headers = self.elf_headers(x86_elf)
+                self.assertEqual(arm_machine, 183)
+                self.assertEqual(x86_machine, 62)
+                self.assertIn(0x6474E550, arm_headers)  # PT_GNU_EH_FRAME
+                self.assertIn(0x6474E551, arm_headers)  # PT_GNU_STACK
+
+                # Ruling 146(2), ELF gABI §7.1: p_align=0 denotes no alignment requirement.
+                arm_tls = arm_headers.get(7)  # PT_TLS
+                x86_tls = x86_headers.get(7)
+                self.assertEqual((arm_tls or {}).get('MemSize', 0) > 0,
+                                 (x86_tls or {}).get('MemSize', 0) > 0,
+                                 'ARM and x86 must agree on whether the TLS template is non-empty')
+                for elf, tls in ((arm_elf, arm_tls), (x86_elf, x86_tls)):
+                    with self.subTest(elf=elf):
+                        if name == 'rust-host-startup-probe':
+                            self.assertIsNotNone(tls)
+                            self.assertGreater(tls['MemSize'], 0)
+                        if tls is not None:
+                            self.assertGreaterEqual(tls['MemSize'], tls['FileSize'])
+                            align = tls['Alignment']
+                            self.assertTrue(align == 0 or (align > 0 and (align & (align - 1)) == 0),
+                                            f'PT_TLS p_align={align} must be zero or a power of two')
+                            self.assertLessEqual(tls['Offset'] + tls['FileSize'], elf.stat().st_size)
+
+    def elf_headers(self, elf):
+        [report] = json.loads(subprocess.check_output([
+            READELF, '--elf-output-style=JSON', '--file-header', '--program-headers', elf,
+        ]))
+        headers = {row['ProgramHeader']['Type']['Value']: row['ProgramHeader']
+                   for row in report['ProgramHeaders']}
+        return report['ElfHeader']['Machine']['Value'], headers
+
     def test_unwind_personality_slot_is_readable_by_bunwind(self):
         for arch in ('x86_64', 'aarch64'):
             with self.subTest(arch=arch):
