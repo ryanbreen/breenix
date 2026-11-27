@@ -7,15 +7,15 @@
 //!
 //! `complete(token)` stores `done`, issues a SeqCst fence, and reads `waiter`
 //! without taking a lock. A registered waiter receives the wake through its
-//! preallocated node in the owner CPU's scheduler inbox. The waiter stores its TID and fences before
-//! checking `done`, so the producer sees the waiter or the waiter sees the
-//! receipt before it sleeps. On
-//! x86_64 a syscall waiter halts in place, and the same pairing on its CPU
-//! (`halted_cpu`) lets `complete()` end the halt from another CPU.
+//! preallocated node in the owner CPU's scheduler inbox. The waiter stores
+//! its TID and fences before checking `done`, so the producer sees the waiter
+//! or the waiter sees the receipt before it sleeps. On x86_64 a syscall
+//! waiter halts in place, and the same pairing on its CPU (`halted_cpu`)
+//! lets `complete()` end the halt from another CPU.
 //!
 //! The waiter's done-check and `block_current_for_io()` execute under a single
-//! `with_current()` call, and the waiter checks `done` again after that call and after
-//! each wake. A waiter that sees `done` clears `waiter`, so `complete()` may
+//! `with_current()` call. The waiter checks `done` again after that call and
+//! after each wake. A waiter that sees `done` clears `waiter`, so `complete()` may
 //! read 0 and publish no wake; every exit therefore goes through
 //! `finish_wait_current()`, which takes back a published `BlockedOnIO` under
 //! the scheduler lock. A pending wake applied after that finds the thread

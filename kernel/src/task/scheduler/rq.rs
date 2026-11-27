@@ -1353,14 +1353,13 @@ pub(super) fn apply_isr_wakeups(local: &mut Held) {
 }
 
 /// How many times a wake made outside a scheduling pass tries the lock of the
-/// CPU that owns its thread before it holds the wake instead (`hold`). A lock
+/// CPU that owns its thread before it publishes the wake (`hold`). A lock
 /// held for an ordinary pass is free within this many tries; one held by a
 /// CPU whose vCPU has stopped is not, and the waker does not wait for it.
 const OWNER_TRIES: usize = 256;
 
 /// Wake `tid` with `kind` from outside a scheduling pass. When the lock of the
-/// CPU that owns it stays busy, the wake is held on its index slot and that
-/// CPU is interrupted: its next pass, or any CPU's, applies it. None when the
+/// CPU that owns it stays busy, the wake is published to that CPU's inbox. None when the
 /// wake was held, or the run-queue locks do not exist yet.
 pub(super) fn wake_or_hold(tid: u64, kind: Wake) -> Option<UnblockOutcome> {
     let mut local = local()?;

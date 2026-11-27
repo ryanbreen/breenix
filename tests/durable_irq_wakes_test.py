@@ -33,17 +33,27 @@ fn completion_between_check_and_block() {
     for tid in 1..=64 {
         queue.publish(tid);
     }
-    let receipt_seen_by_waiter = false;
-    // The device publishes its receipt and its wake before the owner stores
-    // the blocked state. The owner's lock excludes the drain until that store.
+    use std::sync::{atomic::{AtomicBool, Ordering}, Mutex};
+    let receipt = AtomicBool::new(false);
+    let state = Mutex::new(false);
+    let mut waiter = state.lock().unwrap();
+    assert!(!receipt.load(Ordering::Acquire));
+    // The IRQ publishes its receipt and wake after the locked check.
+    receipt.store(true, Ordering::Release);
     queue.publish(65);
-    let mut blocked = !receipt_seen_by_waiter;
+    // The owner (or a stalled-owner helper) cannot drain before the blocked
+    // state is published, even though the IRQ can publish without this lock.
+    assert!(state.try_lock().is_err());
+    *waiter = true;
+    drop(waiter);
+    let mut waiter = state.lock().unwrap();
     while queue.drain(|tid| {
         if tid == 65 {
-            blocked = false;
+            assert!(*waiter);
+            *waiter = false;
         }
     }).1 {}
-    assert!(!blocked, "the completion lost its wake between check and block");
+    assert!(!*waiter, "the completion lost its wake between check and block");
 }
 
 #[test]

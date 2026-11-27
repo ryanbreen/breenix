@@ -3982,7 +3982,9 @@ impl Scheduler {
         // milliseconds to write while every other CPU waits for the lock.
 
         #[cfg(target_arch = "x86_64")]
-        self.apply_wake_inbox(Self::current_cpu_id());
+        if rq::is_live(self) {
+            self.apply_wake_inbox(current_cpu);
+        }
         #[cfg(target_arch = "aarch64")]
         if self.drains_wake_inboxes {
             self.apply_arm_wake_inboxes(current_cpu);
@@ -6313,20 +6315,21 @@ impl Scheduler {
     #[cfg(target_arch = "aarch64")]
     fn apply_arm_wake_inboxes(&mut self, cpu: usize) {
         self.apply_wake_inbox(cpu);
-        // The global scheduler lock also allows an available CPU to apply
-        // one stalled owner's batch. Only inspect inboxes with advertised work.
-        let pending = WAKE_INBOX_CPUS.load(Ordering::Acquire) & !(1 << cpu);
-        let remote = (0..MAX_CPUS).find(|&peer| {
-            pending & (1 << peer) != 0
-                && (peer >= self.online_cpu_count() || self.cpu_dispatch_stale(peer))
-        });
-        if let Some(remote) = remote {
-            self.apply_wake_inbox(remote);
+        // Idle ticks and busy CPUs' quantum expiry revisit stalled owners,
+        // even when the first SGI reached an owner that could not schedule.
+        let mut pending = WAKE_INBOX_CPUS.load(Ordering::Acquire) & !(1 << cpu);
+        while pending != 0 {
+            let peer = pending.trailing_zeros() as usize;
+            pending &= pending - 1;
+            if peer >= self.online_cpu_count() || self.cpu_dispatch_stale(peer) {
+                self.apply_wake_inbox(peer);
+                break;
+            }
         }
     }
 
-    /// Consume pending wake nodes under the full scheduler lock, normally
-    /// for this CPU, or on behalf of a stalled owner.
+    /// Consume pending wake nodes under the full scheduler lock. On x86
+    /// that guard also holds every run-queue lock, serializing with rq drains.
     fn apply_wake_inbox(&mut self, cpu: usize) {
         drain_wake_inbox(cpu, |tid, bits| {
             if bits & WAKE_IO != 0 {
@@ -10355,8 +10358,8 @@ pub enum WakeOutcome {
     AlreadyRunnable,
     /// Published to its CPU's wake inbox or coalesced with a pending wake.
     Buffered,
-    /// The scheduler found no live target for this TID.
-    Rejected,
+    /// The TID has no live waiter for this wake.
+    NoTarget,
 }
 
 /// Wake `tid` from any context.
@@ -10365,7 +10368,7 @@ pub fn wake_thread_any_context(tid: u64) -> WakeOutcome {
         if publish_irq_wake(tid, WAKE_GENERIC).is_some() {
             WakeOutcome::Buffered
         } else {
-            WakeOutcome::Rejected
+            WakeOutcome::NoTarget
         }
     } else {
         match unblock_thread(tid) {
@@ -10374,7 +10377,7 @@ pub fn wake_thread_any_context(tid: u64) -> WakeOutcome {
                 WakeOutcome::Applied
             }
             Some(UnblockOutcome::AlreadyRunnable) => WakeOutcome::AlreadyRunnable,
-            Some(UnblockOutcome::NotFound) | None => WakeOutcome::Rejected,
+            Some(UnblockOutcome::NotFound) | None => WakeOutcome::NoTarget,
         }
     }
 }
