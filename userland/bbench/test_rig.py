@@ -38,6 +38,30 @@ class Ratios(unittest.TestCase):
                          {"a": 2.5, "b": 4.0, "c": None})
 
 
+class DownGuest:
+    boots = 3
+
+    def alive(self):
+        return False
+
+
+class GuestThatStaysDown(unittest.TestCase):
+    def test_every_network_row_counts_the_lost_attempt(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        out = Path(temp.name)
+        bench = rig.Rig.__new__(rig.Rig)
+        bench.args = type("Args", (), {"run": "rig"})()
+        bench.out = {"breenix": out}
+        bench.guests = {"breenix": DownGuest()}
+        bench.restart = lambda system: None
+        bench.sample("network", 1, "breenix")
+        groups = rig.collect_receipts(out, ["rig"], "scp-upload")
+        for case in ("scp-upload", "download", "ssh"):
+            self.assertEqual([sample["error"] for sample in groups[case]],
+                             ["breenix VM could not be restarted"], case)
+
+
 class ImagePin(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
