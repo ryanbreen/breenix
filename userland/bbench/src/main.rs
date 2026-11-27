@@ -174,6 +174,15 @@ fn run(args: &[String]) -> io::Result<bool> {
             "sample must contain only ASCII letters, digits or hyphens",
         ));
     }
+    let reports = Path::new(reports);
+    let destination = reports.join(format!("{sample}.json"));
+    let partial = destination.with_extension("partial");
+    if destination.try_exists()? || partial.try_exists()? {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "sample already exists",
+        ));
+    }
     let dir = Path::new(data).join(sample);
     fs::create_dir(&dir)?;
     let before = counters();
@@ -197,8 +206,6 @@ fn run(args: &[String]) -> io::Result<bool> {
         json_string(sample), argv.join(","), object(&metrics, u64::to_string),
         object(&before, |s| json_string(s)), object(&after, |s| json_string(s)),
     );
-    let destination = Path::new(reports).join(format!("{sample}.json"));
-    let partial = destination.with_extension("partial");
     let mut file = File::options()
         .create_new(true)
         .write(true)
@@ -213,6 +220,7 @@ fn run(args: &[String]) -> io::Result<bool> {
         ));
     }
     fs::rename(partial, destination)?;
+    File::open(reports)?.sync_all()?;
     io::stdout().lock().write_all(report.as_bytes())?;
     Ok(result.is_ok())
 }

@@ -24,6 +24,8 @@ pub fn sequential(dir: &Path, size: usize, metrics: &mut Metrics) -> io::Result<
     metrics.insert("bytes_written", size as u64);
     drop(file);
 
+    // This is the read-after-fsync workload. Leave each filesystem's cache
+    // in the state normally produced by the preceding write and sync.
     let mut block = vec![0; payload.len()];
     let start = Instant::now();
     let mut file = File::open(path)?;

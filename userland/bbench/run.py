@@ -126,18 +126,25 @@ def main(args):
         "walk": lambda _: ["walk", 10_000],
         "fsync": lambda _: ["fsync", 32],
     }
-    selected = args.cases.split(",") if args.cases else list(cases)
+    defaults = list(cases)
+    if args.host or args.mac_ssh:
+        defaults.append("network")
+    selected = args.cases.split(",") if args.cases else defaults
+    if args.host and "network" in selected and not args.bsync:
+        raise ValueError("network requires a Mac bsync executable")
     unknown = set(selected) - cases.keys() - {"network"}
     if unknown:
         raise ValueError(f"unknown cases: {', '.join(sorted(unknown))}")
     failures = 0
 
-    def probe(sample, words):
+    def probe(sample, words, cold_target=None):
         nonlocal failures
         receipt = args.out / f"{sample}.json"
         if receipt.exists():
             failures += int(bool(json.loads(receipt.read_bytes())["error"]))
             return
+        if cold_target and run(["/bin/test", "-e", cold_target], check=False).returncode != 1:
+            raise RuntimeError(f"{sample} needs a fresh target directory. Use a new run ID.")
         print(sample, flush=True)
         with (args.out / f"{sample}.log").open("ab") as log:
             probe_env = ["/bin/env", f"RUST_TARGET_PATH={fixture / 'targets'}"] if remote else []
@@ -167,13 +174,12 @@ def main(args):
             probe(seed, noop)
             if json.loads((args.out / f"{seed}.json").read_bytes())["error"]:
                 continue
-        for number in range(1, (1 if case == "bcc" else RUNS) + 1):
+        for number in range(1, (1 if case == "bcc" else args.count) + 1):
             sample = f"{args.run}-{case}-{number}"
-            words = cases[case](sample)
             # Cargo's target directory must differ from the probe's scratch directory.
-            if case in ("yes-dev-box", "yes-release", "bobj", "bld", "bmake", "bcc"):
-                words = cases[case](f"{sample}-artifacts")
-            probe(sample, words)
+            cold = case in ("yes-dev-box", "yes-release", "bobj", "bld", "bmake", "bcc")
+            output = f"{sample}-artifacts" if cold else sample
+            probe(sample, cases[case](output), cold_target=data / output if cold else None)
     return int(failures != 0)
 
 
@@ -205,12 +211,14 @@ def network_series(args, data, run):
             values["/proc/trace/counters"] = trace.stdout.decode()
         return values
 
-    for number in range(1, RUNS + 1):
+    upload_name = "bsync-upload" if args.host else "scp-upload"
+    for number in range(1, args.count + 1):
         destination = data / "network" / str(number)
         run(["/bin/mkdir", "-p", destination])
         remote_file = f"{host}:{destination}/payload"
         for case in ("upload", "download", "ssh"):
-            sample = f"{args.run}-{case}-{number}"
+            name = upload_name if case == "upload" else case
+            sample = f"{args.run}-{name}-{number}"
             receipt = args.out / f"{sample}.json"
             if receipt.exists():
                 if json.loads(receipt.read_bytes())["error"]:
@@ -266,6 +274,8 @@ if __name__ == "__main__":
     parser.add_argument("--out", required=True, type=Path, help="local receipt and log directory")
     parser.add_argument("--probe", required=True, help="absolute path to bbench")
     parser.add_argument("--cases", help="comma-separated case names")
+    parser.add_argument("--count", type=int, choices=range(1, RUNS + 1), default=RUNS,
+                        help="samples per selected case, useful for failed-run follow-up")
     parser.add_argument("--host", help="Breenix SSH login or alias")
     parser.add_argument("--mac-ssh", choices=["localhost"], help="macOS loopback SSH reference")
     parser.add_argument("--source", help="absolute path to the synced source tree on Breenix")
