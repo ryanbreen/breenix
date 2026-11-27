@@ -1065,6 +1065,17 @@ unsafe fn report_slot(
     Ok(())
 }
 
+fn check_replace_usr_slots(mut size: impl FnMut(&str) -> Result<u64, Status>) -> Result<(), Status> {
+    // The transaction removes its journal after all moves finish. Completion markers can remain.
+    for path in [r"\EFI\BREENIX\SLOT.TXN", r"\EFI\BREENIX\SWAP.IMG",
+                 r"\EFI\BREENIX\SWAP.TXT", r"\EFI\BREENIX\NEXT.IMG", r"\EFI\BREENIX\NEXT.TXT"] {
+        if !matches!(size(path), Err(NOT_FOUND)) {
+            return Err(VOLUME_CORRUPTED);
+        }
+    }
+    Ok(())
+}
+
 /// Carries out persist.cfg when the boot disk has one.
 pub(super) unsafe fn run(boot: &BootServices, runtime: &RuntimeServices, volume: *const u8, image: Handle) -> Result<(), Status> {
     let mut path = volume;
@@ -1143,13 +1154,7 @@ pub(super) unsafe fn run(boot: &BootServices, runtime: &RuntimeServices, volume:
     if request.action == Action::ReplaceUsr {
         // The manager already recovered before launching the test image.
         // This path must never recover or write a kernel slot.
-        for path in [r"\EFI\BREENIX\SLOT.TXN", r"\EFI\BREENIX\SLOT0.OK", r"\EFI\BREENIX\SLOT1.OK",
-                     r"\EFI\BREENIX\SLOT2.OK", r"\EFI\BREENIX\SWAP.IMG",
-                     r"\EFI\BREENIX\SWAP.TXT", r"\EFI\BREENIX\NEXT.IMG", r"\EFI\BREENIX\NEXT.TXT"] {
-            if !matches!(root.size(path), Err(NOT_FOUND)) {
-                return Err(VOLUME_CORRUPTED);
-            }
-        }
+        check_replace_usr_slots(|path| root.size(path))?;
         if delivered.size("persist.dat")? != 0 {
             return Err(INVALID_PARAMETER);
         }
@@ -1204,6 +1209,27 @@ pub(super) unsafe fn run(boot: &BootServices, runtime: &RuntimeServices, volume:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replace_usr_accepts_completed_slot_transactions_but_refuses_open_or_staged_slots() {
+        let completed = ["CURRENT.IMG", "CURRENT.TXT", "PREVIOUS.IMG", "PREVIOUS.TXT",
+                         "SLOT0.OK", "SLOT1.OK", "SLOT2.OK"];
+        let check = |extra, unreadable| check_replace_usr_slots(|path| {
+            let name = path.rsplit('\\').next().unwrap();
+            if Some(name) == unreadable {
+                Err(DEVICE_ERROR)
+            } else if completed.contains(&name) || Some(name) == extra {
+                Ok(5)
+            } else {
+                Err(NOT_FOUND)
+            }
+        });
+        assert_eq!(check(None, None), Ok(()));
+        for name in ["SLOT.TXN", "SWAP.IMG", "SWAP.TXT", "NEXT.IMG", "NEXT.TXT"] {
+            assert_eq!(check(Some(name), None), Err(VOLUME_CORRUPTED));
+            assert_eq!(check(None, Some(name)), Err(VOLUME_CORRUPTED));
+        }
+    }
 
     #[test]
     fn accepts_breenfs_upgrade_request_without_enabling_migration_slots() {

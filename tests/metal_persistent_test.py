@@ -351,6 +351,81 @@ class DriverPersistentTest(unittest.TestCase):
             with self.assertRaisesRegex(boot.Finish, 'CURRENT.*userland'):
                 d.prepare_install(inputs, build)
 
+    def test_successful_kernel_staging_skips_scoring_and_continues_verification(self):
+        d = self.driver
+        d.args.mode, d.args.kernel_only = 'persistent-install', True
+        definition = d.dir / 'definition/docs/metal/boot-path.json'
+        definition.parent.mkdir(parents=True)
+        definition.write_text('{}')
+        d.create_record = d.claim = d.prepare_payload = d.preflight = Mock()
+        d.do_stage = d.start_console = d.power_on = Mock()
+        d.watch = Mock(side_effect=boot.Finish(m.EXIT_DONE, 'the kernel-only NEXT slot was staged'))
+        d.power_off = Mock(return_value=True)
+        d.cleanup = Mock()
+        d.continue_verification = Mock(return_value=m.EXIT_DONE)
+        with patch.object(metal_score, 'score', return_value={}) as score, \
+             patch.object(metal_score, 'falls_short', return_value=True):
+            status = d.run()
+        score.assert_not_called()
+        d.cleanup.assert_called_once_with(m.EXIT_DONE, keep_lease=True)
+        d.continue_verification.assert_called_once_with()
+        self.assertEqual(status, m.EXIT_DONE)
+
+    def test_kernel_flash_can_restage_the_same_candidate_before_promotion(self):
+        d = self.driver
+        d.args.commit, d.args.kernel_only = 'a' * 40, True
+        layout = persistent_disk_records()[3]['layout']
+        current = dict(commit='b' * 40, userland='live-root')
+        pending = dict(commit=d.args.commit, userland='live-root', writableRoot=True,
+                       installedBy='20261016T000000Z-metal', sha256='c' * 64, size=4096)
+        slots = dict(current=current, next=pending)
+        metal_persist.update_disk(layout=layout, slots=slots)
+        previous = m.boot_dir(pending['installedBy'])
+        m.write_json(previous / 'run.json', dict(id=previous.name, mode='persistent-install',
+                                               payload='image', kernelOnly=True, commit=d.args.commit))
+        m.write_json(previous / 'persist.json', dict(action='upgrade', kernelOnly=True, layout=layout, slot=pending))
+        m.event(previous, 'persist-written', action='upgrade', commit=d.args.commit)
+        m.event(previous, 'decided', status=m.EXIT_DONE)
+        m.event(previous, 'power-off', off=True)
+        m.close_record(previous, m.EXIT_SHORT, 'driver')
+        install = dict(writablePersistentRoot=True)
+        with patch.object(boot.metal_migration, 'require_closed', return_value={'closed': 'return'}), \
+             patch.object(boot.metal_image, 'extract_esp', side_effect=RuntimeError('admitted for staging')):
+            with self.assertRaisesRegex(RuntimeError, 'admitted for staging'):
+                d.prepare_install(d.stage, install)
+            for commit, root, kernel_only in [('d' * 40, 'live-root', True),
+                                               ('a' * 40, 'different-root', True),
+                                               ('a' * 40, 'live-root', False)]:
+                with self.subTest(commit=commit, root=root, kernel_only=kernel_only):
+                    d.args.commit, d.args.kernel_only = commit, kernel_only
+                    metal_persist.update_disk(slots=dict(slots, current=dict(current, userland=root)))
+                    with self.assertRaisesRegex(boot.Finish, 'refuses to replace NEXT'):
+                        d.prepare_install(d.stage, install)
+            d.args.commit, d.args.kernel_only = 'a' * 40, True
+            metal_persist.update_disk(slots=slots)
+            m.event(previous, 'persistent-verification-next', verification=d.id)
+            with self.assertRaisesRegex(boot.Finish, 'refuses to replace NEXT'):
+                d.prepare_install(d.stage, install)
+
+    def test_upgrade_verifier_requires_promotion_even_with_the_same_commit_and_root(self):
+        d = self.driver
+        d.args.mode = d.args.payload = 'persistent'
+        d.args.slot_action = 'commit'
+        d.args.upgrade_parent = '20261016T000000Z-metal'
+        d.args.commit = 'a' * 40
+        kept = m.STATE / 'persistent' / d.args.commit / 'definition'
+        kept.mkdir(parents=True)
+        current = dict(commit=d.args.commit, userland='live-root', installedBy='old')
+        pending = dict(current, installedBy=d.args.upgrade_parent)
+        metal_persist.update_disk(slots=dict(current=current, next=pending))
+        booting = 'breenix-manager: booting current ' + d.args.commit
+        with self.assertRaisesRegex(boot.Finish, 'did not confirm the requested slot action'):
+            d.on_slot_boot(booting, 10)
+        d.on_slot_line(f'breenix-manager: slot commit: current {d.args.commit}, previous {d.args.commit}', 11)
+        d.on_slot_boot(booting, 12)
+        self.assertIn('manager-slot', d.seen)
+        self.assertEqual(metal_persist.read_disk()['slots'], dict(current=pending, previous=current))
+
     def test_automated_boot_stages_only_test_root_and_refuses_live_watchdog_recovery(self):
         d = self.driver
         layout = persistent_disk_records()[3]['layout']

@@ -553,8 +553,44 @@ def stopped_upgrade_slot(layout):
     return slot
 
 
-def require_upgrade_next(layout, slots):
+def retryable_kernel_next(layout, slots, commit):
+    """Prove that the same kernel was staged and powered off before any promotion was requested."""
     pending = slots.get('next')
+    if not isinstance(pending, dict) or pending.get('commit') != commit:
+        return False
+    generation = metal_persist.slot_userland(slots.get('current'))
+    ident = pending.get('installedBy')
+    if not generation or pending.get('userland') != generation or not isinstance(ident, str) or not BOOT_ID.fullmatch(ident):
+        return False
+    boot = m.boot_dir(ident)
+    run = m.read_json(boot / 'run.json')
+    request = m.read_json(boot / 'persist.json')
+    if (not (boot / 'ended').is_file() or not isinstance(run, dict) or not isinstance(request, dict)
+            or run.get('id') != ident or run.get('mode') != 'persistent-install' or run.get('payload') != 'image'
+            or run.get('kernelOnly') is not True or run.get('commit') != commit or run.get('inject')
+            or request.get('action') != 'upgrade' or request.get('kernelOnly') is not True
+            or request.get('slot') != pending or request.get('layout') != layout):
+        return False
+    try:
+        log = events(boot)
+        if any(row['event'] in ('capture-incomplete', 'persistent-verification-next', 'persistent-rollback-next')
+               for row in log):
+            return False
+        written, decided, off, closed = [row for row in log if row['event'] in
+                                         ('persist-written', 'decided', 'power-off', 'closed')]
+        return (written['event'] == 'persist-written' and written.get('commit') == commit
+                and written.get('action') == 'upgrade' and decided['event'] == 'decided'
+                and decided.get('status') == m.EXIT_DONE and off['event'] == 'power-off' and off.get('off') is True
+                and closed['event'] == 'closed' and closed.get('endedBy') == 'driver'
+                and closed.get('status') in (m.EXIT_DONE, m.EXIT_SHORT))
+    except (OSError, ValueError, TypeError, KeyError):
+        return False
+
+
+def require_upgrade_next(layout, slots, *, retry_kernel=None):
+    pending = slots.get('next')
+    if retry_kernel and retryable_kernel_next(layout, slots, retry_kernel):
+        return
     if pending is not None and (not isinstance(pending, dict) or pending.get('installedBy') != STOPPED_UPGRADE
                                 or pending != stopped_upgrade_slot(layout)):
         raise ValueError('BreenFS upgrade refuses to replace NEXT without the stopped install custody record')
