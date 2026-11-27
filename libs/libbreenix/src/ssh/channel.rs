@@ -69,6 +69,11 @@ pub enum SessionCommand {
     Sftp,
 }
 
+pub(super) enum ChannelRequestPhase {
+    Setup,
+    Running,
+}
+
 /// Handle an incoming "session" channel open request (server side).
 ///
 /// Returns the new Channel on success.
@@ -120,7 +125,7 @@ pub(super) fn server_handle_channel_request(
     io: &mut PacketIo,
     msg: &[u8],
     channel: &mut Channel,
-    allow_start: bool,
+    phase: ChannelRequestPhase,
 ) -> Result<Option<SessionCommand>, SshError> {
     let mut pos = 1;
     let recipient =
@@ -132,28 +137,29 @@ pub(super) fn server_handle_channel_request(
         SshBuf::get_string(msg, &mut pos).ok_or(SshError::Protocol("bad request type"))?;
     let want_reply = SshBuf::get_bool(msg, &mut pos).ok_or(SshError::Protocol("bad want_reply"))?;
 
+    let setup = matches!(phase, ChannelRequestPhase::Setup);
     let mut command = None;
     let accepted = match request_type {
-        b"pty-req" if allow_start => {
+        b"pty-req" if setup => {
             let term = SshBuf::get_string(msg, &mut pos).unwrap_or(b"xterm");
             let cols = SshBuf::get_u32(msg, &mut pos).unwrap_or(80);
             let rows = SshBuf::get_u32(msg, &mut pos).unwrap_or(24);
             // width_px, height_px, terminal modes (ignored)
             channel.pty_term = Some(String::from_utf8_lossy(term).into_owned());
-            channel.pty_size = (cols, rows);
+            channel.pty_size = (if cols == 0 { 80 } else { cols }, if rows == 0 { 24 } else { rows });
             true
         }
-        b"shell" if allow_start => {
+        b"shell" if setup => {
             command = Some(SessionCommand::Shell);
             true
         }
-        b"exec" if allow_start => {
+        b"exec" if setup => {
             let exec =
                 SshBuf::get_string(msg, &mut pos).ok_or(SshError::Protocol("bad exec command"))?;
             command = Some(SessionCommand::Exec(String::from_utf8_lossy(exec).into_owned()));
             true
         }
-        b"subsystem" if allow_start => {
+        b"subsystem" if setup => {
             let name = SshBuf::get_string(msg, &mut pos)
                 .ok_or(SshError::Protocol("bad subsystem name"))?;
             if name == b"sftp" && pos == msg.len() && channel.pty_term.is_none() {
@@ -163,13 +169,20 @@ pub(super) fn server_handle_channel_request(
                 false
             }
         }
-        b"window-change" => {
-            let cols = SshBuf::get_u32(msg, &mut pos).unwrap_or(80);
-            let rows = SshBuf::get_u32(msg, &mut pos).unwrap_or(24);
-            channel.pty_size = (cols, rows);
+        b"window-change" if setup || channel.pty_term.is_some() => {
+            let cols = SshBuf::get_u32(msg, &mut pos)
+                .ok_or(SshError::Protocol("missing PTY columns"))?;
+            let rows = SshBuf::get_u32(msg, &mut pos)
+                .ok_or(SshError::Protocol("missing PTY rows"))?;
+            if cols != 0 {
+                channel.pty_size.0 = cols;
+            }
+            if rows != 0 {
+                channel.pty_size.1 = rows;
+            }
             true
         }
-        b"env" => true,
+        b"env" if setup => true,
         _ => false,
     };
 
@@ -227,6 +240,9 @@ pub fn send_window_adjust(
     channel: &mut Channel,
     bytes_to_add: u32,
 ) -> Result<(), SshError> {
+    if bytes_to_add == 0 {
+        return Ok(());
+    }
     let mut msg = Vec::with_capacity(9);
     msg.push(SSH_MSG_CHANNEL_WINDOW_ADJUST);
     SshBuf::put_u32(&mut msg, channel.remote_id);
@@ -403,7 +419,7 @@ fn recv_client_control_packet(io: &mut PacketIo) -> Result<Vec<u8>, SshError> {
     }
 }
 
-fn handle_client_global_request(io: &mut PacketIo, msg: &[u8]) -> Result<(), SshError> {
+pub(super) fn handle_client_global_request(io: &mut PacketIo, msg: &[u8]) -> Result<(), SshError> {
     let mut pos = 1;
     let _request_name =
         SshBuf::get_string(msg, &mut pos).ok_or(SshError::Protocol("bad global request name"))?;

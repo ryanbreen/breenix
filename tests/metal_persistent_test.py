@@ -304,6 +304,66 @@ class DriverPersistentTest(unittest.TestCase):
     def tearDown(self):
         self.fixture.tearDown()
 
+    def test_kernel_only_stages_next_with_current_userland_and_no_partition_extents(self):
+        d = self.driver
+        d.args.commit, d.args.kernel_only = 'a' * 40, True
+        d.site = {'BOOT_URL': 'http://example.invalid/boot'}
+        inputs = d.stage / 'inputs'
+        inputs.mkdir(parents=True)
+        manager = inputs / 'manager.efi'
+        manager.write_bytes(b'manager')
+        build = dict(manager=dict(sha256=boot.metal_image.sha256(manager)))
+        esp = dict.fromkeys(boot.metal_image.ESP_FILES, manager)
+        layout = persistent_disk_records()[3]['layout']
+        current = dict(commit='b' * 40, installedBy='another-flash', userland='live-generation')
+        metal_persist.update_disk(layout=layout, slots={'current': current})
+
+        def assemble(path, files):
+            path.write_bytes(files['ramdisk'].read_bytes())
+
+        with patch.object(boot.metal_image, 'extract_esp', return_value=esp), \
+             patch.object(boot.metal_image, 'assemble', side_effect=assemble), \
+             patch.object(boot.metal_migration, 'require_closed', return_value={'closed': 'return'}), \
+             patch.object(boot.metal_migration, 'require_upgrade_next'), \
+             patch.object(metal_persist, 'store_definition'), \
+             patch.object(boot.metal_disk, 'stage', return_value=({}, {})) as stage:
+            files, _ = d.prepare_install(inputs, build)
+            stage.assert_not_called()
+            self.assertEqual(set(files), {'persist.cfg', 'persist.dat'})
+            request = files['persist.cfg'].read_text().splitlines()
+            self.assertIn('kernel-only live-generation', request)
+            self.assertFalse(any(line.startswith(('partition ', 'extent ')) for line in request))
+            self.assertEqual([line.split()[1] for line in request if line.startswith('esp-file ')],
+                             [r'\EFI\BREENIX\NEXT.IMG', r'\EFI\BREENIX\NEXT.TXT'])
+            self.assertIn(b'userland live-generation\n', (d.stage / 'persist/next.img').read_bytes())
+            self.assertEqual(d.persist['slot']['userland'], 'live-generation')
+            metal_persist.update_disk(slots={'current': {'commit': current['commit']}})
+            with self.assertRaisesRegex(boot.Finish, 'CURRENT.*userland'):
+                d.prepare_install(inputs, build)
+
+    def test_automated_boot_stages_only_test_root_and_refuses_live_watchdog_recovery(self):
+        d = self.driver
+        layout = persistent_disk_records()[3]['layout']
+        metal_persist.update_disk(layout=layout)
+        inputs = d.stage / 'inputs'
+        inputs.mkdir(parents=True)
+        (inputs / 'ext2.img').write_bytes(bytes(1080) + b'\x53\xef' + bytes(3014))
+        with patch.object(boot.metal_root, 'stage_root', return_value={}), \
+             patch.object(boot.metal_root, 'console_identity', return_value='fixture'), \
+             patch.object(m, 'power_token', return_value='fixture'):
+            facts, files = metal_disk.stage(d.dir, inputs, d.id, 'a' * 40, {},
+                                           {'ext2': {'sha256': 'b' * 64}}, mode='tests')
+        magic, action, size, partition, _, _ = metal_disk.HEADER_2.unpack(files['suite-disk.cfg'].read_bytes())
+        test_root = layout['partitions']['test']['guid']
+        self.assertEqual((magic, action, size, partition), (metal_disk.MAGIC_2, 1, 4096, uuid.UUID(test_root).bytes_le))
+        self.assertEqual(facts['partition'], test_root)
+        self.assertEqual(set(files), {'suite-disk.cfg', 'suite-root.img'})
+        d.args.inject = 'watchdog-feeder-hang'
+        with patch.object(m, 'machine_checks', return_value=([], {'power': 'Off'})) as checks:
+            with self.assertRaisesRegex(boot.Finish, 'watchdog.*persistent'):
+                d.preflight()
+            checks.assert_not_called()
+
     def test_install_and_slot_intents_use_the_recorded_layout(self):
         d = self.driver
         d.args.commit = 'a' * 40

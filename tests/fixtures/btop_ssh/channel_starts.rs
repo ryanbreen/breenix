@@ -1,5 +1,5 @@
 fn check_channel_starts() {
-    use ssh::SessionCommand;
+    use ssh::channel::SessionCommand;
 
     for (kind, argument) in [
         (b"shell".as_slice(), None),

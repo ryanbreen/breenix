@@ -1,5 +1,5 @@
 //! Copy the staged OS tree into an independent root on the BreenFS system volume.
-use super::{fail, layout, own, read_fixtures, recovered_slots, require_directory, valid_id,
+use super::{fail, layout, local, own, read_fixtures, recovered_slots, require_directory, valid_id,
             Copier, Totals, READY};
 use crate::breenfs_abi::{SnapshotNext, SnapshotRename, SnapshotRequest, SNAPSHOT_CREATE, SNAPSHOT_DELETE,
           SNAPSHOT_EMPTY, SNAPSHOT_NEXT, SNAPSHOT_READ_ONLY, SNAPSHOT_RENAME};
@@ -51,13 +51,19 @@ impl Upgrade {
         println!("[persistent] install starting: the test root's userland onto BreenFS");
         let id = std::env::args().nth(1).filter(|id| valid_id(id))
             .ok_or("upgrade intent names no valid userland generation")?;
-        let references = recovered_slots(source)?;
-        let slots: Vec<_> = references.split_whitespace().skip(1).collect();
+        let (references, carry) = recovered_slots(source)?;
+        let slots = references.each_ref().map(String::as_str);
         if slots[2] != id || matches!(slots[0], "empty" | "flat") {
             return Err("recovered slots do not name the current generation and upgrade candidate".into());
         }
         let published = format!("gen-{id}");
         let draft = format!("{id}.new");
+        let current = format!("gen-{}", slots[0]);
+        remount(Some(&current), true)?;
+        let local_files = local::LocalFiles::inspect(Path::new(SYSTEM), source, true, carry, || {
+            installed_image(slots[0])
+        })?;
+        remount(None, false)?;
         {
             let system = open(SYSTEM)?;
             let mut roots = SnapshotNext { id: 0, root: request("", 0) };
@@ -93,11 +99,24 @@ impl Upgrade {
                 ioctl(&system, SNAPSHOT_DELETE, &mut request(&name, 0))?;
                 println!("[persistent] reclaimed: {name}");
             }
-            ioctl(&system, SNAPSHOT_CREATE, &mut request(&draft, SNAPSHOT_EMPTY))?;
+            if local_files.is_empty() {
+                ioctl(&system, SNAPSHOT_CREATE, &mut request(&draft, SNAPSHOT_EMPTY))?;
+            }
         }
-        remount(Some(&draft))?;
-        let totals = copy_generation(source, Path::new(SYSTEM), &id)?;
-        remount(None)?;
+        let staged = Path::new(SYSTEM);
+        let scratch = if local_files.is_empty() {
+            remount(Some(&draft), false)?;
+            None
+        } else {
+            // Clone CURRENT and move its contents aside inside the clone. The
+            // old tree stays available for rollback and no scratch writes go to home.
+            remount(Some(&current), false)?;
+            ioctl(&open(SYSTEM)?, SNAPSHOT_CREATE, &mut request(&draft, 0))?;
+            remount(Some(&draft), false)?;
+            Some(move_old_tree(staged, &id)?)
+        };
+        let totals = copy_generation(source, staged, &id, &local_files, slots[0], scratch.as_deref())?;
+        remount(None, false)?;
         ioctl(&open(SYSTEM)?, SNAPSHOT_RENAME, &mut SnapshotRename {
             from: request(&draft, 0),
             to: request(&published, 0),
@@ -107,13 +126,48 @@ impl Upgrade {
     }
 }
 
+fn installed_image(id: &str) -> Result<bool, String> {
+    // Every BreenFS image install snapshots home before it publishes gen-{id}.
+    // The ext2 migration can import modified files and creates no such snapshot.
+    // Persistent boots expose gen-{id} only through a read-only generation view.
+    let expected = format!("pre-upgrade-{id}");
+    let home = open(HOME)?;
+    let mut roots = SnapshotNext { id: 0, root: request("", 0) };
+    loop {
+        ioctl(&home, SNAPSHOT_NEXT, &mut roots)?;
+        if roots.id == 0 { return Ok(false); }
+        let root = &roots.root;
+        if root.flags == SNAPSHOT_READ_ONLY
+            && root.name.get(..root.name_len as usize) == Some(expected.as_bytes())
+        {
+            return Ok(true);
+        }
+    }
+}
+
 fn is_metal_generation(name: &str) -> bool {
     let Some(id) = name.strip_suffix("-metal") else { return false; };
     id.len() == 16 && id.as_bytes()[8] == b'T' && id.as_bytes()[15] == b'Z'
         && id.as_bytes()[..8].iter().chain(&id.as_bytes()[9..15]).all(u8::is_ascii_digit)
 }
 
-fn copy_generation(source: &Path, staged: &Path, id: &str) -> Result<Totals, String> {
+fn move_old_tree(staged: &Path, id: &str) -> Result<std::path::PathBuf, String> {
+    let name = format!(".breenix-carry-{id}");
+    let scratch = staged.join(&name);
+    fs::create_dir(&scratch).map_err(|error| fail("create carry scratch", &scratch, error))?;
+    let entries = fs::read_dir(staged).and_then(|entries| entries.collect::<Result<Vec<_>, _>>())
+        .map_err(|error| fail("list snapshot", staged, error))?;
+    for entry in entries {
+        if entry.file_name() != name.as_str() {
+            fs::rename(entry.path(), scratch.join(entry.file_name()))
+                .map_err(|error| fail("move old path within draft", &entry.path(), error))?;
+        }
+    }
+    Ok(scratch)
+}
+
+fn copy_generation(source: &Path, staged: &Path, id: &str, local_files: &local::LocalFiles,
+                   previous: &str, scratch: Option<&Path>) -> Result<Totals, String> {
     let fixtures = read_fixtures(source)?;
     let mut copier = Copier {
         totals: Totals::default(), skip: Default::default(), linked: HashMap::new(),
@@ -141,6 +195,11 @@ fn copy_generation(source: &Path, staged: &Path, id: &str) -> Result<Totals, Str
     own(staged, &root_meta, true).map_err(|error| fail("chown", staged, error))?;
     fs::set_permissions(staged, fs::Permissions::from_mode(root_meta.mode() & 0o7777))
         .map_err(|error| fail("chmod", staged, error))?;
+    local::record(&mut copier, staged, scratch.and_then(|path| path.strip_prefix(staged).ok()))?;
+    if let Some(scratch) = scratch {
+        local_files.apply(&mut copier, scratch, staged, previous, true)?;
+        fs::remove_dir_all(scratch).map_err(|error| fail("remove old draft paths", scratch, error))?;
+    }
     layout::check_setid(staged, false)?;
     copier.write_file(&staged.join(READY), &layout::record(id), 0o644)?;
     copier.sync(staged)?;
@@ -162,10 +221,10 @@ fn ioctl<T>(file: &File, operation: u64, arg: &mut T) -> Result<(), String> {
     Error::from_syscall(result as i64).map(|_| ()).map_err(|error| error.to_string())
 }
 
-fn remount(name: Option<&str>) -> Result<(), String> {
+fn remount(name: Option<&str>, read_only: bool) -> Result<(), String> {
     let data = name.map(|name| CString::new(format!("root={name}"))).transpose()
         .map_err(|error| error.to_string())?;
     let data = data.as_ref().map_or(std::ptr::null(), |data| data.as_ptr().cast());
     umount2(SYSTEM, 0).map_err(|error| format!("unmount {SYSTEM}: {error}"))?;
-    unsafe { mount("boot", SYSTEM, "breenfs", 0, data) }.map_err(|error| format!("mount {SYSTEM}: {error}"))
+    unsafe { mount("boot", SYSTEM, "breenfs", u64::from(read_only), data) }.map_err(|error| format!("mount {SYSTEM}: {error}"))
 }

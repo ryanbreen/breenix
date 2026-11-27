@@ -103,6 +103,7 @@ struct Request<'t> {
     load_option: Option<&'t str>,
     migration_slots: bool,
     breenfs_upgrade: Option<[[u8; 16]; 4]>,
+    kernel_only: Option<&'t str>,
     keep_generations: Option<[&'t str; 2]>,
 }
 
@@ -123,6 +124,7 @@ fn parse<'t>(text: &'t str) -> Result<Request<'t>, Status> {
         load_option: None,
         migration_slots: false,
         breenfs_upgrade: None,
+        kernel_only: None,
         keep_generations: None,
     };
     let mut action = None;
@@ -199,6 +201,8 @@ fn parse<'t>(text: &'t str) -> Result<Request<'t>, Status> {
                 }
                 request.breenfs_upgrade = Some(guids);
             }
+            "kernel-only" if request.kernel_only.is_none() && valid_generation(value)
+                && !matches!(value, "flat" | "empty") => request.kernel_only = Some(value),
             "rescue-file" if !value.is_empty() => {}
             "extent" | "esp-file" if !value.is_empty() => {}
             _ => return Err(INVALID_PARAMETER),
@@ -235,6 +239,19 @@ fn parse<'t>(text: &'t str) -> Result<Request<'t>, Status> {
             || text.lines().any(|line| line.starts_with("extent ")))
     {
         return Err(INVALID_PARAMETER);
+    }
+    if request.kernel_only.is_some() {
+        let mut files = text.lines().filter_map(|line| line.strip_prefix("esp-file "));
+        if request.action != Action::Upgrade || request.migration_slots || request.expect_record.is_some()
+            || request.parts.iter().any(Option::is_some) || request.config_len != 0
+            || request.load_option.is_some() || request.keep_generations.is_some()
+            || text.lines().any(|line| line.starts_with("extent "))
+            || !files.next().is_some_and(|line| line.starts_with(r"\EFI\BREENIX\NEXT.IMG "))
+            || !files.next().is_some_and(|line| line.starts_with(r"\EFI\BREENIX\NEXT.TXT "))
+            || files.next().is_some()
+        {
+            return Err(INVALID_PARAMETER);
+        }
     }
     let (original, additions) = request.parts.split_at(ORIGINAL_PARTS);
     match request.action {
@@ -989,6 +1006,7 @@ unsafe fn report_slot(
     name[prefix.len()+slot.len()..prefix.len()+slot.len()+4].copy_from_slice(b".IMG");
     let path = core::str::from_utf8(&name[..prefix.len()+slot.len()+4]).map_err(|_| INVALID_PARAMETER)?;
     match root.size(path) {
+        Err(NOT_FOUND) if request.kernel_only.is_some() && slot != "PREVIOUS" => return Err(NOT_FOUND),
         Err(NOT_FOUND) if request.breenfs_upgrade.is_none() || slot == "PREVIOUS" => {
             say!("slot userland: {} empty", slot);
             return Ok(());
@@ -1000,6 +1018,19 @@ unsafe fn report_slot(
     let (memory, size, len) = read_slot_intent(boot, root, path, &mut intent)?;
     let text = core::str::from_utf8(&intent[..len]).map_err(|_| VOLUME_CORRUPTED)?;
     let (id, rescue) = slot_intent(text, request.migration_slots, request.breenfs_upgrade, slot)?;
+    if let Some(expected) = request.kernel_only {
+        if slot == "PREVIOUS" {
+            if rescue {
+                root.size(r"\EFI\BREENIX\RESCUE.IMG")?;
+                root.size(r"\EFI\BREENIX\RESCUE.TXT")?;
+            }
+        } else if id != expected {
+            say!("kernel-only flash refused: {} userland differs from the requested generation", slot);
+            return Err(VOLUME_CORRUPTED);
+        }
+        say!("slot userland: {} {}", slot, id);
+        return Ok(());
+    }
     if rescue {
         // Ordinary promotion replaces PREVIOUS. Save the read-only pair for
         // the manager's independent rescue entry.
@@ -1090,6 +1121,16 @@ pub(super) unsafe fn run(boot: &BootServices, runtime: &RuntimeServices, volume:
         }
     }
     metal_efi::slot_transaction::recover(&metal_efi::slot_store::SlotStore(&root))?;
+    if request.kernel_only.is_some() {
+        for slot in ["CURRENT", "PREVIOUS"] {
+            report_slot(boot, &root, &request, slot)?;
+        }
+        write_esp_files(boot, &root, payload.handle(), text, "esp-file ")?;
+        report_slot(boot, &root, &request, "NEXT")?;
+        say!("slot userlands complete");
+        say!("persistent install request complete");
+        metal_efi::com1::halt();
+    }
     let http_option = if installing { boot_current } else { recorded_http_option(&root) };
     if request.migration_slots {
         write_esp_files(boot, &root, payload.handle(), text, "rescue-file ")?;

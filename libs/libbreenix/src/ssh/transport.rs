@@ -9,7 +9,7 @@ use crate::error::Error;
 use crate::types::Fd;
 
 use super::auth;
-use super::channel::{self, Channel, SessionCommand};
+use super::channel::{self, Channel, ChannelRequestPhase, SessionCommand};
 use super::kex::{self, KexState};
 use super::keys::{HostKey, Identity, ServerHostKeyInfo};
 use super::packet::PacketIo;
@@ -177,23 +177,15 @@ impl<'a> ServerSession<'a> {
                 }
                 SSH_MSG_CHANNEL_REQUEST => {
                     if let Some(ref mut ch) = self.channel {
-                        if let Some(command) =
-                            channel::server_handle_channel_request(&mut self.io, &msg, ch, true)?
-                        {
+                        if let Some(command) = channel::server_handle_channel_request(
+                            &mut self.io, &msg, ch, ChannelRequestPhase::Setup,
+                        )? {
                             return Ok(command);
                         }
                     }
                 }
                 SSH_MSG_GLOBAL_REQUEST => {
-                    // Respond with REQUEST_FAILURE for unrecognized global requests
-                    let mut pos = 1;
-                    let _req_name = SshBuf::get_string(&msg, &mut pos);
-                    let want_reply = SshBuf::get_bool(&msg, &mut pos).unwrap_or(false);
-                    if want_reply {
-                        self.io
-                            .send_packet(&[super::SSH_MSG_REQUEST_FAILURE])
-                            .map_err(|_| SshError::Io)?;
-                    }
+                    channel::handle_client_global_request(&mut self.io, &msg)?;
                 }
                 SSH_MSG_IGNORE | SSH_MSG_UNIMPLEMENTED => {}
                 SSH_MSG_CHANNEL_WINDOW_ADJUST => {
@@ -297,17 +289,21 @@ impl<'a> ServerSession<'a> {
         match msg[0] {
             SSH_MSG_CHANNEL_DATA => {
                 let mut pos = 1;
-                let _channel_id = SshBuf::get_u32(msg, &mut pos);
+                let recipient = SshBuf::get_u32(msg, &mut pos)
+                    .ok_or(SshError::Protocol("bad channel data recipient"))?;
                 let data = SshBuf::get_string(msg, &mut pos)
                     .ok_or(SshError::Protocol("bad channel data"))?;
-
-                // Adjust receive window
-                if let Some(ref mut ch) = self.channel {
-                    ch.recv_window = ch.recv_window.checked_sub(data.len() as u32)
-                        .ok_or(SshError::Protocol("channel receive window exceeded"))?;
-                    if replenish && ch.recv_window < 512 * 1024 {
-                        channel::send_window_adjust(&mut self.io, ch, 1024 * 1024)?;
-                    }
+                let ch = self.channel.as_mut().ok_or(SshError::ChannelNotFound)?;
+                if recipient != ch.local_id {
+                    return Err(SshError::ChannelNotFound);
+                }
+                if ch.eof_received {
+                    return Err(SshError::Protocol("channel data after EOF"));
+                }
+                ch.recv_window = ch.recv_window.checked_sub(data.len() as u32)
+                    .ok_or(SshError::Protocol("channel receive window exceeded"))?;
+                if replenish && ch.recv_window < 512 * 1024 {
+                    channel::send_window_adjust(&mut self.io, ch, 1024 * 1024)?;
                 }
 
                 Ok(Some(data.to_vec()))
@@ -345,11 +341,15 @@ impl<'a> ServerSession<'a> {
             }
             SSH_MSG_DISCONNECT => Err(SshError::Disconnected),
             SSH_MSG_IGNORE | SSH_MSG_UNIMPLEMENTED => Ok(None),
+            SSH_MSG_GLOBAL_REQUEST => {
+                channel::handle_client_global_request(&mut self.io, msg)?;
+                Ok(None)
+            }
             SSH_MSG_CHANNEL_REQUEST => {
-                // Handle window-change during session
-                if let Some(ref mut ch) = self.channel {
-                    channel::server_handle_channel_request(&mut self.io, msg, ch, false)?;
-                }
+                let ch = self.channel.as_mut().ok_or(SshError::ChannelNotFound)?;
+                channel::server_handle_channel_request(
+                    &mut self.io, msg, ch, ChannelRequestPhase::Running,
+                )?;
                 Ok(None)
             }
             _ => Ok(None),

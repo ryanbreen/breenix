@@ -267,6 +267,14 @@ def slot_note(commit, boot_id):
     return f'commit {commit}\ninstalled-by {boot_id}\n'
 
 
+def slot_userland(slot):
+    # Before kernel-only flashes, the slot's installation ID and userland ID were the same.
+    if not slot:
+        return None
+    value = slot.get('userland', slot.get('installedBy'))
+    return value if isinstance(value, str) and value not in ('flat', 'empty') and re.fullmatch(r'[A-Za-z0-9-]{1,64}', value) else None
+
+
 def sparse_file(path, size):
     with open(path, 'wb') as handle:
         handle.truncate(size)
@@ -522,7 +530,7 @@ def reclaim_request(directory, layout, first, second):
     return request.finish(), request
 
 
-def upgrade_request(directory, the_layout, files, slot, note, site, *, rescue=None, breenfs=False):
+def upgrade_request(directory, the_layout, files, slot, note, site, *, rescue=None, breenfs=False, kernel_only=None):
     """An upgrade: the staged slot, the manager and its configuration into the EFI system partition."""
     # The retired rescue archive may still occupy its original ESP space.
     check_slot_capacity(the_layout, slot, files, slots=4 if breenfs else 3)
@@ -539,6 +547,10 @@ def upgrade_request(directory, the_layout, files, slot, note, site, *, rescue=No
         request.lines.append('breenfs-upgrade ' + ' '.join(parts[role]['guid'] for role in roles))
     elif the_layout['version'] in (2, 3) and rescue is None:
         raise ValueError('ordinary BreenFS upgrades need a closed migration')
+    if kernel_only is not None:
+        if files or rescue is not None or slot_userland({'userland': kernel_only}) is None:
+            raise ValueError('kernel-only requests need just a NEXT slot and the CURRENT userland ID')
+        request.lines.append('kernel-only ' + kernel_only)
     if rescue is not None:
         request.lines.append('migration-slots')
         for path, source in zip(('efi/breenix/next.img', 'efi/breenix/next.txt'), rescue, strict=True):
@@ -546,7 +558,7 @@ def upgrade_request(directory, the_layout, files, slot, note, site, *, rescue=No
             request.lines[-1] = request.lines[-1].replace('esp-file ', 'rescue-file ', 1)
     for path, source in dict(files, **{'efi/breenix/next.img': slot, 'efi/breenix/next.txt': note}).items():
         request.esp_file(path, source)
-    if rescue is None:
+    if rescue is None and kernel_only is None:
         config = manager_config(site)
         if breenfs and the_layout['version'] == 2:
             guids = (uuid.UUID(parts[role]['guid']).bytes_le.hex() for role in EXT2_ROLES)
