@@ -109,8 +109,12 @@ fn run_case(
         Err(e) => return Err(format!("{}: {e}", input.display())),
     };
     let stdout = match case.stdout {
-        // A read-only fd 1 guarantees EBADF even on runtimes that reopen closed stdio.
-        Stdout::Closed => Stdio::from(File::open("/dev/null").map_err(|e| e.to_string())?),
+        // Rust may reopen missing stdio. A pipe's read end stays open but
+        // Breenix rejects writes to it with EBADF.
+        Stdout::Closed => {
+            let (reader, _) = io::pipe().map_err(|e| format!("create closed-stdout pipe: {e}"))?;
+            Stdio::from(reader)
+        }
         _ => Stdio::piped(),
     };
     let mut command = Command::new(binary);

@@ -201,6 +201,7 @@ fn run(packages: &[String], id: &str) -> Result<Run, String> {
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
+            eprint!("{stderr}{stdout}");
             let lines = || stderr.lines().chain(stdout.lines());
             let detail = lines()
                 .find(|line| line.trim_start().starts_with("error"))

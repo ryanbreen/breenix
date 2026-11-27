@@ -87,8 +87,8 @@ Use `inputs/<id>.in` for optional stdin and
 program name before `:` normalized to `{prog}` in stderr. Status is an exit
 code or `signal:N`, followed by a newline. `stdout_prefix_bytes` closes the
 read end of the capture pipe after that many bytes, for producers such as
-`yes`. `stdout_closed` supplies a read-only descriptor to exercise the
-closed-output write error on runtimes that reopen missing descriptors.
+`yes`. `stdout_closed` gives fd 1 the read end of a pipe so writes get
+`EBADF` even on runtimes that reopen missing standard descriptors.
 Each capture is limited to 1 MiB. The [yes invocation] and [common options]
 manual sections define the interface for the hand-written `yes` goldens.
 
