@@ -693,39 +693,17 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
             description,
             unprivileged,
             size_limit,
-        } => {
-            use crate::fs::vfs::{WriteAt, WriteReq};
-
-            let mut position = match file.position.enter() {
-                Ok(position) => position,
-                Err(error) => return SyscallResult::Err(error),
-            };
-            let append = description.status_flags() & crate::ipc::fd::status_flags::O_APPEND != 0;
-            let req = WriteReq {
-                at: if append {
-                    WriteAt::Append
-                } else {
-                    WriteAt::Offset(*position)
-                },
-                limit: size_limit,
-                clear_setid: unprivileged,
-            };
-            // Append chooses EOF under backend write exclusion, including
-            // when another open description writes to the same inode.
-            match file.open.fs.write(&file.open.node, req, &buffer) {
-                Ok(written) => {
-                    *position = written.offset + written.bytes as u64;
-                    SyscallResult::Ok(written.bytes as u64)
-                }
-                Err(error) => {
-                    drop(position);
-                    if matches!(error, crate::fs::vfs::WriteError::FileSizeLimit) && signal_limit {
-                        super::resource::signal_fsize();
-                    }
-                    SyscallResult::Err(error.errno().into())
-                }
-            }
-        }
+        } => match write_regular_file(
+            &file,
+            &description,
+            unprivileged,
+            size_limit,
+            &buffer,
+            signal_limit,
+        ) {
+            Ok(bytes) => SyscallResult::Ok(bytes),
+            Err(error) => SyscallResult::Err(error),
+        },
     };
     if matches!(result, SyscallResult::Ok(n) if n > 0) {
         if let Some(entry) = fifo_to_touch {
@@ -733,6 +711,45 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
         }
     }
     result
+}
+
+/// Write to one open description, including EOF selection for an append.
+pub(super) fn write_regular_file(
+    file: &crate::ipc::fd::RegularFile,
+    description: &crate::ipc::fd::OpenFileDescription,
+    unprivileged: bool,
+    size_limit: u64,
+    buffer: &[u8],
+    signal_limit: bool,
+) -> Result<u64, u64> {
+    use crate::fs::vfs::{WriteAt, WriteReq};
+
+    let mut position = file.position.enter()?;
+    let append = description.status_flags() & crate::ipc::fd::status_flags::O_APPEND != 0;
+    let req = WriteReq {
+        at: if append {
+            WriteAt::Append
+        } else {
+            WriteAt::Offset(*position)
+        },
+        limit: size_limit,
+        clear_setid: unprivileged,
+    };
+    // The backend chooses append EOF under inode write exclusion, including
+    // when another open description writes to the same inode.
+    match file.open.fs.write(&file.open.node, req, buffer) {
+        Ok(written) => {
+            *position = written.offset + written.bytes as u64;
+            Ok(written.bytes as u64)
+        }
+        Err(error) => {
+            drop(position);
+            if matches!(error, crate::fs::vfs::WriteError::FileSizeLimit) && signal_limit {
+                super::resource::signal_fsize();
+            }
+            Err(error.errno().into())
+        }
+    }
 }
 
 /// Helper function to write to stdio through TTY layer

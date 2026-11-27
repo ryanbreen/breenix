@@ -1,11 +1,12 @@
 //! Vectored I/O, including explicit-offset transfers on regular files.
 
-use alloc::vec::Vec;
 use super::errno;
 use super::handlers;
 use super::iovec_range::{positioned_offset, snapshot_vectors, vector_prefix, IoVec, UIO_MAXIOV};
 use super::userptr::{copy_from_user, read_user_bytes, write_user_prefix};
 use super::SyscallResult;
+use alloc::vec::Vec;
+use crate::ipc::fd::{FileDescriptor, RegularFile};
 use crate::ipc::FdKind;
 
 /// writev(fd, iov, iovcnt) - Write data from multiple buffers
@@ -22,12 +23,18 @@ pub fn sys_writev(fd: u64, iov_ptr: u64, iovcnt: u64) -> SyscallResult {
         Ok((vectors, length)) => (vectors, length as u64),
         Err(error) => return SyscallResult::Err(error),
     };
+    if length == 0 {
+        return SyscallResult::Ok(0);
+    }
+    let entry = super::metadata::descriptor_entry(fd as i32).ok();
+    if let Some(entry) = &entry {
+        if let FdKind::RegularFile(file) = &entry.kind {
+            return transfer_result(write_file_vectors(entry, file, &vectors, length as usize));
+        }
+    }
     if length > 0 && length <= crate::ipc::pipe::PIPE_BUF as u64 {
         // Hold only an owned endpoint snapshot across user copies and waiting.
-        let endpoint = crate::task::scheduler::current_thread_id().and_then(|tid| {
-            let manager = crate::process::manager();
-            let (_, process) = manager.as_ref()?.find_process_by_thread(tid)?;
-            let entry = process.fd_table.get(fd as i32)?;
+        let endpoint = entry.and_then(|entry| {
             match &entry.kind {
                 crate::ipc::FdKind::PipeWrite(buffer)
                 | crate::ipc::FdKind::FifoWrite(_, buffer, _)
@@ -95,13 +102,28 @@ fn user_vectors(ptr: u64, count: u64) -> Result<(Vec<IoVec>, usize), u64> {
     snapshot_vectors(ptr, count, |addr| copy_from_user(addr as *const IoVec))
 }
 
-fn gather(vectors: &[IoVec], len: usize) -> Result<Vec<u8>, u64> {
+fn gather(vectors: &[IoVec], len: usize, allow_prefix: bool) -> Result<Vec<u8>, u64> {
     let mut data = Vec::new();
-    data.try_reserve_exact(len).map_err(|_| errno::ENOMEM as u64)?;
-    data.resize(len, 0);
+    if !allow_prefix {
+        data.try_reserve_exact(len).map_err(|_| errno::ENOMEM as u64)?;
+    }
     for (addr, span) in vector_prefix(vectors, len) {
+        if data.try_reserve(span.len()).is_err() {
+            if allow_prefix && !data.is_empty() {
+                break;
+            }
+            return Err(errno::ENOMEM as u64);
+        }
+        data.resize(span.end, 0);
+        let start = span.start;
         let output = &mut data[span];
-        read_user_bytes(output.as_mut_ptr(), addr, output.len())?;
+        if let Err(error) = read_user_bytes(output.as_mut_ptr(), addr, output.len()) {
+            if allow_prefix && start != 0 {
+                data.truncate(start);
+                break;
+            }
+            return Err(error);
+        }
     }
     Ok(data)
 }
@@ -118,15 +140,62 @@ fn scatter(vectors: &[IoVec], data: &[u8]) -> Result<u64, u64> {
     Ok(data.len() as u64)
 }
 
+fn write_file_vectors(
+    entry: &FileDescriptor,
+    file: &RegularFile,
+    vectors: &[IoVec],
+    len: usize,
+) -> Result<u64, u64> {
+    if !entry.writable() {
+        return Err(errno::EBADF as u64);
+    }
+    let cred = crate::fs::permissions::Credentials::current(false)?;
+    let limit = super::resource::current_fsize();
+    // Copy before entering the cursor gate, retaining the complete-vector
+    // prefix if a later user buffer faults.
+    let data = gather(vectors, len, true)?;
+    handlers::write_regular_file(
+        file,
+        &entry.open_description(),
+        !cred.privileged(),
+        limit,
+        &data,
+        true,
+    )
+}
+
+fn read_file_vectors(
+    entry: &FileDescriptor,
+    file: &RegularFile,
+    ptr: u64,
+    count: u64,
+) -> Result<u64, u64> {
+    let (vectors, len) = user_vectors(ptr, count)?;
+    if len == 0 {
+        return Ok(0);
+    }
+    if !entry.readable() {
+        return Err(errno::EBADF as u64);
+    }
+    // Keep the cursor through scatter so a fault commits only the bytes
+    // delivered to this request.
+    let mut position = file.position.enter()?;
+    let data =
+        handlers::read_positional_file(file.open.fs.as_ref(), &file.open.node, *position, len)?;
+    let copied = scatter(&vectors, &data)?;
+    *position += copied;
+    Ok(copied)
+}
+
 pub fn sys_preadv(fd: i32, ptr: u64, count: i32, offset: i64) -> SyscallResult {
-    positioned_result(transfer_at(fd, ptr, count, offset, false))
+    transfer_result(transfer_at(fd, ptr, count, offset, false))
 }
 
 pub fn sys_pwritev(fd: i32, ptr: u64, count: i32, offset: i64) -> SyscallResult {
-    positioned_result(transfer_at(fd, ptr, count, offset, true))
+    transfer_result(transfer_at(fd, ptr, count, offset, true))
 }
 
-fn positioned_result(result: Result<u64, u64>) -> SyscallResult {
+fn transfer_result(result: Result<u64, u64>) -> SyscallResult {
     match result {
         Ok(count) => SyscallResult::Ok(count),
         Err(error) => SyscallResult::Err(error),
@@ -159,7 +228,7 @@ fn transfer_at(fd: i32, ptr: u64, count: i32, offset: i64, write: bool) -> Resul
     }
     if let Some(file) = userspace {
         return if write {
-            file.pwritev_once(offset, len, |allowed| gather(&vectors, allowed))
+            file.pwritev_once(offset, len, |allowed| gather(&vectors, allowed, false))
         } else {
             scatter(&vectors, &file.preadv_once(offset, len)?)
         };
@@ -176,7 +245,7 @@ fn transfer_at(fd: i32, ptr: u64, count: i32, offset: i64, write: bool) -> Resul
             len,
             super::resource::current_fsize(),
             !cred.privileged(),
-            |allowed| gather(&vectors, allowed),
+            |allowed| gather(&vectors, allowed, false),
         )
     } else {
         scatter(&vectors, &handlers::read_positional_file(fs.as_ref(), &node, offset, len)?)
@@ -196,6 +265,11 @@ pub fn sys_readv(fd: u64, iov_ptr: u64, iovcnt: u64) -> SyscallResult {
     }
     if iov_ptr == 0 {
         return SyscallResult::Err(errno::EFAULT as u64);
+    }
+    if let Ok(entry) = super::metadata::descriptor_entry(fd as i32) {
+        if let FdKind::RegularFile(file) = &entry.kind {
+            return transfer_result(read_file_vectors(&entry, file, iov_ptr, iovcnt));
+        }
     }
 
     let mut total: u64 = 0;

@@ -124,6 +124,7 @@ mod ipc {
             pub fn readable(&self) -> bool { true }
             pub fn writable(&self) -> bool { true }
             pub fn status_flags(&self) -> u32 { self.description.status_flags() }
+            pub fn open_description(&self) -> Arc<OpenFileDescription> { self.description.clone() }
         }
 
         pub fn open(open: OpenFile, flags: u32) -> Result<FileDescriptor, crate::fs::errno::Errno> {
@@ -284,7 +285,7 @@ mod syscall {
             let data = unsafe { std::slice::from_raw_parts(buf as *const u8, count as usize) };
             calls::write(&entry, data)
         }
-        // POSITIONED_HANDLERS
+        // FILE_HANDLERS
     }
     pub mod calls {
         use super::super::*;
@@ -300,12 +301,10 @@ mod syscall {
 
         pub fn write(entry: &FileDescriptor, buffer: &[u8]) -> SyscallResult {
             let FdKind::RegularFile(file) = &entry.kind else { unreachable!() };
-            let file = file.clone();
-            // WRITE_BINDING
-            let unprivileged = true;
-            let size_limit = u64::MAX;
-            let signal_limit = true;
-            // WRITE_ARM
+            match super::handlers::write_regular_file(file, &entry.description, true, u64::MAX, buffer, true) {
+                Ok(bytes) => SyscallResult::Ok(bytes),
+                Err(error) => SyscallResult::Err(error),
+            }
         }
 
         // LSEEK

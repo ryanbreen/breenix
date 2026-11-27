@@ -42,18 +42,6 @@ fn run_fixture(kind: &str, filter: Option<&str>) {
         .split_once("FdKind::RegularFile(file_ref) => {")
         .unwrap()
         .1;
-    let write = between(
-        HANDLERS,
-        "WriteOperation::RegularFile {\n            file,",
-        "\n    };\n    if matches!(result",
-    );
-    let (bindings, write) = write.split_once("} => {").unwrap();
-    let write = write.strip_suffix("\n        }").unwrap();
-    let append = if bindings.contains("description") {
-        "let description = entry.description.clone();"
-    } else {
-        "let append = entry.description.status_flags() & crate::ipc::fd::status_flags::O_APPEND != 0;"
-    };
     let constructor = between(FS, "fn prepare_open_descriptor(", "/// A descriptor slot")
         .split_once("} else {")
         .unwrap()
@@ -94,12 +82,11 @@ fn run_fixture(kind: &str, filter: Option<&str>) {
         .replace("// REGULAR_VARIANT", variant)
         .replace("// CONSTRUCTOR", constructor)
         .replace("// READ_ARM", read)
-        .replace("// WRITE_BINDING", append)
-        .replace("// WRITE_ARM", write)
         .replace(
-            "// POSITIONED_HANDLERS",
+            "// FILE_HANDLERS",
             &format!(
-                "pub(super) fn read_positional_file{}\npub(super) fn write_positional_file{}",
+                "pub(super) fn write_regular_file{}\npub(super) fn read_positional_file{}\npub(super) fn write_positional_file{}",
+                between(HANDLERS, "pub(super) fn write_regular_file", "/// Helper function to write"),
                 between(
                     HANDLERS,
                     "pub(super) fn read_positional_file",
