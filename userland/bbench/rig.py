@@ -546,8 +546,9 @@ class Rig:
         threading.Thread(target=self.endpoint.serve_forever, daemon=True).start()
         self.guests = {}
         self.notes = {system: [] for system in SYSTEMS}
-        # Each guest's root mount line, as the guest reports it.
-        self.roots = {}
+        # Each guest's root mount line, as the guest reports it, by boot number: only
+        # boots whose setup passed, which are the only boots that take samples.
+        self.roots = {system: {} for system in SYSTEMS}
         self.started = datetime.now(timezone.utc).replace(microsecond=0)
 
     def bin(self, system, name):
@@ -577,14 +578,15 @@ class Rig:
         problem = root_problem(system, mounts)
         if problem:
             raise RuntimeError(problem)
-        self.roots[system] = next(line for line in reversed(mounts.splitlines())
-                                  if line.split()[1:2] == ["/"])
+        return next(line for line in reversed(mounts.splitlines()) if line.split()[1:2] == ["/"])
 
     def setup(self, system):
+        """Make a freshly booted guest ready for samples. Its root line is recorded, under
+        its boot number, only once every step has passed."""
         guest = self.guests[system]
         data, reports = self.dirs(system)
         home = guest.home
-        self.check_root(system)
+        root = self.check_root(system)
         guest.ssh(["/bin/mkdir", "-p", f"{home}/bbench/bin", data, reports, f"{home}/bbench/net"])
         if system == "breenix":
             for source, name in ((BREENIX_RELEASE / "bbench", "bbench"),
@@ -618,6 +620,7 @@ class Rig:
                            ["fixture", fixture, FIXTURE_BYTES])
         if made["error"]:
             raise RuntimeError(f"{system}: fixture: {made['error']}")
+        self.roots[system][guest.boots] = root
 
     def sync_source(self, guest):
         manifest = tomllib.loads((ROOT / "libs/libbreenix/Cargo.toml").read_text())
@@ -796,8 +799,12 @@ class Rig:
         try:
             guest.start()
             self.setup(system)
-        except RuntimeError as error:
+        except (RuntimeError, subprocess.TimeoutExpired) as error:
+            # A guest that is up but not set up must not take samples: stop it, so
+            # sample() records the attempt as lost.
             print(f"{system}: restart failed: {error}", flush=True)
+            self.notes[system].append(f"boot {guest.boots} failed setup and was stopped")
+            guest.stop()
 
     def serial_tail(self, system):
         path = self.run_dir / f"serial-{system}-{self.guests[system].boots}.txt"
@@ -928,7 +935,7 @@ class Rig:
             "tcpCounters": {"atBoot": before, "afterNetworkRows": after},
             "notes": self.notes[system], "facts": facts,
             "rootFilesystem": {"filesystem": ROOT_CACHE[system],
-                               "mount": getattr(self, "roots", {}).get(system)},
+                               "mounts": getattr(self, "roots", {}).get(system, {})},
         }
         if system == "linux":
             provenance["image"] = PIN
