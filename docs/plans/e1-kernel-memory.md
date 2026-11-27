@@ -465,8 +465,23 @@ Bonwick and Adams 2001.
   - vmap window: 4 × RAM;
   - stack window (E1-9): reserved for kernel stacks.
   VA is plentiful: the 48-bit kernel half is 128 TiB, and a window costs no memory until it is mapped.
-- x86-64 maps into them with the existing `map_kernel_page` and `unmap_kernel_page`
-  (`kernel_page_table.rs:132`, `:295`), which share the kernel half through the master PML4.
+  The direct map (RAM), span window (RAM) and vmap window (4 × RAM) together take about 6 × RAM of it,
+  which is the bound section 9 names.
+- x86-64 does not map the windows through `map_kernel_page` (`kernel_page_table.rs:132`). That function
+  points each upper-half PML4 slot it touches, other than 402 and 403, at one shared `KERNEL_PDPT_FRAME` (lines 170-191),
+  so addresses that differ only in their PML4 index alias each other and the whole upper half has 512 GiB
+  of unique space. The vmap window alone fills that at 128 GiB of RAM. It also walks and fills the tables
+  with no lock, so two first mappings under one empty PD entry can each install a table and one is lost.
+  E1-5 instead gives the windows their own slots:
+  - each window takes ceil(size / 512 GiB) PML4 slots of its own, each with its own PDPT, installed in the
+    master PML4 at boot. That happens before the first process is created, because
+    `ProcessPageTable::new` copies PML4[256..512] from the master once (`process_memory.rs:1098-1107`), so
+    a slot added later would be missing from existing address spaces;
+  - a window mapper walks from the window's own PDPT and does not write PML4 entries after boot;
+  - an intermediate table is installed by a compare-exchange of the empty entry. The loser returns its
+    zeroed page and uses the winner's. Leaf entries need no lock: the VA allocator gives each range to
+    one owner.
+  `map_kernel_page`'s aliasing stays for its existing callers, and E1-5 does not widen its use.
 - ARM64 has no TTBR1 page mapper today (`arch_impl/aarch64/mmu.rs` holds the boot-time block tables only).
   E1-5 adds one.
   - It installs table pages from the page layer, then 4 KiB or 2 MiB descriptors into invalid entries, then
@@ -652,7 +667,9 @@ What remains is constant by design and is not a RAM limit:
 - the 30-bit generation, which wraps exactly as today (`& 0x3fff_ffff`);
 - the per-CPU batch bounds.
 
-The 48-bit kernel VA half (128 TiB) bounds the windows. Supporting more than that is a 5-level paging (x86)
+The 48-bit kernel VA half (128 TiB) bounds the windows. The direct map, span and vmap windows take about
+6 × RAM of it (6.5), which is about 21 TiB of RAM; x86 also needs one PML4 slot per 512 GiB of window.
+Supporting more than that is a 5-level paging (x86)
 or 52-bit VA (ARM64) question, outside E1.
 
 ## 10. Sources
@@ -803,8 +820,8 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
 ### E1-5: kernel VA windows
 
 - Change: the span, vmap and stack windows (6.5), with a VA allocator per window.
-  - x86-64 uses `map_kernel_page` and `unmap_kernel_page`, with a pending-unmap list flushed through
-    `memory/tlb.rs`.
+  - x86-64 uses a window mapper over dedicated PML4 slots and PDPTs installed at boot (6.5), with
+    compare-exchange table installs, and a pending-unmap list flushed through `memory/tlb.rs`.
   - ARM64 gets a TTBR1 4 KiB and 2 MiB mapper with `tlbi vaae1is` on unmap.
   - Only this PR's own self-check at init uses the windows yet.
 - x86-64: kernel-half table pages for the windows are allocated on first use.
@@ -814,6 +831,15 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
     not returned before a flush that covers it (check first: the model's naive "free on unmap" variant
     fails this).
   - A mapping that runs out of table pages part way unwinds, leaving no partial mapping.
+  - Check first, address space: the existing x86 index selection (`map_kernel_page`'s PML4/PDPT choice,
+    lines 165-191) is extracted unchanged into a pure function and given two addresses that differ only in
+    their PML4 index (any two slots other than 402 and 403). It returns the same PDPT and PDPT index for
+    both, which is red: the two windows alias. The window mapper resolves them to distinct entries, and a
+    window of 4 × 128 GiB gets four slots.
+  - Check first, table install: two simulated CPUs make first mappings under the same empty PD entry, in
+    the fixed order read-empty (CPU 0), read-empty (CPU 1), install (CPU 0), install (CPU 1). On the
+    extracted old walk CPU 0's page table is overwritten and its leaf is lost, which is red. With the
+    compare-exchange install both leaves are present and one table page is returned.
   - Free-extent tree: allocations do not overlap and each keeps a guard page; freed extents coalesce;
     exhausting the window returns `NoVa`.
 - Boot: one ARM64 QEMU boot of the boot-path gate. That the new TTBR1 mapper's descriptors and TLB maintenance work on the CPU
