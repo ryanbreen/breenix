@@ -204,29 +204,39 @@ glue: locks, interrupt masking, the direct map and page tables.
   carving another page if the firmware describes more. Building it takes two passes over the firmware
   description: the first finds the largest range, and the second fills the set.
 - A boot carve takes `(bytes, align, below)` and removes the highest fitting run from the range set. It
-  feeds the metadata arrays (4.2), the section table, and ARM64's extra direct-map tables (4.4). It returns
+  feeds the metadata pages, section descriptors and directory (4.2), and ARM64's extra direct-map tables (4.4). It returns
   an error instead of panicking. A boot that cannot carve its metadata still stops, at an explicit
   `expect` naming the shortfall.
 - After the buddy allocator is seeded (5.1), the carve is closed. The range set is not allocated from again.
 
 ### 4.2 Frame metadata sections
 
-- Physical memory is described in sections of 2^15 frames (128 MiB, aligned).
-- A section that holds any usable RAM gets one metadata array of 2^15 entries, carved from that section's
-  own RAM where the section can spare it, and from the nearest larger section otherwise.
-- A section table holds one pointer per 128 MiB of physical address space, up to the highest usable frame.
-  It is carved at boot.
-- Lookup is `pfn >> 15` into the section table, then `pfn & 0x7fff` into the array: two loads, O(1).
-  `frame_ordinal`'s O(regions) scan goes.
+- Each piece of the metadata fits in one contiguous 4 KiB page, and address-space holes cost
+  0 bytes below the top level. A sparse map can have ample RAM in total and still no 1 MiB run to spare, so
+  a design that needs a contiguous array per section can fail to place it. A flat table indexed by
+  section also grows with the highest address, holes included.
+- Metadata pages: one 4 KiB page holds 4096 / `size_of::<FrameMeta>()` entries (128 at 32 bytes), so it
+  describes 512 KiB of physical address space. A metadata page exists only where that 512 KiB holds
+  usable RAM. Each page is carved separately and can come from any range the direct map covers (4.4).
+- Sections of 2^15 frames (128 MiB, aligned): a section that holds any usable RAM has one 2 KiB descriptor,
+  an array of 256 pointers to its metadata pages. A null pointer means "no RAM here".
+- The directory is two-level and sparse:
+  - a root with one 8-byte entry per 64 GiB of physical address space, up to the highest usable frame;
+  - leaf pages of 512 section-descriptor pointers, present only for a 64 GiB span that holds RAM.
+- Lookup: `root[pfn >> 24]`, then `leaf[(pfn >> 15) & 511]`, then `section[(pfn >> 7) & 255]`, then
+  `page[pfn & 127]`. That is four dependent loads, O(1), each in a structure that is at most one page. A
+  null at any level is `RefusedUntracked`. `frame_ordinal`'s O(regions) scan goes.
 - Sizes:
-  - an entry is 32 bytes, so metadata is 0.78% of RAM;
-  - a section costs 1 MiB;
-  - holes cost 8 bytes of section table per 128 MiB of address space;
-  - a section that is only partly RAM still costs its full 1 MiB.
+  - an entry is 32 bytes, so metadata is 0.78% of the RAM it describes, rounded up to 512 KiB per range edge;
+  - a section with RAM adds a 2 KiB descriptor (0.0016% of 128 MiB);
+  - a 64 GiB span with RAM adds one 4 KiB leaf page;
+  - holes cost 8 bytes of root per 64 GiB of address space and 0 bytes below it. A machine whose highest
+    frame is at 256 TiB has a 32 KiB root.
 - Worked numbers:
-  - the 512 MiB QEMU rig: 4 sections, 4 MiB of metadata. Today's ledger and free-list capacity for those
-    131,072 frames take up to about 2.5 MiB of the heap;
-  - the R240's 8 GiB: about 64 MiB of metadata outside the heap. Today it is up to 40-48 MiB inside it.
+  - the 512 MiB QEMU rig: 4 sections, 4 MiB of metadata pages, 8 KiB of descriptors and one leaf page.
+    Today's ledger and free-list capacity for those 131,072 frames take up to about 2.5 MiB of the heap;
+  - the R240's 8 GiB: about 64 MiB of metadata pages and about 128 KiB of descriptors, outside the heap.
+    Today it is up to 40-48 MiB inside it.
   - 32 bytes is more than today's 12-byte slot plus 8 bytes of list capacity. It buys O(1) buddy links and
     a slab back-pointer, and it scales with RAM instead of with a fixed heap.
 
@@ -249,7 +259,7 @@ The lease rules carry over word for word:
 - A claim moves `ST_NEVER` or `ST_FREE` to `ST_ALLOCATED` and increments the generation in one CAS, then issues
   `FrameLease { pfn, generation }`. The index becomes the pfn (u64) instead of the ordinal (u32).
 - A return with a lease whose generation does not match is `RefusedStale`. A return on `ST_FREE` is
-  `RefusedDoubleRelease`. On `ST_NEVER` it is `RefusedNeverAllocated`. A frame outside any section is
+  `RefusedDoubleRelease`. On `ST_NEVER` it is `RefusedNeverAllocated`. A frame with no metadata page is
   `RefusedUntracked`. A frame with live leaf references is `RefusedLiveLeaf`. Each refusal leaks the frame
   and counts it, as now.
 - A frame in a per-CPU cache or on a buddy list is `ST_FREE` in `state_gen`; `flags` says where.
@@ -279,7 +289,7 @@ The lease rules carry over word for word:
 - `EXTERNAL_LEAF_SPANS` is deleted (section 1.1: no code writes it). `register_external_leaf_frame`, which
   marks RAM frames, is unchanged.
 
-The census walks the sections instead of the chunks. `/proc/breenix/frames` keeps its lines and owner set.
+The census walks the directory instead of the chunks. `/proc/breenix/frames` keeps its lines and owner set.
 Zone, order and per-CPU cache counts go in a new `/proc/breenix/kmem`.
 
 ### 4.4 The direct map covers the described RAM (ARM64)
@@ -405,7 +415,7 @@ pageblocks. That is what leaves contiguous runs available long after boot.
 ### 5.7 Room for E3 and for swap
 
 - `FrameMeta` grows to 64 bytes when E3 adds the page cache's owner object, index, LRU links, flags and
-  reference count. The sections are sized by `size_of::<FrameMeta>()`, so that is one constant. The cost is
+  reference count. The entries per metadata page and the section descriptor length follow from `size_of::<FrameMeta>()`, so that is one constant (64 entries per page and 512 pointers per descriptor at 64 bytes). The cost is
   1.56% of RAM.
 - The reclaim registry (7.3) has a context argument that E2 extends with "may sleep" and "may do I/O", and
   E3 with "may write back". Swap would be one more shrinker over anonymous pages, plus its own on-disk
@@ -710,7 +720,7 @@ heap OOM (audit section 4).
 | 64 MiB x86 heap; 64-128 MiB ARM64 heap | The heap grows from frames until memory runs out, then fails with an error after reclaim |
 | `MAX_REGIONS` = 128 memory-map regions | A range set that grows as needed (4.1) |
 | ARM64 RAM above 4 GiB unused (`DIRECT_MAP_RAM_END`) | The direct map covers the described RAM (4.4) |
-| `MAX_TRACKED_FRAMES` = u32::MAX frames (16 TiB) through u32 ordinals | u64 pfns and a section table sized from the highest frame (4.2) |
+| `MAX_TRACKED_FRAMES` = u32::MAX frames (16 TiB) through u32 ordinals | u64 pfns and a sparse two-level directory whose only address-sized part is 8 bytes per 64 GiB (4.2) |
 | Frame metadata inside the heap | Metadata from frames, 0.78% of RAM (4.2) |
 | Contiguous runs only at the frontier | Buddy runs up to 1 GiB at any time (5.1, 5.6) |
 | Kernel stacks: x86 fixed window (about 990), ARM64 32 MiB pool (about 480) | Stacks from the buddy in a stack window sized from RAM (E1-9) |
@@ -837,7 +847,7 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
 ### E1-3: frame metadata sections replace the heap ledger
 
 - Change:
-  - `FrameMeta` (4.3) in per-section arrays from the carve, before the heap exists;
+  - `FrameMeta` (4.3) in separately carved 4 KiB metadata pages under the sparse directory, before the heap exists;
   - the lease and refusal logic moves verbatim into a pure `memory/frame_meta.rs` over the array;
   - `frame_ordinal` becomes a pfn split;
   - the LIFO free list is threaded through `FrameMeta.use`, so the `Vec`, its capacity reservation and
@@ -858,6 +868,11 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
   - Check first: the old ledger built under a host allocator that fails returns `Err` (red). The new arrays
     come from carved ranges and need no allocator.
   - Lookup: a pfn in a section hole is untracked; each pfn in RAM maps to exactly one entry.
+  - Sparse placement: a fixed map of 64 ranges of 768 KiB each, with the ranges spread across 1 TiB of
+    address space. No range is 1 MiB long, so a layout that needs a contiguous 1 MiB array per section
+    fits in 0 of the 64 ranges. The page-granular layout places the metadata (at most 192 pages), and its
+    directory and descriptors total under 200 KiB: a 128-byte root, at most 16 leaf pages and at most 64
+    descriptors. Each RAM pfn resolves, and each hole pfn is untracked.
 - Boot: one ARM64 QEMU boot of the boot-path gate (`--features testing`). The change reorders boot memory
   initialisation, which is publication order that host tests cannot settle. Cases: the boot-path milestone
   stages and the frame census.
