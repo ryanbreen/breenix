@@ -42,6 +42,11 @@ def redact(value):
     return value
 
 
+def failures(samples):
+    """The distinct errors of a row's failed attempts, in the order they happened."""
+    return list(dict.fromkeys(sample["error"] for sample in samples if sample["error"]))
+
+
 def series_rows(groups, system, target, deferred=None, cache=None):
     """Yield the rows. `deferred` maps a case a system cannot run to the reason;
     `cache` maps a case to text appended to its rows' cache description."""
@@ -55,9 +60,14 @@ def series_rows(groups, system, target, deferred=None, cache=None):
         reason = None
         if times:
             state = "measured"
+            errors = failures(samples)
+            if errors:
+                # A partly measured row says why its other attempts gave no time.
+                reason = (f"{len(samples) - len(times)} of {len(samples)} attempts failed: "
+                          + ", ".join(errors))
         elif samples:
             state = "failed"
-            reason = ", ".join(dict.fromkeys(sample["error"] for sample in samples))
+            reason = ", ".join(failures(samples))
         elif row.case == "cargo-noop" and seed_failure:
             state = "failed"
             reason = f"Cargo no-op setup: {seed_failure}"
@@ -165,22 +175,25 @@ def atomic_write(directory, path, encoded):
 def write_series(directory, series_id, at, metadata, groups, deferred=None, provenance=None,
                  cache=None):
     """Write `<series_id>.series.json`, and its provenance sidecar when there is
-    provenance or a field had to be shortened. Refuses to write a series Vigil
-    would refuse."""
+    provenance, a failed attempt or a field that had to be shortened. Refuses to
+    write a series Vigil would refuse."""
     series = {
         "version": 1, "id": series_id, "at": at, **metadata,
         "rows": list(series_rows(groups, metadata["system"], metadata["target"], deferred,
                                  cache)),
     }
     sidecar_name = f"{series_id}.provenance.json"
-    shortened = fit_series(series, sidecar_name, provenance is not None)
+    # Every failed attempt's error, by row, in full: a measured row's too.
+    failed = {row.id: failures(groups.get(row.case, [])) for row in ROWS}
+    failed = {row_id: errors for row_id, errors in failed.items() if errors}
+    shortened = fit_series(series, sidecar_name, provenance is not None or bool(failed))
     problems = vigil_rules.problems(series)
     if problems:
         raise ValueError(f"series {series_id} would be refused by Vigil: {'; '.join(problems)}")
     directory.mkdir(parents=True, exist_ok=True)
-    if provenance is not None or shortened:
+    if provenance is not None or shortened or failed:
         sidecar = redact({"version": 1, "series": series_id, "provenance": provenance or {},
-                          "shortened": shortened})
+                          "failures": failed, "shortened": shortened})
         atomic_write(directory, directory / sidecar_name,
                      json.dumps(sidecar, indent=2, allow_nan=False) + "\n")
     path = directory / f"{series_id}.series.json"
