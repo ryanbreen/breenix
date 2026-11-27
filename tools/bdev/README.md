@@ -1,8 +1,48 @@
-# On-box builds
+# On-box builds and tests
 
 Install the Mac driver with `cargo install --locked --path tools/bdev`.
-From a Breenix checkout, configure the SSH login, the absolute source
-directory on the box and a separate cache directory on the box.
+It is written in Rust to reuse the existing source snapshot and bsync engine.
+
+For tests, create `~/.config/breenix-devbox/bdev.json` with the alias from
+your OpenSSH config and the absolute path to the dedicated source mirror
+on the box. Replace the example path with your remote home path.
+
+```json
+{
+  "host": "devbox",
+  "source": "/REMOTE/HOME/src/breenix"
+}
+```
+
+Set `"jump": "bastion"` to use the specified OpenSSH bastion alias via
+ProxyJump, or set ProxyJump in the alias's OpenSSH config. An alternate
+OpenSSH configuration file can be specified with `ssh_config` in the
+JSON. To use a different bdev configuration, pass `--config FILE` before
+`test`. The remote PATH must contain the JSON-capable btest binary.
+
+From a Breenix checkout:
+
+```sh
+bdev test yes
+bdev test --changed
+```
+
+`--changed` uses `git diff --name-only origin/main...HEAD` and includes
+uncommitted paths. Mac-side Cargo metadata maps those paths to suites
+and follows transitive path dependencies. Workspace manifest, lockfile
+and bu-sys changes select all available suites. With no selected suites,
+the command exits successfully without connecting. The explicit form
+accepts multiple packages and sends them in one btest invocation.
+
+The test command holds a local workspace lock and uses a single SSH
+ControlMaster for bsync, stamp publication and btest. It mirrors
+deletions inside the listed roots, streams JSON case lines and the final
+summary, and saves the summary to
+`~/Library/Caches/breenix-devbox/runs/<utc-seconds>-<nanoseconds>.json`.
+The exit status comes from btest. Cargo builds and cases run on the box.
+
+For standalone source sync and self-host builds, specify the SSH login,
+the absolute source directory on the box and a separate remote cache.
 
 ```sh
 bdev --host "$BOX_LOGIN" --source "$BOX_SOURCE" --cache "$BOX_CACHE" sync

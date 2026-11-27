@@ -4,11 +4,11 @@ use bu_case::{identifier, json::Json, Suite};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs::{self, File, OpenOptions, Permissions};
-use std::io::{self, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::os::fd::AsFd;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::process::{self, Command, ExitCode};
+use std::process::{self, Command, ExitCode, Stdio};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 const USAGE: &str = "Usage: btest run <prog>...";
@@ -22,9 +22,16 @@ fn main() -> ExitCode {
             println!("{USAGE}");
             ExitCode::SUCCESS
         }
-        [action, packages @ ..] if action == "run" && !packages.is_empty() => report(packages),
-        [action, stage, id] if action == "__case-supervisor" && identifier(id) => {
-            match cases::supervisor(Path::new(stage), id) {
+        [action, args @ ..] if action == "run" && !args.is_empty() => {
+            let json = args.last().is_some_and(|arg| arg == "--json");
+            report(&args[..args.len() - usize::from(json)], json)
+        }
+        [action, stage, id, options @ ..]
+            if action == "__case-supervisor"
+                && identifier(id)
+                && (options.is_empty() || options == ["--json"]) =>
+        {
+            match cases::supervisor(Path::new(stage), id, !options.is_empty()) {
                 Ok(result) => {
                     println!("{result}");
                     ExitCode::SUCCESS
@@ -42,7 +49,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn report(packages: &[String]) -> ExitCode {
+fn report(packages: &[String], json: bool) -> ExitCode {
     let started = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("clock before epoch");
@@ -72,7 +79,7 @@ fn report(packages: &[String]) -> ExitCode {
     let mut code = match lock
         .as_ref()
         .map_err(Clone::clone)
-        .and_then(|_| run(packages, &id))
+        .and_then(|_| run(packages, &id, json))
     {
         Ok(run) => {
             fields.insert("suites".into(), Json::Array(run.suites));
@@ -134,7 +141,10 @@ struct Run {
     failed: bool,
 }
 
-fn run(packages: &[String], id: &str) -> Result<Run, String> {
+fn run(packages: &[String], id: &str, json: bool) -> Result<Run, String> {
+    if packages.is_empty() {
+        return Err(USAGE.into());
+    }
     let mut seen = BTreeSet::new();
     for package in packages {
         if !identifier(package) || !seen.insert(package) {
@@ -236,7 +246,7 @@ fn run(packages: &[String], id: &str) -> Result<Run, String> {
             Ok(digest) => {
                 build.insert("status".into(), "ok".into());
                 build.insert("sha256".into(), digest.into());
-                match run_suite(&dir, &suite, &binary, id) {
+                match run_suite(&dir, &suite, &binary, id, json) {
                     Ok(cases) => {
                         failed |= !matches!(cases.get("failed"), Some(Json::Number(n)) if n == "0");
                         result.extend(cases);
@@ -302,6 +312,7 @@ fn run_suite(
     suite: &Suite,
     binary: &Path,
     id: &str,
+    json: bool,
 ) -> Result<BTreeMap<String, Json>, String> {
     let parent = Path::new(STATE)
         .join("stage")
@@ -341,28 +352,59 @@ fn run_suite(
     copy(binary, &staged_bin.join(&suite.binary), 0o555)?;
     // Stock wheel policy permits root. The second sudo uses that policy's
     // root path to drop every credential before executing the supervisor.
-    let output = Command::new("/usr/bin/sudo")
+    let mut command = Command::new("/usr/bin/sudo");
+    command
         .current_dir("/")
         .args(["-n", "/usr/bin/sudo", "-n", "-u", "btest"])
         .arg(supervisor)
         .arg("__case-supervisor")
         .arg(&stage.0)
-        .arg(id)
-        .output()
+        .arg(id);
+    if json {
+        command.arg("--json");
+    }
+    let mut child = command
+        .stdout(Stdio::piped())
+        .spawn()
         .map_err(|e| format!("launch btest account: {e}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "case supervisor {}: {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
+    let result = read_cases(BufReader::new(child.stdout.take().unwrap()));
+    let status = child
+        .wait()
+        .map_err(|e| format!("wait for case supervisor: {e}"))?;
+    if !status.success() {
+        return Err(format!("case supervisor {status}"));
     }
-    let text =
-        std::str::from_utf8(&output.stdout).map_err(|e| format!("invalid case result: {e}"))?;
-    match Json::parse(text)? {
-        Json::Object(fields) => Ok(fields),
-        _ => Err("case supervisor result must be an object".into()),
+    result
+}
+
+fn read_cases(stdout: impl BufRead) -> Result<BTreeMap<String, Json>, String> {
+    let mut result = None;
+    let mut stream_error = None;
+    for line in stdout.lines() {
+        let line = line.map_err(|e| format!("read case result: {e}"))?;
+        match Json::parse(&line) {
+            Ok(Json::Object(fields)) if matches!(fields.get("kind"), Some(Json::String(kind)) if kind == "case") => {
+                if let Err(error) = write_case_line(&line) {
+                    stream_error.get_or_insert(error);
+                }
+            }
+            Ok(Json::Object(fields)) if result.is_none() => result = Some(fields),
+            _ => {
+                stream_error.get_or_insert_with(|| "invalid case supervisor result".into());
+            }
+        }
     }
+    if let Some(error) = stream_error {
+        return Err(error);
+    }
+    result.ok_or_else(|| "missing case supervisor result".into())
+}
+
+fn write_case_line(line: &str) -> Result<(), String> {
+    let mut stdout = io::stdout().lock();
+    writeln!(stdout, "{line}")
+        .and_then(|()| stdout.flush())
+        .map_err(|e| format!("write case line: {e}"))
 }
 
 fn stage_dir(path: &Path) -> Result<(), String> {

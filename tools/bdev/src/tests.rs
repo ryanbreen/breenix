@@ -209,6 +209,7 @@ fn ssh_exec_starts_with_a_bare_program() {
         source: "/work/src/breenix",
         cache: "/work/.cache/btest",
         ssh_program: Path::new("/usr/bin/ssh"),
+        ssh_args: &[],
     };
     let command = remote.ssh(&["/bin/env", "-i", "RUSTFLAGS=one two"]);
     assert_eq!(
@@ -235,6 +236,7 @@ fn interrupted_transfer_invalidates_stamp_before_writes() {
         source: source.to_str().unwrap(),
         cache: cache.to_str().unwrap(),
         ssh_program: &ssh_program,
+        ssh_args: &[],
     };
     let stamp = source.join(STAMP);
     let old_stamp =
@@ -269,6 +271,7 @@ fn changed_paths_select_only_suites_reached_by_the_synced_sources() {
     for path in [
         "userland/yes/src/main.rs",
         "userland/yes/suite/manifest.json",
+        "userland/cat/src/main.rs",
         "userland/cat/suite/manifest.json",
         "userland/crates/bu-format/src/lib.rs",
         "libs/format/src/lib.rs",
@@ -279,6 +282,42 @@ fn changed_paths_select_only_suites_reached_by_the_synced_sources() {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, "old").unwrap();
     }
+    fs::write(
+        checkout.join("userland/Cargo.toml"),
+        "[workspace]\nresolver = \"2\"\nmembers = [\"yes\", \"cat\", \"crates/bu-format\"]\n",
+    )
+    .unwrap();
+    for (dir, name, dependency) in [
+        (
+            "userland/yes",
+            "yes",
+            "bu-format = {path = \"../crates/bu-format\"}",
+        ),
+        ("userland/cat", "cat", ""),
+        (
+            "userland/crates/bu-format",
+            "bu-format",
+            "format = {path = \"../../../libs/format\"}",
+        ),
+        ("libs/format", "format", ""),
+    ] {
+        fs::write(
+            checkout.join(dir).join("Cargo.toml"),
+            format!(
+                "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n[dependencies]\n{dependency}\n"
+            ),
+        )
+        .unwrap();
+    }
+    super::checked(
+        Command::new("cargo")
+            .current_dir(checkout.join("userland"))
+            .args(["generate-lockfile", "--offline"])
+            .output()
+            .unwrap(),
+        "fixture Cargo lockfile",
+    )
+    .unwrap();
     git(&["add", "."]);
     git(&[
         "-c",
@@ -302,7 +341,7 @@ fn changed_paths_select_only_suites_reached_by_the_synced_sources() {
         "-qm",
         "changes",
     ]);
-    fs::remove_file(checkout.join("userland/yes/src/main.rs")).unwrap();
+    fs::write(checkout.join("userland/yes/src/helper.rs"), "untracked").unwrap();
     fs::write(checkout.join("libs/format-extra/src/new.rs"), "untracked").unwrap();
 
     let paths = crate::testing::changed_paths(&checkout).unwrap();
@@ -312,23 +351,20 @@ fn changed_paths_select_only_suites_reached_by_the_synced_sources() {
             "kernel/src/main.rs",
             "libs/format-extra/src/new.rs",
             "libs/format/src/lib.rs",
-            "userland/yes/src/main.rs",
+            "userland/yes/src/helper.rs",
         ]
     );
-    let roots = BTreeSet::from(["userland".into(), "libs/format".into()]);
-    let suites = BTreeMap::from([
-        ("cat".into(), BTreeSet::from(["userland/cat".into()])),
-        (
-            "yes".into(),
-            BTreeSet::from([
-                "userland/yes".into(),
-                "userland/crates/bu-format".into(),
-                "libs/format".into(),
-            ]),
-        ),
-    ]);
-    let select = |paths| crate::testing::select_suites(paths, &roots, &suites).unwrap();
+    let layout = SyncManifest::load().unwrap().layout(&checkout).unwrap();
+    assert!(layout.roots.contains("libs/format"));
+    assert!(!layout.roots.contains("libs/format-extra"));
+    let select = |paths: &BTreeSet<String>| {
+        crate::testing::select_suites(paths, &layout.roots, &layout.suites).unwrap()
+    };
     assert_eq!(select(&paths), ["yes"]);
+    assert_eq!(
+        select(&BTreeSet::from(["libs/format/src/lib.rs".into()])),
+        ["yes"]
+    );
     assert!(select(&BTreeSet::from([
         "libs/format-extra/src/new.rs".into(),
         "userland/yes/.cargo/config.toml".into()
@@ -347,7 +383,7 @@ fn successful_sync_publishes_the_stamp_after_transfer() {
     let script = files.path().join("ssh");
     fs::write(
         &script,
-        "#!/bin/sh\nfor request do :; done\ncase \"$request\" in\n/bin/bput*) set -- ${request}; dest=${2#\'}; dest=${dest%\'}; cat > \"$dest\";;\n*) exec /bin/sh -c \"$request\";;\nesac\n",
+        "#!/bin/sh\nfor request do :; done\ncase \"$request\" in\n/bin/bput*) eval \"set -- ${request#/bin/bput }\"; cat > \"$1\";;\n*) exec /bin/sh -c \"$request\";;\nesac\n",
     ).unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
     let remote = BoxPaths {
