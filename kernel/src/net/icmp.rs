@@ -29,6 +29,9 @@ pub const ICMP_HEADER_SIZE: usize = 8;
 // TCP data sent by this stack has a base IPv4 header and a base TCP header.
 const TCP_IPV4_HEADERS: u16 = ipv4::IPV4_HEADER_MIN_SIZE as u16 + 20;
 const MIN_IPV4_MTU: u16 = 68;
+// Keep ICMP-driven TCP sizing at or above the default IPv4 path MTU floor
+// used by Linux. The wire minimum still determines whether a report is valid.
+const MIN_TCP_PATH_MTU: u16 = 552;
 
 /// An IPv4 fragmentation-needed report quoting a TCP segment.
 #[derive(Clone, Copy, Debug)]
@@ -81,7 +84,7 @@ impl TcpMtuQuote {
     ) -> Option<u16> {
         let offset = self.sequence.wrapping_sub(first_unacked) as usize;
         let quoted_data = self.packet_len.checked_sub(TCP_IPV4_HEADERS)?;
-        let candidate = self.next_hop_mtu.checked_sub(TCP_IPV4_HEADERS)?;
+        let candidate = self.next_hop_mtu.max(MIN_TCP_PATH_MTU) - TCP_IPV4_HEADERS;
         if offset < outstanding
             && usize::from(quoted_data) <= outstanding - offset
             && quoted_data <= current_mss

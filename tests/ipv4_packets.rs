@@ -205,6 +205,18 @@ fn tcp_fragmentation_needed_quote_reduces_the_matching_segment_size() {
 }
 
 #[test]
+fn tcp_fragmentation_needed_clamps_to_the_path_mtu_floor() {
+    for (mtu, expected_mss) in [(68, 512), (551, 512), (552, 512), (553, 513)] {
+        let quote = deliver_tcp_mtu_quote(mtu, 4, 0x4000, 28).expect("valid short TCP quote");
+        assert_eq!(
+            quote.smaller_mss(1460, 2, 1460),
+            Some(expected_mss),
+            "reported MTU {mtu}"
+        );
+    }
+}
+
+#[test]
 fn tcp_fragmentation_needed_rejects_unusable_reports() {
     for (mtu, code, flags, len) in [
         (1436, 3, 0x4000, 28),
