@@ -209,12 +209,21 @@ pub(super) fn test(config_path: Option<&Path>, selectors: &[String]) -> Result<E
 
     let checkout = String::from_utf8(git(Path::new("."), &["rev-parse", "--show-toplevel"])?)?;
     let checkout = Path::new(checkout.trim_end_matches('\n'));
+    if !checkout.join("userland/Cargo.toml").is_file() {
+        return Err("missing local workspace manifest userland/Cargo.toml".into());
+    }
     let state = super::git_state(checkout)?;
     let manifest = SyncManifest::load()?;
     let layout = manifest.layout(checkout)?;
     let programs = if changed {
         select_suites(&changed_paths(checkout)?, &layout.roots, &layout.suites)?
     } else {
+        if let Some(program) = selectors
+            .iter()
+            .find(|program| !layout.suites.contains_key(*program))
+        {
+            return Err(format!("no local btest suite for package {program:?}").into());
+        }
         selectors.to_vec()
     };
     if programs.is_empty() {

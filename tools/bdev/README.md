@@ -33,8 +33,9 @@ bdev test --changed
 uncommitted paths. Mac-side Cargo metadata maps those paths to suites
 and follows transitive path dependencies. Workspace manifest, lockfile
 and bu-sys changes select the full set of available suites. With no selected suites,
-the command exits successfully without connecting. The explicit form
-accepts multiple packages and sends them in one btest invocation.
+the command exits successfully without connecting. Both forms require a local
+`userland/Cargo.toml`. The explicit form requires a local suite for each requested
+package and sends the packages in one btest invocation.
 
 The test command holds a local workspace lock and uses a single SSH
 ControlMaster for bsync, stamp publication and btest. It mirrors
