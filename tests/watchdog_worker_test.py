@@ -8,6 +8,84 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class WatchdogWorker(unittest.TestCase):
+    def test_kcs_feeder_survives_busy_root_only_in_production(self):
+        path = ROOT / 'kernel/src/drivers/watchdog.rs'
+        source = path.read_text()
+        imports = next(line for line in source.splitlines() if line.startswith('use policy'))
+        worker = source[source.index('fn run(port:'):source.index('pub fn start()')]
+        harness = r'''
+use std::cell::Cell;
+#[path = "WATCHDOG_ROUND"] mod round;
+
+thread_local! {
+    static NOW: Cell<u64> = const { Cell::new(0) };
+    static LAST_FEED: Cell<Option<u64>> = const { Cell::new(None) };
+    static EXPIRED: Cell<bool> = const { Cell::new(false) };
+}
+mod policy {
+    pub use super::round::{feed, Transport};
+    #[allow(dead_code)]
+    pub fn health() -> Result<(), &'static str> {
+        if super::NOW.with(|v| v.get()) == 0 { Ok(()) } else { Err("busy root") }
+    }
+    pub fn wait(ms: u64) -> Result<(), &'static str> {
+        let now = super::NOW.with(|v| { v.set(v.get() + ms); v.get() });
+        if super::LAST_FEED.with(|v| v.get().is_some_and(|fed| now - fed >= 120_000)) {
+            super::EXPIRED.with(|v| v.set(true));
+        }
+        if now < 180_000 { Ok(()) } else { Err("end of simulation") }
+    }
+}
+#[macro_export]
+macro_rules! serial_println {
+    ($($arg:tt)*) => { println!($($arg)*) }
+}
+struct Kcs { running: bool }
+impl Kcs {
+    fn new(_: u32) -> Self { Self { running: false } }
+    fn request(&mut self, command: u8, data: &[u8]) -> Result<([u8; 32], usize), &'static str> {
+        assert_eq!(command, 1);
+        assert!(data.is_empty());
+        Ok(([0; 32], 14))
+    }
+    fn get(&mut self) -> Result<[u8; 8], &'static str> {
+        let mut timer = [0; 8];
+        timer[0] = u8::from(self.running);
+        Ok(timer)
+    }
+}
+impl policy::Transport for Kcs {
+    type State = [u8; 8];
+    fn configured(state: &Self::State) -> bool { state[0] != 0 }
+    fn get(&mut self) -> Result<Self::State, &'static str> { Kcs::get(self) }
+    fn set(&mut self) -> Result<(), &'static str> { Ok(()) }
+    fn reset(&mut self) -> Result<(), &'static str> {
+        self.running = true;
+        LAST_FEED.with(|v| v.set(Some(NOW.with(|v| v.get()))));
+        Ok(())
+    }
+}
+const PERIOD_MS: u64 = 20_000;
+#[test]
+fn scheduled_feeder_continues_through_storage_errors() {
+    assert_eq!(run(1), Err("end of simulation"));
+    let fault_build = cfg!(feature = "watchdog_fault_inject");
+    assert_eq!(EXPIRED.with(|v| v.get()), fault_build);
+    assert_eq!(LAST_FEED.with(|v| v.get()), Some(if fault_build { 0 } else { 160_000 }));
+}
+'''
+        round_path = path.with_name('watchdog_round.rs')
+        with tempfile.TemporaryDirectory() as scratch:
+            test = Path(scratch) / 'kcs_worker.rs'
+            binary = test.with_suffix('')
+            test.write_text(harness.replace('WATCHDOG_ROUND', str(round_path)) + imports + '\n' + worker)
+            for cfg in ([], ['--cfg', 'feature="watchdog_fault_inject"']):
+                with self.subTest(cfg=cfg):
+                    subprocess.run(['rustc', '--edition=2021', '--test', '-Dwarnings', *cfg,
+                                    str(test), '-o', str(binary)], check=True)
+                    result = subprocess.run([str(binary)], capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_workers_start_after_init_publication_before_boot_pin_release(self):
         source = (ROOT / 'kernel/src/main_aarch64.rs').read_text()
         begin = source.index('fn launch_init_from_elf(')
