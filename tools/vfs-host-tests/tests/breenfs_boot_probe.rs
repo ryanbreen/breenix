@@ -107,6 +107,7 @@ mod restage {
     struct Entry { type_guid: u8, first: u64, last: u64 }
     const ROLE_TEST_ROOT: u8 = 1;
     const ROLE_SYSTEM: u8 = 2;
+    static FIXTURE_DEVICES: spin::Once<Vec<partition::Partition>> = spin::Once::new();
     static ROOT_ROLE: AtomicU8 = AtomicU8::new(0);
     std::thread_local! { static MEDIA: Disk = Disk::default(); }
 
@@ -122,6 +123,10 @@ mod restage {
     }
 
     mod intent {
+        pub fn captured() -> Option<&'static crate::intent::Captured> {
+            static INTENT: spin::Once<crate::intent::Captured> = spin::Once::new();
+            Some(INTENT.call_once(|| crate::intent::parse(b"BREENIX-BOOT 2\ntarget tests\nroot 01234567-89ab-cdef-1020-304050607080\n").unwrap()))
+        }
         pub fn root_partition() -> Option<&'static str> { Some("test-root") }
         pub fn refused() -> Option<&'static str> { None }
     }
