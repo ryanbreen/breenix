@@ -165,15 +165,17 @@ impl<'a> ServerSession<'a> {
     /// Wait for the client to open a channel and choose a program.
     pub fn wait_for_channel(&mut self) -> Result<SessionCommand, SshError> {
         loop {
-            let msg = self.io.recv_packet().map_err(|_| SshError::Io)?;
+            let msg = self.io.recv_packet().map_err(ssh_io_error)?;
             if msg.is_empty() {
                 return Err(SshError::Disconnected);
             }
 
             match msg[0] {
                 SSH_MSG_CHANNEL_OPEN => {
-                    let ch = channel::server_handle_channel_open(&mut self.io, &msg, 0)?;
-                    self.channel = Some(ch);
+                    let local_id = self.channel.is_none().then_some(0);
+                    if let Some(ch) = channel::server_handle_channel_open(&mut self.io, &msg, local_id)? {
+                        self.channel = Some(ch);
+                    }
                 }
                 SSH_MSG_CHANNEL_REQUEST => {
                     if let Some(ref mut ch) = self.channel {
@@ -188,12 +190,11 @@ impl<'a> ServerSession<'a> {
                     channel::handle_client_global_request(&mut self.io, &msg)?;
                 }
                 SSH_MSG_IGNORE | SSH_MSG_UNIMPLEMENTED => {}
-                SSH_MSG_CHANNEL_WINDOW_ADJUST => {
-                    if let Some(ref mut ch) = self.channel {
-                        let mut pos = 1;
-                        let _id = SshBuf::get_u32(&msg, &mut pos);
-                        let bytes = SshBuf::get_u32(&msg, &mut pos).unwrap_or(0);
-                        ch.send_window = ch.send_window.saturating_add(bytes);
+                SSH_MSG_CHANNEL_WINDOW_ADJUST | SSH_MSG_CHANNEL_EOF | SSH_MSG_CHANNEL_CLOSE => {
+                    match self.handle_channel_packet(&msg, true) {
+                        Err(SshError::Disconnected) if self.channel_closed() => self.channel = None,
+                        Err(error) => return Err(error),
+                        Ok(_) => {}
                     }
                 }
                 SSH_MSG_DISCONNECT => return Err(SshError::Disconnected),
@@ -287,6 +288,10 @@ impl<'a> ServerSession<'a> {
         }
 
         match msg[0] {
+            SSH_MSG_CHANNEL_OPEN => {
+                channel::server_handle_channel_open(&mut self.io, msg, None)?;
+                Ok(None)
+            }
             SSH_MSG_CHANNEL_DATA => {
                 let mut pos = 1;
                 let recipient = SshBuf::get_u32(msg, &mut pos)
@@ -335,8 +340,8 @@ impl<'a> ServerSession<'a> {
                 if recipient != ch.local_id {
                     return Err(SshError::ChannelNotFound);
                 }
-                ch.closed = true;
                 channel::send_channel_close(&mut self.io, ch)?;
+                ch.closed = true;
                 Err(SshError::Disconnected)
             }
             SSH_MSG_DISCONNECT => Err(SshError::Disconnected),
@@ -361,15 +366,16 @@ impl<'a> ServerSession<'a> {
         self.channel.as_ref().is_some_and(|ch| ch.eof_received)
     }
 
+    /// Whether the peer closed the current channel and our CLOSE was sent or queued.
+    pub fn channel_closed(&self) -> bool {
+        self.channel.as_ref().is_some_and(|ch| ch.closed)
+    }
+
     /// Finish a process channel in RFC 4254 sections 6.10/5.3 order.
     /// A peer-initiated CLOSE is acknowledged once; our CLOSE awaits theirs.
     pub fn finish(&mut self, status: i32) -> Result<(), SshError> {
-        if self
-            .channel
-            .as_ref()
-            .ok_or(SshError::ChannelNotFound)?
-            .closed
-        {
+        if self.channel_closed() {
+            self.channel = None;
             return Ok(());
         }
         self.send_exit_status(status)?;
@@ -380,7 +386,7 @@ impl<'a> ServerSession<'a> {
             .map_err(|_| SshError::Io)?
             .tv_sec
             + 5;
-        while !self.channel.as_ref().unwrap().closed {
+        while !self.channel_closed() {
             if crate::time::now_monotonic()
                 .map_err(|_| SshError::Io)?
                 .tv_sec
@@ -396,11 +402,12 @@ impl<'a> ServerSession<'a> {
                 continue;
             }
             match self.recv_data() {
-                Err(SshError::Disconnected) if self.channel.as_ref().unwrap().closed => break,
+                Err(SshError::Disconnected) if self.channel_closed() => break,
                 Err(e) => return Err(e),
                 Ok(_) => {}
             }
         }
+        self.channel = None;
         Ok(())
     }
 
