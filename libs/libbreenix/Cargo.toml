@@ -115,3 +115,8 @@ required-features = ["std"]
 name = "ssh_packet_framing"
 path = "../../tests/ssh_packet_framing.rs"
 required-features = ["std"]
+
+[[test]]
+name = "ssh_openssh_interop"
+path = "../../tests/ssh_openssh_interop.rs"
+required-features = ["std"]
