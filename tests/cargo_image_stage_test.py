@@ -32,6 +32,9 @@ class CargoImageStageTest(unittest.TestCase):
     def test_arm_rustc_and_cargo_share_hosted_libc(self):
         self.check_arm_image('rustc,cargo')
 
+    def test_arm_self_host_image_matches_records_and_size(self):
+        self.check_arm_image('self-host')
+
     def test_arm_cargo_selection_rejects_unported_suites(self):
         for suite in ('d1', 'self-host'):
             with self.subTest(suite=suite), redirect_stderr(io.StringIO()) as stderr:
@@ -72,15 +75,16 @@ class CargoImageStageTest(unittest.TestCase):
                 f'{PREFIX}/bin/cargo': k7['cargo_sha256'],
                 f'{PREFIX}/bin/rustc': k5['hosted_rustc_sha256'],
                 f'{PREFIX}/lib/{driver}': k5['hosted_driver_sha256'],
-                f'{PREFIX}/bin/bld': read_json(rust_link / 'build.json')['files_sha256']['bld'],
             }
+            if 'self-host' not in selection.split(','):
+                expected[f'{PREFIX}/bin/bld'] = read_json(rust_link / 'build.json')['files_sha256']['bld']
             for name in ('libc.a', 'linker.ld'):
                 expected[f'{PREFIX}/lib/{name}'] = k6['inputs'][f'lib/tools/{name}']['sha256']
             for name, digest in k5['sysroot']['files_sha256'].items():
                 if name.startswith('lib/rustlib/aarch64-breenix/'):
                     expected[f'{PREFIX}/sysroot/{name}'] = digest
             for name, digest in k7['fixture_sha256'].items():
-                if name.startswith('corpus/'):
+                if name.startswith('corpus/') and 'cargo' in selection.split(','):
                     expected[f'{CORPUS}/{name.removeprefix("corpus/")}'] = digest
                 if name.startswith('targets/'):
                     expected[f'{PREFIX}/{name}'] = digest
