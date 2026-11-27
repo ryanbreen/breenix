@@ -212,6 +212,7 @@ const TCP_OPT_NOP: u8 = 1;
 const TCP_OPT_MSS: u8 = 2;
 const TCP_OPT_WINDOW_SCALE: u8 = 3;
 const TCP_OPT_SACK_PERMITTED: u8 = 4;
+const SYN_OPTION_CAPACITY: usize = 12;
 const MAX_WINDOW_SHIFT: u8 = 14;
 const ACK_DELAY_MS: u64 = 10;
 
@@ -822,16 +823,27 @@ fn transmit(seg: &Segment, options: &[u8], parts: [&[u8]; 2]) -> bool {
     }
 }
 
-/// MSS and, when offered, window scale. The SYN window itself is unscaled.
-fn syn_options(mss: u16, shift: Option<u8>, bytes: &mut [u8; 8]) -> &[u8] {
+/// Encode MSS, optional window scale, and optional SACK-Permitted (RFC 2018 §2).
+fn syn_options(
+    mss: u16,
+    shift: Option<u8>,
+    sack_permitted: bool,
+    bytes: &mut [u8; SYN_OPTION_CAPACITY],
+) -> &[u8] {
     let [hi, lo] = mss.to_be_bytes();
     bytes[..4].copy_from_slice(&[TCP_OPT_MSS, 4, hi, lo]);
+    let mut len = 4;
     if let Some(shift) = shift {
-        bytes[4..].copy_from_slice(&[TCP_OPT_WINDOW_SCALE, 3, shift, TCP_OPT_END]);
-        bytes
-    } else {
-        &bytes[..4]
+        bytes[len..len + 3].copy_from_slice(&[TCP_OPT_WINDOW_SCALE, 3, shift]);
+        len += 3;
     }
+    if sack_permitted {
+        bytes[len..len + 2].copy_from_slice(&[TCP_OPT_SACK_PERMITTED, 2]);
+        len += 2;
+    }
+    let padded_len = len.next_multiple_of(4);
+    bytes[len..padded_len].fill(TCP_OPT_END);
+    &bytes[..padded_len]
 }
 
 fn window_shift(capacity: usize) -> u8 {
@@ -1247,8 +1259,13 @@ impl TcpConnection {
 
     fn send_syn_ack(&mut self) {
         let seg = self.segment(self.send_initial, TcpFlags::syn_ack());
-        let mut stack = [0; 8];
-        let options = syn_options(local_mss(self.id.remote_ip), self.recv_shift, &mut stack);
+        let mut stack = [0; SYN_OPTION_CAPACITY];
+        let options = syn_options(
+            local_mss(self.id.remote_ip),
+            self.recv_shift,
+            self.sack_permitted,
+            &mut stack,
+        );
         if transmit(&seg, options, [&[], &[]]) {
             self.record_window(&seg);
         }
@@ -1615,8 +1632,9 @@ impl TcpConnection {
         match self.state {
             TcpState::SynSent => {
                 let seg = self.segment(self.send_initial, TcpFlags::syn());
-                let mut stack = [0; 8];
-                let options = syn_options(local_mss(self.id.remote_ip), self.recv_shift, &mut stack);
+                let mut stack = [0; SYN_OPTION_CAPACITY];
+                let options =
+                    syn_options(local_mss(self.id.remote_ip), self.recv_shift, true, &mut stack);
                 if transmit(&seg, options, [&[], &[]]) {
                     self.record_window(&seg);
                 }
@@ -2683,8 +2701,8 @@ fn handle_syn_for_listener(
     child.reuse = listener.reuse;
     child.ttl = listener.ttl;
     let seg = child.segment(isn, TcpFlags::syn_ack());
-    let mut stack = [0; 8];
-    let options = syn_options(local_mss(src_ip), child.recv_shift, &mut stack);
+    let mut stack = [0; SYN_OPTION_CAPACITY];
+    let options = syn_options(local_mss(src_ip), child.recv_shift, child.sack_permitted, &mut stack);
     let Some(syn_ack) = try_build_segment(&seg, options, [&[], &[]]) else {
         return;
     };
@@ -2818,8 +2836,8 @@ pub fn tcp_connect(
     })?;
 
     // Send SYN. One lost here is sent again by the retransmission timer.
-    let mut stack = [0; 8];
-    let options = syn_options(local_mss(remote_ip), Some(shift), &mut stack);
+    let mut stack = [0; SYN_OPTION_CAPACITY];
+    let options = syn_options(local_mss(remote_ip), Some(shift), true, &mut stack);
     transmit(&syn, options, [&[], &[]]);
 
     Ok(conn_id)

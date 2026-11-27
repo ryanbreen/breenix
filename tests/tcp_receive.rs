@@ -247,7 +247,8 @@ fn ack_fields(packet: &[u8]) -> (u32, u16, &[u8]) {
 fn receive_path_releases_queued_bytes_and_fin_across_sequence_wrap() {
     let _serial = serial();
     let start = u32::MAX - 1;
-    let (id, ack, _) = handshake(40001, start, &MSS);
+    let (id, ack, syn_ack) = handshake(40001, start, &MSS);
+    assert_eq!(ack_fields(&syn_ack).2, &[2, 4, 64, 0]);
     receive(id, 1, ack, TcpFlags::fin_ack(), &[], b"def");
     let mut output = [0; 16];
     assert!(!tcp::tcp_has_data(&id));
@@ -266,12 +267,7 @@ fn receive_path_negotiates_sack_and_prioritizes_newest_merged_block() {
     let _serial = serial();
     let options = [2, 4, 5, 116, 4, 2, 0, 0];
     let (id, ack, syn_ack) = handshake(40002, 100, &options);
-    // RFC 2018 permits independent directions. The kernel can report blocks
-    // to a peer that offered SACK, without offering to consume peer blocks.
-    assert!(!ack_fields(&syn_ack)
-        .2
-        .windows(2)
-        .any(|option| option == [4, 2]));
+    assert_eq!(ack_fields(&syn_ack).2, &[2, 4, 64, 0, 4, 2, 0, 0]);
     for (seq, data) in [(106, b"ghi"), (112, b"mno"), (109, b"jkl")] {
         receive(id, seq, ack, TcpFlags::ack(), &[], data);
         let packets = take_output();
@@ -426,17 +422,26 @@ fn receive_path_uses_scaled_peer_window_only_after_active_handshake() {
     let id = tcp::tcp_connect(LOCAL, 40008, PEER, 44000, 1, 64, 212_992).unwrap();
     let packets = take_output();
     let syn = TcpHeader::parse(&packets[0]).unwrap().0;
+    assert!(syn.flags.syn && !syn.flags.ack);
     assert_eq!(syn.window_size, u16::MAX);
-    assert!(packets[0][20..]
-        .windows(3)
-        .any(|option| option == [3, 3, 1]));
+    assert_eq!(
+        &packets[0][20..],
+        &[2, 4, 64, 0, 3, 3, 1, 4, 2, 0, 0, 0]
+    );
+
+    CLOCK.set(2000);
+    step_timer();
+    let retry = take_output();
+    assert!(retry.iter().any(|packet| packet == &packets[0]));
 
     let start = 1200;
     let ack = syn.seq_num.wrapping_add(1);
     let options = [2, 4, 5, 116, 3, 3, 1, 0];
     receive(id, start - 1, ack, TcpFlags::syn_ack(), &options, &[]);
     let handshake_ack = take_output();
-    assert_eq!(usize::from(ack_fields(&handshake_ack[0]).1) << 1, 106_496);
+    let (_, window, options) = ack_fields(&handshake_ack[0]);
+    assert_eq!(usize::from(window) << 1, 106_496);
+    assert!(options.is_empty());
 
     tcp::tcp_set_options(&id, || tcp::ConnOptions {
         rcvbuf: 212_992,
