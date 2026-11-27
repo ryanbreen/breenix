@@ -16,7 +16,7 @@ GUEST = '/root/.breenix-flash'
 TOKEN = re.compile(r'[0-9a-f]{32}')
 COMMIT = re.compile(r'[0-9a-f]{40}')
 BOOT_ID = re.compile(r'[0-9a-f]+-[0-9a-f]+-[0-9a-f]+')
-HEALTH = 'test "$(readlink /proc/1/exe)" = /sbin/init && cat /run/breenix/boot-id'
+HEALTH = 'test "$(sudo -n /bin/readlink /proc/1/exe)" = /sbin/init && cat /run/breenix/boot-id'
 DEADLINE = 600
 
 
