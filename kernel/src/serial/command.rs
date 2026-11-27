@@ -11,7 +11,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 static TTY_INPUT: AtomicBool = AtomicBool::new(false);
 
-/// Select the userspace console before starting the serial input task.
+/// Select the userspace console before making init runnable.
 pub fn use_tty_input() {
     TTY_INPUT.store(true, Ordering::Release);
 }
@@ -58,10 +58,8 @@ pub async fn serial_command_task() {
 
     let mut input = SerialInputStream::new();
     let mut line_buffer = String::new();
-    let tty_input = TTY_INPUT.load(Ordering::Acquire);
-
     // Send a prompt
-    if !tty_input {
+    if !TTY_INPUT.load(Ordering::Acquire) {
         print_prompt();
     }
 
@@ -76,7 +74,8 @@ pub async fn serial_command_task() {
             host_keys.feed(byte, |line| crate::input::host::serial_line(line));
             continue;
         }
-        if tty_input {
+        // The PID 1 loader can select the TTY while this task awaits input.
+        if TTY_INPUT.load(Ordering::Acquire) {
             at.at(Site::Tty);
             crate::tty::push_char_from(byte, crate::tty::InputSource::Serial);
             continue;
