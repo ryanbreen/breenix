@@ -37,8 +37,19 @@ pub fn ip_output(_: [u8; 4], _: [u8; 4], _: u8, _: u8, _: &[u8]) -> Result<(), T
     unreachable!("wire tests never transmit")
 }
 pub mod tcp {
+    use crate::icmp::TcpMtuQuote;
+    use std::cell::Cell;
+
+    thread_local! {
+        pub(crate) static MTU_QUOTE: Cell<Option<TcpMtuQuote>> = const { Cell::new(None) };
+    }
+
     pub fn handle_tcp(_: &crate::ipv4::Ipv4Packet, _: &[u8]) {
         unreachable!("wire tests never deliver TCP")
+    }
+
+    pub(crate) fn handle_path_mtu(quote: TcpMtuQuote) {
+        MTU_QUOTE.set(Some(quote));
     }
 }
 pub mod udp {
@@ -152,6 +163,59 @@ fn truncated_icmp_quote_identifies_original_flow_and_rejects_malformed_headers()
     }
     error[8] = 0x4f;
     assert!(icmp::udp_error_quote(&icmp::IcmpPacket::parse(&error).unwrap()).is_none());
+}
+
+fn deliver_tcp_mtu_quote(
+    mtu: u16,
+    icmp_code: u8,
+    flags: u16,
+    quoted_len: usize,
+) -> Option<icmp::TcpMtuQuote> {
+    let cfg = config();
+    let peer = cfg.gateway.map(|byte| byte ^ 0x80);
+    let mut segment = [0; 1480];
+    segment[..2].copy_from_slice(&49152u16.to_be_bytes());
+    segment[2..4].copy_from_slice(&443u16.to_be_bytes());
+    segment[4..8].copy_from_slice(&2u32.to_be_bytes());
+    let mut original = Ipv4Packet::build(cfg.ip_addr, peer, ipv4::PROTOCOL_TCP, &segment);
+    original[6..8].copy_from_slice(&flags.to_be_bytes());
+    let mut error = vec![3, icmp_code, 0, 0, 0, 0, 0, 0];
+    error[6..8].copy_from_slice(&mtu.to_be_bytes());
+    error.extend_from_slice(&original[..quoted_len]);
+    let checksum = internet_checksum(&error);
+    error[2..4].copy_from_slice(&checksum.to_be_bytes());
+    let packet = Ipv4Packet::build(cfg.gateway, cfg.ip_addr, ipv4::PROTOCOL_ICMP, &error);
+    let ip = Ipv4Packet::parse(&packet).unwrap();
+    icmp::handle_icmp(&ip, &icmp::IcmpPacket::parse(ip.payload).unwrap());
+    tcp::MTU_QUOTE.take()
+}
+
+#[test]
+fn tcp_fragmentation_needed_quote_reduces_the_matching_segment_size() {
+    let quote = deliver_tcp_mtu_quote(1436, 4, 0x4000, 28).expect("valid short TCP quote");
+    assert_eq!(quote.src, config().ip_addr);
+    assert_eq!(quote.dst, config().gateway.map(|byte| byte ^ 0x80));
+    assert_eq!((quote.src_port, quote.dst_port), (49152, 443));
+    // The sequence range wraps through zero. This quote is for outstanding data.
+    assert_eq!(quote.smaller_mss(1460, u32::MAX - 3, 1466), Some(1396));
+    assert_eq!(quote.smaller_mss(1460, 3, 2000), None);
+    assert_eq!(quote.smaller_mss(1460, 2, 0), None);
+    assert_eq!(quote.smaller_mss(1460, 0, 2), None);
+    assert_eq!(quote.smaller_mss(1396, 2, 1460), None);
+}
+
+#[test]
+fn tcp_fragmentation_needed_rejects_unusable_reports() {
+    for (mtu, code, flags, len) in [
+        (1436, 3, 0x4000, 28),
+        (1436, 4, 0, 28),
+        (1436, 4, 0x4001, 28),
+        (1436, 4, 0x4000, 27),
+        (67, 4, 0x4000, 28),
+        (1500, 4, 0x4000, 28),
+    ] {
+        assert!(deliver_tcp_mtu_quote(mtu, code, flags, len).is_none());
+    }
 }
 
 pub mod time {
