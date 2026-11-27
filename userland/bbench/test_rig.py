@@ -211,6 +211,56 @@ class GuestThatStaysDown(unittest.TestCase):
                              ["breenix VM could not be restarted"], case)
 
 
+class RestartableGuest:
+    """A guest that boots when started; its QEMU stays up until it is stopped."""
+
+    def __init__(self):
+        self.boots = 1
+        self.running = False
+        self.home = "/etc/breenix/test-ssh/home"
+
+    def alive(self):
+        return self.running
+
+    def start(self):
+        self.boots += 1
+        self.running = True
+
+    def stop(self):
+        self.running = False
+
+
+class RestartThatFailsSetup(unittest.TestCase):
+    """A guest whose restart fails setup (a wrong root, a failed upload) takes no
+    samples, and the sidecar keeps no root line for that boot."""
+
+    def test_the_guest_is_not_sampled_after_setup_fails(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        out = Path(temp.name)
+        bench = rig.Rig.__new__(rig.Rig)
+        bench.args = type("Args", (), {"run": "rig"})()
+        bench.run_dir = out
+        bench.out = {"breenix": out}
+        bench.notes = {"breenix": []}
+        bench.roots = {"breenix": {1: "none / breenfs rw 0 0"}}
+        guest = RestartableGuest()
+        bench.guests = {"breenix": guest}
+
+        def setup(system):
+            raise RuntimeError("breenix: the root is none / ext2 rw 0 0, not breenfs read-write")
+
+        bench.setup = setup
+        bench.endpoint = type("Endpoint", (), {"server_address": ("127.0.0.1", 9)})()
+        bench.bbench = mock.Mock(side_effect=AssertionError("sampled a guest that failed setup"))
+        with mock.patch("sys.stdout"):
+            bench.sample("getpid", 2, "breenix")
+        self.assertFalse(guest.alive())
+        [receipt] = rig.collect_receipts(out, ["rig"], "scp-upload")["getpid"]
+        self.assertEqual(receipt["error"], "breenix VM could not be restarted")
+        self.assertEqual(bench.roots["breenix"], {1: "none / breenfs rw 0 0"})
+
+
 class GuestWhoseWarmupFails(RecordingGuest):
     """Cargo fails the no-op warm-up; every other command succeeds."""
 
