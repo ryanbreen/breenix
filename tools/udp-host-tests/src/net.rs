@@ -57,6 +57,10 @@ pub mod tcp {
     pub fn handle_tcp(_: &super::ipv4::Ipv4Packet, _: &[u8]) {
         unreachable!()
     }
+
+    pub(crate) fn handle_path_mtu(_: super::icmp::TcpMtuQuote) {
+        unreachable!("UDP tests never receive TCP path MTU reports")
+    }
 }
 /// No DHCP exchange runs here. The kernel's client claims a datagram only while
 /// it awaits a reply, so with none awaited it claims nothing.
