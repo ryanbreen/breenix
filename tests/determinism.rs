@@ -4,6 +4,7 @@ use std::process::Command;
 
 const OUTPUTS: [&str; 7] = ["bas", "bld", "bar", "bnm", "bmake", "bcc", "libbobj.rlib"];
 
+/// Ruling 161 Mac run: 136.093 s; receipt check failed on stale host bld.
 #[test]
 fn two_directories_same_bytes() {
     let fixture = std::env::var_os("BREENIX_K6_FIXTURE")
@@ -66,6 +67,7 @@ fn two_directories_same_bytes() {
     println!("comparison artifacts: {}", work.display());
 }
 
+/// Ruling 161 Mac run: 140.275 s; both roots and receipt matched.
 #[test]
 fn two_directories_same_bytes_aarch64() {
     let fixture = std::env::var_os("BREENIX_K6_AARCH64_FIXTURE")
