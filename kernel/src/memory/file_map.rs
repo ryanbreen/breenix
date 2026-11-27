@@ -1105,7 +1105,7 @@ impl MapState {
     }
 
     /// Retire cache pages no binding covers. The filesystem write guard
-    /// excludes every mutation hook. Population reads and publishes without
+    /// excludes the mutation hooks. Population reads and publishes without
     /// that guard, so a page a population still has to bind counts as bound
     /// here; its eviction stays pending until the population ends.
     pub(crate) fn evict(&self, budget: &mut usize) -> bool {
@@ -1484,7 +1484,8 @@ pub(crate) enum MapError {
 /// A population's transfer lease and its claim on the pages it populates.
 /// Until it is dropped, after mmap has published the binding or given up,
 /// eviction keeps the pages of `[first, last)`: the binding is published
-/// later, and a fault on a bound page the cache lacks maps a zero page.
+/// later, and a fault on a bound page the cache lacks maps a fresh page of
+/// 00 bytes (the hole case in `resolve_page`).
 pub(crate) struct Population {
     file: Box<dyn MappingIo>,
     map: MapState,

@@ -332,8 +332,8 @@ fn healthy_cache_returns_to_baseline_after_unmap_and_close() {
 // #3208: mmap populates the cache, then publishes its binding under the mount
 // guard. A worker eviction pass in that gap, requested when an earlier mapping
 // of the same file was unmapped, must not retire the populated pages: a fault
-// on a bound page that is not cached maps a zero page, so the loader read an
-// all-zero ELF header from librustc_driver.
+// on a bound page that is not cached maps a fresh page of 00 bytes, so the
+// loader read an ELF header of 00 bytes from librustc_driver.
 #[test]
 fn populated_pages_survive_eviction_until_the_binding_is_published() {
     use crate::memory::file_map::{bind_host, bind_populated, populate};
