@@ -9,6 +9,9 @@ static SIGNALS: Mutex<Vec<(&str, ProcessId, u32)>> = Mutex::new(Vec::new());
 
 enum TtyRef { Pty(Pair), Vt(()) }
 struct Pair { ctl: ControlLock }
+impl Pair {
+    fn master_closed(&self) -> bool { true }
+}
 struct ControlLock(Mutex<Control>);
 impl ControlLock {
     fn lock(&self) -> std::sync::MutexGuard<'_, Control> { self.0.lock().unwrap() }
@@ -18,10 +21,22 @@ impl Control {
     fn detach(&mut self) -> Option<ProcessId> { self.fg.take() }
 }
 impl TtyRef {
-    fn detach(&self) -> Option<ProcessId> { None }
+    fn detach(&self) -> Option<ProcessId> {
+        match self {
+            Self::Pty(pair) => pair.ctl.lock().detach(),
+            Self::Vt(_) => None,
+        }
+    }
     fn session(&self) -> Option<ProcessId> { *SESSION.lock().unwrap() }
-    fn id(&self) -> u32 { 0 }
+    fn id(&self) -> TtyId {
+        match self {
+            Self::Pty(_) => TtyId::Pty,
+            Self::Vt(_) => TtyId::Vt(()),
+        }
+    }
 }
+enum TtyId { Pty, Vt(()) }
+struct SessionExit { tty: TtyRef, sid: ProcessId, fg: Option<ProcessId> }
 mod process {
     pub fn manager() -> std::sync::MutexGuard<'static, Option<()>> {
         static PM: std::sync::Mutex<Option<()>> = std::sync::Mutex::new(Some(()));
@@ -47,17 +62,25 @@ pub mod syscall {
         }
     }
 }
-fn clear_session(_: &mut (), sid: ProcessId, _: u32) {
+fn clear_session(_: &mut (), sid: ProcessId, _: TtyId) {
     assert_eq!(SESSION.lock().unwrap().take(), Some(sid));
 }
 // @HANGUP@
+// @LEADER_EXIT@
 
 fn main() {
-    let tty = TtyRef::Pty(Pair { ctl: ControlLock(Mutex::new(Control { fg: Some(JOB), last_hangup_fg: None })) });
+    let ctl = Control { fg: Some(JOB), last_hangup_fg: None };
+    assert!(ctl.last_hangup_fg.is_none());
+    let tty = TtyRef::Pty(Pair { ctl: ControlLock(Mutex::new(ctl)) });
     hangup_ref(&tty);
     hangup_ref(&tty);
-    let TtyRef::Pty(pair) = tty else { unreachable!() };
-    assert_eq!(pair.ctl.lock().last_hangup_fg, Some(JOB));
+    assert_signals();
+    finish_session_exit(SessionExit { tty, sid: LEADER, fg: Some(JOB) });
+    assert_signals();
+    let _ = TtyRef::Vt(());
+}
+
+fn assert_signals() {
     use signal::constants::{SIGCONT, SIGHUP};
     let signals = SIGNALS.lock().unwrap();
     assert_eq!(signals.len(), 4, "hangup must alert both recipients exactly once: {signals:?}");
@@ -66,5 +89,4 @@ fn main() {
             .map(|entry| entry.2).collect();
         assert_eq!(received, [SIGHUP, SIGCONT]);
     }
-    let _ = TtyRef::Vt(());
 }

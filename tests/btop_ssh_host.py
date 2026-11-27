@@ -33,7 +33,7 @@ def check(name, **parts):
         path = Path(scratch)
         (path / "check.rs").write_text(code)
         subprocess.run(
-            ["taskpolicy", "-b", "rustc", "--edition=2021", "check.rs", "-o", "check"],
+            ["rustc", "--edition=2021", "check.rs", "-o", "check"],
             cwd=path, check=True, timeout=20,
         )
         subprocess.run(["./check"], cwd=path, check=True, timeout=5)
@@ -64,7 +64,11 @@ class BtopSsh(unittest.TestCase):
 
     def test_hangup_alerts_the_leader_and_foreground_job(self):
         ctty = source("kernel/src/tty/ctty.rs")
-        check("hangup", HANGUP=function(ctty, "hangup_ref"))
+        check(
+            "hangup",
+            HANGUP=function(ctty, "hangup_ref"),
+            LEADER_EXIT=function(ctty, "finish_session_exit"),
+        )
         daemon = source("userspace/programs/src/bsshd.rs")
         shell = daemon[daemon.index("// Fork a child for the shell"):daemon.index("// Parent: shuttle")]
         self.assertIn("signal::SIGHUP", shell, "login must reset init's inherited SIGHUP ignore")

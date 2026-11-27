@@ -29,7 +29,7 @@ pub mod error {
     pub enum Error { Os(super::errno::Errno) }
 }
 pub mod errno {
-    pub enum Errno { EINTR }
+    pub enum Errno { EINTR, EIO }
 }
 pub mod fs {
     pub fn open(_: &str, _: u32) -> Result<crate::types::Fd, ()> { Err(()) }

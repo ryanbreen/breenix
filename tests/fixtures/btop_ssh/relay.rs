@@ -1,6 +1,8 @@
 extern crate self as libbreenix;
 
 use std::cell::RefCell;
+pub use errno::Errno;
+pub use error::Error;
 use io::poll_events::*;
 pub use ssh::{SshBuf, SshError, *};
 use ssh::transport::ServerSession;
@@ -16,7 +18,7 @@ thread_local! {
     static WRITES: RefCell<Vec<Vec<u8>>> = const { RefCell::new(Vec::new()) };
     static SIZES: RefCell<Vec<(u16, u16)>> = const { RefCell::new(Vec::new()) };
 }
-pub mod errno { pub enum Errno { EAGAIN, EINTR, EIO } }
+pub mod errno { pub enum Errno { EAGAIN, EINTR, EIO, EBADF } }
 pub mod error { pub enum Error { Os(super::errno::Errno) } }
 pub mod io {
     use super::*;
@@ -29,6 +31,7 @@ pub mod io {
         pub const POLLERR: i16 = 8;
         pub const POLLHUP: i16 = 16;
         pub const POLLNVAL: i16 = 32;
+        pub const POLLRDHUP: i16 = 0x2000;
     }
     pub struct PollFd { fd: Fd, events: i16, pub revents: i16 }
     impl PollFd {
