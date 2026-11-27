@@ -4,7 +4,9 @@ from pathlib import Path
 import tempfile
 import unittest
 
+import rig
 import series
+import tables
 
 
 def receipt(sample, error=None, **metrics):
@@ -58,7 +60,45 @@ class AttributionRows(unittest.TestCase):
         self.assertEqual((rows["compile.rustc-vv"]["state"], rows["compile.rustc-vv"]["reason"]),
                          ("deferred", reason))
         self.assertEqual(rows["process.rustc-first-output"]["reason"], reason)
-        self.assertEqual(rows["memory.copy"]["reason"], "No timed receipts")
+        self.assertEqual(rows["memory.anonymous"]["reason"], "No timed receipts")
+
+
+class CopyRows(unittest.TestCase):
+    """The probe copied 4 GiB (i32 buffers) until the rig's branch, then 1 GiB of bytes.
+    The two measure different work, so they are different rows."""
+
+    def receipts(self, *names):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        for name in names:
+            Path(temp.name, f"{name}.json").write_text(json.dumps(
+                receipt(name, copy_ns=10**9, bytes_copied=1 << 30)))
+        return tables.collect_receipts(temp.name, ["rig"], "scp-upload")
+
+    def write(self, groups):
+        return AttributionRows.write(self, groups)
+
+    def test_the_byte_copy_has_its_own_row(self):
+        rows = self.write(self.receipts("rig-copy-bytes-1", "rig-copy-bytes-2"))
+        self.assertEqual((rows["memory.copy-bytes"]["completed"],
+                          rows["memory.copy-bytes"]["median"]), (2, 1.0))
+        self.assertIn("1 GiB", rows["memory.copy-bytes"]["title"])
+        self.assertEqual(rows["memory.copy"]["completed"], 0)
+
+    def test_historical_copy_receipts_stay_on_the_4_gib_row(self):
+        rows = self.write(self.receipts("rig-copy-1"))
+        self.assertEqual(rows["memory.copy"]["completed"], 1)
+        self.assertIn("4 GiB", rows["memory.copy"]["title"])
+        self.assertEqual(rows["memory.copy-bytes"]["completed"], 0)
+
+    def test_a_new_series_says_why_the_4_gib_row_is_empty(self):
+        rows = self.write({})
+        self.assertEqual(rows["memory.copy"]["state"], "deferred")
+        self.assertIn("memory.copy-bytes", rows["memory.copy"]["reason"])
+
+    def test_the_rig_runs_the_byte_copy(self):
+        self.assertIn("copy-bytes", rig.CASES)
+        self.assertNotIn("copy", rig.CASES)
 
 
 if __name__ == "__main__":
