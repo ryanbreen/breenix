@@ -141,8 +141,8 @@ fn workload(dir: &Path, args: &[String], metrics: &mut Metrics) -> io::Result<()
             Ok(())
         }
         ["copy"] => {
-            let mut source = vec![0x55; 128 * MIB];
-            let mut target = vec![0xaa; source.len()];
+            let mut source = vec![0x55u8; 128 * MIB];
+            let mut target = vec![0xaau8; source.len()];
             black_box(&mut source);
             black_box(&mut target);
             let start = Instant::now();

@@ -64,6 +64,10 @@ median was 1.171 s with 7,931–7,986 device reads.
 | HMAC-SHA256, opt-level 3 (MB/s) | — | — | — | 8 MiB in 32 KiB SSH packets |
 <!-- bbench results end -->
 
+The R240 and Mac "Copy 1 GiB total" medians above copied 4 GiB. Until the
+QEMU rig's branch, the probe's buffers held `i32` values, not bytes. Those
+medians are not comparable with later series, which copy 1 GiB.
+
 The attribution rows from getpid down were added for the ARM64 QEMU rig
 (`rig.py`, DEV-31). Neither column above has run them yet; their
 Breenix and Linux medians live in the arm64-qemu series files.
