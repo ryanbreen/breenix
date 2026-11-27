@@ -1083,9 +1083,7 @@
         "R_AARCH64_PREL32",
         "R_AARCH64_PREL64"
       ],
-      "needs_bld": [
-        "R_AARCH64_PREL64"
-      ],
+      "needs_bld": [],
       "reference_sha256": "3872642372d99e5f919df43596d3d9b23540fb4e60f06c5e733e88d414286afc"
     }
   },
@@ -2025,10 +2023,9 @@
       "R_AARCH64_LDST32_ABS_LO12_NC",
       "R_AARCH64_LDST64_ABS_LO12_NC",
       "R_AARCH64_LDST8_ABS_LO12_NC",
-      "R_AARCH64_PREL32"
-    ],
-    "needs_bld": [
+      "R_AARCH64_PREL32",
       "R_AARCH64_PREL64"
-    ]
+    ],
+    "needs_bld": []
   }
 }
