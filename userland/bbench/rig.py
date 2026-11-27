@@ -93,6 +93,8 @@ DEFERRED = {
               "bsync-upload": "bsync is measured on the R240 only"},
 }
 NETWORK = ("network", "tcp-send", "tcp-recv")
+# The rows the composite network case writes, one receipt each per sample.
+NETWORK_PARTS = ("scp-upload", "download", "ssh")
 TCP_BYTES = 32_000_000
 CRYPTO_BYTES = 8 * MIB
 SCP_BYTES = 8_000_000
@@ -579,14 +581,17 @@ class Rig:
         if not guest.alive():
             self.restart(system)
         if not guest.alive():
-            receipt = failure_receipt(name, [case], f"{system} VM could not be restarted")
-            self.save(system, name, receipt)
+            # The network case is three rows; each one records the lost attempt.
+            for part in (NETWORK_PARTS if case == "network" else (case,)):
+                sample = f"{self.args.run}-{part}-{number}"
+                self.save(system, sample, failure_receipt(sample, [part],
+                                                          f"{system} VM could not be restarted"))
             return
         if case == "network":
             try:
                 self.network(system, number)
             except (RuntimeError, subprocess.TimeoutExpired, IndexError) as error:
-                for part in ("scp-upload", "download", "ssh"):
+                for part in NETWORK_PARTS:
                     sample = f"{self.args.run}-{part}-{number}"
                     if not (self.out[system] / f"{sample}.json").exists():
                         self.save(system, sample, failure_receipt(sample, [part], str(error)))
