@@ -250,9 +250,25 @@ fn record(
     operations: impl Iterator<Item = (usize, Operation)>,
     end: usize,
 ) -> Result<Recorded> {
+    record_with(initial, seed, operations, end, false)
+}
+
+/// `record`, optionally with a writer that continues each published
+/// generation (WriterAdapter::continuing) as the kernel's mount does.
+fn record_with(
+    initial: Vec<u8>,
+    seed: u64,
+    operations: impl Iterator<Item = (usize, Operation)>,
+    end: usize,
+    continuing: bool,
+) -> Result<Recorded> {
     let mut durable = Image::from_bytes(&initial);
     let device = Arc::new(RecordingDevice::new(initial).map_err(|_| Errno::EIO)?);
-    let mut writer = WriterAdapter::new(device.clone())?;
+    let mut writer = if continuing {
+        WriterAdapter::continuing(device.clone())?
+    } else {
+        WriterAdapter::new(device.clone())?
+    };
     let mut model = Model::new();
     assert_eq!(
         writer.roots()?,
@@ -644,6 +660,102 @@ mod tests {
             started.elapsed()
         );
         assert!(started.elapsed().as_secs_f64() < 60.0);
+    }
+
+    /// PENDING ranges (start, length) released in `generation`, read from a
+    /// durable image after read-only recovery.
+    fn released_in(image: &Image, generation: u64) -> Vec<(u64, u64)> {
+        use crate::{btree, commit::DeviceStore, format};
+        let dev = MemoryDevice(Mutex::new(image.clone()));
+        let sb = crate::recover::recover(&dev, false).unwrap();
+        let object = 0xffff_ffff_ffff_ff30;
+        btree::range(&DeviceStore(&dev), sb.space_root,
+            format::Key { object, item_type: format::PENDING, offset: 0 },
+            format::Key { object, item_type: format::PENDING, offset: u64::MAX })
+            .unwrap()
+            .into_iter()
+            .filter_map(|(key, bytes)| {
+                let p = format::Pending::decode(&bytes).unwrap();
+                (p.released_generation == generation).then_some((key.offset, p.length))
+            })
+            .collect()
+    }
+
+    /// Audit R13: one generation's releases enter PENDING, are promoted two
+    /// generations later and are then rewritten, through a mount that
+    /// continues each published generation (the kernel's path, which carries
+    /// the quarantine in memory). Each representative crash image of each
+    /// flush window recovers to an acknowledged commit and passes the full
+    /// checker, and the recording device refuses any write into the two
+    /// newest durable generations (writer rule W1).
+    #[test]
+    fn promotion_at_g_plus_2_crash_images_recover() {
+        use std::{
+            fs::OpenOptions,
+            io::{Seek, SeekFrom, Write},
+            process::Command,
+            time::Instant,
+        };
+        let started = Instant::now();
+        let create = |name: &[u8]| Action::Create { dir: 2, name: name.to_vec(), mode: 0o644 };
+        let write = |ino, blocks: usize, byte| Action::Write { ino, offset: 0, bytes: vec![byte; blocks * 4096] };
+        // Inodes are numbered from 16 in creation order (model and writer).
+        let actions = [
+            create(b"a"), write(16, 8, 1), create(b"b"), write(17, 8, 2), Action::Fsync { ino: 16 },
+            Action::Unlink { dir: 2, name: b"a".to_vec() }, Action::Unlink { dir: 2, name: b"b".to_vec() },
+            Action::Fsync { ino: 2 },                                   // 7: G, the releases
+            create(b"c"), Action::Fsync { ino: 18 },                    // 9: G+1
+            create(b"d"), write(19, 4, 3), Action::Fsync { ino: 19 },   // 12: G+2, promotion
+            create(b"e"), write(20, 16, 4), Action::Fsync { ino: 20 },  // 15: reuse
+        ];
+        let operations: Vec<_> = actions.into_iter().enumerate()
+            .map(|(i, action)| (i, Operation { at: Time { seconds: 100 + i as i64, nanos: 0 }, action }))
+            .collect();
+        let end = operations.len();
+        let seed = 0x13_13;
+        let recorded = record_with(crate::test_image::image(), seed, operations.into_iter(), end, true).unwrap();
+        let first = |operation| recorded.windows.iter().position(|w| w.operation == operation).unwrap();
+        // The durable image when G+1 starts writing holds G's quarantine.
+        let g_plus_1 = &recorded.windows[first(9)];
+        let released = released_in(&g_plus_1.durable, g_plus_1.acknowledged);
+        assert!(!released.is_empty(), "G released the unlinked files' blocks");
+        let written_into_release = |operation| recorded.windows.iter()
+            .filter(|w| w.operation == operation)
+            .flat_map(|w| &w.writes)
+            .any(|(sector, _)| released.iter().any(|&(s, l)| (s..s + l).contains(&(sector / 8))));
+        assert!(!written_into_release(9), "G+1 wrote a block G released");
+        assert!(written_into_release(12) || written_into_release(15), "released blocks were reused after G+2");
+
+        let path = std::env::temp_dir().join(alloc::format!("breenfs-promotion-crash-{}.img", std::process::id()));
+        let mut file = OpenOptions::new().create_new(true).write(true).open(&path).unwrap();
+        let mut checks = 0;
+        for (boundary, window) in recorded.windows.iter().enumerate() {
+            let selections = subsets(window.writes.len(), seed.wrapping_add(boundary as u64)).unwrap();
+            for (case, mask) in selections.iter().enumerate() {
+                if !Masks::Representative.keeps(window.writes.len(), case) {
+                    continue;
+                }
+                validate(&recorded, boundary, case, mask, None, &mut |image| {
+                    file.set_len(0).unwrap();
+                    file.set_len(image.sector_count * SECTOR_SIZE as u64).unwrap();
+                    for (&sector, bytes) in &image.sectors {
+                        file.seek(SeekFrom::Start(sector * SECTOR_SIZE as u64)).unwrap();
+                        file.write_all(bytes).unwrap();
+                    }
+                    file.flush().unwrap();
+                    let output = Command::new(env!("CARGO_BIN_FILE_BREENFS_breenfs-check"))
+                        .arg("--full").arg(&path).output().unwrap();
+                    assert_eq!(output.status.code(), Some(0), "boundary={boundary} image={case}: {output:?}");
+                    checks += 1;
+                    Ok(())
+                })
+                .unwrap();
+            }
+        }
+        assert!(checks > recorded.windows.len());
+        std::fs::remove_file(path).unwrap();
+        std::eprintln!("promotion crash sample: {checks} checked images in {} windows in {:?}",
+            recorded.windows.len(), started.elapsed());
     }
 
     #[test]

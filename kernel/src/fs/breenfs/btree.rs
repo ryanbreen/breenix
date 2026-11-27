@@ -32,6 +32,15 @@ pub mod measurement {
             core::cell::RefCell::new(alloc::collections::BTreeSet::new())
         };
         static HEIGHT: core::cell::Cell<u8> = const { core::cell::Cell::new(0) };
+        static TREE_EDITS: core::cell::Cell<[u64; 2]> = const { core::cell::Cell::new([0; 2]) };
+    }
+    /// Completed item edits (insert, replace or delete) per tree type, FS then
+    /// SPACE, including edits of a private reservation copy of either tree.
+    pub fn take_tree_edits() -> [u64; 2] { TREE_EDITS.with(|n| n.replace([0; 2])) }
+    pub(super) fn tree_edit(tree: u8) {
+        if let Some(index) = usize::from(tree).checked_sub(1).filter(|&i| i < 2) {
+            TREE_EDITS.with(|n| { let mut counts = n.get(); counts[index] += 1; n.set(counts); });
+        }
     }
     #[derive(Debug, Default)]
     pub struct EditCost {
@@ -985,6 +994,8 @@ fn change<S: NodeStore>(
         }
     }
     edit.store.item_changed(key, old.as_deref(), value)?;
+    #[cfg(test)]
+    measurement::tree_edit(header.tree);
     *root = new_root;
     Ok(old)
 }

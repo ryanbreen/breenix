@@ -196,6 +196,10 @@ mod frozen_review;
 #[path = "../../../../tools/breenfs-host-tests/src/extent_runs.rs"]
 mod extent_runs;
 
+#[cfg(test)]
+#[path = "../../../../tools/breenfs-host-tests/src/free_space.rs"]
+mod free_space;
+
 // Extended attributes use ABI errno 61 for an absent attribute.
 const ENODATA: i32 = 61;
 

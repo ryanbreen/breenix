@@ -23,6 +23,9 @@ pub struct WriterAdapter {
     read_only: bool,
     failed: bool,
     dirty: bool,
+    // Continue each published generation's Files view, as the kernel's
+    // publication does, instead of mounting the published image again.
+    continuing: bool,
 }
 fn error(e: ops::Error) -> Error {
     use ops::Error as E;
@@ -74,7 +77,13 @@ impl WriterAdapter {
             read_only: false,
             failed: false,
             dirty: false,
+            continuing: false,
         })
+    }
+    /// A writer whose fsync continues the mount with next_generation, so the
+    /// space state of one generation is carried into the next (kernel path).
+    pub fn continuing(device: Arc<dyn BlockDevice>) -> Result<Self> {
+        Ok(Self { continuing: true, ..Self::new(device)? })
     }
     fn files(&self) -> Result<&Files<'static, Store>> {
         self.files.as_ref().ok_or(Errno::EIO.into())
@@ -128,6 +137,13 @@ impl WriterAdapter {
             .ok_or(Errno::EIO)?
             .fsync(self.device.as_ref(), &mut self.committer)
             .map_err(error)?;
+        if self.continuing {
+            let files = self.files.as_mut().ok_or(Errno::EIO)?;
+            files.next_generation(Store(self.device.clone()), &sb).map_err(error)?;
+            self.superblock = sb;
+            self.dirty = false;
+            return Ok(());
+        }
         // Publication may fill child pointer checksums. Discard the old overlay.
         self.files = None;
         self.files = Some(
