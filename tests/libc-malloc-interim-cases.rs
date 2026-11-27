@@ -30,7 +30,8 @@ fn interim_contended_malloc_waits_and_reuses_a_slot() {
             waited = event.recv().unwrap();
             assert!(!base.is_null());
             base
-        }).unwrap();
+        })
+        .unwrap();
         (p.addr(), tag, waited)
     });
     entered.recv().unwrap();
@@ -40,10 +41,18 @@ fn interim_contended_malloc_waits_and_reuses_a_slot() {
     assert!(!p.is_null());
     let tag = unsafe { p.cast::<usize>().sub(1).read() };
     assert!(waited, "contender used mmap before a futex wait");
-    assert_eq!(tag, first_arena, "contender allocated outside the holder's arena");
+    assert_eq!(
+        tag, first_arena,
+        "contender allocated outside the holder's arena"
+    );
     unsafe {
         free(p);
-        alloc_cache::put(first_arena, std::ptr::with_exposed_provenance_mut(first), |p, n| munmap(p, n) == 0);
+        alloc_cache::put_run(
+            first_arena,
+            std::ptr::with_exposed_provenance_mut(first),
+            2048,
+            |p, n| munmap(p, n) == 0,
+        );
         __breenix_malloc_release_cached();
     }
 }
@@ -64,7 +73,9 @@ fn interim_calloc_clears_only_recycled_storage() {
         free(small);
         let reused = calloc(128, 1);
         assert_eq!(reused, small);
-        assert!(std::slice::from_raw_parts(reused, 128).iter().all(|&b| b == 0));
+        assert!(std::slice::from_raw_parts(reused, 128)
+            .iter()
+            .all(|&b| b == 0));
         assert_eq!(CLEARS.load(Relaxed), 128);
         free(reused);
         free(large);
@@ -85,7 +96,9 @@ fn interim_realloc_claims_and_releases_adjacent_slots() {
         free(free_slot);
         let grown = realloc(p, 180);
         assert_eq!(grown, p);
-        assert!(std::slice::from_raw_parts(grown, 64).iter().all(|&b| b == 0xa5));
+        assert!(std::slice::from_raw_parts(grown, 64)
+            .iter()
+            .all(|&b| b == 0xa5));
         assert!(malloc_usable_size(grown) >= 180);
         grown.write_bytes(0x5a, 180);
         let next = malloc(64);

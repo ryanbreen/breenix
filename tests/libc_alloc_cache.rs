@@ -1,6 +1,7 @@
-pub fn getpid() -> i32 {
-    std::process::id() as i32
-}
+#![allow(dead_code)] // Host fixture also drives the public allocation entry points.
+include!("fixtures/libc_malloc_host.rs");
+use allocation_string as string;
+
 #[path = "../libs/libbreenix-libc/src/stdlib/alloc_cache.rs"]
 mod alloc_cache;
 

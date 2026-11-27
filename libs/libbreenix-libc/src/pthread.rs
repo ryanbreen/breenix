@@ -510,6 +510,7 @@ pub unsafe fn startup(envp: *const *const u8) {
 #[no_mangle]
 pub unsafe extern "C" fn __breenix_after_fork() {
     let process = pid();
+    crate::stdlib::alloc_cache::after_fork(process);
     if PROCESS.load(Acquire) == process || !RUNTIME_READY.load(Acquire) {
         return;
     }
@@ -533,6 +534,18 @@ pub unsafe extern "C" fn __breenix_after_fork() {
     PROCESS.store(process, Release);
     crate::mqueue::after_fork();
 }
+/// Allocation may run before libc startup, or on a thread created outside
+/// pthread. These paths have no initialized descriptor to read.
+pub(crate) fn malloc_thread_id() -> u32 {
+    if RUNTIME_READY.load(Acquire) {
+        let thread = unsafe { descriptor_from_tp() };
+        if !thread.is_null() {
+            return unsafe { (*thread).id.load(Relaxed) };
+        }
+    }
+    tid()
+}
+
 unsafe fn current_id() -> u32 {
     let p = current();
     if p.is_null() {
@@ -830,6 +843,9 @@ pub unsafe extern "C" fn pthread_create(
     if out.is_null() {
         return EINVAL;
     }
+    // Also repair the library before starting a sibling in a process created
+    // by a direct fork syscall that bypassed the libc child hook.
+    __breenix_after_fork();
     if current().is_null() {
         return EAGAIN;
     }

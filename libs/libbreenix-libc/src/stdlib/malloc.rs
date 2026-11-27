@@ -36,13 +36,23 @@ unsafe fn map(len: usize) -> *mut u8 {
 
 #[no_mangle]
 pub unsafe extern "C" fn malloc(size: usize) -> *mut u8 {
+    allocate(size, false)
+}
+
+unsafe fn allocate(size: usize, zeroed: bool) -> *mut u8 {
     if size > LIMIT {
         set_errno(ENOMEM);
         return core::ptr::null_mut();
     }
     // malloc(0) returns a unique block that may be passed to free.
     if let Some(class) = alloc_cache::class(size.max(1)) {
-        if let Some((ptr, tag)) = alloc_cache::take(class, |len| map(len)) {
+        let map_arena = |len| map(len);
+        let block = if zeroed {
+            alloc_cache::take_zeroed(class, map_arena, size)
+        } else {
+            alloc_cache::take(class, map_arena)
+        };
+        if let Some((ptr, tag)) = block {
             let h = header(ptr);
             *h = size;
             *h.add(1) = tag;
@@ -92,7 +102,7 @@ pub unsafe extern "C" fn free(ptr: *mut u8) {
     let h = header(ptr);
     let tag = *h.add(1);
     if alloc_cache::is_arena_tag(tag) {
-        alloc_cache::put(tag, ptr, |base, len| unmap(base, len));
+        alloc_cache::put_run(tag, ptr, *h, |base, len| unmap(base, len));
     } else if tag != 0 {
         // An over-aligned block: the mapping base stores the full length.
         let base = core::ptr::with_exposed_provenance_mut::<usize>(tag);
@@ -108,12 +118,7 @@ pub unsafe extern "C" fn calloc(n: usize, size: usize) -> *mut u8 {
         set_errno(ENOMEM);
         return core::ptr::null_mut();
     };
-    let p = malloc(total);
-    if !p.is_null() {
-        // Recycled blocks keep their old contents.
-        crate::string::memset(p, 0, total);
-    }
-    p
+    allocate(total, true)
 }
 
 /// A size of 0 is treated as a request for a minimal block, so realloc(p, 0) frees p
@@ -130,8 +135,7 @@ pub unsafe extern "C" fn realloc(ptr: *mut u8, size: usize) -> *mut u8 {
     let h = header(ptr);
     let old = *h;
     let tag = *h.add(1);
-    if alloc_cache::is_arena_tag(tag) && size.max(1) <= alloc_cache::block_capacity(tag) {
-        *h = size;
+    if alloc_cache::is_arena_tag(tag) && alloc_cache::resize(tag, ptr, h, size) {
         return ptr;
     }
     let new = malloc(size);
@@ -224,7 +228,7 @@ pub unsafe extern "C" fn malloc_usable_size(ptr: *mut u8) -> usize {
     let h = header(ptr);
     let tag = *h.add(1);
     if alloc_cache::is_arena_tag(tag) {
-        alloc_cache::block_capacity(tag)
+        alloc_cache::block_capacity(tag, *h)
     } else {
         *h
     }

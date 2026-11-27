@@ -37,10 +37,16 @@ mod native {
 pub mod syscall {
     pub mod nr {
         pub const MADVISE: u64 = 0;
+        pub const FUTEX: u64 = 1;
     }
 }
 
 pub mod raw {
+    pub unsafe fn syscall6(number: u64, _: u64, _: u64, _: u64, _: u64, _: u64, _: u64) -> u64 {
+        assert_eq!(number, crate::syscall::nr::FUTEX);
+        unreachable!("bld links on one thread")
+    }
+
     pub unsafe fn syscall3(number: u64, addr: u64, len: u64, advice: u64) -> u64 {
         assert_eq!(number, crate::syscall::nr::MADVISE);
         crate::native::madvise(addr as *mut u8, len as usize, advice as i32) as u64
@@ -59,6 +65,11 @@ fn set_errno(value: i32) {
 fn errno() -> i32 {
     ERRNO.with(|errno| errno.get())
 }
+fn malloc_thread_id() -> u32 {
+    // The linker probe has one thread and never forks.
+    1
+}
+
 fn getpid() -> i32 {
     unsafe { native::getpid() }
 }

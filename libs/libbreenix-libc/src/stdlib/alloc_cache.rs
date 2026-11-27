@@ -1,46 +1,92 @@
-//! Size-class arenas for malloc. Each mapping has a bitmap of live slots and an
-//! intrusive link. Freeing a slot needs no allocation, including during contention.
-use core::ptr;
-use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
+//! Size-class arenas for malloc. Allocation uses the head of a per-class
+//! partial list. The separate list of all arenas supports cache release and
+//! provides the authoritative links for rebuilding the indexes after fork.
+use core::ptr::{self, null_mut};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering::*};
+use libbreenix::syscall::{nr, raw};
 
 pub(super) const ALIGNMENT: usize = 16;
-pub(super) const HEADER: usize = 2 * core::mem::size_of::<usize>();
+pub(super) const HEADER: usize = 2 * size_of::<usize>();
 const CLASSES: usize = 12; // 16, 32, ... 32768 bytes
 const MAX_ARENA_BYTES: usize = 256 * 1024;
 const PAGE_SIZE: usize = 4096;
-const LOCKED: u64 = 1 << 63;
 const ARENA_TAG: usize = 1;
+const WAITERS: u32 = 1 << 31;
+const FUTEX_PRIVATE: u64 = 128;
 
 #[repr(C, align(16))]
 struct Arena {
-    next: AtomicPtr<Arena>,
+    all: Links,
+    partial: Links,
+    // Live slots (including the continuation slots of a grown block).
     live: AtomicU64,
-    touched: AtomicU64,
+    // Pages that may still need discarding, and slots ever exposed to callers.
+    touched: u64,
+    used: u64,
+    // A free reentering the owner defers its edit until the next acquisition.
+    deferred: AtomicU64,
     class: usize,
 }
 
-static OWNER: AtomicU64 = AtomicU64::new(0);
-static HEADS: [AtomicPtr<Arena>; CLASSES] = [const { AtomicPtr::new(ptr::null_mut()) }; CLASSES];
+#[derive(Default)]
+struct Links {
+    next: AtomicPtr<Arena>,
+    prev: *mut Arena,
+}
 
-struct Guard(u64);
+static OWNER: AtomicU32 = AtomicU32::new(0);
+static PROCESS: AtomicU32 = AtomicU32::new(0);
+static DEFERRED: AtomicBool = AtomicBool::new(false);
+static ALL: [AtomicPtr<Arena>; CLASSES] = [const { AtomicPtr::new(null_mut()) }; CLASSES];
+static PARTIAL: [AtomicPtr<Arena>; CLASSES] = [const { AtomicPtr::new(null_mut()) }; CLASSES];
+static EMPTY: [AtomicPtr<Arena>; CLASSES] = [const { AtomicPtr::new(null_mut()) }; CLASSES];
+
+fn futex(op: u64, value: u32) {
+    unsafe {
+        raw::syscall6(
+            nr::FUTEX,
+            OWNER.as_ptr() as u64,
+            FUTEX_PRIVATE | op,
+            value.into(),
+            0,
+            0,
+            0,
+        );
+    }
+}
+
+pub(crate) struct Guard;
+
 impl Guard {
     fn acquire() -> Option<Self> {
-        // A raw fork can inherit the lock held by another thread. Publication
-        // follows arena initialization, and unlinking precedes unmapping.
-        // List and bitmap edits use a single atomic operation, so the
-        // child can take over without discarding arenas that hold live blocks.
-        // Breenix CLONE_VM members share getpid()'s thread-group identity.
-        let pid = crate::getpid() as u32 as u64;
+        let id = crate::malloc_thread_id();
+        let Err(mut observed) = OWNER.compare_exchange(0, id, Acquire, Relaxed) else {
+            return Some(Self);
+        };
+        // The public fork path repairs the cache in the child. This also
+        // handles a direct fork syscall that inherited a held lock.
+        let pid = crate::getpid() as u32;
+        if PROCESS.load(Relaxed) != pid {
+            unsafe { after_fork(pid) };
+            return Self::acquire();
+        }
         loop {
-            let old = OWNER.load(Ordering::Relaxed);
-            if old == pid | LOCKED {
+            if observed == 0 {
+                match OWNER.compare_exchange(0, id | WAITERS, Acquire, Relaxed) {
+                    Ok(_) => return Some(Self),
+                    Err(other) => observed = other,
+                }
+            } else if observed & !WAITERS == id {
+                // Same-thread reentry cannot wait for itself.
                 return None;
-            }
-            if OWNER
-                .compare_exchange_weak(old, pid | LOCKED, Ordering::Acquire, Ordering::Relaxed)
-                .is_ok()
-            {
-                return Some(Self(pid));
+            } else if observed & WAITERS == 0 {
+                match OWNER.compare_exchange(observed, observed | WAITERS, Relaxed, Relaxed) {
+                    Ok(_) => observed |= WAITERS,
+                    Err(other) => observed = other,
+                }
+            } else {
+                futex(0, observed);
+                observed = OWNER.load(Relaxed);
             }
         }
     }
@@ -48,7 +94,33 @@ impl Guard {
 
 impl Drop for Guard {
     fn drop(&mut self) {
-        OWNER.store(self.0, Ordering::Release);
+        if OWNER.swap(0, Release) & WAITERS != 0 {
+            futex(1, 1);
+        }
+    }
+}
+
+fn initialize_process() {
+    if PROCESS.load(Relaxed) == 0 {
+        PROCESS.store(crate::getpid() as u32, Relaxed);
+    }
+}
+
+pub(crate) fn before_fork() -> Option<Guard> {
+    initialize_process();
+    Guard::acquire()
+}
+
+/// Called by the sole surviving thread before child atfork callbacks. A raw
+/// fork may have copied a half-edited index. Forward ALL links are published
+/// in one store and remain valid throughout every edit.
+pub(crate) unsafe fn after_fork(pid: u32) {
+    if PROCESS.load(Relaxed) != pid {
+        if OWNER.load(Relaxed) != 0 {
+            rebuild_indexes();
+        }
+        PROCESS.store(pid, Relaxed);
+        OWNER.store(0, Release);
     }
 }
 
@@ -75,6 +147,10 @@ fn length(class: usize) -> usize {
     size_of::<Arena>() + slots(class) * stride(class)
 }
 
+fn low_bits(n: usize) -> u64 {
+    u64::MAX >> (u64::BITS as usize - n)
+}
+
 pub fn is_arena_tag(tag: usize) -> bool {
     tag & ARENA_TAG != 0
 }
@@ -83,85 +159,242 @@ fn arena(tag: usize) -> *mut Arena {
     ptr::with_exposed_provenance_mut(tag & !ARENA_TAG)
 }
 
-/// The caller holds a live slot in the arena.
-pub unsafe fn block_capacity(tag: usize) -> usize {
-    capacity((*arena(tag)).class)
+fn run_slots(class: usize, size: usize) -> usize {
+    (size.max(1) + HEADER).div_ceil(stride(class))
 }
 
-pub unsafe fn take(class: usize, map: impl FnOnce(usize) -> *mut u8) -> Option<(*mut u8, usize)> {
-    let _guard = Guard::acquire()?;
-    let head = &HEADS[class];
-    let mut arena = head.load(Ordering::Relaxed);
-    let slot_count = slots(class);
-    while !arena.is_null() {
-        let bit = (*arena).live.load(Ordering::Acquire).trailing_ones() as usize;
-        if bit < slot_count {
-            // Under the guard only this thread can set bits. A concurrent
-            // free can only clear other bits, so an atomic OR claims this one.
-            let mask = 1 << bit;
-            (*arena).touched.fetch_or(mask, Ordering::Relaxed);
-            (*arena).live.fetch_or(mask, Ordering::AcqRel);
-            return Some(block(arena, class, bit));
+pub unsafe fn block_capacity(tag: usize, requested: usize) -> usize {
+    let class = (*arena(tag)).class;
+    run_slots(class, requested) * stride(class) - HEADER
+}
+
+fn all_links(p: *mut Arena) -> *mut Links {
+    unsafe { &raw mut (*p).all }
+}
+
+fn partial_links(p: *mut Arena) -> *mut Links {
+    unsafe { &raw mut (*p).partial }
+}
+
+unsafe fn push(head: &AtomicPtr<Arena>, arena: *mut Arena, links: fn(*mut Arena) -> *mut Links) {
+    let next = head.load(Relaxed);
+    (*links(arena)).next.store(next, Relaxed);
+    (*links(arena)).prev = null_mut();
+    head.store(arena, Release);
+    if !next.is_null() {
+        (*links(next)).prev = arena;
+    }
+}
+
+unsafe fn remove(head: &AtomicPtr<Arena>, arena: *mut Arena, links: fn(*mut Arena) -> *mut Links) {
+    let next = (*links(arena)).next.load(Relaxed);
+    let prev = (*links(arena)).prev;
+    if prev.is_null() {
+        head.store(next, Release);
+    } else {
+        (*links(prev)).next.store(next, Release);
+    }
+    if !next.is_null() {
+        (*links(next)).prev = prev;
+    }
+    *links(arena) = Links::default();
+}
+
+unsafe fn rebuild_indexes() {
+    for class in 0..CLASSES {
+        PARTIAL[class].store(null_mut(), Relaxed);
+        EMPTY[class].store(null_mut(), Relaxed);
+        let mut prev = null_mut();
+        let mut arena = ALL[class].load(Acquire);
+        while !arena.is_null() {
+            (*arena).all.prev = prev;
+            (*arena).partial = Links::default();
+            let live = (*arena).live.load(Acquire);
+            if live != low_bits(slots(class)) {
+                push(&PARTIAL[class], arena, partial_links);
+            }
+            if live == 0 {
+                EMPTY[class].store(arena, Relaxed);
+            }
+            prev = arena;
+            arena = (*arena).all.next.load(Acquire);
         }
-        arena = (*arena).next.load(Ordering::Relaxed);
     }
-
-    let arena = map(length(class)).cast::<Arena>();
-    if arena.is_null() {
-        return None;
-    }
-    arena.write(Arena {
-        next: AtomicPtr::new(head.load(Ordering::Relaxed)),
-        live: AtomicU64::new(1),
-        touched: AtomicU64::new(1),
-        class,
-    });
-    head.store(arena, Ordering::Release);
-    Some(block(arena, class, 0))
 }
 
-unsafe fn block(arena: *mut Arena, class: usize, index: usize) -> (*mut u8, usize) {
-    let ptr = arena
+unsafe fn apply_deferred() {
+    if !DEFERRED.swap(false, Relaxed) {
+        return;
+    }
+    for head in &ALL {
+        let mut arena = head.load(Relaxed);
+        while !arena.is_null() {
+            let mask = (*arena).deferred.swap(0, Relaxed);
+            if mask != 0 {
+                release_slots(arena, mask);
+            }
+            arena = (*arena).all.next.load(Acquire);
+        }
+    }
+}
+
+// Keep the usual allocation entry point small. The zeroing path uses the
+// same cache operation and can clear only the recycled slots.
+pub unsafe fn take(class: usize, map: impl FnOnce(usize) -> *mut u8) -> Option<(*mut u8, usize)> {
+    take_inner(class, map, 0)
+}
+
+pub unsafe fn take_zeroed(
+    class: usize,
+    map: impl FnOnce(usize) -> *mut u8,
+    size: usize,
+) -> Option<(*mut u8, usize)> {
+    take_inner(class, map, size)
+}
+
+unsafe fn take_inner(
+    class: usize,
+    map: impl FnOnce(usize) -> *mut u8,
+    clear: usize,
+) -> Option<(*mut u8, usize)> {
+    initialize_process();
+    let guard = Guard::acquire()?;
+    if DEFERRED.load(Relaxed) {
+        apply_deferred();
+    }
+    let head = &PARTIAL[class];
+    let mut arena = head.load(Relaxed);
+    if arena.is_null() {
+        arena = map(length(class)).cast();
+        if arena.is_null() {
+            return None;
+        }
+        arena.write(Arena {
+            all: Links::default(),
+            partial: Links::default(),
+            live: AtomicU64::new(0),
+            touched: 0,
+            used: 0,
+            deferred: AtomicU64::new(0),
+            class,
+        });
+        push(&ALL[class], arena, all_links);
+        push(head, arena, partial_links);
+    }
+    if arena == EMPTY[class].load(Relaxed) {
+        EMPTY[class].store(null_mut(), Relaxed);
+    }
+    let index = (*arena).live.load(Relaxed).trailing_ones() as usize;
+    let mask = 1 << index;
+    let clear = if (*arena).used & mask != 0 { clear } else { 0 };
+    claim_slots(arena, mask);
+    let p = arena
         .cast::<u8>()
         .add(size_of::<Arena>() + index * stride(class) + HEADER);
-    (ptr, arena.expose_provenance() | ARENA_TAG)
+    drop(guard);
+    if clear != 0 {
+        crate::string::memset(p, 0, clear);
+    }
+    Some((p, arena.expose_provenance() | ARENA_TAG))
 }
 
-/// Release a slot and keep at most the head arena of this class warm on the
-/// uncontended path. A contended free leaves empty arenas for the next drain.
-pub unsafe fn put(tag: usize, block: *mut u8, unmap: impl FnOnce(*mut u8, usize) -> bool) {
-    let guard = Guard::acquire();
-    let arena = arena(tag);
+unsafe fn claim_slots(arena: *mut Arena, mask: u64) {
     let class = (*arena).class;
-    let offset = block.addr() - arena.addr() - size_of::<Arena>() - HEADER;
-    let bit = 1 << (offset / stride(class));
-    let previous = (*arena).live.fetch_and(!bit, Ordering::AcqRel);
-    // With no guard, a drain may unmap the arena as soon as we clear its last
-    // bit. Do not read anything from it after the atomic operation.
-    let Some(_guard) = guard else { return };
-    if previous == bit && HEADS[class].load(Ordering::Relaxed) != arena {
-        let mut link = &HEADS[class];
-        let mut current = link.load(Ordering::Relaxed);
-        while current != arena {
-            link = &(*current).next;
-            current = link.load(Ordering::Relaxed);
-        }
-        unlink(link, arena, class, unmap);
+    (*arena).used |= mask;
+    (*arena).touched |= mask;
+    let live = (*arena).live.load(Relaxed) | mask;
+    (*arena).live.store(live, Release);
+    if live == low_bits(slots(class)) {
+        remove(&PARTIAL[class], arena, partial_links);
     }
 }
 
-unsafe fn unlink(
-    link: &AtomicPtr<Arena>,
+unsafe fn release_slots(arena: *mut Arena, mask: u64) {
+    let class = (*arena).class;
+    let previous = (*arena).live.load(Relaxed);
+    (*arena).live.store(previous & !mask, Release);
+    if previous == low_bits(slots(class)) {
+        push(&PARTIAL[class], arena, partial_links);
+    }
+}
+
+fn slot_index(arena: *mut Arena, block: *mut u8, class: usize) -> usize {
+    (block.addr() - arena.addr() - size_of::<Arena>() - HEADER) / stride(class)
+}
+
+pub unsafe fn put_run(
+    tag: usize,
+    block: *mut u8,
+    size: usize,
+    unmap: impl FnOnce(*mut u8, usize) -> bool,
+) {
+    let arena = arena(tag);
+    let class = (*arena).class;
+    let mask = low_bits(run_slots(class, size)) << slot_index(arena, block, class);
+    let Some(_guard) = Guard::acquire() else {
+        // Only the owner can reenter; preserve the slot until we can edit
+        // both the bitmap and partial-list membership together.
+        (*arena).deferred.fetch_or(mask, Relaxed);
+        DEFERRED.store(true, Relaxed);
+        return;
+    };
+    release_slots(arena, mask);
+    if (*arena).live.load(Relaxed) == 0 {
+        if EMPTY[class].load(Relaxed).is_null() {
+            EMPTY[class].store(arena, Relaxed);
+        } else {
+            retire(arena, class, unmap);
+        }
+    }
+}
+
+pub unsafe fn resize(tag: usize, block: *mut u8, requested: *mut usize, size: usize) -> bool {
+    let arena = arena(tag);
+    let class = (*arena).class;
+    let old_slots = run_slots(class, requested.read());
+    let new_slots = run_slots(class, size);
+    if old_slots == new_slots {
+        requested.write(size);
+        return true;
+    }
+    let index = slot_index(arena, block, class);
+    if new_slots > slots(class) - index {
+        return false;
+    }
+    let Some(_guard) = Guard::acquire() else {
+        return false;
+    };
+    let change = (low_bits(old_slots) ^ low_bits(new_slots)) << index;
+    if new_slots > old_slots {
+        if (*arena).live.load(Relaxed) & change != 0 {
+            return false;
+        }
+        claim_slots(arena, change);
+        requested.write(size);
+    } else {
+        // A raw fork between these stores can retain a reserved tail, but
+        // must never inherit a header spanning slots already released.
+        requested.write(size);
+        release_slots(arena, change);
+    }
+    true
+}
+
+unsafe fn retire(
     arena: *mut Arena,
     class: usize,
     unmap: impl FnOnce(*mut u8, usize) -> bool,
 ) -> bool {
-    let next = (*arena).next.load(Ordering::Relaxed);
-    link.store(next, Ordering::Release);
+    if EMPTY[class].load(Relaxed) == arena {
+        EMPTY[class].store(null_mut(), Relaxed);
+    }
+    remove(&PARTIAL[class], arena, partial_links);
+    remove(&ALL[class], arena, all_links);
     if unmap(arena.cast(), length(class)) {
         true
     } else {
-        link.store(arena, Ordering::Release);
+        push(&ALL[class], arena, all_links);
+        push(&PARTIAL[class], arena, partial_links);
         false
     }
 }
@@ -171,31 +404,27 @@ pub unsafe fn drain(
     mut unmap: impl FnMut(*mut u8, usize) -> bool,
     mut discard: impl FnMut(*mut u8, usize) -> bool,
 ) -> usize {
+    initialize_process();
     let Some(_guard) = Guard::acquire() else {
         return 0;
     };
+    if DEFERRED.load(Relaxed) {
+        apply_deferred();
+    }
     let mut count = 0;
-    for (class, head) in HEADS.iter().enumerate() {
-        let mut link = head;
-        loop {
-            let arena = link.load(Ordering::Relaxed);
-            if arena.is_null() {
-                break;
-            }
-            let live = (*arena).live.load(Ordering::Acquire);
+    for (class, head) in ALL.iter().enumerate() {
+        let mut arena = head.load(Relaxed);
+        while !arena.is_null() {
+            let next = (*arena).all.next.load(Acquire);
+            let live = (*arena).live.load(Acquire);
             if live == 0 {
-                if unlink(link, arena, class, &mut unmap) {
-                    count += 1;
-                    continue;
-                }
-            } else if (*arena).touched.load(Ordering::Relaxed) & !live != 0
+                count += usize::from(retire(arena, class, &mut unmap));
+            } else if (*arena).touched & !live != 0
                 && discard_unused_pages(arena, class, live, &mut discard)
             {
-                // A concurrent free can only clear live bits. Keeping the
-                // snapshot lets the next drain pick up those frees.
-                (*arena).touched.store(live, Ordering::Relaxed);
+                (*arena).touched = live;
             }
-            link = &(*arena).next;
+            arena = next;
         }
     }
     count
@@ -223,7 +452,6 @@ unsafe fn discard_unused_pages(
     }
     success & discard_gap(gap_start, length(class).next_multiple_of(PAGE_SIZE))
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,6 +482,10 @@ mod tests {
         ptr::null_mut()
     }
 
+    unsafe fn put(tag: usize, block: *mut u8, unmap: impl FnOnce(*mut u8, usize) -> bool) {
+        put_run(tag, block, 1, unmap);
+    }
+
     #[test]
     fn reuse_is_bounded_and_preserves_live_blocks() {
         let _test = TEST_LOCK.lock().unwrap();
@@ -262,7 +494,7 @@ mod tests {
         unsafe {
             let (live, live_tag) = take(class, map).unwrap();
             assert!(is_arena_tag(live_tag));
-            assert_eq!(block_capacity(live_tag), 64);
+            assert_eq!(block_capacity(live_tag, 47), 64);
             live.add(16).write(0xa5);
             let blocks: Vec<_> = (1..slots(class))
                 .map(|_| take(class, no_mapping).unwrap())
