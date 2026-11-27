@@ -33,9 +33,13 @@ fn code_only(source: &str) -> String {
 }
 
 fn function_body<'a>(source: &'a str, name: &str) -> &'a str {
-    let signature = format!("fn {name}(");
-    let start = source.find(&signature).unwrap_or_else(|| panic!("find fn {name}"));
-    let open = start + source[start..].find('{').unwrap_or_else(|| panic!("open brace of {name}"));
+    block_after(source, &format!("fn {name}("))
+}
+
+/// The brace-delimited block that follows the first `marker` in `source`.
+fn block_after<'a>(source: &'a str, marker: &str) -> &'a str {
+    let start = source.find(marker).unwrap_or_else(|| panic!("find {marker:?}"));
+    let open = start + source[start..].find('{').unwrap_or_else(|| panic!("open brace after {marker:?}"));
     let mut depth = 0usize;
     for (offset, byte) in source.as_bytes()[open..].iter().enumerate() {
         match byte {
@@ -49,7 +53,7 @@ fn function_body<'a>(source: &'a str, name: &str) -> &'a str {
             _ => {}
         }
     }
-    panic!("close brace of {name}")
+    panic!("close brace after {marker:?}")
 }
 
 fn between<'a>(source: &'a str, from: &str, to: &str) -> &'a str {
@@ -83,13 +87,26 @@ fn address_space_switches_issue_no_tlb_invalidation() {
     assert!(offenders.is_empty(), "switch paths still invalidate the TLB: {offenders:?}");
 
     // The one invalidation an ASID scheme needs on a switch is the local one
-    // after a generation rollover, and it is the allocator's to ask for.
+    // after a generation rollover, and it is the allocator's to ask for. The
+    // host model clears its own simulated TLB, so only this reading can see
+    // whether the kernel's rollover arm really invalidates: inside
+    // `bind_process_root`'s `if flush_local` arm, a local `tlbi vmalle1`
+    // (the same instruction in `init_asids` does not count), then a DSB that
+    // completes it, then an ISB, before the tagged root is returned.
     let bind = function_body(&ttbr0, "bind_process_root");
-    assert!(bind.contains("flush_local"), "bind must honour the allocator's local-flush request");
-    assert!(
-        ttbr0.contains("tlbi vmalle1\"") || ttbr0.contains("\"tlbi vmalle1\","),
-        "the rollover flush is a local `tlbi vmalle1`, not the broadcast `vmalle1is`"
-    );
+    let arm = block_after(bind, "if flush_local");
+    let at = |needle: &str| arm.find(needle);
+    let tlbi = at("\"tlbi vmalle1\"");
+    let dsb = ["\"dsb nsh\"", "\"dsb ish\"", "\"dsb sy\""]
+        .iter()
+        .filter_map(|barrier| at(barrier))
+        .filter(|&offset| tlbi.is_some_and(|tlbi| offset > tlbi))
+        .min();
+    let isb = at("\"isb\"").filter(|&offset| dsb.is_some_and(|dsb| offset > dsb));
+    assert!(tlbi.is_some(), "the rollover arm issues no local `tlbi vmalle1`");
+    assert!(!arm.contains("vmalle1is"), "the rollover flush is local, not the broadcast `vmalle1is`");
+    assert!(dsb.is_some(), "the rollover arm's `tlbi vmalle1` is not completed by a DSB after it");
+    assert!(isb.is_some(), "the rollover arm has no ISB after its completing DSB");
 }
 
 /// An ASID only separates non-global entries: user leaves must set nG, and
