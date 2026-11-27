@@ -100,3 +100,8 @@ required-features = ["std"]
 name = "ssh_cipher_throughput"
 path = "../../tests/ssh_cipher_throughput.rs"
 required-features = ["std"]
+
+[[test]]
+name = "chacha20_poly1305_vectors"
+path = "../../tests/chacha20_poly1305_vectors.rs"
+required-features = ["std"]
