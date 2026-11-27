@@ -3,7 +3,7 @@ use std::string::{String, ToString};
 use crate::live_flash::{Action, Manifest, choose};
 
 fn manifest(token: char, digest: &str, size: usize) -> String {
-    format!("BREENIX-FLASH 1\n{}\n{}\n{size}\n{digest}\n", token.to_string().repeat(32), "a".repeat(40))
+    format!("BREENIX-FLASH 1\n{}\n{}\n{size}\n{digest}\nba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\n", token.to_string().repeat(32), "a".repeat(40))
 }
 
 #[test]
@@ -45,4 +45,12 @@ fn restart_at_each_publication_boundary_cannot_launch_twice_or_commit_early() {
     for (pending, attempted, acknowledged, retained, action) in cases {
         assert_eq!(choose(pending, attempted, acknowledged, retained), action);
     }
+}
+
+#[test]
+fn an_armed_trial_names_the_exact_base_slot_note() {
+    let text = manifest('1', &"a".repeat(64), 3);
+    let staged = Manifest::parse(text.as_bytes()).unwrap();
+    assert!(staged.matches_base(b"abc"));
+    assert!(!staged.matches_base(b"abd"));
 }
