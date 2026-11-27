@@ -69,7 +69,8 @@ class BtopSsh(unittest.TestCase):
             CHANNEL_STARTS=(FIXTURES / "channel_starts.rs").read_text(),
             GLOBAL_REQUEST="pub(super) " + function(channel, "handle_client_global_request"),
             CHANNEL_REQUEST="pub(super) " + function(channel, "server_handle_channel_request"),
-            SHUTTLE=function(daemon, "data_shuttle"),
+            SHUTTLE=next(line for line in daemon.splitlines() if line.startswith("const RELAY_CHUNK"))
+            + "\n" + function(daemon, "data_shuttle"),
             PTY_SIZE=function(daemon, "set_pty_size") if "fn set_pty_size(" in daemon else "",
         )
 

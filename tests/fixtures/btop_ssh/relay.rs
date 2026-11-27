@@ -121,6 +121,7 @@ pub mod ssh {
         pub fn flush_relay(&mut self) -> Result<(), ()> { Ok(()) }
         pub fn relay_output_pending(&self) -> bool { false }
         pub fn relay_can_queue(&self) -> bool { true }
+        pub fn packet_ready(&mut self) -> bool { false }
     }
     pub mod channel {
         use super::*;

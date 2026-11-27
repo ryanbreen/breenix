@@ -17,7 +17,7 @@ use super::{SshBuf, SshError, BSSH_VERSION};
 use super::{
     SSH_MSG_CHANNEL_CLOSE, SSH_MSG_CHANNEL_DATA, SSH_MSG_CHANNEL_EXTENDED_DATA, SSH_MSG_CHANNEL_EOF, SSH_MSG_CHANNEL_OPEN,
     SSH_MSG_CHANNEL_REQUEST, SSH_MSG_CHANNEL_SUCCESS, SSH_MSG_CHANNEL_WINDOW_ADJUST,
-    SSH_MSG_DISCONNECT, SSH_MSG_GLOBAL_REQUEST, SSH_MSG_IGNORE, SSH_MSG_KEXINIT, SSH_MSG_NEWKEYS,
+    SSH_MSG_DISCONNECT, SSH_MSG_GLOBAL_REQUEST, SSH_MSG_IGNORE, SSH_MSG_KEXINIT, SSH_MSG_KEX_ECDH_INIT, SSH_MSG_NEWKEYS,
     SSH_MSG_UNIMPLEMENTED,
 };
 
@@ -94,8 +94,12 @@ impl<'a> ServerSession<'a> {
         }
         self.kex.peer_kexinit = peer_kexinit;
 
-        // Receive KEX init (type 30)
+        // Receive KEX init (type 30). The only message accepted here, so a
+        // peer cannot shift sequence numbers before strict KEX takes effect.
         let kex_init = self.io.recv_packet().map_err(|_| SshError::Io)?;
+        if kex_init.first() != Some(&SSH_MSG_KEX_ECDH_INIT) {
+            return Err(SshError::Protocol("expected KEX_ECDH_INIT"));
+        }
 
         // Dispatch: hybrid C_INIT is 1216 bytes, X25519 Q_C is 32 bytes
         let c_init_len = if kex_init.len() > 5 {
@@ -141,6 +145,10 @@ impl<'a> ServerSession<'a> {
 
         self.io.set_cipher_recv(cipher_c2s); // client→server = our recv
         self.io.set_cipher_send(cipher_s2c); // server→client = our send
+        // Both NEWKEYS have passed and nothing was sent or received since.
+        if kex::strict_kex(&self.kex.peer_kexinit, &self.kex.my_kexinit) {
+            self.io.reset_sequence_numbers();
+        }
 
         // Send EXT_INFO (RFC 8308) to advertise supported pubkey algorithms.
         // Without this, modern OpenSSH (which disables ssh-rsa SHA-1 by default)
@@ -394,12 +402,15 @@ impl<'a> ServerSession<'a> {
             {
                 return Err(SshError::Protocol("channel close timeout"));
             }
-            let mut fds = [crate::io::PollFd::new(
-                self.io.fd(),
-                crate::io::poll_events::POLLIN,
-            )];
-            if crate::io::poll(&mut fds, 100).map_err(|_| SshError::Io)? == 0 {
-                continue;
+            // A packet already taken off the socket will not wake poll.
+            if !self.io.packet_ready() {
+                let mut fds = [crate::io::PollFd::new(
+                    self.io.fd(),
+                    crate::io::poll_events::POLLIN,
+                )];
+                if crate::io::poll(&mut fds, 100).map_err(|_| SshError::Io)? == 0 {
+                    continue;
+                }
             }
             match self.recv_data() {
                 Err(SshError::Disconnected) if self.channel_closed() => break,
@@ -536,6 +547,9 @@ impl ClientSession {
 
         self.io.set_cipher_send(cipher_c2s); // client→server = our send
         self.io.set_cipher_recv(cipher_s2c); // server→client = our recv
+        if kex::strict_kex(&self.kex.my_kexinit, &self.kex.peer_kexinit) {
+            self.io.reset_sequence_numbers();
+        }
 
         // 3. Authentication
         auth::client_request_service(&mut self.io)?;

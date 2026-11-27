@@ -1,34 +1,39 @@
 //! SSH key exchange: curve25519-sha256 (RFC 8731)
 //!
 //! Implements the Elliptic Curve Diffie-Hellman key exchange using Curve25519,
-//! with SHA-256 as the hash function. Derives session keys for AES-128-CTR
-//! encryption and HMAC-SHA256 integrity.
+//! with SHA-256 as the hash function. Derives session keys for the
+//! negotiated cipher, and negotiates strict KEX (draft-ietf-sshm-strict-kex).
 
 use crate::crypto::mlkem;
 use crate::crypto::rand::Csprng;
 use crate::crypto::sha256::sha256;
 use crate::crypto::x25519::{x25519, x25519_basepoint};
 
-use super::cipher::SshCipher;
+use super::cipher::{CipherKind, SshCipher};
 use super::keys::{HostKey, ServerHostKeyInfo};
 use super::packet::PacketIo;
 use super::SshBuf;
 use super::*;
 
 /// Algorithms offered by BSSH.
-// ext-info-s tells clients we'll send SSH_MSG_EXT_INFO after NEWKEYS (RFC 8308)
-pub const KEX_ALGORITHMS: &str = "mlkem768x25519-sha256,curve25519-sha256,ext-info-s";
+// ext-info-s tells clients we'll send SSH_MSG_EXT_INFO after NEWKEYS (RFC 8308).
+// The kex-strict-s markers offer strict KEX under both of its names.
+pub const KEX_ALGORITHMS: &str =
+    "mlkem768x25519-sha256,curve25519-sha256,ext-info-s,kex-strict-s-v00@openssh.com,kex-strict-s";
 /// Algorithms offered by the BSSH client.
 ///
 /// Keep this in sync with the client-side key exchange implementation. The
 /// client currently implements Curve25519 only; advertising ML-KEM here causes
 /// OpenSSH servers to negotiate a hybrid exchange that the client cannot speak.
-pub const CLIENT_KEX_ALGORITHMS: &str = "curve25519-sha256,ext-info-c";
+pub const CLIENT_KEX_ALGORITHMS: &str =
+    "curve25519-sha256,ext-info-c,kex-strict-c-v00@openssh.com,kex-strict-c";
 /// The server's host key is Ed25519 (RFC 8709).
 pub const HOST_KEY_ALGORITHMS: &str = "ssh-ed25519";
 /// Host-key algorithms the client can verify.
 pub const CLIENT_HOST_KEY_ALGORITHMS: &str = "ssh-ed25519,rsa-sha2-256,rsa-sha2-512";
-pub const CIPHERS: &str = "aes256-gcm@openssh.com,aes128-ctr";
+/// Preference order: ChaCha20-Poly1305 is constant-time without hardware
+/// support, so it comes first.
+pub const CIPHERS: &str = "chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-ctr";
 pub const MACS: &str = "hmac-sha2-256";
 pub const COMPRESSION: &str = "none";
 
@@ -385,53 +390,61 @@ fn compute_exchange_hash_inner(
     sha256(&data).to_vec()
 }
 
-/// Select each direction independently, in client preference order (RFC 4253).
-/// GCM's integrity is implicit (draft-miller-sshm-aes-gcm); CTR needs HMAC.
-pub fn negotiate_ciphers(client: &[u8], server: &[u8]) -> Result<(bool, bool), SshError> {
-    fn lists(packet: &[u8]) -> Result<Vec<&str>, SshError> {
-        if packet.len() < 17 || packet[0] != SSH_MSG_KEXINIT {
-            return Err(SshError::Protocol("bad KEXINIT"));
-        }
-        let mut pos = 17;
-        (0..10).map(|_| {
-            let bytes = SshBuf::get_string(packet, &mut pos)
-                .ok_or(SshError::Protocol("bad algorithm list"))?;
-            core::str::from_utf8(bytes).map_err(|_| SshError::Protocol("bad algorithm name"))
-        }).collect()
+fn name_lists(packet: &[u8]) -> Result<Vec<&str>, SshError> {
+    if packet.len() < 17 || packet[0] != SSH_MSG_KEXINIT {
+        return Err(SshError::Protocol("bad KEXINIT"));
     }
-    let c = lists(client)?;
-    let s = lists(server)?;
+    let mut pos = 17;
+    (0..10).map(|_| {
+        let bytes = SshBuf::get_string(packet, &mut pos)
+            .ok_or(SshError::Protocol("bad algorithm list"))?;
+        core::str::from_utf8(bytes).map_err(|_| SshError::Protocol("bad algorithm name"))
+    }).collect()
+}
+
+/// Select each direction independently, in client preference order (RFC 4253).
+/// AEAD ciphers carry their own integrity; CTR needs HMAC-SHA256.
+pub fn negotiate_ciphers(client: &[u8], server: &[u8]) -> Result<(CipherKind, CipherKind), SshError> {
+    let c = name_lists(client)?;
+    let s = name_lists(server)?;
     let choose = |index: usize| {
         c[index].split(',').find(|name| !name.is_empty() && s[index].split(',').any(|other| other == *name))
             .ok_or(SshError::Protocol("no common algorithm"))
     };
-    let mut gcm = [false; 2];
+    let mut kinds = [CipherKind::Aes128Ctr; 2];
     for direction in 0..2 {
-        gcm[direction] = match choose(2 + direction)? {
-            "aes256-gcm@openssh.com" => true,
-            "aes128-ctr" => {
-                if choose(4 + direction)? != "hmac-sha2-256" {
-                    return Err(SshError::Protocol("unsupported MAC"));
-                }
-                false
-            }
-            _ => return Err(SshError::Protocol("unsupported cipher")),
-        };
+        let kind = CipherKind::from_name(choose(2 + direction)?)
+            .ok_or(SshError::Protocol("unsupported cipher"))?;
+        if !kind.is_aead() && choose(4 + direction)? != "hmac-sha2-256" {
+            return Err(SshError::Protocol("unsupported MAC"));
+        }
         if choose(6 + direction)? != "none" {
             return Err(SshError::Protocol("unsupported compression"));
         }
+        kinds[direction] = kind;
     }
-    Ok((gcm[0], gcm[1]))
+    Ok((kinds[0], kinds[1]))
 }
 
-/// RFC 4253 section 7.2 KDF; RFC 5647 uses a 32-byte key and 12-byte IV.
+/// Strict KEX applies when the client's and the server's initial KEXINIT
+/// offer the same name of it: kex-strict-c with kex-strict-s, or the
+/// pre-standard -v00@openssh.com pair. Never a standard name with a
+/// pre-standard one.
+pub fn strict_kex(client: &[u8], server: &[u8]) -> bool {
+    let (Ok(c), Ok(s)) = (name_lists(client), name_lists(server)) else { return false };
+    let offers = |list: &str, name: &str| list.split(',').any(|offered| offered == name);
+    (offers(c[0], "kex-strict-c") && offers(s[0], "kex-strict-s"))
+        || (offers(c[0], "kex-strict-c-v00@openssh.com") && offers(s[0], "kex-strict-s-v00@openssh.com"))
+}
+
+/// RFC 4253 section 7.2 KDF, in the sizes each cipher kind takes.
 pub fn derive_keys(
     shared_secret: &[u8],
     exchange_hash: &[u8],
     session_id: &[u8],
     k_as_string: bool,
-    gcm_c2s: bool,
-    gcm_s2c: bool,
+    c2s: CipherKind,
+    s2c: CipherKind,
 ) -> (SshCipher, SshCipher) {
     let derive = |letter: u8, len: usize| -> Vec<u8> {
         let mut data = Vec::with_capacity(256);
@@ -467,19 +480,16 @@ pub fn derive_keys(
         }
     };
 
-    let direction = |iv_letter, key_letter, mac_letter, gcm| {
-        if gcm {
-            SshCipher::new_gcm(
-                &derive(key_letter, 32).try_into().unwrap(),
-                &derive(iv_letter, 12).try_into().unwrap(),
-            )
-        } else {
-            SshCipher::new(
-                &derive(key_letter, 16).try_into().unwrap(),
-                &derive(iv_letter, 16).try_into().unwrap(),
-                &derive(mac_letter, 32).try_into().unwrap(),
-            )
+    let direction = |iv_letter, key_letter, mac_letter, kind: CipherKind| {
+        let (key, iv, mac) = kind.key_sizes();
+        let mut material = derive(key_letter, key);
+        if iv > 0 {
+            material.extend_from_slice(&derive(iv_letter, iv));
         }
+        if mac > 0 {
+            material.extend_from_slice(&derive(mac_letter, mac));
+        }
+        SshCipher::new(kind, &material)
     };
-    (direction(b'A', b'C', b'E', gcm_c2s), direction(b'B', b'D', b'F', gcm_s2c))
+    (direction(b'A', b'C', b'E', c2s), direction(b'B', b'D', b'F', s2c))
 }
