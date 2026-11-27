@@ -1,17 +1,24 @@
 #!/usr/bin/env python3
 """Run the R240 workload series or its native macOS references."""
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
 from pathlib import Path
+import platform
 import shlex
 import shutil
 import subprocess
+import sys
 import time
 
+from series import write_series
+from tables import DEFERRED_DISK, collect_receipts
+
 RUNS = 5
-DEFERRED_DISK = ("sequential", "small-files", "walk", "fsync")
+SYSTEMS = ("breenix", "linux", "mac")
+TARGETS = ("x86-metal", "arm64-qemu", "mac")
 MIB = 1024 * 1024
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -53,6 +60,11 @@ def main(args):
         raise ValueError("choose Breenix SSH or the macOS loopback reference")
     args.out = args.out.resolve()
     source, data, remote = inputs(args)
+    system = "breenix" if remote else "mac"
+    target = getattr(args, "target", None) or ("x86-metal" if remote else "mac")
+    hardware = getattr(args, "hardware", None) or (target if remote else platform.machine())
+    metadata = series_metadata(args, system, target, hardware)
+    at = utc_timestamp(datetime.now(timezone.utc))
     requested = args.cases.split(",") if args.cases else None
     bsync_host = None
     if remote and (requested is None or "network" in requested):
@@ -60,6 +72,14 @@ def main(args):
             raise ValueError("network requires a Mac bsync executable")
         bsync_host = bsync_login(args.host)
     args.out.mkdir(parents=True, exist_ok=True)
+    try:
+        return run_workloads(args, source, data, remote, requested, bsync_host, metadata)
+    finally:
+        path = save_series(args.out, [args.run], args.out, args.run, at, metadata)
+        print(f"Series: {path}", flush=True)
+
+
+def run_workloads(args, source, data, remote, requested, bsync_host, metadata):
     reports = Path("/var/lib/bbench") if remote else args.out
     data = data / args.run
 
@@ -87,13 +107,15 @@ def main(args):
         fixture = args.fixture.resolve()
         linker = args.linker.resolve()
         driver = Path(args.driver).resolve()
-    (args.out / "toolchain.txt").write_bytes(
-        run([fixture / "bin/rustc", "-vV"], check=False).stdout
-        if not remote else (current + "\n").encode()
-    )
+    toolchain = (current + "\n").encode() if remote else run(
+        [fixture / "bin/rustc", "-vV"], check=False
+    ).stdout
+    (args.out / "toolchain.txt").write_bytes(toolchain)
+    if not metadata["toolchain"]:
+        lines = toolchain.decode().splitlines()
+        metadata["toolchain"] = lines[0] if lines else None
 
     rustc = str(fixture / "bin/rustc")
-    compiler = [args.bcargo, rustc] if args.wrap_rustc else [rustc]
     target = str(fixture / "targets/x86_64-breenix.json")
     sysroot = str(fixture / "sysroot")
     env = os.environ.copy()
@@ -126,9 +148,9 @@ def main(args):
     noop_target = Path(args.noop_target) if args.noop_target else data / "noop-artifacts"
     noop = cargo("userland", "yes", "dev-box", noop_target)
     cases = {
-        "rustc-version": lambda _: ["command", data, *compiler, "-vV"],
+        "rustc-version": lambda _: ["command", data, rustc, "-vV"],
         "hello-object": lambda sample: [
-            "command", source / "toolchain/rust-host/k5/corpus", *compiler,
+            "command", source / "toolchain/rust-host/k5/corpus", rustc,
             "--edition=2021", "--sysroot", sysroot, "-Dwarnings", "--emit=obj",
             "--target", target, "--crate-type=lib", "hello.rs", "-o", data / f"{sample}.o",
         ],
@@ -302,9 +324,84 @@ def network_series(args, data, run, bsync_host):
         run(["/bin/rm", "-f", destination / "payload"])
 
 
-if __name__ == "__main__":
+def series_metadata(args, system, target, hardware):
+    return {
+        "system": system, "target": target, "hardware": hardware,
+        "kernelCommit": getattr(args, "kernel_commit", None),
+        "userlandCommit": getattr(args, "userland_commit", None),
+        "toolchain": getattr(args, "toolchain", None),
+        "session": getattr(args, "session", None),
+        "pr": getattr(args, "pr", None),
+        "note": getattr(args, "note", None),
+    }
+
+
+def utc_timestamp(value):
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def parse_timestamp(value):
+    try:
+        timestamp = datetime.fromisoformat(value)
+        if timestamp.tzinfo is not None:
+            return utc_timestamp(timestamp)
+    except ValueError:
+        pass
+    raise argparse.ArgumentTypeError("expected an ISO 8601 timestamp with a UTC offset")
+
+
+def run_id(value):
+    if not value or not all(c.isascii() and (c.isalnum() or c == "-") for c in value):
+        raise argparse.ArgumentTypeError("expected an ID containing letters, digits or hyphens")
+    return value
+
+
+def add_metadata_options(parser, importing=False):
+    parser.add_argument("--target", choices=TARGETS, required=importing)
+    parser.add_argument("--hardware", required=importing, help="benchmark machine or VM description")
+    parser.add_argument("--kernel-commit")
+    parser.add_argument("--userland-commit")
+    parser.add_argument("--toolchain", help="override the run's detected toolchain")
+    parser.add_argument("--session")
+    parser.add_argument("--pr", type=int)
+    parser.add_argument("--note")
+
+
+def save_series(receipts, prefixes, directory, series_id, at, metadata, *, require_receipts=False):
+    upload_case = "scp-upload" if metadata["system"] == "mac" else "bsync-upload"
+    groups = collect_receipts(receipts, prefixes, upload_case)
+    if require_receipts and not groups:
+        raise ValueError(f"no bbench receipts for {', '.join(prefixes)} in {receipts}")
+    return write_series(directory, series_id, at, metadata, groups)
+
+
+def convert(argv):
+    parser = argparse.ArgumentParser(prog="run.py series-from-receipts",
+                                     description="Convert receipts for one run to schema v1.")
+    parser.add_argument("receipts", type=Path)
+    parser.add_argument("--run", action="append", type=run_id, required=True,
+                        help="receipt prefix, repeat for a continuation of the same run")
+    parser.add_argument("--id", type=run_id, help="series ID (defaults to the first receipt prefix)")
+    parser.add_argument("--out", required=True, type=Path, help="local series output directory")
+    parser.add_argument("--at", type=parse_timestamp, required=True, help="original run timestamp")
+    parser.add_argument("--system", choices=SYSTEMS, required=True)
+    add_metadata_options(parser, importing=True)
+    args = parser.parse_args(argv)
+    metadata = series_metadata(args, args.system, args.target, args.hardware)
+    try:
+        path = save_series(args.receipts, args.run, args.out, args.id or args.run[0],
+                           args.at, metadata, require_receipts=True)
+    except (KeyError, TypeError, ValueError) as error:
+        parser.error(str(error))
+    print(f"Series: {path}")
+    return 0
+
+
+def cli(argv):
+    if argv and argv[0] == "series-from-receipts":
+        return convert(argv[1:])
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--run", required=True, help="unique run prefix, letters/digits/hyphens")
+    parser.add_argument("--run", required=True, type=run_id, help="unique run prefix")
     parser.add_argument("--out", required=True, type=Path, help="local receipt and log directory")
     parser.add_argument("--probe", required=True, help="absolute path to bbench")
     parser.add_argument(
@@ -318,17 +415,18 @@ if __name__ == "__main__":
     parser.add_argument("--data", help="absolute path to the scratch directory on Breenix")
     parser.add_argument("--noop-target", help="absolute target directory from a completed dev-box build of yes")
     parser.add_argument("--bcargo", help="absolute path to bcargo on Breenix")
-    parser.add_argument("--wrap-rustc", action="store_true",
-                        help="use the PR 3 bcargo loader workaround for direct rustc probes")
     parser.add_argument("--fixture", type=Path, help="Mac E25 twin fixture")
     parser.add_argument("--linker", type=Path, help="Mac E25 bld")
     parser.add_argument("--driver", help="absolute path to the matching Breenix driver ELF")
     parser.add_argument("--bsync", default=shutil.which("bsync"), help="Mac bsync executable")
-    args = parser.parse_args()
-    if not args.run or not all(c.isascii() and (c.isalnum() or c == "-") for c in args.run):
-        parser.error("invalid --run")
+    add_metadata_options(parser)
+    args = parser.parse_args(argv)
     if args.host and not args.bcargo:
         parser.error("remote runs require --bcargo")
-    if args.wrap_rustc and not args.host:
-        parser.error("--wrap-rustc requires a Breenix endpoint")
-    raise SystemExit(main(args))
+    if args.target and (args.target == "mac") == bool(args.host):
+        parser.error("--target must match the selected native or SSH run")
+    return main(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(cli(sys.argv[1:]))
