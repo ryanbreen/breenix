@@ -404,11 +404,21 @@ fn name_lists(packet: &[u8]) -> Result<Vec<&str>, SshError> {
 
 /// Select each direction independently, in client preference order (RFC 4253).
 /// AEAD ciphers carry their own integrity; CTR needs HMAC-SHA256.
+///
+/// chacha20-poly1305 is eligible only under strict KEX: without it a peer
+/// cannot detect packets deleted from the start of the encrypted stream
+/// (the Terrapin attack), so such a client gets its next common cipher.
 pub fn negotiate_ciphers(client: &[u8], server: &[u8]) -> Result<(CipherKind, CipherKind), SshError> {
     let c = name_lists(client)?;
     let s = name_lists(server)?;
+    let strict = strict_kex(client, server);
+    let eligible = |index: usize, name: &str| {
+        !name.is_empty()
+            && (strict || CipherKind::from_name(name) != Some(CipherKind::ChaCha20Poly1305))
+            && s[index].split(',').any(|other| other == name)
+    };
     let choose = |index: usize| {
-        c[index].split(',').find(|name| !name.is_empty() && s[index].split(',').any(|other| other == *name))
+        c[index].split(',').find(|name| eligible(index, name))
             .ok_or(SshError::Protocol("no common algorithm"))
     };
     let mut kinds = [CipherKind::Aes128Ctr; 2];
