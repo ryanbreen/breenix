@@ -902,6 +902,10 @@ STD_BINARIES=(
     # Shells
     "bsh"
 
+    # Terminal utilities
+    "clear"
+    "reset"
+
     # Window manager and system monitor
     "bwm"
     "btop"

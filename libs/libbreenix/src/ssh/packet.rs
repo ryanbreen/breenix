@@ -3,6 +3,8 @@
 //! Handles reading and writing SSH packets over a TCP stream, including
 //! padding, sequence numbers, and (after key exchange) encryption and MAC.
 
+use std::collections::VecDeque;
+
 use crate::crypto::rand::Csprng;
 use crate::errno::Errno;
 use crate::error::Error;
@@ -16,6 +18,9 @@ const MAX_PACKET_SIZE: usize = 256 * 1024;
 
 /// Minimum padding length per RFC 4253.
 const MIN_PADDING: usize = 4;
+
+/// Stop pulling more relay traffic once the socket's userspace backlog is full.
+const RELAY_HIGH_WATER: usize = 64 * 1024;
 
 /// SSH packet reader/writer with sequence tracking.
 pub struct PacketIo {
@@ -33,6 +38,8 @@ pub struct PacketIo {
     /// block is decrypted once, when the length becomes available.
     incoming: Vec<u8>,
     incoming_length: Option<usize>,
+    relay_flags: Option<i32>,
+    outgoing: VecDeque<u8>,
 }
 
 impl PacketIo {
@@ -47,6 +54,8 @@ impl PacketIo {
             cipher_recv: None,
             incoming: Vec::new(),
             incoming_length: None,
+            relay_flags: None,
+            outgoing: VecDeque::new(),
         }
     }
 
@@ -115,13 +124,15 @@ impl PacketIo {
         self.rng.fill(&mut pad);
         packet.extend_from_slice(&pad);
 
-        if let Some(ref mut cipher) = self.cipher_send {
-            let mac = cipher.seal(self.seq_send, &mut packet)?;
-            self.write_all(&packet)?;
-            self.write_all(&mac)?;
+        let mac = self.cipher_send.as_mut()
+            .map(|cipher| cipher.seal(self.seq_send, &mut packet))
+            .transpose()?;
+        if self.relay_flags.is_some() {
+            self.outgoing.extend(packet);
+            self.outgoing.extend(mac.into_iter().flatten());
         } else {
-            // Plaintext
             self.write_all(&packet)?;
+            if let Some(mac) = mac { self.write_all(&mac)?; }
         }
 
         self.seq_send = self.seq_send.wrapping_add(1);
@@ -148,11 +159,54 @@ impl PacketIo {
     /// Read only bytes already available, retaining a fragmented packet so
     /// the relay can keep draining process output and delivering process input.
     pub fn try_recv_packet(&mut self) -> Result<Option<Vec<u8>>, Error> {
+        if self.relay_flags.is_some() {
+            return self.read_packet();
+        }
         let flags = crate::io::fcntl_getfl(self.fd)? as i32;
         crate::io::fcntl_setfl(self.fd, flags | crate::io::status_flags::O_NONBLOCK)?;
         let result = self.read_packet();
         crate::io::fcntl_setfl(self.fd, flags)?;
         result
+    }
+
+    /// Queue writes during the process relay so TCP backpressure cannot block
+    /// reads from the remote peer or the terminal.
+    pub fn start_relay(&mut self) -> Result<(), Error> {
+        let flags = crate::io::fcntl_getfl(self.fd)? as i32;
+        crate::io::fcntl_setfl(self.fd, flags | crate::io::status_flags::O_NONBLOCK)?;
+        self.relay_flags = Some(flags);
+        Ok(())
+    }
+
+    pub fn relay_output_pending(&self) -> bool {
+        !self.outgoing.is_empty()
+    }
+
+    pub fn relay_can_queue(&self) -> bool {
+        self.outgoing.len() < RELAY_HIGH_WATER
+    }
+
+    pub fn flush_relay(&mut self) -> Result<(), Error> {
+        while !self.outgoing.is_empty() {
+            let bytes = self.outgoing.as_slices().0;
+            match socket::send(self.fd, bytes) {
+                Ok(0) => return Err(Error::Os(Errno::EIO)),
+                Ok(n) => { self.outgoing.drain(..n); }
+                Err(Error::Os(Errno::EAGAIN | Errno::EINTR)) => return Ok(()),
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+
+    pub fn finish_relay(&mut self) -> Result<(), Error> {
+        if self.relay_output_pending() {
+            return Err(Error::Os(Errno::EAGAIN));
+        }
+        if let Some(flags) = self.relay_flags.take() {
+            crate::io::fcntl_setfl(self.fd, flags)?;
+        }
+        Ok(())
     }
 
     fn read_packet(&mut self) -> Result<Option<Vec<u8>>, Error> {

@@ -219,8 +219,11 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
                     revents |= events::POLLIN;
                 }
             }
-            if (events & events::POLLOUT) != 0 {
-                // Master can always write (goes through line discipline)
+            if (events & events::POLLOUT) != 0
+                && !pair.has_slave_hung_up()
+                && !pair.master_output_stopped()
+                && pair.ldisc.lock().input_room()
+            {
                 revents |= events::POLLOUT;
             }
             // POLLHUP only when slave was opened and then all slave FDs closed.

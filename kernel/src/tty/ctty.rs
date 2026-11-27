@@ -32,20 +32,17 @@ pub enum TtyRef {
 pub struct TermCtl {
     pub session: Option<ProcessId>,
     pub fg_pgrp: Option<ProcessId>,
-    last_hangup_fg: Option<ProcessId>,
 }
 impl TermCtl {
     pub const fn new() -> Self {
         Self {
             session: None,
             fg_pgrp: None,
-            last_hangup_fg: None,
         }
     }
     pub fn attach(&mut self, sid: ProcessId, pgid: ProcessId) {
         self.session = Some(sid);
         self.fg_pgrp = Some(pgid);
-        self.last_hangup_fg = None;
     }
     pub fn detach(&mut self) -> Option<ProcessId> {
         self.session = None;
@@ -314,10 +311,11 @@ pub fn finish_exit(exit: LeaderExit) {
 }
 
 fn finish_session_exit(exit: SessionExit) {
-    // Descriptor retirement may have hung up the master. Complete a deferred
-    // hangup too, before deciding whether Linux's saved-pgrp path applies.
+    // A master hangup delivers both signals itself, including when it was
+    // deferred during descriptor retirement.
     if matches!(&exit.tty, TtyRef::Pty(pair) if pair.master_closed()) {
         hangup_ref(&exit.tty);
+        return;
     }
     let (detached, fg) = {
         let mut guard = crate::process::manager();
@@ -328,7 +326,7 @@ fn finish_session_exit(exit: SessionExit) {
                 (true, fg)
             } else {
                 let saved = match &exit.tty {
-                    TtyRef::Pty(pair) => pair.ctl.lock().last_hangup_fg,
+                    TtyRef::Pty(_) => None,
                     TtyRef::Vt(_) => exit.fg,
                 };
                 (false, saved)
@@ -345,8 +343,6 @@ fn finish_session_exit(exit: SessionExit) {
     }
     if let Some(fg) = fg {
         crate::syscall::signal::signal_pgrp_from_kernel(fg, crate::signal::constants::SIGHUP);
-        // Linux resumes the saved foreground group when fd close already
-        // hung up the controlling terminal; a live PTY disassociation does not.
         if !detached {
             crate::syscall::signal::signal_pgrp_from_kernel(fg, crate::signal::constants::SIGCONT);
         }
@@ -395,16 +391,20 @@ fn hangup_ref(tty: &TtyRef) {
     let Some(sid) = tty.session() else {
         return;
     };
-    match tty {
-        TtyRef::Pty(pair) => {
-            let mut ctl = pair.ctl.lock();
-            let fg = ctl.detach();
-            ctl.last_hangup_fg = fg;
-        }
-        TtyRef::Vt(_) => { tty.detach(); }
-    }
+    let fg = match tty {
+        TtyRef::Pty(pair) => pair.ctl.lock().detach(),
+        TtyRef::Vt(_) => { tty.detach(); None }
+    };
     clear_session(pm, sid, tty.id());
     drop(guard);
-    crate::syscall::signal::signal_process_from_kernel(sid, crate::signal::constants::SIGHUP);
-    crate::syscall::signal::signal_process_from_kernel(sid, crate::signal::constants::SIGCONT);
+    use crate::signal::constants::{SIGHUP, SIGCONT};
+    use crate::syscall::signal::{signal_pgrp_from_kernel, signal_process_from_kernel};
+    if let Some(fg) = fg {
+        signal_pgrp_from_kernel(fg, SIGHUP);
+        signal_pgrp_from_kernel(fg, SIGCONT);
+    }
+    if fg != Some(sid) {
+        signal_process_from_kernel(sid, SIGHUP);
+        signal_process_from_kernel(sid, SIGCONT);
+    }
 }

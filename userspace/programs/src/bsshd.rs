@@ -28,7 +28,9 @@ use std::os::fd::{FromRawFd, IntoRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use libbreenix::io;
+use libbreenix::{io, signal, termios};
+use libbreenix::errno::Errno;
+use libbreenix::error::Error;
 use libbreenix::process;
 use libbreenix::pty;
 use libbreenix::socket::{self, SockAddrIn, AF_INET, SOCK_STREAM};
@@ -38,6 +40,7 @@ use libbreenix::ssh::host_keys;
 use libbreenix::ssh::machine_state;
 use libbreenix::ssh::keys::{fingerprint_text, HostKey};
 use libbreenix::ssh::transport::ServerSession;
+use libbreenix::ssh::SshError;
 use libbreenix::types::Fd;
 
 const DEFAULT_PORT: u16 = 22;
@@ -321,8 +324,9 @@ fn handle_connection(fd: Fd, host_key: &HostKey) {
 
     let exec_command = session.take_exec_command();
     if let Some(command) = exec_command.as_ref().filter(|_| !pty_requested) {
-        let status = run_exec_command(&mut session, &account, command);
-        if let Err(e) = session.finish(status) {
+        if let Err(e) = run_exec_command(&mut session, &account, command)
+            .and_then(|status| session.finish(status))
+        {
             eprintln!("bsshd: exec close failed: {:?}", e);
         }
         return;
@@ -334,7 +338,14 @@ fn handle_connection(fd: Fd, host_key: &HostKey) {
     let mut child_pipe_fds = None;
     let (master_fd, input_fd, slave_path) = if pty_requested {
         match pty::openpty() {
-            Ok((master, path)) => (master, master, path),
+            Ok((master, path)) => {
+                if let Err(error) = set_pty_size(master, session.pty_size()) {
+                    eprintln!("bsshd: initial PTY size: {error}");
+                    let _ = io::close(master);
+                    return;
+                }
+                (master, master, path)
+            }
             Err(e) => {
                 eprintln!("bsshd: openpty() failed: {:?}", e);
                 return;
@@ -361,6 +372,7 @@ fn handle_connection(fd: Fd, host_key: &HostKey) {
     match process::fork() {
         Ok(process::ForkResult::Child) => {
             // Child: close master, set up slave as stdin/stdout/stderr
+            let _ = io::close(fd);
             let _ = io::close(master_fd);
             if input_fd != master_fd {
                 let _ = io::close(input_fd);
@@ -374,6 +386,11 @@ fn handle_connection(fd: Fd, host_key: &HostKey) {
             }
 
             if pty_requested {
+                // Init ignores HUP while detaching its console. A new login
+                // must terminate when its own controlling terminal hangs up.
+                if signal::sigaction(signal::SIGHUP, Some(&signal::Sigaction::default_action()), None).is_err() {
+                    process::exit(1);
+                }
                 // A PTY login owns a new session and its controlling terminal.
                 if process::setsid().is_err() { process::exit(1); }
                 // Open the slave PTY
@@ -440,7 +457,7 @@ fn handle_connection(fd: Fd, host_key: &HostKey) {
                 let _ = io::close(input_read);
                 let _ = io::close(output_write);
             }
-            let input_closed = data_shuttle(&mut session, master_fd, input_fd, pty_requested);
+            let (input_closed, connected) = data_shuttle(&mut session, master_fd, input_fd, pty_requested);
             println!("bsshd: session ended for user '{}'", username);
 
             // Restore ownership while the master still keeps the slave alive.
@@ -456,14 +473,15 @@ fn handle_connection(fd: Fd, host_key: &HostKey) {
             if input_fd != master_fd && !input_closed {
                 let _ = io::close(input_fd);
             }
-            let mut status = 0;
-            let shell_status = match process::waitpid(child_pid.raw() as i32, &mut status, 0) {
-                Ok(_) if process::wifexited(status) => process::wexitstatus(status),
-                Ok(_) if process::wifsignaled(status) => 128 + process::wtermsig(status),
-                _ => 1,
-            };
-            if let Err(e) = session.finish(shell_status) {
-                eprintln!("bsshd: shell close failed: {:?}", e);
+            if connected {
+                match wait_for_shell(&mut session, child_pid.raw() as i32) {
+                    Ok(status) => {
+                        if let Err(e) = session.finish(status) {
+                            eprintln!("bsshd: shell close failed: {:?}", e);
+                        }
+                    }
+                    Err(e) => eprintln!("bsshd: session closed while waiting for shell: {:?}", e),
+                }
             }
         }
         Err(e) => {
@@ -482,7 +500,7 @@ fn handle_connection(fd: Fd, host_key: &HostKey) {
     session.close();
 }
 
-fn run_exec_command(session: &mut ServerSession, account: &Account, command: &str) -> i32 {
+fn run_exec_command(session: &mut ServerSession, account: &Account, command: &str) -> Result<i32, SshError> {
     println!("bsshd: exec request");
 
     let (read_fd, write_fd) = match io::pipe() {
@@ -490,7 +508,7 @@ fn run_exec_command(session: &mut ServerSession, account: &Account, command: &st
         Err(e) => {
             let msg = format!("bsshd: pipe failed: {:?}\n", e);
             let _ = session.send_data(msg.as_bytes());
-            return 1;
+            return Ok(1);
         }
     };
 
@@ -499,24 +517,25 @@ fn run_exec_command(session: &mut ServerSession, account: &Account, command: &st
         Err(_) => {
             let _ = io::close(read_fd);
             let _ = io::close(write_fd);
-            return 1;
+            return Ok(1);
         }
     };
     let (error_read, error_write) = match io::pipe() {
         Ok(pipe) => pipe,
         Err(_) => {
             for fd in [read_fd, write_fd, input_read, input_write] { let _ = io::close(fd); }
-            return 1;
+            return Ok(1);
         }
     };
     // Backpressure on command input must not prevent draining its output.
     if io::fcntl_setfl(input_write, io::status_flags::O_NONBLOCK).is_err() {
         for fd in [read_fd, write_fd, error_read, error_write, input_read, input_write] { let _ = io::close(fd); }
-        return 1;
+        return Ok(1);
     }
 
     match process::fork() {
         Ok(process::ForkResult::Child) => {
+            let _ = io::close(session.io().fd());
             let _ = io::close(read_fd);
             let _ = io::close(error_read);
             let _ = io::close(input_write);
@@ -550,22 +569,11 @@ fn run_exec_command(session: &mut ServerSession, account: &Account, command: &st
             let _ = io::close(write_fd);
             let _ = io::close(error_write);
             let _ = io::close(input_read);
-            let relay = exec_shuttle(session, [read_fd, error_read], input_write);
-
-            let mut status = 0i32;
-            let status = match process::waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0) {
-                Ok(_) if process::wifexited(status) => process::wexitstatus(status),
-                Ok(_) if process::wifsignaled(status) => 128 + process::wtermsig(status),
-                Ok(_) => 1,
-                Err(_) => 1,
-            };
-            match relay {
-                Ok(()) => status,
-                Err(why) => {
-                    eprintln!("bsshd: exec relay failed: {}", why);
-                    1
-                }
-            }
+            exec_shuttle(session, [read_fd, error_read], input_write).map_err(|why| {
+                eprintln!("bsshd: exec relay failed: {}", why);
+                SshError::Io
+            })?;
+            wait_for_shell(session, child_pid.raw() as i32)
         }
         Err(e) => {
             let _ = io::close(error_read);
@@ -576,7 +584,7 @@ fn run_exec_command(session: &mut ServerSession, account: &Account, command: &st
             let _ = io::close(write_fd);
             let msg = format!("bsshd: fork failed: {:?}\n", e);
             let _ = session.send_data(msg.as_bytes());
-            1
+            Ok(1)
         }
     }
 }
@@ -680,72 +688,183 @@ fn c_string(value: &str) -> Vec<u8> {
     bytes
 }
 
-/// Shuttle data between the SSH channel and the PTY master fd.
-///
-/// Uses poll() to multiplex between:
-/// - Data from the PTY master (shell output) → send to SSH client
-/// - Data from the SSH client → write to PTY master (shell input)
-fn data_shuttle(session: &mut ServerSession, master_fd: Fd, input_fd: Fd, has_pty: bool) -> bool {
-    let mut input_eof = false;
-    let ssh_fd = session.io().fd();
+fn set_pty_size(master: Fd, (cols, rows): (u32, u32)) -> Result<(), Error> {
+    termios::set_winsize(master, &termios::Winsize {
+        ws_col: cols.min(u32::from(u16::MAX)) as u16,
+        ws_row: rows.min(u32::from(u16::MAX)) as u16,
+        ..Default::default()
+    })
+}
 
+/// Relay a shell's input and output. Return which pipe end we closed and
+/// whether the channel is still connected for an exit status.
+fn data_shuttle(session: &mut ServerSession, master_fd: Fd, input_fd: Fd, has_pty: bool) -> (bool, bool) {
+    use io::poll_events::{POLLERR, POLLHUP, POLLIN, POLLNVAL, POLLOUT, POLLRDHUP};
+    let mut input_closed = false;
+    let result = (|| {
+        let flags = io::fcntl_getfl(input_fd).map_err(|_| SshError::Io)? as i32;
+        io::fcntl_setfl(input_fd, flags | io::status_flags::O_NONBLOCK).map_err(|_| SshError::Io)?;
+        session.io().start_relay().map_err(|_| SshError::Io)?;
+        let ssh_fd = session.io().fd();
+        let unused = Fd::from_raw(u64::MAX);
+        let mut size = session.pty_size();
+        let mut pending = std::collections::VecDeque::new();
+        let mut eof_sent = false;
+        let mut pending_eof = false;
+        let mut output_done = false;
+
+        loop {
+            let queue_ready = session.io().relay_can_queue();
+            let output_pending = session.io().relay_output_pending();
+            if output_done && !output_pending { break; }
+            let capacity = if queue_ready { session.send_capacity().min(4096) } else { 0 };
+            let output = if capacity > 0 && !output_done { master_fd } else { unused };
+            let input = if !input_closed && !pending.is_empty() { input_fd } else { unused };
+            let socket_events = (if queue_ready { POLLIN } else { POLLRDHUP })
+                | (if output_pending { POLLOUT } else { 0 });
+            let mut fds = [
+                io::PollFd::new(output, POLLIN),
+                io::PollFd::new(ssh_fd, socket_events),
+                io::PollFd::new(input, POLLOUT),
+            ];
+            match io::poll(&mut fds, 100) {
+                Err(Error::Os(Errno::EINTR)) => continue,
+                Err(_) => return Err(SshError::Io),
+                Ok(_) => {}
+            }
+
+            let ssh_events = fds[1].revents;
+            if ssh_events & (POLLERR | POLLHUP | POLLNVAL | POLLRDHUP) != 0 {
+                return Err(SshError::Disconnected);
+            }
+            if ssh_events & POLLOUT != 0 {
+                session.io().flush_relay().map_err(|_| SshError::Io)?;
+            }
+            let mut new_input = false;
+            if ssh_events & POLLIN != 0 {
+                if let Some(data) = session.try_recv_data_uncredited()? {
+                    if input_closed {
+                        session.consume_input(data.len())?;
+                    } else if !data.is_empty() {
+                        pending.extend(data);
+                        new_input = true;
+                    }
+                }
+                if has_pty && session.pty_size() != size {
+                    size = session.pty_size();
+                    set_pty_size(master_fd, size).map_err(|_| SshError::Io)?;
+                }
+            }
+            if session.input_eof() && !eof_sent && !input_closed {
+                if has_pty {
+                    // Deliver the PTY's existing end-of-input convention
+                    // behind any channel data already accepted.
+                    pending.push_back(4);
+                    pending_eof = true;
+                    new_input = true;
+                    eof_sent = true;
+                } else if pending.is_empty() {
+                    let _ = io::close(input_fd);
+                    input_closed = true;
+                    eof_sent = true;
+                }
+            }
+
+            if new_input || fds[2].revents & (POLLOUT | POLLERR | POLLHUP) != 0 {
+                match io::write(input_fd, pending.as_slices().0) {
+                    Ok(0) => return Err(SshError::Io),
+                    Ok(n) => {
+                        pending.drain(..n);
+                        let local_eof = pending_eof && pending.is_empty();
+                        session.consume_input(n - usize::from(local_eof))?;
+                        pending_eof &= !local_eof;
+                    }
+                    Err(Error::Os(Errno::EAGAIN | Errno::EINTR)) => {}
+                    // A PTY master EIO means the slave went away. Keep
+                    // draining its last output below.
+                    Err(Error::Os(Errno::EIO)) if has_pty => {
+                        session.consume_input(pending.len() - usize::from(pending_eof))?;
+                        pending.clear();
+                        input_closed = true;
+                    }
+                    Err(_) if !has_pty => {
+                        let _ = io::close(input_fd);
+                        input_closed = true;
+                        session.consume_input(pending.len())?;
+                        pending.clear();
+                    }
+                    Err(_) => return Err(SshError::Io),
+                }
+            }
+
+            if fds[0].revents & POLLIN != 0 {
+                let mut bytes = [0; 4096];
+                match io::read(master_fd, &mut bytes[..capacity]) {
+                    Ok(0) | Err(Error::Os(Errno::EIO)) => output_done = true,
+                    Ok(n) => session.send_data(&bytes[..n])?,
+                    Err(Error::Os(Errno::EAGAIN | Errno::EINTR)) => {}
+                    Err(_) => return Err(SshError::Io),
+                }
+            } else if fds[0].revents & POLLHUP != 0 {
+                output_done = true;
+            } else if fds[0].revents & (POLLERR | POLLNVAL) != 0 {
+                return Err(SshError::Io);
+            }
+        }
+        session.io().finish_relay().map_err(|_| SshError::Io)
+    })();
+    if result.is_err() && session.io().relay_output_pending() {
+        // An explicit channel CLOSE can have queued an acknowledgment.
+        let _ = session.io().flush_relay();
+    }
+    (input_closed, result.is_ok())
+}
+
+/// A shell can close its terminal descriptors before it exits. Keep
+/// answering connection requests while waiting for its status.
+fn wait_for_shell(session: &mut ServerSession, pid: i32) -> Result<i32, SshError> {
+    use io::poll_events::{POLLERR, POLLHUP, POLLIN, POLLNVAL, POLLOUT, POLLRDHUP};
+    session.io().start_relay().map_err(|_| SshError::Io)?;
+    let mut status = 0;
+    let mut exit = None;
     loop {
-        // Keep processing window adjustments while peer output credit is exhausted.
-        let capacity = session.send_capacity().min(4096);
-        let mut fds = [
-            io::PollFd::new(if capacity > 0 { master_fd } else { Fd::from_raw(u64::MAX) }, io::poll_events::POLLIN),
-            io::PollFd::new(ssh_fd, io::poll_events::POLLIN),
-        ];
-
-        // 100ms timeout — keeps the loop responsive
+        if exit.is_none() {
+            match process::waitpid(pid, &mut status, process::WNOHANG) {
+                Ok(child) if child.raw() != 0 => {
+                    exit = Some(if process::wifexited(status) {
+                        process::wexitstatus(status)
+                    } else if process::wifsignaled(status) {
+                        128 + process::wtermsig(status)
+                    } else { 1 });
+                }
+                Ok(_) | Err(Error::Os(Errno::EINTR)) => {}
+                Err(_) => return Err(SshError::Io),
+            }
+        }
+        let pending = session.io().relay_output_pending();
+        if let Some(status) = exit.filter(|_| !pending) {
+            session.io().finish_relay().map_err(|_| SshError::Io)?;
+            return Ok(status);
+        }
+        let events = (if session.io().relay_can_queue() { POLLIN } else { POLLRDHUP })
+            | (if pending { POLLOUT } else { 0 });
+        let mut fds = [io::PollFd::new(session.io().fd(), events)];
         match io::poll(&mut fds, 100) {
-            Ok(0) => continue, // Timeout, no data on either fd
-            Err(_) => break,
-            _ => {}
+            Err(Error::Os(Errno::EINTR)) => continue,
+            Err(_) => return Err(SshError::Io),
+            Ok(_) => {}
         }
-
-        // Check PTY master for shell output
-        if capacity > 0 && fds[0].revents & io::poll_events::POLLIN != 0 {
-            let mut pty_buf = [0u8; 4096];
-            match io::read(master_fd, &mut pty_buf[..capacity]) {
-                Ok(n) if n > 0 => {
-                    if session.send_data(&pty_buf[..n]).is_err() {
-                        break;
-                    }
-                }
-                Ok(_) => break,
-                Err(_) => break,
+        let events = fds[0].revents;
+        if events & (POLLERR | POLLHUP | POLLNVAL | POLLRDHUP) != 0 {
+            return Err(SshError::Disconnected);
+        }
+        if events & POLLOUT != 0 {
+            session.io().flush_relay().map_err(|_| SshError::Io)?;
+        }
+        if events & POLLIN != 0 {
+            if let Some(data) = session.try_recv_data_uncredited()? {
+                session.consume_input(data.len())?;
             }
-        }
-
-        // Check SSH socket for client input
-        if fds[1].revents & io::poll_events::POLLIN != 0 {
-            match session.recv_data() {
-                Ok(Some(data)) => {
-                    let _ = io::write(input_fd, &data);
-                }
-                Ok(None) => {
-                    if session.input_eof() && !input_eof {
-                        input_eof = true;
-                        if has_pty {
-                            let _ = io::write(input_fd, &[4]);
-                        } else {
-                            let _ = io::close(input_fd);
-                        }
-                    }
-                }
-                Err(libbreenix::ssh::SshError::Disconnected) => break,
-                Err(_) => break,
-            }
-        }
-
-        // Check for hangup/error on either fd
-        if (capacity > 0 && fds[0].revents & io::poll_events::POLLHUP != 0
-            && fds[0].revents & io::poll_events::POLLIN == 0)
-            || fds[1].revents & io::poll_events::POLLHUP != 0
-        {
-            break;
         }
     }
-    input_eof && !has_pty
 }

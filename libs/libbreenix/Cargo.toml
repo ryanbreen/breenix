@@ -80,3 +80,8 @@ required-features = ["std"]
 name = "atomic_file"
 path = "../../tests/atomic_file.rs"
 required-features = ["std"]
+
+[[test]]
+name = "reset_termios"
+path = "../../tests/reset_termios.rs"
+required-features = ["std"]
