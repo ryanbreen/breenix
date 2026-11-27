@@ -138,7 +138,8 @@ class RustLinkImageStageTest(unittest.TestCase):
         self.assertEqual(another.stat().st_size, before)
 
     def test_stage_rust_link_matches_records_aarch64(self):
-        arm_fixture = Path.home() / 'Library/Caches/breenix-e25/k6/aarch64'
+        arm_fixture = Path(os.environ.get(
+            'BREENIX_K6_AARCH64_FIXTURE', Path.home() / 'Library/Caches/breenix-e25/k6/aarch64'))
         image = self.image('rust-link-arm.img')
         artifacts = self.root / 'userspace/programs/target/rust-link/aarch64'
         files = {name: write(artifacts, name, b'\x7fELF' + name.encode())
@@ -168,7 +169,12 @@ class RustLinkImageStageTest(unittest.TestCase):
             expected[f'{prefix}/{name}'] = digest((RECORDS / 'k6' / name).read_bytes())
 
         before = image.stat().st_size
-        staged = self.stage(self.root, image, 'rust-link', arch='aarch64', BREENIX_K6_FIXTURE=str(arm_fixture))
+        with patch.object(Path, 'home', return_value=self.root / 'empty-home'):
+            staged = self.stage(
+                self.root, image, 'rust-link', arch='aarch64',
+                BREENIX_K6_AARCH64_FIXTURE=str(arm_fixture),
+                BREENIX_K6_FIXTURE=str(self.root / 'wrong-arch-fixture'),
+            )
         self.assertEqual(staged, expected)
         for path, sha in expected.items():
             with self.subTest(path=path):
