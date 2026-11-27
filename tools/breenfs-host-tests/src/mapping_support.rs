@@ -30,7 +30,7 @@ struct MapInner {
     pages: PageVec<CachePage>,
     poisoned: PageVec<()>,
     bindings: Vec<BindingRec>,
-    populating: Vec<(u64, u64)>,
+    populating: Vec<Claim>,
     writable_shared: usize,
     writeback_cursor: u64,
     writeback_epoch: u64,
@@ -83,7 +83,8 @@ std::thread_local! {
         core::cell::RefCell::new((0, None));
 }
 /// Run `hook(n)` before this thread's nth cache-frame allocation from now on,
-/// so a test can mutate a file between population's page reads. `None` ends it.
+/// so a test can mutate a file between population's page reads. An empty
+/// option clears the hook.
 pub fn on_cache_allocation(hook: Option<Box<dyn FnMut(usize)>>) {
     ALLOCATION_HOOK.with(|slot| *slot.borrow_mut() = (0, hook));
 }
