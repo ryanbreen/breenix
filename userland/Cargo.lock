@@ -10,6 +10,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "breengel-abi"
+version = "0.1.0"
+
+[[package]]
+name = "bsshd"
+version = "0.1.0"
+dependencies = [
+ "libbreenix",
+]
+
+[[package]]
 name = "btest"
 version = "0.1.0"
 dependencies = [
@@ -24,6 +35,23 @@ version = "0.1.0"
 [[package]]
 name = "bu-sys"
 version = "0.1.0"
+
+[[package]]
+name = "gpu-abi"
+version = "0.1.0"
+
+[[package]]
+name = "input-abi"
+version = "0.1.0"
+
+[[package]]
+name = "libbreenix"
+version = "0.1.0"
+dependencies = [
+ "breengel-abi",
+ "gpu-abi",
+ "input-abi",
+]
 
 [[package]]
 name = "yes"

@@ -320,37 +320,43 @@ fn handle_connection(fd: Fd, host_key: &HostKey) {
         eprintln!("bsshd: auth log: {}", why);
     }
 
-    let command = match session.wait_for_channel() {
-        Ok(command) => command,
-        Err(e) => {
-            eprintln!("bsshd: channel setup failed: {:?}", e);
-            return;
-        }
-    };
-    let exec_command = match command {
-        SessionCommand::Shell => None,
-        SessionCommand::Exec(command) => Some(command),
-        SessionCommand::Sftp => {
-            let target_first = session.client_version().starts_with("SSH-2.0-OpenSSH_");
-            if let Err(e) = run_piped_program(&mut session, &account, PipedProgram::Sftp { target_first })
-                .and_then(|status| session.finish(status))
-            {
-                eprintln!("bsshd: SFTP close failed: {:?}", e);
+    loop {
+        let result = session.wait_for_channel()
+            .and_then(|command| run_channel(&mut session, &account, command));
+        match result {
+            Ok(()) => {}
+            Err(SshError::Disconnected) => return,
+            Err(error) => {
+                eprintln!("bsshd: session channel failed: {error:?}");
+                return;
             }
-            return;
+        }
+    }
+}
+
+fn run_channel(session: &mut ServerSession, account: &Account, command: SessionCommand) -> Result<(), SshError> {
+    let program = match command {
+        SessionCommand::Sftp => PipedProgram::Sftp {
+            target_first: session.client_version().starts_with("SSH-2.0-OpenSSH_"),
+        },
+        SessionCommand::Exec(ref command) if session.pty_term().is_none() => PipedProgram::Exec(command),
+        command => {
+            let exec_command = match command {
+                SessionCommand::Exec(command) => Some(command),
+                _ => None,
+            };
+            let shell_status = run_shell(session, account, exec_command)?;
+            return session.finish(shell_status);
         }
     };
+    let status = run_piped_program(session, account, program)?;
+    session.finish(status)
+}
+
+fn run_shell(session: &mut ServerSession, account: &Account, exec_command: Option<String>) -> Result<i32, SshError> {
+    let fd = session.io().fd();
     let term = session.pty_term();
     let pty_requested = term.is_some();
-    if let Some(command) = exec_command.as_ref().filter(|_| !pty_requested) {
-        if let Err(e) = run_piped_program(&mut session, &account, PipedProgram::Exec(command))
-            .and_then(|status| session.finish(status))
-        {
-            eprintln!("bsshd: exec close failed: {:?}", e);
-        }
-        return;
-    }
-
     // Shell input and output are separate pipes without a requested PTY.
     let mut child_pipe_fds = None;
     let (master_fd, input_fd, slave_path) = if pty_requested {
@@ -359,26 +365,26 @@ fn handle_connection(fd: Fd, host_key: &HostKey) {
                 if let Err(error) = set_pty_size(master, session.pty_size()) {
                     eprintln!("bsshd: initial PTY size: {error}");
                     let _ = io::close(master);
-                    return;
+                    return Ok(1);
                 }
                 (master, master, path)
             }
             Err(e) => {
                 eprintln!("bsshd: openpty() failed: {:?}", e);
-                return;
+                return Ok(1);
             }
         }
     } else {
         let (input_read, input_write) = match io::pipe() {
             Ok(pipe) => pipe,
-            Err(_) => return,
+            Err(_) => return Ok(1),
         };
         let (output_read, output_write) = match io::pipe() {
             Ok(pipe) => pipe,
             Err(_) => {
                 let _ = io::close(input_read);
                 let _ = io::close(input_write);
-                return;
+                return Ok(1);
             }
         };
         child_pipe_fds = Some((input_read, output_write));
@@ -420,7 +426,7 @@ fn handle_connection(fd: Fd, host_key: &HostKey) {
 
                 if libbreenix::termios::set_controlling_terminal(slave_fd).is_err()
                     || libbreenix::termios::tcsetpgrp(slave_fd, process::getpid().unwrap().raw() as i32).is_err()
-                    || session::grant_terminal(slave_fd.raw() as i32, &account).is_err()
+                    || session::grant_terminal(slave_fd.raw() as i32, account).is_err()
                 { process::exit(1); }
 
                 // Set PTY to translate \n → \r\n (ONLCR) for SSH terminals
@@ -442,7 +448,7 @@ fn handle_connection(fd: Fd, host_key: &HostKey) {
             }
 
             // Run the account's shell as the account, as a login shell.
-            let environment = match enter_account(&account, term.as_deref()) {
+            let environment = match enter_account(account, term.as_deref()) {
                 Ok(environment) => environment,
                 Err(why) => {
                     eprintln!("bsshd: session for '{}' refused: {}", account.name, why);
@@ -468,14 +474,14 @@ fn handle_connection(fd: Fd, host_key: &HostKey) {
             println!(
                 "bsshd: shell started (pid {}) for user '{}'",
                 child_pid.raw(),
-                username
+                account.name
             );
             if let Some((input_read, output_write)) = child_pipe_fds {
                 let _ = io::close(input_read);
                 let _ = io::close(output_write);
             }
-            let (input_closed, connected) = data_shuttle(&mut session, master_fd, input_fd, pty_requested);
-            println!("bsshd: session ended for user '{}'", username);
+            let (input_closed, connected) = data_shuttle(session, master_fd, input_fd, pty_requested);
+            println!("bsshd: session ended for user '{}'", account.name);
 
             // Restore ownership while the master still keeps the slave alive.
             if pty_requested {
@@ -491,14 +497,9 @@ fn handle_connection(fd: Fd, host_key: &HostKey) {
                 let _ = io::close(input_fd);
             }
             if connected {
-                match wait_for_shell(&mut session, child_pid.raw() as i32) {
-                    Ok(status) => {
-                        if let Err(e) = session.finish(status) {
-                            eprintln!("bsshd: shell close failed: {:?}", e);
-                        }
-                    }
-                    Err(e) => eprintln!("bsshd: session closed while waiting for shell: {:?}", e),
-                }
+                wait_for_shell(session, child_pid.raw() as i32)
+            } else {
+                Err(SshError::Disconnected)
             }
         }
         Err(e) => {
@@ -511,10 +512,9 @@ fn handle_connection(fd: Fd, host_key: &HostKey) {
                 let _ = io::close(input_read);
                 let _ = io::close(output_write);
             }
+            Ok(1)
         }
     }
-
-    session.close();
 }
 
 /// Re-executing bsshd clears the address space before SFTP handles any
@@ -732,6 +732,7 @@ fn exec_shuttle(session: &mut ServerSession, outputs: [Fd; 2], input: Fd) -> Res
                     }
                     Ok(Some(data)) => session.consume_input(data.len()).map_err(|e| format!("discard data: {:?}", e))?,
                     Ok(None) => {}
+                    Err(SshError::Disconnected) if session.channel_closed() => return Ok(()),
                     Err(e) => return Err(format!("receive channel: {:?}", e)),
                 }
             }
@@ -792,8 +793,8 @@ fn data_shuttle(session: &mut ServerSession, master_fd: Fd, input_fd: Fd, has_pt
             if output_done && !output_pending { break; }
             let capacity = if queue_ready { session.send_capacity().min(4096) } else { 0 };
             let output = if capacity > 0 && !output_done { master_fd } else { unused };
-            let input = if !input_closed && !pending.is_empty() { input_fd } else { unused };
-            let socket_events = (if queue_ready { POLLIN } else { POLLRDHUP })
+            let input = if !session.channel_closed() && !input_closed && !pending.is_empty() { input_fd } else { unused };
+            let socket_events = (if queue_ready && !session.channel_closed() { POLLIN } else { POLLRDHUP })
                 | (if output_pending { POLLOUT } else { 0 });
             let mut fds = [
                 io::PollFd::new(output, POLLIN),
@@ -815,13 +816,18 @@ fn data_shuttle(session: &mut ServerSession, master_fd: Fd, input_fd: Fd, has_pt
             }
             let mut new_input = false;
             if ssh_events & POLLIN != 0 {
-                if let Some(data) = session.try_recv_data_uncredited()? {
-                    if input_closed {
-                        session.consume_input(data.len())?;
-                    } else if !data.is_empty() {
+                match session.try_recv_data_uncredited() {
+                    Ok(Some(data)) if input_closed => session.consume_input(data.len())?,
+                    Ok(Some(data)) if !data.is_empty() => {
                         pending.extend(data);
                         new_input = true;
                     }
+                    Ok(_) => {}
+                    Err(SshError::Disconnected) if session.channel_closed() => {
+                        output_done = true;
+                        continue;
+                    }
+                    Err(error) => return Err(error),
                 }
                 if has_pty && session.pty_size() != size {
                     size = session.pty_size();
@@ -915,11 +921,24 @@ fn wait_for_shell(session: &mut ServerSession, pid: i32) -> Result<i32, SshError
             }
         }
         let pending = session.io().relay_output_pending();
-        if let Some(status) = exit.filter(|_| !pending) {
+        let closed = session.channel_closed();
+        if !pending && (exit.is_some() || closed) {
             session.io().finish_relay().map_err(|_| SshError::Io)?;
-            return Ok(status);
+            if let Some(status) = exit {
+                return Ok(status);
+            }
+            // The peer abandoned this channel. The unreaped PID still refers
+            // to this channel's own child. Release it before accepting another.
+            let _ = signal::kill(pid, signal::SIGKILL);
+            loop {
+                match process::waitpid(pid, &mut status, 0) {
+                    Err(Error::Os(Errno::EINTR)) => continue,
+                    Err(_) => return Err(SshError::Io),
+                    Ok(_) => return Ok(1),
+                }
+            }
         }
-        let events = (if session.io().relay_can_queue() { POLLIN } else { POLLRDHUP })
+        let events = (if !closed && session.io().relay_can_queue() { POLLIN } else { POLLRDHUP })
             | (if pending { POLLOUT } else { 0 });
         let mut fds = [io::PollFd::new(session.io().fd(), events)];
         match io::poll(&mut fds, 100) {
@@ -935,8 +954,11 @@ fn wait_for_shell(session: &mut ServerSession, pid: i32) -> Result<i32, SshError
             session.io().flush_relay().map_err(|_| SshError::Io)?;
         }
         if events & POLLIN != 0 {
-            if let Some(data) = session.try_recv_data_uncredited()? {
-                session.consume_input(data.len())?;
+            match session.try_recv_data_uncredited() {
+                Ok(Some(data)) => session.consume_input(data.len())?,
+                Ok(None) => {}
+                Err(SshError::Disconnected) if session.channel_closed() => {}
+                Err(error) => return Err(error),
             }
         }
     }
