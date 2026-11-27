@@ -33,10 +33,11 @@ use spin::Mutex;
 const BLOCK_WAIT_SLICE_NS: u64 = 1_000_000_000;
 /// A request outstanding this long is reported, at most once per interval.
 const BLOCK_SLOW_REPORT_INTERVAL_NS: u64 = 10_000_000_000;
-/// Bound a published request even if the device keeps reporting DRIVER_OK.
-/// On timeout the caller closes the request gate and retains the DMA memory
-/// for the outstanding request until the device is reset.
-const BLOCK_REQUEST_TIMEOUT_NS: u64 = 30_000_000_000;
+/// A wait that cannot sleep (before the scheduler, or on the boot thread
+/// before its timer runs) busy-polls the CPU, so it is bounded: past this the
+/// request is abandoned, the gate is wedged so its DMA buffers are never
+/// reused, and the boot carries on without the disk.
+const BLOCK_BOOTSTRAP_WAIT_LIMIT_NS: u64 = 30_000_000_000;
 /// When a slow request was last reported, so reports stay rate-limited.
 static LAST_SLOW_REPORT_NS: AtomicU64 = AtomicU64::new(0);
 const NO_COMPLETED_DESC: u32 = u32::MAX;
@@ -607,9 +608,13 @@ impl VirtioBlockDevice {
 
     /// Wait for the device to complete the published request.
     ///
-    /// The request owns its DMA buffers until the used-ring receipt arrives.
-    /// At the deadline the caller poisons the queue, so a late completion
-    /// cannot collide with new DMA.
+    /// The device owns the descriptors and DMA buffers until it completes the
+    /// request, and a slow device is not a failed one, so, as in Linux's
+    /// virtio-blk, there is no timeout: the wait ends when the device
+    /// completes the request. It sleeps in slices only to notice a device
+    /// that has failed, the one case where the request is abandoned. A wait
+    /// that cannot sleep spins instead, and is abandoned past the bootstrap
+    /// limit rather than spinning the boot CPU forever.
     fn wait_for_completion(&self, token: u32, request: u32) -> Result<(), &'static str> {
         let started_ns = monotonic_now_ns();
         let sleeps = crate::task::completion::wait_sleeps();
@@ -624,12 +629,8 @@ impl VirtioBlockDevice {
                 return Err("Block device failed with a request outstanding");
             }
             let waited_ns = monotonic_now_ns().saturating_sub(started_ns);
-            if waited_ns >= BLOCK_REQUEST_TIMEOUT_NS {
-                return Err(if sleeps {
-                    "Block request timed out"
-                } else {
-                    "Block request not completed before the kernel could sleep"
-                });
+            if !sleeps && waited_ns >= BLOCK_BOOTSTRAP_WAIT_LIMIT_NS {
+                return Err("Block request not completed before the kernel could sleep");
             }
             report_slow_request(self, request, waited_ns);
         }
