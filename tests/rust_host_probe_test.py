@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import unittest
@@ -18,6 +19,31 @@ READELF = os.environ.get('LLVM_READELF', 'llvm-readelf')
 
 
 class StartupProbeTest(unittest.TestCase):
+    def test_arm_rust_host_build_matches_sequence_elf(self):
+        build = ROOT / 'userspace/programs/build.sh'
+        for args in (('--arch', 'aarch64'), ('--arch', 'aarch64', '--rust-host')):
+            result = subprocess.run([build, *args], cwd=ROOT, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertIsNone(re.search(r'(?im)^\s*warning(?:\[|:)', result.stdout), result.stdout)
+
+        release = HOSTED / 'aarch64-breenix-hosted/release'
+        suite = release / 'suite-rust-host'
+        self.assertEqual((ROOT / 'userspace/programs/aarch64/suite-rust-host.elf').read_bytes(),
+                         suite.read_bytes())
+        for elf in (suite, *(release / f'rust-host-{name}-probe'
+                             for name in ('startup', 'process', 'unwind'))):
+            with self.subTest(elf=elf.name):
+                [report] = json.loads(subprocess.check_output([
+                    READELF, '--elf-output-style=JSON', '--file-header', '--program-headers', elf,
+                ]))
+                self.assertEqual(report['ElfHeader']['Machine']['Value'], 183)
+                headers = {row['ProgramHeader']['Type']['Value']: row['ProgramHeader']
+                           for row in report['ProgramHeaders']}
+                self.assertIn(0x6474E550, headers)  # PT_GNU_EH_FRAME
+                self.assertGreater(headers[7]['MemSize'], 0)  # PT_TLS
+                self.assertIn(0x6474E551, headers)  # PT_GNU_STACK
+
     def test_unwind_personality_slot_is_readable_by_bunwind(self):
         for arch in ('x86_64', 'aarch64'):
             with self.subTest(arch=arch):
