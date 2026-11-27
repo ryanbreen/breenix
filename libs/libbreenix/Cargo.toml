@@ -95,3 +95,8 @@ required-features = ["std"]
 name = "etc_reconcile"
 path = "../../userspace/programs/src/etc_reconcile.rs"
 required-features = ["std"]
+
+[[test]]
+name = "ssh_cipher_throughput"
+path = "../../tests/ssh_cipher_throughput.rs"
+required-features = ["std"]
