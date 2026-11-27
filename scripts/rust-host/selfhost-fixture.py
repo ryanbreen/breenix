@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Pack the BreenFS extents for the Mac-matched self-host workspace."""
 
+import argparse
 import hashlib
 import json
 from pathlib import Path
 import struct
 import subprocess
-import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 MAC_REFERENCE = ROOT / "toolchain/rust-host/selfhost/x86_64-mac.json"
@@ -23,8 +23,9 @@ def facts(path):
         return {"size": path.stat().st_size, "sha256": hashlib.file_digest(stream, "sha256").hexdigest()}
 
 
-def main(tree, mkfs, disk):
-    receipt = json.loads(MAC_REFERENCE.read_text())
+def main(tree, mkfs, disk, arch="x86_64"):
+    reference = MAC_REFERENCE if arch == "x86_64" else ROOT / f"toolchain/rust-host/selfhost/{arch}-mac.json"
+    receipt = json.loads(reference.read_text())
     commit = git("rev-parse", "HEAD")
     workspace = []
     for name, expected in receipt["workspace"].items():
@@ -66,11 +67,18 @@ def main(tree, mkfs, disk):
             end = first + count
     if end != size or image.stat().st_size != size:
         raise ValueError("self-host scratch formatter omitted the closing superblock ring")
-    image.unlink()
+    if arch == "x86_64":
+        image.unlink()
     record = {"commit": commit, "disk": facts(disk), "scratchBytes": size, "payload_bytes": payload,
-              "mac_replay": facts(MAC_REFERENCE), "files": files}
+              "mac_replay": facts(reference), "files": files}
     disk.with_name("self-host-build.json").write_text(json.dumps(record, indent=2) + "\n")
 
 
 if __name__ == "__main__":
-    main(*(Path(arg) for arg in sys.argv[1:]))
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--arch", choices=("x86_64", "aarch64"), default="x86_64")
+    parser.add_argument("tree", type=Path)
+    parser.add_argument("mkfs", type=Path)
+    parser.add_argument("disk", type=Path)
+    args = parser.parse_args()
+    main(args.tree, args.mkfs, args.disk, args.arch)

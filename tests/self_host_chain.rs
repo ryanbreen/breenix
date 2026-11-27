@@ -11,6 +11,33 @@ use std::time::{Duration, SystemTime};
 const DEP_INFO: &str = "x86_64-breenix/selfhost/libbcc.d";
 
 #[test]
+fn noop_exempts_only_aarch64_tool_dep_info() {
+    use self_host_chain::{verify_noop, Artifact};
+    let original = Artifact {
+        sha256: "same".into(),
+        modified: SystemTime::UNIX_EPOCH,
+    };
+    let touched = Artifact {
+        modified: original.modified + Duration::from_secs(1),
+        ..original.clone()
+    };
+    let check = |path: &str| {
+        verify_noop(
+            &BTreeMap::from([(path.to_owned(), original.clone())]),
+            &BTreeMap::from([(path.to_owned(), touched.clone())]),
+            "aarch64-breenix/selfhost",
+        )
+    };
+    check("aarch64-breenix/selfhost/libbcc.d").unwrap();
+    for path in [
+        "aarch64-breenix/selfhost/libbcc.rlib",
+        "x86_64-breenix/selfhost/libbcc.d",
+    ] {
+        assert!(check(path).unwrap_err().contains(path));
+    }
+}
+
+#[test]
 fn rejects_changed_file_set_or_contents() {
     let target = std::env::temp_dir().join(format!("breenix-self-host-chain-{}", std::process::id()));
     fs::create_dir(&target).unwrap();
@@ -55,7 +82,7 @@ fn noop_rejects_mtime_changes_outside_top_level_tool_dep_info() {
     };
     let before = BTreeMap::from([(DEP_INFO.to_owned(), original.clone())]);
     let after = BTreeMap::from([(DEP_INFO.to_owned(), touched.clone())]);
-    verify_noop(&before, &after).unwrap();
+    verify_noop(&before, &after, "x86_64-breenix/selfhost").unwrap();
 
     for path in [
         "x86_64-breenix/selfhost/libbcc.rlib",
@@ -69,7 +96,7 @@ fn noop_rejects_mtime_changes_outside_top_level_tool_dep_info() {
         let mut after = after.clone();
         before.insert(path.to_owned(), original.clone());
         after.insert(path.to_owned(), touched.clone());
-        assert!(verify_noop(&before, &after).unwrap_err().contains(path));
+        assert!(verify_noop(&before, &after, "x86_64-breenix/selfhost").unwrap_err().contains(path));
     }
 }
 
@@ -84,7 +111,7 @@ fn noop_rejects_changed_contents_in_exempt_dep_info() {
     let after = self_host_chain::snapshot(&target).unwrap();
     fs::remove_dir_all(&target).unwrap();
 
-    assert!(self_host_chain::verify_noop(&before, &after)
+    assert!(self_host_chain::verify_noop(&before, &after, "x86_64-breenix/selfhost")
         .unwrap_err()
         .contains(DEP_INFO));
 }

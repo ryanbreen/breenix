@@ -3,8 +3,8 @@
     "Cargo.toml": "6601f1c4fa02bd1a3d1647ae23485bc5f1ab23d2",
     "Cargo.lock": "9d536ab12d25f4e3f26ce4f24f4234428027f29e",
     "bobj": "ec3106576f748c26ee5a75e13a9a264a200f55f7",
-    "bas": "00934f5c6aaa61f56b084ea1a221619f1dfa1d90",
-    "bld": "584ab2bdcc03962916d572e34bd6bc21bb5d963c",
+    "bas": "cbb6f3ad0403c6bd059084c33b6390a1d63a7aab",
+    "bld": "3be2f026ab5c84f9c9b0fd36b5b796d6fcebad5f",
     "bar": "b9d1ca8831b6ff1871065093cd3a74f48f73eafa",
     "bnm": "a238263518708af34bb7e145ba2ae975f41e6de5",
     "bmake": "597a176fb3702c1db97b0f9d2c3a27bd12325f95",
@@ -199,7 +199,7 @@
     },
     "host-bld": {
       "size": 688160,
-      "sha256": "00b31a01ee5964c77c434ca2637c7ab27d010d9415bf4167cfb8b42af56fa568"
+      "sha256": "2e717e25ab116411f682394e4e92a45f3934a5bd599fe06740c94352991aaa4b"
     }
   },
   "packages": [
@@ -215,12 +215,12 @@
   "comparison": "two distinct source and target roots; byte-for-byte equality",
   "outputs": {
     "bas": {
-      "size": 590584,
-      "sha256": "ab971d6ab009ed3ec53727aac8a1f67834e7130b10fcc73f6b9df96a19cf73a0"
+      "size": 640304,
+      "sha256": "1673210dee5a30cdc59e0cdf4be034d09ecfdac1045eb1a45916e3f73b9985cd"
     },
     "bld": {
       "size": 698704,
-      "sha256": "01ab7a2b916c2a4eae02d5d9a17250af2fc9a9f9e548bfce134b236e344e5bc6"
+      "sha256": "a9533e241e68142fdac0e92e00f48e83d7cdfd76c24595f8610724dd11da4de7"
     },
     "bar": {
       "size": 418392,

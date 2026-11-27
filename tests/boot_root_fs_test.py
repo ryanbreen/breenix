@@ -136,6 +136,30 @@ printf 'scratch:%s\n' "${BREENFS_SCRATCH_ARGS[*]}"
             self.assertIn(f'if=none,id=breenfs-scratch,format=raw,file={scratch}', result.stdout.splitlines())
             self.assertEqual(scratch.read_text(), '--size\n67108864\n')
 
+    def test_self_host_scratch_drive_is_selection_scoped(self):
+        script = r'''
+set -eu
+source "$1/scripts/lib/root-fs.sh"
+MODE=suite
+WRITABLE=$2/root.img
+SUITE=memory,processes
+root_fs_scratch
+[ "${#BREENFS_SCRATCH_ARGS[@]}" -eq 0 ]
+SUITE=memory,processes,self-host
+MILESTONE=toolchain/self-host
+root_fs_scratch
+printf '%s\n' "${BREENFS_SCRATCH_ARGS[@]}"
+'''
+        with tempfile.TemporaryDirectory() as tmp:
+            scratch = Path(tmp) / 'self-host-scratch.img'
+            scratch.touch()
+            result = subprocess.run(['bash', '-c', script, 'test', str(ROOT), tmp],
+                                    text=True, capture_output=True, check=True)
+            self.assertEqual(result.stdout.splitlines(), [
+                '-device', 'virtio-blk-device,drive=breenfs-scratch',
+                '-drive', f'if=none,id=breenfs-scratch,format=raw,file={scratch}',
+            ])
+
 
 if __name__ == '__main__':
     unittest.main()

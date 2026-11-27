@@ -433,11 +433,11 @@ def stage_hosted_toolchain(image, suites, release, artifacts, rust_link, sysroot
                  for name, source, mode, digest in files]
         if 'd1' in suites or self_host:
             replay_dir = 'selfhost' if self_host else 'd1'
-            replay = json.loads((records / replay_dir / 'x86_64-mac.json').read_text())
+            replay = json.loads((records / replay_dir / f'{arch}-mac.json').read_text())
             if self_host:
                 # The Mac has its own executables and the hosted target rlibs.
                 # Match the shared inputs used to produce the compared ELF files.
-                tool_sysroot = 'sysroot/lib/rustlib/x86_64-breenix/'
+                tool_sysroot = f'sysroot/lib/rustlib/{arch}-breenix/'
                 shared = {name: name for name, _, _, _ in files
                           if name.startswith((tool_sysroot, 'targets/'))}
                 shared.update({f'lib/{name}': f'lib/tools/{name}' for name in ('linker.ld', 'libc.a')})
@@ -491,9 +491,8 @@ def main():
     args = parser.parse_args()
     suites = args.suite.split(',')
     if args.arch == 'aarch64':
-        for suite in ('d1', 'self-host'):
-            if suite in suites:
-                parser.error(f'hosted {suite} staging requires x86-64')
+        if 'd1' in suites:
+            parser.error('hosted d1 staging requires x86-64')
     release = PROGRAMS / f'target/hosted/{args.arch}-breenix-hosted/release'
     kd_default = PROGRAMS / 'target/kd'
     if args.arch == 'aarch64':

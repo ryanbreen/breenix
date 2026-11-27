@@ -24,7 +24,7 @@ fn executes_only_the_digest_bound_rebuilt_path() {
     let root = std::env::temp_dir().join(format!("breenix-self-host-tools-{}", std::process::id()));
     fs::create_dir(&root).unwrap();
     let fixture = Fixture(root);
-    let profile = fixture.0.join("target/x86_64-breenix/selfhost");
+    let profile = fixture.0.join(self_host_behave::PROFILE);
     fs::create_dir_all(&profile).unwrap();
     let mut digests = BTreeMap::new();
     for package in ["bcc", "bas", "bld", "bar", "bnm", "bmake"] {
@@ -75,4 +75,35 @@ fn executes_only_the_digest_bound_rebuilt_path() {
         "{error}"
     );
     assert!(table.verify_all().unwrap_err().contains("SHA-256 changed"));
+}
+
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn aarch64_text_bytes_match_arm_encoding_fixture() {
+    let root = std::env::temp_dir().join(format!("breenix-arm-encodings-{}", std::process::id()));
+    fs::create_dir(&root).unwrap();
+    let fixture = Fixture(root);
+    let object = fixture.0.join("encodings.o");
+    let corpus = PathBuf::from("toolchain/corpus/assembler-aarch64");
+    let status = Command::new("toolchain/target/debug/bas")
+        .args(["--target", "aarch64", "-o"])
+        .arg(&object)
+        .arg(corpus.join("encodings.s"))
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let expected: Vec<u8> = fs::read_to_string(corpus.join("encodings.hex"))
+        .unwrap()
+        .lines()
+        .flat_map(|line| {
+            u32::from_str_radix(line.split_ascii_whitespace().next().unwrap(), 16)
+                .unwrap()
+                .to_le_bytes()
+        })
+        .collect();
+    assert!(!expected.is_empty());
+    assert_eq!(
+        self_host_behave::text_bytes(&fs::read(object).unwrap()),
+        Some(expected.as_slice())
+    );
 }

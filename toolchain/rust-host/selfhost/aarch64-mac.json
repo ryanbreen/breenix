@@ -1,0 +1,292 @@
+{
+  "workspace": {
+    "Cargo.toml": "6601f1c4fa02bd1a3d1647ae23485bc5f1ab23d2",
+    "Cargo.lock": "9d536ab12d25f4e3f26ce4f24f4234428027f29e",
+    "bobj": "ec3106576f748c26ee5a75e13a9a264a200f55f7",
+    "bas": "cbb6f3ad0403c6bd059084c33b6390a1d63a7aab",
+    "bld": "3be2f026ab5c84f9c9b0fd36b5b796d6fcebad5f",
+    "bar": "b9d1ca8831b6ff1871065093cd3a74f48f73eafa",
+    "bnm": "a238263518708af34bb7e145ba2ae975f41e6de5",
+    "bmake": "597a176fb3702c1db97b0f9d2c3a27bd12325f95",
+    "bcc": "fee2f47b69d9d47149b960c98becf3c315642cc9",
+    "brt": "1f5236dd3a01d2084e98fe1c365aab6ba22cdd6b",
+    "elfcheck": "4301ad02d2a56fb1489f740e2b5f687e8f1fdc56"
+  },
+  "inputs": {
+    "sysroot/lib/rustlib/aarch64-breenix/lib/libaddr2line-a62ad53d350efe1b.rlib": {
+      "size": 494748,
+      "sha256": "80fe24918e239aceab59e72f8a5f515aee0a2800a9b81cc36ad1c285c83028b3"
+    },
+    "sysroot/lib/rustlib/aarch64-breenix/lib/libadler2-a8c5aa1e1b886ba1.rlib": {
+      "size": 28958,
+      "sha256": "ef04c5ea281f3a914a2d2f8b000471f1c3a455f366124796a20bb65f0388cbb3"
+    },
+    "sysroot/lib/rustlib/aarch64-breenix/lib/liballoc-3af0907a558e478a.rlib": {
+      "size": 6830562,
+      "sha256": "d6b72f60c2f34866b477e2ce189b1e3aff225b91d4c3e11ff7a664240ac64176"
+    },
+    "sysroot/lib/rustlib/aarch64-breenix/lib/libcfg_if-58c2b3c838b4116f.rlib": {
+      "size": 9942,
+      "sha256": "efac304ed66f18ef5541b02bfdb7f4f4130630b4366008fe672868d52d295798"
+    },
+    "sysroot/lib/rustlib/aarch64-breenix/lib/libcompiler_builtins-d5c0b641b715fcd5.rlib": {
+      "size": 1917240,
+      "sha256": "c198173ccb07213a5ea17eaebe81916e0243c6ae1732582345be4973331bd442"
+    },
+    "sysroot/lib/rustlib/aarch64-breenix/lib/libcore-0c0c46514d9fd5cc.rlib": {
+      "size": 48227868,
+      "sha256": "652b5b6b21cbbf1edbad6ed07a0b43f65ab19c03c622b9a6444dd3c0732ee988"
+    },
+    "sysroot/lib/rustlib/aarch64-breenix/lib/libgimli-897f6144c775d6d8.rlib": {
+      "size": 6105898,
+      "sha256": "e7227e3ef96543dd478f09db1a260537d3e69c42e487d9ed140bcd165afb5bc4"
+    },
+    "sysroot/lib/rustlib/aarch64-breenix/lib/libhashbrown-684bf49084a02754.rlib": {
+      "size": 1472372,
+      "sha256": "5e88a6ceddd72dc31fff67bae03a34d98937f4f102466824ba6bb64e8670341a"
+    },
+    "sysroot/lib/rustlib/aarch64-breenix/lib/liblibc-aaedd0c661ec0bb5.rlib": {
+      "size": 992874,
+      "sha256": "ad9938e3bff8ed66d2795b28f747184f5b0faa5bc0c56d5a9a5b348cf60aa395"
+    },
+    "sysroot/lib/rustlib/aarch64-breenix/lib/libmemchr-106ccfc875cb201b.rlib": {
+      "size": 1057566,
+      "sha256": "8486f7f4a046566bf6be842d810c01b1b230b07ab83eead1193bd65f42979245"
+    },
+    "sysroot/lib/rustlib/aarch64-breenix/lib/libminiz_oxide-a9ac466d9ad81589.rlib": {
+      "size": 231218,
+      "sha256": "f1de345c5856d665075b52e118fb4820935212624fe65950acc55cfe000cf33d"
+    },
+    "sysroot/lib/rustlib/aarch64-breenix/lib/libobject-d525ea299d24a54e.rlib": {
+      "size": 8791348,
+      "sha256": "5c29960fa00e58a522b334b5b661650e9f622ebcfdf4f8f659d32b7ac59723f6"
+    },
+    "sysroot/lib/rustlib/aarch64-breenix/lib/libpanic_abort-855fa6204188a543.rlib": {
+      "size": 10328,
+      "sha256": "ef3530acf2d8eae903b3a0d0226d35cccbcc13bc39cf08bf42d5e5388fd729d1"
+    },
+    "sysroot/lib/rustlib/aarch64-breenix/lib/libpanic_unwind-551786c6ac1451bb.rlib": {
+      "size": 19370,
+      "sha256": "afb1e7dd04cff3d2844873e3ea00e9c67e2d77b90e5526f59751b935deb61ec8"
+    },
+    "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_demangle-d034108d2ca632bb.rlib": {
+      "size": 345628,
+      "sha256": "70648b240fa3efdf87585d0e65fd8094c51ebf8ae1e472eb396abd29f788356c"
+    },
+    "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_std_workspace_alloc-b69acd07e02e3096.rlib": {
+      "size": 6292,
+      "sha256": "3ce25491c6f0d26acb8432ea41de51ea7fd4274a7e29312027449c856e6ddb20"
+    },
+    "sysroot/lib/rustlib/aarch64-breenix/lib/librustc_std_workspace_core-bc08819eabacb217.rlib": {
+      "size": 9698,
+      "sha256": "3232e783100b9ef7bbe76f2569cf6fbb5787b73d41ad91adc3068ccdc522a109"
+    },
+    "sysroot/lib/rustlib/aarch64-breenix/lib/libstd-0e8040b4e1a0bc8a.rlib": {
+      "size": 11672880,
+      "sha256": "b1a3fac35fd0a330eff001050ff4f5d2d58aa418d036f4c9d9b610157bfd2685"
+    },
+    "sysroot/lib/rustlib/aarch64-breenix/lib/libstd_detect-34c29095c2c12f04.rlib": {
+      "size": 239132,
+      "sha256": "d851dfb204e2abed927584eeb366633c7721499dee4620ac5e726658a73329c6"
+    },
+    "sysroot/lib/rustlib/aarch64-breenix/lib/libunwind-ec088ece3d595b0f.rlib": {
+      "size": 27174,
+      "sha256": "a4b1f41d94b826220c70bbbe4af08d0c8917bd5b991faea2e46113f402cd8f78"
+    },
+    "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libaddr2line-68fe07ad22513d68.rlib": {
+      "size": 475668,
+      "sha256": "0bba7c314e2db55032a2dd050423d0b12e3454da6620c80f6c4ee546ae962fe5"
+    },
+    "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libadler2-a77417f6b37a7fec.rlib": {
+      "size": 29478,
+      "sha256": "85abd24b0e94a8dba8b3176913053e345a3fdca3de5337dad2052b29c8a73744"
+    },
+    "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/liballoc-4c4b1a0b0b522106.rlib": {
+      "size": 6873826,
+      "sha256": "ce08c3643678c260c0c41e03bad5eb2f5636351434fc1c6a8748c9615fd94a7a"
+    },
+    "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libcfg_if-ff1a97e7eb4545df.rlib": {
+      "size": 10022,
+      "sha256": "4104e8385635ff3880623b4117d20c974f45dacefbee075c7bab5693db18e11c"
+    },
+    "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libcompiler_builtins-3182ba5cda57f44e.rlib": {
+      "size": 2010680,
+      "sha256": "1a56a23f46f9e963b7d5a0d17e3224793220dafea33db0b9e876582691ece986"
+    },
+    "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libcore-78666adbb848cbfb.rlib": {
+      "size": 48324166,
+      "sha256": "34dd5bf15cfeed5615d022a22edae459ea7a43a842ec4f0ad18f385bcc9ed318"
+    },
+    "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libgimli-3754a5a1d5c4751a.rlib": {
+      "size": 6134112,
+      "sha256": "4610dedea06a9f131ae499c84c800730c9eeba67bec8db5cc6c7725b95beeac5"
+    },
+    "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libhashbrown-225a67b4f4074587.rlib": {
+      "size": 1462444,
+      "sha256": "b84a2fa9235a7c50221441615062b29ea5f919e8d5e8afbd34f74fd216656aa4"
+    },
+    "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/liblibc-d613cda31f8fb908.rlib": {
+      "size": 991314,
+      "sha256": "40cc42570bc7674318f9eb4cd095964c4a60ee6b4638550e9372cea30709be3c"
+    },
+    "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libmemchr-ab90733f64d9d9fa.rlib": {
+      "size": 1037246,
+      "sha256": "6011d160cc007e1cc568f816642b37521af5d2dda5bbd6bab9a92ba5dd04c7a2"
+    },
+    "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libminiz_oxide-cf73b3a04f047740.rlib": {
+      "size": 234150,
+      "sha256": "876106b379c56b8389c3e286d5170701cedd8b5af05d1695acbe65ac9c6804bf"
+    },
+    "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libobject-e58a221ef75236de.rlib": {
+      "size": 8756894,
+      "sha256": "f0ec64e4ad244146c36749a741d60d342ba09305308ef477fb51aab5aa8a52b7"
+    },
+    "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libpanic_abort-2258438f37ed8719.rlib": {
+      "size": 10432,
+      "sha256": "d33b4542f7bd1ce345d5231e9ccd94e8f33d8c0bef7a62bf0b2619daa32c4711"
+    },
+    "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libpanic_unwind-1b942d2e1fd53d04.rlib": {
+      "size": 22370,
+      "sha256": "14836ed5368920fdd8fa5851e602c69ab12ea9840194b8466625bc51fffbb3de"
+    },
+    "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/librustc_demangle-25a9abb5407f72ce.rlib": {
+      "size": 357282,
+      "sha256": "d94bec0a367b01925a1339eb5e39138c5d481b54ea6ed213d507fddb33eeca51"
+    },
+    "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/librustc_std_workspace_alloc-dfd155565da1d9ec.rlib": {
+      "size": 6388,
+      "sha256": "1b8b24696534e1bf707d4175157d37c63e7892bbcfd79c255c97dd95550bbf3a"
+    },
+    "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/librustc_std_workspace_core-ddd44772a330babc.rlib": {
+      "size": 9794,
+      "sha256": "e630d85f26a7ab7d5ac1a95706dff2e0485c9d9916ddfcbd85708d454f705b50"
+    },
+    "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libstd-72375f68e2b88265.rlib": {
+      "size": 12273814,
+      "sha256": "94a7e558ac996ae034760f53ea3cb8d7ce86159c5bd9ce6ebcb719b775c1e673"
+    },
+    "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libstd_detect-b3faec4098fed33b.rlib": {
+      "size": 239540,
+      "sha256": "4120ddc0db77bfcd1b68191a0875fcb42aa8d8d2fa936abb5df99113569a337a"
+    },
+    "sysroot/lib/rustlib/aarch64-breenix-hosted/lib/libunwind-bd50e6b6d0a875fb.rlib": {
+      "size": 27390,
+      "sha256": "e0ed07fe7e7045341e436afbaa5f93d3a68a499de65b79904243a4f693af20ac"
+    },
+    "targets/aarch64-breenix-hosted.json": {
+      "size": 674,
+      "sha256": "79618ae239e8029443b07092151b129127fc8962039880023367218ce3769a00"
+    },
+    "targets/aarch64-breenix.json": {
+      "size": 611,
+      "sha256": "05bbcb28fb27cd0c942ea9fcd7bf03abdc396f0e5009119a97a7dc5ebe7e0ebd"
+    },
+    "lib/tools/libc.a": {
+      "size": 2722150,
+      "sha256": "7cabb7f6ca6b93f5fca4fe888586380dd40151fcff0a30d2ad333fd487385418"
+    },
+    "lib/tools/linker.ld": {
+      "size": 1187,
+      "sha256": "84cb49304763022d1d369cf625ed1bc95ed82c3bbcff13c3af83df0c63317033"
+    },
+    "mac-twin-rustc": {
+      "size": 50616,
+      "sha256": "b3e90b74fd944e6812a0e4a23ad89f98cdc4887c17faf82e8f6e767300be10d6"
+    },
+    "mac-cargo": {
+      "size": 34989192,
+      "sha256": "d2e8fbde0080ee2ced108abb5175f2d1dd8afc732ed2a1fbafba477835da0b86"
+    },
+    "host-bld": {
+      "size": 688160,
+      "sha256": "2e717e25ab116411f682394e4e92a45f3934a5bd599fe06740c94352991aaa4b"
+    }
+  },
+  "packages": [
+    "bobj",
+    "bas",
+    "bld",
+    "bar",
+    "bnm",
+    "bmake",
+    "bcc"
+  ],
+  "profile": "selfhost",
+  "comparison": "two distinct source and target roots; byte-for-byte equality",
+  "outputs": {
+    "bas": {
+      "size": 598816,
+      "sha256": "22b5c770a6935ccca2af27b3bdd6e914ba3220b8bb7660d16f6d2dccdce0f01c"
+    },
+    "bld": {
+      "size": 636696,
+      "sha256": "91e4aec23a5c1935562a55e80006ea2ec701782ea595edc9c42ee8b4d3ca2ea7"
+    },
+    "bar": {
+      "size": 401456,
+      "sha256": "c9c4b6dab49057b0768414934e01d387ccb148385ab1224fb81032557022d80c"
+    },
+    "bnm": {
+      "size": 401824,
+      "sha256": "7dd7ad266f135cd94c6a9de7987f331baa6b41861ef469c461490d990f23e168"
+    },
+    "bmake": {
+      "size": 777488,
+      "sha256": "8a23621d7428a7680355e5a9d0c186bdf1f7917e4d67fbb8e493eb356dbcfdb7"
+    },
+    "bcc": {
+      "size": 1300160,
+      "sha256": "43c2493f9fa80cb7c794df43261a8b619a6644ce64122ba1611503659ad93f69"
+    },
+    "libbobj.rlib": {
+      "size": 327320,
+      "sha256": "ed31ea42c61417d7796c1d125cdc34a322fc3758546bc92576a71d6ef2e16eba"
+    }
+  },
+  "compiler_identity": "rustc 1.90.0-dev (a763a7dd7 2026-11-24)\nbinary: rustc\ncommit-hash: a763a7dd70cc6bc97736aca5eabaf867b36477bf\ncommit-date: 2026-11-24\nhost: aarch64-apple-darwin\nrelease: 1.90.0-dev\nLLVM version: 20.1.7",
+  "cargo_identity": "cargo 1.90.0-dev (84709f085 2025-06-22)",
+  "flags": [
+    "--sysroot=<fixture>/sysroot",
+    "-Clinker=<host-bld>",
+    "-Clink-arg=-T<fixture>/lib/linker.ld",
+    "-Lnative=<fixture>/lib",
+    "-Clink-arg=--allow-multiple-definition",
+    "-Cdefault-linker-libraries=no",
+    "--remap-path-prefix=<source>=/breenix-src"
+  ],
+  "cargo_arguments": [
+    "build",
+    "--offline",
+    "--frozen",
+    "--profile",
+    "selfhost",
+    "--target",
+    "<fixture>/targets/aarch64-breenix.json",
+    "--manifest-path",
+    "<source>/toolchain/Cargo.toml",
+    "-p",
+    "<package>",
+    "--target-dir",
+    "<run>/target"
+  ],
+  "peak_rss_bytes": {
+    "one": {
+      "bobj": 133627904,
+      "bas": 231571456,
+      "bld": 268992512,
+      "bar": 111394816,
+      "bnm": 105660416,
+      "bmake": 288243712,
+      "bcc": 557203456
+    },
+    "two": {
+      "bobj": 137363456,
+      "bas": 230440960,
+      "bld": 256147456,
+      "bar": 111312896,
+      "bnm": 105463808,
+      "bmake": 288555008,
+      "bcc": 550256640
+    }
+  }
+}

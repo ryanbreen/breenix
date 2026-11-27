@@ -6,7 +6,6 @@ use std::io::{self, Read};
 use std::path::Path;
 use std::time::SystemTime;
 
-pub const PROFILE: &str = "x86_64-breenix/selfhost";
 pub const TOOLS: [&str; 6] = ["bas", "bld", "bar", "bnm", "bcc", "bmake"];
 
 #[derive(Clone)]
@@ -85,25 +84,25 @@ pub fn verify(recorded: &Digests, current: &Snapshot) -> Result<(), String> {
     Ok(())
 }
 
-pub fn verify_noop(before: &Snapshot, after: &Snapshot) -> Result<(), String> {
+pub fn verify_noop(before: &Snapshot, after: &Snapshot, profile: &str) -> Result<(), String> {
     let digests = before
         .iter()
         .map(|(path, file)| (path.clone(), file.sha256.clone()))
         .collect();
     verify(&digests, after)?;
     for (path, file) in before {
-        if after[path].modified != file.modified && !top_level_tool_dep_info(path) {
+        if after[path].modified != file.modified && !top_level_tool_dep_info(path, profile) {
             return Err(format!("mtime changed for {path}"));
         }
     }
     Ok(())
 }
 
-fn top_level_tool_dep_info(path: &str) -> bool {
-    // Ruling 137: x86_64-breenix/selfhost/{,lib}<tool>.d for the six tools.
-    let Some((PROFILE, file)) = path.rsplit_once('/') else {
+fn top_level_tool_dep_info(path: &str, profile: &str) -> bool {
+    // Rulings 137 and 160: <arch>-breenix/selfhost/{,lib}<tool>.d.
+    let Some((directory, file)) = path.rsplit_once('/') else {
         return false;
     };
-    file.strip_suffix(".d")
+    directory == profile && file.strip_suffix(".d")
         .is_some_and(|stem| TOOLS.contains(&stem.strip_prefix("lib").unwrap_or(stem)))
 }

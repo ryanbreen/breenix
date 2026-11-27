@@ -20,8 +20,12 @@ fn cargo_runs_one_package_in_a_clean_environment() {
         &fixture.join("bin/bld"),
         Path::new("/src/run"),
         "bld",
+        "x86_64-breenix",
     );
-    assert_eq!(command.get_program(), "/usr/libexec/breenix/rustc/bin/cargo");
+    assert_eq!(
+        command.get_program(),
+        "/usr/libexec/breenix/rustc/bin/cargo"
+    );
     assert!(command.get_args().eq([
         "build",
         "--offline",

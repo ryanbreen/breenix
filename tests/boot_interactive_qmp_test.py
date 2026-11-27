@@ -187,6 +187,99 @@ class BootInteractiveQmpTest(unittest.TestCase):
         self.assertEqual(stage_args[:3], ["--arch", "aarch64", "--image"])
         self.assertEqual(stage_args[4:], ["--suite", "cargo"])
 
+    def test_arm_self_host_selection_scratch_and_memory(self):
+        selection = "memory,processes,self-host"
+        mode = ("--mode", "suite", "--suite", selection)
+        milestone = ("--milestone", "toolchain/self-host")
+        scripts = self.root / "scripts"
+        (scripts / "boot-commit.sh").write_text("boot_commit() { echo test dirty=0; }\n")
+        shutil.copy2(ROOT / "scripts/write-boot-target.sh", scripts / "write-boot-target.sh")
+        programs = self.root / "userspace/programs"
+        (programs / "aarch64").mkdir(parents=True)
+        for name in ("memory", "processes"):
+            (programs / f"aarch64/suite-{name}.elf").write_text(name)
+        self.executable(programs / "build.sh", r"""#!/bin/bash
+set -eu
+printf '%s\n' "$*" >> build-calls
+case "${3:-}" in
+    --hosted-bin)
+        hosted=userspace/programs/target/hosted/aarch64-breenix-hosted/release
+        mkdir -p "$hosted"
+        printf 'hosted self-host suite' > "$hosted/$4" ;;
+    --kd-loader)
+        mkdir -p userspace/programs/target/kd/aarch64 ;;
+esac
+""")
+        self.executable(scripts / "create_ext2_disk.sh", r"""#!/bin/bash
+set -eu
+if [ "$#" -eq 2 ]; then
+    mkdir -p disk-root/etc disk-root/sbin
+    for name in memory processes; do
+        cp "userspace/programs/aarch64/suite-$name.elf" "disk-root/sbin/suite-$name"
+    done
+    mke2fs -q -t ext2 -F -d disk-root target/ext2-aarch64.img 8M
+else
+    [ "${5}" = --output ] && [ "${7}" = --suite ] && [ "${8}" = toolchain ]
+    [ -f "${10}/build.json" ]
+    cp "$4" "$6"
+    printf 'corpus staged\n' > bundle-staged
+fi
+""")
+        self.executable(scripts / "build-toolchain.sh",
+                        '#!/bin/sh\nset -eu\nmkdir "$4"\nprintf "{}" > "$4/build.json"\n')
+        (scripts / "rust_host_stage.py").write_text(
+            'import subprocess, sys\nfrom pathlib import Path\n'
+            f'assert sys.argv[1:] == ["--arch", "aarch64", "--image", '
+            f'str(Path("ext2-writable.img").resolve()), "--suite", {selection!r}]\n'
+            'assert Path("bundle-staged").is_file()\n'
+            'runner = "userspace/programs/target/hosted/aarch64-breenix-hosted/release/suite-self-host"\n'
+            'subprocess.run(["debugfs", "-w", "-R", f"write {runner} /sbin/suite-self-host", '
+            'sys.argv[4]], check=True, capture_output=True)\n')
+        (scripts / "rust-host").mkdir()
+        (scripts / "rust-host/selfhost-fixture.py").write_text(
+            'import sys\nfrom pathlib import Path\n'
+            'assert sys.argv[1:3] == ["--arch", "aarch64"]\n'
+            'tree, mkfs, packed = map(Path, sys.argv[3:])\n'
+            'assert mkfs.is_file()\n'
+            'tree.with_suffix(".img").write_bytes(b"raw ARM BreenFS fixture")\n'
+            'packed.write_bytes(b"packed extents")\n'
+            'packed.with_name("self-host-build.json").write_text("{}")\n')
+        self.executable(scripts / "cargo", """#!/bin/bash
+set -eu
+if [[ " $* " == *" --bin breenfs-mkfs "* ]]; then
+    target="${@: -1}"
+    mkdir -p "$target/release"
+    touch "$target/release/breenfs-mkfs"
+fi
+""")
+        self.executable(scripts / "check-kernel-no-neon.sh", "#!/bin/sh\nexit 0\n")
+        self.executable(scripts / "build-background.sh", '#!/bin/sh\nexec "$@"\n')
+        libc = self.root / "libc.so"
+        libc.touch()
+        path = os.pathsep.join((str(scripts), "/opt/homebrew/opt/e2fsprogs/sbin", os.environ["PATH"]))
+        with patch.dict(os.environ, PATH=path, BREENIX_KD_LIBC_INPUT=str(libc),
+                        BREENIX_KD_BUILD_DIR=str(programs / "target/kd/aarch64"),
+                        CARGO_TARGET_DIR=str(self.root / "mkfs-target")):
+            args, _ = self.launch("--no-display", *milestone, mode=mode, build=True)
+            for suites, options in ((selection, ()), ("self-host", milestone),
+                                    ("processes,memory,self-host", milestone)):
+                with self.subTest(suites=suites, options=options):
+                    _, error = self.launch("--no-display", *options, build=True, expected_code=2,
+                                           mode=("--mode", "suite", "--suite", suites))
+                    self.assertIn("self-host requires", error)
+
+        self.assertEqual([args[i + 1] for i, arg in enumerate(args) if arg == "-m"], ["2048"])
+        commands = (self.root / "build-calls").read_text().splitlines()
+        for command in ("--hosted-bin suite-self-host --features self-host", "--rustc", "--cargo-suite"):
+            self.assertIn(f"--arch aarch64 {command}", commands)
+        scratch = self.root / "self-host-scratch.img"
+        self.assertIn(f"if=none,id=breenfs-scratch,format=raw,file={scratch}", args)
+        self.assertIn("virtio-blk-device,drive=breenfs-scratch", args)
+        self.assertEqual(scratch.read_bytes(), b"raw ARM BreenFS fixture")
+        watch = json.loads((self.root / "args.json.watch").read_text())
+        self.assertEqual(watch[watch.index("--suite") + 1], selection)
+        self.assertEqual(watch[watch.index("--gate-timeout") + 1], "1800")
+
     def test_rust_link_sequence_verifies_the_hosted_suite_binaries(self):
         scripts = self.root / "scripts"
         shutil.copy2(ROOT / "scripts/write-boot-target.sh", scripts / "write-boot-target.sh")

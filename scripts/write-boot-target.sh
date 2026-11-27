@@ -14,7 +14,7 @@
 # so the boot runs each suite in turn (docs/suites/README.md, "Several suites in one boot").
 # Sequence ELFs default to files beside PID1_ELF.
 # HOSTED_SUITE_ELF is the path to an ELF file inside the hosted release directory.
-# When supplied, cxx-runtime, llvm, dynamic, rustc, rust-link and cargo use their ELFs from that directory
+# When supplied, cxx-runtime, llvm, dynamic, rustc, rust-link, cargo and self-host use their ELFs from that directory
 # for both PID 1 and sequence readback checks.
 # ROOT_FS writes the host's root-fs ext2|breenfs declaration beside the suite list.
 #
@@ -40,7 +40,7 @@ case "$ROOT_FS" in ''|ext2|breenfs) ;; *) echo "write-boot-target: unknown root 
 suite_elf_path() {
     local id="$1" fallback="$2"
     case "$id" in
-        cxx-runtime|llvm|dynamic|rustc|rust-link|cargo)
+        cxx-runtime|llvm|dynamic|rustc|rust-link|cargo|self-host)
             if [ -n "$HOSTED_SUITE_ELF" ]; then
                 printf '%s/suite-%s' "$(dirname "$HOSTED_SUITE_ELF")" "$id"
                 return

@@ -2,8 +2,12 @@
   "id": "self-host",
   "title": "Native Rust toolchain rebuild",
   "area": "Toolchain",
-  "summary": "Opt-in x86-64 rebuild with the hosted compiler and Cargo. The no-op replay preserves every target file and SHA-256. Only the mtimes of x86_64-breenix/selfhost/{,lib}<tool>.d for bas, bld, bar, bnm, bcc and bmake may change (E25 ruling 137).",
+  "summary": "Opt-in architecture-specific rebuild with the hosted compiler and Cargo. The no-op replay preserves the target file set and SHA-256 values. Only the mtimes of <arch>-breenix/selfhost/{,lib}<tool>.d for bas, bld, bar, bnm, bcc and bmake may change (E25 ruling 137).",
   "binary": "/sbin/suite-self-host",
+  "minimumGuestMemory": {
+    "mib": 2048,
+    "derivation": "E25 rulings 156 and 160. Start with the ARM Cargo budget of 122,091 frames from cargo.json. Add the larger of the D1 bcc peak (119,051 frames) and the ARM Mac twin bcc peak in selfhost/aarch64-mac.json (557,203,456 bytes, or 136,036 frames at 4096 bytes). The 258,127-frame total needs 344,170 free frames to leave a quarter in reserve. Extrapolating from the 88,532-frame floor at 512 MiB gives 219,604 free frames at 1024 MiB and 481,748 at 2048 MiB."
+  },
   "timingSensitive": true,
   "categories": [{
     "id": "self-host",
