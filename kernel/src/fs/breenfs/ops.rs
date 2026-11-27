@@ -1354,8 +1354,11 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         self.put_inode(ino, inode)
     }
     fn reclaim_orphans(&mut self) -> Result<(), Error> {
-        let candidates: Vec<_> = self.orphan_work.iter().copied().collect();
-        for ino in candidates {
+        // Walk the work set by cursor: a copy of it would be one allocation
+        // proportional to the unlinked inodes, at commit.
+        let mut cursor = 0;
+        while let Some(&ino) = self.orphan_work.range(cursor..).next() {
+            cursor = ino.checked_add(1).ok_or(Error::EIO)?;
             preemption_point();
             #[cfg(test)] btree::measurement::orphan_visit();
             let k = key(ORPHAN_OBJECT, format::ORPHAN, ino ^ self.tag(ino));
