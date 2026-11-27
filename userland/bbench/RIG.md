@@ -25,7 +25,16 @@ firmware. The `hardware` field of each series records the shape.
 
 ## Inputs
 
-Breenix comes from this checkout at the commit being measured. Build it first:
+Breenix comes from this checkout at the commit being measured. Build it first,
+from a committed tree:
+
+```sh
+scripts/bench-qemu-arm64.sh build-breenix
+```
+
+That runs these builds, then writes `~/Library/Caches/breenix-bench/breenix-arm64/build.json`
+with the commit and the SHA-256 of the kernel, the image and the three bbench
+binaries:
 
 ```sh
 userspace/programs/build.sh --arch aarch64
@@ -35,6 +44,11 @@ BREENIX_TEST_SSH_KEY_DIR=$HOME/Library/Caches/breenix-bench/breenix-arm64/test-s
 cargo build --release --target aarch64-breenix-kernel.json -Z build-std=core,alloc \
     -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64
 ```
+
+`run` refuses to start unless that stamp names HEAD and each artifact still has
+its stamped digest, so a series never names a commit its Breenix binaries were
+not built from. Running the builds by hand leaves no stamp. Linux builds bbench
+from the same commit (`git archive` of the stamped commit).
 
 The key directory keeps the image's test-only SSH key, so the rig can log in as
 `sshtest`. `--bbench` builds `bbench` and `bbench-exit` as shipped (opt-level z)

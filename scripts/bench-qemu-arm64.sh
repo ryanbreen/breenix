@@ -3,6 +3,7 @@
 #
 #   scripts/bench-qemu-arm64.sh run --run ID [--count N] [--cases a,b] [--headed]
 #   scripts/bench-qemu-arm64.sh provision-linux
+#   scripts/bench-qemu-arm64.sh build-breenix
 #
 # Holds the Mac's boot slot and the host-wide ARM64 QEMU lock for the whole run, so
 # no other lane's VM shares the host while samples are taken, then hands its
@@ -15,9 +16,9 @@ BREENIX_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$BREENIX_ROOT/docker/qemu/lib/qemu-host-lock.sh"
 
 case "${1:-}" in
-    fetch-linux|ratios) exec python3 "$BREENIX_ROOT/userland/bbench/rig.py" "$@" ;;
+    fetch-linux|ratios|build-breenix) exec python3 "$BREENIX_ROOT/userland/bbench/rig.py" "$@" ;;
     run|provision-linux) ;;
-    *) echo "usage: $0 run --run ID [...] | provision-linux | fetch-linux | ratios LINUX BREENIX" >&2; exit 2 ;;
+    *) echo "usage: $0 run --run ID [...] | provision-linux | fetch-linux | build-breenix | ratios LINUX BREENIX" >&2; exit 2 ;;
 esac
 
 host_slot_acquire mac-boot

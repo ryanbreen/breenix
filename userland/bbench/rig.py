@@ -7,6 +7,7 @@ drift lands on both. Each run writes one schema-v1 series per system.
 
   rig.py fetch-linux                  download and verify the pinned image, make the raw disk
   rig.py provision-linux              first boot: account, compiler, rustup toolchain
+  rig.py build-breenix                build the Breenix inputs at HEAD and stamp their commit
   rig.py run --run ID [--count N] [--cases a,b] [--headed]
 
 Run it through scripts/bench-qemu-arm64.sh, which holds the host's QEMU slot.
@@ -74,6 +75,18 @@ BREENIX_IMAGE = ROOT / "target/ext2-aarch64.img"
 BREENIX_RELEASE = ROOT / "userspace/programs/target/aarch64-breenix/release"
 BREENIX_O3 = ROOT / "userspace/programs/target/bench-o3/aarch64-breenix/release"
 BREENIX_KEY = CACHE / "breenix-arm64/test-ssh/id_ed25519"
+BREENIX_ARTIFACTS = (BREENIX_KERNEL, BREENIX_IMAGE, BREENIX_RELEASE / "bbench",
+                     BREENIX_RELEASE / "bbench-exit", BREENIX_O3 / "bbench")
+# build-breenix records the commit and each artifact's SHA-256; run refuses anything else.
+BUILD_STAMP = CACHE / "breenix-arm64/build.json"
+BREENIX_BUILD = (
+    ["userspace/programs/build.sh", "--arch", "aarch64"],
+    ["userspace/programs/build.sh", "--arch", "aarch64", "--bbench"],
+    ["scripts/create_ext2_disk.sh", "--arch", "aarch64", "--size", str(DISK_BYTES // MIB)],
+    ["cargo", "build", "--release", "--target", "aarch64-breenix-kernel.json",
+     "-Z", "build-std=core,alloc", "-Z", "build-std-features=compiler-builtins-mem",
+     "-p", "kernel", "--bin", "kernel-aarch64"],
+)
 LINUX_KEY = CACHE / "rig-ssh/id_ed25519"
 
 COMPILE = ("rustc-version", "hello-object", "cargo-noop", "yes-dev-box", "yes-release")
@@ -431,8 +444,10 @@ def failure_receipt(sample, words, error):
 
 
 class Rig:
-    def __init__(self, args):
+    def __init__(self, args, commit):
         self.args = args
+        # The commit the stamped Breenix inputs were built from; Linux builds it too.
+        self.commit = commit
         self.run_dir = CACHE / "runs" / args.run
         self.run_dir.mkdir(parents=True, exist_ok=False)
         self.out = {system: self.run_dir / system for system in SYSTEMS}
@@ -452,7 +467,7 @@ class Rig:
         return f"{home}/bbench/data/{self.args.run}", f"{home}/bbench/reports"
 
     def boot(self):
-        commit = git("rev-parse", "HEAD")
+        commit = self.commit
         disk = self.run_dir / "breenix-disk.raw"
         run_command(["cp", "-c", BREENIX_IMAGE, disk])
         self.guests["breenix"] = Guest("breenix", self.run_dir, disk, self.args.headed)
@@ -505,7 +520,7 @@ class Rig:
         paths = ["userland", "libs/libbreenix", "libs/input-abi", "libs/breengel-abi",
                  "libs/gpu-abi", "toolchain/rust-host/k5/corpus",
                  *sorted({str(path.resolve().relative_to(ROOT)) for path in targets})]
-        archive = subprocess.run(["git", "-C", ROOT, "archive", "--format=tar", "HEAD", *paths],
+        archive = subprocess.run(["git", "-C", ROOT, "archive", "--format=tar", self.commit, *paths],
                                  check=True, capture_output=True).stdout
         guest.ssh(f"rm -rf {guest.home}/src && mkdir -p {guest.home}/src && "
                   f"tar -xf - -C {guest.home}/src", input=archive)
@@ -804,16 +819,55 @@ def ratio_table(linux_path, breenix_path):
     return "\n".join(lines)
 
 
+def write_build_stamp(stamp, commit, artifacts):
+    stamp.parent.mkdir(parents=True, exist_ok=True)
+    record = {"commit": commit, "artifacts": {str(path): sha256(path) for path in artifacts}}
+    stamp.write_text(json.dumps(record, indent=2) + "\n")
+
+
+def verify_build_stamp(stamp, head, artifacts):
+    """The commit the Breenix inputs were built from. Refuses inputs that build-breenix
+    did not build at `head`, and any artifact that changed after that build."""
+    if not stamp.exists():
+        raise ValueError(f"no build stamp at {stamp}: build the Breenix inputs with "
+                         "scripts/bench-qemu-arm64.sh build-breenix")
+    record = json.loads(stamp.read_text())
+    if record["commit"] != head:
+        raise ValueError(f"the Breenix inputs were built at {record['commit']}, not HEAD {head}: "
+                         "run scripts/bench-qemu-arm64.sh build-breenix")
+    for path in artifacts:
+        recorded = record["artifacts"].get(str(path))
+        if recorded is None:
+            raise ValueError(f"the build stamp does not cover {path}: run build-breenix")
+        if not Path(path).exists() or sha256(path) != recorded:
+            raise ValueError(f"{path} changed after build-breenix built it at {head}")
+    return head
+
+
+def build_breenix():
+    """Build the Breenix inputs (RIG.md) from a clean tree and stamp their commit."""
+    if git("status", "--porcelain", "--untracked-files=no"):
+        raise ValueError("commit the tree first: the build stamp records its commit")
+    commit = git("rev-parse", "HEAD")
+    env = {**os.environ, "BREENIX_TEST_SSH_KEY_DIR": str(BREENIX_KEY.parent)}
+    for words in BREENIX_BUILD:
+        run_command(words, cwd=ROOT, env=env)
+    if git("rev-parse", "HEAD") != commit or git("status", "--porcelain", "--untracked-files=no"):
+        raise ValueError(f"the tree moved from {commit} during the build; nothing was stamped")
+    write_build_stamp(BUILD_STAMP, commit, BREENIX_ARTIFACTS)
+    print(f"Breenix inputs built and stamped at {commit} ({BUILD_STAMP})")
+
+
 def check_breenix_inputs():
-    missing = [path for path in (BREENIX_KERNEL, BREENIX_IMAGE, BREENIX_RELEASE / "bbench",
-                                 BREENIX_RELEASE / "bbench-exit", BREENIX_O3 / "bbench",
-                                 BREENIX_KEY) if not path.exists()]
+    """The commit the Breenix inputs were built from, once they are present and fit."""
+    missing = [path for path in (*BREENIX_ARTIFACTS, BREENIX_KEY) if not path.exists()]
     if missing:
-        raise ValueError("missing Breenix inputs (see scripts/bench-qemu-arm64.sh): "
-                         + ", ".join(map(str, missing)))
+        raise ValueError("missing Breenix inputs (run scripts/bench-qemu-arm64.sh "
+                         "build-breenix): " + ", ".join(map(str, missing)))
     if BREENIX_IMAGE.stat().st_size != DISK_BYTES:
         raise ValueError(f"{BREENIX_IMAGE} must be {DISK_BYTES // MIB} MiB, the rig's disk size "
                          f"(scripts/create_ext2_disk.sh --arch aarch64 --size {DISK_BYTES // MIB})")
+    return verify_build_stamp(BUILD_STAMP, git("rev-parse", "HEAD"), BREENIX_ARTIFACTS)
 
 
 def cli(argv):
@@ -822,6 +876,7 @@ def cli(argv):
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("fetch-linux")
     commands.add_parser("provision-linux")
+    commands.add_parser("build-breenix", help="build the Breenix inputs at HEAD and stamp them")
     table = commands.add_parser("ratios", help="Markdown table of a run's two series")
     table.add_argument("linux", type=Path)
     table.add_argument("breenix", type=Path)
@@ -835,6 +890,9 @@ def cli(argv):
     if args.command == "fetch-linux":
         fetch_linux()
         return 0
+    if args.command == "build-breenix":
+        build_breenix()
+        return 0
     if args.command == "ratios":
         print(ratio_table(args.linux, args.breenix))
         return 0
@@ -845,9 +903,9 @@ def cli(argv):
         parser.error("--run must contain only letters, digits or hyphens")
     if git("status", "--porcelain", "--untracked-files=no"):
         parser.error("commit the tree first: the series record its commit")
-    check_breenix_inputs()
+    commit = check_breenix_inputs()
     provision_linux()
-    rig = Rig(args)
+    rig = Rig(args, commit)
     try:
         rig.run()
     finally:
