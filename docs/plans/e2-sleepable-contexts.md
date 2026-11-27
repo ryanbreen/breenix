@@ -761,6 +761,18 @@ should own each, not several agents on one PR (DEV-30(3)).
 - **6a.** `sync::{SpinLock, IrqSpinLock, SleepLock, SleepRwLock}`, with `IrqSafeMutex` and `MountLock`
   becoming instances. The §4.2 validator. A structure guard bans `spin::Mutex` and `spin::RwLock` outside
   `kernel/src/sync/`, with an allowlist holding today's 126 files.
+- **Before per-CPU init.** Some of these locks are taken before the per-CPU area exists. ARM64 runs
+  `drivers::init()`, which sets up the VirtIO MMIO network queues behind `IrqSafeMutex`
+  (`kernel/src/drivers/virtio/net_mmio.rs:433-474`), at `main_aarch64.rs:998`. `per_cpu_aarch64::init()`
+  runs later, at `:1262`. Both architectures' `preempt_disable` assert that per-CPU init has happened
+  (`per_cpu_aarch64.rs:728-743`, `per_cpu.rs:1026-1031`). So a guard that always raised the depth would
+  break the ARM64 boot as soon as `IrqSafeMutex` became an `IrqSpinLock`. The rule: <!-- claim-lint:ok: normative requirement of docs/plans/e2-sleepable-contexts.md under ruling DEV-37(2), not a measured result. -->
+  - before per-CPU init there is one CPU, no scheduler and nothing to preempt. A `SpinLock` or
+    `IrqSpinLock` guard then masks interrupts as usual but leaves the depth alone; <!-- claim-lint:ok: normative requirement of docs/plans/e2-sleepable-contexts.md under ruling DEV-37(2), not a measured result. -->
+  - each guard records whether it raised the depth, and its drop lowers the depth only if it did. A lock
+    taken before per-CPU init and released after it therefore cannot underflow the count;
+  - the validator records pre-init acquisitions under the class's name with no CPU attribution.
+  This leaves today's boot order unchanged. E2.6a does not move driver init.
 - **6b onward.** Migration by subsystem (drivers, fs, net and socket, ipc, memory, process, gpu). Each PR
   shrinks the allowlist and is safe alone, because a preempt-raising lock excludes what a raw one does and also keeps its holder on the CPU.
   The x86 ISR lock inventory (§4.3) lands with the driver migration.
@@ -768,11 +780,17 @@ should own each, not several agents on one PR (DEV-30(3)).
   - host tests of the validator: an inverted pair is flagged; a class taken in IRQ and with interrupts on
     is flagged; a `SpinLock` across `park::wait` is flagged;
   - host tests that each guard raises and restores depth and mask in order;
+  - host tests of the pre-init rule: a guard taken with per-CPU state absent masks and does not touch
+    the depth; one taken before init and dropped after leaves the depth at its value from before the
+    acquisition;
   - the structure guard, red on today's tree.
 - **Risk retired.** A preempted holder with its contender spinning on the same CPU (#1394's class). Locks
   shared with ISRs without masking, which E2.7 needs gone first.
-- **Rows.** No row is predicted to move. **Boot.** Not needed. The migration is mechanical, and the validator carries the
-  runtime evidence into the final run.
+- **Rows.** No row is predicted to move.
+- **Boot.** 6a and most of the migration PRs need none: the migration is mechanical, and the validator
+  carries the runtime evidence into the final run. The drivers PR is the exception. It converts the locks
+  that ARM64 takes before per-CPU init, and which locks those are is a property of the real boot order
+  that the host tests do not see. So it gets one ARM64 QEMU boot with the standard boot test. <!-- claim-lint:ok: normative requirement of docs/plans/e2-sleepable-contexts.md under ruling DEV-37(2), not a measured result. -->
 
 ### E2.7: x86 syscalls with interrupts enabled
 
