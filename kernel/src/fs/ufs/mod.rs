@@ -91,7 +91,7 @@ impl State {
 impl Mount {
     fn mutation_gate(&self, node: u64) -> Result<Arc<file::Gate>, u64> {
         self.mutations.lock().get_or_insert(node,
-            || Arc::try_new(file::Gate::new()).map_err(|_| ENOMEM as u64), ENOMEM as u64)
+            || Arc::try_new(file::Gate::new(())).map_err(|_| ENOMEM as u64), ENOMEM as u64)
     }
     fn defer(self: &Arc<Self>) {
         let mut head = DEFERRED.lock();
@@ -210,7 +210,7 @@ impl Endpoint {
         Arc::try_new(Self {
             binding: Mutex::new(None),
             readers,
-            read_serial: file::Gate::new(),
+            read_serial: file::Gate::new(()),
         })
         .map_err(|_| ENOMEM as u64)
     }
