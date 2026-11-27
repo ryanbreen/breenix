@@ -27,6 +27,24 @@ class AlternatingSchedule(unittest.TestCase):
         self.assertEqual(order, [("fsync", 1, "linux"), ("fsync", 1, "breenix")])
 
 
+class MemoryShape(unittest.TestCase):
+    """Both guests get the repository's standard memory for the work the rig runs: the
+    compile rows need the rustc and cargo suites' declared minimum, and the toolchain
+    effort's acceptance (self-host) boots larger still. A smaller guest starves the
+    page cache on both systems and hides the gap (DEV-31's same-shape rule)."""
+
+    def test_the_guest_memory_covers_the_toolchain_suites_minimums(self):
+        minimums = {suite: json.loads((rig.ROOT / f"docs/suites/{suite}.json").read_text())
+                    ["minimumGuestMemory"]["mib"] for suite in ("rustc", "cargo", "self-host")}
+        self.assertEqual(rig.MEMORY, f"{max(minimums.values())}M", minimums)
+
+    def test_both_guests_boot_with_that_memory(self):
+        for system in ("linux", "breenix"):
+            argv = [str(word) for word in rig.Guest(system, Path("/rig"), Path("/disk"),
+                                                    headed=False).argv()]
+            self.assertEqual(argv[argv.index("-m") + 1], rig.MEMORY, system)
+
+
 class Ratios(unittest.TestCase):
     def test_above_one_always_means_breenix_is_slower(self):
         def row(row_id, better, median):
