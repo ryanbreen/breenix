@@ -555,7 +555,7 @@ fn start_publisher(fs: &Arc<Fs>) -> Publisher {
 fn pending_census(fs: &Fs) -> (u64, u64) {
     let state = fs.inner.state.lock();
     let sb = &state.durable;
-    let store = fs.inner.cache.store(fs.inner.device.clone(), sb);
+    let store = fs.inner.cache.store(fs.inner.device.clone(), sb, &fs.inner.decoded);
     let lower = format::Key { object: 0xffff_ffff_ffff_ff30, item_type: format::PENDING, offset: 0 };
     let upper = format::Key { offset: u64::MAX, ..lower };
     let (mut blocks, mut oldest) = (0, 0);

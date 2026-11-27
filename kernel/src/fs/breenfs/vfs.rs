@@ -15,7 +15,7 @@ use super::{
     dirty::DirtyPages,
     format::{self, Inode, Root, Superblock, Time, BLOCK_SIZE},
     mount_lock::{MountGuard, MountLock},
-    node_cache::CachedNodeStore,
+    node_cache::{metadata_ram_bytes, CacheBudget, CacheCharge, CachedNodeStore, DecodedNodes},
     ops::{self, Files, ReadError},
     recover,
     reserve::{Estimate, Grant, Ledger, Operation},
@@ -177,6 +177,10 @@ pub(super) mod publication_phases;
 pub(super) mod publication_cost;
 
 #[cfg(test)]
+#[path = "../../../../tools/breenfs-host-tests/src/metadata_cache.rs"]
+mod metadata_cache;
+
+#[cfg(test)]
 #[path = "../../../../tools/breenfs-host-tests/src/metadata_failure.rs"]
 mod metadata_failure;
 
@@ -289,6 +293,7 @@ struct Mount<W: Wait + 'static> {
     owner: Option<WritableOwner>,
     data: Box<DataBlocks>,
     cache: Cache<W>,
+    decoded: Arc<DecodedNodes>,
     id: usize,
     root_id: u64,
     mounted_root: MountedRoot,
@@ -330,10 +335,15 @@ impl<W: Wait> Cache<W> {
             Self::Kernel(cache) => cache,
         }
     }
-    fn store(&self, device: Arc<dyn BlockDevice>, sb: &Superblock) -> CachedNodeStore<'static, W> {
+    fn store(
+        &self,
+        device: Arc<dyn BlockDevice>,
+        sb: &Superblock,
+        decoded: &Arc<DecodedNodes>,
+    ) -> CachedNodeStore<'static, W> {
         match self {
-            Self::Shared(cache) => CachedNodeStore::new_owned(cache.clone(), device, sb),
-            Self::Kernel(cache) => CachedNodeStore::with_device(cache, device, sb),
+            Self::Shared(cache) => CachedNodeStore::new_owned(cache.clone(), device, sb, decoded.clone()),
+            Self::Kernel(cache) => CachedNodeStore::with_device(cache, device, sb, decoded.clone()),
         }
     }
 }
@@ -849,10 +859,93 @@ struct NodePin<W: Wait + 'static> {
 impl<W: Wait + 'static> Drop for NodePin<W> {
     fn drop(&mut self) { self.mount.events.push(&self.touched); }
 }
-// Bounded metadata cache; mutation completion invalidates its entries.
+const INODE_HEAP_CAP: usize = 2 * 1024 * 1024;
+const INODES_PER_CHUNK: usize = 64;
+static INODE_HEAP: CacheBudget = CacheBudget::new();
+
+type InodeSlot = Option<(u64, Inode)>;
+
+// Direct indexing avoids linear scans. Allocate groups of slots as touched so
+// a mount with a few active inodes needs only a small part of its RAM budget.
 struct InodeCache {
-    entries: [Option<(u64, Inode)>; 32],
-    next: usize,
+    limit: usize,
+    pages: Vec<Option<InodeCacheChunk>>,
+    table_charge: Option<CacheCharge>,
+}
+
+struct InodeCacheChunk {
+    slots: Vec<InodeSlot>,
+    _charge: CacheCharge,
+}
+
+impl InodeCache {
+    fn new(ram: usize) -> Self {
+        Self { limit: (ram / 256).min(INODE_HEAP_CAP), pages: Vec::new(), table_charge: None }
+    }
+
+    fn index(&self, ino: u64) -> (usize, usize) {
+        // Fold in the namespace tag used for an included default tree.
+        let slots = self.pages.len() * INODES_PER_CHUNK;
+        let index = ((ino ^ (ino >> 32)) % slots as u64) as usize;
+        (index / INODES_PER_CHUNK, index % INODES_PER_CHUNK)
+    }
+
+    fn get(&self, ino: u64) -> Option<Inode> {
+        if self.pages.is_empty() {
+            return None;
+        }
+        let (page, slot) = self.index(ino);
+        self.pages[page].as_ref()?.slots[slot]
+            .filter(|&(cached, _)| cached == ino)
+            .map(|(_, inode)| inode)
+    }
+
+    fn insert(&mut self, ino: u64, inode: Inode) {
+        let chunk_bytes = INODES_PER_CHUNK * core::mem::size_of::<InodeSlot>();
+        let table_slot = core::mem::size_of::<Option<InodeCacheChunk>>();
+        if self.table_charge.is_none() {
+            let count = self.limit / (chunk_bytes + table_slot);
+            if count == 0 {
+                return;
+            }
+            let Some(charge) = INODE_HEAP.charge(count * table_slot, self.limit) else { return };
+            if self.pages.try_reserve_exact(count).is_err() {
+                return;
+            }
+            self.pages.resize_with(count, || None);
+            self.table_charge = Some(charge);
+        }
+        let (page, slot) = self.index(ino);
+        let page = &mut self.pages[page];
+        if page.is_none() {
+            let Some(charge) = INODE_HEAP.charge(chunk_bytes, self.limit) else { return };
+            let mut slots = Vec::new();
+            if slots.try_reserve_exact(INODES_PER_CHUNK).is_err() {
+                return;
+            }
+            slots.resize(INODES_PER_CHUNK, None);
+            *page = Some(InodeCacheChunk { slots, _charge: charge });
+        }
+        if let Some(page) = page {
+            page.slots[slot] = Some((ino, inode));
+        }
+    }
+
+    fn invalidate(&mut self, ino: u64) {
+        if self.pages.is_empty() {
+            return;
+        }
+        let (page, slot) = self.index(ino);
+        if let Some(page) = &mut self.pages[page] {
+            if page.slots[slot].is_some_and(|(cached, _)| cached == ino) {
+                page.slots[slot] = None;
+            }
+        }
+    }
+
+    fn clear(&mut self) {
+        self.pages.fill_with(|| None);
+    }
 }
 impl<W: Wait> MountState<W> {
     fn read_only(&self) -> bool {
@@ -952,20 +1045,18 @@ impl<W: Wait> MountState<W> {
         // snapshot here so a closed orphan cannot be opened again by inode.
         // A refused share stays queued; the final-close check below covers it.
         let _ = self.retain_open();
-        let inode = if let Some((_, inode)) = self
-            .inodes
-            .entries
-            .iter()
-            .flatten()
-            .find(|(cached, _)| *cached == ino)
-        {
-            *inode
+        // Preparation can change the stored block count and deferred times.
+        // After install, the bounded refresh removes those entries. A holder
+        // reading ahead of its refresh share bypasses the cache for that inode.
+        let refreshing = self.refresh.contains(&ino);
+        let inode = if let Some(inode) = self.inodes.get(ino).filter(|_| !refreshing) {
+            inode
         } else {
             let result = self.files.inode(ino);
             let inode = self.observed(result)?;
-            let slot = self.inodes.next;
-            self.inodes.entries[slot] = Some((ino, inode));
-            self.inodes.next = (slot + 1) % self.inodes.entries.len();
+            if !refreshing {
+                self.inodes.insert(ino, inode);
+            }
             inode
         };
         // A final-close notification may still be in a later retention share.
@@ -1039,6 +1130,7 @@ impl<W: Wait> MountState<W> {
                 break;
             }
             if times.pending() { self.touches.insert(times.ino, times.clone()); }
+            if !open && node.links == 0 { self.inodes.invalidate(times.ino); }
             self.prune_node(times.ino);
         }
         if batch.is_empty() {
@@ -1098,11 +1190,12 @@ impl<W: Wait> MountState<W> {
                 let scratch = core::mem::replace(&mut self.files.files, next);
                 self.files.log = None;
                 self.files.replay_bounds = None;
-                self.inodes.entries.fill(None);
                 // Each install is preceded by a freeze, which takes this slot.
                 self.stale_views = Some((scratch, self.installed.take()));
             }
             if let Some(error) = failed {
+                // The next view contains only the replay prefix that succeeded.
+                self.inodes.clear();
                 self.record_metadata(error);
                 self.fail("replay-open-generation", Errno(EIO));
             }
@@ -1110,6 +1203,7 @@ impl<W: Wait> MountState<W> {
         while steps < MATERIALIZE_STEPS {
             preemption_point();
             let Some(ino) = self.refresh.pop_first() else { break; };
+            self.inodes.invalidate(ino);
             steps += 1;
             #[cfg(test)] measurement::materialized();
             if let Some(node) = self.nodes.get(&ino).and_then(|entry| entry.node.upgrade()) {
@@ -1188,7 +1282,6 @@ impl<W: Wait> MountState<W> {
         #[cfg(test)]
         super::btree::measurement::refresh_call();
         if result.is_ok() { self.fresh = false; }
-        self.inodes.entries.fill(None);
         // A storage/allocation failure may have interrupted a multi-item edit.
         // Do not publish that transaction. Reservation refusals return before
         // mutation via admission; an ENOSPC here is still a bug.
@@ -1210,6 +1303,7 @@ impl<W: Wait> MountState<W> {
         // indexed until publication, without making later edits scan them.
         for (index, &ino) in objects.iter().enumerate() {
             if objects[..index].contains(&ino) { continue; }
+            self.inodes.invalidate(ino);
             let Some(entry) = self.nodes.get_mut(&ino) else { continue; };
             #[cfg(test)]
             {
@@ -1734,7 +1828,9 @@ impl<W: Wait + 'static> BreenFs<W> {
         })?;
         // Recovery can publish orphan reclamation even if root selection fails.
         *publication = Some(durable.clone());
-        let store = cache.store(device.clone(), &durable);
+        let ram = metadata_ram_bytes();
+        let decoded = Arc::try_new(DecodedNodes::new(ram)).map_err(|_| Errno(ENOMEM))?;
+        let store = cache.store(device.clone(), &durable, &decoded);
         let block = durable.space_root.addr;
         let roots = recover::space_items(&store, &durable).map_err(|error| {
             report(format_args!("stage=breenfs-node-cache space_root={} expected=readable-roots found={:?}", block, error));
@@ -1837,15 +1933,13 @@ impl<W: Wait + 'static> BreenFs<W> {
                 mapping_retry_ns: 0,
                 pending: None,
                 signal: signal.clone(),
-                inodes: InodeCache {
-                    entries: [None; 32],
-                    next: 0,
-                },
+                inodes: InodeCache::new(ram),
             }),
             device,
             owner,
             data,
             cache,
+            decoded,
             id: mount,
             root_id,
             mounted_root,
@@ -2355,9 +2449,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                 state.fresh = false;
                 // This data write changes one inode. Keep its known result
                 // instead of rereading the unrelated live VNodes (#3040).
-                state.inodes.entries.fill(None);
-                state.inodes.entries[0] = Some((node.ino, inode));
-                state.inodes.next = 1;
+                state.inodes.insert(node.ino, inode);
                 node.size.store(inode.size, Ordering::Release);
                 *node.times.lock() = attributes(node.ino, inode)?.times;
                 state.signal.worker.wake();
@@ -2759,7 +2851,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         let store = self
             .inner
             .cache
-            .store(self.inner.device.clone(), sb)
+            .store(self.inner.device.clone(), sb, &self.inner.decoded)
             .with_pending(&prepared);
         let next = {
             let _next = self.inner.costs.span(CostOp::Commit, CostPhase::NextFilesView);
@@ -2773,6 +2865,10 @@ impl<W: Wait + 'static> BreenFs<W> {
             // still before any view can name them (no view does until install).
             // Afterwards a reader of N would fail N's CRC on such stale bytes.
             let _cleanup = self.inner.costs.span(CostOp::Commit, CostPhase::Cleanup);
+            // G+2 reuse cannot overlap a node reachable by the live N-1 view.
+            // Retire older decodings that these writes can overwrite, including
+            // nodes whose four-block range is only partially reused for data.
+            self.inner.decoded.retire_overwritten(&prepared);
             for (start, count) in prepared.data_ranges() {
                 preemption_point();
                 self.inner.cache.buffers().discard_clean_range(self.inner.data.as_ref(), start, count);
@@ -2862,7 +2958,6 @@ impl<W: Wait + 'static> BreenFs<W> {
                     // N+1's view as it stands.
                     state.files.log = None;
                     state.files.replay_bounds = None;
-                    state.inodes.entries.fill(None);
                     Some(core::mem::replace(&mut state.files.files, next))
                 };
                 self.inner.materialize.store(true, Ordering::Release);
@@ -2909,7 +3004,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         let mut pages = Arc::try_new(FrozenPages { nodes: BTreeMap::new(), bytes: 0 })
             .map_err(|_| Errno(ENOMEM))?;
         // 601(1): N's transaction moves out whole; N+1 gets a scratch fork.
-        let store = self.inner.cache.store(self.inner.device.clone(), &state.durable);
+        let store = self.inner.cache.store(self.inner.device.clone(), &state.durable, &self.inner.decoded);
         let scratch = state.files.files.fork(store).map_err(errno)?;
         // 601(3): the receipt boundary moves here.
         let commit = state.committer.as_mut().ok_or(Errno(EIO))?.freeze().map_err(|_| Errno(EIO))?;
@@ -3348,7 +3443,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         let publication = self.inner.mounted_root.device.publication.lock();
         let state = self.foreground_lock()?;
         let sb = publication.as_ref().unwrap_or(&state.durable);
-        let store = self.inner.cache.store(self.inner.device.clone(), sb);
+        let store = CachedNodeStore::new(self.inner.cache.buffers(), self.inner.device.as_ref(), sb);
         let items = recover::space_items(&store, sb).map_err(|_| Errno(EIO))?;
         Ok(SnapshotStatus {
             root_id: self.inner.root_id,
@@ -3791,9 +3886,13 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         if let Some(sb) = publication.as_deref().and_then(Option::as_ref)
             .filter(|sb| sb.generation > state.durable.generation)
         {
-            let store = self.inner.cache.store(self.inner.device.clone(), sb);
+            // An observer can skip generations without seeing the writer's
+            // overwritten ranges or changed inode set. Start from its new view.
+            self.inner.decoded.clear();
+            let store = self.inner.cache.store(self.inner.device.clone(), sb, &self.inner.decoded);
             let result = Files::new(store, sb, self.inner.root_id, false);
             let files = state.observed(result)?;
+            state.inodes.clear();
             state.files.files = state.edited(&[], Ok(files))?;
             state.durable = sb.clone();
         }
