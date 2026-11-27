@@ -330,6 +330,25 @@ user-copy nofault flag is one of them: `NOFAULT` is indexed by CPU (`kernel/src/
 or becomes per-thread state. The nofault flag becomes per-thread, because the copy it covers may now
 migrate. A structure test pins the remaining unguarded sites with an allowlist that shrinks to zero. <!-- claim-lint:ok: normative requirement of docs/plans/e2-sleepable-contexts.md under ruling DEV-37(2), not a measured result. -->
 
+`cpu_id()` is not the only per-CPU read. The audit covers each per-CPU accessor (GS-relative loads on
+x86, `tpidr_el1` loads on ARM64) reached from a converted syscall, including the shared entry and return
+code in `syscall/handler.rs` and `arch_impl/aarch64/syscall_entry.rs`, which the directory list above
+leaves out. The worst of these is on the x86 return path:
+
+- `rust_syscall_handler` reads this CPU's kernel stack top and then, inside `gdt::set_tss_rsp0`, this
+  CPU's TSS pointer, and writes RSP0 through it (`handler.rs:616-621`, and `:310-313` on the sigreturn
+  arm; `gdt.rs:253-260`). This runs before `entry.asm` masks interrupts (`:117`).
+- Once the syscall is preemptible, it can migrate between loading the TSS pointer and the write. The old
+  CPU's RSP0 then points at this thread's kernel stack, and the next user-to-kernel entry on that CPU,
+  made by whichever thread runs there, pushes its frame onto this thread's stack.
+- Dispatch already sets RSP0 for the thread it switches in (`per_cpu::update_tss_rsp0` at
+  `interrupts/context_switch.rs:1037`, `:1277` and `:1354`).
+
+So E2.10a deletes both syscall-return TSS writes, in its Tier-1 commit, before the first class converts.
+If its code reading finds a path where only the syscall return sets RSP0, that write moves after the
+exit `cli`, where nothing can preempt it. The same audit covers `irq_log::flush_local_try()` on that
+return path (`handler.rs:624`). <!-- claim-lint:ok: normative requirement of docs/plans/e2-sleepable-contexts.md under ruling DEV-37(2), not a measured result. -->
+
 ### 4.6 What stays masked
 
 These sections keep interrupts masked, each bounded by code that does no waiting:
@@ -546,7 +565,7 @@ series before and after each PR that §10 says could move a row (DEV-31(3)).
 | E2.7 | x86 syscalls with interrupts enabled, under the brake | E2.6 (x86 ISR inventory) | `syscall/handler.rs` (Tier 1) |
 | E2.8 | `AddressSpace` object, mapping lock and page-table lock; faults and the mmap family off PROCESS_MANAGER; signal frames out of PROCESS_MANAGER | E2.2, E2.6 | `interrupts.rs` (Tier 2) |
 | E2.9 | Restartable sleeping faults | E2.8 | `interrupts.rs` (Tier 2) |
-| E2.10a-e | Preemptible syscalls by class (§4.4), with the `CpuPin` audit | E2.6; x86 also E2.7; 10d needs E2.9 | `syscall/handler.rs` (Tier 1), once, for the class table |
+| E2.10a-e | Preemptible syscalls by class (§4.4), with the `CpuPin` audit | E2.6; x86 also E2.7; 10d needs E2.9 | `syscall/handler.rs` (Tier 1), once in 10a: the class table and the return-path TSS write |
 | E2.11 | Retire the brake, the `Braked` class and the baselines | E2.10a-e | `syscall/handler.rs` (Tier 1) |
 
 E2.3, E2.4 and E2.5 are independent of each other after E2.2, and E2.6 can run beside them. One lane
@@ -742,9 +761,12 @@ should own each, not several agents on one PR (DEV-30(3)).
 
 ### E2.10a-e: preemptible syscalls by class
 
-- **Scope.** §4.4-§4.5, one PR per class. The class table and the baseline-setting entry change land in
-  10a, as the one Tier-1 edit of this group.
+- **Scope.** §4.4-§4.5, one PR per class. 10a carries this group's Tier-1 commit: the class table, the
+  baseline-setting entry change and the removal of the syscall-return TSS writes (§4.5).
 - **Tests:**
+  - a structure test that `set_tss_rsp0` and `update_tss_rsp0` are reached only from dispatch, AP
+    start-up and boot, or after the exit `cli`, and not from `rust_syscall_handler`. It is red on today's
+    tree at `handler.rs:313` and `:618`;
   - a structure test that the table lists exactly the converted set;
   - a structure test that the converted classes' modules have no raw spin locks or unpinned per-CPU reads
     left on their allowlists;
