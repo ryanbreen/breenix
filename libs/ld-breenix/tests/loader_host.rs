@@ -504,7 +504,7 @@ mod aarch64 {
         assert_eq!(patches.len(), 4);
 
         let offset = |pair: &[u64; 2]| {
-            // SAFETY: word zero is the loader's resolver and pair is the
+            // SAFETY: the first word holds the loader's resolver. Pair is the
             // two-word descriptor it expects in x0 (the first argument).
             let resolver: unsafe extern "C" fn(*const u64) -> usize =
                 unsafe { std::mem::transmute(pair[0] as usize) };

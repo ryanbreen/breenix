@@ -100,5 +100,6 @@ for the K3 archive directory in the layout described above and
 [`x2-aarch64.json`](../x2-aarch64.json) records the twin sysroot and ELF
 digests, runtime imports and PT_LOAD frame count.
 
-ARM64 still needs KD relocations and TLS, guest staging, and dynamic and
-rustc suite acceptance.
+The ARM64 launcher stages the compiler, KD runtime and suite fixtures from
+these records. ARM64 still needs guest acceptance for the dynamic and rustc
+suites, followed by K6 (Rust linking), K7 (Cargo) and A5 (self-hosting).
