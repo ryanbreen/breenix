@@ -78,8 +78,32 @@ struct CachePage {
     gen: u64,
     written: Option<WritebackReceipt>,
 }
+std::thread_local! {
+    static ALLOCATION_HOOK: core::cell::RefCell<(usize, Option<Box<dyn FnMut(usize)>>)> =
+        core::cell::RefCell::new((0, None));
+}
+/// Run `hook(n)` before this thread's nth cache-frame allocation from now on,
+/// so a test can mutate a file between population's page reads. `None` ends it.
+pub fn on_cache_allocation(hook: Option<Box<dyn FnMut(usize)>>) {
+    ALLOCATION_HOOK.with(|slot| *slot.borrow_mut() = (0, hook));
+}
 impl CachePage {
     fn allocate() -> Result<Self, &'static str> {
+        let hook = ALLOCATION_HOOK.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            slot.0 += 1;
+            let count = slot.0;
+            slot.1.take().map(|hook| (count, hook))
+        });
+        if let Some((count, mut hook)) = hook {
+            hook(count);
+            ALLOCATION_HOOK.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                if slot.1.is_none() {
+                    slot.1 = Some(hook);
+                }
+            });
+        }
         let storage = Box::new([0; 4096]);
         Ok(Self { frame: PhysFrame(storage.as_ptr() as usize), _storage: storage,
             dirty: false, gen: 0, written: None })
