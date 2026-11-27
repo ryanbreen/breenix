@@ -1003,8 +1003,11 @@ Use `--branch` for a pinned commit on a pushed branch. The machine must be power
 1. The manager takes the network boot path under the flash lease. The delivery stub recovers any pending
    slot transaction, checks physical CURRENT and stages only `NEXT.IMG` and `NEXT.TXT` on the EFI system
    partition. Its boot intent keeps CURRENT's selected BreenFS tree and requests a writable root with
-   `cmdline persistent_root=rw`. This phase stages no test root and opens neither the system nor home filesystem.
-2. The manager promotes NEXT to CURRENT and retains the old CURRENT in PREVIOUS. The new kernel
+   `cmdline persistent_root=rw`. This firmware-only phase stages no test root and opens neither the system
+   nor home filesystem. The staging receipt and confirmed power-off hand the lease to verification.
+2. The manager promotes NEXT to CURRENT and retains the old CURRENT in PREVIOUS. The driver requires
+   the manager's promotion receipt and the selected kernel before accepting the verification boot. That boot
+   still has its own milestone checks. The new kernel
    opens the existing named BreenFS tree in place and publishes it as writable `/`. On the first flash
    this is the same tree the old kernel mounted read-only. The seven existing binds at `/etc`, `/var`,
    `/opt`, `/srv`, `/tmp`, `/run` and `/root` keep their original inodes in the system partition's
@@ -1014,7 +1017,16 @@ Use `--branch` for a pinned commit on a pushed branch. The machine must be power
    the selected root identity and mount flags reported by `/proc/mounts`, `/home` readability and the exact
    system and home write fence. The verifier has 600 seconds from power-on. A failed candidate that
    was promoted triggers a slot swap and verification of the restored kernel under the same lease.
-   `upgrade-result.json` and each boot's `ssh-verification.json` record the result.
+   `upgrade-result.json` and each boot's `ssh-verification.json` record the result. Follow the staging boot
+   and wait for its `upgrade-result.json` to say `verified` before continuing. A successful staging exit
+   only confirms the handoff. A `rolled-back` result confirms recovery to the old kernel.
+
+If staging closed with a successful firmware receipt and confirmed power-off before any verification boot
+was requested, repeat `metal-run install-persistent --sha <same-commit>` once the failure is understood.
+For BreenFS the driver checks the earlier request and the CURRENT root ID against the recorded NEXT
+before allowing the retry. The stub rechecks physical CURRENT and writes and reads back NEXT again.
+A pending slot from another commit or an attempt that already requested promotion requires diagnosis.
+A plain `metal-run boot --persistent` selects CURRENT and leaves any staged NEXT in place.
 
 Ordinary runtime activity resumes when the verification kernel boots. It includes filesystem recovery,
 service startup and clearing `/tmp` and `/run`. The flash operates on kernel slots. The writable boot
@@ -1024,7 +1036,8 @@ legacy install and rescue paths. A legacy PREVIOUS kernel can still serve its or
 of the same tree on the first rollback.
 
 `metal-run install-persistent --sha <commit> --replace-usr` stages the build on the test root and checks
-the physical CURRENT intent in firmware. The install runs with CURRENT offline. The kernel mounts the test
+the physical CURRENT intent in firmware. Start it only after verifying writable CURRENT, with NEXT empty
+and the machine Off. The kernel mounts the test
 image read-only and grants writes only to the system partition. The installer opens the same named tree and
 copies the replacement under `/usr` before removing the old contents. It preserves the image's ownership,
 modes, symlinks and hard links within `/usr`. The installed `/usr/share/factory` tree and its generation marker
