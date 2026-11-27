@@ -17,6 +17,9 @@
 
 use crate::drivers::pci;
 use core::ptr::{read_volatile, write_volatile};
+
+#[path = "tx_hold.rs"]
+mod tx_hold;
 use core::sync::atomic::{fence, AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
 
 // Legacy VirtIO PCI register offsets (from BAR0)
@@ -233,6 +236,12 @@ static mut PCI_TX_BUFFERS: [TxBuffer; PCI_TX_POOL_SIZE] = [EMPTY_PCI_TX_BUFFER; 
 static PCI_TX_SLOT_IN_FLIGHT: [AtomicBool; PCI_TX_POOL_SIZE] =
     [const { AtomicBool::new(false) }; PCI_TX_POOL_SIZE];
 static PCI_TX_AVAIL_HEAD: AtomicU16 = AtomicU16::new(0);
+
+/// TX slots filled while the RX ring is being consumed, which this device
+/// drops if they are published then (`tx_hold`). The same lock orders each
+/// publish to the TX avail ring.
+static PCI_TX_HOLD: crate::irq_safe_mutex::IrqSafeMutex<tx_hold::TxHold<PCI_TX_POOL_SIZE>> =
+    crate::irq_safe_mutex::IrqSafeMutex::new(tx_hold::TxHold::new());
 static RX_REARM_SAMPLE_SEQ: AtomicU64 = AtomicU64::new(0);
 static RX_REARM_SAMPLES: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
 static RX_SOFTIRQ_ENTRY_SAMPLE: AtomicU64 = AtomicU64::new(0);
@@ -965,28 +974,39 @@ pub fn transmit(data: &[u8]) -> Result<(), &'static str> {
 
     let tx_phys = virt_to_phys(tx_ptr as u64);
     let total_len = core::mem::size_of::<VirtioNetHdr>() + data.len();
-    let avail_idx = PCI_TX_AVAIL_HEAD.fetch_add(1, Ordering::AcqRel);
 
     unsafe {
         let q = &raw mut PCI_TX_QUEUE;
-
         (*q).desc[slot] = VirtqDesc {
             addr: tx_phys,
             len: total_len as u32,
             flags: 0,
             next: 0,
         };
+    }
 
-        (*q).avail.ring[(avail_idx % VIRTQ_SIZE as u16) as usize] = slot as u16;
+    let mut hold = PCI_TX_HOLD.lock();
+    if let Some(slot) = hold.submit(slot as u16) {
+        publish_tx_slot(slot);
+        reg_write_u16(bar0_virt, REG_QUEUE_NOTIFY, 1);
+    }
+    drop(hold);
+
+    Ok(())
+}
+
+/// Put a filled TX descriptor on the avail ring. The caller holds
+/// `PCI_TX_HOLD` and notifies the device afterwards.
+fn publish_tx_slot(slot: u16) {
+    let avail_idx = PCI_TX_AVAIL_HEAD.fetch_add(1, Ordering::AcqRel);
+    unsafe {
+        let q = &raw mut PCI_TX_QUEUE;
+        fence(Ordering::Release);
+        (*q).avail.ring[(avail_idx % VIRTQ_SIZE as u16) as usize] = slot;
         fence(Ordering::Release);
         (*q).avail.idx = avail_idx.wrapping_add(1);
         fence(Ordering::Release);
     }
-
-    // Notify device about TX queue (queue 1)
-    reg_write_u16(bar0_virt, REG_QUEUE_NOTIFY, 1);
-
-    Ok(())
 }
 
 /// Reclaim completed TX descriptors and free their buffer slots.
@@ -1055,7 +1075,13 @@ pub fn receive() -> Option<&'static [u8]> {
     }
 
     let data_len = packet_len - hdr_size;
-    rx_buffer_data(desc_idx).map(|buf| &buf[..data_len])
+    let packet = rx_buffer_data(desc_idx).map(|buf| &buf[..data_len]);
+    if packet.is_some() {
+        // A packet is handed up and the stack may answer it while the RX
+        // ring is still being consumed: hold TX until `recycle_rx_buffers`.
+        PCI_TX_HOLD.lock().begin_rx();
+    }
+    packet
 }
 
 /// Re-post all consumed RX buffers back to the device.
@@ -1083,6 +1109,17 @@ pub fn recycle_rx_buffers() {
     }
 
     reg_write_u16(state.bar0_virt, REG_QUEUE_NOTIFY, 0);
+
+    // RX consumption is over: publish what was held, in order.
+    let mut hold = PCI_TX_HOLD.lock();
+    let held = hold.end_rx();
+    for &slot in held {
+        publish_tx_slot(slot);
+    }
+    if !held.is_empty() {
+        reg_write_u16(state.bar0_virt, REG_QUEUE_NOTIFY, 1);
+    }
+    drop(hold);
 }
 
 /// Get the MAC address

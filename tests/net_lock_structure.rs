@@ -820,7 +820,6 @@ fn every_cross_context_net_static_is_guarded_or_declared_thread_only() {
     const DISCOVERY_FLOOR: &[&str] = &[
         "TCP_CONNECTIONS",
         "SEQ_COUNTER",
-        "DEFERRED_TX_QUEUE",
         "ARP_CACHE",
         "NET_CONFIG",
         "LOOPBACK_QUEUE",
