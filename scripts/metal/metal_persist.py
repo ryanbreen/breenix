@@ -129,6 +129,18 @@ def layout():
     return check_layout(record['layout']) if record.get('layout') else None
 
 
+def persistent_partition_guids(layout):
+    """Return the system (root and shared state) and home partition GUIDs.
+
+    The six-entry migration layout keeps the legacy pin identity while its boot intents
+    select mounts by phase.
+    After reclaim the surviving BreenFS system partition supplies the shared-state identity.
+    """
+    parts = layout['partitions']
+    system, home = BREENFS_ROLES if layout['version'] == 3 else EXT2_ROLES
+    return parts[system]['guid'], parts[home]['guid']
+
+
 def test_root():
     """The last staged root's facts: the test root's on the persistent layout, the whole disk's before it."""
     record = read_disk()
@@ -239,10 +251,12 @@ def tests_ramdisk(output, target, root, binaries):
 
 def slot_image(output, esp_files, the_layout, scratch, generation):
     """A kernel slot: the build's bootloader, kernel and boot.json, and the persistent boot's intent as `ramdisk`."""
-    parts = the_layout['partitions']
     ramdisk = Path(scratch) / 'slot-intent'
-    boot = (migration_intent(the_layout, 'cutover', generation) if the_layout['version'] in (2, 3)
-            else intent('persistent', root=parts['system']['guid'], home=parts['home']['guid'], userland=generation))
+    if the_layout['version'] in (2, 3):
+        boot = migration_intent(the_layout, 'cutover', generation)
+    else:
+        system, home = persistent_partition_guids(the_layout)
+        boot = intent('persistent', root=system, home=home, userland=generation)
     ramdisk.write_bytes(boot)
     files = {name: esp_files[name] for name in metal_image.ESP_FILES}
     files['ramdisk'] = ramdisk

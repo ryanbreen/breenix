@@ -70,10 +70,11 @@ def preempt(waiter, only_persistent=False):
                             return
                         if lab.lease().get('id') != holder or not any(q.get('id') == waiter for q in lab.lease().get('queue', [])):
                             continue
-                        layout = lab.remote('python3', '-c', 'import sys,json;sys.path.insert(0,"/opt/breenix-metal");'
-                            'import metal_persist;print(json.dumps(metal_persist.read_disk()["layout"]))', check=True)
-                        system = json.loads(layout.stdout)['partitions']['system']['guid']
-                        key_id = hashlib.sha256((system + ':' + lab.site['SERVER_SSH_HOST']).encode()).hexdigest()
+                        disk = lab.remote('python3', '-c', 'import sys,json;sys.path.insert(0,"/opt/breenix-metal");'
+                            'import metal_persist;layout=metal_persist.read_disk()["layout"];'
+                            'print(json.dumps(metal_persist.persistent_partition_guids(layout)))', check=True)
+                        shared_id, _ = json.loads(disk.stdout)
+                        key_id = hashlib.sha256((shared_id + ':' + lab.site['SERVER_SSH_HOST']).encode()).hexdigest()
                         cache = json.loads((state / ('pinned-hostkey-' + key_id + '.json')).read_text())
                         lab.probe.known.write_text(cache['known'])
                         result = lab.probe.ssh('id -u')

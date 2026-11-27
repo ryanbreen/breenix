@@ -1125,12 +1125,15 @@ class Driver:
         self.delivery['diskRoot'] = facts
         files = dict(esp_files)
         files.update(suite_files)
-        parts = the_layout['partitions']
         intent = self.stage / 'boot-intent'
-        intent.write_bytes(metal_persist.breenfs_upgrade_intent(the_layout, self.id) if breenfs else
-                           metal_persist.intent('persistent-install', root=parts['test']['guid'],
-                                                home=parts['system']['guid'], userland=self.id,
-                                                previous_userland=(slots.get('current') or {}).get('installedBy')))
+        if breenfs:
+            boot_intent = metal_persist.breenfs_upgrade_intent(the_layout, self.id)
+        else:
+            system, _ = metal_persist.persistent_partition_guids(the_layout)
+            boot_intent = metal_persist.intent('persistent-install', root=the_layout['partitions']['test']['guid'],
+                                               home=system, userland=self.id,
+                                               previous_userland=(slots.get('current') or {}).get('installedBy'))
+        intent.write_bytes(boot_intent)
         files['ramdisk'] = intent
         if action == 'install':
             config, request = metal_persist.install_request(scratch, the_layout, expect, manager_files, slot, note,
