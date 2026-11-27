@@ -477,12 +477,9 @@ pub fn release_thread(tid: u64) {
 /// Drop `owner`'s locks on the file a descriptor it just closed referred to.
 pub fn release_closed(owner: u64, kind: &crate::ipc::FdKind) {
     if let crate::ipc::FdKind::RegularFile(file) = kind {
-        let key = {
-            let file = file.lock();
-            FileKey {
-                mount_id: file.mount_id,
-                inode: file.inode_num,
-            }
+        let key = FileKey {
+            mount_id: file.mount_id,
+            inode: file.inode_num,
         };
         release_file(owner, key);
     }

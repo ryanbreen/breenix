@@ -365,9 +365,12 @@ fn prepare_open_descriptor(
             open, inode_num, mount_id, position: 0,
         })).map_err(|_| Errno(super::errno::ENOMEM))?)
     } else {
-        FdKind::RegularFile(Arc::try_new(Mutex::new(RegularFile {
-            open, inode_num, mount_id, position: 0,
-        })).map_err(|_| Errno(super::errno::ENOMEM))?)
+        FdKind::RegularFile(Arc::try_new(RegularFile {
+            open,
+            inode_num,
+            mount_id,
+            position: crate::ipc::sleep_mutex::SleepMutex::new(0),
+        }).map_err(|_| Errno(super::errno::ENOMEM))?)
     };
     FileDescriptor::try_opened(kind, flags).map(|entry| entry.on_mount(mount_flags))
         .map_err(|e| Errno(e as i32))
@@ -629,139 +632,54 @@ fn sys_open_install(reserved: Option<ReservedSlot>, entry: crate::ipc::fd::FileD
 /// # Returns
 /// New file position on success, negative errno on failure
 pub fn sys_lseek(fd: i32, offset: i64, whence: i32) -> SyscallResult {
-    // Get current process
-    let thread_id = match crate::task::scheduler::current_thread_id() {
-        Some(id) => id,
-        None => {
-            log::error!("sys_lseek: No current thread");
-            return SyscallResult::Err(3); // ESRCH
-        }
+    let Some(thread_id) = crate::task::scheduler::current_thread_id() else {
+        return SyscallResult::Err(3); // ESRCH
+    };
+    let manager_guard = crate::process::manager();
+    let Some((_, process)) = manager_guard
+        .as_ref()
+        .and_then(|manager| manager.find_process_by_thread(thread_id))
+    else {
+        return SyscallResult::Err(3); // ESRCH
+    };
+    let Some(entry) = process.fd_table.get(fd) else {
+        return SyscallResult::Err(9); // EBADF
     };
 
-    let ipc = {
-        let guard = crate::process::manager();
-        guard
-            .as_ref()
-            .and_then(|m| m.find_process_by_thread(thread_id))
-            .and_then(|(_, p)| p.fd_table.get(fd))
-            .and_then(|d| {
-                if let FdKind::Ipc(file) = &d.kind {
-                    Some(file.clone())
-                } else {
-                    None
-                }
-            })
-    };
-    if let Some(file) = ipc {
-        return match file.seek(offset, whence) {
-            Ok(p) => SyscallResult::Ok(p),
-            Err(e) => SyscallResult::Err(e),
-        };
-    }
-    // SEEK_END requires a disk read to get the file size.  We MUST NOT hold the
-    // process manager lock (manager_guard) or the file lock during that I/O,
-    // because the dispatch path calls set_next_ttbr0_for_thread() which tries
-    // to acquire the PM lock.  If we are holding it while blocked on I/O, every
-    // attempt to re-dispatch us returns PmLockBusy and we spin forever.
-    //
-    // Retain the filesystem and node, release PM and the file lock for the
-    // backend call, then re-acquire to update the position.
-    if whence == SEEK_END {
-        // Phase 1: extract file metadata under PM lock
-        let (fs, node) = {
-            let mut manager_guard = crate::process::manager();
-            let process = match &mut *manager_guard {
-                Some(manager) => match manager.find_process_by_thread_mut(thread_id) {
-                    Some((_, p)) => p,
-                    None => return SyscallResult::Err(3), // ESRCH
-                },
-                None => return SyscallResult::Err(3), // ESRCH
-            };
-            let fd_entry = match process.fd_table.get(fd) {
-                Some(entry) => entry,
-                None => return SyscallResult::Err(9), // EBADF
-            };
-            match &fd_entry.kind {
-                FdKind::RegularFile(file) => {
-                    let f = file.lock();
-                    (f.open.fs.clone(), f.open.node.clone())
-                }
-                // A directory position is a record offset, not a byte count
-                // that SEEK_END can be relative to.
-                FdKind::Directory(_) => return SyscallResult::Err(22), // EINVAL
-                _ => return SyscallResult::Err(29),                    // ESPIPE
+    match &entry.kind {
+        FdKind::Ipc(file) => {
+            let file = file.clone();
+            drop(manager_guard);
+            match file.seek(offset, whence) {
+                Ok(position) => SyscallResult::Ok(position),
+                Err(error) => SyscallResult::Err(error),
             }
-            // PM lock and file lock both dropped here
-        };
-
-        // Phase 2: disk read WITHOUT any lock held
-        let file_size = match fs.getattr(node.ino) {
-            Ok(attrs) => attrs.size as i64,
-            Err(error) => return SyscallResult::Err(error.into()),
-        };
-        let new_position = match file_size.checked_add(offset) {
-            Some(position) if position >= 0 => position,
-            _ => return SyscallResult::Err(22), // EINVAL
-        };
-        let new_pos = new_position as u64;
-
-        // Phase 3: update position under PM lock
-        let mut manager_guard = crate::process::manager();
-        let process = match &mut *manager_guard {
-            Some(manager) => match manager.find_process_by_thread_mut(thread_id) {
-                Some((_, p)) => p,
-                None => return SyscallResult::Err(3), // ESRCH
-            },
-            None => return SyscallResult::Err(3), // ESRCH
-        };
-        let fd_entry = match process.fd_table.get(fd) {
-            Some(entry) => entry,
-            None => return SyscallResult::Err(9), // EBADF
-        };
-        match &fd_entry.kind {
-            FdKind::RegularFile(file) => {
-                file.lock().position = new_pos;
-                return SyscallResult::Ok(new_pos);
-            }
-            _ => return SyscallResult::Err(29), // ESPIPE
         }
-    }
-
-    // SEEK_SET and SEEK_CUR: no disk I/O needed, handle under lock.
-    let mut manager_guard = crate::process::manager();
-    let process = match &mut *manager_guard {
-        Some(manager) => match manager.find_process_by_thread_mut(thread_id) {
-            Some((_, p)) => p,
-            None => {
-                log::error!("sys_lseek: Process not found for thread {}", thread_id);
-                return SyscallResult::Err(3); // ESRCH
-            }
-        },
-        None => {
-            log::error!("sys_lseek: Process manager not initialized");
-            return SyscallResult::Err(3); // ESRCH
-        }
-    };
-
-    let fd_entry = match process.fd_table.get(fd) {
-        Some(entry) => entry,
-        None => return SyscallResult::Err(9), // EBADF
-    };
-
-    match &fd_entry.kind {
         FdKind::RegularFile(file) => {
-            let mut file = file.lock();
-            let new_pos = match whence {
-                SEEK_SET => Some(offset),
-                SEEK_CUR => (file.position as i64).checked_add(offset),
+            if !matches!(whence, SEEK_SET | SEEK_CUR | SEEK_END) {
+                return SyscallResult::Err(22); // EINVAL
+            }
+            // Keep the original open description even if fd is closed or
+            // reused while SEEK_END waits for I/O.
+            let file = file.clone();
+            drop(manager_guard);
+            let mut position = match file.position.enter() {
+                Ok(position) => position,
+                Err(error) => return SyscallResult::Err(error),
+            };
+            let base = match whence {
+                SEEK_CUR => *position,
+                SEEK_END => match file.open.fs.getattr(file.open.node.ino) {
+                    Ok(attrs) => attrs.size,
+                    Err(error) => return SyscallResult::Err(error.into()),
+                },
+                _ => 0, // SEEK_SET
+            };
+            let new_pos = match base.checked_add_signed(offset) {
+                Some(new_pos) if new_pos <= i64::MAX as u64 => new_pos,
                 _ => return SyscallResult::Err(22), // EINVAL
             };
-            // A resulting offset that is negative or overflows is EINVAL.
-            let new_pos = match new_pos {
-                Some(position) if position >= 0 => position as u64,
-                _ => return SyscallResult::Err(22), // EINVAL
-            };
-            file.position = new_pos;
+            *position = new_pos;
             SyscallResult::Ok(new_pos)
         }
         FdKind::Directory(dir) => {
@@ -873,16 +791,13 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
                 FdKind::StdIo(io_fd) => FstatKind::StdIo(*io_fd),
                 FdKind::PipeRead(pipe) | FdKind::PipeWrite(pipe) => FstatKind::Pipe(pipe.clone()),
                 FdKind::Socket(socket) => FstatKind::Socket(socket.common.ino()),
-                FdKind::RegularFile(file) => {
-                    let file_guard = file.lock();
-                    FstatKind::File {
-                        open: crate::fs::vfs::file::OpenFile {
-                            fs: file_guard.open.fs.clone(),
-                            node: file_guard.open.node.clone(),
-                        },
-                        mount_id: file_guard.mount_id,
-                    }
-                }
+                FdKind::RegularFile(file) => FstatKind::File {
+                    open: crate::fs::vfs::file::OpenFile {
+                        fs: file.open.fs.clone(),
+                        node: file.open.node.clone(),
+                    },
+                    mount_id: file.mount_id,
+                },
                 FdKind::Directory(dir) => {
                     let dir_guard = dir.lock();
                     FstatKind::File {
@@ -4011,10 +3926,7 @@ pub fn sys_utimensat(dirfd: i32, path_ptr: u64, times_ptr: u64, flags: u32) -> S
             crate::fs::vfs::names::held(handle)
         } else {
             match &entry.kind {
-                FdKind::RegularFile(file) => {
-                    let file = file.lock();
-                    Ok((file.open.fs.clone(), file.open.node.clone()))
-                }
+                FdKind::RegularFile(file) => Ok((file.open.fs.clone(), file.open.node.clone())),
                 FdKind::Directory(dir) => {
                     let dir = dir.lock();
                     Ok((dir.open.fs.clone(), dir.open.node.clone()))
@@ -4095,10 +4007,7 @@ pub fn sys_fsync(fd: i32) -> SyscallResult {
         }
     }
     let (fs, node) = match &entry.kind {
-        FdKind::RegularFile(file) => {
-            let file = file.lock();
-            (file.open.fs.clone(), file.open.node.clone())
-        }
+        FdKind::RegularFile(file) => (file.open.fs.clone(), file.open.node.clone()),
         FdKind::Directory(dir) => {
             let dir = dir.lock();
             (dir.open.fs.clone(), dir.open.node.clone())
@@ -4252,11 +4161,7 @@ pub fn sys_fstatfs(fd: i32, buf: u64) -> SyscallResult {
                 }
             },
             FdKind::RegularFile(file) => {
-                let (mount, fs) = {
-                    let file = file.lock();
-                    (file.open.node.mount, file.open.fs.clone())
-                };
-                filesystem_statfs(mount, fs.as_ref(), mount_flags)
+                filesystem_statfs(file.open.node.mount, file.open.fs.as_ref(), mount_flags)
             }
             FdKind::Directory(dir) => {
                 let (mount, fs) = {
@@ -4328,13 +4233,13 @@ pub fn sys_fadvise(fd: i32, offset: i64, len: i64, advice: i32) -> SyscallResult
     }
     const POSIX_FADV_WILLNEED: i32 = 3;
     if let (POSIX_FADV_WILLNEED, FdKind::RegularFile(file)) = (advice, &entry.kind) {
-        let node = file.lock().open.node.clone();
+        let node = &file.open.node;
         const PAGE_SIZE: u64 = 4096;
         let first = offset as u64 / PAGE_SIZE;
         let last = if len == 0 { u64::MAX } else { (offset as u64 + len as u64).div_ceil(PAGE_SIZE) };
         // Readahead is advisory. A cache miss or pressure cannot change the
         // outcome of ordinary reads from this descriptor.
-        let _ = crate::memory::file_map::populate(&node, first, (last - first).min(16));
+        let _ = crate::memory::file_map::populate(node, first, (last - first).min(16));
     }
     SyscallResult::Ok(0)
 }
@@ -4373,11 +4278,7 @@ pub fn sys_fallocate(fd: i32, mode: u32, offset: i64, len: i64) -> SyscallResult
         Ok(cred) => cred,
         Err(errno) => return SyscallResult::Err(errno),
     };
-    let (fs, node) = {
-        let file = file.lock();
-        (file.open.fs.clone(), file.open.node.clone())
-    };
-    match fs.preallocate(&node, offset as u64, len as u64, !cred.privileged()) {
+    match file.open.fs.preallocate(&file.open.node, offset as u64, len as u64, !cred.privileged()) {
         Ok(()) => SyscallResult::Ok(0),
         Err(errno) => SyscallResult::Err(errno.into()),
     }
@@ -4403,7 +4304,6 @@ pub fn sys_ftruncate(fd: i32, length: i64) -> SyscallResult {
     }
     let (fs, node) = match &entry.kind {
         FdKind::RegularFile(file) if entry.writable() => {
-            let file = file.lock();
             (file.open.fs.clone(), file.open.node.clone())
         }
         _ => return SyscallResult::Err(super::errno::EINVAL as u64),

@@ -519,7 +519,7 @@ fn file_mapping(
     if kind != 2 && prot.contains(Protection::WRITE) && !may_write {
         return Err(EACCES as u64);
     }
-    let handle = file.lock().open.node.clone();
+    let handle = file.open.node.clone();
     Ok((handle, may_write))
 }
 
