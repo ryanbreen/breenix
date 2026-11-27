@@ -854,58 +854,31 @@ fn validate_generic_unblock_keeps_child_exit_dedicated(source: &str) -> Result<(
     Ok(())
 }
 
-fn validate_io_wake_buffers_before_thread_context_overflow_fallback(
-    source: &str,
-) -> Result<(), String> {
+fn validate_io_wake_publishes_without_inline_scheduler(source: &str) -> Result<(), String> {
     let io_wake = function_body(source, "isr_unblock_for_io")
         .ok_or_else(|| "missing isr_unblock_for_io".to_string())?;
-    if compact_code(io_wake) != "{let_=buffer_isr_wakeup(tid);set_need_resched();}" {
-        return Err(
-            "isr_unblock_for_io must buffer and then request rescheduling unconditionally"
-                .to_string(),
-        );
+    if compact_code(io_wake) != "{publish_irq_wake(tid,WAKE_IO);}" {
+        return Err("deferred I/O wake must publish directly to the task inbox".to_string());
     }
 
-    let buffer = function_body(source, "buffer_isr_wakeup")
-        .ok_or_else(|| "missing buffer_isr_wakeup".to_string())?;
-    let full_offset = code_text_offset(buffer, "IsrWakePush::Full")
-        .ok_or_else(|| "buffer helper has no full-buffer arm".to_string())?;
-    let full = braced_block(buffer, &code_mask(buffer), full_offset)
-        .ok_or_else(|| "cannot parse full-buffer arm".to_string())?;
-    if !compact_code(full).contains("if!crate::per_cpu::in_interrupt()") {
-        return Err("full-buffer fallback is not restricted to thread context".to_string());
+    let irq = function_body(source, "publish_irq_wake")
+        .ok_or_else(|| "missing IRQ wake entry".to_string())?;
+    let publish = function_body(source, "publish_wake")
+        .ok_or_else(|| "missing inbox publication".to_string())?;
+    if !has_identifier(irq, "arch_without_interrupts") || !has_identifier(irq, "publish_wake") {
+        return Err("IRQ wake publication must complete with local IRQs masked".to_string());
     }
-
-    let interrupt_offset = identifier_offsets(full, &code_mask(full), "in_interrupt")
-        .into_iter()
-        .next()
-        .ok_or_else(|| "full-buffer arm does not inspect interrupt context".to_string())?;
-    let thread_context = braced_block(full, &code_mask(full), interrupt_offset)
-        .ok_or_else(|| "cannot parse thread-context overflow arm".to_string())?;
-    // `unblock_thread` applies the wake inline: under the scheduler lock, or
-    // on x86-64 under the lock of the CPU that owns the thread (#1649).
-    for required in ["unblock_thread", "Applied", "AlreadyRunnable"] {
-        if !has_identifier(thread_context, required) {
-            return Err(format!("thread-context overflow arm is missing {required}"));
+    for forbidden in ["with_scheduler", "lock_scheduler", "SCHEDULER", "unblock_thread", "wake_thread_any_context"] {
+        if has_identifier(irq, forbidden) || has_identifier(publish, forbidden) {
+            return Err(format!("IRQ wake publication references {forbidden}"));
         }
     }
-    if has_identifier(thread_context, "ENQUEUE_ISR_BUFFER_FULL") {
-        return Err("thread-context overflow is counted as an ISR drop".to_string());
-    }
-
-    let else_offset = code_text_offset(full, "else")
-        .ok_or_else(|| "full-buffer arm has no real-interrupt rejection branch".to_string())?;
-    let interrupt_context = braced_block(full, &code_mask(full), else_offset)
-        .ok_or_else(|| "cannot parse real-interrupt overflow arm".to_string())?;
-    for required in ["ENQUEUE_ISR_BUFFER_FULL", "Rejected"] {
-        if !has_identifier(interrupt_context, required) {
-            return Err(format!("real-interrupt overflow arm is missing {required}"));
-        }
-    }
-    if has_identifier(interrupt_context, "with_scheduler")
-        || has_identifier(interrupt_context, "unblock_thread")
-    {
-        return Err("real-interrupt overflow arm takes the scheduler lock".to_string());
+    let publication = code_text_offset(publish, "inbox.publish")
+        .ok_or_else(|| "missing task inbox publication".to_string())?;
+    let notification = code_text_offset(publish, "kick_wake_inbox")
+        .ok_or_else(|| "missing wake notification".to_string())?;
+    if publication >= notification {
+        return Err("the owner CPU must be notified after publication".to_string());
     }
     Ok(())
 }
@@ -1921,35 +1894,35 @@ fn generic_unblock_validator_rejects_child_exit_wake() {
 }
 
 #[test]
-fn io_wake_buffers_before_thread_context_overflow_fallback() {
-    validate_io_wake_buffers_before_thread_context_overflow_fallback(&repo_text(
+fn deferred_io_wake_publishes_without_inline_scheduler() {
+    validate_io_wake_publishes_without_inline_scheduler(&repo_text(
         "kernel/src/task/scheduler.rs",
     ))
-    .expect("I/O completion wake keeps the lock-free buffer dependency break");
+    .expect("deferred I/O wake keeps the scheduler lock out of the publication path");
 }
 
 #[test]
 fn io_wake_validator_rejects_direct_any_context_routing() {
     let source = repo_text("kernel/src/task/scheduler.rs");
     let mutated = source.replacen(
-        "let _ = buffer_isr_wakeup(tid);\n    set_need_resched();",
-        "let _ = wake_thread_any_context(tid);\n    set_need_resched();",
+        "publish_irq_wake(tid, WAKE_IO);",
+        "wake_thread_any_context(tid);",
         1,
     );
     assert_ne!(mutated, source, "fixture mutation must apply");
-    assert!(validate_io_wake_buffers_before_thread_context_overflow_fallback(&mutated).is_err());
+    assert!(validate_io_wake_publishes_without_inline_scheduler(&mutated).is_err());
 }
 
 #[test]
 fn io_wake_validator_rejects_interrupt_context_inline_fallback() {
     let source = repo_text("kernel/src/task/scheduler.rs");
     let mutated = source.replacen(
-        "if !crate::per_cpu::in_interrupt()",
-        "if crate::per_cpu::in_interrupt()",
+        "let previous = publish_wake(tid, bits, None)?;",
+        "let previous = publish_wake(tid, bits, None).or_else(|| { unblock_thread(tid); None })?;",
         1,
     );
     assert_ne!(mutated, source, "fixture mutation must apply");
-    assert!(validate_io_wake_buffers_before_thread_context_overflow_fallback(&mutated).is_err());
+    assert!(validate_io_wake_publishes_without_inline_scheduler(&mutated).is_err());
 }
 
 #[test]
@@ -4390,7 +4363,8 @@ fn last_interrupt_return_tick(_cpu: usize) -> u64 { 0 }
 #[derive(Clone, Copy, PartialEq)] enum ThreadState { Ready, Terminated }
 #[derive(Clone, Copy)] struct CpuPin { cpu: usize, per_cpu_worker: bool, relocating: bool }
 struct Context { sp: u64 }
-struct Thread { state: ThreadState, cpu_affinity: Option<CpuPin>, context: Context, run_start_ticks: u64 }
+struct Wake { cpu: std::sync::atomic::AtomicUsize }
+struct Thread { state: ThreadState, cpu_affinity: Option<CpuPin>, context: Context, run_start_ticks: u64, wake: Option<Wake> }
 impl Thread { fn id(&self) -> u64 { 7 } fn set_running(&mut self) {} }
 struct CpuState { last_schedule_ticks: u64, current_thread: Option<u64>, previous_thread: Option<u64>, pending_next: Option<u64> }
 mod scheduler {
@@ -4402,6 +4376,8 @@ fn online_cpu_count(&self) -> usize { 2 }
 fn cpu_load(&self, cpu: usize) -> usize { self.per_cpu_queues[cpu].len() }
 fn get_thread(&self, tid: u64) -> Option<&Thread> { (tid == 7).then_some(&self.thread) }
 fn get_thread_mut(&mut self, tid: u64) -> Option<&mut Thread> { (tid == 7).then_some(&mut self.thread) }
+fn wake_thread_ref(&self, tid: u64) -> Option<&Thread> { self.get_thread(tid) }
+fn wake_thread_mut(&mut self, tid: u64) -> Option<&mut Thread> { self.get_thread_mut(tid) }
 fn is_in_deferred_requeue(&self, tid: u64) -> bool { assert_eq!(tid, 7); false }
 fn send_resched_ipi_to_cpu(&self, cpu: usize) { assert!(cpu < MAX_CPUS); }
 "#,
@@ -4464,7 +4440,7 @@ pub fn run(offline: bool) {
     let mut s = Scheduler {
         per_cpu_queues: std::array::from_fn(|_| VecDeque::new()),
         cpu_state: std::array::from_fn(|_| CpuState { last_schedule_ticks: 0, current_thread: None, previous_thread: None, pending_next: None }),
-        thread: Thread { state: ThreadState::Ready, cpu_affinity: Some(CpuPin { cpu: home, per_cpu_worker: true, relocating: false }), context: Context { sp: 0 }, run_start_ticks: 0 },
+        thread: Thread { state: ThreadState::Ready, cpu_affinity: Some(CpuPin { cpu: home, per_cpu_worker: true, relocating: false }), context: Context { sp: 0 }, run_start_ticks: 0, wake: None },
     };
     assert!(offline || s.cpu_dispatch_stale(home));
     s.per_cpu_queues[home].push_back(7);
@@ -4583,6 +4559,7 @@ struct Scheduler { threads: Vec<Thread>, per_cpu_queues: [VecDeque<u64>; MAX_CPU
 impl Scheduler {
 fn current_cpu_id() -> usize { CURRENT_CPU.load(Ordering::Relaxed) }
 fn get_thread(&self, tid: u64) -> Option<&Thread> { LOOKUPS.fetch_add(1, Ordering::Relaxed); self.threads.iter().find(|t| t.tid == tid) }
+fn wake_thread_ref(&self, tid: u64) -> Option<&Thread> { self.get_thread(tid) }
 fn is_in_deferred_requeue(&self, _tid: u64) -> bool { false }
 "#,
     );

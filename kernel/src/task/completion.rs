@@ -1,27 +1,24 @@
 //! Completion primitive for synchronising a waiter thread with an ISR.
 //!
-//! `Completion` is the kernel equivalent of Linux's `struct completion`.
-//! A single thread calls `wait_timeout()`, which sleeps until an ISR
-//! (or any other context) calls `complete(token)`.
+//! One thread calls `wait_timeout()` and sleeps until an ISR or another
+//! context calls `complete(token)`.
 //!
 //! # Race prevention
 //!
-//! `complete(token)` takes no lock. It stores `done`, issues a SeqCst fence,
-//! then reads `waiter`; if a waiter is registered it buffers a wake for it
-//! (`isr_unblock_for_io`), which the scheduler applies when it drains the wake
-//! buffer. The waiter stores its tid in `waiter` and fences before it checks
-//! `done`, so at least one side sees the other: either `complete()` reads the
-//! tid and buffers a wake, or the waiter sees `done` and does not sleep. On
-//! x86_64 a syscall waiter halts in place, and the same pairing on its CPU
-//! (`halted_cpu`) lets `complete()` end the halt from another CPU.
+//! `complete(token)` stores `done`, issues a SeqCst fence, and reads `waiter`
+//! without taking a lock. A registered waiter receives the wake through its
+//! preallocated node in the owner CPU's scheduler inbox. The waiter stores
+//! its TID and fences before checking `done`, so the producer sees the waiter
+//! or the waiter sees the receipt before it sleeps. On x86_64 a syscall
+//! waiter halts in place, and the same pairing on its CPU (`halted_cpu`)
+//! lets `complete()` end the halt from another CPU.
 //!
 //! The waiter's done-check and `block_current_for_io()` execute under a single
-//! `with_scheduler()` call, matching Linux's `raw_spin_lock_irq` around
-//! `__prepare_to_swait`, and it checks `done` again after that call and after
-//! each wake. A waiter that sees `done` clears `waiter`, so `complete()` may
-//! read 0 and buffer no wake; every exit therefore goes through
+//! `with_current()` call. The waiter checks `done` again after that call and
+//! after each wake. A waiter that sees `done` clears `waiter`, so `complete()` may
+//! read 0 and publish no wake; every exit therefore goes through
 //! `finish_wait_current()`, which takes back a published `BlockedOnIO` under
-//! the scheduler lock. A buffered wake applied after that finds the thread
+//! the scheduler lock. A pending wake applied after that finds the thread
 //! running and does nothing.
 //!
 //! # Caller contract
@@ -483,12 +480,12 @@ impl Completion {
                 //    done and the timeout.
                 //
                 // Race safety: complete(token) publishes done without the
-                // scheduler lock and buffers a wake only if it reads a nonzero
+                // scheduler lock and publishes a wake only if it reads a nonzero
                 // waiter. If done lands after our locked done-check, the
                 // unlocked recheck below sees it; we then clear waiter, so the
-                // ISR may buffer no wake, and finish_wait_current() returns the
+                // ISR may publish no wake, and finish_wait_current() returns the
                 // still-published BlockedOnIO to Running before we return.
-                // Otherwise the ISR read our tid and its buffered wake ends the
+                // Otherwise the ISR read our tid and its pending wake ends the
                 // halt or schedule() below.
                 // ============================================================
 
@@ -727,12 +724,9 @@ impl Completion {
     /// Signal completion from ISR or any other context.
     ///
     /// Sets `done = token`, then wakes the waiter thread (if any) via the
-    /// lock-free ISR wakeup buffer. The scheduler drains that buffer under its
-    /// own lock at the top of the next scheduling decision.
-    ///
-    /// This keeps the hardirq path out of `with_scheduler()`, which is closer
-    /// to Linux's completion wakeup model and avoids inlining the full
-    /// scheduler mutation path into the AHCI IRQ handler.
+    /// waiter's task-owned wake node. The waiter can observe the receipt
+    /// before it blocks, or its CPU will apply the published node under the
+    /// same scheduler lock used by the check-and-block path.
     ///
     /// Idempotent: calling `complete()` multiple times is safe (the second
     /// call stores the same token again and a waiter of 0, which is a no-op).
