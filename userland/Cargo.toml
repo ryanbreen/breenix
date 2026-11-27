@@ -21,6 +21,11 @@ lto = "thin"
 overflow-checks = true
 incremental = false
 
+# The crypto and SSH transport live in libbreenix. Their per-byte loops
+# (ciphers, MACs, hashes, packet framing) are built for speed, not size.
+[profile.release.package.libbreenix]
+opt-level = 3
+
 [profile.dev-box]
 inherits = "release"
 opt-level = 1
