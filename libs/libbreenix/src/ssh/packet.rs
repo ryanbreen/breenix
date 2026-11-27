@@ -387,7 +387,7 @@ impl PacketIo {
     }
 
     /// Leave relay mode for an exchange that blocks on the peer, such as a
-    /// key re-exchange: write out every queued packet, waiting for the
+    /// key re-exchange: write out the queued packets, waiting for the
     /// socket as needed, then restore blocking writes. Returns whether a
     /// relay was running, so the caller can start it again.
     pub fn pause_relay(&mut self) -> Result<bool, Error> {

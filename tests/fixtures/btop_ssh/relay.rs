@@ -166,7 +166,7 @@ pub mod ssh {
             // @WAIT_FOR_CHANNEL@
             // @CHANNEL_CLOSED@
             pub fn io(&mut self) -> &mut PacketIo { &mut self.io }
-            // The scripted packets hold no KEXINIT, so every message comes back.
+            // The scripted packets hold no KEXINIT, so the message comes back.
             fn rekey_if_kexinit(&mut self, msg: Vec<u8>) -> Result<Option<Vec<u8>>, SshError> { Ok(Some(msg)) }
             pub fn input_eof(&self) -> bool { self.channel.as_ref().unwrap().eof_received }
             pub fn pty_size(&self) -> (u32, u32) { self.channel.as_ref().unwrap().pty_size }

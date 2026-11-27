@@ -181,8 +181,8 @@ fn writes_are_pipelined_up_to_the_window_and_cover_the_file_once() {
 
 #[test]
 fn a_failed_pipelined_write_fails_the_upload_without_marking_it_ready() {
-    // The server answers the first window's writes only once all of them
-    // have arrived, newest first, and the third one failed. The upload must
+    // The server answers the first window's writes only once its 16th
+    // write has arrived, newest first, and the third one failed. The upload must
     // report that status, which needs the window of writes in flight and
     // each reply matched to its request, and must not mark itself ready.
     let file = vec![7u8; 2 * WINDOW * CHUNK];
