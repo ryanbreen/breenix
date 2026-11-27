@@ -262,3 +262,39 @@ python3 userland/bbench/tables.py --box "$RUN_ID" "$BOX_RECEIPTS" \
 python3 userland/bbench/render.py --box "$RUN_ID" "$BOX_RECEIPTS" \
     --mac "$MAC_RUN_ID" "$MAC_RECEIPTS" > target/bbench-baseline.md
 ```
+
+## Benchmark series (schema v1)
+
+The Mac-side driver writes `<run>.series.json` alongside the receipts, including
+when a workload fails. Use a unique `--run` for each system and commit pair.
+Pass `--hardware`, `--kernel-commit`, `--userland-commit` and `--session` when
+recording a run for comparison. The driver timestamps the run in UTC and
+reads the toolchain from CURRENT on Breenix or `rustc -vV` on the Mac.
+
+```sh
+python3 userland/bbench/run.py series-from-receipts "$RECEIPTS" \
+    --run "$RUN_ID" --out "$SERIES_DIR" --at "$RUN_STARTED_UTC" \
+    --system breenix --target x86-metal --hardware "Dell PowerEdge R240" \
+    --kernel-commit "$KERNEL_COMMIT" --userland-commit "$USERLAND_COMMIT" \
+    --session "$SESSION"
+```
+
+Repeat `--run` to include a continuation of the same run from the receipt
+directory. Use `--id` to give the combined series its own stable ID.
+
+- Each file contains `version: 1`, `id`, UTC ISO 8601 `at`, `system`
+  (`breenix`, `linux`, `mac`), `target` (`x86-metal`, `arm64-qemu`, `mac`),
+  `hardware`, `kernelCommit`, `userlandCommit`, `toolchain`, `session`,
+  `pr`, `note` and `rows`. Unknown commit, toolchain, session, PR and
+  note values are `null`.
+- Each row has a stable `id`, `title`, `area` (`compile`, `process`,
+  `memory`, `disk`, `network`, `ssh`), `unit` (`s`, `ms`, `MB/s`),
+  `better` (`lower`, `higher`), `state` (`measured`, `deferred`,
+  `failed`), `median`, `min`, `max`, `completed`, `attempts`, `cache`
+  and nullable `reason`. Statistics use successful timed receipts.
+  `attempts` counts published timed receipts, including failures.
+  Deferred and failed rows have null statistics and are omitted from plots.
+  Disk cases deferred on the R240 carry reason `#3226`.
+- For matching measured rows on the same hardware, divide Breenix by Linux
+  when lower is better and Linux by Breenix when higher is better. A ratio
+  above 1 means Breenix is slower.
