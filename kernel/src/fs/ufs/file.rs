@@ -4,54 +4,15 @@ use super::{
     path, FileLease, Pending, Release,
 };
 use crate::ipc::object::IpcFile;
-use crate::ipc::wait::{wait_on, IpcDeadline, WaitEnd};
 use crate::syscall::{errno::*, userptr};
-use crate::task::waitqueue::WaitQueueHead;
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
-use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 use ufs_abi::{
     payload::{Attr, Reader, MAX_WRITE},
     Op, Request,
 };
 
-/// Sleeping serialization for an operation that waits on a daemon reply.
-pub(super) struct Gate {
-    busy: AtomicBool,
-    waiters: WaitQueueHead,
-}
-pub(super) struct Guard<'a>(&'a Gate);
-impl Gate {
-    pub fn new() -> Self {
-        Self {
-            busy: AtomicBool::new(false),
-            waiters: WaitQueueHead::new(),
-        }
-    }
-    pub(super) fn enter(&self) -> Result<Guard<'_>, u64> {
-        loop {
-            if self
-                .busy
-                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-                .is_ok()
-            {
-                return Ok(Guard(self));
-            }
-            match wait_on(&self.waiters, &IpcDeadline::Never, || {
-                self.busy.load(Ordering::Acquire)
-            }) {
-                WaitEnd::Interrupted(e) => return Err(e),
-                WaitEnd::Woken | WaitEnd::TimedOut => {}
-            }
-        }
-    }
-}
-impl Drop for Guard<'_> {
-    fn drop(&mut self) {
-        self.0.busy.store(false, Ordering::Release);
-        self.0.waiters.wake_up();
-    }
-}
+pub(super) type Gate = crate::ipc::sleep_mutex::SleepMutex<()>;
 
 pub struct UfsFile {
     pub mount: u64,
@@ -204,7 +165,7 @@ impl UfsFile {
             handle,
             position: Mutex::new(0),
             dots: Mutex::new(0),
-            serial: Gate::new(),
+            serial: Gate::new(()),
             mutation,
             lease,
             release: Some(release),
