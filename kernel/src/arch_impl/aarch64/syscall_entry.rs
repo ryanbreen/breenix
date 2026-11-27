@@ -1385,7 +1385,7 @@ fn sys_exec_aarch64(
         Err(errno) => return (-(errno as i64)) as u64,
     };
 
-    let (elf_vec, (image_identity, exe_path)) = match crate::syscall::exec::read_image(&program_name, &mut arguments, |path| {
+    let (process_image, (image_identity, exe_path)) = match crate::syscall::exec::read_image(&program_name, &mut arguments, |path| {
         load_elf_from_ext2(path, crate::exec_elf::Purpose::Exec).map(|(data, identity, path)| (data, (identity, path)))
     }) {
         Ok(data) => data,
@@ -1435,7 +1435,7 @@ fn sys_exec_aarch64(
     };
     let mut prepared = match crate::process::manager::ProcessManager::prepare_exec_image(
         current_pid,
-        elf_vec,
+        process_image,
         Some(&process_name),
         Some(exe_path),
         &argv_slices,
@@ -1523,6 +1523,7 @@ fn sys_exec_aarch64(
             crate::task::process_task::enqueue_process_reclaim(reclaim);
         }
 
+        // The prepared image chooses the EL0 entry, including PT_INTERP handoff.
         frame.elr = new_entry_point;
 
         unsafe {

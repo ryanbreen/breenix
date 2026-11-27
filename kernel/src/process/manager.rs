@@ -115,7 +115,6 @@ pub(crate) enum ReapOutcome {
 pub(crate) struct PreparedExecImage {
     new_page_table: crate::memory::process_memory::UnpublishedPageTable,
     loaded_elf: crate::elf::LoadedElf,
-    #[cfg(target_arch = "x86_64")]
     exec_vmas: Vec<crate::memory::vma::Vma>,
     program_name: Option<String>,
     exe_path: Option<alloc::sync::Arc<Vec<u8>>>,
@@ -4925,7 +4924,14 @@ impl ProcessManager {
             .map(alloc::sync::Arc::try_new)
             .transpose()
             .map_err(|_| "exec allocation failed")?;
-        let user_stack_size = crate::syscall::exec::stack_size(argv, envp)?;
+        let mut image_source = image_source.into();
+        let interpreter_plan = image_source.interpreter_plan();
+        let exec_vmas = image_source.take_exec_vmas();
+        let mut user_stack_size = crate::syscall::exec::stack_size(argv, envp)?;
+        if interpreter_plan.is_some() {
+            // The static stack budget does not include the interpreter's auxv entries.
+            user_stack_size += 4096;
+        }
         let cmdline = super::process::cmdline_of(argv)?;
         let program_name = program_name
             .map(crate::syscall::exec::copy_string)
@@ -4936,7 +4942,7 @@ impl ProcessManager {
         // A filesystem image arrives already read into a table cleared by
         // clear_exec_table.
         log::debug!("exec_process_with_argv [ARM64]: Loading ELF into new page table...");
-        let (mut new_page_table, loaded_elf) = match image_source.into().into_loaded(pid.as_u64()) {
+        let (mut new_page_table, loaded_elf) = match image_source.into_loaded(pid.as_u64()) {
             crate::exec_elf::Loaded::Mapped(new_page_table, loaded_elf, _) => (new_page_table, loaded_elf),
             crate::exec_elf::Loaded::Bytes(elf_data) => {
                 // Reserve the Box before allocating a root, so ENOMEM cannot strand it.
@@ -4982,12 +4988,12 @@ impl ProcessManager {
             user_stack_top,
             argv,
             envp,
-            ExecPlan::static_image(
+            interpreter_plan.unwrap_or_else(|| ExecPlan::static_image(
                 loaded_elf.phdr_vaddr,
                 loaded_elf.phnum,
                 loaded_elf.phentsize,
                 loaded_elf.entry_point,
-            ),
+            )),
             &cred,
         )?;
 
@@ -4999,6 +5005,7 @@ impl ProcessManager {
         Ok(PreparedExecImage {
             new_page_table,
             loaded_elf,
+            exec_vmas,
             program_name,
             exe_path,
             cmdline,
@@ -5099,6 +5106,7 @@ impl ProcessManager {
         let PreparedExecImage {
             new_page_table,
             loaded_elf,
+            exec_vmas,
             program_name,
             exe_path,
             cmdline,
@@ -5163,7 +5171,11 @@ impl ProcessManager {
         process.clear_child_tid = None;
         process.signals.drop_timer_signals();
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
-        process.vmas.clear();
+        if exec_vmas.is_empty() {
+            process.vmas.clear();
+        } else {
+            process.vmas = exec_vmas;
+        }
         process.mmap_gaps = None;
         process.memory_locks.clear();
 

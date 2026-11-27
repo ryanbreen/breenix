@@ -20,6 +20,7 @@ const PAGE: usize = 4096;
 const ET_EXEC: u16 = 2;
 const ET_DYN: u16 = 3;
 const EM_X86_64: u16 = 62;
+const EM_AARCH64: u16 = 183;
 const PT_LOAD: u32 = 1;
 const PT_INTERP: u32 = 3;
 const PT_PHDR: u32 = 6;
@@ -51,11 +52,9 @@ impl ProgramHeader {
 }
 
 type ReadAt<'a> = dyn FnMut(u64, &mut [u8]) -> Result<(), Errno> + 'a;
-#[cfg(any(test, target_arch = "x86_64"))]
 pub(crate) type ReadInterpreter<'a> = dyn FnMut(u64, &mut ReadAt<'_>) -> Result<ExecPlan, Errno> + 'a;
 
 /// A page-aligned part of an interpreted exec image and its mapped ELF flags.
-#[cfg(any(test, target_arch = "x86_64"))]
 pub(crate) struct ImageRegion {
     pub(crate) start: u64,
     pub(crate) end: u64,
@@ -65,6 +64,7 @@ pub(crate) struct ImageRegion {
 /// A validated ELF64 executable's header facts and program header table.
 pub(crate) struct Headers {
     kind: u16,
+    machine: u16,
     entry: u64,
     table: Vec<u8>,
     interpreter_path: Option<Vec<u8>>,
@@ -97,7 +97,8 @@ impl Headers {
         let u16_at = |at| u16::from_le_bytes(header[at..at + 2].try_into().unwrap());
         let u64_at = |at| u64::from_le_bytes(header[at..at + 8].try_into().unwrap());
         let kind = u16_at(16);
-        if (kind != ET_EXEC && !(kind == ET_DYN && machine == EM_X86_64))
+        let supports_interp = matches!(machine, EM_X86_64 | EM_AARCH64);
+        if (kind != ET_EXEC && !(kind == ET_DYN && supports_interp))
             || u16_at(18) != machine
             || u16_at(52) as usize != ELF_HEADER || u16_at(54) as usize != PHDR
         {
@@ -134,7 +135,7 @@ impl Headers {
             match ph.kind {
                 // gABI ch. 5: PT_INTERP is unique and precedes the loads.
                 PT_INTERP => {
-                    if machine != EM_X86_64 || interpreter_path.is_some() || first_page != u64::MAX {
+                    if !supports_interp || interpreter_path.is_some() || first_page != u64::MAX {
                         return Err(Errno(ENOEXEC));
                     }
                     interpreter_path = Some(read_interpreter_path(ph, file_len, read)?);
@@ -194,6 +195,7 @@ impl Headers {
         }
         Ok(Self {
             kind,
+            machine,
             entry,
             table,
             interpreter_path,
@@ -224,7 +226,9 @@ impl Headers {
         let mut plan = self.program_plan()?;
         match (self.interpreter_path(), interpreter) {
             (None, None) => {}
-            (Some(_), Some((image, region))) if image.kind == ET_DYN && image.interpreter_path().is_none() => {
+            (Some(_), Some((image, region)))
+                if image.kind == ET_DYN && image.machine == self.machine
+                    && image.interpreter_path().is_none() => {
                 // Place the interpreter above the program's last load.
                 // Align the bias itself to preserve each PT_LOAD's alignment.
                 let start = region.start.max(self.segments_end());
@@ -259,7 +263,6 @@ impl Headers {
         Ok(bias)
     }
 
-    #[cfg(any(test, target_arch = "x86_64"))]
     pub(crate) fn position_program(mut self, region: Range<u64>) -> Result<Self, Errno> {
         if self.kind == ET_DYN && self.interpreter_path().is_some() {
             self.program_bias = Some(self.bias_in(region)?);
@@ -273,7 +276,6 @@ impl Headers {
 
     /// Collect the page rights that map_image_page installed. If PT_LOADs
     /// share pages, those pages have the union of the segments' permissions.
-    #[cfg(any(test, target_arch = "x86_64"))]
     fn append_image_regions(&self, bias: u64, regions: &mut Vec<ImageRegion>) -> Result<(), Errno> {
         let page_mask = PAGE as u64 - 1;
         let count = self.table.len() / PHDR;
@@ -293,6 +295,8 @@ impl Headers {
         boundaries.sort_unstable();
         boundaries.dedup();
         regions.try_reserve(boundaries.len()).map_err(|_| Errno(ENOMEM))?;
+        // Keep the two ARM ELF images distinct even if their loads abut.
+        let merge_from = if self.machine == EM_AARCH64 { regions.len() } else { 0 };
         for pair in boundaries.windows(2) {
             let [start, end] = [pair[0], pair[1]];
             let Some(flags) = loads.iter()
@@ -300,7 +304,7 @@ impl Headers {
                 .reduce(|combined, flags| combined | flags) else {
                 continue;
             };
-            if let Some(previous) = regions.last_mut()
+            if let Some(previous) = regions[merge_from..].last_mut()
                 .filter(|previous| previous.end == start && previous.flags == flags)
             {
                 previous.end = end;
@@ -318,7 +322,6 @@ impl Headers {
     /// `map_page` must return a writable page owned by `table`, as required
     /// by `load_segments`. `open` must retain the interpreter's file lease
     /// across the callback.
-    #[cfg(any(test, target_arch = "x86_64"))]
     pub(crate) unsafe fn load_interpreter<T>(
         &self,
         mut table: T,
@@ -332,18 +335,22 @@ impl Headers {
             let mut header = [0; ELF_HEADER];
             let prefix = size.min(ELF_HEADER as u64) as usize;
             read(0, &mut header[..prefix])?;
-            let interpreter = Self::read(&header[..prefix], size, EM_X86_64, region.end, read)?;
+            let interpreter = Self::read(&header[..prefix], size, self.machine, region.end, read)?;
             let plan = self.exec_plan(Some((&interpreter, region.clone())))?;
             let bias = plan.interpreter_bias().ok_or(Errno(ENOEXEC))?;
             self.append_image_regions(self.program_bias.unwrap_or(0), &mut regions)?;
             interpreter.append_image_regions(bias, &mut regions)?;
+            #[cfg(not(test))]
+            let sync = arch::sync_image_range;
+            #[cfg(test)]
+            let sync = |_, _| {};
             // SAFETY: map_page supplies the pages owned by table. exec_plan
             // bounds the biased loads and places them above the program.
             unsafe {
                 interpreter.load_segments(
                     read,
                     |address, flags| map_page(&mut table, address + bias, flags),
-                    |_, _| {},
+                    sync,
                 )?;
             }
             Ok(plan)
@@ -436,8 +443,8 @@ fn read_interpreter_path(
     Ok(path)
 }
 
-/// The program metadata on the initial stack and the PC it starts at. Under
-/// AMD64 psABI §3.4, the auxv still describes the program on interpreter entry.
+/// The program metadata on the initial stack and the PC it starts at. The
+/// auxv describes the program even when the interpreter receives control.
 #[derive(Clone, Copy)]
 pub(crate) struct ExecPlan {
     phdr_vaddr: u64,
@@ -541,6 +548,36 @@ use crate::memory::process_memory::{ProcessPageTable, UnpublishedPageTable};
 use crate::elf as arch;
 #[cfg(all(not(test), target_arch = "aarch64"))]
 use crate::arch_impl::aarch64::elf as arch;
+#[cfg(all(not(test), target_arch = "aarch64"))]
+use crate::memory::arch_stub::VirtAddr;
+#[cfg(all(not(test), target_arch = "x86_64"))]
+use x86_64::VirtAddr;
+
+// Keep the permissions of an interpreted image's shared PT_LOAD pages in
+// sync with the union recorded in its VMAs.
+#[cfg(all(not(test), target_arch = "aarch64"))]
+fn map_interpreted_arm_page(
+    table: &mut ProcessPageTable,
+    address: u64,
+    flags: u32,
+) -> Result<*mut u8, i32> {
+    use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB};
+    let page = Page::<Size4KiB>::containing_address(VirtAddr::new(address));
+    if table.owns_image_page(address) {
+        let (_, existing) = table.get_page_info(page).ok_or(ENOEXEC)?;
+        let mut merged = existing;
+        if flags & 2 != 0 {
+            merged.insert(PageTableFlags::WRITABLE);
+        }
+        if flags & 1 != 0 {
+            merged.remove(PageTableFlags::NO_EXECUTE);
+        }
+        if merged != existing {
+            table.update_page_flags(page, merged).map_err(|_| ENOMEM)?;
+        }
+    }
+    arch::map_image_page(table, address, flags)
+}
 
 /// How the new image's page table starts out.
 #[cfg(not(test))]
@@ -559,9 +596,7 @@ pub enum Purpose {
 pub struct MappedElf {
     table: UnpublishedPageTable,
     elf: arch::LoadedElf,
-    #[cfg(target_arch = "x86_64")]
     interpreter_plan: Option<ExecPlan>,
-    #[cfg(target_arch = "x86_64")]
     exec_vmas: Vec<crate::memory::vma::Vma>,
     /// The file's length, reported as the process's code size.
     pub file_len: u64,
@@ -582,7 +617,6 @@ impl MappedElf {
         let headers = Headers::read(header, file_len, machine,
             crate::memory::layout::USER_STACK_REGION_END, read)?;
         let needs_interpreter = purpose == Purpose::Exec && headers.interpreter_path().is_some();
-        #[cfg(target_arch = "x86_64")]
         let headers = if needs_interpreter {
             use crate::memory::layout::{USERSPACE_BASE, USERSPACE_CODE_DATA_END};
             headers.position_program(USERSPACE_BASE..USERSPACE_CODE_DATA_END)?
@@ -604,12 +638,20 @@ impl MappedElf {
         if purpose == Purpose::Exec {
             crate::process::manager::ProcessManager::clear_exec_table(table.as_mut());
         }
+        #[cfg(target_arch = "aarch64")]
+        let map_page = if needs_interpreter {
+            map_interpreted_arm_page
+        } else {
+            arch::map_image_page
+        };
+        #[cfg(target_arch = "x86_64")]
+        let map_page = arch::map_image_page;
         // SAFETY: arch::map_image_page yields direct-map pages owned by this
         // unpublished table, which lives until this function returns.
         unsafe {
             headers.load_segments(
                 read,
-                |address, flags| arch::map_image_page(table.as_mut(), address, flags).map_err(Errno),
+                |address, flags| map_page(table.as_mut(), address, flags).map_err(Errno),
                 arch::sync_image_range,
             )?;
         }
@@ -622,7 +664,7 @@ impl MappedElf {
             #[cfg(target_arch = "x86_64")]
             stack_top: x86_64::VirtAddr::zero(),
             #[cfg(target_arch = "aarch64")]
-            load_base: headers.load_base,
+            load_base: headers.load_base + headers.program_bias.unwrap_or(0),
             segments_end: headers.segments_end(),
             image_size: headers.image_size,
             data_size: headers.data_size,
@@ -633,16 +675,13 @@ impl MappedElf {
         let image = Self {
             table,
             elf,
-            #[cfg(target_arch = "x86_64")]
             interpreter_plan: None,
-            #[cfg(target_arch = "x86_64")]
             exec_vmas: Vec::new(),
             file_len,
         };
         Ok((image, needs_interpreter.then_some(headers)))
     }
 
-    #[cfg(target_arch = "x86_64")]
     pub(crate) fn with_interpreter(
         mut self,
         program: &Headers,
@@ -650,6 +689,10 @@ impl MappedElf {
     ) -> Result<Self, Errno> {
         use crate::memory::layout::{MMAP_REGION_END, MMAP_REGION_START};
         use crate::memory::vma::{MmapFlags, Protection, Vma};
+        #[cfg(target_arch = "aarch64")]
+        let map_page = map_interpreted_arm_page;
+        #[cfg(target_arch = "x86_64")]
+        let map_page = arch::map_image_page;
         // SAFETY: arch::map_image_page returns the table's own direct-map
         // pages, and the VFS opener pins the file through its reads.
         let (table, plan, regions) = unsafe {
@@ -657,7 +700,7 @@ impl MappedElf {
                 self.table,
                 MMAP_REGION_START..MMAP_REGION_END,
                 open,
-                |table, address, flags| arch::map_image_page(table.as_mut(), address, flags).map_err(Errno),
+                |table, address, flags| map_page(table.as_mut(), address, flags).map_err(Errno),
             )?
         };
         self.exec_vmas.try_reserve_exact(regions.len()).map_err(|_| Errno(ENOMEM))?;
@@ -670,14 +713,22 @@ impl MappedElf {
             let elf = region.flags;
             let prot = Protection::from_bits_truncate((elf & 4) >> 2 | (elf & 2) | (elf & 1) << 2);
             self.exec_vmas.push(Vma::new(
-                x86_64::VirtAddr::new(region.start),
-                x86_64::VirtAddr::new(region.end),
+                VirtAddr::new(region.start),
+                VirtAddr::new(region.end),
                 prot,
                 flags,
             ));
         }
+        arch::finish_image_load();
         self.table = table;
-        self.elf.entry_point = x86_64::VirtAddr::new(plan.initial_pc());
+        #[cfg(target_arch = "x86_64")]
+        {
+            self.elf.entry_point = VirtAddr::new(plan.initial_pc());
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            self.elf.entry_point = plan.initial_pc();
+        }
         // The VMAs now account for both images, including the writable bytes.
         self.elf.image_size = 0;
         self.elf.data_size = 0;
@@ -771,7 +822,6 @@ pub enum ProcessImage<'a> {
 
 #[cfg(not(test))]
 impl<'a> ProcessImage<'a> {
-    #[cfg(target_arch = "x86_64")]
     pub(crate) fn take_exec_vmas(&mut self) -> Vec<crate::memory::vma::Vma> {
         match self {
             Self::Mapped(image) => core::mem::take(&mut image.exec_vmas),
@@ -779,7 +829,6 @@ impl<'a> ProcessImage<'a> {
         }
     }
 
-    #[cfg(target_arch = "x86_64")]
     pub(crate) fn interpreter_plan(&self) -> Option<ExecPlan> {
         match self {
             Self::Mapped(image) => image.interpreter_plan,
