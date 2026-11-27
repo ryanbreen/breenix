@@ -29,6 +29,8 @@ const PARTITIONS: usize = ORIGINAL_PARTS + 2;
 const CHUNK_SECTORS: usize = 128;
 const CONFIG_LINES: usize = 16;
 const MANAGER_FILE: &str = "\\EFI\\BREENIX\\BOOTMGR.EFI";
+const LIVE_MANAGER: &str = "\\EFI\\BREENIX\\LIVE.EFI";
+const LIVE_CONFIG: &str = "\\EFI\\BREENIX\\LIVE.CFG";
 const CONFIG_FILE: &str = "\\EFI\\BREENIX\\MANAGER.CFG";
 const PART_TYPES: [&str; PARTITIONS] = [
     "c12a7328-f81f-11d2-ba4b-00a0c93ec93b",
@@ -107,6 +109,7 @@ struct Request<'t> {
     breenfs_upgrade: Option<[[u8; 16]; 4]>,
     expected_userland: Option<&'t str>,
     keep_generations: Option<[&'t str; 2]>,
+    replace_manager: bool,
 }
 
 fn parse<'t>(text: &'t str) -> Result<Request<'t>, Status> {
@@ -128,6 +131,7 @@ fn parse<'t>(text: &'t str) -> Result<Request<'t>, Status> {
         breenfs_upgrade: None,
         expected_userland: None,
         keep_generations: None,
+        replace_manager: false,
     };
     let mut action = None;
     for line in lines {
@@ -208,6 +212,7 @@ fn parse<'t>(text: &'t str) -> Result<Request<'t>, Status> {
             {
                 request.expected_userland = Some(value);
             }
+            "manager-replacement" if !request.replace_manager && value == "yes" => request.replace_manager = true,
             "rescue-file" if !value.is_empty() => {}
             "extent" | "esp-file" if !value.is_empty() => {}
             _ => return Err(INVALID_PARAMETER),
@@ -250,6 +255,9 @@ fn parse<'t>(text: &'t str) -> Result<Request<'t>, Status> {
         let mut files = text.lines().filter_map(|line| line.strip_prefix("esp-file "));
         let valid_files = match request.action {
             Action::ReplaceUsr => files.next().is_none() && request.breenfs_upgrade.is_some(),
+            Action::Upgrade if request.replace_manager => request.breenfs_upgrade.is_some_and(|guids| guids[2..] == [[0; 16]; 2])
+                && files.next().and_then(|line| line.split_once(' ')).is_some_and(|(path, _)| path == LIVE_MANAGER)
+                && files.next().is_none(),
             Action::Upgrade => files.next().is_some_and(|line| line.starts_with(r"\EFI\BREENIX\NEXT.IMG "))
                 && files.next().is_some_and(|line| line.starts_with(r"\EFI\BREENIX\NEXT.TXT "))
                 && files.next().is_none(),
@@ -262,9 +270,10 @@ fn parse<'t>(text: &'t str) -> Result<Request<'t>, Status> {
         {
             return Err(INVALID_PARAMETER);
         }
-    } else if request.action == Action::ReplaceUsr {
+    } else if request.action == Action::ReplaceUsr || request.replace_manager {
         return Err(INVALID_PARAMETER);
     }
+    if request.replace_manager && request.action != Action::Upgrade { return Err(INVALID_PARAMETER); }
     let (original, additions) = request.parts.split_at(ORIGINAL_PARTS);
     match request.action {
         Action::Install => {
@@ -746,7 +755,7 @@ unsafe fn write_config(boot: &BootServices, root: &Root, request: &Request, imag
 }
 
 /// The manager's load option, first in BootOrder, the HTTP boot option second (sections 3.1.2 and 3.1.3).
-unsafe fn load_option(boot: &BootServices, runtime: &RuntimeServices, esp: Handle, description: &str, http_option: Option<u16>) -> Result<(), Status> {
+unsafe fn load_option(boot: &BootServices, runtime: &RuntimeServices, esp: Handle, description: &str, manager_path: &str, http_option: Option<u16>) -> Result<(), Status> {
     let mut path: *mut c_void = null_mut();
     ok((boot.handle_protocol)(esp, &DEVICE_PATH, &mut path))?;
     let prefix = path_length(path.cast()).ok_or(INVALID_PARAMETER)?;
@@ -761,10 +770,10 @@ unsafe fn load_option(boot: &BootServices, runtime: &RuntimeServices, esp: Handl
     let path_start = len;
     option[len..len + prefix].copy_from_slice(core::slice::from_raw_parts(path.cast::<u8>(), prefix));
     len += prefix;
-    let node = 4 + 2 * (MANAGER_FILE.len() + 1);
+    let node = 4 + 2 * (manager_path.len() + 1);
     option[len..len + 4].copy_from_slice(&[node::MEDIA, node::FILE_PATH, node as u8, (node >> 8) as u8]);
     len += 4;
-    for unit in MANAGER_FILE.bytes().map(u16::from).chain([0]) {
+    for unit in manager_path.bytes().map(u16::from).chain([0]) {
         option[len..len + 2].copy_from_slice(&unit.to_le_bytes());
         len += 2;
     }
@@ -778,7 +787,7 @@ unsafe fn load_option(boot: &BootServices, runtime: &RuntimeServices, esp: Handl
         let mut name = [0u8; 8];
         let mut bytes = [0u8; 1024];
         match variable(runtime, option_name(number, &mut name), &mut bytes) {
-            Ok(size) => {
+            Ok(size) if size >= 6 => {
                 let units = bytes[6..size].chunks(2).take_while(|pair| pair != &[0, 0]).count();
                 let matches = units == description.len()
                     && description.bytes().enumerate().all(|(at, b)| bytes[6 + 2 * at] == b && bytes[7 + 2 * at] == 0);
@@ -787,7 +796,7 @@ unsafe fn load_option(boot: &BootServices, runtime: &RuntimeServices, esp: Handl
                 }
             }
             Err(_) if free.is_none() => free = Some(number),
-            Err(_) => {}
+            _ => {}
         }
     }
     let number = chosen.or(free).ok_or(OUT_OF_RESOURCES)?;
@@ -1163,6 +1172,22 @@ pub(super) unsafe fn run(boot: &BootServices, runtime: &RuntimeServices, volume:
         return Ok(());
     }
     metal_efi::slot_transaction::recover(&metal_efi::slot_store::SlotStore(&root))?;
+    if request.replace_manager {
+        check_replace_usr_slots(|path| root.size(path))?;
+        report_slot(boot, &root, &request, "CURRENT")?;
+        // The existing manager and its Boot#### entry remain available in
+        // firmware setup, even if the replacement application cannot start.
+        root.size(MANAGER_FILE)?;
+        root.size(CONFIG_FILE)?;
+        let system = request.breenfs_upgrade.ok_or(INVALID_PARAMETER)?[0];
+        write_esp_files(boot, &root, payload.handle(), text, "esp-file ")?;
+        root.write(LIVE_CONFIG, &system)?;
+        files::flush_volume(boot, esp)?;
+        load_option(boot, runtime, esp, "Breenix live boot manager", LIVE_MANAGER, recorded_http_option(&root))?;
+        say!("live manager installed; the prior boot option is retained");
+        say!("persistent install request complete");
+        metal_efi::com1::halt();
+    }
     if request.expected_userland.is_some() {
         for slot in ["CURRENT", "PREVIOUS"] {
             report_slot(boot, &root, &request, slot)?;
@@ -1191,7 +1216,7 @@ pub(super) unsafe fn run(boot: &BootServices, runtime: &RuntimeServices, volume:
     if !request.migration_slots {
         write_config(boot, &root, &request, image, http_option)?;
         if let Some(description) = request.load_option {
-            load_option(boot, runtime, esp, description, http_option)?;
+            load_option(boot, runtime, esp, description, MANAGER_FILE, http_option)?;
         }
     }
     // The host's disk.json is deliberately not an authority for reclamation.

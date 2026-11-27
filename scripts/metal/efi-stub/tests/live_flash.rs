@@ -1,4 +1,6 @@
-use metal_efi::live_flash::{Action, Manifest, choose};
+use std::format;
+use std::string::{String, ToString};
+use crate::live_flash::{Action, Manifest, choose};
 
 fn manifest(token: char, digest: &str, size: usize) -> String {
     format!("BREENIX-FLASH 1\n{}\n{}\n{size}\n{digest}\n", token.to_string().repeat(32), "a".repeat(40))

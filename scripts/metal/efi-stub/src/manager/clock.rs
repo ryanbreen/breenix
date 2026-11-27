@@ -7,9 +7,17 @@ pub struct Clock {
     per_ms: u64,
 }
 
+#[cfg(target_arch = "x86_64")]
 fn counter() -> u64 {
     // SAFETY: reading the time-stamp counter has no side effect.
     unsafe { core::arch::x86_64::_rdtsc() }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn counter() -> u64 {
+    let counter;
+    unsafe { core::arch::asm!("mrs {}, cntvct_el0", out(reg) counter, options(nomem, nostack)) };
+    counter
 }
 
 impl Clock {

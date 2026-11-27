@@ -4,13 +4,13 @@ version = "0.1.0"
 edition = "2021"
 description = "The x86-metal EFI applications: the delivery stub that serves its embedded boot disk to the pinned bootloader, and the boot manager on the disk's EFI system partition"
 publish = false
+autotests = false
 
 # The UEFI declarations and the pieces both applications use (docs/metal/README.md, "Delivery" and "Boot manager
 # and persistent install").
 [lib]
 name = "metal_efi"
 path = "src/lib.rs"
-test = false
 bench = false
 
 [[bin]]

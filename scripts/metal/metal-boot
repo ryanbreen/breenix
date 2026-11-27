@@ -46,6 +46,7 @@ import metal_disk  # noqa: E402
 import metal_export  # noqa: E402
 import metal_migration  # noqa: E402
 import metal_persist  # noqa: E402
+import metal_live_flash  # noqa: E402
 import breenfs_replay  # noqa: E402
 import metal_power_cut  # noqa: E402
 import metal_prebuilt  # noqa: E402
@@ -1135,13 +1136,23 @@ class Driver:
             the_layout = metal_persist.new_layout()
             expect = metal_disk.record(previous)
         manager = inputs / 'manager.efi'
-        if not kernel_only and (not manager.is_file() or build.get('manager', {}).get('sha256') != metal_image.sha256(manager)):
+        replace_manager = getattr(self.args, 'replace_manager', False)
+        if (not kernel_only or replace_manager) and (not manager.is_file() or build.get('manager', {}).get('sha256') != metal_image.sha256(manager)):
             raise Finish(m.EXIT_CANCELLED, 'the boot manager differs from its build record')
         self.phase('Assembling the ' + action)
         extracted = self.stage / 'esp'
         esp_files = metal_image.extract_esp(inputs / 'uefi.img', extracted)
         scratch = self.stage / 'persist'
         scratch.mkdir(parents=True, exist_ok=True)
+        if replace_manager:
+            if (the_layout['version'] != 3 or not current.get('writableRoot')
+                    or slots.get('next') or metal_persist.read_disk().get('liveManager')):
+                raise Finish(m.EXIT_CANCELLED, 'manager replacement requires an unbootstrapped writable format-3 CURRENT')
+            config, request = metal_persist.manager_replacement_request(scratch, the_layout, generation, manager)
+            self.persist = {'managerReplacement': True, 'sha256': metal_image.sha256(manager),
+                            'userland': generation}
+            m.write_json(self.dir / 'persist.json', self.persist)
+            return {'persist.cfg': config, 'persist.dat': request.data}, extracted
         slot = scratch / 'next.img'
         slot_files = dict(esp_files)
         if self.args.inject == 'upgrade-no-ssh':
@@ -2068,6 +2079,16 @@ class Driver:
                 self.seen.add('replace-usr-verified')
             if INSTALL_DONE in line and not {'replace-usr-verified', 'replace-usr-fence'} <= self.seen:
                 raise Finish(m.EXIT_SHORT, '/usr replacement lacks CURRENT or the system-only write fence receipt')
+        if getattr(self.args, 'replace_manager', False) and self.persist:
+            if line == 'metal-stub: live manager installed; the prior boot option is retained':
+                self.seen.add('live-manager-installed')
+            if line == PERSIST_DONE:
+                if ('stub' not in self.seen or 'live-manager-installed' not in self.seen
+                        or self.kernel_started is not None
+                        or self.slot_userlands != {'CURRENT': self.persist['userland']}):
+                    raise Finish(m.EXIT_SHORT, 'firmware did not confirm the manager replacement and CURRENT')
+                metal_persist.update_disk(liveManager=dict(boot=self.id, sha256=self.persist['sha256']))
+                raise Finish(m.EXIT_DONE, 'live boot manager installed; original boot option retained')
         if self.persist and PERSIST_DONE in line and 'persist-written' not in self.seen:
             slot = self.persist['slot']
             if self.persist.get('kernelOnly') and (line != PERSIST_DONE or 'stub' not in self.seen
@@ -2165,8 +2186,20 @@ class Driver:
             kind = 'rescue' if self.migration_phase == 'rescue' else 'cutover'
             if entry != expected or slot.get('migration') != kind or commit != slot.get('commit'):
                 raise BootManagerAbort(line, observed_at)
+        if slot.get('commit') != commit:
+            raise Finish(m.EXIT_SHORT, "the booted slot has no matching commit and definition")
+        self.select_slot_definition(commit)
+        run = m.read_json(self.dir / 'run.json', {})
+        run.update(entry=entry, bootedCommit=commit)
+        m.write_json(self.dir / 'run.json', run)
+        # A lab-selected previous entry is one-shot within this lease too.
+        m.update_lease(self.id, entry='current')
+        self.seen.add('manager-slot')
+        self.event('slot-boot', observed_at=observed_at, entry=entry, commit=commit)
+
+    def select_slot_definition(self, commit):
         kept = m.STATE / 'persistent' / commit / 'definition'
-        if slot.get('commit') != commit or not kept.is_dir():
+        if not kept.is_dir():
             raise Finish(m.EXIT_SHORT, "the booted slot has no matching commit and definition")
         if self.args.commit != commit:
             # This line precedes the bootloader and kernel; use the selected kernel's contracts from here on.
@@ -2175,14 +2208,6 @@ class Driver:
             self.args.commit = commit
             m.write_text(self.dir / 'commit', commit + '\n')
             self.load_definition()
-        run = m.read_json(self.dir / 'run.json', {})
-        run.update(entry=entry, bootedCommit=commit)
-        m.write_json(self.dir / 'run.json', run)
-        # A lab-selected previous entry is one-shot within this lease too.
-        # A later reboot or watchdog reset asks for current without swapping slots.
-        m.update_lease(self.id, entry='current')
-        self.seen.add('manager-slot')
-        self.event('slot-boot', observed_at=observed_at, entry=entry, commit=commit)
 
     def challenge_persistent(self, text):
         """A persistent boot with --run: log in over SOL with the console account, type each command at a fresh
@@ -2278,6 +2303,19 @@ class Driver:
             self.on_reset(self.reset_time(observed_at))
             self.event('persistent-restart', observed_at=observed_at)
             self.kernel_started = None
+        if found := re.fullmatch(r'breenix-manager: live flash: (trial|promoted) ([0-9a-f]{32}) ([0-9a-f]{40})', line):
+            operation, token, commit = found.groups()
+            if operation == 'promoted':
+                metal_live_flash.promoted(m, token, commit)
+                self.event('live-flash-promoted', observed_at=observed_at, token=token, commit=commit)
+            elif persistent(self.args) and session(self.args):
+                metal_live_flash.trial(m, token, commit)
+                self.select_slot_definition(commit)
+                run = m.read_json(self.dir / 'run.json', {})
+                run.update(entry='trial', bootedCommit=commit, liveFlash=token)
+                m.write_json(self.dir / 'run.json', run)
+                self.seen.add('manager-slot')
+                self.event('live-flash-trial', observed_at=observed_at, token=token, commit=commit)
         self.on_slot_line(line, observed_at)
         self.on_slot_boot(line, observed_at)
         if MANAGER_STARTED in line:
@@ -3124,7 +3162,7 @@ class Driver:
                 m.release_lease(self.id)
                 return m.EXIT_SHORT
         if (self.args.mode == 'persistent-install' and status == m.EXIT_DONE and not self.gap
-                and not getattr(self.args, 'replace_usr', False)):
+                and not getattr(self.args, 'replace_usr', False) and not getattr(self.args, 'replace_manager', False)):
             self.cleanup(status, keep_lease=True)
             try:
                 return self.continue_verification()
@@ -3398,6 +3436,7 @@ def main():
         p.add_argument('--kernel-only', action='store_true', help=argparse.SUPPRESS)
         p.add_argument('--carry-local', action='store_true', help=argparse.SUPPRESS)
         p.add_argument('--replace-usr', action='store_true', help=argparse.SUPPRESS)
+        p.add_argument('--replace-manager', action='store_true', help=argparse.SUPPRESS)
         p.add_argument('--migration-image', action='store_true', help=argparse.SUPPRESS)
         p.add_argument('--verify', action='store_true', help='a persistent boot that ends at the login prompt')
         p.add_argument('--resting', action='store_true', help=argparse.SUPPRESS)
@@ -3426,7 +3465,8 @@ def main():
         if ((args.mode == 'persistent-install' and flashes != 1)
                 or (args.mode != 'persistent-install' and flashes)
                 or (args.carry_local or args.inject == 'upgrade-service-down') and not args.migration_image
-                or args.inject and args.replace_usr):
+                or args.inject and args.replace_usr
+                or args.replace_manager and (not args.kernel_only or args.inject)):
             parser.error('invalid persistent flash options')
         transfer = transfer_fixture.selected(args.suite)
         if transfer:

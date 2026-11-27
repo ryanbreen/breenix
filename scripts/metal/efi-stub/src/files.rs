@@ -61,9 +61,25 @@ pub unsafe fn root_of(boot: &BootServices, handle: Handle) -> Result<Root, Statu
 /// # Safety
 /// `image` must be this application's handle.
 pub unsafe fn own_root(boot: &BootServices, image: Handle) -> Result<Root, Status> {
+    root_of(boot, own_device(boot, image)?)
+}
+
+/// The device handle recorded on the loaded image.
+pub unsafe fn own_device(boot: &BootServices, image: Handle) -> Result<Handle, Status> {
     let mut loaded = null_mut();
     ok((boot.handle_protocol)(image, &LOADED_IMAGE, &mut loaded))?;
-    root_of(boot, (*loaded.cast::<LoadedImage>()).device_handle)
+    Ok((*loaded.cast::<LoadedImage>()).device_handle)
+}
+
+pub unsafe fn block_io(boot: &BootServices, handle: Handle) -> Result<*mut BlockIo, Status> {
+    let mut io = null_mut();
+    ok((boot.handle_protocol)(handle, &BLOCK_IO, &mut io))?;
+    Ok(io.cast())
+}
+
+pub unsafe fn flush_volume(boot: &BootServices, handle: Handle) -> Result<(), Status> {
+    let io = block_io(boot, handle)?;
+    ok(((*io).flush_blocks)(io))
 }
 
 impl Root {

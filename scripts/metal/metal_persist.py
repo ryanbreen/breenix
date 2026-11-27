@@ -249,7 +249,7 @@ def tests_ramdisk(output, target, root, binaries):
     return output
 
 
-def slot_image(output, esp_files, the_layout, scratch, generation, *, writable_root=False):
+def slot_image(output, esp_files, the_layout, scratch, generation, *, writable_root=False, compact=False):
     """A kernel slot: the build's bootloader, kernel and boot.json, and the persistent boot's intent as `ramdisk`."""
     ramdisk = Path(scratch) / 'slot-intent'
     if the_layout['version'] in (2, 3):
@@ -262,7 +262,7 @@ def slot_image(output, esp_files, the_layout, scratch, generation, *, writable_r
     ramdisk.write_bytes(boot)
     files = {name: esp_files[name] for name in metal_image.ESP_FILES}
     files['ramdisk'] = ramdisk
-    return metal_image.assemble(output, files)
+    return metal_image.assemble(output, files, compact=compact)
 
 
 def slot_note(commit, boot_id):
@@ -568,6 +568,19 @@ def upgrade_request(directory, the_layout, files, slot, note, site, *, rescue=No
         for line in config:
             request.lines.append('manager-config ' + line)
         request.lines.append('load-option ' + LOAD_OPTION)
+    return request.finish(), request
+
+
+def manager_replacement_request(directory, layout, generation, manager):
+    if layout['version'] != 3 or not slot_userland({'userland': generation}):
+        raise ValueError('manager replacement requires writable format-3 CURRENT')
+    parts = layout['partitions']
+    request = Request(directory, 'upgrade')
+    request.lines += ['expect-disk ' + layout['diskGuid'], 'disk ' + layout['diskGuid'],
+                      'esp ' + parts['esp']['guid'],
+                      'breenfs-upgrade ' + ' '.join(parts[role]['guid'] for role in BREENFS_ROLES),
+                      'current-userland ' + generation, 'manager-replacement yes']
+    request.esp_file('efi/breenix/live.efi', manager)
     return request.finish(), request
 
 

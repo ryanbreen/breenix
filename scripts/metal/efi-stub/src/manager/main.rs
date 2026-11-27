@@ -14,6 +14,7 @@
 
 mod clock;
 mod lab;
+mod live;
 mod options;
 mod screen;
 mod slots;
@@ -298,6 +299,8 @@ impl<'a> Manager<'a> {
 }
 
 unsafe fn run(image: Handle, system: *const SystemTable) -> Status {
+    #[cfg(target_arch = "aarch64")]
+    com1::set_console((*system).con_out);
     metal_efi::firmware::publish(system);
     let boot = &*(*system).boot_services;
     let runtime = &*(*system).runtime_services;
@@ -311,7 +314,7 @@ unsafe fn run(image: Handle, system: *const SystemTable) -> Status {
     }
     let esp = files::own_root(boot, image).ok();
     if let Some(root) = esp.as_ref() {
-        if let Err(status) = slots::recover(root) {
+        if let Err(status) = slots::recover(root).and_then(|()| live::reconcile(boot, image, root)) {
             say!("slot recovery failed ({:#x}); returning to firmware", status);
             (boot.set_watchdog_timer)(300, 0, 0, core::ptr::null());
             return status;
@@ -331,6 +334,9 @@ unsafe fn run(image: Handle, system: *const SystemTable) -> Status {
             for entry in [Entry::Current, Entry::Previous] {
                 let note = slots::note(root, slots::slot_name(entry));
                 if note.present {
+                    if entry == Entry::Current {
+                        live::start(boot, runtime, image, root);
+                    }
                     say!("booting {} {}", entry.as_str(), note.full());
                     slots::boot(boot, image, root, entry);
                 }
@@ -486,7 +492,7 @@ unsafe fn run(image: Handle, system: *const SystemTable) -> Status {
             manager.show(true);
             manager.menu(0)
         }
-        Answer::Persistent(_, _, action) => {
+        Answer::Persistent(_, entry, action) => {
             let applied = match (action, manager.esp.as_ref()) {
                 (SlotAction::None, _) => Ok(()),
                 (_, None) => Err(NOT_FOUND),
@@ -503,11 +509,19 @@ unsafe fn run(image: Handle, system: *const SystemTable) -> Status {
                 manager.show(true);
                 manager.menu(0)
             }
+            if entry == Entry::Current && action == SlotAction::None {
+                if let Some(root) = manager.esp.as_ref() {
+                    live::start(boot, runtime, image, root);
+                }
+            }
             manager.show(false);
             manager.menu(countdown)
         }
         Answer::Busy(_) => manager.menu(0),
         Answer::None(_) => {
+            if let Some(root) = manager.esp.as_ref() {
+                live::start(boot, runtime, image, root);
+            }
             manager.select(Item::Slot(Entry::Current));
             manager.show(false);
             manager.menu(countdown)

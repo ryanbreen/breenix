@@ -35,9 +35,10 @@ pub fn recover<S: Store>(store: &S) -> Result<(), S::Error> {
     if !store.exists(JOURNAL) { return Ok(()); }
     let mut action = [0; 16];
     let len = store.read(JOURNAL, &mut action)?;
-    let rollback = match &action[..len] {
-        b"commit\n" => false,
-        b"rollback\n" => true,
+    let (rollback, candidate) = match &action[..len] {
+        b"commit\n" => (false, ["NEXT.IMG", "NEXT.TXT"]),
+        b"live-commit\n" => (false, ["TRY.IMG", "TRY.TXT"]),
+        b"rollback\n" => (true, ["SWAP.IMG", "SWAP.TXT"]),
         _ => return Err(store.invalid()),
     };
     for (phase, marker) in MARKERS.iter().enumerate() {
@@ -57,7 +58,7 @@ pub fn recover<S: Store>(store: &S) -> Result<(), S::Error> {
                     move_pair(store, ["CURRENT.IMG", "CURRENT.TXT"], ["PREVIOUS.IMG", "PREVIOUS.TXT"])?;
                 }
             }
-            (false, 2) => move_pair(store, ["NEXT.IMG", "NEXT.TXT"], ["CURRENT.IMG", "CURRENT.TXT"] )?,
+            (false, 2) => move_pair(store, candidate, ["CURRENT.IMG", "CURRENT.TXT"])?,
             (true, 0) => move_pair(store, ["CURRENT.IMG", "CURRENT.TXT"], ["SWAP.IMG", "SWAP.TXT"] )?,
             (true, 1) => move_pair(store, ["PREVIOUS.IMG", "PREVIOUS.TXT"], ["CURRENT.IMG", "CURRENT.TXT"] )?,
             (true, 2) => move_pair(store, ["SWAP.IMG", "SWAP.TXT"], ["PREVIOUS.IMG", "PREVIOUS.TXT"] )?,
@@ -72,10 +73,18 @@ pub fn recover<S: Store>(store: &S) -> Result<(), S::Error> {
 
 /// Publish an immutable action only after its temporary file has passed write readback.
 pub fn begin<S: Store>(store: &S, rollback: bool) -> Result<(), S::Error> {
+    begin_action(store, if rollback { b"rollback\n" } else { b"commit\n" })
+}
+
+pub fn promote_trial<S: Store>(store: &S) -> Result<(), S::Error> {
+    begin_action(store, b"live-commit\n")
+}
+
+fn begin_action<S: Store>(store: &S, action: &[u8]) -> Result<(), S::Error> {
     recover(store)?;
     for marker in MARKERS { remove(store, marker)?; }
     remove(store, "SLOT.NEW")?;
-    store.write("SLOT.NEW", if rollback { b"rollback\n" } else { b"commit\n" })?;
+    store.write("SLOT.NEW", action)?;
     store.rename("SLOT.NEW", JOURNAL)?;
     recover(store)
 }

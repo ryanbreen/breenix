@@ -72,11 +72,15 @@ def esp_layout(payload):
     return (esp_bytes + (1 << 20) - 1) // (1 << 20) << 20, ['-F', '32', '-s', '8']
 
 
-def assemble(output, files):
+def assemble(output, files, *, compact=False):
     """Writes a GPT disk with one FAT ESP holding `files` ({path in the ESP: source}); returns the image facts."""
     output = Path(output)
     payload = sum(Path(source).stat().st_size for source in files.values())
-    esp_bytes, fat = esp_layout(payload)
+    if compact and payload > 16 << 20:
+        esp_bytes = max(36 << 20, ((payload + (9 << 20) - 1) >> 20) << 20)
+        fat = ['-F', '32', '-s', '1']
+    else:
+        esp_bytes, fat = esp_layout(payload)
     total = ESP_START * SECTOR + esp_bytes + (1 << 20)
     output.unlink(missing_ok=True)
     with output.open('wb') as disk:

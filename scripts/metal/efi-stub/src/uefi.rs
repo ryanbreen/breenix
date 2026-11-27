@@ -212,7 +212,7 @@ pub struct SimpleTextInput {
 #[repr(C)]
 pub struct SimpleTextOutput {
     pub reset: usize,
-    pub output_string: usize,
+    pub output_string: unsafe extern "efiapi" fn(*mut SimpleTextOutput, *const u16) -> Status,
     pub test_string: usize,
     pub query_mode: usize,
     pub set_mode: usize,
