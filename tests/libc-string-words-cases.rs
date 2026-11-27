@@ -104,3 +104,13 @@ fn words_match_the_reference_at_guard_pages() {
         }
     }
 }
+
+#[test]
+fn memchr_stops_at_a_match_before_the_guard_page() {
+    let mapping = Guarded::new();
+    unsafe {
+        let last = mapping.tail(1, 0);
+        last.write(0x81);
+        assert_eq!(words::memchr(last, 0x81, usize::MAX), last);
+    }
+}
