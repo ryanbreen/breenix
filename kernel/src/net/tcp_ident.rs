@@ -57,7 +57,7 @@ const KEY_SET: u8 = 2;
 /// drawn the first time a connection needs one once the pool is ready, and no
 /// context ever waits for it:
 /// - Until the pool is ready there is no key: each ISN's offset is a draw of
-///   its own, so nothing taken from an unready pool outlives one connection.
+///   its own, so a draw taken from an unready pool serves one connection only.
 /// - The context that claims the key draws and publishes it. A context that
 ///   asks meanwhile, including a handshake that interrupted the claimer on its
 ///   own CPU, takes a draw of its own instead.
@@ -97,7 +97,8 @@ impl IsnKey {
         }
     }
 
-    /// The key, or a fresh offset from the pool when there is none to use yet.
+    /// The key, or a fresh offset from the pool while the key is unset or
+    /// being written.
     fn key(&self, pool: &impl Pool) -> Result<&[u8; ISN_SECRET_LEN], u32> {
         if self.state.load(Ordering::Acquire) == KEY_SET {
             // SAFETY: KEY_SET is stored after the key is written, and it is
@@ -134,7 +135,7 @@ impl IsnKey {
 /// is used for this search only and is not kept, and the search does not wait
 /// for the pool to be ready: port randomization (RFC 6056 section 1) makes a
 /// port harder to guess, and a connection must not block on it.
-/// `Ok(None)` when the range has no free port; `bind`'s error otherwise.
+/// An `Ok` holding no port when the range is full; `bind`'s error otherwise.
 pub fn bind_ephemeral(
     pool: &impl Pool,
     mut bind: impl FnMut(u16) -> Result<bool, i32>,

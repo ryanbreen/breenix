@@ -89,7 +89,7 @@ fn no_isn_key_is_drawn_before_the_pool_is_ready() {
     let a = key.isn(&pool, LOCAL, 40000, REMOTE, 22, now);
     let b = key.isn(&pool, LOCAL, 40000, REMOTE, 22, now);
     assert!(pool.key_draws(false).is_empty(), "an ISN key was drawn from an unready pool");
-    // Before readiness nothing outlives one connection: two connections on one
+    // Before readiness an offset serves one connection: two connections on one
     // 4-tuple at one instant do not share an offset.
     assert_ne!(a, b, "two ISNs drawn before readiness share a stored offset");
 
@@ -158,7 +158,7 @@ fn each_ephemeral_search_starts_at_its_own_draw() {
     let next = |p: u16| if p == EPHEMERAL_LAST { EPHEMERAL_FIRST } else { p + 1 };
     assert_eq!(seen, vec![first, next(first), next(next(first))]);
 
-    // Every port taken: no port, after one pass over the range.
+    // With the range taken: no port, after one pass over its 28,232 ports.
     let mut tries = 0u64;
     assert_eq!(bind_ephemeral(&pool, |_| { tries += 1; Ok(false) }), Ok(None));
     assert_eq!(tries, span);
