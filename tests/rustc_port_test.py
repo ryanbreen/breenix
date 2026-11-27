@@ -256,7 +256,8 @@ class RustcPort(unittest.TestCase):
         cache = Path.home() / 'Library/Caches/breenix-e25/k5/twin'
         mac_rustc = Path(os.environ.get('BREENIX_K5_MAC_RUSTC', cache / 'mac/bin/rustc'))
         sysroot = Path(os.environ.get('BREENIX_K5_SYSROOT', cache / 'sysroot'))
-        verbose = subprocess.check_output([mac_rustc, '-vV'], text=True, timeout=5)
+        verbose = subprocess.check_output([mac_rustc, '-vV'], text=True, timeout=5,
+                                          env=guest_environment(ROOT))
         banner, *fields = verbose.splitlines()
         version = dict(line.split(': ', 1) for line in fields)
         targets = ('x86_64-breenix', 'x86_64-breenix-hosted')
@@ -269,7 +270,8 @@ class RustcPort(unittest.TestCase):
                                  1, target)
             for archive in archives:
                 result = subprocess.run([mac_rustc, '-Zls=root', archive],
-                                        capture_output=True, text=True, timeout=5, check=True)
+                                        capture_output=True, text=True, timeout=5, check=True,
+                                        env=guest_environment(ROOT))
                 if result.stderr or f'triple {target}' not in result.stdout.splitlines():
                     failures.append(f'{target}/{archive.name}: {result.stderr or result.stdout}'.strip())
                 with archive.open('rb') as artifact:
@@ -381,7 +383,7 @@ class RustcPort(unittest.TestCase):
     def test_aarch64_twin_rlibs_match_twin_compiler(self):
         cache = Path.home() / 'Library/Caches/breenix-e25/ak5'
         mac_rustc = Path(os.environ.get('BREENIX_K5_MAC_RUSTC', cache / 'build/aarch64-apple-darwin/stage1/bin/rustc'))
-        sysroot = Path(os.environ.get('BREENIX_K5_SYSROOT', cache / 'build/aarch64-apple-darwin/stage1'))
+        sysroot = Path(os.environ.get('BREENIX_K5_SYSROOT', cache / 'sysroot'))
         verbose = subprocess.check_output([mac_rustc, '-vV'], text=True, timeout=5,
                                           env=guest_environment(ROOT))
         banner, *fields = verbose.splitlines()

@@ -144,12 +144,12 @@ if [[ "$RUST_LINK" == 1 ]]; then
        -z "$HOSTED_BIN" && ${#HOSTED_FEATURES[@]} -eq 0 ]] || usage
 fi
 if [[ "$RUSTC_PORT" == 1 ]]; then
-    [[ "$ARCH" == x86_64 && "$DYNAMIC" == 0 && "$KD_LIBC" == 0 && "$KD_LOADER" == 0 &&
+    [[ ( "$ARCH" == x86_64 || "$ARCH" == aarch64 ) && "$DYNAMIC" == 0 && "$KD_LIBC" == 0 && "$KD_LOADER" == 0 &&
        "$CXX_RUNTIME" == 0 && "$LLVM" == 0 && "$BUNWIND" == 0 &&
        "$RUST_HOST" == 0 && -z "$HOSTED_BIN" && ${#HOSTED_FEATURES[@]} -eq 0 ]] || usage
     builds="${BREENIX_RUSTC_PORT_BUILDS:-$PROJECT_ROOT/build/rustc-port}"
     exec python3 "$PROJECT_ROOT/scripts/rust-host/rustc_port.py" --cache "$builds" \
-        --stage-hosted "$SCRIPT_DIR/target/rustc/$ARCH"
+        --arch "$ARCH" --stage-hosted "$SCRIPT_DIR/target/rustc/$ARCH"
 fi
 if [[ "$DYNAMIC" == 1 ]]; then
     [[ ( "$ARCH" == x86_64 || "$ARCH" == aarch64 ) && "$KD_LIBC" == 0 && "$KD_LOADER" == 0 &&

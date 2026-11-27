@@ -1,0 +1,11 @@
+{
+  "rustc_vv": [
+    "release: 1.90.0-dev",
+    "commit-hash: a763a7dd70cc6bc97736aca5eabaf867b36477bf",
+    "commit-date: 2026-11-24",
+    "LLVM version: 20.1.7"
+  ],
+  "hosted_host": "aarch64-breenix-hosted",
+  "hello_o_sha256": "57f3f527f73fd9d89cdc062d7ec8faff1bad751bfb8919fb0ef6273a087c5dca",
+  "type_error": "type-error.rs:2:18"
+}
