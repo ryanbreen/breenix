@@ -80,6 +80,9 @@ fn close_recipient_validation_precedes_completion() {
     use std::process::Command;
     let transport = source("libs/libbreenix/src/ssh/transport.rs");
     let arm = transport
+        .split("fn handle_channel_packet(")
+        .nth(1)
+        .unwrap()
         .split("SSH_MSG_CHANNEL_CLOSE => {")
         .nth(1)
         .unwrap()

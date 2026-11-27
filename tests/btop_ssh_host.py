@@ -63,9 +63,9 @@ class BtopSsh(unittest.TestCase):
             BUFFER=wire[wire.index("pub struct SshBuf;"):],
             HANDLER=function(transport, "handle_channel_packet"),
             WAIT_FOR_CHANNEL="pub " + function(transport, "wait_for_channel"),
-            CHANNEL_CLOSED=function(transport, "channel_closed"),
+            CHANNEL_CLOSED="pub " + function(transport, "channel_closed"),
             CHANNEL_TYPES=channel[channel.index("pub enum SessionCommand"):
-                                  channel.index("/// Handle an incoming")],
+                                  channel.index("\n\n///", channel.index("pub(super) enum ChannelRequestPhase"))],
             CHANNEL_STARTS=(FIXTURES / "channel_starts.rs").read_text(),
             GLOBAL_REQUEST="pub(super) " + function(channel, "handle_client_global_request"),
             CHANNEL_REQUEST="pub(super) " + function(channel, "server_handle_channel_request"),
