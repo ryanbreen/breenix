@@ -82,8 +82,12 @@ pub mod cc {
     pub const VEOF: usize = 4;
     pub const VMIN: usize = 6;
     pub const VTIME: usize = 5;
+    pub const VSTART: usize = 8;
+    pub const VSTOP: usize = 9;
     pub const VSUSP: usize = 10;
     pub const VEOL: usize = 11;
+    pub const VWERASE: usize = 14;
+    pub const VLNEXT: usize = 15;
     pub const VEOL2: usize = 16;
     pub const NCCS: usize = 32;
 }
