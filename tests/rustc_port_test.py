@@ -1,4 +1,5 @@
 import datetime
+from fnmatch import fnmatchcase
 import hashlib
 import json
 import mmap
@@ -35,6 +36,79 @@ def git(*args, tree=TREE):
 
 
 class RustcPort(unittest.TestCase):
+    def test_aarch64_libc_so_one_process_state(self):
+        stage = Path(os.environ.get('BREENIX_KD_BUILD_DIR',
+                                    ROOT / 'userspace/programs/target/kd/aarch64'))
+        llvm = Path(os.environ.get('BREENIX_X2_LLVM', '/opt/homebrew/opt/llvm@20/bin'))
+        libc = stage / 'libc.so'
+        crt = stage / 'breenix-crt.o'
+        dso_handle = stage / 'hosted_dso_handle.o'
+        for path in (libc, crt, dso_handle):
+            self.assertTrue(path.is_file(), f'{path.name} is missing from --arch aarch64 --kd-libc')
+
+        def readelf(path, *args):
+            return subprocess.check_output([llvm / 'llvm-readelf', '-W', *args, path],
+                                           text=True, timeout=10)
+
+        header = readelf(libc, '--file-header', '--dynamic-table')
+        self.assertRegex(header, r'Type:\s+DYN\b')
+        self.assertRegex(header, r'Machine:\s+AArch64\b')
+        self.assertEqual(re.findall(r'\(SONAME\).*\[(.+)\]', header), ['libc.so'])
+        self.assertNotIn('(NEEDED)', header)
+        for path in (crt, dso_handle):
+            header = readelf(path, '--file-header')
+            self.assertRegex(header, r'Type:\s+REL\b')
+            self.assertRegex(header, r'Machine:\s+AArch64\b')
+
+        def definitions(path):
+            return subprocess.check_output(
+                [llvm / 'llvm-nm', '--defined-only', '--format=posix', path],
+                text=True, timeout=10,
+            ).splitlines()
+
+        names = {path: [line.split()[0] for line in definitions(path)]
+                 for path in (libc, crt, dso_handle)}
+
+        def owners(pattern):
+            return [path.name for path, symbols in names.items() for name in symbols
+                    if re.fullmatch(pattern, name)]
+
+        self.assertEqual(owners('_start'), ['breenix-crt.o'])
+        for name in ('environ', 'stdin', 'stdout', 'stderr', 'optarg', 'optind',
+                     'opterr', 'optopt', 'atexit', '__cxa_atexit', 'getauxval',
+                     '__errno_location', '__breenix_libc_init'):
+            self.assertEqual(owners(name), ['libc.so'], name)
+        for name in ('AUXV', 'PROCESS', 'RUNTIME_READY', 'EARLY_ERRNO', 'TLS_IMAGE',
+                     'STACK_CACHE', 'INPUT', 'OUTPUT', 'ERROR', 'AT_EXIT', 'AT_QUICK_EXIT'):
+            self.assertEqual(owners(r'_ZN1c.*' + str(len(name)) + name +
+                                    r'17h[0-9a-f]+E(?:\..*)?'), ['libc.so'], name)
+        self.assertRegex(readelf(dso_handle, '--symbols'),
+                         r'OBJECT\s+GLOBAL\s+HIDDEN\s+\d+\s+__dso_handle\b')
+
+        # Apply the version script to externally visible ELF definitions in
+        # the whole-archive link input (ELF gABI, Symbol Binding and Visibility).
+        script = ROOT / 'libs/libbreenix-libc/hosted-libc.exports'
+        rules = re.fullmatch(r'\s*\{\s*global:(.*?)local:(.*?)\};\s*',
+                             script.read_text(), re.S)
+        self.assertIsNotNone(rules, script)
+        include, exclude = [[pattern.strip() for pattern in rule.split(';') if pattern.strip()]
+                            for rule in rules.groups()]
+
+        def visible_definitions(path, option):
+            rows = re.findall(r'^\s*\d+:\s+[0-9a-f]+\s+\S+\s+\S+\s+'
+                              r'(?:GLOBAL|WEAK)\s+(?:DEFAULT|PROTECTED)\s+(\S+)\s+(\S+)',
+                              readelf(path, option), re.M)
+            return {name for section, name in rows if section != 'UND'}
+
+        expected = {name for name in visible_definitions(stage / 'libc-pic.a', '--symbols')
+                    if any(fnmatchcase(name, pattern) for pattern in include)
+                    and not any(fnmatchcase(name, pattern) for pattern in exclude)}
+        self.assertEqual(visible_definitions(libc, '--dyn-syms'), expected)
+
+        pin = json.loads((RECORDS.parent / 'hosted-libc-aarch64.json').read_text())
+        self.assertEqual(pin['sha256'], {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                                        for path in (libc, crt, dso_handle)})
+
     def test_arm_k5_pinned_inputs(self):
         fork = ROOT / 'rust-fork'
         pin = tomllib.loads((ROOT / 'rust-fork.toml').read_text())['commit']
