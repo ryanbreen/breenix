@@ -20,6 +20,10 @@ struct Fixture {
     /// After this step, someone renames the staging directory away and puts
     /// a directory of their own, holding these bytes, at the same path.
     replace_staging_after: Option<(&'static str, Vec<u8>)>,
+    /// The payload of the directory now at the staging path, once replaced.
+    replacement: Option<Vec<u8>>,
+    /// Whether the open staged file is the original directory's payload.
+    reading_original: bool,
     /// Whether the staging directory belongs to the caller and nobody else
     /// may write in it.
     staging_private: bool,
@@ -36,6 +40,8 @@ impl Fixture {
             staged: None,
             staged_read: 0,
             replace_staging_after: None,
+            replacement: None,
+            reading_original: true,
             staging_private: true,
             fault,
             calls: Vec::new(),
@@ -53,7 +59,7 @@ impl Fixture {
         self.calls.push(name);
         if self.replace_staging_after.as_ref().is_some_and(|(after, _)| *after == name) {
             let (_, bytes) = self.replace_staging_after.take().unwrap();
-            self.staged = Some(bytes);
+            self.replacement = Some(bytes);
         }
         if self.fault == Some(name) {
             let kind = match name {
@@ -69,6 +75,9 @@ impl Fixture {
 
 impl PublishIo for Fixture {
     type File = ();
+    /// Whether the handle is the original staging directory, rather than
+    /// the one now at its path.
+    type Dir = bool;
 
     fn open_dir(&mut self) -> io::Result<()> {
         self.step("open directory")
@@ -121,24 +130,36 @@ impl PublishIo for Fixture {
         Ok(())
     }
 
-    fn open_staged(&mut self) -> io::Result<()> {
+    fn open_staging_dir(&mut self) -> io::Result<bool> {
+        self.step("open staging directory")?;
+        Ok(self.replacement.is_none())
+    }
+
+    fn staging_is_private(&mut self, _: &bool) -> io::Result<bool> {
+        Ok(self.staging_private)
+    }
+
+    fn open_staged(&mut self, original: &bool) -> io::Result<()> {
         self.step("open staged file")?;
+        self.reading_original = *original;
         assert!(self.staged.is_some());
         Ok(())
     }
 
     fn read_staged(&mut self, _: &mut (), buf: &mut [u8]) -> io::Result<usize> {
         self.step("read staged file")?;
-        let staged = self.staged.as_ref().unwrap();
+        let staged = if self.reading_original { &self.staged } else { &self.replacement };
+        let staged = staged.as_ref().unwrap();
         let n = buf.len().min(staged.len() - self.staged_read).min(2);
         buf[..n].copy_from_slice(&staged[self.staged_read..self.staged_read + n]);
         self.staged_read += n;
         Ok(n)
     }
 
-    fn rename_staged(&mut self) -> io::Result<()> {
+    fn rename_staged(&mut self, original: &bool) -> io::Result<()> {
         self.step("rename staged file")?;
-        self.dest = self.staged.take().unwrap();
+        let staged = if *original { &mut self.staged } else { &mut self.replacement };
+        self.dest = staged.take().unwrap();
         Ok(())
     }
 }

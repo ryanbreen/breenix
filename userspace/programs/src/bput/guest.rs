@@ -6,6 +6,7 @@ use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::{
     ffi::OsStrExt,
+    fs::MetadataExt,
     fs::{OpenOptionsExt, PermissionsExt},
 };
 use std::path::{Path, PathBuf};
@@ -16,6 +17,7 @@ extern "C" {
     fn openat(dirfd: i32, path: *const c_char, flags: i32, mode: u32) -> i32;
     fn renameat(oldfd: i32, old: *const c_char, newfd: i32, new: *const c_char) -> i32;
     fn unlinkat(dirfd: i32, path: *const c_char, flags: i32) -> i32;
+    fn geteuid() -> u32;
 }
 
 /// Kernel open flag: fail rather than follow a final symbolic link.
@@ -45,8 +47,8 @@ struct Guest {
     parent: PathBuf,
     dest: CString,
     temp: CString,
-    /// With --adopt, the staged upload's path.
-    staged: Option<CString>,
+    /// With --adopt, the staged upload's directory and its name there.
+    staged: Option<(CString, CString)>,
     dir: Option<File>,
 }
 
@@ -65,6 +67,7 @@ fn status(result: i32) -> io::Result<i32> {
 
 impl PublishIo for Guest {
     type File = File;
+    type Dir = File;
 
     fn open_dir(&mut self) -> io::Result<()> {
         self.dir = Some(
@@ -131,11 +134,27 @@ impl PublishIo for Guest {
         self.dir.as_ref().expect("directory open").sync_all()
     }
 
-    fn open_staged(&mut self) -> io::Result<File> {
+    fn open_staging_dir(&mut self) -> io::Result<File> {
         check_cancelled()?;
-        let path = self.staged.as_ref().expect("staged path");
+        let (dir, _) = self.staged.as_ref().expect("staged path");
+        let flags = fs::O_RDONLY as i32
+            | fs::O_DIRECTORY as i32
+            | O_NOFOLLOW
+            | sysio::status_flags::O_CLOEXEC as i32;
+        let fd = status(unsafe { openat(AT_FDCWD, dir.as_ptr(), flags, 0) })?;
+        Ok(unsafe { File::from_raw_fd(fd) })
+    }
+
+    fn staging_is_private(&mut self, dir: &File) -> io::Result<bool> {
+        let metadata = dir.metadata()?;
+        Ok(metadata.is_dir() && metadata.uid() == unsafe { geteuid() } && metadata.mode() & 0o022 == 0)
+    }
+
+    fn open_staged(&mut self, dir: &File) -> io::Result<File> {
+        check_cancelled()?;
+        let (_, name) = self.staged.as_ref().expect("staged path");
         let flags = fs::O_RDONLY as i32 | O_NOFOLLOW | sysio::status_flags::O_CLOEXEC as i32;
-        let fd = status(unsafe { openat(AT_FDCWD, path.as_ptr(), flags, 0) })?;
+        let fd = status(unsafe { openat(dir.as_raw_fd(), name.as_ptr(), flags, 0) })?;
         let file = unsafe { File::from_raw_fd(fd) };
         if !file.metadata()?.is_file() {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "staged upload is not a regular file"));
@@ -148,10 +167,10 @@ impl PublishIo for Guest {
         file.read(buf)
     }
 
-    fn rename_staged(&mut self) -> io::Result<()> {
+    fn rename_staged(&mut self, dir: &File) -> io::Result<()> {
         check_cancelled()?;
-        let path = self.staged.as_ref().expect("staged path");
-        status(unsafe { renameat(AT_FDCWD, path.as_ptr(), self.dir_fd(), self.dest.as_ptr()) })?;
+        let (_, name) = self.staged.as_ref().expect("staged path");
+        status(unsafe { renameat(dir.as_raw_fd(), name.as_ptr(), self.dir_fd(), self.dest.as_ptr()) })?;
         Ok(())
     }
 
@@ -185,9 +204,15 @@ fn arguments() -> Result<(Guest, u64, [u8; 32], u32), String> {
         if args.len() < 2 {
             return Err(USAGE.into());
         }
-        let path = args.remove(1);
+        let path = PathBuf::from(args.remove(1));
         args.remove(0);
-        Some(CString::new(path.as_bytes()).map_err(|error| error.to_string())?)
+        let name = path.file_name().ok_or(USAGE)?;
+        let dir = match path.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent,
+            _ => Path::new("."),
+        };
+        let cstring = |bytes: &[u8]| CString::new(bytes).map_err(|error| error.to_string());
+        Some((cstring(dir.as_os_str().as_bytes())?, cstring(name.as_bytes())?))
     } else {
         None
     };
