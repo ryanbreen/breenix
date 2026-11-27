@@ -76,6 +76,33 @@ class UserlandWorkspaceTest(unittest.TestCase):
         problems = check_workspace(WORKSPACE)
         self.assertFalse(problems, "\n".join(problems))
 
+    def test_build_scripts_are_rejected(self):
+        for script, build in (("build.rs", "false"), ("generate.rs", '"generate.rs"')):
+            with self.subTest(script=script), TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "Cargo.toml").write_text(
+                    '[package]\nname = "app"\nversion = "0.1.0"\nedition = "2021"\n'
+                    f'build = {build}\n', encoding="utf-8"
+                )
+                (root / "src").mkdir()
+                (root / "src/lib.rs").touch()
+                (root / script).write_text('fn main() {}\n', encoding="utf-8")
+                subprocess.run(["cargo", "generate-lockfile", "--offline", "--quiet"],
+                               cwd=root, check=True)
+                self.assertEqual(check_workspace(root), ["package app has a build script"])
+
+    def test_registry_lock_entry_is_rejected_before_cargo_resolution(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "Cargo.lock").write_text(
+                'version = 4\n\n[[package]]\nname = "registry-dependency"\n'
+                'version = "0.1.0"\nsource = "registry+https://example.invalid/index"\n',
+                encoding="utf-8"
+            )
+            self.assertEqual(check_workspace(root), [
+                "locked package registry-dependency is not a path package",
+            ])
+
     def test_dependency_feature_cannot_enable_a_proc_macro(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
