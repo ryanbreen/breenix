@@ -220,11 +220,25 @@ struct MapInner {
     poisoned: PageVec<()>,
     /// Sorted by id: ids are issued under this lock, in increasing order.
     bindings: Vec<BindingRec>,
+    /// Claims of populations whose binding is not yet published. Eviction
+    /// treats their pages as bound (see `Population`).
+    populating: Vec<Claim>,
     writable_shared: usize,
     writeback_cursor: u64,
     /// The request generation the traversal at `writeback_cursor` began
     /// under. A traversal that ends under a newer one starts over.
     writeback_epoch: u64,
+}
+
+/// A population's claim on the pages `[first, last)`.
+#[derive(Debug)]
+struct Claim {
+    id: u64,
+    first: u64,
+    last: u64,
+    /// One range covering the claimed pages whose file bytes a mutation
+    /// changed since the population last merged. Population reads them again.
+    stale: Option<(u64, u64)>,
 }
 
 /// Values keyed by file page index, sorted by index.
@@ -540,6 +554,21 @@ impl MapInner {
         self.bindings.iter().any(|rec| rec.covers(index))
     }
 
+    /// A mutation changed the file bytes of pages `[first, last)`. A
+    /// population may have read some of them already, and its copies are not
+    /// in the cache, where the mutation hooks update pages, so mark its claim
+    /// for a re-read. Does not allocate.
+    fn mark_populating(&mut self, first: u64, last: u64) {
+        for claim in &mut self.populating {
+            let (low, high) = (first.max(claim.first), last.min(claim.last));
+            if low < high {
+                claim.stale = Some(claim.stale.map_or((low, high), |(from, to)| {
+                    (from.min(low), to.max(high))
+                }));
+            }
+        }
+    }
+
     /// Cache bytes changed through the HHDM alias: make them visible to
     /// instruction fetch through any executable binding.
     fn sync_if_executable(&self, index: u64) {
@@ -630,6 +659,7 @@ impl MapState {
                     pages: PageVec::new(),
                     poisoned: PageVec::new(),
                     bindings: Vec::new(),
+                    populating: Vec::new(),
                     writable_shared: 0,
                     writeback_cursor: 0,
                     writeback_epoch: 0,
@@ -1046,14 +1076,15 @@ impl MapState {
         Ok(more)
     }
 
-    /// The caller observed `size` under the filesystem guard. Without a
-    /// binding nothing maps the cache, so a size this state never saw only
-    /// discards cached pages.
+    /// The caller observed `size` under the filesystem guard. While neither a
+    /// binding nor a population about to publish one exists, the cache is
+    /// unmapped, so a size this state did not see only discards cached pages.
     pub(crate) fn resync_unbound(&self, size: u64) {
         let stale = {
             let mut inner = self.state.inner.lock();
             if inner.mapped_size == size
                 || !inner.bindings.is_empty()
+                || !inner.populating.is_empty()
                 || inner.pages.entries.iter().any(|(_, page)| page.dirty)
             {
                 return;
@@ -1101,16 +1132,25 @@ impl MapState {
     }
 
     /// Retire cache pages no binding covers. The filesystem write guard
-    /// excludes population and every mutation hook.
+    /// excludes the mutation hooks. Population reads and publishes without
+    /// that guard, so a page a population still has to bind counts as bound
+    /// here; its eviction stays pending until the population ends.
     pub(crate) fn evict(&self, budget: &mut usize) -> bool {
         let mut inner = self.state.inner.lock();
         let MapInner {
             pages,
             poisoned,
             bindings,
+            populating,
             ..
         } = &mut *inner;
-        let unbound = |index: u64| !bindings.iter().any(|rec| rec.covers(index));
+        let unmapped = |index: u64| !bindings.iter().any(|rec| rec.covers(index));
+        let unbound = |index: u64| {
+            unmapped(index)
+                && !populating
+                    .iter()
+                    .any(|claim| claim.first <= index && index < claim.last)
+        };
         poisoned.retain(|index| !unbound(index));
         // Retired frames are released in place: the frame allocator follows
         // the map lock in the lock order.
@@ -1129,8 +1169,9 @@ impl MapState {
             .store(!pages.is_empty() || !poisoned.is_empty(), Ordering::Release);
         // Dirty unbound pages still owe eviction after writeback. Preserve
         // that request even when this pass has no clean page left to retire;
-        // writeback owns rescheduling until those pages become clean.
-        let pending = pages.entries.iter().any(|(index, _)| unbound(*index));
+        // writeback owns rescheduling until those pages become clean. Pages
+        // only a population holds stay pending; its drop requests the pass.
+        let pending = pages.entries.iter().any(|(index, _)| unmapped(*index));
         self.state.eviction_pending.store(pending, Ordering::Release);
         more
     }
@@ -1184,11 +1225,13 @@ impl MapState {
     }
 
     /// After a successful write of `bytes` at `offset`: the cache takes the
-    /// written bytes, so every binding that maps a cache page sees them.
-    /// Copies into pages already in the cache; allocates nothing.
+    /// written bytes, so the bindings that map a cache page see them.
+    /// Copies into pages already in the cache and marks populations' claims
+    /// on the others; does not allocate.
     pub(crate) fn commit_write(&self, offset: u64, bytes: &[u8]) {
         let end = offset + bytes.len() as u64;
-        let inner = self.state.inner.lock();
+        let mut inner = self.state.inner.lock();
+        inner.mark_populating(offset / PAGE_SIZE, pages(end));
         for (index, page) in inner.pages.range(offset / PAGE_SIZE, pages(end)) {
             let start = offset.max(index * PAGE_SIZE);
             let stop = end.min((index + 1) * PAGE_SIZE);
@@ -1226,6 +1269,7 @@ impl MapState {
             // Dirty cache pages are authoritative even if the disk mutation
             // failed; poison only pages that lack dirty custody.
             inner.poison(first, last);
+            inner.mark_populating(first, last);
             self.state.resident.store(
                 !inner.pages.is_empty() || !inner.poisoned.is_empty(),
                 Ordering::Release,
@@ -1267,6 +1311,9 @@ impl MapState {
             if size > old {
                 return;
             }
+            // A population's copy of the boundary page or a page past the new
+            // EOF holds bytes the file no longer has.
+            inner.mark_populating(boundary / PAGE_SIZE, u64::MAX);
             let keep = pages(size);
             for rec in inner.bindings.iter_mut() {
                 let cut = rec.parked.partition_point(|(index, _)| *index < keep);
@@ -1467,62 +1514,143 @@ pub(crate) enum MapError {
     Io,
 }
 
+/// A population's transfer lease and its claim on the pages it populates.
+/// Until it is dropped, after mmap has published the binding or given up,
+/// eviction keeps the claimed pages: the binding is published later, and a
+/// fault on a bound page the cache lacks maps a fresh page of 00 bytes (the
+/// hole case in `resolve_page`).
+pub(crate) struct Population {
+    file: Box<dyn MappingIo>,
+    map: MapState,
+    id: u64,
+}
+
+impl core::ops::Deref for Population {
+    type Target = dyn MappingIo;
+
+    fn deref(&self) -> &Self::Target {
+        &*self.file
+    }
+}
+
+impl Drop for Population {
+    fn drop(&mut self) {
+        {
+            let mut inner = self.map.state.inner.lock();
+            if let Some(slot) = inner.populating.iter().position(|claim| claim.id == self.id) {
+                inner.populating.swap_remove(slot);
+            }
+        }
+        // An eviction deferred for these pages may proceed now.
+        if self.map.eviction_pending() {
+            self.map.state.filesystem.request_eviction();
+        }
+    }
+}
+
 /// Populate absent pages through a stable per-inode transfer lease. File
 /// bytes are read without a mount guard; the map lock publishes the cache.
+/// The returned population holds the pages against eviction until dropped.
+///
+/// A mutation can change a page after population read it and before the
+/// merge, and the mutation hooks update only cached pages. They mark the
+/// claim instead (`mark_populating`), and population drops its copies of the
+/// marked pages and reads them again, until a round merges with no mark. A
+/// read shorter than the size it was sampled against with no mark is an
+/// error rather than 00 bytes in the cache.
 pub(crate) fn populate(
     handle: &VNode,
     first: u64,
     count: u64,
-) -> Result<Box<dyn MappingIo>, MapError> {
+) -> Result<Population, MapError> {
+    static NEXT_CLAIM: AtomicU64 = AtomicU64::new(0);
     let file = handle.filesystem.mapping_io(handle).map_err(|_| MapError::Io)?;
     let map = &handle.map;
-    let size = handle.size.load(Ordering::Acquire);
-    let last = first.saturating_add(count).min(pages(size));
-    let wanted = {
-        let inner = map.state.inner.lock();
-        (first..last)
-            .filter(|index| !inner.pages.contains(*index))
-            .count()
+    let id = NEXT_CLAIM.fetch_add(1, Ordering::Relaxed);
+    let end = first.saturating_add(count);
+    // Claim the range before looking at the cache, so a page found resident
+    // here is still resident when the binding is published.
+    {
+        let mut inner = map.state.inner.lock();
+        inner
+            .populating
+            .try_reserve(1)
+            .map_err(|_| MapError::NoMemory)?;
+        inner.populating.push(Claim { id, first, last: end, stale: None });
+    }
+    let file = Population {
+        file,
+        map: map.clone(),
+        id,
     };
-    if wanted == 0 {
-        return Ok(file);
-    }
-    let mut read = Vec::new();
-    read.try_reserve(wanted).map_err(|_| MapError::NoMemory)?;
-    for index in first..last {
-        if map.state.inner.lock().pages.contains(index) {
-            continue;
+    let mut range = (first, end);
+    loop {
+        let (size, last, wanted) = {
+            let inner = map.state.inner.lock();
+            let size = inner.mapped_size;
+            let last = range.1.min(pages(size));
+            let wanted = (range.0..last)
+                .filter(|index| !inner.pages.contains(*index))
+                .count();
+            (size, last, wanted)
+        };
+        let mut read = Vec::new();
+        read.try_reserve(wanted).map_err(|_| MapError::NoMemory)?;
+        let mut short = None;
+        for index in range.0..last {
+            if map.state.inner.lock().pages.contains(index) {
+                continue;
+            }
+            if read.len() == read.capacity() {
+                read.try_reserve(1).map_err(|_| MapError::NoMemory)?;
+            }
+            let page = CachePage::allocate().map_err(|_| MapError::NoMemory)?;
+            let bytes = file
+                .read(index * PAGE_SIZE, PAGE_SIZE as usize)
+                .map_err(|_| MapError::Io)?;
+            let length = bytes.len().min(PAGE_SIZE as usize);
+            if (length as u64) < (size - index * PAGE_SIZE).min(PAGE_SIZE) {
+                short = short.or(Some(index));
+            }
+            // SAFETY: a fresh cache frame; `length` is at most one page.
+            unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), page.ptr(), length) };
+            read.push((index, page));
         }
-        if read.len() == read.capacity() {
-            read.try_reserve(1).map_err(|_| MapError::NoMemory)?;
+        let mut inner = map.state.inner.lock();
+        let stale = inner
+            .populating
+            .iter_mut()
+            .find(|claim| claim.id == id)
+            .and_then(|claim| claim.stale.take());
+        let marked = |index: u64| stale.is_some_and(|(low, high)| low <= index && index < high);
+        if short.is_some_and(|index| !marked(index)) {
+            return Err(MapError::Io);
         }
-        let page = CachePage::allocate().map_err(|_| MapError::NoMemory)?;
-        let bytes = file
-            .read(index * PAGE_SIZE, PAGE_SIZE as usize)
-            .map_err(|_| MapError::Io)?;
-        // SAFETY: a fresh cache frame; `bytes` is at most one page.
-        unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), page.ptr(), bytes.len()) };
-        read.push((index, page));
+        let valid = pages(inner.mapped_size);
+        read.retain(|(index, _)| !marked(*index) && *index < valid);
+        inner
+            .pages
+            .try_reserve(read.len())
+            .map_err(|_| MapError::NoMemory)?;
+        for (index, _) in &read {
+            inner.poisoned.remove(*index);
+        }
+        inner.pages.merge_reserved(read);
+        map.state.resident.store(
+            !inner.pages.is_empty() || !inner.poisoned.is_empty(),
+            Ordering::Release,
+        );
+        match stale {
+            None => return Ok(file),
+            Some(marked) => range = marked,
+        }
     }
-    let mut inner = map.state.inner.lock();
-    inner
-        .pages
-        .try_reserve(read.len())
-        .map_err(|_| MapError::NoMemory)?;
-    for (index, _) in &read {
-        inner.poisoned.remove(*index);
-    }
-    inner.pages.merge_reserved(read);
-    map.state.resident.store(
-        !inner.pages.is_empty() || !inner.poisoned.is_empty(),
-        Ordering::Release,
-    );
-    Ok(file)
 }
 
 /// Register a binding for a new file VMA. PROCESS_MANAGER held, and the
-/// population lease and the mount read guard held through publication, so
-/// no content mutation or eviction has removed the populated pages.
+/// population (its lease and its claim on the range) and the mount read guard
+/// held through publication, so no content mutation or eviction has removed
+/// the populated pages.
 pub(crate) fn bind(
     handle: Arc<VNode>,
     pid: ProcessId,
