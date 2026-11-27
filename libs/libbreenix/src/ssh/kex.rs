@@ -1,34 +1,39 @@
 //! SSH key exchange: curve25519-sha256 (RFC 8731)
 //!
 //! Implements the Elliptic Curve Diffie-Hellman key exchange using Curve25519,
-//! with SHA-256 as the hash function. Derives session keys for AES-128-CTR
-//! encryption and HMAC-SHA256 integrity.
+//! with SHA-256 as the hash function. Derives session keys for the
+//! negotiated cipher, and negotiates strict KEX (draft-ietf-sshm-strict-kex).
 
 use crate::crypto::mlkem;
 use crate::crypto::rand::Csprng;
 use crate::crypto::sha256::sha256;
 use crate::crypto::x25519::{x25519, x25519_basepoint};
 
-use super::cipher::SshCipher;
+use super::cipher::{CipherKind, SshCipher};
 use super::keys::{HostKey, ServerHostKeyInfo};
-use super::packet::PacketIo;
+use super::packet::{KexTransport, PacketIo};
 use super::SshBuf;
 use super::*;
 
 /// Algorithms offered by BSSH.
-// ext-info-s tells clients we'll send SSH_MSG_EXT_INFO after NEWKEYS (RFC 8308)
-pub const KEX_ALGORITHMS: &str = "mlkem768x25519-sha256,curve25519-sha256,ext-info-s";
+// ext-info-s tells clients we'll send SSH_MSG_EXT_INFO after NEWKEYS (RFC 8308).
+// The kex-strict-s markers offer strict KEX under both of its names.
+pub const KEX_ALGORITHMS: &str =
+    "mlkem768x25519-sha256,curve25519-sha256,ext-info-s,kex-strict-s-v00@openssh.com,kex-strict-s";
 /// Algorithms offered by the BSSH client.
 ///
 /// Keep this in sync with the client-side key exchange implementation. The
 /// client currently implements Curve25519 only; advertising ML-KEM here causes
 /// OpenSSH servers to negotiate a hybrid exchange that the client cannot speak.
-pub const CLIENT_KEX_ALGORITHMS: &str = "curve25519-sha256,ext-info-c";
+pub const CLIENT_KEX_ALGORITHMS: &str =
+    "curve25519-sha256,ext-info-c,kex-strict-c-v00@openssh.com,kex-strict-c";
 /// The server's host key is Ed25519 (RFC 8709).
 pub const HOST_KEY_ALGORITHMS: &str = "ssh-ed25519";
 /// Host-key algorithms the client can verify.
 pub const CLIENT_HOST_KEY_ALGORITHMS: &str = "ssh-ed25519,rsa-sha2-256,rsa-sha2-512";
-pub const CIPHERS: &str = "aes256-gcm@openssh.com,aes128-ctr";
+/// Preference order: ChaCha20-Poly1305 is constant-time without hardware
+/// support, so it comes first.
+pub const CIPHERS: &str = "chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-ctr";
 pub const MACS: &str = "hmac-sha2-256";
 pub const COMPRESSION: &str = "none";
 
@@ -40,6 +45,9 @@ pub struct KexState {
     pub peer_kexinit: Vec<u8>,
     /// Exchange hash (H) — also the session_id for the first KEX.
     pub session_id: Option<Vec<u8>>,
+    /// Whether the initial KEXINITs agreed on strict KEX. It holds for the
+    /// whole connection, whatever later KEXINITs offer.
+    pub strict: bool,
 }
 
 impl KexState {
@@ -48,6 +56,7 @@ impl KexState {
             my_kexinit: Vec::new(),
             peer_kexinit: Vec::new(),
             session_id: None,
+            strict: false,
         }
     }
 }
@@ -102,7 +111,8 @@ fn build_kexinit_with_algorithms(rng: &mut Csprng, kex_algorithms: &str, host_ke
 ///
 /// Returns the exchange hash H and the shared secret K.
 pub fn server_kex_ecdh(
-    io: &mut PacketIo,
+    io: &mut impl KexTransport,
+    rng: &mut Csprng,
     host_key: &HostKey,
     kex: &mut KexState,
     client_version: &str,
@@ -120,7 +130,6 @@ pub fn server_kex_ecdh(
     }
 
     // Generate server's ephemeral key pair
-    let mut rng = Csprng::new();
     let mut server_secret = [0u8; 32];
     rng.fill(&mut server_secret);
     let server_public = x25519_basepoint(&server_secret);
@@ -174,9 +183,106 @@ pub fn server_kex_ecdh(
     Ok((h, shared_secret.to_vec()))
 }
 
+/// The server side of the initial key exchange, from sending our KEXINIT
+/// through both NEWKEYS, ending with the new keys installed in `io`.
+///
+/// Only the messages of the exchange are accepted, in order: the client's
+/// KEXINIT first, then its KEX_ECDH_INIT, then NEWKEYS. Anything else ends
+/// the connection, so under strict KEX no packet can shift the sequence
+/// numbers before they restart.
+pub fn server_key_exchange(
+    io: &mut impl KexTransport,
+    rng: &mut Csprng,
+    host_key: &HostKey,
+    kex: &mut KexState,
+    client_version: &str,
+    server_version: &str,
+) -> Result<(), SshError> {
+    kex.my_kexinit = build_kexinit(rng);
+    io.send_packet(&kex.my_kexinit).map_err(|_| SshError::Io)?;
+    let peer_kexinit = io.recv_packet().map_err(|_| SshError::Io)?;
+    if peer_kexinit.first() != Some(&SSH_MSG_KEXINIT) {
+        return Err(SshError::Protocol("expected KEXINIT"));
+    }
+    kex.peer_kexinit = peer_kexinit;
+    kex.strict = strict_kex(&kex.peer_kexinit, &kex.my_kexinit);
+    exchange_after_kexinit(io, rng, host_key, kex, client_version, server_version)
+}
+
+/// Answer a key re-exchange that the client opened with `peer_kexinit`
+/// after the initial exchange (RFC 4253 section 9): send our KEXINIT and
+/// run the exchange again, admitting only its messages. The session
+/// identifier stays the initial exchange hash, and strict KEX, settled by
+/// the initial KEXINITs, restarts the sequence numbers again.
+pub fn server_rekey(
+    io: &mut impl KexTransport,
+    rng: &mut Csprng,
+    host_key: &HostKey,
+    kex: &mut KexState,
+    client_version: &str,
+    server_version: &str,
+    peer_kexinit: Vec<u8>,
+) -> Result<(), SshError> {
+    if kex.session_id.is_none() {
+        return Err(SshError::Protocol("re-exchange before the initial exchange"));
+    }
+    if peer_kexinit.first() != Some(&SSH_MSG_KEXINIT) {
+        return Err(SshError::Protocol("expected KEXINIT"));
+    }
+    kex.my_kexinit = build_kexinit(rng);
+    io.send_packet(&kex.my_kexinit).map_err(|_| SshError::Io)?;
+    kex.peer_kexinit = peer_kexinit;
+    exchange_after_kexinit(io, rng, host_key, kex, client_version, server_version)
+}
+
+/// The next message of a key exchange, which must be `kind`. A DISCONNECT
+/// (allowed during an exchange, RFC 4253 section 7.1) ends the connection
+/// as a disconnect; anything else is a protocol error.
+fn exchange_message(io: &mut impl KexTransport, kind: u8, expected: &'static str) -> Result<Vec<u8>, SshError> {
+    let message = io.recv_packet().map_err(|_| SshError::Io)?;
+    match message.first() {
+        Some(&first) if first == kind => Ok(message),
+        Some(&SSH_MSG_DISCONNECT) => Err(SshError::Disconnected),
+        _ => Err(SshError::Protocol(expected)),
+    }
+}
+
+/// The rest of a server key exchange once both KEXINITs are in `kex`.
+fn exchange_after_kexinit(
+    io: &mut impl KexTransport,
+    rng: &mut Csprng,
+    host_key: &HostKey,
+    kex: &mut KexState,
+    client_version: &str,
+    server_version: &str,
+) -> Result<(), SshError> {
+    let kex_init = exchange_message(io, SSH_MSG_KEX_ECDH_INIT, "expected KEX_ECDH_INIT")?;
+
+    // Dispatch: hybrid C_INIT is 1216 bytes, X25519 Q_C is 32 bytes
+    let hybrid = kex_init.len() > 5
+        && u32::from_be_bytes([kex_init[1], kex_init[2], kex_init[3], kex_init[4]]) == 1216;
+    let (exchange_hash, shared_secret) = if hybrid {
+        println!("bsshd: KEX mlkem768x25519-sha256 (post-quantum)");
+        server_kex_hybrid(io, rng, host_key, kex, client_version, server_version, &kex_init)?
+    } else {
+        println!("bsshd: KEX curve25519-sha256");
+        server_kex_ecdh(io, rng, host_key, kex, client_version, server_version, &kex_init)?
+    };
+
+    exchange_message(io, SSH_MSG_NEWKEYS, "expected NEWKEYS")?;
+
+    let session_id = kex.session_id.as_ref().ok_or(SshError::KeyExchange)?;
+    let (c2s, s2c) = negotiate_ciphers_with(&kex.peer_kexinit, &kex.my_kexinit, kex.strict)?;
+    let (cipher_c2s, cipher_s2c) = derive_keys(&shared_secret, &exchange_hash, session_id, hybrid, c2s, s2c);
+    // client to server is our receive direction
+    io.install_keys(cipher_c2s, cipher_s2c, kex.strict);
+    Ok(())
+}
+
 /// Server-side hybrid post-quantum key exchange (mlkem768x25519-sha256).
 pub fn server_kex_hybrid(
-    io: &mut PacketIo,
+    io: &mut impl KexTransport,
+    rng: &mut Csprng,
     host_key: &HostKey,
     kex: &mut KexState,
     client_version: &str,
@@ -189,8 +295,6 @@ pub fn server_kex_hybrid(
     if c_init.len() != 1216 {
         return Err(SshError::Protocol("invalid hybrid C_INIT length"));
     }
-
-    let mut rng = Csprng::new();
 
     // X25519
     let mut x25519_secret = [0u8; 32];
@@ -385,53 +489,80 @@ fn compute_exchange_hash_inner(
     sha256(&data).to_vec()
 }
 
-/// Select each direction independently, in client preference order (RFC 4253).
-/// GCM's integrity is implicit (draft-miller-sshm-aes-gcm); CTR needs HMAC.
-pub fn negotiate_ciphers(client: &[u8], server: &[u8]) -> Result<(bool, bool), SshError> {
-    fn lists(packet: &[u8]) -> Result<Vec<&str>, SshError> {
-        if packet.len() < 17 || packet[0] != SSH_MSG_KEXINIT {
-            return Err(SshError::Protocol("bad KEXINIT"));
-        }
-        let mut pos = 17;
-        (0..10).map(|_| {
-            let bytes = SshBuf::get_string(packet, &mut pos)
-                .ok_or(SshError::Protocol("bad algorithm list"))?;
-            core::str::from_utf8(bytes).map_err(|_| SshError::Protocol("bad algorithm name"))
-        }).collect()
+fn name_lists(packet: &[u8]) -> Result<Vec<&str>, SshError> {
+    if packet.len() < 17 || packet[0] != SSH_MSG_KEXINIT {
+        return Err(SshError::Protocol("bad KEXINIT"));
     }
-    let c = lists(client)?;
-    let s = lists(server)?;
+    let mut pos = 17;
+    (0..10).map(|_| {
+        let bytes = SshBuf::get_string(packet, &mut pos)
+            .ok_or(SshError::Protocol("bad algorithm list"))?;
+        core::str::from_utf8(bytes).map_err(|_| SshError::Protocol("bad algorithm name"))
+    }).collect()
+}
+
+/// Select each direction independently, in client preference order (RFC 4253).
+/// AEAD ciphers carry their own integrity; CTR needs HMAC-SHA256.
+///
+/// chacha20-poly1305 is eligible only under strict KEX: without it a peer
+/// cannot detect packets deleted from the start of the encrypted stream
+/// (the Terrapin attack), so such a client gets its next common cipher.
+pub fn negotiate_ciphers(client: &[u8], server: &[u8]) -> Result<(CipherKind, CipherKind), SshError> {
+    negotiate_ciphers_with(client, server, strict_kex(client, server))
+}
+
+/// [`negotiate_ciphers`] for a connection whose strict KEX was settled by
+/// its initial KEXINITs, which a re-exchange's KEXINITs do not repeat.
+pub fn negotiate_ciphers_with(
+    client: &[u8],
+    server: &[u8],
+    strict: bool,
+) -> Result<(CipherKind, CipherKind), SshError> {
+    let c = name_lists(client)?;
+    let s = name_lists(server)?;
+    let eligible = |index: usize, name: &str| {
+        !name.is_empty()
+            && (strict || CipherKind::from_name(name) != Some(CipherKind::ChaCha20Poly1305))
+            && s[index].split(',').any(|other| other == name)
+    };
     let choose = |index: usize| {
-        c[index].split(',').find(|name| !name.is_empty() && s[index].split(',').any(|other| other == *name))
+        c[index].split(',').find(|name| eligible(index, name))
             .ok_or(SshError::Protocol("no common algorithm"))
     };
-    let mut gcm = [false; 2];
+    let mut kinds = [CipherKind::Aes128Ctr; 2];
     for direction in 0..2 {
-        gcm[direction] = match choose(2 + direction)? {
-            "aes256-gcm@openssh.com" => true,
-            "aes128-ctr" => {
-                if choose(4 + direction)? != "hmac-sha2-256" {
-                    return Err(SshError::Protocol("unsupported MAC"));
-                }
-                false
-            }
-            _ => return Err(SshError::Protocol("unsupported cipher")),
-        };
+        let kind = CipherKind::from_name(choose(2 + direction)?)
+            .ok_or(SshError::Protocol("unsupported cipher"))?;
+        if !kind.is_aead() && choose(4 + direction)? != "hmac-sha2-256" {
+            return Err(SshError::Protocol("unsupported MAC"));
+        }
         if choose(6 + direction)? != "none" {
             return Err(SshError::Protocol("unsupported compression"));
         }
+        kinds[direction] = kind;
     }
-    Ok((gcm[0], gcm[1]))
+    Ok((kinds[0], kinds[1]))
 }
 
-/// RFC 4253 section 7.2 KDF; RFC 5647 uses a 32-byte key and 12-byte IV.
+/// Strict KEX applies when the client's and the server's initial KEXINIT
+/// offer the same name of it: kex-strict-c with kex-strict-s, or the
+/// pre-standard -v00@openssh.com pair. A standard name paired with a
+/// pre-standard one does not count.
+pub fn strict_kex(client: &[u8], server: &[u8]) -> bool {
+    let (Ok(c), Ok(s)) = (name_lists(client), name_lists(server)) else { return false };
+    let offers = |list: &str, name: &str| list.split(',').any(|offered| offered == name);
+    (offers(c[0], "kex-strict-c") && offers(s[0], "kex-strict-s"))
+        || (offers(c[0], "kex-strict-c-v00@openssh.com") && offers(s[0], "kex-strict-s-v00@openssh.com"))
+}
+
+/// RFC 4253 section 7.2 KDF, in the sizes each cipher kind takes.
 pub fn derive_keys(
     shared_secret: &[u8],
     exchange_hash: &[u8],
     session_id: &[u8],
     k_as_string: bool,
-    gcm_c2s: bool,
-    gcm_s2c: bool,
+    c2s: CipherKind,
+    s2c: CipherKind,
 ) -> (SshCipher, SshCipher) {
     let derive = |letter: u8, len: usize| -> Vec<u8> {
         let mut data = Vec::with_capacity(256);
@@ -467,19 +598,16 @@ pub fn derive_keys(
         }
     };
 
-    let direction = |iv_letter, key_letter, mac_letter, gcm| {
-        if gcm {
-            SshCipher::new_gcm(
-                &derive(key_letter, 32).try_into().unwrap(),
-                &derive(iv_letter, 12).try_into().unwrap(),
-            )
-        } else {
-            SshCipher::new(
-                &derive(key_letter, 16).try_into().unwrap(),
-                &derive(iv_letter, 16).try_into().unwrap(),
-                &derive(mac_letter, 32).try_into().unwrap(),
-            )
+    let direction = |iv_letter, key_letter, mac_letter, kind: CipherKind| {
+        let (key, iv, mac) = kind.key_sizes();
+        let mut material = derive(key_letter, key);
+        if iv > 0 {
+            material.extend_from_slice(&derive(iv_letter, iv));
         }
+        if mac > 0 {
+            material.extend_from_slice(&derive(mac_letter, mac));
+        }
+        SshCipher::new(kind, &material)
     };
-    (direction(b'A', b'C', b'E', gcm_c2s), direction(b'B', b'D', b'F', gcm_s2c))
+    (direction(b'A', b'C', b'E', c2s), direction(b'B', b'D', b'F', s2c))
 }
