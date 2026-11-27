@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Exercise the scalar string routines and check their generated x86 code."""
+import argparse
 from pathlib import Path
 import re
 import subprocess
@@ -13,6 +14,12 @@ def isolate(source):
     # Keep the host libc's symbols out of the test entry points.
     return re.sub(r'#\[no_mangle\]\s+pub unsafe extern "C" fn (\w+)',
                   r'#[export_name = "breenix_\1"] pub unsafe extern "C" fn \1', source)
+
+
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--also-x86", action="store_true",
+                    help="also execute the x86-64 binary on hosts with native or translated support")
+args = parser.parse_args()
 
 
 with tempfile.TemporaryDirectory(prefix="breenix-string-check-") as temporary:
@@ -36,6 +43,10 @@ with tempfile.TemporaryDirectory(prefix="breenix-string-check-") as temporary:
     # the red run detects byte loops and unconditional REP without timing.
     triple = subprocess.check_output(["rustc", "-vV"], text=True).split("host: ")[1].split()[0]
     target = "x86_64" + triple[triple.index("-"):]
+    if args.also_x86 and triple != target:
+        x86_binary = directory / "check-x86"
+        subprocess.run([*command, "--target", target, "-o", str(x86_binary)], check=True)
+        subprocess.run([str(x86_binary)], check=True, timeout=30)
     output = directory / "check.s"
     subprocess.run([*command, "--target", target, "--emit=asm", "-o", str(output)], check=True)
     assembly = output.read_text()
