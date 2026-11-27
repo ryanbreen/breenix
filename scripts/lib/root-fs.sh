@@ -20,6 +20,8 @@ root_fs_scratch() {
     local scratch
     if [ "$MODE" = suite ] && [[ "${MILESTONE:-}" = toolchain/busybox-on-box || "${MILESTONE:-}" = toolchain/kernel-assembly ]]; then
         scratch="${WRITABLE%/*}/toolchain-scratch.img"
+    elif [ "$MODE" = suite ] && [[ ",$SUITE," == *,self-host,* ]]; then
+        scratch="${WRITABLE%/*}/self-host-scratch.img"
     elif [ "$MODE" = suite ] && [[ ",$SUITE," == *,filesystem,* ]]; then
         scratch="${WRITABLE%/*}/breenfs-scratch.img"
     else

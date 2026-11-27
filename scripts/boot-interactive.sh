@@ -245,6 +245,14 @@ if [ -n "$MILESTONE" ] && { [ "$MODE" != suite ] || [ -n "$ONLY" ] || [ "$BUILD"
     echo "--milestone needs a built suite boot without --case or transfer-fixture" >&2
     exit 2
 fi
+SELF_HOST=0
+if [[ ",$SUITE," == *,self-host,* ]]; then
+    if [ "$SUITE" != memory,processes,self-host ] || [ "$MILESTONE" != toolchain/self-host ]; then
+        echo "self-host requires --suite memory,processes,self-host --milestone toolchain/self-host" >&2
+        exit 2
+    fi
+    SELF_HOST=1
+fi
 if [[ ",$SUITE," == *,toolchain,* ]] && [ "$BUILD" -ne 1 ]; then
     echo "toolchain needs a built suite boot" >&2
     exit 2
@@ -429,7 +437,7 @@ if [ "$BUILD" -eq 1 ]; then
     if [ "$MODE" = suite ] && [[ ",$SUITE," =~ ,(rust-link|cargo), ]]; then
         run_build "$ROOT/userspace/programs/build.sh" --arch aarch64 --rust-link
     fi
-    if [ "$MODE" = suite ] && [[ ",$SUITE," =~ ,(rustc|cargo), ]]; then
+    if [ "$MODE" = suite ] && [[ ",$SUITE," =~ ,(rustc|cargo|self-host), ]]; then
         KD_ARM_DIR="${BREENIX_KD_BUILD_DIR:-$ROOT/userspace/programs/target/kd/aarch64}"
         K5_CACHE="${BREENIX_RUSTC_PORT_BUILDS:-$ROOT/build/rustc-port}"
         BREENIX_KD_LIBC_INPUT="${BREENIX_KD_LIBC_INPUT:-${BREENIX_HOSTED_LIBC:-$K5_CACHE/shared-libc/libc.so}}"
@@ -441,8 +449,11 @@ if [ "$BUILD" -eq 1 ]; then
         if [[ ",$SUITE," == *,rustc,* ]]; then
             run_build "$ROOT/userspace/programs/build.sh" --arch aarch64 --hosted-bin suite-rustc --features rustc
         fi
-        if [[ ",$SUITE," == *,cargo,* ]]; then
+        if [[ ",$SUITE," == *,cargo,* ]] || [ "$SELF_HOST" -eq 1 ]; then
             run_build "$ROOT/userspace/programs/build.sh" --arch aarch64 --cargo-suite
+        fi
+        if [ "$SELF_HOST" -eq 1 ]; then
+            run_build "$ROOT/userspace/programs/build.sh" --arch aarch64 --hosted-bin suite-self-host --features self-host
         fi
         run_build "$ROOT/userspace/programs/build.sh" --arch aarch64 --rustc
         if [[ ",$SUITE," != *,dynamic,* ]]; then
@@ -547,14 +558,20 @@ fi
 WRITABLE="$(dirname "$SERIAL_LOG")/ext2-writable.img"
 if [ -n "$TRANSFER_RUN_DIR" ]; then WRITABLE="$TRANSFER_RUN_DIR/ext2-writable.img"; fi
 TOOLCHAIN_RECORD=
-if [[ ",$SUITE," == *,toolchain,* ]]; then
+if [[ ",$SUITE," == *,toolchain,* ]] || [ "$SELF_HOST" -eq 1 ]; then
     echo "==> Building and staging the reference toolchain corpus"
     (
         toolchain_scratch=$(mktemp -d "$(dirname "$WRITABLE")/.toolchain.XXXXXX")
         trap 'rm -rf "$toolchain_scratch"' EXIT
         bundle="$toolchain_scratch/bundle"
+        staging_suites="$SUITE"
         milestone_args=()
-        [ -z "$MILESTONE" ] || milestone_args=(--milestone "$MILESTONE")
+        if [ "$SELF_HOST" -eq 1 ]; then
+            # The toolchain selector stages the bundle. The boot still runs the original sequence.
+            staging_suites=toolchain
+        elif [ -n "$MILESTONE" ]; then
+            milestone_args=(--milestone "$MILESTONE")
+        fi
         receipt_args=()
         if [ "$MILESTONE" = toolchain/kernel-assembly ]; then
             record=$(python3 - "$ROOT" "$KERNEL" <<'PYRECORD'
@@ -584,13 +601,24 @@ PYRECORD
             --libc "$ROOT/libs/libbreenix-libc/target/aarch64-breenix/release/libc.a" \
             ${milestone_args[@]+"${milestone_args[@]}"} ${receipt_args[@]+"${receipt_args[@]}"}
         "$ROOT/scripts/create_ext2_disk.sh" --arch aarch64 --stage-from "$DISK" --output "$WRITABLE" \
-            --suite "$SUITE" --toolchain-bundle "$bundle" ${milestone_args[@]+"${milestone_args[@]}"}
+            --suite "$staging_suites" --toolchain-bundle "$bundle" ${milestone_args[@]+"${milestone_args[@]}"}
         if [[ "$MILESTONE" = toolchain/busybox-on-box || "$MILESTONE" = toolchain/kernel-assembly ]]; then
             mv "$bundle/toolchain-scratch.img" "$(dirname "$WRITABLE")/toolchain-scratch.img"
         fi
+        if [ "$SELF_HOST" -eq 1 ]; then
+            mkfs_target="${CARGO_TARGET_DIR:-$ROOT/tools/breenfs/target}"
+            run_build cargo build --release --locked --manifest-path "$ROOT/tools/breenfs/Cargo.toml" \
+                --bin breenfs-mkfs --target-dir "$mkfs_target"
+            run_build python3 "$ROOT/scripts/rust-host/selfhost-fixture.py" --arch aarch64 \
+                "$toolchain_scratch/self-host-scratch" "$mkfs_target/release/breenfs-mkfs" \
+                "${WRITABLE%/*}/self-host-scratch.dat"
+            mv "$toolchain_scratch/self-host-scratch.img" "${WRITABLE%/*}/self-host-scratch.img"
+        fi
         cp "$bundle/build.json" "$SERIAL_LOG.toolchain-build.json"
     )
-    TOOLCHAIN_RECORD="$SERIAL_LOG.toolchain-build.json"
+    if [ "$SELF_HOST" -eq 0 ]; then
+        TOOLCHAIN_RECORD="$SERIAL_LOG.toolchain-build.json"
+    fi
 else
     cp "$DISK" "$WRITABLE"
 fi
@@ -621,7 +649,7 @@ if [ "$MODE" = suite ]; then
     # The first suite runs from fw_cfg; the list on the disk tells each suite which runs next.
     SEQUENCE=
     if [[ "$SUITE" == *,* ]]; then SEQUENCE="$SUITE"; fi
-    if [[ ",$SUITE," =~ ,(rust-host|cxx-runtime|llvm|dynamic|rustc|rust-link|cargo), ]]; then
+    if [[ ",$SUITE," =~ ,(rust-host|cxx-runtime|llvm|dynamic|rustc|rust-link|cargo|self-host), ]]; then
         python3 "$ROOT/scripts/rust_host_stage.py" --arch aarch64 --image "$WRITABLE" --suite "$SUITE"
     fi
     "$ROOT/scripts/write-boot-target.sh" "$WRITABLE" "${SUITE%%,*}" \
