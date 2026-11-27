@@ -159,6 +159,34 @@ class BootInteractiveQmpTest(unittest.TestCase):
         args, _ = self.launch("--no-display", mode=("--mode", "suite", "--suite", "smoke"))
         self.assertEqual([args[i + 1] for i, arg in enumerate(args) if arg == "-m"], ["512"])
 
+    def test_cargo_selection_stages_hosted_runner_at_declared_memory(self):
+        scripts = self.root / "scripts"
+        shutil.copy2(ROOT / "scripts/write-boot-target.sh", scripts / "write-boot-target.sh")
+        stage_call = self.root / "stage-call.json"
+        (scripts / "rust_host_stage.py").write_text(
+            "import json, sys\nfrom pathlib import Path\n"
+            f"Path({str(stage_call)!r}).write_text(json.dumps(sys.argv[1:]))\n"
+        )
+        hosted = self.root / "userspace/programs/target/hosted/aarch64-breenix-hosted/release"
+        hosted.mkdir(parents=True)
+        binary = hosted / "suite-cargo"
+        binary.write_bytes(b"hosted cargo suite")
+        disk_root = self.root / "disk-root"
+        (disk_root / "sbin").mkdir(parents=True)
+        (disk_root / "etc").mkdir()
+        shutil.copyfile(binary, disk_root / "sbin/suite-cargo")
+        path = os.pathsep.join(("/opt/homebrew/opt/e2fsprogs/sbin", os.environ["PATH"]))
+        with patch.dict(os.environ, PATH=path):
+            subprocess.run(["mke2fs", "-q", "-t", "ext2", "-F", "-d", disk_root,
+                            self.root / "target/ext2-aarch64.img", "8M"], check=True)
+            args, _ = self.launch("--no-display", mode=("--mode", "suite", "--suite", "cargo"))
+        manifest = json.loads((self.root / "docs/suites/cargo.json").read_text())
+        minimum = manifest["minimumGuestMemory"]["mib"]
+        self.assertEqual([args[i + 1] for i, arg in enumerate(args) if arg == "-m"], [str(minimum)])
+        stage_args = json.loads(stage_call.read_text())
+        self.assertEqual(stage_args[:3], ["--arch", "aarch64", "--image"])
+        self.assertEqual(stage_args[4:], ["--suite", "cargo"])
+
     def test_rust_link_sequence_verifies_the_hosted_suite_binaries(self):
         scripts = self.root / "scripts"
         shutil.copy2(ROOT / "scripts/write-boot-target.sh", scripts / "write-boot-target.sh")

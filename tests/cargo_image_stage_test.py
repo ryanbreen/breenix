@@ -1,11 +1,12 @@
 """Read back the Cargo selection on a private ext2 image."""
 
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 import hashlib
 import io
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import unittest
@@ -25,6 +26,103 @@ def sha256(path):
 
 
 class CargoImageStageTest(unittest.TestCase):
+    def test_arm_cargo_image_matches_records_and_size(self):
+        self.check_arm_image('cargo')
+
+    def test_arm_rustc_and_cargo_share_hosted_libc(self):
+        self.check_arm_image('rustc,cargo')
+
+    def test_arm_cargo_selection_rejects_unported_suites(self):
+        for suite in ('d1', 'self-host'):
+            with self.subTest(suite=suite), redirect_stderr(io.StringIO()) as stderr:
+                argv = ['rust_host_stage.py', '--arch', 'aarch64', '--image', 'unused.img',
+                        '--suite', f'cargo,{suite}']
+                with patch('sys.argv', argv), self.assertRaises(SystemExit) as error:
+                    STAGE.main()
+                self.assertEqual(error.exception.code, 2)
+                self.assertIn(f'hosted {suite} staging requires x86-64', stderr.getvalue())
+
+    def check_arm_image(self, selection):
+        mke2fs, debugfs, dumpe2fs = STAGE.require_e2fsprogs('mke2fs', 'debugfs', 'dumpe2fs')
+        k5 = read_json(RECORDS / 'k5/aarch64.json')
+        k6 = read_json(RECORDS / 'k6/aarch64.json')
+        k7 = read_json(RECORDS / 'k7/aarch64.json')
+        kd = Path(os.environ.get('BREENIX_KD_BUILD_DIR', PROGRAMS / 'kd/aarch64'))
+        release = PROGRAMS / 'hosted/aarch64-breenix-hosted/release'
+        rust_link = PROGRAMS / 'rust-link/aarch64'
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            image = directory / 'cargo.img'
+            subprocess.run([mke2fs, '-q', '-t', 'ext2', '-b', '4096', '-F', image, '16M'],
+                           check=True, capture_output=True)
+            before = image.stat().st_size
+            argv = ['rust_host_stage.py', '--arch', 'aarch64', '--image', str(image),
+                    '--suite', selection]
+            stdout = io.StringIO()
+            with patch('sys.argv', argv), redirect_stdout(stdout):
+                STAGE.main()
+
+            driver = k5['hosted_link']['driver']
+            libc = read_json(RECORDS / 'hosted-libc-aarch64.json')['sha256']['libc.so']
+            self.assertEqual(libc, k5['hosted_link']['libc_sha256'])
+            self.assertEqual(libc, k7['libc_sha256'])
+            expected = {
+                '/lib/libc.so': libc,
+                '/lib/ld-breenix.so': sha256(kd / 'ld-breenix.so'),
+                f'{PREFIX}/bin/cargo': k7['cargo_sha256'],
+                f'{PREFIX}/bin/rustc': k5['hosted_rustc_sha256'],
+                f'{PREFIX}/lib/{driver}': k5['hosted_driver_sha256'],
+                f'{PREFIX}/bin/bld': read_json(rust_link / 'build.json')['files_sha256']['bld'],
+            }
+            for name in ('libc.a', 'linker.ld'):
+                expected[f'{PREFIX}/lib/{name}'] = k6['inputs'][f'lib/tools/{name}']['sha256']
+            for name, digest in k5['sysroot']['files_sha256'].items():
+                if name.startswith('lib/rustlib/aarch64-breenix/'):
+                    expected[f'{PREFIX}/sysroot/{name}'] = digest
+            for name, digest in k7['fixture_sha256'].items():
+                if name.startswith('corpus/'):
+                    expected[f'{CORPUS}/{name.removeprefix("corpus/")}'] = digest
+                if name.startswith('targets/'):
+                    expected[f'{PREFIX}/{name}'] = digest
+            for suite in selection.split(','):
+                runner = f'suite-{suite}'
+                expected[f'/sbin/{runner}'] = sha256(release / runner)
+            if 'rustc' in selection.split(','):
+                for name in ('hello.rs', 'type-error.rs', 'uses-std.rs', 'expect.json'):
+                    source = 'expect-aarch64.json' if name == 'expect.json' else name
+                    expected[f'{PREFIX}/corpus/{name}'] = sha256(RECORDS / 'k5/corpus' / source)
+            self.assertEqual(json.loads(stdout.getvalue()), expected)
+
+            dump = directory / 'readback'
+            dump.mkdir()
+            subprocess.run([debugfs, '-R', f'rdump / {dump}', image], check=True, capture_output=True)
+            files = {f'/{path.relative_to(dump)}': path for path in dump.rglob('*') if path.is_file()}
+            self.assertEqual({name: sha256(path) for name, path in files.items()}, expected)
+            self.assertEqual([name for name in files if name.endswith('/libc.so')], ['/lib/libc.so'])
+            self.check_arm_cargo_imports(files[f'{PREFIX}/bin/cargo'], files['/lib/libc.so'], k7)
+
+            summary = subprocess.check_output([dumpe2fs, '-h', image], text=True,
+                                              stderr=subprocess.DEVNULL)
+            superblock = dict(line.split(':', 1) for line in summary.splitlines() if ':' in line)
+            block_size = int(superblock['Block size'])
+            payload = sum(path.stat().st_size for path in files.values())
+            blocks, partial = divmod(before + payload + HEADROOM, block_size)
+            self.assertEqual(int(superblock['Block count']), blocks + bool(partial))
+            self.assertEqual(image.stat().st_size, (blocks + bool(partial)) * block_size)
+            self.assertGreaterEqual(int(superblock['Free blocks']) * block_size, HEADROOM)
+
+    def check_arm_cargo_imports(self, cargo, libc, k7):
+        libdir = subprocess.check_output(['rustc', '--print', 'target-libdir'], cwd=ROOT,
+                                         text=True, timeout=10).strip()
+        nm = Path(libdir).parent / 'bin/llvm-nm'
+        options = ['--dynamic', '--format=posix']
+        undefined = subprocess.check_output([nm, *options, '--undefined-only', cargo], text=True)
+        defined = subprocess.check_output([nm, *options, '--defined-only', libc], text=True)
+        imports = set(re.findall(r'(?m)^(\S+) U\b', undefined))
+        exports = set(re.findall(r'(?m)^(\S+) [A-Z]\b', defined))
+        self.assertEqual(imports, set(k7['elf']['strong_imports']))
+        self.assertEqual(imports - exports, set())
+
     def test_combined_selection_stages_one_toolchain(self):
         mke2fs, = STAGE.require_e2fsprogs('mke2fs')
         k5 = read_json(RECORDS / 'k5/x86_64.json')
