@@ -67,7 +67,8 @@ mv "$HOME/bin/.btest-new" "$HOME/bin/btest"
 ## Suite format
 
 A suite lives at `userland/<prog>/suite/manifest.json`. Supply `program`,
-`binary`, `format: 1` and a nonempty `cases` array. Each case supplies a
+`binary`, `format: 1` and a nonempty `cases` array. Both names match the
+Cargo package. Each case supplies a
 unique kebab-case `id`, `argv` (strings), and `source` (`manual` or `gnu`).
 Optional fields are `fixture` (a name under `fixtures/`), `env` (strings),
 and `timeout_ms` (default 5,000). The supervisor uses a 60-second case

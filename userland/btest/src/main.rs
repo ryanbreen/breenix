@@ -114,14 +114,17 @@ fn save(path: &Path, bytes: &[u8]) -> io::Result<()> {
         .create_new(true)
         .mode(0o600)
         .open(&temp)?;
-    let result = out
-        .write_all(bytes)
-        .and_then(|()| out.sync_all())
-        .and_then(|()| fs::rename(&temp, path));
-    if result.is_err() {
+    let result = out.write_all(bytes).and_then(|()| out.sync_all());
+    drop(out);
+    if let Err(error) = result.and_then(|()| fs::rename(&temp, path)) {
         let _ = fs::remove_file(&temp);
+        return Err(error);
     }
-    result
+    // The file sync covers its contents. Commit the rename in the parent directory.
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::other("run report has no parent"))?;
+    File::open(parent)?.sync_all()
 }
 
 struct Run {
@@ -163,9 +166,9 @@ fn run(packages: &[String], id: &str) -> Result<Run, String> {
         .map(|package| {
             let dir = workspace.join(package).join("suite");
             let suite = load_suite(&dir)?;
-            if suite.program != *package {
+            if suite.program != *package || suite.binary != *package {
                 return Err(format!(
-                    "{}: suite program does not match package {package}",
+                    "{}: suite program and binary must match package {package}",
                     dir.display()
                 ));
             }
