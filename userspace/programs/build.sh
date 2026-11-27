@@ -38,8 +38,8 @@
 #     Build the hosted Cargo suite into target/hosted.
 #   ./userspace/programs/build.sh --rust-link
 #     Build the hosted replay suite and guest bld into target/rust-link/x86_64.
-#   ./userspace/programs/build.sh --kd-libc
-#     Link the x86-64 hosted compiler's libc.so and executable CRT.
+#   ./userspace/programs/build.sh --arch x86_64|aarch64 --kd-libc
+#     Link the hosted compiler's libc.so and executable CRT.
 #   ./userspace/programs/build.sh --dynamic
 #     Build the x86-64 dynamic suite, its runtime and fixtures into target/kd.
 #   ./userspace/programs/build.sh --kd-loader
@@ -157,7 +157,8 @@ if [[ "$DYNAMIC" == 1 ]]; then
        "$RUST_HOST" == 0 && -z "$HOSTED_BIN" && ${#HOSTED_FEATURES[@]} -eq 0 ]] || usage
 fi
 if [[ "$KD_LIBC" == 1 || "$KD_LOADER" == 1 ]]; then
-    [[ "$KD_LIBC" != "$KD_LOADER" && "$ARCH" == x86_64 && "$CXX_RUNTIME" == 0 && "$LLVM" == 0 &&
+    [[ "$ARCH" == x86_64 || ( "$ARCH" == aarch64 && "$KD_LIBC" == 1 ) ]] || usage
+    [[ "$KD_LIBC" != "$KD_LOADER" && "$CXX_RUNTIME" == 0 && "$LLVM" == 0 &&
        "$BUNWIND" == 0 && "$RUST_HOST" == 0 && -z "$HOSTED_BIN" && ${#HOSTED_FEATURES[@]} -eq 0 ]] || usage
 fi
 if [[ "$CXX_RUNTIME" == 1 || "$LLVM" == 1 ]]; then
@@ -257,7 +258,11 @@ if [[ "$KD_LOADER" == 1 ]]; then
     exit 0
 fi
 if [[ "$KD_LIBC" == 1 ]]; then
-    kd_dir="${BREENIX_KD_BUILD_DIR:-$SCRIPT_DIR/target/kd}"
+    kd_default="$SCRIPT_DIR/target/kd"
+    if [[ "$ARCH" == aarch64 ]]; then
+        kd_default="$kd_default/aarch64"
+    fi
+    kd_dir="${BREENIX_KD_BUILD_DIR:-$kd_default}"
     libc_dir="$PROJECT_ROOT/libs/libbreenix-libc"
     cd "$SCRIPT_DIR"
     rust_tools="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin"
@@ -274,7 +279,7 @@ if [[ "$KD_LIBC" == 1 ]]; then
     "$rust_tools/llvm-objcopy" --rename-section \
         .rodata.breenix_dso_handle=.data.rel.ro.breenix_dso_handle,alloc,load,data,contents \
         "$kd_dir/libc/$TARGET_DIR-hosted/release/libc.a" "$kd_dir/libc-pic.a"
-    python3 "$PROJECT_ROOT/scripts/libc-clean-archive.py" --archive "$kd_dir/libc-pic.a" --tool-dir "$rust_tools" --shared-libc
+    python3 "$PROJECT_ROOT/scripts/libc-clean-archive.py" --archive "$kd_dir/libc-pic.a" --tool-dir "$rust_tools" --shared-libc "$ARCH"
     "$rust_tools/gcc-ld/ld.lld" -shared --no-undefined --fatal-warnings --eh-frame-hdr --hash-style=sysv \
         -soname libc.so --version-script "$libc_dir/hosted-libc.exports" \
         -o "$kd_dir/libc.so" --whole-archive "$kd_dir/libc-pic.a" --no-whole-archive
