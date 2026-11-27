@@ -709,10 +709,40 @@ impl SchedPolicy {
     }
 }
 
+/// Stable IRQ registration owned by the admitted scheduler thread. IRQ
+/// readers access this allocation without borrowing the mutable thread.
+pub(crate) struct ThreadWake {
+    pub(crate) node: super::wake_inbox::WakeNode,
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) thread: core::sync::atomic::AtomicPtr<Thread>,
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) index_next: core::sync::atomic::AtomicPtr<ThreadWake>,
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) cpu: core::sync::atomic::AtomicUsize,
+}
+
+impl ThreadWake {
+    pub(crate) fn new(
+        tid: u64,
+        #[cfg(target_arch = "aarch64")] thread: *mut Thread,
+    ) -> Self {
+        Self {
+            node: super::wake_inbox::WakeNode::new(tid),
+            #[cfg(target_arch = "aarch64")]
+            thread: core::sync::atomic::AtomicPtr::new(thread),
+            #[cfg(target_arch = "aarch64")]
+            index_next: core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+            #[cfg(target_arch = "aarch64")]
+            cpu: core::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+}
+
 /// Extended Thread Control Block for preemptive multitasking
 pub struct Thread {
     /// Thread ID
     pub id: u64,
+    pub(crate) wake: Option<alloc::sync::Arc<ThreadWake>>,
 
     /// Thread name (for debugging)
     pub name: alloc::string::String,
@@ -1342,6 +1372,7 @@ impl Clone for Thread {
     fn clone(&self) -> Self {
         Thread {
             id: self.id,
+            wake: None,
             name: self.name.clone(),
             state: self.state,
             #[cfg(target_arch = "aarch64")]
@@ -1480,6 +1511,7 @@ impl Thread {
 
         Ok(Self {
             id,
+            wake: None,
             name,
             state: ThreadState::Ready,
             context,
@@ -1558,6 +1590,7 @@ impl Thread {
 
         Ok(Self {
             id,
+            wake: None,
             name,
             state: ThreadState::Ready,
             wait_site: WaitSite::default(),
@@ -1626,6 +1659,7 @@ impl Thread {
 
         Self {
             id,
+            wake: None,
             name,
             state: ThreadState::Ready,
             context,
@@ -1690,6 +1724,7 @@ impl Thread {
 
         Self {
             id,
+            wake: None,
             name,
             state: ThreadState::Ready,
             wait_site: WaitSite::default(),
@@ -1770,6 +1805,7 @@ impl Thread {
 
         Self {
             id,
+            wake: None,
             name,
             state: ThreadState::Ready,
             context,
@@ -1842,6 +1878,7 @@ impl Thread {
 
         Self {
             id,
+            wake: None,
             name,
             state: ThreadState::Ready,
             wait_site: WaitSite::default(),
@@ -1964,6 +2001,7 @@ impl Thread {
 
         Self {
             id,
+            wake: None,
             name,
             state: ThreadState::Ready,
             context,
@@ -2024,6 +2062,7 @@ impl Thread {
 
         Self {
             id,
+            wake: None,
             name,
             state: ThreadState::Ready,
             wait_site: WaitSite::default(),
