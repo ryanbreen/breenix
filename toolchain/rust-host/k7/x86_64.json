@@ -58,7 +58,7 @@
     }
   },
   "patches_sha256": {
-    "openssl-src-300.5.0+3.5.0-breenix.patch": "c72c00959df8dfa82cbfcf87127fa5e90730fcf5fe1ad5736cb246f85d388ef7",
+    "openssl-src-300.5.0+3.5.0-breenix.patch": "65252cfa8918ff7521512ebbfdfedb0cc948dcb2c40081d7c1b363a31c132fea",
     "rustix-1.0.7-breenix.patch": "598a61c08a340ffadc009076944bbcce7d7dab88e89bc1b85806481fb26cabe0",
     "socket2-0.5.10-breenix.patch": "c8c5498fc03a78649a223a417e2443ffd6dc2a1b3e182d921e62fb60a1c37924"
   },
