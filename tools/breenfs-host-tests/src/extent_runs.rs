@@ -117,6 +117,9 @@ fn superblock(tag: u8) -> Superblock {
 /// split at RUN_BLOCKS. Holes need no request.
 fn expected_requests(extents: &[(Key, Extent)], off: u64, end: u64) -> usize {
     let bs = BLOCK_SIZE as u64;
+    if off >= end {
+        return 0;
+    }
     let mut blocks = Vec::new();
     for (k, e) in extents {
         for i in 0..u64::from(e.num_blocks) {

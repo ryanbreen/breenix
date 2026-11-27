@@ -131,6 +131,16 @@ pub trait MappingIo: Any {
     fn size(&self) -> u64;
     /// The file bytes at `offset`, at most `length`; fewer past EOF.
     fn read(&self, offset: u64, length: usize) -> Result<Vec<u8>, Errno>;
+    /// The file bytes at `offset` into `bytes`, returning how many there
+    /// were; the rest of `bytes` (past EOF) is 00. One call may cover several
+    /// pages, so a backend can read them as one run.
+    fn read_into(&self, offset: u64, bytes: &mut [u8]) -> Result<usize, Errno> {
+        let read = self.read(offset, bytes.len())?;
+        let length = read.len().min(bytes.len());
+        bytes[..length].copy_from_slice(&read[..length]);
+        bytes[length..].fill(0);
+        Ok(length)
+    }
     fn needs_flush(&self) -> bool;
     /// Generation that accepted the most recent writeback run, for
     /// backends that publish staged data in transactions.

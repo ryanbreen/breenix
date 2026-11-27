@@ -13,6 +13,7 @@ use super::{
     txn::{self, Transaction},
 };
 use crate::block::BlockDevice;
+use core::cell::RefCell;
 use alloc::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -91,6 +92,220 @@ impl ReadError {
         }
     }
 }
+impl From<btree::Error> for ReadError {
+    fn from(error: btree::Error) -> Self { Self::Metadata(error.into()) }
+}
+
+// Clean file reads (Phase 1.1, audit R7). A read seeks to the first EXTENT
+// item that intersects it and issues one device request per run of blocks
+// that are adjacent both in the file and on the device, up to the block
+// cache's per-request limit, straight into the caller's buffer. The format
+// keeps one CRC per 4 KiB block in the extent's REF, so each block is still
+// checked on its own; what is shared per extent is the REF lookup.
+const RUN_BLOCKS: usize = crate::block::cache::RUN_BYTES / BLOCK_SIZE;
+
+/// One EXTENT item: file bytes `[offset, end)` map `extent`.
+#[derive(Clone, Copy)]
+struct Mapped {
+    offset: u64,
+    end: u64,
+    extent: Extent,
+}
+impl Mapped {
+    fn new(key: Key, extent: Extent) -> Result<Self, Error> {
+        let end = u64::from(extent.num_blocks)
+            .checked_mul(BLOCK_SIZE as u64)
+            .and_then(|length| key.offset.checked_add(length))
+            .ok_or(Error::EIO)?;
+        Ok(Self { offset: key.offset, end, extent })
+    }
+}
+
+// In-core extent maps (audit R7). A Files view keeps the decoded EXTENT
+// items of recently read inodes, sorted by file offset, and the REF
+// checksums of the extents they name. EXTENT inserts and deletes for an
+// inode go through Files::insert and Files::delete, which drop that inode's
+// map, so a map does not outlive the items it decodes. Maps and checksums share
+// one byte budget, a sixty-fourth of the smallest kernel heap; a file whose
+// items alone exceed it is read through a B-tree seek on each call instead.
+// claim-lint:ok: in ops.rs the only FS-tree edits are Files::insert, Files::delete and create_empty_root's INODE insert.
+const EXTENT_MAP_BYTES: usize = 1 << 20;
+const EXTENT_MAPS: usize = 64;
+const MAP_OVERHEAD: usize = 128;
+const CRCS_OVERHEAD: usize = 64;
+
+#[derive(Default)]
+struct ExtentMaps {
+    // Projected roots (with_read_root) are not cached.
+    disabled: bool,
+    maps: BTreeMap<u64, ExtentMap>,
+    bytes: usize,
+    clock: u64,
+}
+struct ExtentMap {
+    // Sorted by offset and non-overlapping; empty when `oversized`.
+    extents: Vec<Mapped>,
+    oversized: bool,
+    crcs: BTreeMap<u64, Vec<u32>>,
+    bytes: usize,
+    used: u64,
+}
+impl ExtentMaps {
+    fn disabled() -> Self {
+        Self { disabled: true, ..Self::default() }
+    }
+    fn invalidate(&mut self, ino: u64) {
+        if let Some(map) = self.maps.remove(&ino) {
+            self.bytes -= map.bytes;
+        }
+    }
+    /// Evict least recently used maps until a new map of `bytes` fits.
+    fn make_room(&mut self, bytes: usize) -> bool {
+        while self.bytes + bytes > EXTENT_MAP_BYTES || self.maps.len() >= EXTENT_MAPS {
+            let Some(victim) = self.maps.iter().min_by_key(|(_, map)| map.used).map(|(ino, _)| *ino)
+            else {
+                return false;
+            };
+            self.invalidate(victim);
+        }
+        true
+    }
+}
+
+/// The destination of one clean read: `buf` holds file bytes from `base`.
+/// Bytes before `done` are final; a pending run of `blocks` device blocks
+/// from `phys` covers file bytes `[lo, hi)` of blocks starting at `first`.
+struct Runs<'r> {
+    device: &'r dyn BlockDevice,
+    base: u64,
+    buf: &'r mut [u8],
+    done: usize,
+    first: u64,
+    lo: u64,
+    hi: u64,
+    phys: u64,
+    blocks: usize,
+    crcs: [u32; RUN_BLOCKS],
+    // Whole blocks for a run that starts or ends inside a block.
+    staging: Vec<u8>,
+}
+impl<'r> Runs<'r> {
+    fn new(device: &'r dyn BlockDevice, base: u64, buf: &'r mut [u8]) -> Self {
+        Self {
+            device, base, buf, done: 0, first: 0, lo: 0, hi: 0, phys: 0, blocks: 0,
+            crcs: [0; RUN_BLOCKS], staging: Vec::new(),
+        }
+    }
+    fn end(&self) -> u64 {
+        self.base + self.buf.len() as u64
+    }
+    /// The part of `m` this read wants, as file offsets.
+    fn wanted(&self, m: &Mapped) -> Option<(u64, u64)> {
+        let (lo, hi) = (self.base.max(m.offset), self.end().min(m.end));
+        (lo < hi).then_some((lo, hi))
+    }
+    /// Fill the hole with 00 bytes up to file offset `to`, which must not precede `done`.
+    fn zero_to(&mut self, to: u64) -> Result<usize, ReadError> {
+        let at = (to - self.base) as usize;
+        if at < self.done {
+            return Err(ReadError::Metadata(Error::EIO));
+        }
+        self.buf[self.done..at].fill(0);
+        Ok(at)
+    }
+    /// Add the wanted blocks of a device extent, checked against `crcs`
+    /// (the REF's per-block checksums), to the pending run or new ones.
+    fn push(&mut self, m: Mapped, crcs: &[u32]) -> Result<(), ReadError> {
+        let Some((lo, hi)) = self.wanted(&m) else { return Ok(()) };
+        let size = BLOCK_SIZE as u64;
+        let mut index = (lo - m.offset) / size;
+        let last = (hi - m.offset).div_ceil(size);
+        while index < last {
+            preemption_point();
+            let logical = m.offset + index * size;
+            let within = u64::from(m.extent.extent_offset) + index;
+            let phys = m.extent.phys_start.checked_add(within).ok_or(ReadError::Metadata(Error::EIO))?;
+            let crc = *usize::try_from(within).ok().and_then(|i| crcs.get(i))
+                .ok_or(ReadError::Metadata(Error::EIO))?;
+            let joins = self.blocks != 0
+                && self.blocks < RUN_BLOCKS
+                && self.phys.checked_add(self.blocks as u64) == Some(phys)
+                && self.first + self.blocks as u64 * size == logical
+                && self.hi == logical;
+            if !joins {
+                self.flush()?;
+                self.first = logical;
+                self.phys = phys;
+                self.lo = logical.max(lo);
+            }
+            self.crcs[self.blocks] = crc;
+            self.blocks += 1;
+            self.hi = (logical + size).min(hi);
+            index += 1;
+        }
+        Ok(())
+    }
+    /// Copy the wanted part of an extent whose data has not reached the device.
+    fn private(&mut self, m: Mapped, bytes: &[u8]) -> Result<(), ReadError> {
+        let Some((lo, hi)) = self.wanted(&m) else { return Ok(()) };
+        self.flush()?;
+        let at = self.zero_to(lo)?;
+        let from = u64::from(m.extent.extent_offset) * BLOCK_SIZE as u64 + (lo - m.offset);
+        let length = (hi - lo) as usize;
+        let source = usize::try_from(from).ok()
+            .and_then(|from| bytes.get(from..from.checked_add(length)?))
+            .ok_or(ReadError::Data)?;
+        self.buf[at..at + length].copy_from_slice(source);
+        self.done = at + length;
+        Ok(())
+    }
+    /// Issue the pending run as one device request and check its blocks.
+    fn flush(&mut self) -> Result<(), ReadError> {
+        if self.blocks == 0 {
+            return Ok(());
+        }
+        let blocks = core::mem::take(&mut self.blocks);
+        let length = blocks * BLOCK_SIZE;
+        let at = self.zero_to(self.lo)?;
+        let skip = (self.lo - self.first) as usize;
+        let take = (self.hi - self.lo) as usize;
+        let direct = skip == 0 && take == length;
+        if !direct && self.staging.len() < length {
+            self.staging
+                .try_reserve_exact(length - self.staging.len())
+                .map_err(|_| ReadError::Device(crate::block::BlockError::OutOfMemory))?;
+            self.staging.resize(length, 0);
+        }
+        let bytes = if direct { &mut self.buf[at..at + length] } else { &mut self.staging[..length] };
+        commit::read_into(self.device, self.phys, bytes).map_err(|error| match error {
+            commit::Error::BlockRead(error) => ReadError::Device(error),
+            _ => ReadError::Data,
+        })?;
+        let corrupt = bytes
+            .chunks_exact(BLOCK_SIZE)
+            .zip(&self.crcs[..blocks])
+            .position(|(block, expected)| crc32c::checksum(block) != *expected);
+        #[cfg(feature = "breenfs_corrupt_inject")]
+        if let Some(n) = corrupt {
+            crate::serial_println!(
+                "\n[breenfs] corrupt-read block={} result=ReadError::Data", self.phys + n as u64);
+        }
+        if corrupt.is_some() {
+            return Err(ReadError::Data);
+        }
+        if !direct {
+            self.buf[at..at + take].copy_from_slice(&self.staging[skip..skip + take]);
+        }
+        self.done = at + take;
+        Ok(())
+    }
+    /// Issue the last run and fill the hole after it with 00 bytes.
+    fn finish(mut self) -> Result<(), ReadError> {
+        self.flush()?;
+        self.buf[self.done..].fill(0);
+        Ok(())
+    }
+}
 #[derive(Clone, Default)]
 pub struct SetAttr {
     pub mode: Option<u32>,
@@ -157,6 +372,8 @@ pub struct Files<'a, S: NodeStore + 'a> {
     unvalidated_orphans: Inodes,
     // Cleanup newly deferred by this transaction, funded by its namespace grants.
     orphan_count: u64,
+    // Decoded EXTENT items of recently read inodes; see ExtentMaps.
+    extent_maps: RefCell<ExtentMaps>,
 }
 impl<'a, S: NodeStore + 'a> Files<'a, S> {
     /// Create root 1 in the formatter's sole, unpublished generation.
@@ -190,6 +407,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             orphan_work: Inodes::default(),
             unvalidated_orphans: Inodes::default(),
             orphan_count: 0,
+            extent_maps: RefCell::default(),
         };
         files.put_inode(
             2,
@@ -252,6 +470,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             unvalidated_orphans: Arc::new(orphans.clone()),
             orphans: Arc::new(orphans),
             orphan_count: 0,
+            extent_maps: RefCell::default(),
         })
     }
     pub fn include_default_tree(&mut self) -> Result<(), Error> {
@@ -300,13 +519,20 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         key(ino ^ self.tag(ino), kind, offset)
     }
 
+    // An EXTENT change is the inode's write generation for its extent map.
     fn insert(&mut self, ino: u64, key: Key, bytes: &[u8]) -> Result<(), Error> {
+        if key.item_type == format::EXTENT {
+            self.extent_maps.get_mut().invalidate(ino);
+        }
         let (txn, root) = self.tree_mut(ino);
         txn.insert(&mut root.root, key, bytes)?;
         Ok(())
     }
 
     fn delete(&mut self, ino: u64, key: Key) -> Result<(), Error> {
+        if key.item_type == format::EXTENT {
+            self.extent_maps.get_mut().invalidate(ino);
+        }
         let (txn, root) = self.tree_mut(ino);
         txn.delete(&mut root.root, key)?;
         Ok(())
@@ -356,6 +582,8 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             orphan_work: self.orphan_work.clone(),
             unvalidated_orphans: self.unvalidated_orphans.clone(),
             orphan_count: 0,
+            // Built on first read of the scratch tree, as cookies are.
+            extent_maps: RefCell::default(),
         })
     }
     /// The stored INODE item, whether or not the inode is still linked.
@@ -521,7 +749,10 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         let root = self.roots.get(&id).ok_or(Error::ENOENT)?.root;
         let original = core::mem::replace(&mut self.root.root, root);
         let opened = core::mem::replace(&mut self.open_inodes, closed.clone());
+        // The writer's maps describe its own root, not the projected one.
+        let maps = core::mem::replace(self.extent_maps.get_mut(), ExtentMaps::disabled());
         let value = read(self);
+        *self.extent_maps.get_mut() = maps;
         self.open_inodes = opened;
         self.root.root = original;
         Ok(value)
@@ -1093,29 +1324,134 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         .map(|(k, v)| { preemption_point(); Ok((k, Extent::decode(&v)?)) })
         .collect()
     }
-    fn block(
-        &self, device: &dyn BlockDevice, e: Extent, index: u64, crcs: &[u32],
-    ) -> Result<Vec<u8>, ReadError> {
-        let addr = e.phys_start + u64::from(e.extent_offset) + index;
-        if let Some(bytes) = self.data.get(&e.phys_start) {
-            let lo = (addr - e.phys_start) as usize * BLOCK_SIZE;
-            return bytes
-                .get(lo..lo + BLOCK_SIZE)
-                .map(|b| b.to_vec())
-                .ok_or(ReadError::Data);
-        }
-        let expected = crcs.get(e.extent_offset as usize + index as usize)
+    /// The REF checksums of a data extent on the device.
+    fn data_crcs(&self, e: Extent) -> Result<Vec<u32>, ReadError> {
+        let r = space::reference(
+            &self.txn.view(), self.space_root, e.phys_start, u64::from(e.phys_len),
+        ).map_err(|error| Error::from(txn::Error::from(error)))?
             .ok_or(ReadError::Metadata(Error::EIO))?;
-        let bytes = commit::read(device, addr, BLOCK_SIZE).map_err(|error| match error {
-            commit::Error::BlockRead(error) => ReadError::Device(error),
-            _ => ReadError::Data,
-        })?;
-        if crc32c::checksum(&bytes) != *expected {
-            #[cfg(feature = "breenfs_corrupt_inject")]
-            crate::serial_println!("\n[breenfs] corrupt-read block={addr} result=ReadError::Data");
-            return Err(ReadError::Data);
+        if r.kind != space::Kind::Data as u8 {
+            return Err(ReadError::Metadata(Error::EIO));
         }
-        Ok(bytes)
+        Ok(r.crcs)
+    }
+    /// Decode the inode's EXTENT items in file order, at most `limit` of
+    /// them. Gives up, returning no vector, when there are more or the heap refuses it.
+    fn decode_extents(&self, ino: u64, limit: usize) -> Result<Option<Vec<Mapped>>, ReadError> {
+        let mut extents: Vec<Mapped> = Vec::new();
+        let mut complete = true;
+        let mut last = 0;
+        btree::visit_range(
+            &self.txn.view(), self.tree(ino).root,
+            self.inode_key(ino, format::EXTENT, 0),
+            self.inode_key(ino, format::EXTENT, u64::MAX),
+            &mut |key, bytes| {
+                preemption_point();
+                let m = Mapped::new(key, Extent::decode(bytes).map_err(Error::from)?)?;
+                if m.offset < last {
+                    return Err(ReadError::Metadata(Error::EIO));
+                }
+                last = m.end;
+                // Grow geometrically, capped at `limit` items.
+                let grow = extents.len().clamp(16, limit).min(limit - extents.len());
+                if extents.len() == limit
+                    || (extents.len() == extents.capacity() && extents.try_reserve_exact(grow).is_err())
+                {
+                    complete = false;
+                    return Ok(false);
+                }
+                extents.push(m);
+                Ok(true)
+            },
+        )?;
+        Ok(complete.then_some(extents))
+    }
+    /// Whether `maps` holds a usable map for `ino`, building it on a miss.
+    fn load_extent_map(&self, maps: &mut ExtentMaps, ino: u64) -> Result<bool, ReadError> {
+        if maps.disabled {
+            return Ok(false);
+        }
+        maps.clock += 1;
+        if let Some(map) = maps.maps.get_mut(&ino) {
+            map.used = maps.clock;
+            return Ok(!map.oversized);
+        }
+        let limit = (EXTENT_MAP_BYTES - MAP_OVERHEAD) / core::mem::size_of::<Mapped>();
+        let (extents, oversized) = match self.decode_extents(ino, limit)? {
+            Some(extents) => (extents, false),
+            None => (Vec::new(), true),
+        };
+        let bytes = extents.capacity() * core::mem::size_of::<Mapped>() + MAP_OVERHEAD;
+        if !maps.make_room(bytes) {
+            return Ok(false);
+        }
+        maps.maps.insert(ino, ExtentMap {
+            extents, oversized, crcs: BTreeMap::new(), bytes, used: maps.clock,
+        });
+        maps.bytes += bytes;
+        Ok(!oversized)
+    }
+    /// Read through the inode's map: a binary search finds the first
+    /// intersecting item, and REF checksums are kept while the budget allows.
+    fn read_mapped(&self, maps: &mut ExtentMaps, ino: u64, runs: &mut Runs<'_>) -> Result<(), ReadError> {
+        let ExtentMaps { maps: table, bytes: used, .. } = maps;
+        let Some(map) = table.get_mut(&ino) else { return Ok(()) };
+        let end = runs.end();
+        let mut i = map.extents.partition_point(|m| m.end <= runs.base);
+        while let Some(&m) = map.extents.get(i) {
+            if m.offset >= end {
+                break;
+            }
+            preemption_point();
+            let phys = m.extent.phys_start;
+            if let Some(bytes) = self.data.get(&phys) {
+                runs.private(m, bytes)?;
+            } else if let Some(crcs) = map.crcs.get(&phys) {
+                runs.push(m, crcs)?;
+            } else {
+                let crcs = self.data_crcs(m.extent)?;
+                let cost = crcs.len() * 4 + CRCS_OVERHEAD;
+                if *used + cost <= EXTENT_MAP_BYTES {
+                    *used += cost;
+                    map.bytes += cost;
+                    runs.push(m, map.crcs.entry(phys).or_insert(crcs))?;
+                } else {
+                    runs.push(m, &crcs)?;
+                }
+            }
+            i += 1;
+        }
+        Ok(())
+    }
+    /// Read without a map: seek to the last item at or before the read's
+    /// start, then visit the items up to its end.
+    fn read_seek(&self, ino: u64, runs: &mut Runs<'_>) -> Result<(), ReadError> {
+        let view = self.txn.view();
+        let root = self.tree(ino).root;
+        let mut start = self.inode_key(ino, format::EXTENT, runs.base);
+        btree::visit_range_reverse(
+            &view, root, self.inode_key(ino, format::EXTENT, 0), start,
+            &mut |key, _| {
+                start = key;
+                Ok::<_, ReadError>(false)
+            },
+        )?;
+        let upper = self.inode_key(ino, format::EXTENT, runs.end() - 1);
+        let mut last = 0;
+        btree::visit_range(&view, root, start, upper, &mut |key, bytes| {
+            preemption_point();
+            let m = Mapped::new(key, Extent::decode(bytes).map_err(Error::from)?)?;
+            if m.offset < last {
+                return Err(ReadError::Metadata(Error::EIO));
+            }
+            last = m.end;
+            if let Some(bytes) = self.data.get(&m.extent.phys_start) {
+                runs.private(m, bytes)?;
+            } else if runs.wanted(&m).is_some() {
+                runs.push(m, &self.data_crcs(m.extent)?)?;
+            }
+            Ok(true)
+        })
     }
     pub fn read(
         &self,
@@ -1126,6 +1462,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
     ) -> Result<usize, Error> {
         self.read_verified(device, ino, offset, buf).map_err(ReadError::error)
     }
+    /// Read file bytes at `offset`, at most to EOF. Holes read as 00 bytes.
     pub(super) fn read_verified(
         &self,
         device: &dyn BlockDevice,
@@ -1135,37 +1472,25 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
     ) -> Result<usize, ReadError> {
         let inode = self.regular(ino)?;
         let n = inode.size.saturating_sub(offset).min(buf.len() as u64) as usize;
-        buf[..n].fill(0);
-        for (k, e) in self.extents(ino)? {
-            preemption_point();
-            let lo = offset.max(k.offset);
-            let hi =
-                (offset + n as u64).min(k.offset + u64::from(e.num_blocks) * BLOCK_SIZE as u64);
-            if lo >= hi { continue; }
-            // Fetch the CRC vector once for this intersecting extent, before
-            // reading its blocks. Private data has not reached disk yet.
-            let reference = if self.data.contains_key(&e.phys_start) { None } else {
-                let r = space::reference(
-                    &self.txn.view(), self.space_root, e.phys_start, u64::from(e.phys_len),
-                ).map_err(|error| Error::from(txn::Error::from(error)))?
-                    .ok_or(ReadError::Metadata(Error::EIO))?;
-                if r.kind != space::Kind::Data as u8 {
-                    return Err(ReadError::Metadata(Error::EIO));
+        let mut runs = Runs::new(device, offset, &mut buf[..n]);
+        if n != 0 {
+            // A read holds its view's maps for its duration; a nested borrow
+            // would read through the seek instead.
+            let mapped = match self.extent_maps.try_borrow_mut() {
+                Ok(mut maps) => {
+                    let usable = self.load_extent_map(&mut maps, ino)?;
+                    if usable {
+                        self.read_mapped(&mut maps, ino, &mut runs)?;
+                    }
+                    usable
                 }
-                Some(r)
+                Err(_) => false,
             };
-            let crcs = reference.as_ref().map_or(&[][..], |r| r.crcs.as_slice());
-            let mut pos = lo;
-            while pos < hi {
-                let index = (pos - k.offset) / BLOCK_SIZE as u64;
-                let within = ((pos - k.offset) % BLOCK_SIZE as u64) as usize;
-                let take = ((hi - pos) as usize).min(BLOCK_SIZE - within);
-                let block = self.block(device, e, index, crcs)?;
-                buf[(pos - offset) as usize..(pos - offset) as usize + take]
-                    .copy_from_slice(&block[within..within + take]);
-                pos += take as u64;
+            if !mapped {
+                self.read_seek(ino, &mut runs)?;
             }
         }
+        runs.finish()?;
         Ok(n)
     }
     // Logical runs are bounded to 1 MiB (design 1.2); fragmented FREE space
@@ -1198,32 +1523,45 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         }
         Ok(())
     }
-    // Remove intersecting items and retain unaffected block slices. A split
-    // needs a reference per replacement item; txn::delete releases the old one.
+    // Remove intersecting items. The blocks of an item that start before
+    // `start` or at or after `end` stay, as at most two bookend items naming
+    // the old extent: its head and its tail (audit R7's bookend items). No
+    // format change: an item already carries its own extent_offset and
+    // num_blocks. Each bookend needs its own reference; txn::delete releases
+    // the old one.
     fn remove_range(&mut self, ino: u64, start: u64, end: u64) -> Result<(), Error> {
+        if start >= end {
+            return Ok(());
+        }
+        let size = BLOCK_SIZE as u64;
         for (k, e) in self.extents(ino)? {
             preemption_point();
-            let extent_end = k.offset + u64::from(e.num_blocks) * BLOCK_SIZE as u64;
+            let blocks = u64::from(e.num_blocks);
+            let extent_end = k.offset + blocks * size;
             if k.offset >= end || extent_end <= start {
                 continue;
             }
-            for off in (k.offset..extent_end).step_by(BLOCK_SIZE) {
-                if off < start || off >= end {
-                    self.txn.increment(e.phys_start, u64::from(e.phys_len))?;
-                    let slice = Extent {
-                        extent_offset: e.extent_offset
-                            + ((off - k.offset) / BLOCK_SIZE as u64) as u32,
-                        num_blocks: 1,
-                        ..e
-                    };
-                    // The first slice can replace the old key (same REF); the
-                    // old incoming reference is explicitly released below.
-                    self.insert(
-                        ino,
-                        self.inode_key(ino, format::EXTENT, off),
-                        &slice.encode(),
-                    )?;
+            // Blocks [0, head) start before `start`; blocks [tail, blocks)
+            // start at or after `end`.
+            let head = start.saturating_sub(k.offset).div_ceil(size).min(blocks);
+            let tail = end.saturating_sub(k.offset).div_ceil(size).min(blocks);
+            for (first, last) in [(0, head), (tail, blocks)] {
+                if first >= last {
+                    continue;
                 }
+                self.txn.increment(e.phys_start, u64::from(e.phys_len))?;
+                let bookend = Extent {
+                    extent_offset: e.extent_offset + first as u32,
+                    num_blocks: (last - first) as u32,
+                    ..e
+                };
+                // The head replaces the old key (same REF); the old incoming
+                // reference is explicitly released below.
+                self.insert(
+                    ino,
+                    self.inode_key(ino, format::EXTENT, k.offset + first * size),
+                    &bookend.encode(),
+                )?;
             }
             if k.offset < start {
                 // Same-key replacement retained its old reference in txn::insert.
