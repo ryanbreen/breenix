@@ -1,5 +1,6 @@
 """Run the launcher with stub host services and inspect the QEMU command line it builds."""
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -7,6 +8,7 @@ import pwd
 import re
 import shlex
 import shutil
+import struct
 import subprocess
 import tempfile
 import unittest
@@ -18,6 +20,48 @@ ROOT = Path(__file__).resolve().parents[1]
 BOOT_ID = "boot-123"
 BOOTS = "Library/Application Support/Vigil/breenix/boots"
 SOCKET_SUFFIX = f"/{BOOTS}/{BOOT_ID}/qmp.sock"
+ARM_K5_TWIN = os.environ.get("BREENIX_ARM_K5_TWIN")
+ARM_K5_RECORDS = ROOT / "toolchain/rust-host"
+ARM_K5_TARGET = ROOT / "userspace/programs/target"
+PAGE_BYTES = 4096
+
+
+def sha256(path):
+    with path.open("rb") as file:
+        return hashlib.file_digest(file, "sha256").hexdigest()
+
+
+def rounded_frames(size):
+    return (size + PAGE_BYTES - 1) // PAGE_BYTES
+
+
+def elf_frames(path, *, dso=False):
+    """Measure PT_LOAD, and conservatively account for a loader-held DSO file view."""
+    loads = 0
+    shared_file_pages = set()
+    with path.open("rb") as stream:
+        header = stream.read(64)
+        if header[:6] != b"\x7fELF\x02\x01" or struct.unpack_from("<H", header, 18)[0] != 183:
+            raise ValueError(f"{path}: expected little-endian AArch64 ELF64")
+        stream.seek(struct.unpack_from("<Q", header, 32)[0])
+        entry_size, count = struct.unpack_from("<HH", header, 54)
+        if entry_size != 56:
+            raise ValueError(f"{path}: unexpected program-header size {entry_size}")
+        for _ in range(count):
+            kind, flags, offset, address, _, filesz, memsz, _ = struct.unpack("<II6Q", stream.read(entry_size))
+            if kind != 1 or not memsz:
+                continue
+            loads += rounded_frames(address % PAGE_BYTES + memsz)
+            if dso and filesz and not flags & 2:
+                # Writable file pages can become private through relocation or writes.
+                # Also reserve a private copy for map_load's zeroed file tail.
+                end = offset + filesz
+                shared_end = end // PAGE_BYTES if filesz < memsz else rounded_frames(end)
+                shared_file_pages.update(range(offset // PAGE_BYTES, shared_end))
+    if not loads:
+        raise ValueError(f"{path}: missing loadable segments")
+    extra = rounded_frames(path.stat().st_size) - len(shared_file_pages) if dso else 0
+    return loads, extra
 
 
 class BootInteractiveQmpTest(unittest.TestCase):
@@ -30,6 +74,8 @@ class BootInteractiveQmpTest(unittest.TestCase):
         shutil.copyfile(ROOT / "scripts/boot-interactive.sh", scripts / "boot-interactive.sh")
         shutil.copyfile(ROOT / "scripts/qemu-smb-forward.sh", scripts / "qemu-smb-forward.sh")
         shutil.copyfile(ROOT / "scripts/suite-sequence.py", scripts / "suite-sequence.py")
+        (scripts / "lib").mkdir()
+        shutil.copy2(ROOT / "scripts/lib/root-fs.sh", scripts / "lib/root-fs.sh")
         shutil.copytree(ROOT / "docs", self.root / "docs")
         (scripts / "boot-commit.sh").write_text("boot_commit() { echo test; }\n")
         self.executable(scripts / "write-boot-target.sh", '#!/bin/sh\nexit 0\n')
@@ -66,7 +112,8 @@ class BootInteractiveQmpTest(unittest.TestCase):
             'import json, os, pathlib, sys\n'
             'pathlib.Path(os.environ["CAPTURE"] + ".watch").write_text(json.dumps(sys.argv))\n'
             'disk = pathlib.Path(sys.argv[sys.argv.index("--disk") + 1])\n'
-            'data = disk.read_bytes(); pathlib.Path(os.environ["CAPTURE"] + ".disk").write_bytes(data)\n'
+            'with disk.open("rb") as f: data = f.read(4096)\n'
+            'pathlib.Path(os.environ["CAPTURE"] + ".disk").write_bytes(data)\n'
             'if data.startswith(b"route="): os.kill(int(data[6:]), 0)\n'
             'serial = pathlib.Path(sys.argv[sys.argv.index("--serial") + 1])\n'
             'suites = sys.argv[sys.argv.index("--suite") + 1]\n'
@@ -87,7 +134,7 @@ class BootInteractiveQmpTest(unittest.TestCase):
         path.chmod(0o755)
 
     def launch(self, *args, boot_id=BOOT_ID, vigil_home="default", boot_home="default",
-               mode=("--mode", "probe"), expected_code=0, build=False):
+               mode=("--mode", "probe"), expected_code=0, build=False, timeout=10):
         """Boots with HOME and Vigil's home in different folders; vigil_home=None leaves VIGIL_TEST_HOME unset."""
         vigil_home = self.vigil_home if vigil_home == "default" else vigil_home
         boot_home = vigil_home if boot_home == "default" else boot_home
@@ -102,11 +149,161 @@ class BootInteractiveQmpTest(unittest.TestCase):
         result = subprocess.run(
             ["bash", str(self.root / "scripts/boot-interactive.sh"), *([] if build else ["--no-build"]),
              *mode, "--serial-log", str(self.root / "serial.txt"), *args],
-            cwd=self.root, env=env, capture_output=True, text=True, timeout=10)
+            cwd=self.root, env=env, capture_output=True, text=True, timeout=timeout)
         self.assertEqual(result.returncode, expected_code, result.stdout + result.stderr)
         if expected_code:
             return [], result.stderr
         return json.loads((self.root / "args.json").read_text()), result.stdout
+
+    def test_undeclared_suite_memory_keeps_512_mib(self):
+        args, _ = self.launch("--no-display", mode=("--mode", "suite", "--suite", "smoke"))
+        self.assertEqual([args[i + 1] for i, arg in enumerate(args) if arg == "-m"], ["512"])
+
+    def test_suite_memory_uses_largest_declared_minimum(self):
+        for suite, size in (("smoke", 1024), ("rust-std", 2048)):
+            path = self.root / f"docs/suites/{suite}.json"
+            manifest = json.loads(path.read_text())
+            manifest["minimumGuestMemory"] = {"mib": size, "derivation": "Launcher test input."}
+            path.write_text(json.dumps(manifest))
+        args, _ = self.launch("--no-display", mode=("--mode", "suite", "--suite", "smoke,rust-std"))
+        self.assertEqual([args[i + 1] for i, arg in enumerate(args) if arg == "-m"], ["2048"])
+
+    @unittest.skipUnless(ARM_K5_TWIN, "set BREENIX_ARM_K5_TWIN to the built ARM K5 twin cache")
+    def test_arm_rustc_dynamic_stages_recorded_files(self):
+        scripts = self.root / "scripts"
+        for name in ("write-boot-target.sh", "rust_host_stage.py", "lib/root-fs.sh",
+                     "metal/metal_root.py", "metal/metal_probe.py", "metal/transfer_fixture.py"):
+            destination = scripts / name
+            destination.parent.mkdir(exist_ok=True)
+            shutil.copy2(ROOT / "scripts" / name, destination)
+        for name, script in (("cargo", "exit 0"), ("check-kernel-no-neon.sh", "exit 0"),
+                             ("build-background.sh", 'exec "$@"')):
+            self.executable(scripts / name, f"#!/bin/sh\n{script}\n")
+        self.executable(scripts / "create_ext2_disk.sh", '''#!/bin/sh
+set -eu
+mke2fs -q -t ext2 -b 4096 -F target/ext2-aarch64.img 16M
+''')
+        programs = self.root / "userspace/programs"
+        programs.mkdir(parents=True)
+        (programs / "target").symlink_to(ARM_K5_TARGET, target_is_directory=True)
+        self.executable(programs / "build.sh", '#!/bin/sh\nprintf "%s\\n" "$*" >> build-calls\n')
+        records = self.root / "toolchain/rust-host"
+        records.parent.mkdir()
+        records.symlink_to(ARM_K5_RECORDS, target_is_directory=True)
+        for name in ("aarch64-breenix.json", "aarch64-breenix-hosted.json"):
+            shutil.copy2(ROOT / name, self.root / name)
+        cache = Path(ARM_K5_TWIN).expanduser().resolve()
+        kd = ARM_K5_TARGET / "kd/aarch64"
+        suite = ARM_K5_TARGET / "hosted/aarch64-breenix-hosted/release/suite-rustc"
+        k5 = json.loads((records / "k5/aarch64.json").read_text())
+        pin = json.loads((records / "hosted-libc-aarch64.json").read_text())
+        path = os.pathsep.join((str(scripts), "/opt/homebrew/opt/e2fsprogs/sbin", os.environ["PATH"]))
+        with patch.dict(os.environ, PATH=path, BREENIX_K5_SYSROOT=str(cache / "sysroot"),
+                        BREENIX_KD_BUILD_DIR=str(kd)):
+            args, _ = self.launch("--no-display", mode=("--mode", "suite", "--suite", "rustc,dynamic"),
+                                  build=True, timeout=35)
+            self.assertEqual([args[i + 1] for i, arg in enumerate(args) if arg == "-m"], ["1024"])
+            calls = (self.root / "build-calls").read_text().splitlines()
+            for command in ("--arch aarch64 --hosted-bin suite-rustc --features rustc",
+                            "--arch aarch64 --rustc", "--arch aarch64 --dynamic"):
+                self.assertIn(command, calls)
+            host = "/usr/libexec/breenix/rustc"
+            dynamic = "/usr/libexec/breenix/dynamic"
+            entries = {
+                f"{host}/bin/rustc": k5["hosted_rustc_sha256"],
+                f"{host}/lib/{k5['hosted_link']['driver']}": k5["hosted_driver_sha256"],
+                "/lib/libc.so": pin["sha256"]["libc.so"],
+                "/lib/ld-breenix.so": sha256(kd / "ld-breenix.so"),
+                "/sbin/suite-rustc": sha256(suite),
+                "/sbin/suite-dynamic": sha256(kd / "suite-dynamic"),
+            }
+            self.assertEqual(entries["/lib/libc.so"], k5["hosted_link"]["libc_sha256"])
+            for name, digest in k5["sysroot"]["files_sha256"].items():
+                if name.startswith("lib/rustlib/aarch64-breenix/"):
+                    entries[f"{host}/sysroot/{name}"] = digest
+            for name in ("aarch64-breenix.json", "aarch64-breenix-hosted.json"):
+                entries[f"{host}/targets/{name}"] = sha256(ROOT / name)
+            for name in ("expect.json", "hello.rs", "type-error.rs", "uses-std.rs"):
+                source = "expect-aarch64.json" if name == "expect.json" else name
+                entries[f"{host}/corpus/{name}"] = sha256(records / "k5/corpus" / source)
+            for name in ("dynamic-probe", "missing-interp", "libkd-probe.so",
+                         "dynamic-panic-probe", "libkd-panic.so"):
+                entries[f"{dynamic}/{name}"] = sha256(kd / name)
+            image = self.root / "ext2-writable.img"
+            for guest, digest in entries.items():
+                with self.subTest(guest=guest), subprocess.Popen(
+                        ["debugfs", "-R", f"cat {guest}", image], stdout=subprocess.PIPE,
+                        stderr=subprocess.DEVNULL) as readback:
+                    self.assertEqual(hashlib.file_digest(readback.stdout, "sha256").hexdigest(), digest)
+                    self.assertEqual(readback.wait(), 0)
+
+    @unittest.skipUnless(ARM_K5_TWIN, "set BREENIX_ARM_K5_TWIN to the built ARM K5 twin cache")
+    def test_arm_rustc_and_dynamic_fit_declared_guest_memory(self):
+        cache = Path(ARM_K5_TWIN).expanduser().resolve()
+        compiler = cache / "build/aarch64-apple-darwin/stage1/bin/rustc"
+        records = ARM_K5_RECORDS / "k5"
+        k5 = json.loads((records / "aarch64.json").read_text())
+        self.assertEqual(sha256(compiler), k5["mac_rustc_sha256"])
+        corpus = records / "corpus"
+        timed = ["/usr/sbin/taskpolicy", "-b", "/usr/bin/time", "-l", compiler]
+        compile_args = [
+            "--edition=2021",
+            "--sysroot", cache / "sysroot", "-Dwarnings", "--emit=obj",
+            "--target", ROOT / "aarch64-breenix.json",
+        ]
+        cases = {
+            "compiler-version": (["-vV"], 0, 0),
+            "identity-and-sysroot": (["uses-std.rs"], 0, 88_424_448),
+            "hello-object-equals-mac": (["--crate-type=lib", "hello.rs"], 0, 61_685_760),
+            "diagnostic-located": (["--error-format=json", "type-error.rs"], 1, 75_055_104),
+        }
+        rss = {}
+        for case, (args, status, recorded_rss) in cases.items():
+            out = self.root / f"{case}.o"
+            invocation = args if case == "compiler-version" else [*compile_args, *args, "-o", out]
+            result = subprocess.run(
+                [*timed, *invocation],
+                cwd=corpus, env={"RUST_TARGET_PATH": str(ROOT)}, capture_output=True,
+                text=True, timeout=10,
+            )
+            self.assertEqual(result.returncode, status, result.stderr)
+            measured = int(re.search(r"(?m)^\s*(\d+)\s+maximum resident set size", result.stderr)[1])
+            rss[case] = rounded_frames(max(measured, recorded_rss))
+
+        kd = ARM_K5_TARGET / "kd/aarch64"
+        rustc = ARM_K5_TARGET / "rustc/aarch64"
+        suite = ARM_K5_TARGET / "hosted/aarch64-breenix-hosted/release/suite-rustc"
+        interpreter = kd / "ld-breenix.so"
+        libc = kd / "libc.so"
+        driver = rustc / k5["hosted_link"]["driver"]
+        inputs = {
+            case: ([suite, rustc / "rustc", interpreter], [driver, libc]) for case in cases
+        }
+        dynamic = kd / "suite-dynamic"
+        probe = ([dynamic, kd / "dynamic-probe", interpreter], [kd / "libkd-probe.so", libc])
+        inputs.update({
+            "interp-runs-program": probe,
+            "missing-interp-fails": ([dynamic, kd / "missing-interp"], []),
+            "dso-relocs-and-tls": probe,
+            "panic-across-dso": ([dynamic, kd / "dynamic-panic-probe", interpreter], [kd / "libkd-panic.so", libc]),
+        })
+        totals = {}
+        for case, (programs, dsos) in inputs.items():
+            elf = [elf_frames(path) for path in programs] + [elf_frames(path, dso=True) for path in dsos]
+            loads, private_and_cache = map(sum, zip(*elf))
+            totals[case] = loads + private_and_cache + rss.get(case, 0)
+            print(f"{case}: PT_LOAD={loads} extra_DSO={private_and_cache} Mac_RSS={rss.get(case, 0)} "
+                  f"total={totals[case]} frames")
+
+        manifest = json.loads((ROOT / "docs/suites/rustc.json").read_text())
+        minimum = manifest.get("minimumGuestMemory", {}).get("mib", 512)
+        # Hold fixed the frames unavailable in main's 512 MiB boot 20261127T045753Z-qemu-76081.
+        frames_per_mib = (1024 * 1024) // PAGE_BYTES
+        floor = 88_532 + (minimum - 512) * frames_per_mib
+        peak = max(totals.values())
+        self.assertLessEqual(peak * 4, floor * 3, f"{peak} frames with a 25% reserve exceed {floor}")
+        self.assertGreater(peak * 4, (floor - minimum // 2 * frames_per_mib) * 3)
+        self.assertEqual(minimum & (minimum - 1), 0, "guest size must be a power of two")
 
     def test_cxx_runtime_build_keeps_manifest_and_verifies_scratch_image(self):
         scripts = self.root / "scripts"
