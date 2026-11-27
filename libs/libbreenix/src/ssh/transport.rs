@@ -184,7 +184,7 @@ impl<'a> ServerSession<'a> {
                 SSH_MSG_CHANNEL_REQUEST => {
                     if let Some(ref mut ch) = self.channel {
                         let req_type =
-                            channel::server_handle_channel_request(&mut self.io, &msg, ch)?;
+                            channel::server_handle_channel_request(&mut self.io, &msg, ch, false)?;
                         match req_type.as_str() {
                             "pty-req" => pty_requested = true,
                             "shell" | "exec" => shell_requested = true,
@@ -193,15 +193,7 @@ impl<'a> ServerSession<'a> {
                     }
                 }
                 SSH_MSG_GLOBAL_REQUEST => {
-                    // Respond with REQUEST_FAILURE for unrecognized global requests
-                    let mut pos = 1;
-                    let _req_name = SshBuf::get_string(&msg, &mut pos);
-                    let want_reply = SshBuf::get_bool(&msg, &mut pos).unwrap_or(false);
-                    if want_reply {
-                        self.io
-                            .send_packet(&[super::SSH_MSG_REQUEST_FAILURE])
-                            .map_err(|_| SshError::Io)?;
-                    }
+                    channel::handle_client_global_request(&mut self.io, &msg)?;
                 }
                 SSH_MSG_IGNORE | SSH_MSG_UNIMPLEMENTED => {}
                 SSH_MSG_CHANNEL_WINDOW_ADJUST => {
@@ -309,17 +301,21 @@ impl<'a> ServerSession<'a> {
         match msg[0] {
             SSH_MSG_CHANNEL_DATA => {
                 let mut pos = 1;
-                let _channel_id = SshBuf::get_u32(msg, &mut pos);
+                let recipient = SshBuf::get_u32(msg, &mut pos)
+                    .ok_or(SshError::Protocol("bad channel data recipient"))?;
                 let data = SshBuf::get_string(msg, &mut pos)
                     .ok_or(SshError::Protocol("bad channel data"))?;
-
-                // Adjust receive window
-                if let Some(ref mut ch) = self.channel {
-                    ch.recv_window = ch.recv_window.checked_sub(data.len() as u32)
-                        .ok_or(SshError::Protocol("channel receive window exceeded"))?;
-                    if replenish && ch.recv_window < 512 * 1024 {
-                        channel::send_window_adjust(&mut self.io, ch, 1024 * 1024)?;
-                    }
+                let ch = self.channel.as_mut().ok_or(SshError::ChannelNotFound)?;
+                if recipient != ch.local_id {
+                    return Err(SshError::ChannelNotFound);
+                }
+                if ch.eof_received {
+                    return Err(SshError::Protocol("channel data after EOF"));
+                }
+                ch.recv_window = ch.recv_window.checked_sub(data.len() as u32)
+                    .ok_or(SshError::Protocol("channel receive window exceeded"))?;
+                if replenish && ch.recv_window < 512 * 1024 {
+                    channel::send_window_adjust(&mut self.io, ch, 1024 * 1024)?;
                 }
 
                 Ok(Some(data.to_vec()))
@@ -357,11 +353,13 @@ impl<'a> ServerSession<'a> {
             }
             SSH_MSG_DISCONNECT => Err(SshError::Disconnected),
             SSH_MSG_IGNORE | SSH_MSG_UNIMPLEMENTED => Ok(None),
+            SSH_MSG_GLOBAL_REQUEST => {
+                channel::handle_client_global_request(&mut self.io, msg)?;
+                Ok(None)
+            }
             SSH_MSG_CHANNEL_REQUEST => {
-                // Handle window-change during session
-                if let Some(ref mut ch) = self.channel {
-                    let _ = channel::server_handle_channel_request(&mut self.io, &msg, ch);
-                }
+                let ch = self.channel.as_mut().ok_or(SshError::ChannelNotFound)?;
+                channel::server_handle_channel_request(&mut self.io, msg, ch, true)?;
                 Ok(None)
             }
             _ => Ok(None),

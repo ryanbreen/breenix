@@ -1,7 +1,7 @@
 //! btop - Breenix System Monitor
 //!
 //! A top/htop-like system monitor that reads from procfs and displays
-//! live system statistics. Designed to run inside a PTY via bwm.
+//! live system statistics in a terminal.
 //!
 //! Reads:
 //!   /proc/uptime   — system uptime
@@ -10,7 +10,9 @@
 //!   /proc/pids     — list of process IDs
 //!   /proc/<pid>/status — per-process info (name, state, memory, CPU ticks)
 
-use libbreenix::io;
+use libbreenix::{io, termios};
+use libbreenix::errno::Errno;
+use libbreenix::error::Error;
 use libbreenix::types::Fd;
 use std::sync::Mutex;
 
@@ -151,7 +153,7 @@ fn emit(s: &[u8]) {
             return;
         }
     }
-    write_all(s);
+    let _ = write_all(s);
 }
 
 /// Write a string to stdout
@@ -163,13 +165,15 @@ fn emit_line_break() {
     emit_str("\n\x1b[2K");
 }
 
-fn write_all(mut buf: &[u8]) {
+fn write_all(mut buf: &[u8]) -> bool {
     while !buf.is_empty() {
-        match io::write(Fd::from_raw(1), buf) {
-            Ok(0) | Err(_) => break,
+        match io::write(Fd::STDOUT, buf) {
+            Err(Error::Os(Errno::EINTR)) => continue,
+            Ok(0) | Err(_) => return false,
             Ok(n) => buf = &buf[n..],
         }
     }
+    true
 }
 
 /// Write a u64 number to a buffer, return length
@@ -212,11 +216,37 @@ fn begin_frame() {
     }
 }
 
-fn flush_frame() {
+fn flush_frame(size: termios::Winsize) -> bool {
     let frame = FRAME_BUFFER.lock().ok().and_then(|mut frame| frame.take());
-    if let Some(buf) = frame {
-        write_all(&buf);
+    let Some(frame) = frame else { return false };
+    let rows = usize::from(if size.ws_row == 0 { 24 } else { size.ws_row });
+    let cols = usize::from(if size.ws_col == 0 { 80 } else { size.ws_col });
+    let mut output = Vec::with_capacity(frame.len());
+    for (row, line) in frame.split(|&byte| byte == b'\n').enumerate() {
+        if row == rows { break; }
+        if row > 0 { output.extend_from_slice(b"\r\n"); }
+        // The frame contains ASCII text and CSI sequences. Keep the latter
+        // intact: a clipped bar still needs its color reset and line erase.
+        let mut col = 0;
+        let mut pos = 0;
+        while pos < line.len() {
+            if line[pos..].starts_with(b"\x1b[") {
+                let Some(end) = line[pos + 2..].iter().position(|b| (0x40..=0x7e).contains(b)) else {
+                    break;
+                };
+                let next = pos + 3 + end;
+                output.extend_from_slice(&line[pos..next]);
+                pos = next;
+                continue;
+            }
+            if col < cols {
+                output.push(line[pos]);
+                col += 1;
+            }
+            pos += 1;
+        }
     }
+    write_all(&output)
 }
 
 fn monotonic_ms() -> Option<u64> {
@@ -233,24 +263,51 @@ fn sleep_ms_blocking(ms: u64) {
     let _ = libbreenix::time::nanosleep(&ts);
 }
 
-fn wait_until_ms(deadline_ms: u64) {
-    let Some(mut now_ms) = monotonic_ms() else {
-        sleep_ms_blocking(REFRESH_INTERVAL_MS);
-        return;
-    };
+struct TerminalInput(termios::Termios);
 
-    while now_ms < deadline_ms {
-        let remaining_ms = deadline_ms - now_ms;
-        sleep_ms_blocking(remaining_ms.min(REFRESH_INTERVAL_MS));
-        match monotonic_ms() {
-            Some(next_ms) => {
-                if next_ms <= now_ms {
-                    let _ = libbreenix::process::yield_now();
-                }
-                now_ms = next_ms;
+impl TerminalInput {
+    fn open() -> Option<Self> {
+        let mut saved = termios::Termios::default();
+        termios::tcgetattr(Fd::STDIN, &mut saved).ok()?;
+        let mut mode = saved;
+        mode.c_lflag &= !(termios::lflag::ICANON | termios::lflag::ECHO
+            | termios::lflag::ECHONL | termios::lflag::ISIG);
+        mode.c_iflag &= !termios::iflag::IXON;
+        mode.c_cc[termios::cc::VMIN] = 0;
+        mode.c_cc[termios::cc::VTIME] = 0;
+        termios::tcsetattr(Fd::STDIN, termios::TCSANOW, &mode).ok()?;
+        Some(Self(saved))
+    }
+
+    /// Return false on a quit key or terminal hangup.
+    fn wait_for_refresh(&self, deadline_ms: u64) -> bool {
+        use io::poll_events::{POLLERR, POLLHUP, POLLIN, POLLNVAL};
+        loop {
+            let remaining = monotonic_ms().map_or(REFRESH_INTERVAL_MS, |now| deadline_ms.saturating_sub(now));
+            let mut fds = [io::PollFd::new(Fd::STDIN, POLLIN)];
+            match io::poll(&mut fds, remaining.min(REFRESH_INTERVAL_MS) as i32) {
+                Ok(0) => return true,
+                Err(Error::Os(Errno::EINTR)) => continue,
+                Err(_) => return false,
+                Ok(_) => {}
             }
-            None => break,
+            if fds[0].revents & (POLLERR | POLLHUP | POLLNVAL) != 0 { return false; }
+            if fds[0].revents & POLLIN != 0 {
+                let mut keys = [0; 32];
+                match io::read(Fd::STDIN, &mut keys) {
+                    Ok(n) if keys[..n].iter().any(|&key| matches!(key, b'q' | 3)) => return false,
+                    Ok(_) | Err(Error::Os(Errno::EINTR)) => {}
+                    Err(_) => return false,
+                }
+            }
+            if remaining == 0 { return true; }
         }
+    }
+}
+
+impl Drop for TerminalInput {
+    fn drop(&mut self) {
+        let _ = termios::tcsetattr(Fd::STDIN, termios::TCSANOW, &self.0);
     }
 }
 
@@ -355,7 +412,9 @@ fn parse_proc_status(pid: u64) -> Option<ProcInfo> {
     // Parse Name
     let name_val = parse_str_value(content, b"Name:");
     let copy_len = name_val.len().min(31);
-    info.name[..copy_len].copy_from_slice(&name_val[..copy_len]);
+    for (out, &byte) in info.name.iter_mut().zip(&name_val[..copy_len]) {
+        *out = if byte.is_ascii_graphic() || byte == b' ' { byte } else { b'?' };
+    }
     info.name_len = copy_len;
 
     // Parse PPid
@@ -536,8 +595,7 @@ fn draw_memory_bar(used_kb: u64, total_kb: u64) {
 }
 
 fn main() {
-    // Wait a moment for the system to settle
-    let _ = libbreenix::time::sleep_ms(500);
+    let terminal = TerminalInput::open();
 
     // Previous tick counts for CPU% delta computation
     let mut prev_ticks: Vec<ProcTickSample> = Vec::new();
@@ -546,12 +604,9 @@ fn main() {
     let mut prev_gpu_partial: u64 = 0;
     let mut prev_cpu_ticks: Vec<CpuTicks> = Vec::new();
     let mut first_frame = true;
-    let mut next_refresh_ms = monotonic_ms().unwrap_or(0);
 
     loop {
-        wait_until_ms(next_refresh_ms);
-        let frame_start_ms = monotonic_ms().unwrap_or(next_refresh_ms);
-        next_refresh_ms = frame_start_ms.saturating_add(REFRESH_INTERVAL_MS);
+        let deadline = monotonic_ms().unwrap_or(0).saturating_add(REFRESH_INTERVAL_MS);
 
         // ── Gather Data ──────────────────────────────────────────────────
 
@@ -873,6 +928,13 @@ fn main() {
         }
         emit_line_break();
         emit_str("\x1b[J");
-        flush_frame();
+        let size = termios::get_winsize(Fd::STDOUT).unwrap_or_default();
+        if !flush_frame(size) { break; }
+        if let Some(terminal) = &terminal {
+            if !terminal.wait_for_refresh(deadline) { break; }
+        } else {
+            let remaining = monotonic_ms().map_or(REFRESH_INTERVAL_MS, |now| deadline.saturating_sub(now));
+            sleep_ms_blocking(remaining);
+        }
     }
 }

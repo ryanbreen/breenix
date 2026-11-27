@@ -307,6 +307,8 @@ pub mod poll_events {
     pub const POLLHUP: i16 = 0x0010;
     /// Invalid fd (output only)
     pub const POLLNVAL: i16 = 0x0020;
+    /// Peer stopped sending on a stream socket.
+    pub const POLLRDHUP: i16 = 0x2000;
 }
 
 /// pollfd structure for poll()
