@@ -110,3 +110,8 @@ required-features = ["std"]
 name = "aes_constant_time"
 path = "../../tests/aes_constant_time.rs"
 required-features = ["std"]
+
+[[test]]
+name = "ssh_packet_framing"
+path = "../../tests/ssh_packet_framing.rs"
+required-features = ["std"]
