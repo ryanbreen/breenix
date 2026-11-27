@@ -21,17 +21,23 @@ class AhciCompletion(unittest.TestCase):
     def test_interrupt_and_timeout(self):
         source = SOURCE.read_text()
         registers = re.findall(
-            r"(?m)^const (?:HBA_IS|PORT_(?:IS|CI|TFD|CMD)|PORT_(?:IRQ|TFD|CMD)_[A-Z0-9_]+|"
+            r"(?m)^const (?:HBA_IS|PORT_(?:IS|IE|CI|TFD|CMD|SERR|SSTS|SCTL|SACT)|S[CS]TS_[A-Z0-9_]+|SCTL_[A-Z0-9_]+|PORT_(?:IRQ|TFD|CMD)_[A-Z0-9_]+|"
             r"AHCI_(?:CI_COMPLETION_LOOP_LIMIT|TRACKED_SLOT_MASK|TIMEOUT_SECS)): [^=]+=[^;]+;",
             source,
         )
-        names = ["ack_port_interrupt", "detect_completed_slots", "handle_interrupt", "wait_cmd_slot0"]
+        names = ["ack_port_interrupt", "detect_completed_slots", "handle_interrupt", "wait_cmd_slot0",
+                 "wait_cmd_slot0_inner"]
         # The baseline has an inline timeout error. The new helper, when present,
         # must run its production body against the very same device and tests.
         if "fn resolve_wait_timeout(" in source:
             names.extend(["resolve_wait_timeout", "record_lost_notification"])
             registers.append("#[derive(Clone, Copy)]\n" +
                              re.search(r"struct TimeoutRegisters \{[^}]+\}", source)[0])
+        # On the original driver there is no recovery admission check.
+        if "fn ensure_port_ready(" in source:
+            names.append("ensure_port_ready")
+        else:
+            registers.append("fn ensure_port_ready(_: u64, _: usize) -> Result<(), &'static str> { Ok(()) }")
         dump = function(source, "dump_timeout_state_free").split("{", 1)[0]
         registers.append(dump + "{ MODEL.with_borrow_mut(|device| device.timeouts += 1); }")
         harness = (ROOT / "tests/fixtures/ahci_completion_timeout_model.rs").read_text()
