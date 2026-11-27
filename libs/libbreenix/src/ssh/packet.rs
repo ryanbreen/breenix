@@ -1,7 +1,11 @@
 //! SSH binary packet protocol (RFC 4253 §6)
 //!
-//! Handles reading and writing SSH packets over a TCP stream, including
-//! padding, sequence numbers, and (after key exchange) encryption and MAC.
+//! [`Framer`] owns padding, sequence numbers and packet protection, with no
+//! socket: a packet is sealed in place into one contiguous frame, and
+//! received bytes accumulate in one buffer from which complete packets are
+//! taken, several per receive when the peer sent several. [`PacketIo`] moves
+//! those bytes over the connection: one write per packet, and receives as
+//! large as the buffer has room for.
 
 use std::collections::VecDeque;
 
@@ -13,7 +17,7 @@ use crate::types::Fd;
 
 use super::cipher::SshCipher;
 
-/// Maximum SSH packet payload size (256 KB, generous for interactive sessions).
+/// Maximum SSH packet length accepted from a peer (256 KB, generous for interactive sessions).
 const MAX_PACKET_SIZE: usize = 256 * 1024;
 
 /// Minimum padding length per RFC 4253.
@@ -22,22 +26,242 @@ const MIN_PADDING: usize = 4;
 /// Stop pulling more relay traffic once the socket's userspace backlog is full.
 const RELAY_HIGH_WATER: usize = 64 * 1024;
 
-/// SSH packet reader/writer with sequence tracking.
+/// Room offered to each receive: enough for two full 32 KiB channel packets.
+const RECEIVE_ROOM: usize = 64 * 1024 + 512;
+
+/// Packets that one set of keys may protect in one direction. The sequence
+/// number is 32 bits (RFC 4253 section 6.4) and is chacha20-poly1305's
+/// nonce, so the 2^32nd packet under the same keys would reuse number 0's
+/// keystream and Poly1305 key. The connection ends there unless new keys
+/// were installed (RFC 4344 section 3.1 asks for a rekey before then).
+const PACKETS_PER_KEY: u64 = 1 << 32;
+
+/// Packet framing and protection for both directions of one connection.
+pub struct Framer {
+    rng: Csprng,
+    seq_send: u32,
+    seq_recv: u32,
+    /// Packets protected by the current keys, in each direction.
+    sent_under_keys: u64,
+    received_under_keys: u64,
+    cipher_send: Option<SshCipher>,
+    cipher_recv: Option<SshCipher>,
+    /// Received bytes are `rx[rx_start..rx_end]`; the rest is free room.
+    rx: Vec<u8>,
+    rx_start: usize,
+    rx_end: usize,
+    /// The length of the packet at `rx_start`, once its header was read.
+    rx_length: Option<usize>,
+}
+
+impl Framer {
+    pub fn new(rng: Csprng) -> Self {
+        Self {
+            rng,
+            seq_send: 0,
+            seq_recv: 0,
+            sent_under_keys: 0,
+            received_under_keys: 0,
+            cipher_send: None,
+            cipher_recv: None,
+            rx: Vec::new(),
+            rx_start: 0,
+            rx_end: 0,
+            rx_length: None,
+        }
+    }
+
+    pub fn set_cipher_send(&mut self, cipher: SshCipher) {
+        self.cipher_send = Some(cipher);
+        self.sent_under_keys = 0;
+    }
+
+    pub fn set_cipher_recv(&mut self, cipher: SshCipher) {
+        self.cipher_recv = Some(cipher);
+        self.received_under_keys = 0;
+    }
+
+    /// Test support: behave as if `packets` more packets had passed each
+    /// way under the current keys, without sealing them.
+    #[doc(hidden)]
+    pub fn advance_sequence_numbers(&mut self, packets: u32) {
+        self.seq_send = self.seq_send.wrapping_add(packets);
+        self.seq_recv = self.seq_recv.wrapping_add(packets);
+        self.sent_under_keys += u64::from(packets);
+        self.received_under_keys += u64::from(packets);
+    }
+
+    /// Install the keys of a finished key exchange, once NEWKEYS has been
+    /// sent and received. Under strict KEX both sequence numbers restart
+    /// at 0 (draft-ietf-sshm-strict-kex).
+    pub fn install_keys(&mut self, recv: SshCipher, send: SshCipher, strict: bool) {
+        self.set_cipher_recv(recv);
+        self.set_cipher_send(send);
+        if strict {
+            self.seq_send = 0;
+            self.seq_recv = 0;
+        }
+    }
+
+    /// Append one complete wire packet for `payload` to `out`.
+    pub fn seal(&mut self, payload: &[u8], out: &mut Vec<u8>) -> Result<(), Error> {
+        if self.cipher_send.is_some() && self.sent_under_keys >= PACKETS_PER_KEY {
+            return Err(Error::Os(Errno::EBADMSG));
+        }
+        let (block, aad, tag_len) = match &self.cipher_send {
+            Some(cipher) => (cipher.block_size(), cipher.length_is_aad(), cipher.tag_len()),
+            None => (8, false, 0),
+        };
+        // The padded body (and for non-AEAD ciphers the length field too)
+        // must fill whole cipher blocks, with at least MIN_PADDING bytes.
+        let unpadded = if aad { 1 + payload.len() } else { 4 + 1 + payload.len() };
+        let mut padding = block - unpadded % block;
+        if padding < MIN_PADDING {
+            padding += block;
+        }
+        let length = 1 + payload.len() + padding;
+
+        let start = out.len();
+        out.reserve(4 + length + tag_len);
+        out.extend_from_slice(&(length as u32).to_be_bytes());
+        out.push(padding as u8);
+        out.extend_from_slice(payload);
+        let padding_start = out.len();
+        out.resize(padding_start + padding + tag_len, 0);
+        self.rng.fill(&mut out[padding_start..padding_start + padding]);
+
+        if let Some(cipher) = self.cipher_send.as_mut() {
+            let (packet, tag) = out[start..].split_at_mut(4 + length);
+            if let Err(error) = cipher.seal(self.seq_send, packet, tag) {
+                out.truncate(start);
+                return Err(error);
+            }
+        }
+        self.seq_send = self.seq_send.wrapping_add(1);
+        self.sent_under_keys += 1;
+        Ok(())
+    }
+
+    /// Free room for received bytes. Fill a prefix, then call `received`.
+    pub fn receive_buffer(&mut self) -> &mut [u8] {
+        if self.rx_start == self.rx_end {
+            self.rx_start = 0;
+            self.rx_end = 0;
+        } else if self.rx_start > 0 && self.rx.len() - self.rx_end < RECEIVE_ROOM {
+            self.rx.copy_within(self.rx_start..self.rx_end, 0);
+            self.rx_end -= self.rx_start;
+            self.rx_start = 0;
+        }
+        let pending = self.rx_length.map_or(0, |length| 4 + length + self.recv_tag_len());
+        let room = RECEIVE_ROOM.max(pending.saturating_sub(self.rx_end - self.rx_start));
+        if self.rx.len() < self.rx_end + room {
+            self.rx.resize(self.rx_end + room, 0);
+        }
+        &mut self.rx[self.rx_end..]
+    }
+
+    /// Record `n` received bytes, stored at the start of the slice that
+    /// receive_buffer returned.
+    pub fn received(&mut self, n: usize) {
+        self.rx_end += n;
+        assert!(self.rx_end <= self.rx.len());
+    }
+
+    fn recv_tag_len(&self) -> usize {
+        self.cipher_recv.as_ref().map_or(0, SshCipher::tag_len)
+    }
+
+    /// Read the header of the next packet if enough bytes have arrived.
+    /// Returns the bytes the whole packet needs, header included.
+    fn next_packet_size(&mut self) -> Result<Option<usize>, Error> {
+        if self.rx_length.is_none() {
+            if self.cipher_recv.is_some() && self.received_under_keys >= PACKETS_PER_KEY {
+                return Err(Error::Os(Errno::EBADMSG));
+            }
+            let head = self.cipher_recv.as_ref().map_or(4, SshCipher::length_bytes);
+            if self.rx_end - self.rx_start < head {
+                return Ok(None);
+            }
+            let bytes = &mut self.rx[self.rx_start..self.rx_start + head];
+            let length = match self.cipher_recv.as_mut() {
+                Some(cipher) => cipher.packet_length(self.seq_recv, bytes),
+                None => u32::from_be_bytes(bytes[..4].try_into().unwrap()),
+            } as usize;
+            let (alignment, aad) = match &self.cipher_recv {
+                Some(cipher) => (cipher.block_size(), cipher.length_is_aad()),
+                None => (8, false),
+            };
+            let aligned = if aad { length } else { 4 + length };
+            if length > MAX_PACKET_SIZE || length < 1 + MIN_PADDING || aligned % alignment != 0 {
+                return Err(Error::Os(Errno::EMSGSIZE));
+            }
+            self.rx_length = Some(length);
+        }
+        Ok(self.rx_length.map(|length| 4 + length + self.recv_tag_len()))
+    }
+
+    /// Whether a complete packet is buffered, so `open` returns it without
+    /// another receive. A malformed header counts as ready: `open` reports it.
+    pub fn packet_ready(&mut self) -> bool {
+        match self.next_packet_size() {
+            Ok(Some(size)) => self.rx_end - self.rx_start >= size,
+            Ok(None) => false,
+            Err(_) => true,
+        }
+    }
+
+    /// Take the next complete packet's payload from the received bytes.
+    pub fn open(&mut self) -> Result<Option<Vec<u8>>, Error> {
+        let Some(size) = self.next_packet_size()? else { return Ok(None) };
+        if self.rx_end - self.rx_start < size {
+            return Ok(None);
+        }
+        let length = self.rx_length.take().unwrap();
+        let frame = &mut self.rx[self.rx_start..self.rx_start + size];
+        let (packet, tag) = frame.split_at_mut(4 + length);
+        if let Some(cipher) = self.cipher_recv.as_mut() {
+            cipher.open(self.seq_recv, packet, tag)?;
+        }
+        let padding = packet[4] as usize;
+        if padding < MIN_PADDING || padding >= length {
+            return Err(Error::Os(Errno::EBADMSG));
+        }
+        let payload = packet[5..4 + length - padding].to_vec();
+        self.rx_start += size;
+        self.seq_recv = self.seq_recv.wrapping_add(1);
+        self.received_under_keys += 1;
+        Ok(Some(payload))
+    }
+}
+
+/// What a key exchange needs from a connection: whole packets each way,
+/// and installing the keys it produced.
+pub trait KexTransport {
+    fn send_packet(&mut self, payload: &[u8]) -> Result<(), Error>;
+    fn recv_packet(&mut self) -> Result<Vec<u8>, Error>;
+    fn install_keys(&mut self, recv: SshCipher, send: SshCipher, strict: bool);
+}
+
+impl KexTransport for PacketIo {
+    fn send_packet(&mut self, payload: &[u8]) -> Result<(), Error> {
+        PacketIo::send_packet(self, payload)
+    }
+
+    fn recv_packet(&mut self) -> Result<Vec<u8>, Error> {
+        PacketIo::recv_packet(self)
+    }
+
+    fn install_keys(&mut self, recv: SshCipher, send: SshCipher, strict: bool) {
+        PacketIo::install_keys(self, recv, send, strict);
+    }
+}
+
+/// SSH packet reader/writer over a connected socket.
 pub struct PacketIo {
     fd: Fd,
-    rng: Csprng,
-    /// Sequence number for outgoing packets.
-    seq_send: u32,
-    /// Sequence number for incoming packets.
-    seq_recv: u32,
-    /// Cipher state for outgoing packets (None = plaintext).
-    cipher_send: Option<SshCipher>,
-    /// Cipher state for incoming packets (None = plaintext).
-    cipher_recv: Option<SshCipher>,
-    /// An incomplete wire packet survives a nonblocking relay read. Its first
-    /// block is decrypted once, when the length becomes available.
-    incoming: Vec<u8>,
-    incoming_length: Option<usize>,
+    framer: Framer,
+    /// Reused for each sealed packet, so sends stop allocating once it has grown.
+    send_buffer: Vec<u8>,
     relay_flags: Option<i32>,
     outgoing: VecDeque<u8>,
 }
@@ -47,26 +271,16 @@ impl PacketIo {
     pub fn new(fd: Fd) -> Self {
         Self {
             fd,
-            rng: Csprng::new(),
-            seq_send: 0,
-            seq_recv: 0,
-            cipher_send: None,
-            cipher_recv: None,
-            incoming: Vec::new(),
-            incoming_length: None,
+            framer: Framer::new(Csprng::new()),
+            send_buffer: Vec::new(),
             relay_flags: None,
             outgoing: VecDeque::new(),
         }
     }
 
-    /// Install encryption for outgoing packets.
-    pub fn set_cipher_send(&mut self, cipher: SshCipher) {
-        self.cipher_send = Some(cipher);
-    }
-
-    /// Install encryption for incoming packets.
-    pub fn set_cipher_recv(&mut self, cipher: SshCipher) {
-        self.cipher_recv = Some(cipher);
+    /// Install a finished key exchange's keys (see [`Framer::install_keys`]).
+    pub fn install_keys(&mut self, recv: SshCipher, send: SshCipher, strict: bool) {
+        self.framer.install_keys(recv, send, strict);
     }
 
     /// Read exactly `n` bytes from the socket.
@@ -83,10 +297,10 @@ impl PacketIo {
     }
 
     /// Write all bytes to the socket.
-    fn write_all(&self, buf: &[u8]) -> Result<(), Error> {
+    fn write_all(fd: Fd, buf: &[u8]) -> Result<(), Error> {
         let mut offset = 0;
         while offset < buf.len() {
-            let n = socket::send(self.fd, &buf[offset..])?;
+            let n = socket::send(fd, &buf[offset..])?;
             if n == 0 {
                 return Err(Error::Os(Errno::EIO));
             }
@@ -95,54 +309,20 @@ impl PacketIo {
         Ok(())
     }
 
-    /// Send an SSH packet with the given payload.
-    ///
-    /// Constructs the binary packet with proper padding, optionally encrypts
-    /// and computes MAC, then writes to the socket.
+    /// Send an SSH packet with the given payload: sealed in place, then
+    /// written (or queued during a relay) as one buffer.
     pub fn send_packet(&mut self, payload: &[u8]) -> Result<(), Error> {
-        let block_size = if self.cipher_send.is_some() { 16 } else { 8 };
-
-        // Calculate padding: total of (4 + 1 + payload + padding) must be
-        // a multiple of block_size, with padding >= MIN_PADDING.
-        let gcm = self.cipher_send.as_ref().is_some_and(SshCipher::is_gcm);
-        let unpadded = if gcm { 1 + payload.len() } else { 4 + 1 + payload.len() };
-        let mut padding = block_size - (unpadded % block_size);
-        if padding < MIN_PADDING {
-            padding += block_size;
-        }
-
-        let packet_length = 1 + payload.len() + padding;
-
-        // Build the unencrypted packet
-        let mut packet = Vec::with_capacity(4 + packet_length);
-        packet.extend_from_slice(&(packet_length as u32).to_be_bytes());
-        packet.push(padding as u8);
-        packet.extend_from_slice(payload);
-
-        // Random padding
-        let mut pad = vec![0u8; padding];
-        self.rng.fill(&mut pad);
-        packet.extend_from_slice(&pad);
-
-        let mac = self.cipher_send.as_mut()
-            .map(|cipher| cipher.seal(self.seq_send, &mut packet))
-            .transpose()?;
+        self.send_buffer.clear();
+        self.framer.seal(payload, &mut self.send_buffer)?;
         if self.relay_flags.is_some() {
-            self.outgoing.extend(packet);
-            self.outgoing.extend(mac.into_iter().flatten());
+            self.outgoing.extend(self.send_buffer.iter());
         } else {
-            self.write_all(&packet)?;
-            if let Some(mac) = mac { self.write_all(&mac)?; }
+            Self::write_all(self.fd, &self.send_buffer)?;
         }
-
-        self.seq_send = self.seq_send.wrapping_add(1);
         Ok(())
     }
 
     /// Receive an SSH packet and return the payload.
-    ///
-    /// Reads the binary packet from the socket, optionally decrypts and
-    /// verifies the MAC.
     pub fn recv_packet(&mut self) -> Result<Vec<u8>, Error> {
         loop {
             if let Some(packet) = self.read_packet()? {
@@ -156,10 +336,17 @@ impl PacketIo {
         }
     }
 
+    /// Whether a complete packet is already buffered. A caller that polls
+    /// the socket before receiving must not wait while this is true: those
+    /// bytes have left the socket.
+    pub fn packet_ready(&mut self) -> bool {
+        self.framer.packet_ready()
+    }
+
     /// Read only bytes already available, retaining a fragmented packet so
     /// the relay can keep draining process output and delivering process input.
     pub fn try_recv_packet(&mut self) -> Result<Option<Vec<u8>>, Error> {
-        if self.relay_flags.is_some() {
+        if self.relay_flags.is_some() || self.framer.packet_ready() {
             return self.read_packet();
         }
         let flags = crate::io::fcntl_getfl(self.fd)? as i32;
@@ -199,6 +386,29 @@ impl PacketIo {
         Ok(())
     }
 
+    /// Leave relay mode for an exchange that blocks on the peer, such as a
+    /// key re-exchange: write out the queued packets, waiting for the
+    /// socket as needed, then restore blocking writes. Returns whether a
+    /// relay was running, so the caller can start it again.
+    pub fn pause_relay(&mut self) -> Result<bool, Error> {
+        if self.relay_flags.is_none() {
+            return Ok(false);
+        }
+        loop {
+            self.flush_relay()?;
+            if !self.relay_output_pending() {
+                break;
+            }
+            let mut fds = [crate::io::PollFd::new(self.fd, crate::io::poll_events::POLLOUT)];
+            match crate::io::poll(&mut fds, -1) {
+                Ok(_) | Err(Error::Os(Errno::EINTR)) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        self.finish_relay()?;
+        Ok(true)
+    }
+
     pub fn finish_relay(&mut self) -> Result<(), Error> {
         if self.relay_output_pending() {
             return Err(Error::Os(Errno::EAGAIN));
@@ -209,62 +419,26 @@ impl PacketIo {
         Ok(())
     }
 
+    /// The next buffered packet, receiving more bytes until one is complete.
+    /// On a nonblocking socket it returns early, without a packet, when the
+    /// receive would block.
     fn read_packet(&mut self) -> Result<Option<Vec<u8>>, Error> {
-        let gcm = self.cipher_recv.as_ref().is_some_and(SshCipher::is_gcm);
-        let block_size = if gcm { 4 } else if self.cipher_recv.is_some() { 16 } else { 8 };
-        let mac_size = if gcm { 16 } else if self.cipher_recv.is_some() { 32 } else { 0 };
         loop {
-            let needed = self.incoming_length.map(|n| 4 + n + mac_size).unwrap_or(block_size);
-            while self.incoming.len() < needed {
-                let filled = self.incoming.len();
-                self.incoming.resize(needed, 0);
-                let result = socket::recv(self.fd, &mut self.incoming[filled..]);
-                let n = match result {
-                    Ok(0) => return Err(Error::Os(Errno::ECONNRESET)),
-                    Ok(n) => n,
-                    Err(e) => {
-                        self.incoming.truncate(filled);
-                        match e {
-                            Error::Os(Errno::EINTR) => continue,
-                            Error::Os(Errno::EAGAIN) => return Ok(None),
-                            _ => return Err(e),
-                        }
-                    }
-                };
-                self.incoming.truncate(filled + n);
+            if let Some(packet) = self.framer.open()? {
+                return Ok(Some(packet));
             }
-            if self.incoming_length.is_none() {
-                if let Some(ref mut cipher) = self.cipher_recv {
-                    cipher.decrypt(&mut self.incoming);
-                }
-                let length = u32::from_be_bytes(self.incoming[..4].try_into().unwrap()) as usize;
-                let alignment = if self.cipher_recv.is_some() { 16 } else { 8 };
-                if length > MAX_PACKET_SIZE || length < 1 + MIN_PADDING
-                    || (length + if gcm { 0 } else { 4 }) % alignment != 0
-                {
-                    return Err(Error::Os(Errno::EMSGSIZE));
-                }
-                self.incoming_length = Some(length);
-                continue;
+            match socket::recv(self.fd, self.framer.receive_buffer()) {
+                Ok(0) => return Err(Error::Os(Errno::ECONNRESET)),
+                Ok(n) => self.framer.received(n),
+                Err(Error::Os(Errno::EINTR)) => {}
+                Err(Error::Os(Errno::EAGAIN)) => return Ok(None),
+                Err(e) => return Err(e),
             }
-            let length = self.incoming_length.take().unwrap();
-            let mut full = core::mem::take(&mut self.incoming);
-            let (packet, mac) = full.split_at_mut(4 + length);
-            if let Some(ref mut cipher) = self.cipher_recv {
-                cipher.decrypt(&mut packet[block_size..]);
-                cipher.open(self.seq_recv, packet, mac)?;
-            }
-            let padding = packet[4] as usize;
-            if padding < MIN_PADDING || padding >= length {
-                return Err(Error::Os(Errno::EBADMSG));
-            }
-            let payload = packet[5..4 + length - padding].to_vec();
-            self.seq_recv = self.seq_recv.wrapping_add(1);
-            return Ok(Some(payload));
         }
     }
 
     /// Read a line terminated by \r\n (for version string exchange).
+    /// Bytes are read one at a time so the first packet's bytes stay in the socket.
     pub fn read_line(&self) -> Result<String, Error> {
         let mut line = Vec::new();
         let mut byte = [0u8; 1];
@@ -289,7 +463,7 @@ impl PacketIo {
         buf.extend_from_slice(line.as_bytes());
         buf.push(b'\r');
         buf.push(b'\n');
-        self.write_all(&buf)
+        Self::write_all(self.fd, &buf)
     }
 
     /// Get the underlying file descriptor.

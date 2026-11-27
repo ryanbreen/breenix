@@ -703,6 +703,11 @@ opt-level = "z"
 [profile.release.package.libimg]
 opt-level = 3
 
+# The crypto and SSH transport live in libbreenix. Their per-byte loops
+# (ciphers, MACs, hashes, packet framing) are built for speed, not size.
+[profile.release.package.libbreenix]
+opt-level = 3
+
 [workspace]
 
 # Note: The libc patch is applied in rust-fork/library/Cargo.toml, not here.

@@ -81,66 +81,16 @@ impl<'a> ServerSession<'a> {
             return Err(SshError::Protocol("unsupported SSH version"));
         }
 
-        // 2. Key exchange
-        let mut rng = Csprng::new();
-        let my_kexinit = kex::build_kexinit(&mut rng);
-        self.kex.my_kexinit = my_kexinit.clone();
-        self.io.send_packet(&my_kexinit).map_err(|_| SshError::Io)?;
-
-        // Receive client's KEXINIT
-        let peer_kexinit = self.io.recv_packet().map_err(|_| SshError::Io)?;
-        if peer_kexinit.is_empty() || peer_kexinit[0] != SSH_MSG_KEXINIT {
-            return Err(SshError::Protocol("expected KEXINIT"));
-        }
-        self.kex.peer_kexinit = peer_kexinit;
-
-        // Receive KEX init (type 30)
-        let kex_init = self.io.recv_packet().map_err(|_| SshError::Io)?;
-
-        // Dispatch: hybrid C_INIT is 1216 bytes, X25519 Q_C is 32 bytes
-        let c_init_len = if kex_init.len() > 5 {
-            u32::from_be_bytes([kex_init[1], kex_init[2], kex_init[3], kex_init[4]]) as usize
-        } else {
-            0
-        };
-
-        let (exchange_hash, shared_secret) = if c_init_len == 1216 {
-            println!("bsshd: KEX mlkem768x25519-sha256 (post-quantum)");
-            kex::server_kex_hybrid(
-                &mut self.io,
-                self.host_key,
-                &mut self.kex,
-                &self.client_version,
-                BSSH_VERSION,
-                &kex_init,
-            )?
-        } else {
-            println!("bsshd: KEX curve25519-sha256");
-            kex::server_kex_ecdh(
-                &mut self.io,
-                self.host_key,
-                &mut self.kex,
-                &self.client_version,
-                BSSH_VERSION,
-                &kex_init,
-            )?
-        };
-
-        // Receive client's NEWKEYS
-        let newkeys = self.io.recv_packet().map_err(|_| SshError::Io)?;
-        if newkeys.is_empty() || newkeys[0] != SSH_MSG_NEWKEYS {
-            return Err(SshError::Protocol("expected NEWKEYS"));
-        }
-
-        // Derive and install session keys
-        let session_id = self.kex.session_id.as_ref().unwrap();
-        let (c2s, s2c) = kex::negotiate_ciphers(&self.kex.peer_kexinit, &self.kex.my_kexinit)?;
-        let (cipher_c2s, cipher_s2c) = kex::derive_keys(
-            &shared_secret, &exchange_hash, session_id, c_init_len == 1216, c2s, s2c,
-        );
-
-        self.io.set_cipher_recv(cipher_c2s); // client→server = our recv
-        self.io.set_cipher_send(cipher_s2c); // server→client = our send
+        // 2. Key exchange, ending with the session keys installed.
+        kex::server_key_exchange(
+            &mut self.io,
+            &mut Csprng::new(),
+            self.host_key,
+            &mut self.kex,
+            &self.client_version,
+            BSSH_VERSION,
+        )?;
+        let session_id = self.kex.session_id.as_ref().ok_or(SshError::KeyExchange)?;
 
         // Send EXT_INFO (RFC 8308) to advertise supported pubkey algorithms.
         // Without this, modern OpenSSH (which disables ssh-rsa SHA-1 by default)
@@ -166,6 +116,7 @@ impl<'a> ServerSession<'a> {
     pub fn wait_for_channel(&mut self) -> Result<SessionCommand, SshError> {
         loop {
             let msg = self.io.recv_packet().map_err(ssh_io_error)?;
+            let Some(msg) = self.rekey_if_kexinit(msg)? else { continue };
             if msg.is_empty() {
                 return Err(SshError::Disconnected);
             }
@@ -271,6 +222,7 @@ impl<'a> ServerSession<'a> {
     /// (window adjust, etc.), or Err for disconnect/errors.
     pub fn recv_data(&mut self) -> Result<Option<Vec<u8>>, SshError> {
         let msg = self.io.recv_packet().map_err(|_| SshError::Io)?;
+        let Some(msg) = self.rekey_if_kexinit(msg)? else { return Ok(None) };
         self.handle_channel_packet(&msg, true)
     }
 
@@ -279,7 +231,32 @@ impl<'a> ServerSession<'a> {
     /// returns input credit with consume_input after delivering the data.
     pub fn try_recv_data_uncredited(&mut self) -> Result<Option<Vec<u8>>, SshError> {
         let Some(msg) = self.io.try_recv_packet().map_err(|_| SshError::Io)? else { return Ok(None) };
+        let Some(msg) = self.rekey_if_kexinit(msg)? else { return Ok(None) };
         self.handle_channel_packet(&msg, false)
+    }
+
+    /// A client KEXINIT after the handshake opens a key re-exchange, which
+    /// is answered before anything else is sent. Any other message is
+    /// handed back. The client waits for our KEXINIT behind whatever output
+    /// a relay has queued, so that is written out first.
+    fn rekey_if_kexinit(&mut self, msg: Vec<u8>) -> Result<Option<Vec<u8>>, SshError> {
+        if msg.first() != Some(&SSH_MSG_KEXINIT) {
+            return Ok(Some(msg));
+        }
+        let relaying = self.io.pause_relay().map_err(ssh_io_error)?;
+        kex::server_rekey(
+            &mut self.io,
+            &mut Csprng::new(),
+            self.host_key,
+            &mut self.kex,
+            &self.client_version,
+            BSSH_VERSION,
+            msg,
+        )?;
+        if relaying {
+            self.io.start_relay().map_err(ssh_io_error)?;
+        }
+        Ok(None)
     }
 
     fn handle_channel_packet(&mut self, msg: &[u8], replenish: bool) -> Result<Option<Vec<u8>>, SshError> {
@@ -394,12 +371,15 @@ impl<'a> ServerSession<'a> {
             {
                 return Err(SshError::Protocol("channel close timeout"));
             }
-            let mut fds = [crate::io::PollFd::new(
-                self.io.fd(),
-                crate::io::poll_events::POLLIN,
-            )];
-            if crate::io::poll(&mut fds, 100).map_err(|_| SshError::Io)? == 0 {
-                continue;
+            // A packet already taken off the socket will not wake poll.
+            if !self.io.packet_ready() {
+                let mut fds = [crate::io::PollFd::new(
+                    self.io.fd(),
+                    crate::io::poll_events::POLLIN,
+                )];
+                if crate::io::poll(&mut fds, 100).map_err(|_| SshError::Io)? == 0 {
+                    continue;
+                }
             }
             match self.recv_data() {
                 Err(SshError::Disconnected) if self.channel_closed() => break,
@@ -534,8 +514,9 @@ impl ClientSession {
             &shared_secret, &exchange_hash, session_id, false, send_cipher, recv_cipher,
         );
 
-        self.io.set_cipher_send(cipher_c2s); // client→server = our send
-        self.io.set_cipher_recv(cipher_s2c); // server→client = our recv
+        // client to server is our send direction
+        let strict = kex::strict_kex(&self.kex.my_kexinit, &self.kex.peer_kexinit);
+        self.io.install_keys(cipher_s2c, cipher_c2s, strict);
 
         // 3. Authentication
         auth::client_request_service(&mut self.io)?;
