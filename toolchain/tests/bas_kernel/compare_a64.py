@@ -234,7 +234,7 @@ def compare_units(bas, clang, directory):
         reference = directory / f"{unit}.clang.o"
         candidate = directory / f"{unit}.bas.o"
         try:
-            run(clang, "--target=aarch64-none-elf", "-c", source, "-o", reference)
+            run(clang, "--target=aarch64-none-elf", "-x", "assembler", "-c", source, "-o", reference)
             run(bas, "--target", "aarch64", "-o", candidate, source)
             expected, actual = read_object(reference), read_object(candidate)
             compare_absolute_constants(assembly, expected, actual)
