@@ -181,6 +181,11 @@ def verify_hosted_libc(kd, records, k5, rustc, cargo):
     runtime = json.loads((kd / 'build.json').read_text())
     if runtime['libc.so'] != pin['sha256'] or sha256(libc) != pin['sha256']:
         raise ValueError(f'{libc}: SHA-256 differs from the hosted libc pin')
+    verify_hosted_elf(libc, rustc / 'rustc', rustc / k5['hosted_link']['driver'], cargo)
+    return runtime
+
+
+def verify_hosted_elf(libc, compiler, driver, cargo):
     libdir = subprocess.check_output(['rustc', '--print', 'target-libdir'], cwd=ROOT,
                                      text=True, timeout=10).strip()
     readobj = Path(libdir).parent / 'bin/llvm-readobj'
@@ -214,16 +219,13 @@ def verify_hosted_libc(kd, records, k5, rustc, cargo):
 
     libc_imports, libc_exports = symbols(libc, [], libc.name)
     verify(libc, libc_imports, set())
-    driver = rustc / k5['hosted_link']['driver']
     driver_imports, driver_exports = symbols(driver, [libc.name], driver.name)
     verify(driver, driver_imports, libc_exports)
-    compiler = rustc / 'rustc'
     compiler_imports, _ = symbols(compiler, [driver.name, libc.name])
     verify(compiler, compiler_imports, libc_exports | driver_exports)
     if cargo is not None:
         cargo_imports, _ = symbols(cargo, [libc.name])
         verify(cargo, cargo_imports, libc_exports)
-    return runtime
 
 
 def hosted_runtime_entries(kd, runtime, already_staged):
