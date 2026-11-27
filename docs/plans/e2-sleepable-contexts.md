@@ -174,8 +174,16 @@ records it instead. Each thread gets `park_baseline: u8` and `baseline_irqs_mask
 - the mask flag is true for an x86 syscall until §4.3.
 
 `LocksHeld(n)` means the depth exceeds the baseline by n. A park releases exactly the baseline before it
-switches and restores it after (B1 requirement 9). It does no further arithmetic. The "add a level so the
-wait can remove one" step (`ahci/mod.rs:487`, `mount_lock.rs:141-144`) goes away. Because the baseline is
+switches and restores it after (B1 requirement 9). Callers do no further arithmetic. The "add a level so
+the wait can remove one" step (`ahci/mod.rs:487`, `mount_lock.rs:141-144`) leaves the callers.
+
+Until E2.3, one copy of that step lives inside `park::wait`. Today's publication protocol publishes a
+blocked state only at depth 1 or more. The reason is that ARM64's interrupt exit switches out a thread
+it sees blocked at depth 0 and leaves it off the run queue as a blocked thread (§3.5). So in E2.2 a baseline-0 caller's `park::wait`
+raises one level from publishing `Parking` to its switch, and the switch releases it. E2.3 makes an
+involuntary switch requeue a `Parking` thread, and deletes that internal level. Because of this,
+E2.4 and E2.5, which depend only on E2.2, do not publish `Parking` at depth 0 on a scheduler that would
+strand it. Because the baseline is
 stored in the thread and not in the per-CPU count, it survives migration across a sleep. E9 owns the count
 layout (brief B3), and E2 reaches the count only through `preempt::depth()` and guard types.
 
@@ -602,10 +610,14 @@ should own each, not several agents on one PR (DEV-30(3)).
   `park::wait` and `park::wait_any` on the E2.1 queue, `park::announce` and `park::should_wake`, and the
   violation receipts. The eight predicates in §1.2 are converted to `park::context()`.
 - **Behaviour change.** Only one: a kthread holding a raw spin lock (depth 1, baseline 0), which today parks
-  while holding the lock, now gets a receipt and an error.
+  while holding the lock, now gets a receipt and an error. Publication keeps today's protocol: a
+  baseline-0 waiter's `Parking` state is published at depth 1, raised inside `park::wait`, until E2.3
+  (§3.2).
 - **Tests:**
   - a host table test of `context()` across its input space;
   - a host model of the baseline: each `WaitEnd` returns with the caller's entry depth (B1 requirement 9);
+  - a host model of publication: from the moment a baseline-0 waiter publishes `Parking` until its
+    switch, no interrupt exit in the model reads depth 0;
   - a structure test that no file outside `kernel/src/task/park*` compares `preempt_count()` with 1 or 0
     to decide whether to sleep, or adds a level for a wait. On today's tree it finds the sites in §1.2.
 - **Risk retired.** "Whether code may sleep is an unstated property of its caller" (R4). The
@@ -616,7 +628,9 @@ should own each, not several agents on one PR (DEV-30(3)).
 
 - **Scope.** §3.5: the `Parking` state, requeueing on an involuntary switch, and committing only in
   `park::wait`. The non-preemptible branches of `arch_halt_while_blocked` become violations. The
-  "yield before parking" workarounds go, because a committed park switches away.
+  "yield before parking" workarounds go, because a committed park switches away. The level that
+  `park::wait` raises around publication in E2.2 (§3.2) goes in this PR, in the same commit as the
+  requeue, so no tree has one without the other.
 - **Tests:**
   - a host scheduler-state model: publish, then an involuntary switch at depth 0, leaves the thread
     runnable; publish, wake, commit ends `Woken` with no sleep; publish, commit, wake ends `Woken` once;
