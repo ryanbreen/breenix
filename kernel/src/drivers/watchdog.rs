@@ -13,7 +13,7 @@ const TIMER: [u8; 6] = [4, 1, 0, 0x10, 0xb0, 4];
 
 #[path = "watchdog_progress.rs"]
 mod progress;
-use progress::{Phase, Progress};
+use progress::{Overdue, Phase, Progress};
 
 static PROGRESS: Progress = Progress::new();
 static FEEDER_TID: AtomicU64 = AtomicU64::new(0);
@@ -46,13 +46,13 @@ fn is_feeder() -> bool {
 
 /// Sample from another CPU so a blocked feeder can still be observed.
 fn report_stall() {
-    let Some((phase, feed_age_ms)) = PROGRESS.overdue(now()) else { return; };
+    let Some(Overdue { phase, age_ms, has_fed }) = PROGRESS.overdue(now()) else { return; };
     let tid = FEEDER_TID.load(Ordering::Relaxed);
     let running = crate::task::scheduler::try_liveness_snapshot(0)
         .map(|s| s.per_cpu_current);
     crate::serial_println!(
-        "[watchdog] feed overdue: phase={:?} tid={} feed_age_ms={} running={:?}",
-        phase, tid, feed_age_ms, running,
+        "[watchdog] feeder overdue: phase={:?} tid={} age_ms={} has_fed={} running={:?}",
+        phase, tid, age_ms, has_fed, running,
     );
     let port = PROBE_PORT.load(Ordering::Relaxed);
     if matches!(phase, Phase::RootMount | Phase::RootSuperblock | Phase::RootInode)
@@ -183,7 +183,10 @@ impl policy::Transport for Kcs {
 }
 fn run(port: u32) -> Result<(), &'static str> {
     #[cfg(not(test))]
-    FEEDER_TID.store(crate::task::scheduler::current_thread_id().unwrap_or(0), Ordering::Relaxed);
+    {
+        FEEDER_TID.store(crate::task::scheduler::current_thread_id().unwrap_or(0), Ordering::Relaxed);
+        PROGRESS.start(now());
+    }
     let mut kcs = Kcs::new(port);
     let mut identified = false;
     let mut announced = false;

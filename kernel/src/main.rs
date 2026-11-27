@@ -1190,7 +1190,8 @@ fn nonblock_eagain_test_main() -> ! {
 /// manually, x86_64 enqueues it on the ordinary scheduler dispatch path via
 /// `task::scheduler::spawn()`.
 ///
-/// Run with the root mounted and interrupts masked around publication.
+/// Run with the root mounted. ProcessManager and scheduler publication
+/// supply their own protection while this thread keeps hardware IRQs enabled.
 #[cfg(all(
     target_arch = "x86_64",
     not(any(
@@ -1565,9 +1566,8 @@ fn run_x86_production_init() {
         match image {
             Ok((name, exe_path, elf_data, only, mode)) => {
                 kernel::console::splash::set_status(format_args!("Starting {}", name));
-                let launched = x86_64::instructions::interrupts::without_interrupts(|| {
-                    launch_x86_production_init(&name, &exe_path, elf_data, only.as_deref(), mode)
-                });
+                let launched =
+                    launch_x86_production_init(&name, &exe_path, elf_data, only.as_deref(), mode);
                 match launched {
                     Ok(()) => {
                         kernel::console::splash::stage(kernel::console::splash::Stage::StartingPid1);
@@ -2133,6 +2133,11 @@ fn kernel_main_continue() -> ! {
     {
         kernel::per_cpu::preempt_disable();
         x86_64::instructions::interrupts::enable();
+        // Pin the loader to this CPU so it cannot publish PID 1 until the
+        // final release below, even while APs are running storage workers.
+        if let Err(e) = task::kthread::kthread_run_on_cpu(run_x86_production_init, "production_init", 0) {
+            log::error!("PRODUCTION INIT: failed to start loader kthread: {:?}", e);
+        }
     }
 
     // Test timer functionality immediately
@@ -2719,11 +2724,6 @@ fn kernel_main_continue() -> ! {
         feature = "disable_x86_prod_init"
     )))]
     {
-        // Pin the loader to this CPU so it cannot publish PID 1 until the
-        // final release below, even while APs are running storage workers.
-        if let Err(e) = task::kthread::kthread_run_on_cpu(run_x86_production_init, "production_init", 0) {
-            log::error!("PRODUCTION INIT: failed to start loader kthread: {:?}", e);
-        }
         kernel::drivers::watchdog::start();
         if let Err(e) = task::kthread::kthread_run(
             || {

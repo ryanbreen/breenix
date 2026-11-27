@@ -9,13 +9,27 @@ fn an_independent_observer_reports_a_feeder_stuck_in_the_root_probe() {
     progress.enter(Phase::Waiting);
     assert_eq!(progress.overdue(21_000), None);
     progress.enter(Phase::RootMount);
-    assert_eq!(progress.overdue(41_000), Some(Overdue { phase: Phase::RootMount, age_ms: 40_000, has_fed: true }));
+    assert_eq!(
+        progress.overdue(41_000),
+        Some(Overdue {
+            phase: Phase::RootMount,
+            age_ms: 40_000,
+            has_fed: true
+        })
+    );
     assert_eq!(progress.overdue(42_000), None);
 
     // The mount lock released, but the on-disk inode read still did not
     // complete. Report the new phase even though the feeder never returned.
     progress.enter(Phase::RootInode);
-    assert_eq!(progress.overdue(61_000), Some(Overdue { phase: Phase::RootInode, age_ms: 60_000, has_fed: true }));
+    assert_eq!(
+        progress.overdue(61_000),
+        Some(Overdue {
+            phase: Phase::RootInode,
+            age_ms: 60_000,
+            has_fed: true
+        })
+    );
     progress.fed(62_000);
     assert_eq!(progress.overdue(80_000), None);
 }
