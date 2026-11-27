@@ -105,6 +105,48 @@ class LlvmPortTest(unittest.TestCase):
                     self.assertIn(f'Type: regular    Mode:  {mode}', stat)
                     self.assertRegex(stat, r'User:\s+0\s+Group:\s+0')
 
+        with self.subTest(arch='aarch64'), tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            hosted = 'target/hosted/aarch64-breenix-hosted/release'
+            manifest = corpus / 'expect-aarch64.json'
+            inputs = json.loads(manifest.read_text())['objects']
+            files = {
+                '/sbin/suite-llvm': (f'{hosted}/suite-llvm', '0755'),
+                **{f'{llvm}/bin/{name}': (f'target/llvm/aarch64/{name}', '0755')
+                   for name in ('llc', 'llvm-mc', 'bld')},
+                f'{llvm}/lib/libc.a': ('target/llvm/aarch64/libc.a', '0444'),
+                f'{llvm}/linker.ld': ('linker.ld', '0444'),
+            }
+            sources = {}
+            for guest, (local, mode) in files.items():
+                source = root / local
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_bytes((b'\x7fELF' if mode == '0755' else b'') + guest.encode())
+                sources[guest] = (source, mode)
+            sources[f'{llvm}/corpus/expect.json'] = (manifest, '0444')
+            for entry in inputs:
+                sources[f'{llvm}/corpus/{entry["input"]}'] = (corpus / entry['input'], '0444')
+            image = root / 'fixture.img'
+            subprocess.run([mke2fs, '-q', '-t', 'ext2', '-F', image, '16384'],
+                           check=True, capture_output=True, timeout=5)
+            output = io.StringIO()
+            with patch.dict(stage.__globals__, PROGRAMS=root), redirect_stdout(output), \
+                    patch.object(sys, 'argv', ['stage', '--arch', 'aarch64', '--image', str(image),
+                                               '--suite', 'llvm']):
+                stage()
+            record = json.loads(output.getvalue())
+            self.assertEqual(set(record), set(sources))
+            for guest, (source, mode) in sources.items():
+                with self.subTest(path=guest):
+                    data = subprocess.check_output([debugfs, '-R', f'cat {guest}', image],
+                                                   stderr=subprocess.PIPE, timeout=5)
+                    self.assertEqual(data, source.read_bytes())
+                    self.assertEqual(record[guest], hashlib.sha256(data).hexdigest())
+                    stat = subprocess.check_output([debugfs, '-R', f'stat {guest}', image],
+                                                   stderr=subprocess.PIPE, text=True, timeout=5)
+                    self.assertIn(f'Type: regular    Mode:  {mode}', stat)
+                    self.assertRegex(stat, r'User:\s+0\s+Group:\s+0')
+
     def test_corpus_objects_match_mac_llc(self):
         corpus = ROOT / 'toolchain/rust-host/k4/corpus'
         manifest = json.loads((corpus / 'expect.json').read_text())
