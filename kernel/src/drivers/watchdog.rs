@@ -1,7 +1,7 @@
 //! IPMI 2.0 sections 9 and 27: polled KCS, SMS/OS watchdog, hard reset.
 //! Only this kthread owns the interface. Each feed requires root-storage health.
 //! The transport accepts only S19's four application commands.
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use x86_64::instructions::port::Port;
 use super::watchdog_round as policy;
 use policy::wait;
@@ -10,6 +10,58 @@ static PORT: AtomicU32 = AtomicU32::new(0);
 const TIMEOUT_MS: u64 = 5_000;
 const PERIOD_MS: u64 = 20_000;
 const TIMER: [u8; 6] = [4, 1, 0, 0x10, 0xb0, 4];
+
+#[path = "watchdog_progress.rs"]
+mod progress;
+use progress::{Overdue, Phase, Progress};
+
+static PROGRESS: Progress = Progress::new();
+static FEEDER_TID: AtomicU64 = AtomicU64::new(0);
+static PROBE_PORT: AtomicU32 = AtomicU32::new(u32::MAX);
+
+pub(crate) fn root_probe_waiting(disk: Option<crate::block::HardwareDisk>) {
+    if !is_feeder() {
+        return;
+    }
+    let port = match disk {
+        Some(crate::block::HardwareDisk::Ahci(port)) => port as u32,
+        _ => u32::MAX,
+    };
+    PROBE_PORT.store(port, Ordering::Relaxed);
+    PROGRESS.enter(Phase::RootMount);
+}
+
+pub(crate) fn root_probe_reading(inode: bool) {
+    if is_feeder() {
+        PROGRESS.enter(if inode { Phase::RootInode } else { Phase::RootSuperblock });
+    }
+}
+
+fn is_feeder() -> bool {
+    let feeder = FEEDER_TID.load(Ordering::Relaxed);
+    feeder != 0 && crate::arch_without_interrupts(|| {
+        crate::per_cpu::current_thread_id_lock_free() == Some(feeder)
+    })
+}
+
+/// Sample from another CPU so a blocked feeder can still be observed.
+fn report_stall() {
+    let Some(Overdue { phase, age_ms, has_fed }) = PROGRESS.overdue(now()) else { return; };
+    let tid = FEEDER_TID.load(Ordering::Relaxed);
+    let running = crate::task::scheduler::try_liveness_snapshot(0)
+        .map(|s| s.per_cpu_current);
+    crate::serial_println!(
+        "[watchdog] feeder overdue: phase={:?} tid={} age_ms={} has_fed={} running={:?}",
+        phase, tid, age_ms, has_fed, running,
+    );
+    let port = PROBE_PORT.load(Ordering::Relaxed);
+    if matches!(phase, Phase::RootMount | Phase::RootSuperblock | Phase::RootInode)
+        && port != u32::MAX
+    {
+        super::ahci::report_watchdog_port(port as usize);
+    }
+}
+
 
 pub fn discover(rsdp: Option<u64>, offset: u64) {
     if let Some((data, status)) = crate::arch_impl::x86_64::acpi::read_kcs_ports(rsdp, offset) {
@@ -43,6 +95,12 @@ impl Kcs {
         if !matches!((command, data.len()), (1, 0) | (0x22, 0) | (0x25, 0))
             && !(command == 0x24 && data == TIMER) {
             return Err("command outside watchdog scope");
+        }
+        match command {
+            0x25 => PROGRESS.enter(Phase::KcsGet),
+            0x24 => PROGRESS.enter(Phase::KcsSet),
+            0x22 => PROGRESS.enter(Phase::KcsReset),
+            _ => {}
         }
         let deadline = now().saturating_add(TIMEOUT_MS);
         let status = self.ready(deadline)?;
@@ -116,9 +174,19 @@ impl policy::Transport for Kcs {
         );
     }
     fn set(&mut self) -> Result<(), &'static str> { self.request(0x24, &TIMER).map(|_| ()) }
-    fn reset(&mut self) -> Result<(), &'static str> { self.request(0x22, &[]).map(|_| ()) }
+    fn reset(&mut self) -> Result<(), &'static str> {
+        self.request(0x22, &[])?;
+        #[cfg(not(test))]
+        PROGRESS.fed(now());
+        Ok(())
+    }
 }
 fn run(port: u32) -> Result<(), &'static str> {
+    #[cfg(not(test))]
+    {
+        FEEDER_TID.store(crate::task::scheduler::current_thread_id().unwrap_or(0), Ordering::Relaxed);
+        PROGRESS.start(now());
+    }
     let mut kcs = Kcs::new(port);
     let mut identified = false;
     let mut announced = false;
@@ -132,6 +200,8 @@ fn run(port: u32) -> Result<(), &'static str> {
                 crate::serial_println!("[watchdog] previous-expired={}", u8::from(previous[3] & 0x10 != 0));
                 identified = true;
             }
+            #[cfg(not(test))]
+            PROGRESS.enter(Phase::RootLookup);
             policy::feed(&mut kcs, policy::health)
         })();
         match result {
@@ -149,6 +219,8 @@ fn run(port: u32) -> Result<(), &'static str> {
         }
         // Retry after the scheduler wait. A stalled feeder cannot keep an
         // armed timer alive.
+        #[cfg(not(test))]
+        PROGRESS.enter(Phase::Waiting);
         wait(PERIOD_MS)?;
     }
 }
@@ -170,6 +242,14 @@ pub fn start() {
     }
     let port = PORT.load(Ordering::Acquire);
     if port == 0 { return; }
+    let observer_cpu = usize::from(crate::arch_impl::x86_64::smp::is_cpu_online(1));
+    if crate::task::kthread::kthread_run_on_cpu(|| {
+        while wait(5_000).is_ok() {
+            report_stall();
+        }
+    }, "watchdog-observer", observer_cpu).is_err() {
+        crate::serial_println!("[watchdog] observer could not start");
+    }
     if crate::task::kthread::kthread_run_on_cpu(move || {
         if let Err(reason) = run(port) {
             // Losing the thread context prevents further rounds.

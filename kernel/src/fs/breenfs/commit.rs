@@ -17,7 +17,6 @@ use crate::block::{
 use alloc::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
-    vec,
     vec::Vec,
 };
 use core::sync::atomic::{AtomicU8, Ordering};
@@ -665,7 +664,9 @@ pub(crate) fn read(device: &dyn BlockDevice, addr: u64, len: usize) -> Result<Ve
     let start = addr
         .checked_mul((BLOCK_SIZE / sector) as u64)
         .ok_or(Error::EIO)?;
-    let mut bytes = vec![0; len];
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(len).map_err(|_| Error::BlockRead(BlockError::OutOfMemory))?;
+    bytes.resize(len, 0);
     // One device request per read (E24 ledger 372, #3040).
     device
         .read_blocks(start, len / sector, &mut bytes)
