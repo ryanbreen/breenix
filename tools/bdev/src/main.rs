@@ -324,6 +324,7 @@ impl BoxPaths<'_> {
         let mut child = self
             .ssh(&["/bin/bput", path, &size, &digest, "644"])
             .stdin(Stdio::piped())
+            .stdout(Stdio::null())
             .spawn()?;
         let written = child.stdin.take().unwrap().write_all(bytes);
         let status = child.wait()?;
