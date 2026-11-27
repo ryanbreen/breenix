@@ -259,3 +259,158 @@ fn interrupted_transfer_invalidates_stamp_before_writes() {
         .contains("sync the source tree before building"));
     assert!(!cache.exists());
 }
+
+#[test]
+fn changed_paths_select_only_suites_reached_by_the_synced_sources() {
+    let files = tempfile::tempdir().unwrap();
+    let checkout = files.path().canonicalize().unwrap();
+    let git = |args: &[&str]| super::git(&checkout, args).unwrap();
+    git(&["init", "-q"]);
+    for path in [
+        "userland/yes/src/main.rs",
+        "userland/yes/suite/manifest.json",
+        "userland/cat/suite/manifest.json",
+        "userland/crates/bu-format/src/lib.rs",
+        "libs/format/src/lib.rs",
+        "libs/format-extra/src/lib.rs",
+        "kernel/src/main.rs",
+    ] {
+        let path = checkout.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, "old").unwrap();
+    }
+    git(&["add", "."]);
+    git(&[
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "commit",
+        "-qm",
+        "base",
+    ]);
+    git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    fs::write(checkout.join("libs/format/src/lib.rs"), "committed").unwrap();
+    fs::write(checkout.join("kernel/src/main.rs"), "unrelated").unwrap();
+    git(&["add", "."]);
+    git(&[
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "commit",
+        "-qm",
+        "changes",
+    ]);
+    fs::remove_file(checkout.join("userland/yes/src/main.rs")).unwrap();
+    fs::write(checkout.join("libs/format-extra/src/new.rs"), "untracked").unwrap();
+
+    let paths = crate::testing::changed_paths(&checkout).unwrap();
+    assert_eq!(
+        paths.iter().map(String::as_str).collect::<Vec<_>>(),
+        [
+            "kernel/src/main.rs",
+            "libs/format-extra/src/new.rs",
+            "libs/format/src/lib.rs",
+            "userland/yes/src/main.rs",
+        ]
+    );
+    let roots = BTreeSet::from(["userland".into(), "libs/format".into()]);
+    let suites = BTreeMap::from([
+        ("cat".into(), BTreeSet::from(["userland/cat".into()])),
+        (
+            "yes".into(),
+            BTreeSet::from([
+                "userland/yes".into(),
+                "userland/crates/bu-format".into(),
+                "libs/format".into(),
+            ]),
+        ),
+    ]);
+    let select = |paths| crate::testing::select_suites(paths, &roots, &suites).unwrap();
+    assert_eq!(select(&paths), ["yes"]);
+    assert!(select(&BTreeSet::from([
+        "libs/format-extra/src/new.rs".into(),
+        "userland/yes/.cargo/config.toml".into()
+    ]))
+    .is_empty());
+    assert_eq!(
+        select(&BTreeSet::from(["userland/Cargo.lock".into()])),
+        ["cat", "yes"]
+    );
+}
+
+#[test]
+fn successful_sync_publishes_the_stamp_after_transfer() {
+    let files = tempfile::tempdir().unwrap();
+    let source = files.path().to_str().unwrap();
+    let script = files.path().join("ssh");
+    fs::write(
+        &script,
+        "#!/bin/sh\nfor request do :; done\ncase \"$request\" in\n/bin/bput*) set -- ${request}; dest=${2#\'}; dest=${dest%\'}; cat > \"$dest\";;\n*) exec /bin/sh -c \"$request\";;\nesac\n",
+    ).unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+    let remote = BoxPaths {
+        host: "devbox",
+        cache: "/unused",
+        source,
+        ssh_program: &script,
+        ssh_args: &[],
+    };
+    let path = files.path().join(STAMP);
+    fs::write(&path, "old stamp").unwrap();
+
+    let bytes = publish_source(&remote, || {
+        assert!(!path.exists());
+        Ok(TreeStamp {
+            git: GitState {
+                commit: "branch".into(),
+                origin_main: "main".into(),
+                ancestor_of_main: false,
+                dirty: true,
+            },
+            roots: BTreeMap::from([("userland".into(), "source-digest".into())]),
+        })
+    })
+    .unwrap();
+    assert_eq!(fs::read(path).unwrap(), bytes);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
+        serde_json::json!({
+            "commit": "branch", "origin_main": "main", "ancestor_of_main": false,
+            "dirty": true, "roots": {"userland": "source-digest"}
+        })
+    );
+}
+
+#[test]
+fn test_keeps_the_summary_and_returns_the_runner_status() {
+    let files = tempfile::tempdir().unwrap();
+    let script = files.path().join("ssh");
+    fs::write(&script, concat!(
+        "#!/bin/sh\nfor request do :; done\n",
+        "case \"$request\" in *\"'btest' 'run' 'yes' '--json'\") ;; *) exit 90;; esac\n",
+        "printf '%s\\n' '{\"kind\":\"case\",\"pkg\":\"yes\",\"id\":\"default-y\",\"status\":\"fail\",\"diff\":\"--- expected.out\\n+++ actual.out\"}'\n",
+        "printf '%s\\n' '{\"kind\":\"summary\",\"suites\":[]}'\nexit 7\n",
+    )).unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+    let remote = BoxPaths {
+        host: "devbox",
+        source: "/work/src/breenix",
+        cache: "/unused",
+        ssh_program: &script,
+        ssh_args: &[],
+    };
+    let receipt = files.path().join("run.json");
+    let mut output = Vec::new();
+    let status =
+        crate::testing::run_btest(&remote, &["yes".into()], &receipt, &mut output).unwrap();
+    assert_eq!(status, ExitCode::from(7));
+    assert!(String::from_utf8(output)
+        .unwrap()
+        .contains("--- expected.out"));
+    assert_eq!(
+        fs::read_to_string(receipt).unwrap(),
+        "{\"kind\":\"summary\",\"suites\":[]}\n"
+    );
+}
