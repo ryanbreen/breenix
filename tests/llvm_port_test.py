@@ -105,6 +105,48 @@ class LlvmPortTest(unittest.TestCase):
                     self.assertIn(f'Type: regular    Mode:  {mode}', stat)
                     self.assertRegex(stat, r'User:\s+0\s+Group:\s+0')
 
+        with self.subTest(arch='aarch64'), tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            hosted = 'target/hosted/aarch64-breenix-hosted/release'
+            manifest = corpus / 'expect-aarch64.json'
+            inputs = json.loads(manifest.read_text())['objects']
+            files = {
+                '/sbin/suite-llvm': (f'{hosted}/suite-llvm', '0755'),
+                **{f'{llvm}/bin/{name}': (f'target/llvm/aarch64/{name}', '0755')
+                   for name in ('llc', 'llvm-mc', 'bld')},
+                f'{llvm}/lib/libc.a': ('target/llvm/aarch64/libc.a', '0444'),
+                f'{llvm}/linker.ld': ('linker.ld', '0444'),
+            }
+            sources = {}
+            for guest, (local, mode) in files.items():
+                source = root / local
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_bytes((b'\x7fELF' if mode == '0755' else b'') + guest.encode())
+                sources[guest] = (source, mode)
+            sources[f'{llvm}/corpus/expect.json'] = (manifest, '0444')
+            for entry in inputs:
+                sources[f'{llvm}/corpus/{entry["input"]}'] = (corpus / entry['input'], '0444')
+            image = root / 'fixture.img'
+            subprocess.run([mke2fs, '-q', '-t', 'ext2', '-F', image, '16384'],
+                           check=True, capture_output=True, timeout=5)
+            output = io.StringIO()
+            with patch.dict(stage.__globals__, PROGRAMS=root), redirect_stdout(output), \
+                    patch.object(sys, 'argv', ['stage', '--arch', 'aarch64', '--image', str(image),
+                                               '--suite', 'llvm']):
+                stage()
+            record = json.loads(output.getvalue())
+            self.assertEqual(set(record), set(sources))
+            for guest, (source, mode) in sources.items():
+                with self.subTest(path=guest):
+                    data = subprocess.check_output([debugfs, '-R', f'cat {guest}', image],
+                                                   stderr=subprocess.PIPE, timeout=5)
+                    self.assertEqual(data, source.read_bytes())
+                    self.assertEqual(record[guest], hashlib.sha256(data).hexdigest())
+                    stat = subprocess.check_output([debugfs, '-R', f'stat {guest}', image],
+                                                   stderr=subprocess.PIPE, text=True, timeout=5)
+                    self.assertIn(f'Type: regular    Mode:  {mode}', stat)
+                    self.assertRegex(stat, r'User:\s+0\s+Group:\s+0')
+
     def test_corpus_objects_match_mac_llc(self):
         corpus = ROOT / 'toolchain/rust-host/k4/corpus'
         manifest = json.loads((corpus / 'expect.json').read_text())
@@ -128,6 +170,40 @@ class LlvmPortTest(unittest.TestCase):
                     subprocess.run([str(llc), *args], check=True, timeout=10)
                     self.assertEqual(hashlib.sha256(output.read_bytes()).hexdigest(),
                                      entry['sha256'])
+
+    def test_aarch64_corpus_objects_match_mac_llc(self):
+        corpus = ROOT / 'toolchain/rust-host/k4/corpus'
+        x86 = json.loads((corpus / 'expect.json').read_text())
+        manifest = json.loads((corpus / 'expect-aarch64.json').read_text())
+        self.assertEqual(manifest['producer'], x86['producer'])
+        self.assertEqual(manifest['program'], x86['program'])
+        x86_entries = {entry['input']: entry for entry in x86['objects']}
+        entries = manifest['objects']
+        self.assertEqual(len(entries), len(x86_entries))
+        self.assertEqual({entry['input'] for entry in entries}, set(x86_entries))
+        self.assertEqual({p.name for p in corpus.glob('*.ll')}, set(x86_entries))
+        llc = Path(os.environ.get(
+            'BREENIX_MAC_LLC',
+            Path.home() / 'Library/Caches/breenix-e25/k4/x86_64/native-llc/bin/llc'))
+        self.assertEqual(hashlib.sha256(llc.read_bytes()).hexdigest(),
+                         manifest['producer']['sha256'])
+        with tempfile.TemporaryDirectory(prefix='breenix-aarch64-llc-corpus-') as temp:
+            for entry in entries:
+                with self.subTest(input=entry['input']):
+                    expected_args = x86_entries[entry['input']]['arguments'].copy()
+                    index = expected_args.index('-mtriple=x86_64-unknown-elf')
+                    expected_args[index:index + 1] = [
+                        '-mtriple=aarch64-unknown-elf', '-mattr=+v8a,+strict-align']
+                    self.assertEqual(entry['arguments'], expected_args)
+                    output = Path(temp) / (entry['input'] + '.o')
+                    args = [str(corpus / entry['input']) if arg == '<input>' else
+                            str(output) if arg == '<output>' else arg
+                            for arg in entry['arguments']]
+                    subprocess.run([str(llc), *args], check=True, timeout=10)
+                    data = output.read_bytes()
+                    self.assertEqual(hashlib.sha256(data).hexdigest(), entry['sha256'])
+                    self.assertEqual(data[:6], b'\x7fELF\x02\x01')
+                    self.assertEqual(struct.unpack_from('<HH', data, 16), (1, 183))
 
     def test_llc_is_static_breenix_elf(self):
         from cxx_runtime import LLVM_BIN

@@ -163,6 +163,74 @@ mke2fs -q -t ext2 -F -d disk-root target/ext2-aarch64.img 8M
                             stderr=subprocess.DEVNULL)
                         self.assertEqual(result, expected)
 
+    def test_llvm_build_keeps_manifest_and_verifies_scratch_image(self):
+        scripts = self.root / "scripts"
+        for name in ("userspace-manifest.py", "write-boot-target.sh", "rust_host_stage.py",
+                     "lib/root-fs.sh", "metal/metal_root.py", "metal/metal_probe.py",
+                     "metal/transfer_fixture.py"):
+            destination = scripts / name
+            destination.parent.mkdir(exist_ok=True)
+            shutil.copy2(ROOT / "scripts" / name, destination)
+        corpus = self.root / "toolchain/rust-host/k4/corpus"
+        shutil.copytree(ROOT / "toolchain/rust-host/k4/corpus", corpus)
+        programs = self.root / "userspace/programs"
+        (programs / "aarch64").mkdir(parents=True)
+        (programs / "linker.ld").write_text("linker")
+        for name in ("ipc", "rust-std"):
+            (programs / f"aarch64/suite-{name}.elf").write_bytes(name.encode())
+        (self.root / ".gitignore").write_text("/userspace/programs/target/\n")
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        self.executable(programs / "build.sh", '''#!/bin/bash
+set -eu
+cd "$(dirname "$0")"
+printf '%s\n' "$*" >> ../../build-calls
+case "${3:-}" in
+    '') python3 ../../scripts/userspace-manifest.py write --arch "$2" ;;
+    --hosted-bin)
+        out=target/hosted/aarch64-breenix-hosted/release
+        mkdir -p "$out"
+        printf '\177ELF%s suite' "$4" > "$out/$4" ;;
+    --llvm)
+        out=target/llvm/aarch64
+        mkdir -p "$out"
+        for name in llc llvm-mc bld; do printf '\\177ELF%s' "$name" > "$out/$name"; done
+        printf archive > "$out/libc.a" ;;
+    --cxx-runtime)
+        out=target/cxx-runtime/aarch64
+        mkdir -p "$out"
+        for name in static-init-order guarded-static containers-threads; do
+            printf '\\177ELF%s' "$name" > "$out/$name"
+        done ;;
+    *) exit 2 ;;
+esac
+''')
+        self.executable(scripts / "create_ext2_disk.sh", '''#!/bin/bash
+set -eu
+python3 scripts/userspace-manifest.py check "$@"
+mkdir -p disk-root/etc disk-root/sbin
+for name in ipc rust-std; do cp "userspace/programs/aarch64/suite-$name.elf" "disk-root/sbin/suite-$name"; done
+mke2fs -q -t ext2 -F -d disk-root target/ext2-aarch64.img 8M
+''')
+        for name, script in (("cargo", "exit 0"), ("check-kernel-no-neon.sh", "exit 0"),
+                             ("build-background.sh", 'exec "$@"')):
+            self.executable(scripts / name, f"#!/bin/sh\n{script}\n")
+        path = os.pathsep.join((str(scripts), "/opt/homebrew/opt/e2fsprogs/sbin", os.environ["PATH"]))
+        with patch.dict(os.environ, PATH=path):
+            for suites in ("llvm", "ipc,llvm", "llvm,cxx-runtime,ipc,rust-std"):
+                with self.subTest(suites=suites):
+                    calls = self.root / "build-calls"
+                    calls.unlink(missing_ok=True)
+                    self.launch("--no-display", mode=("--mode", "suite", "--suite", suites), build=True)
+                    lines = calls.read_text().splitlines()
+                    hosted = lines.index("--arch aarch64 --hosted-bin suite-llvm --features llvm")
+                    self.assertEqual(lines[hosted + 1], "--arch aarch64 --llvm")
+                    for image, expected in (("target/ext2-aarch64.img", b""),
+                                            ("ext2-writable.img", b"\x7fELFsuite-llvm suite")):
+                        result = subprocess.check_output(
+                            ["debugfs", "-R", "cat /sbin/suite-llvm", self.root / image],
+                            stderr=subprocess.DEVNULL)
+                        self.assertEqual(result, expected)
+
     def test_ui_testing_receiver_and_route_are_limited_to_standalone_suite(self):
         for suite, case in (("ui-testing", None), ("ui-testing", "proof"),
                             ("window-manager", None), ("gpu", None),
