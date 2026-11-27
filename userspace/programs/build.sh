@@ -44,6 +44,9 @@
 #     Build the dynamic suite, its runtime and fixtures into target/kd.
 #   ./userspace/programs/build.sh --arch x86_64|aarch64 --kd-loader
 #     Link the ELF interpreter into target/kd (x86-64) or target/kd/aarch64.
+#   ./userspace/programs/build.sh --arch x86_64|aarch64 --bbench
+#     After an ordinary build: bbench and bbench-exit, and bbench at opt-level 3
+#     in target/bench-o3, for the QEMU bench rig (userland/bbench/RIG.md).
 
 set -e
 
@@ -51,7 +54,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 usage() {
-    echo "Usage: $0 [--arch x86_64|aarch64] [--hosted-bin NAME [--features FEATURES] | --rust-host | --bunwind | --cxx-runtime | --llvm | --rustc | --rust-link | --cargo-suite | --dynamic | --kd-libc | --kd-loader]" >&2
+    echo "Usage: $0 [--arch x86_64|aarch64] [--hosted-bin NAME [--features FEATURES] | --rust-host | --bunwind | --cxx-runtime | --llvm | --rustc | --rust-link | --cargo-suite | --dynamic | --kd-libc | --kd-loader | --bbench]" >&2
     exit 2
 }
 
@@ -68,6 +71,7 @@ CARGO_SUITE=0
 DYNAMIC=0
 KD_LIBC=0
 KD_LOADER=0
+BBENCH=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --arch)
@@ -113,6 +117,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --kd-libc)
             KD_LIBC=1
+            shift
+            ;;
+        --bbench)
+            BBENCH=1
             shift
             ;;
         --kd-loader)
@@ -601,6 +609,29 @@ build_rust_programs() (
         printf "%s\n" "$STD_METADATA_SEED" > "$SCRIPT_DIR/target/$TARGET_DIR/release/std-metadata-seed"
     fi 2>&1 | sed 's/^/  /'
 )
+
+# The QEMU bench rig's binaries: bbench and bbench-exit as shipped (opt-level z),
+# and bbench again at opt-level 3 in target/bench-o3 for the crypto rows. It reuses
+# the libc.a of an earlier ordinary build.
+if [[ "$BBENCH" == 1 ]]; then
+    if [ ! -f "$LIBC_RELEASE_DIR/libc.a" ]; then
+        echo "  ERROR: --bbench needs $LIBC_RELEASE_DIR/libc.a from an ordinary build" >&2
+        exit 1
+    fi
+    (
+        set -o pipefail
+        cd "$SCRIPT_DIR" || exit 1
+        unset CARGO_ENCODED_RUSTFLAGS
+        FORK_COMMIT="$(fork_commit "$RUST_FORK_LIBRARY")" || exit 1
+        STD_METADATA_SEED="${BREENIX_STD_METADATA_SEED:-$FORK_COMMIT}"
+        export __CARGO_TESTS_ONLY_SRC_ROOT="$RUST_FORK_LIBRARY"
+        export RUSTFLAGS="$STD_RUSTFLAGS -C metadata=breenix_std_$STD_METADATA_SEED"
+        cargo build --release --target "$TARGET_JSON" --bin bbench --bin bbench-exit || exit 1
+        CARGO_PROFILE_RELEASE_OPT_LEVEL=3 cargo build --release --target "$TARGET_JSON" \
+            --target-dir "$SCRIPT_DIR/target/bench-o3" --bin bbench
+    ) 2>&1 | sed 's/^/  /'
+    exit "${PIPESTATUS[0]}"
+fi
 
 # Step 1: Build libbreenix-libc (produces libc.a)
 echo "[1/3] Building libbreenix-libc ($ARCH)..."
