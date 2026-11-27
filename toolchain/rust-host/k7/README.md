@@ -112,7 +112,11 @@ symbols. The logging calls use Breenix's timestamped kernel log via
 `/dev/kmsg`, subject to its existing access controls. `LOG_CONS` allows a
 console write when the log device cannot accept the message.
 
-The ARM64 Cargo build still needs its own ELF inventory and guest acceptance.
+The ARM64 archive inventory is in [`x1-aarch64.json`](../x1-aarch64.json).
+Its normal/build closure has the same packages and licenses as x86-64. The eight `-sys` crates produced 8/8 archives; their gaps subtract the pinned ARM
+`libc.so` exports. The archive probe failed later in Cargo's Rust library on
+Mac proc-macro routing. The ARM hosted `proc_macro` sysroot component and
+Cargo ELF inventory and guest acceptance remain outstanding.
 
 ## Offline Cargo suite
 
