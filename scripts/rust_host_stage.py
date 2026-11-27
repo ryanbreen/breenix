@@ -121,22 +121,23 @@ def stage_cxx_runtime(image, selection, suite, probes):
     return stage_files(image, [prefix], entries)
 
 
-def stage_llvm(image, selection, suite, artifacts, corpus, linker):
+def stage_llvm(image, selection, arch, suite, artifacts, corpus, linker):
     if 'llvm' not in selection.split(','):
         return {}
     prefix = '/usr/libexec/breenix/llvm'
-    manifest = corpus / 'expect.json'
+    manifest = corpus / ('expect.json' if arch == 'x86_64' else 'expect-aarch64.json')
     inputs = sorted(corpus.glob('*.ll'))
     if not inputs or {path.name for path in inputs} != {
         entry['input'] for entry in json.loads(manifest.read_text())['objects']
     }:
-        raise ValueError('LLVM corpus files differ from expect.json')
+        raise ValueError(f'LLVM corpus files differ from {manifest.name}')
     entries = [('/sbin/suite-llvm', suite, '0755')]
     entries.extend((f'{prefix}/bin/{name}', artifacts / name, '0755')
                    for name in ('llc', 'llvm-mc', 'bld'))
     entries.extend([(f'{prefix}/lib/libc.a', artifacts / 'libc.a', '0444'),
                     (f'{prefix}/linker.ld', linker, '0444')])
-    entries.extend((f'{prefix}/corpus/{path.name}', path, '0444') for path in [manifest, *inputs])
+    entries.append((f'{prefix}/corpus/expect.json', manifest, '0444'))
+    entries.extend((f'{prefix}/corpus/{path.name}', path, '0444') for path in inputs)
     return stage_files(image, [prefix, f'{prefix}/bin', f'{prefix}/lib', f'{prefix}/corpus'], entries)
 
 
@@ -493,7 +494,7 @@ def main():
 
     staged = stage_cxx_runtime(args.image, args.suite, release / 'suite-cxx-runtime',
                                [PROGRAMS / 'target/cxx-runtime' / args.arch / name for name in CXX_PROBES])
-    staged.update(stage_llvm(args.image, args.suite, release / 'suite-llvm',
+    staged.update(stage_llvm(args.image, args.suite, args.arch, release / 'suite-llvm',
                              PROGRAMS / 'target/llvm' / args.arch,
                              ROOT / 'toolchain/rust-host/k4/corpus', PROGRAMS / 'linker.ld'))
     staged.update(stage_dynamic(args.image, args.suite, args.arch, kd))
