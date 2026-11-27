@@ -103,7 +103,8 @@ def main(args):
             command += ["--target", target]
         return ["command", source / workspace, *command]
 
-    noop = cargo("userland", "yes", "dev-box", data / "noop-artifacts")
+    noop_target = Path(args.noop_target) if args.noop_target else data / "noop-artifacts"
+    noop = cargo("userland", "yes", "dev-box", noop_target)
     cases = {
         "rustc-version": lambda _: ["command", data, *compiler, "-vV"],
         "hello-object": lambda sample: [
@@ -170,10 +171,13 @@ def main(args):
             network_series(args, data, run)
             continue
         if case == "cargo-noop":
-            seed = f"{args.run}-noop-seed"
-            probe(seed, noop)
-            if json.loads((args.out / f"{seed}.json").read_bytes())["error"]:
-                continue
+            if args.noop_target:
+                run(["/bin/test", "-x", noop_target / "x86_64-breenix/dev-box/yes"])
+            else:
+                seed = f"{args.run}-noop-seed"
+                probe(seed, noop)
+                if json.loads((args.out / f"{seed}.json").read_bytes())["error"]:
+                    continue
         for number in range(1, (1 if case == "bcc" else args.count) + 1):
             sample = f"{args.run}-{case}-{number}"
             # Cargo's target directory must differ from the probe's scratch directory.
@@ -280,6 +284,7 @@ if __name__ == "__main__":
     parser.add_argument("--mac-ssh", choices=["localhost"], help="macOS loopback SSH reference")
     parser.add_argument("--source", help="absolute path to the synced source tree on Breenix")
     parser.add_argument("--data", help="absolute path to the scratch directory on Breenix")
+    parser.add_argument("--noop-target", help="absolute target directory from a completed dev-box build of yes")
     parser.add_argument("--bcargo", help="absolute path to bcargo on Breenix")
     parser.add_argument("--wrap-rustc", action="store_true",
                         help="use the PR 3 bcargo loader workaround for direct rustc probes")
