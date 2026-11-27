@@ -985,14 +985,47 @@ pub fn transmit(data: &[u8]) -> Result<(), &'static str> {
         };
     }
 
-    let mut hold = PCI_TX_HOLD.lock();
-    if let Some(slot) = hold.submit(slot as u16) {
-        publish_tx_slot(slot);
-        reg_write_u16(bar0_virt, REG_QUEUE_NOTIFY, 1);
-    }
-    drop(hold);
+    PCI_TX_HOLD
+        .lock()
+        .transmit(&mut PciRings { bar0_virt }, slot as u16);
 
     Ok(())
+}
+
+/// This device's ring and doorbell writes, in the order `PCI_TX_HOLD`
+/// decides. Used only while holding `PCI_TX_HOLD`.
+struct PciRings {
+    bar0_virt: u64,
+}
+
+impl tx_hold::TxRings for PciRings {
+    fn publish_tx(&mut self, slot: u16) {
+        publish_tx_slot(slot);
+    }
+
+    fn notify_tx(&mut self) {
+        reg_write_u16(self.bar0_virt, REG_QUEUE_NOTIFY, 1);
+    }
+
+    fn repost_rx(&mut self) {
+        unsafe {
+            let q = &raw mut PCI_RX_QUEUE;
+            let mut avail_idx = (*q).avail.idx;
+
+            for i in 0..4u16 {
+                (*q).avail.ring[(avail_idx % VIRTQ_SIZE as u16) as usize] = i;
+                avail_idx = avail_idx.wrapping_add(1);
+            }
+
+            fence(Ordering::SeqCst);
+            (*q).avail.idx = avail_idx;
+            fence(Ordering::SeqCst);
+        }
+    }
+
+    fn notify_rx(&mut self) {
+        reg_write_u16(self.bar0_virt, REG_QUEUE_NOTIFY, 0);
+    }
 }
 
 /// Put a filled TX descriptor on the avail ring. The caller holds
@@ -1086,40 +1119,17 @@ pub fn receive() -> Option<&'static [u8]> {
 
 /// Re-post all consumed RX buffers back to the device.
 pub fn recycle_rx_buffers() {
-    let state = unsafe {
-        let ptr = &raw mut NET_PCI_STATE;
+    let bar0_virt = unsafe {
+        let ptr = &raw const NET_PCI_STATE;
         match (*ptr).as_ref() {
-            Some(s) => s,
+            Some(s) => s.bar0_virt,
             None => return,
         }
     };
 
-    unsafe {
-        let q = &raw mut PCI_RX_QUEUE;
-        let mut avail_idx = (*q).avail.idx;
-
-        for i in 0..4u16 {
-            (*q).avail.ring[(avail_idx % VIRTQ_SIZE as u16) as usize] = i;
-            avail_idx = avail_idx.wrapping_add(1);
-        }
-
-        fence(Ordering::SeqCst);
-        (*q).avail.idx = avail_idx;
-        fence(Ordering::SeqCst);
-    }
-
-    reg_write_u16(state.bar0_virt, REG_QUEUE_NOTIFY, 0);
-
-    // RX consumption is over: publish what was held, in order.
-    let mut hold = PCI_TX_HOLD.lock();
-    let held = hold.end_rx();
-    for &slot in held {
-        publish_tx_slot(slot);
-    }
-    if !held.is_empty() {
-        reg_write_u16(state.bar0_virt, REG_QUEUE_NOTIFY, 1);
-    }
-    drop(hold);
+    // RX consumption is over: the hold re-posts and notifies RX, then
+    // publishes what it held, in order.
+    PCI_TX_HOLD.lock().finish_rx(&mut PciRings { bar0_virt });
 }
 
 /// Get the MAC address
