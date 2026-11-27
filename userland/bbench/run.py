@@ -127,7 +127,7 @@ def main(args):
         "walk": lambda _: ["walk", 10_000],
         "fsync": lambda _: ["fsync", 32],
     }
-    defaults = list(cases)
+    defaults = [case for case in cases if not remote or case not in ("sequential", "walk")]
     if args.host or args.mac_ssh:
         defaults.append("network")
     selected = args.cases.split(",") if args.cases else defaults
@@ -290,7 +290,7 @@ if __name__ == "__main__":
     parser.add_argument("--run", required=True, help="unique run prefix, letters/digits/hyphens")
     parser.add_argument("--out", required=True, type=Path, help="local receipt and log directory")
     parser.add_argument("--probe", required=True, help="absolute path to bbench")
-    parser.add_argument("--cases", help="comma-separated case names")
+    parser.add_argument("--cases", help="comma-separated case names (remote defaults omit sequential and walk)")
     parser.add_argument("--count", type=int, choices=range(1, RUNS + 1), default=RUNS,
                         help="samples per selected case, useful for failed-run follow-up")
     parser.add_argument("--host", help="Breenix SSH login or alias")

@@ -179,6 +179,12 @@ python3 userland/bbench/run.py --run "$RUN_ID" --out "$BOX_RECEIPTS" \
     --bcargo "$BOX_BCARGO" --probe "$BOX_PROBE" --wrap-rustc
 ```
 
+The remote defaults skip the 1 GiB sequential write, fsync and read
+workload and the 10,000-file tree walk. Leave both out of R240 reruns
+while [#3226](https://github.com/ryanbreen/breenix/issues/3226) is open.
+These workloads require explicit selection with `--cases` over SSH
+and remain in the native Mac defaults.
+
 The runner uses Python 3.11 or later. Build the native probe from the same sources. Set `MAC_FIXTURE` to the E25
 Mac twin fixture, `MAC_BLD` to its native linker, and `DRIVER_ELF` to the
 retained copy of the exact R240 driver. Enable localhost SSH only if a
