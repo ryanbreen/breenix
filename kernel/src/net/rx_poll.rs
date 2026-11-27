@@ -13,8 +13,8 @@
 //! x86-64: the e1000 interrupts, by MSI or INTx, so its frames need no poller.
 //! Without fw_cfg the stack takes its address from DHCP (`net::uses_dhcp`),
 //! whose client runs from a thread: the BCM5720 runs it on its own worker,
-//! and for an e1000 ke1000dhcp calls `dhcp::maintain` every
-//! `DHCP_INTERVAL_MS`, which keeps the lease state machine's retry, renew and
+//! and for an e1000 ke1000dhcp calls `dhcp::maintain`, then sleeps
+//! `DHCP_INTERVAL_MS`; the lease state machine keeps its own retry, renew and
 //! rebind deadlines.
 
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -32,9 +32,10 @@ static RX_POLL_TID: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_arch = "x86_64")]
 const DHCP_INTERVAL_MS: u64 = 100;
 
-/// Start the thread when the e1000 is the interface: on ARM64 always (other
-/// ARM64 network devices interrupt); on x86-64 when it takes DHCP and no
-/// BCM5720, whose worker owns the one DHCP client, is attached.
+/// Start the thread when the e1000 is the interface. ARM64 needs it for
+/// receive, since the e1000 there takes no interrupt; x86-64 needs it only
+/// when the e1000 takes DHCP and no BCM5720, whose worker owns the one DHCP
+/// client, is attached.
 pub fn init_rx_poll() {
     if !super::active_tx_driver_is_e1000() || RX_POLL_TID.load(Ordering::Acquire) != 0 {
         return;

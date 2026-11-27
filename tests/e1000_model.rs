@@ -176,12 +176,12 @@ struct Device {
     /// The PHY's control register. CTRL.RST does not reach the PHY (SDM 14.7:
     /// "PHY: No effect"; DS 4.2 Table 29), so it keeps what firmware left.
     phy_control: u16,
-    /// When the PHY's negotiation with the link partner completes; `None`
+    /// When the PHY's negotiation with the link partner completes; unset
     /// while it is not negotiating. The partner only auto-negotiates.
     negotiated_at: Option<u64>,
     /// When the MDI cycle in flight completes, with the data a read returns.
     mdi_done_at: Option<(u64, u16)>,
-    /// A PHY that never completes an MDI cycle.
+    /// A PHY that leaves each MDI cycle incomplete.
     mdi_stuck: bool,
     /// Each PHY control value written through MDIC.
     phy_control_writes: Vec<u16>,
@@ -829,7 +829,8 @@ fn bring_up_restores_auto_negotiation_firmware_left_off() {
             }
         }
 
-        // A PHY that never answers MDIC is reported, not taken as configured.
+        // A PHY that leaves its MDIC read incomplete is reported, not taken as
+        // configured.
         let mut silent = Device::new(model, true);
         silent.mdi_stuck = true;
         let refused = Nic::bring_up(&mut silent, model);
