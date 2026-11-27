@@ -49,11 +49,23 @@ GIB = 1024 * MIB
 
 # The repository's standard ARM64 Breenix QEMU shape (run.sh and the production-
 # profile boot test): virt with GICv3, scripts/qemu-arm64.py's accelerator (HVF
-# with -cpu host on Apple Silicon), four CPUs, 512 MiB, one raw virtio-blk-device
-# at QEMU's default cache mode (writeback), virtio-net-device on user networking,
+# with -cpu host on Apple Silicon), four CPUs, raw virtio-blk-device disks at
+# QEMU's default cache mode (writeback), virtio-net-device on user networking,
 # virtio-rng and the virtio input and GPU devices the kernel enumerates.
 CPUS = 4
-MEMORY = "512M"
+# Memory: 512 MiB is the default boot, but the rig runs the compile rows, and the
+# suites behind them declare more (docs/suites/*.json minimumGuestMemory): rustc and
+# cargo 1024 MiB, and the toolchain effort's self-host acceptance 2048 MiB. Both
+# guests get the largest, so neither page cache is starved below the standard.
+TOOLCHAIN_SUITES = ("rustc", "cargo", "self-host")
+
+
+def standard_memory_mib(suites=TOOLCHAIN_SUITES):
+    return max(json.loads((ROOT / f"docs/suites/{suite}.json").read_text())
+               ["minimumGuestMemory"]["mib"] for suite in suites)
+
+
+MEMORY = f"{standard_memory_mib()}M"
 # Linux's root holds the distribution, gcc and the toolchain (2.8 GB on a 4 GiB disk),
 # and the sequential row writes 1 GiB, so both guests get 8 GiB.
 DISK_BYTES = 8192 * MIB
