@@ -38,7 +38,11 @@ impl Excludes {
         Ok(Self(compiled))
     }
 
-    fn matches(&self, path: &str) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub(crate) fn matches(&self, path: &str) -> bool {
         let mut current = path;
         while !current.is_empty() {
             let basename = current.rsplit('/').next().unwrap();

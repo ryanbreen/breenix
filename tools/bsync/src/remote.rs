@@ -1,8 +1,8 @@
 use crate::sftp;
-use crate::tree::{Action, Entry, Tree};
+use crate::tree::{Action, Entry, Excludes, Tree};
 use crate::{normal_relative, parent, Result};
 use std::fs::File;
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -37,8 +37,29 @@ walk() (
     [ -r . ] && [ -x . ] || fail "cannot list directory: $1"
     meta=$(/bin/ls -ldn .) || exit 1
     printf 'd\0%s\0%s\0\0' "$1" "$meta"
-    for leaf in ./* ./.[!.]* ./..?*; do
-        rel=${1:+$1/}${leaf#./}
+    dir=$1
+    set -- ./* ./.[!.]* ./..?*
+    if [ "$filter" = yes ]; then
+        # Ask once per directory, before inspecting its children.
+        printf 'query\0'
+        for leaf do printf '%s\0' "${dir:+$dir/}${leaf#./}"; done
+        printf '\0'
+        IFS= read -r choices || fail "missing exclude response"
+    fi
+    for leaf do
+        rel=${dir:+$dir/}${leaf#./}
+        if [ "$filter" = yes ]; then
+            case "$choices" in
+                0*) choices=${choices#?}
+                    # Keep an opaque record so --delete protects its parents.
+                    if [ -L "$leaf" ] || [ -e "$leaf" ]; then
+                        printf 'o\0%s\0\0\0' "$rel"
+                    fi
+                    continue;;
+                1*) choices=${choices#?};;
+                *) fail "invalid exclude response";;
+            esac
+        fi
         if [ -L "$leaf" ]; then
             printf 'o\0%s\0\0\0' "$rel"
         elif [ -d "$leaf" ]; then
@@ -52,6 +73,7 @@ walk() (
             printf 'o\0%s\0\0\0' "$rel"
         fi
     done
+    [ "$filter" = no ] || [ -z "$choices" ] || fail "invalid exclude response"
 )
 
 case "$root" in
@@ -77,8 +99,9 @@ fi
 printf 'end\0'
 "#;
 
-pub fn listing(root: &str) -> String {
-    format!("{GUARD}\nroot={}\n{LIST}", quote(root))
+pub fn listing(root: &str, excludes: &Excludes) -> String {
+    let filter = if excludes.is_empty() { "no" } else { "yes" };
+    format!("{GUARD}\nroot={}\nfilter={filter}\n{LIST}", quote(root))
 }
 
 pub struct Listing {
@@ -87,17 +110,70 @@ pub struct Listing {
 }
 
 pub fn parse_listing(bytes: &[u8]) -> Result<Listing> {
-    let text = std::str::from_utf8(bytes)?;
-    let mut fields = text.split_terminator('\0');
-    if !text.ends_with('\0') || fields.next() != Some("bsync1") {
+    read_listing(bytes, None)
+}
+
+pub fn run_listing(command: &mut Command, excludes: &Excludes) -> Result<Listing> {
+    let stdin = if excludes.is_empty() {
+        Stdio::null()
+    } else {
+        Stdio::piped()
+    };
+    let mut child = command.stdin(stdin).stdout(Stdio::piped()).spawn()?;
+    let mut reply = child.stdin.take();
+    let input = BufReader::new(child.stdout.take().unwrap());
+    let response = reply
+        .as_mut()
+        .map(|reply| (excludes, reply as &mut dyn Write));
+    let listing = read_listing(input, response);
+    drop(reply);
+    let status = child.wait()?;
+    let listing = listing?;
+    if !status.success() {
+        return Err(format!("remote listing failed ({status})").into());
+    }
+    Ok(listing)
+}
+
+fn read_listing(
+    mut input: impl BufRead,
+    mut response: Option<(&Excludes, &mut dyn Write)>,
+) -> Result<Listing> {
+    let mut fields = std::iter::from_fn(|| -> Option<Result<String>> {
+        let mut field = Vec::new();
+        match input.read_until(0, &mut field) {
+            Ok(0) => None,
+            Ok(_) if field.pop() == Some(0) => Some(String::from_utf8(field).map_err(Into::into)),
+            Ok(_) => Some(Err("unterminated remote listing field".into())),
+            Err(error) => Some(Err(error.into())),
+        }
+    });
+    if fields.next().transpose()?.as_deref() != Some("bsync1") {
         return Err("invalid remote listing header".into());
     }
-    let root = fields.next().ok_or("missing listing root")?;
-    if !absolute(root) {
+    let root = fields.next().transpose()?.ok_or("missing listing root")?;
+    if !absolute(&root) {
         return Err(format!("invalid remote listing root: {root:?}").into());
     }
     let mut entries = Tree::new();
-    while let Some(kind) = fields.next() {
+    while let Some(kind) = fields.next().transpose()? {
+        if kind == "query" {
+            let (excludes, reply) = response.as_mut().ok_or("unexpected exclude query")?;
+            let mut choices = Vec::new();
+            loop {
+                let path = fields
+                    .next()
+                    .transpose()?
+                    .ok_or("truncated exclude query")?;
+                if path.is_empty() {
+                    break;
+                }
+                choices.push(if excludes.matches(&path) { b'0' } else { b'1' });
+            }
+            choices.push(b'\n');
+            reply.write_all(&choices)?;
+            continue;
+        }
         if kind == "end" {
             if fields.next().is_some() {
                 return Err("unexpected data after remote listing".into());
@@ -110,22 +186,28 @@ pub fn parse_listing(bytes: &[u8]) -> Result<Listing> {
                     return Err(format!("remote listing lacks parent of {path:?}").into());
                 }
             }
-            return Ok(Listing {
-                root: root.into(),
-                entries,
-            });
+            return Ok(Listing { root, entries });
         }
-        let path = fields.next().ok_or("truncated remote listing path")?;
-        let meta = fields.next().ok_or("truncated remote listing metadata")?;
-        let digest = fields.next().ok_or("truncated remote listing digest")?;
-        if !(normal_relative(path) || path.is_empty() && kind == "d") {
+        let path = fields
+            .next()
+            .transpose()?
+            .ok_or("truncated remote listing path")?;
+        let meta = fields
+            .next()
+            .transpose()?
+            .ok_or("truncated remote listing metadata")?;
+        let digest = fields
+            .next()
+            .transpose()?
+            .ok_or("truncated remote listing digest")?;
+        if !(normal_relative(&path) || path.is_empty() && kind == "d") {
             return Err(format!("invalid path in remote listing: {path:?}").into());
         }
-        let entry = match kind {
+        let entry = match kind.as_str() {
             "o" if meta.is_empty() && digest.is_empty() => Entry::Other,
-            "d" if digest.is_empty() => Entry::Dir(parse_mode(meta, b'd')?),
+            "d" if digest.is_empty() => Entry::Dir(parse_mode(&meta, b'd')?),
             "f" => {
-                let mode = parse_mode(meta, b'-')?;
+                let mode = parse_mode(&meta, b'-')?;
                 let size = meta
                     .split_ascii_whitespace()
                     .nth(4)
@@ -145,8 +227,13 @@ pub fn parse_listing(bytes: &[u8]) -> Result<Listing> {
             }
             _ => return Err(format!("invalid record for {path:?}").into()),
         };
-        if entries.insert(path.into(), entry).is_some() {
-            return Err(format!("duplicate path in remote listing: {path:?}").into());
+        match entries.entry(path) {
+            std::collections::btree_map::Entry::Occupied(entry) => {
+                return Err(format!("duplicate path in remote listing: {:?}", entry.key()).into());
+            }
+            std::collections::btree_map::Entry::Vacant(slot) => {
+                slot.insert(entry);
+            }
         }
     }
     Err("missing remote listing terminator".into())
@@ -242,18 +329,9 @@ impl Destination {
         command
     }
 
-    pub fn inventory(&self, sudo: bool) -> Result<Listing> {
-        let output = self
-            .command(&listing(&self.path), sudo)
-            .stdin(Stdio::null())
-            .output()?;
-        if !output.stderr.is_empty() {
-            eprint!("{}", String::from_utf8_lossy(&output.stderr));
-        }
-        if !output.status.success() {
-            return Err(format!("remote listing failed ({})", output.status).into());
-        }
-        let listed = parse_listing(&output.stdout)?;
+    pub fn inventory(&self, sudo: bool, excludes: &Excludes) -> Result<Listing> {
+        let script = listing(&self.path, excludes);
+        let listed = run_listing(&mut self.command(&script, sudo), excludes)?;
         if if self.path.starts_with('/') {
             self.path != listed.root
         } else {

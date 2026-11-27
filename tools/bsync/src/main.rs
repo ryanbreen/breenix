@@ -46,7 +46,7 @@ fn run() -> Result<()> {
     let excludes = Excludes::new(&patterns)?;
     let source: PathBuf = std::path::Path::new(source).components().collect();
     let local = scan(&source, &excludes)?;
-    let listing = destination.inventory(sudo)?;
+    let listing = destination.inventory(sudo, &excludes)?;
     let actions = plan(&local, &listing.entries, &excludes, delete)?;
 
     {

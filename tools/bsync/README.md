@@ -34,6 +34,7 @@ to the tree root, with an optional leading slash. Trailing slashes are
 ignored, so `build/` matches the same paths as `build`. `*` and `?` stay within
 a path component and `**` as a full component spans directories. An
 excluded directory and its descendants are also protected from deletion.
+The destination walk skips excluded entries before reading their contents.
 `--delete` removes destination-only entries and allows file/directory
 replacement. Deletion uses individual file removal and empty-directory
 removal.

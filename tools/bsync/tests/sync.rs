@@ -1,4 +1,4 @@
-use bsync::remote::{listing, parse_listing, Destination};
+use bsync::remote::{listing, parse_listing, run_listing, Destination};
 use bsync::tree::{plan, scan, Action, Entry, Excludes};
 use std::fs;
 use std::os::unix::fs::{symlink, PermissionsExt};
@@ -55,6 +55,25 @@ fn trailing_slash_excludes_build_at_any_depth_from_deletion() {
     assert_eq!(
         steps(&plan(&src, &dst, &excludes, true).unwrap()),
         [("DELETE", "nested/build-output")]
+    );
+}
+
+#[test]
+fn remote_inventory_prunes_excluded_subtrees_and_protects_their_parents() {
+    let local = Fixture::new();
+    let remote = Fixture::new();
+    fs::create_dir_all(remote.0.join("outer/.cache-a/invalid\nname")).unwrap();
+    fs::create_dir(remote.0.join("outer/.cache-c")).unwrap();
+    let excludes = Excludes::new(&["outer/**/.cache-[ab]".into()]).unwrap();
+    let script = listing(
+        remote.0.canonicalize().unwrap().to_str().unwrap(),
+        &excludes,
+    );
+    let inventory = run_listing(Command::new("/bin/sh").args(["-c", &script]), &excludes).unwrap();
+    let src = scan(&local.0, &excludes).unwrap();
+    assert_eq!(
+        steps(&plan(&src, &inventory.entries, &excludes, true).unwrap()),
+        [("RMDIR", "outer/.cache-c")]
     );
 }
 
@@ -136,7 +155,7 @@ fn refuses_dot_dot_and_symlinks_at_every_destination_level() {
 
     for relative in ["alias/new", "alias", "dest/link", "dest"] {
         let path = root.join(relative);
-        let script = listing(path.to_str().unwrap());
+        let script = listing(path.to_str().unwrap(), &Excludes::default());
         let output = Command::new("/bin/sh")
             .args(["-c", &script])
             .output()
