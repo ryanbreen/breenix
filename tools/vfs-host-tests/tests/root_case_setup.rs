@@ -56,6 +56,32 @@ fn write(fs: &dyn FileSystem, node: &VNode, offset: u64, bytes: &[u8]) {
     }, bytes).unwrap().bytes, bytes.len());
 }
 
+/// Durable generation and the oldest PENDING `released_generation`.
+pub(crate) fn quarantine(disk: &Disk) -> (u64, Option<u64>) {
+    use crate::breenfs::{commit::DeviceStore, format::{self, Pending}, recover};
+    let sb = recover::recover(disk, false).unwrap();
+    let oldest = recover::space_items(&DeviceStore(disk), &sb).unwrap().into_iter()
+        .filter(|(key, _)| key.item_type == format::PENDING)
+        .map(|(_, bytes)| Pending::decode(&bytes).unwrap().released_generation)
+        .min();
+    (sb.generation, oldest)
+}
+
+/// `blocks` released by the commit after durable generation `released_after`
+/// left allocation: FREE + PENDING gained at least that much, the measure
+/// the guest RootMarker::reclaim uses (E24 583(y2), 646(b4)), since FREE
+/// alone also moves with how many nodes each marker commit copies. And they
+/// are FREE: no PENDING released by that commit or earlier remains.
+pub(crate) fn returned(disk: &Disk, before: (u64, u64), released_after: u64, blocks: u64) {
+    let after = raw(disk);
+    assert!(after.0 + after.1 >= before.0 + before.1 + blocks,
+        "FREE+PENDING {before:?}->{after:?}, expected a gain of {blocks}");
+    let (generation, oldest) = quarantine(disk);
+    assert!(generation >= released_after + 3);
+    assert!(oldest.is_none_or(|g| g > released_after + 1),
+        "PENDING released at {oldest:?} remains at generation {generation}");
+}
+
 fn commits(fs: &dyn FileSystem, marker: &VNode, disk: &Disk) {
     for byte in 0..3 {
         let before = raw(disk);
@@ -103,12 +129,12 @@ fn large_shrink_and_regrowth_return_truncated_data_blocks() {
     with_root(true, |fs, file, marker, disk| {
         write(fs, file, 0, &vec![0x5a; 129 * 4096]);
         commits(fs, marker, disk);
-        let before = fs.statfs().unwrap().free_blocks;
+        let before = raw(disk);
+        let (released_after, _) = quarantine(disk);
         fs.resize(file, 3, false, &|_| Ok(())).unwrap();
         commits(fs, marker, disk);
-        let after = fs.statfs().unwrap().free_blocks;
-        println!("large shrink FREE {before}->{after}");
-        assert!(after >= before + 128);
+        println!("large shrink FREE_PENDING {before:?}->{:?}", raw(disk));
+        returned(disk, before, released_after, 128);
         bytes(fs, file, &[0x5a; 3]);
         fs.resize(file, 129 * 4096, false, &|_| Ok(())).unwrap();
         let mut expected = vec![0; 129 * 4096];
@@ -118,12 +144,12 @@ fn large_shrink_and_regrowth_return_truncated_data_blocks() {
         *expected.last_mut().unwrap() = b'Z';
         bytes(fs, file, &expected);
         commits(fs, marker, disk);
-        let before = fs.statfs().unwrap().free_blocks;
+        let before = raw(disk);
+        let (released_after, _) = quarantine(disk);
         fs.resize(file, 0, false, &|_| Ok(())).unwrap();
         commits(fs, marker, disk);
-        let after = fs.statfs().unwrap().free_blocks;
-        println!("regrowth zero FREE {before}->{after}");
-        assert!(after >= before + 2);
+        println!("regrowth zero FREE_PENDING {before:?}->{:?}", raw(disk));
+        returned(disk, before, released_after, 2);
         bytes(fs, file, b"");
     });
 }
@@ -133,14 +159,14 @@ fn open_truncate_returns_129_data_blocks() {
     with_root(true, |fs, file, marker, disk| {
         write(fs, file, 0, &vec![0x5a; 129 * 4096]);
         commits(fs, marker, disk);
-        let before = fs.statfs().unwrap().free_blocks;
+        let before = raw(disk);
+        let (released_after, _) = quarantine(disk);
         let opened = fs.open(file.ino).unwrap();
         // O_TRUNC dispatches resize through this VFS boundary.
         fs.resize(&opened, 0, false, &|_| Ok(())).unwrap();
         commits(fs, marker, disk);
-        let after = fs.statfs().unwrap().free_blocks;
-        println!("open truncate FREE {before}->{after}");
-        assert!(after >= before + 129);
+        println!("open truncate FREE_PENDING {before:?}->{:?}", raw(disk));
+        returned(disk, before, released_after, 129);
         bytes(fs, &opened, b"");
         write(fs, &opened, 0, b"fresh");
         bytes(fs, &opened, b"fresh");

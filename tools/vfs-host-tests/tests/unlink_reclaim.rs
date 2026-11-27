@@ -189,7 +189,10 @@ fn last_close_releases_identified_extents_and_removes_inode() {
     write(fs.as_ref(), &file, 61440, b"tail");
     let ino = file.ino;
     let second = fs.open(ino).unwrap();
-    let before = free(fs.as_ref(), &marker);
+    free(fs.as_ref(), &marker);
+    // FREE + PENDING, as the guest RootMarker::reclaim measures (E24
+    // 583(y2), 646(b4)); `released` below checks these blocks are FREE.
+    let before = crate::root_case_setup::raw(&disk);
     let baseline = stopped(&disk.bytes.lock().unwrap(), ino, false);
     assert_eq!(baseline.status, 0, "{:?}", baseline.findings);
     let physical: Vec<_> = baseline.extents.iter().flat_map(|&(start, length)| start..start + length).collect();
@@ -242,9 +245,9 @@ fn last_close_releases_identified_extents_and_removes_inode() {
     assert_eq!(final_state.status, 0, "{:?}", final_state.findings);
     assert_eq!(final_state.generation, publication.generation + 2);
     assert!(released(&final_state, &physical, None), "{final_state:?} blocks={physical:?}");
-    let after = fs.statfs().unwrap().free_blocks;
-    assert!(after >= before + blocks);
-    println!("RECLAIM_EXTENTS generation={} free={} owners=0 FREE={before}->{after}", final_state.generation, physical.len());
+    let after = crate::root_case_setup::raw(&disk);
+    assert!(after.0 + after.1 >= before.0 + before.1 + blocks, "FREE+PENDING {before:?}->{after:?}");
+    println!("RECLAIM_EXTENTS generation={} free={} owners=0 FREE_PENDING={before:?}->{after:?}", final_state.generation, physical.len());
     let mut allocated = final_image;
     let (start, length) = baseline.extents[0];
     plant_extent(&mut allocated, start, length, &final_state);
