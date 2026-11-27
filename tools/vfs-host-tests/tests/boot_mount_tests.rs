@@ -286,6 +286,8 @@ fn cutover_system() -> Box<SparseBreenFsDisk> {
     let mut files = Files::format(DeviceStore(disk.as_ref()), &sb).unwrap();
     let at = Default::default();
     files.mkdir(2, b"home", 0o755, at).unwrap();
+    let usr = files.mkdir(2, b"usr", 0o755, at).unwrap();
+    files.mkdir(usr, b"local", 0o755, at).unwrap();
     for name in [b"etc", b"var", b"opt", b"srv", b"tmp", b"run"] {
         files.mkdir(2, name, 0o755, at).unwrap();
     }
@@ -431,6 +433,7 @@ fn format_three_mounts_migration_cutover_and_rescue_by_uuid() {
                 "none /srv breenfs rw 0 0\n",
                 "none /tmp breenfs rw 0 0\n",
                 "none /run breenfs rw 0 0\n",
+                "none /usr/local breenfs rw 0 0\n",
                 "none /home breenfs rw,nosuid,nodev 0 0\n",
             ),
         ),
