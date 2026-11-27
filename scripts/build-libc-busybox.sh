@@ -132,6 +132,12 @@ configure() {
     make "${MAKE_ARGS[@]}" allnoconfig > "$WORK/config.log" 2>&1
     apply_config "$FRAGMENT" "$@"
     { yes "" || true; } | make "${MAKE_ARGS[@]}" oldconfig >> "$WORK/config.log" 2>&1
+    # BusyBox adds -h to ls_options only when this feature survives Kconfig.
+    if grep -qx 'CONFIG_LS=y' "$SRC/.config" &&
+        ! grep -qx 'CONFIG_FEATURE_HUMAN_READABLE=y' "$SRC/.config"; then
+        echo "libc-busybox: configured ls is missing -h (CONFIG_FEATURE_HUMAN_READABLE)" >&2
+        return 1
+    fi
 }
 
 # This top-level prerequisite builds every applet/library directory without
