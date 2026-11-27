@@ -35,6 +35,8 @@ libuitest = { path = "../../libs/libuitest" }
 noto-sans-mono-bitmap = { version = "0.3", default-features = false, features = ["size_16", "size_20", "size_24", "size_32", "regular", "bold", "unicode-basic-latin", "unicode-latin-1-supplement", "unicode-specials"] }
 bgl = { path = "../../libs/bgl" }
 libbreenix = { path = "../../libs/libbreenix", features = ["std"] }
+# bbench's process and memory probes (the bbench bins below).
+bu-sys = { path = "../../userland/crates/bu-sys" }
 breenix-suite = { path = "../../libs/libbreenix/suite" }
 breengel = { path = "../../libs/breengel" }
 libfont = { path = "../../libs/libfont" }
@@ -678,6 +680,16 @@ path = "../../userland/bsshd/src/bsshd.rs"
 [[bin]]
 name = "bssh"
 path = "src/bssh.rs"
+
+# bbench for the ARM64 QEMU rig (userland/bbench/rig.py). The rig uploads these
+# over SSH instead of packing them into the system image.
+[[bin]]
+name = "bbench"
+path = "../../userland/bbench/src/main.rs"
+
+[[bin]]
+name = "bbench-exit"
+path = "../../userland/bbench/src/bin/bbench-exit.rs"
 
 [[bin]]
 name = "usb_pointer_check"
