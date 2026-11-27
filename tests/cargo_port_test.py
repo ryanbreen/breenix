@@ -229,6 +229,10 @@ class CargoPort(unittest.TestCase):
 
         libc = record['libc']
         self.assertRegex(libc['sha256'], r'^[0-9a-f]{64}$')
+        if arch == 'aarch64':
+            pin = json.loads((directory / 'hosted-libc-aarch64.json').read_text())
+            self.assertEqual(libc['sha256'], pin['sha256']['libc.so'])
+            self.assertIsInstance(record['remaining_breenix_symbols'], list)
         exports = set(libc['exports'])
         self.assertIn('__errno_location', exports)
         self.assertIn('getentropy', exports)
