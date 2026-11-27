@@ -8,22 +8,6 @@ pub mod fs {
 }
 
 pub mod net {
-    pub mod dhcp {
-        pub struct Lease {
-            pub nameservers: [Option<[u8; 4]>; 3],
-            pub ntp_servers: [Option<[u8; 4]>; 3],
-            pub server: [u8; 4],
-        }
-
-        pub fn lease() -> Option<Lease> {
-            None
-        }
-
-        pub fn configuration_required() -> bool {
-            false
-        }
-    }
-
     pub mod tcp {
         pub struct Counters {
             pub checksum_rejected: u64,
@@ -61,21 +45,14 @@ pub mod drivers {
     }
 }
 
-#[path = "../kernel/src/fs/procfs/net.rs"]
-pub mod procfs_net;
-
-// The kernel uses this sibling generator through the procfs dispatcher.
-const _: fn() -> Result<String, i32> = procfs_net::generate_pnp;
+#[path = "../kernel/src/fs/procfs/receive_counters.rs"]
+pub mod receive_counters;
 
 #[test]
 fn receive_counters_are_read_only_for_root_and_wheel() {
-    let attrs = procfs_net::receive_counters_attrs("/proc/net/rx_counters").unwrap();
+    let attrs = receive_counters::receive_counters_attrs("/proc/trace/rx_counters").unwrap();
     assert_eq!((attrs.mode, attrs.uid, attrs.gid), (0o100440, 0, 10));
-    assert!(procfs_net::list_entries()
-        .unwrap()
-        .iter()
-        .any(|name| name == "rx_counters"));
-    assert!(procfs_net::generate_receive_counters()
+    assert!(receive_counters::generate_receive_counters()
         .unwrap()
         .contains("tcp_rx_gap_segments: 42\n"));
 }

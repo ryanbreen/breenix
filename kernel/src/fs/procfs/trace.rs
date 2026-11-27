@@ -306,7 +306,7 @@ pub fn generate_counters() -> String {
     #[cfg(target_arch = "aarch64")]
     append_net_pci_diag(&mut output);
 
-    super::net::append_receive_counters(&mut output);
+    super::receive_counters::append_receive_counters(&mut output);
 
     if count == 0 {
         output.push_str("# (no counters registered)\n");

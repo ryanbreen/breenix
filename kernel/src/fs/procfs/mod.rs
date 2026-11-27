@@ -23,6 +23,7 @@
 //! - `/proc/trace/events` - List of available trace points
 //! - `/proc/trace/buffer` - Trace buffer contents
 //! - `/proc/trace/counters` - Trace counter values
+//! - `/proc/trace/rx_counters` - Network receive counters for wheel
 //! - `/proc/trace/providers` - Registered trace providers
 //!
 //! # Architecture
@@ -43,6 +44,7 @@
 mod net;
 mod pid_stat;
 mod pid_path;
+mod receive_counters;
 mod status_memory;
 
 use alloc::string::String;
@@ -52,7 +54,7 @@ use spin::Mutex;
 mod trace;
 mod xhci;
 
-pub use net::receive_counters_attrs;
+pub use receive_counters::receive_counters_attrs;
 
 /// Procfs entry types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,6 +77,8 @@ pub enum ProcEntryType {
     TraceBuffer,
     /// /proc/trace/counters - trace counter values
     TraceCounters,
+    /// /proc/trace/rx_counters - TCP and NIC receive diagnostics, readable by wheel
+    TraceReceiveCounters,
     /// /proc/trace/providers - registered providers
     TraceProviders,
     /// /proc/trace/teardown - per-PID teardown evidence directory
@@ -151,8 +155,6 @@ pub enum ProcEntryType {
     NetPnp,
     /// /proc/net/tcp - TCP listeners and connections, the first columns of Linux's format
     NetTcp,
-    /// /proc/net/rx_counters - TCP and NIC receive diagnostics, readable by wheel
-    NetReceiveCounters,
     /// /proc/console - screen console directory
     #[cfg(target_arch="x86_64")]
     Gt710Pixels,
@@ -218,6 +220,7 @@ impl ProcEntryType {
             ProcEntryType::TraceEvents => "events",
             ProcEntryType::TraceBuffer => "buffer",
             ProcEntryType::TraceCounters => "counters",
+            ProcEntryType::TraceReceiveCounters => "rx_counters",
             ProcEntryType::TraceProviders => "providers",
             ProcEntryType::TraceTeardownDir => "teardown",
             ProcEntryType::TraceTeardownPid(_) => "pid",
@@ -259,7 +262,6 @@ impl ProcEntryType {
             ProcEntryType::NetDir => "net",
             ProcEntryType::NetPnp => "pnp",
             ProcEntryType::NetTcp => "tcp",
-            ProcEntryType::NetReceiveCounters => "rx_counters",
             #[cfg(target_arch="x86_64")]
             ProcEntryType::Gt710Pixels => "gt710-pixels",
             #[cfg(target_arch="x86_64")]
@@ -309,6 +311,7 @@ impl ProcEntryType {
             ProcEntryType::TraceEvents => "/proc/trace/events",
             ProcEntryType::TraceBuffer => "/proc/trace/buffer",
             ProcEntryType::TraceCounters => "/proc/trace/counters",
+            ProcEntryType::TraceReceiveCounters => receive_counters::RECEIVE_COUNTERS_PATH,
             ProcEntryType::TraceProviders => "/proc/trace/providers",
             ProcEntryType::TraceTeardownDir => "/proc/trace/teardown",
             ProcEntryType::TraceTeardownPid(_) => "/proc/trace/teardown/<pid>",
@@ -350,7 +353,6 @@ impl ProcEntryType {
             ProcEntryType::NetDir => "/proc/net",
             ProcEntryType::NetPnp => "/proc/net/pnp",
             ProcEntryType::NetTcp => "/proc/net/tcp",
-            ProcEntryType::NetReceiveCounters => net::RECEIVE_COUNTERS_PATH,
             #[cfg(target_arch="x86_64")]
             ProcEntryType::Gt710Pixels => "/proc/gt710-pixels",
             #[cfg(target_arch="x86_64")]
@@ -401,6 +403,7 @@ impl ProcEntryType {
             ProcEntryType::TraceEvents => 102,
             ProcEntryType::TraceBuffer => 103,
             ProcEntryType::TraceCounters => 104,
+            ProcEntryType::TraceReceiveCounters => 107,
             ProcEntryType::TraceProviders => 105,
             ProcEntryType::TraceTeardownDir => 106,
             ProcEntryType::TraceTeardownPid(pid) => pid_inode(*pid, 3),
@@ -442,7 +445,6 @@ impl ProcEntryType {
             ProcEntryType::NetDir => 400,
             ProcEntryType::NetPnp => 401,
             ProcEntryType::NetTcp => 402,
-            ProcEntryType::NetReceiveCounters => 403,
             ProcEntryType::FbconDir => 500,
             ProcEntryType::FbconCheck => 501,
             #[cfg(target_arch="x86_64")]
@@ -623,7 +625,6 @@ pub fn init() {
     procfs.entries.push(ProcEntry::new(ProcEntryType::NetDir));
     procfs.entries.push(ProcEntry::new(ProcEntryType::NetPnp));
     procfs.entries.push(ProcEntry::new(ProcEntryType::NetTcp));
-    procfs.entries.push(ProcEntry::new(ProcEntryType::NetReceiveCounters));
     #[cfg(target_arch="x86_64")]
     procfs.entries.push(ProcEntry::new(ProcEntryType::Gt710Pixels));
     #[cfg(target_arch="x86_64")]
@@ -662,6 +663,7 @@ pub fn init() {
     procfs
         .entries
         .push(ProcEntry::new(ProcEntryType::TraceCounters));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::TraceReceiveCounters));
     procfs
         .entries
         .push(ProcEntry::new(ProcEntryType::TraceProviders));
@@ -754,6 +756,7 @@ pub fn list_entries() -> Result<Vec<String>, i32> {
                     | ProcEntryType::TraceEvents
                     | ProcEntryType::TraceBuffer
                     | ProcEntryType::TraceCounters
+                    | ProcEntryType::TraceReceiveCounters
                     | ProcEntryType::TraceProviders
                     | ProcEntryType::TraceTeardownDir
                     | ProcEntryType::BreenixTesting
@@ -773,7 +776,6 @@ pub fn list_entries() -> Result<Vec<String>, i32> {
                     | ProcEntryType::BlockCache
                     | ProcEntryType::NetPnp
                     | ProcEntryType::NetTcp
-                    | ProcEntryType::NetReceiveCounters
             ) && !is_console_file(&e.entry_type)
         }) {
             let name = e.entry_type.name();
@@ -874,6 +876,7 @@ pub fn list_trace_entries() -> Vec<String> {
                     | ProcEntryType::TraceEvents
                     | ProcEntryType::TraceBuffer
                     | ProcEntryType::TraceCounters
+                    | ProcEntryType::TraceReceiveCounters
                     | ProcEntryType::TraceProviders
                     | ProcEntryType::TraceTeardownDir
             )
@@ -1027,6 +1030,7 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         ProcEntryType::TraceEvents => require(Operation::Trace).and_then(|()| text(trace::generate_events())),
         ProcEntryType::TraceBuffer => require(Operation::Trace).and_then(|()| text(trace::generate_buffer())),
         ProcEntryType::TraceCounters => require(Operation::Trace).and_then(|()| text(trace::generate_counters())),
+        ProcEntryType::TraceReceiveCounters => receive_counters::generate_receive_counters().map(String::into_bytes),
         ProcEntryType::TraceProviders => require(Operation::Trace).and_then(|()| text(trace::generate_providers())),
         ProcEntryType::TraceTeardownDir => require(Operation::Trace).and_then(|()| text(String::from("<pid>\n"))),
         ProcEntryType::TraceTeardownPid(pid) => {
@@ -1078,7 +1082,6 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         }
         ProcEntryType::NetPnp => net::generate_pnp().map(String::into_bytes),
         ProcEntryType::NetTcp => crate::net::tcp::proc_net_tcp().map(String::into_bytes),
-        ProcEntryType::NetReceiveCounters => net::generate_receive_counters().map(String::into_bytes),
         #[cfg(target_arch="x86_64")]
         ProcEntryType::Gt710Pixels => require(Operation::Trace).map(|()|crate::gk208::proc_pixels()),
         #[cfg(target_arch="x86_64")]
