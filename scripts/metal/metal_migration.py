@@ -443,7 +443,7 @@ def admit(phase, boot_id, commit, tools_commit):
     if phase == 'add':
         slots = metal_persist.read_disk().get('slots', {})
         current = slots.get('current') or {}
-        generation = current.get('installedBy')
+        generation = metal_persist.slot_userland(current)
         if (not layout or cycle.get('boots')
                 or not re.fullmatch(r'[A-Za-z0-9-]{1,64}', generation or '')
                 or slots.get('next')):

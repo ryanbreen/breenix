@@ -137,6 +137,8 @@ def outer(args):
     inner = [sys.executable, str(Path(__file__).resolve()), '--inner', '--id', args.id, '--sha', args.sha,
              '--repo', args.repo, '--rust-fork', args.rust_fork, '--cache', args.cache, '--root', args.root,
              '--stub', args.stub, '--guard-target', target, '--features', args.features, '--suite', args.suite]
+    if args.kernel_only:
+        inner.append('--kernel-only')
     if args.milestone:
         inner += ['--milestone', args.milestone]
     status = subprocess.call([sys.executable, str(HELPER), 'supervise', '--'] + inner,
@@ -193,6 +195,7 @@ def inner(args):
     logs = tmp / 'logs'
     logs.mkdir(parents=True, exist_ok=True)
     local = bool(getattr(args, 'local', False))
+    kernel_only = getattr(args, 'kernel_only', False)
     if local:
         home = os.environ['CARGO_HOME']
     else:
@@ -203,6 +206,7 @@ def inner(args):
     suites = args.suite.split(',')
     seed = clone / 'testdata/ext2.img'
     fixture_builder = clone / 'scripts/breenfs-suite-fixtures.sh'
+    breenfs_manifest = clone / 'tools/breenfs/Cargo.toml'
     build_fixtures = 'filesystem' in suites and fixture_builder.is_file()
     transfer = transfer_fixture.selected(args.suite)
     toolchain = 'toolchain' in suites
@@ -258,60 +262,60 @@ def inner(args):
             subprocess.run([sys.executable, str(HELPER), 'acquire', 'metal-build'], check=True)
         timings['slot_wait'] = round(time.time() - started)
         try:
-            started = time.time()
-            # Use the guest image's standard file creation mask for the Mac recipe.
-            artifact_command = [sys.executable, str(ARTIFACTS), '--metal', str(clone), str(logs)]
-            if subprocess.call(artifact_command, cwd=clone, umask=0o022 if local else -1) != 0:
-                keep_logs(logs, out)
-                return 1
-            timings['userspace'] = round(time.time() - started)
-            breenfs_tools = ('breenfs-mkfs', 'breenfs-check', 'breenfs-extract')
-            breenfs_manifest = clone / 'tools/breenfs/Cargo.toml'
-            if breenfs_manifest.is_file():
+            if not kernel_only:
                 started = time.time()
-                log = logs / 'breenfs-tools-build.log'
-                target = 'x86_64-unknown-linux-gnu'
-                target_dir = tmp / 'breenfs-target'
-                environment = dict(os.environ)
-                if local:
-                    # The Mac builder delivers executables for the Linux service container.
-                    linker = tmp / 'breenfs-linux-cc'
-                    linker.write_text('#!/bin/sh\nexec ' + shlex.quote(shutil.which('zig') or 'zig')
-                                      + ' cc -target x86_64-linux-gnu.2.31 "$@"\n')
-                    linker.chmod(0o755)
-                    environment['CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER'] = str(linker)
-                    environment['CARGO_ENCODED_RUSTFLAGS'] = '-Z\x1flinker-features=-lld'
-                command = ['cargo', 'build', '--release', '--locked', '--manifest-path', str(breenfs_manifest),
-                           '--target', target, '--target-dir', str(target_dir)]
-                for name in breenfs_tools:
-                    command += ['--bin', name]
-                with log.open('w') as output:
-                    status = subprocess.call(command, cwd=clone, env=environment,
-                                             stdout=output, stderr=subprocess.STDOUT)
-                if not clean_build(status, log, 'BreenFS tools', logs, out):
+                # Use the guest image's standard file creation mask for the Mac recipe.
+                artifact_command = [sys.executable, str(ARTIFACTS), '--metal', str(clone), str(logs)]
+                if subprocess.call(artifact_command, cwd=clone, umask=0o022 if local else -1) != 0:
+                    keep_logs(logs, out)
                     return 1
-                for name in breenfs_tools:
-                    shutil.copyfile(target_dir / target / 'release' / name, out / name)
-                    (out / name).chmod(0o755)
-                timings['breenfs_tools'] = round(time.time() - started)
-            helper = clone / 'scripts/metal/sha512-crypt.rs'
-            if helper.is_file():
-                log = logs / 'console-hash-build.log'
-                command = ['rustc', '--edition=2021', '-O', str(helper), '-o', str(out / 'sha512-crypt')]
-                if local:
-                    source = (Path(__file__).resolve().parent / 'sha512-crypt-linux.rs').read_text()
-                    source = source.replace('@SHA512@', str(clone / 'libs/libbreenix/src/crypto/sha512.rs'))
-                    source = source.replace('@CRYPT@', str(clone / 'libs/libbreenix/src/crypto/sha512_crypt.rs'))
-                    portable = tmp / 'sha512-crypt-linux.rs'
-                    portable.write_text(source)
-                    command = ['rustc', '--edition=2021', '-O', '--target', 'x86_64-unknown-none',
-                               '-C', 'relocation-model=static', '-C', 'link-arg=-no-pie',
-                               str(portable), '-o', str(out / 'sha512-crypt')]
-                with log.open('w') as output:
-                    status = subprocess.call(command, cwd=clone,
-                                             stdout=output, stderr=subprocess.STDOUT)
-                if not clean_build(status, log, 'console hash helper', logs, out):
-                    return 1
+                timings['userspace'] = round(time.time() - started)
+                breenfs_tools = ('breenfs-mkfs', 'breenfs-check', 'breenfs-extract')
+                if breenfs_manifest.is_file():
+                    started = time.time()
+                    log = logs / 'breenfs-tools-build.log'
+                    target = 'x86_64-unknown-linux-gnu'
+                    target_dir = tmp / 'breenfs-target'
+                    environment = dict(os.environ)
+                    if local:
+                        # The Mac builder delivers executables for the Linux service container.
+                        linker = tmp / 'breenfs-linux-cc'
+                        linker.write_text('#!/bin/sh\nexec ' + shlex.quote(shutil.which('zig') or 'zig')
+                                          + ' cc -target x86_64-linux-gnu.2.31 "$@"\n')
+                        linker.chmod(0o755)
+                        environment['CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER'] = str(linker)
+                        environment['CARGO_ENCODED_RUSTFLAGS'] = '-Z\x1flinker-features=-lld'
+                    command = ['cargo', 'build', '--release', '--locked', '--manifest-path', str(breenfs_manifest),
+                               '--target', target, '--target-dir', str(target_dir)]
+                    for name in breenfs_tools:
+                        command += ['--bin', name]
+                    with log.open('w') as output:
+                        status = subprocess.call(command, cwd=clone, env=environment,
+                                                 stdout=output, stderr=subprocess.STDOUT)
+                    if not clean_build(status, log, 'BreenFS tools', logs, out):
+                        return 1
+                    for name in breenfs_tools:
+                        shutil.copyfile(target_dir / target / 'release' / name, out / name)
+                        (out / name).chmod(0o755)
+                    timings['breenfs_tools'] = round(time.time() - started)
+                helper = clone / 'scripts/metal/sha512-crypt.rs'
+                if helper.is_file():
+                    log = logs / 'console-hash-build.log'
+                    command = ['rustc', '--edition=2021', '-O', str(helper), '-o', str(out / 'sha512-crypt')]
+                    if local:
+                        source = (Path(__file__).resolve().parent / 'sha512-crypt-linux.rs').read_text()
+                        source = source.replace('@SHA512@', str(clone / 'libs/libbreenix/src/crypto/sha512.rs'))
+                        source = source.replace('@CRYPT@', str(clone / 'libs/libbreenix/src/crypto/sha512_crypt.rs'))
+                        portable = tmp / 'sha512-crypt-linux.rs'
+                        portable.write_text(source)
+                        command = ['rustc', '--edition=2021', '-O', '--target', 'x86_64-unknown-none',
+                                   '-C', 'relocation-model=static', '-C', 'link-arg=-no-pie',
+                                   str(portable), '-o', str(out / 'sha512-crypt')]
+                    with log.open('w') as output:
+                        status = subprocess.call(command, cwd=clone,
+                                                 stdout=output, stderr=subprocess.STDOUT)
+                    if not clean_build(status, log, 'console hash helper', logs, out):
+                        return 1
 
             started = time.time()
             log = logs / 'kernel-build.log'
@@ -553,7 +557,8 @@ def inner(args):
         shutil.copyfile(kernel_image, out / 'uefi.img')
         # The self-host fixture already holds the hosted runtime and bundle.
         # Keep the ordinary root artifact free of a second copy.
-        shutil.copyfile(seed if self_host else root, out / 'ext2.img')
+        if not kernel_only:
+            shutil.copyfile(seed if self_host else root, out / 'ext2.img')
         if args.features == 'testing':
             shutil.copyfile(clone / TEST_BINARIES, out / 'test-binaries.img')
         copied = []
@@ -585,8 +590,12 @@ def inner(args):
                  'cargoJobs': int(os.environ['CARGO_BUILD_JOBS']),
                  'uefi': {'size': (out / 'uefi.img').stat().st_size, 'sha256': sha256(out / 'uefi.img')},
                  'stub': {'size': (out / 'stub.efi').stat().st_size, 'sha256': sha256(out / 'stub.efi')},
-                 'manager': {'size': (out / 'manager.efi').stat().st_size, 'sha256': sha256(out / 'manager.efi')},
-                 'ext2': {'size': (out / 'ext2.img').stat().st_size, 'sha256': sha256(out / 'ext2.img')}}
+                 'manager': {'size': (out / 'manager.efi').stat().st_size, 'sha256': sha256(out / 'manager.efi')}}
+        if kernel_only:
+            build['kernelOnly'] = True
+        else:
+            build['ext2'] = {'size': (out / 'ext2.img').stat().st_size, 'sha256': sha256(out / 'ext2.img')}
+            build['localUserlandGuard'] = (clone / 'userspace/programs/src/persistent_install/local.rs').is_file()
         if toolchain_build is not None:
             build['toolchain'] = toolchain_build
         if staged_files:
@@ -601,7 +610,7 @@ def inner(args):
         if (out / 'sha512-crypt').is_file():
             build['consoleHashHelper'] = {'size': (out / 'sha512-crypt').stat().st_size,
                                           'sha256': sha256(out / 'sha512-crypt')}
-        if breenfs_manifest.is_file():
+        if not kernel_only and breenfs_manifest.is_file():
             build['breenfsTools'] = {name: {'size': (out / name).stat().st_size, 'sha256': sha256(out / name)}
                                     for name in breenfs_tools}
         if d1:
@@ -675,6 +684,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--catchup', action='store_true', help='request catch-up under the policy from origin/main')
     parser.add_argument('--inner', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--kernel-only', action='store_true', help='build the production kernel without userland')
     parser.add_argument('--stub-only', action='store_true', help='build only the deployed EFI applications')
     parser.add_argument('--tools-profile', choices=('disk-readback', 'boot-manager', 'persistent-export', 'reclaim-ext2'),
                         default='disk-readback',
@@ -692,6 +702,8 @@ def main():
         parser.error('--id must be a metal boot id and --sha a full commit id')
     if args.suite and not re.fullmatch(r'[a-z0-9]+(?:-[a-z0-9]+)*(?:,[a-z0-9]+(?:-[a-z0-9]+)*)*', args.suite):
         parser.error('--suite must be a suite id or ids joined by commas')
+    if args.kernel_only and (args.stub_only or args.features or args.suite or args.milestone):
+        parser.error('--kernel-only needs a production kernel without suite inputs')
     if args.stub_only:
         return stub_only(args)
     return inner(args) if args.inner else outer(args)

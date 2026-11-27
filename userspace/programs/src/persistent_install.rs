@@ -16,6 +16,8 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 #[path = "../../../libs/libbreenix/src/layout.rs"]
 mod layout;
+#[path = "persistent_install/local.rs"]
+pub(crate) mod local;
 #[cfg(target_os = "breenix")]
 #[path = "persistent_install/breenfs.rs"]
 mod breenfs;
@@ -56,7 +58,7 @@ const LEFT_BEHIND: [&str; 4] = ["etc/breenix/test-ssh", "etc/breenix/test-users"
 const ROOT_LEFT_BEHIND: &str = "root/.ssh";
 
 #[derive(Default)]
-struct Totals {
+pub(crate) struct Totals {
     files: u64,
     dirs: u64,
     links: u64,
@@ -572,11 +574,19 @@ fn seed_shared(copier: &mut Copier, source: &Path, target: &Path, previous: Opti
     copier.write_file(&marker, "BREENIX-SHARED 2\n", 0o600)
 }
 
+#[cfg(test)]
 fn install_tree(source: &Path, target: &Path, id: &str, checkpoint: &mut dyn FnMut() -> std::io::Result<()>) -> Result<Totals, String> {
     install_tree_from(source, target, id, None, checkpoint)
 }
 
-fn install_tree_from(source: &Path, target: &Path, id: &str, previous: Option<&str>, checkpoint: &mut dyn FnMut() -> std::io::Result<()>) -> Result<Totals, String> {
+#[cfg(not(target_os = "breenix"))]
+pub(crate) fn install_tree_from(source: &Path, target: &Path, id: &str, previous: Option<&str>, checkpoint: &mut dyn FnMut() -> std::io::Result<()>) -> Result<Totals, String> {
+    install_tree_with_local(source, target, id, previous, false, None, checkpoint)
+}
+
+pub(crate) fn install_tree_with_local(source: &Path, target: &Path, id: &str, previous: Option<&str>,
+    carry: bool, retained: Option<&[&str]>, checkpoint: &mut dyn FnMut() -> std::io::Result<()>,
+) -> Result<Totals, String> {
     if id.is_empty() || id.len() > 64 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
         return Err(String::from("invalid userland generation"));
     }
@@ -603,11 +613,22 @@ fn install_tree_from(source: &Path, target: &Path, id: &str, previous: Option<&s
         }
         return Err(String::from("incomplete published userland generation"));
     }
+    let current = match previous {
+        Some("flat") => Some(target.to_path_buf()),
+        Some(name) if valid_id(name) => Some(generations.join(name)),
+        Some(_) => return Err("invalid current userland generation".into()),
+        None => None,
+    };
+    let local_files = current.as_ref().map(|path| local::LocalFiles::inspect(path, source, false, carry, || Ok(false)))
+        .transpose()?.unwrap_or_default();
+    if let Some(retained) = retained {
+        reclaim(target, retained, copier.checkpoint)?;
+    }
     // The store is outside the generations: a retry stages the account again, and
     // an interrupted install leaves the current generation as it was.
     // Check the account collision before publishing any layout state.
     stage_store(&mut copier, target, operator.as_ref())?;
-    seed_shared(&mut copier, source, target, previous, &fixtures)?;
+    seed_shared(&mut copier, source, target, previous.filter(|name| *name != "flat"), &fixtures)?;
     // The lab's power-control capability is private machine state, not a
     // factory default. Refresh it from this install's protected staging file.
     let power_token = source.join("etc/breenix/power-token");
@@ -637,11 +658,11 @@ fn install_tree_from(source: &Path, target: &Path, id: &str, previous: Option<&s
     require_directory(&generations)?;
     // Legacy callers retain published trees; production supplies recovered slot
     // references and reclaims unreferenced published trees before copying.
-    let retained: Vec<String> = fs::read_dir(&generations).map_err(|e| fail("read generations", &generations, e))?
+    let published_names: Vec<String> = fs::read_dir(&generations).map_err(|e| fail("read generations", &generations, e))?
         .map(|e| e.map(|e| e.file_name().to_string_lossy().into_owned())).collect::<Result<_, _>>()
         .map_err(|e| fail("read generations", &generations, e))?;
-    let retained: Vec<&str> = retained.iter().filter(|name| valid_id(name)).map(String::as_str).collect();
-    reclaim(target, &retained, copier.checkpoint)?;
+    let published_ids: Vec<&str> = published_names.iter().filter(|name| valid_id(name)).map(String::as_str).collect();
+    reclaim(target, &published_ids, copier.checkpoint)?;
     copier.change("mkdir", &staged, || fs::create_dir(&staged))?;
     let mut names = Vec::new();
     for entry in fs::read_dir(source).map_err(|error| fail("read directory", source, error))? {
@@ -651,7 +672,7 @@ fn install_tree_from(source: &Path, target: &Path, id: &str, previous: Option<&s
         }
     }
     names.sort();
-    for name in names.iter().filter(|name| !UNTOUCHED.contains(&name.as_str()) && !KEPT.contains(&name.as_str()) && !layout::SHARED.contains(&name.as_str())) {
+    for name in names.iter().filter(|name| !local::outside_image(name)) {
         copier.copy_tree(&source.join(name), &staged.join(name))?;
     }
     // The generation keeps factory defaults; /etc is a shared mount point.
@@ -698,6 +719,12 @@ fn install_tree_from(source: &Path, target: &Path, id: &str, previous: Option<&s
             }
         }
     }
+    local::record(&mut copier, &staged, None)?;
+    if let Some(current) = current {
+        copier.linked.clear();
+        local_files.apply(&mut copier, &current, &staged, previous.expect("current generation has an ID"), false)?;
+    }
+    if retained.is_some() { layout::check_setid(&staged, false)?; }
     let ready = staged.join(READY);
     let record = layout::record(id);
     let mut file = copier.change("create completion record", &ready, || File::create(&ready))?;
@@ -797,15 +824,17 @@ fn reclaim(target: &Path, retained: &[&str], checkpoint: &mut dyn FnMut() -> std
     Ok(())
 }
 
-fn recovered_slots(source: &Path) -> Result<String, String> {
+fn recovered_slots(source: &Path) -> Result<([String; 3], bool), String> {
     println!("[persistent] recovered slot references needed");
     let mut references = String::new();
     std::io::stdin().read_line(&mut references).map_err(|e| fail("read recovered slots", source, e))?;
-    let words: Vec<&str> = references.split_whitespace().collect();
+    let mut words: Vec<&str> = references.split_whitespace().collect();
+    let carry = words.last() == Some(&"carry-local");
+    if carry { words.pop(); }
     if words.len() != 4 || words[0] != "BREENIX-SLOTS-1" || words[1..].iter().any(|id| !valid_id(id)) {
         return Err("missing recovered on-disk slot references".into());
     }
-    Ok(references)
+    Ok(([words[1].into(), words[2].into(), words[3].into()], carry))
 }
 
 fn install() -> Result<Totals, String> {
@@ -820,10 +849,12 @@ fn install() -> Result<Totals, String> {
     let target_dev = fs::metadata(target).map_err(|error| fail("stat", target, error))?.dev();
     if root_dev == target_dev { return Err(String::from("the system partition is not mounted at /home")); }
     let id = std::env::args().nth(1).ok_or("install intent names no userland generation")?;
-    let references = recovered_slots(source)?;
-    let words: Vec<&str> = references.split_whitespace().collect();
-    for reference in &words[1..3] {
-        if !matches!(*reference, "flat" | "empty") {
+    let (slots, carry) = recovered_slots(source)?;
+    if slots[2] != id {
+        return Err("recovered NEXT does not name the install generation".into());
+    }
+    for reference in &slots[..2] {
+        if !matches!(reference.as_str(), "flat" | "empty") {
             let selected = target.join(GENERATIONS).join(reference);
             require_directory(&selected)?;
             let record = fs::read(selected.join(READY)).map_err(|e| fail("read selected generation", &selected, e))?;
@@ -839,13 +870,9 @@ fn install() -> Result<Totals, String> {
         drop(operator_entries(&operator, &read_or_empty(&etc.join("passwd"))?,
                               &read_or_empty(&etc.join("group"))?, &read_or_empty(&etc.join("shadow"))?)?);
     }
-    let mut retained = words[1..].to_vec();
-    retained.push(&id);
-    reclaim(target, &retained, &mut || Ok(()))?;
-    let previous = (!matches!(words[1], "flat" | "empty")).then_some(words[1]);
-    let totals = if let Some(previous) = previous {
-        install_tree_from(source, target, &id, Some(previous), &mut || Ok(()))
-    } else { install_tree(source, target, &id, &mut || Ok(())) }?;
+    let retained = slots.each_ref().map(String::as_str);
+    let previous = (retained[0] != "empty").then_some(retained[0]);
+    let totals = install_tree_with_local(source, target, &id, previous, carry, Some(&retained), &mut || Ok(()))?;
     // Retained rollback trees are subject to the same allowlist as the new tree.
     for entry in fs::read_dir(target.join(GENERATIONS)).map_err(|e| fail("read generations", target, e))? {
         let entry = entry.map_err(|e| fail("read generation", target, e))?;
@@ -1088,7 +1115,7 @@ mod tests {
         fs::write(system.join(STORE).join("etc/passwd"), b"operator:x:1000:1000::/home/operator:/bin/sh\n").unwrap();
         let frozen = snapshot(&old);
         let source = fixture.source("new");
-        install_tree_from(&source, &system, "new", Some("old"), &mut || Ok(())).unwrap();
+        install_tree_with_local(&source, &system, "new", Some("old"), true, None, &mut || Ok(())).unwrap();
         assert_eq!(fs::read(system.join(STORE).join("etc/config")).unwrap(), b"live v1 edit");
         assert_eq!(fs::read(system.join(STORE).join("var/log-sentinel")).unwrap(), b"v1 log");
         assert_eq!(fs::read(system.join(STORE).join("etc/ssh/ssh_host_ed25519_key")).unwrap(), b"host key");
