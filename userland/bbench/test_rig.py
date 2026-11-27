@@ -65,22 +65,65 @@ class RecordingGuest:
         return rig.subprocess.CompletedProcess(words, 0, json.dumps(receipt).encode(), b"")
 
 
+def sampled_argv(test, system, case):
+    """The guest command line of sample 1 of `case` on `system`."""
+    temp = tempfile.TemporaryDirectory()
+    test.addCleanup(temp.cleanup)
+    bench = rig.Rig.__new__(rig.Rig)
+    bench.args = type("Args", (), {"run": "qemu-vol"})()
+    bench.out = {system: Path(temp.name)}
+    guest = RecordingGuest(rig.LINUX_HOME if system == "linux" else "/etc/breenix/test-ssh/home")
+    bench.guests = {system: guest}
+    bench.endpoint = type("Endpoint", (), {"server_address": ("127.0.0.1", 9)})()
+    bench.sample(case, 1, system)
+    [argv] = [argv for argv in guest.argvs if "qemu-vol-" + case + "-1" in argv]
+    return argv
+
+
+class BreenixCompileRows(unittest.TestCase):
+    """The compile rows run on Breenix too, with the hosted aarch64 toolchain staged
+    into the image as the rustc and cargo suite boots stage it."""
+    FIXTURE = "/usr/libexec/breenix/rustc"
+
+    def test_every_compile_row_is_scheduled_on_both_systems(self):
+        order = rig.schedule(list(rig.COMPILE), 1, rig.SYSTEMS, rig.SKIP)
+        self.assertEqual(sorted(order), sorted((case, 1, system) for case in rig.COMPILE
+                                               for system in rig.SYSTEMS))
+        self.assertFalse(set(rig.COMPILE) & set(rig.DEFERRED["breenix"]))
+
+    def test_breenix_compiles_with_the_staged_fork_not_the_linux_toolchain(self):
+        target = f"{self.FIXTURE}/targets/aarch64-breenix.json"
+        for case, program in (("rustc-version", "rustc"), ("hello-object", "rustc"),
+                              ("yes-dev-box", "cargo"), ("yes-release", "cargo"),
+                              ("cargo-noop", "cargo")):
+            argv = sampled_argv(self, "breenix", case)
+            text = " ".join(argv)
+            self.assertIn(f"{self.FIXTURE}/bin/{program}", argv, case)
+            self.assertNotIn(rig.LINUX_HOME, text, case)
+            if case != "rustc-version":
+                self.assertEqual(argv[argv.index("--target") + 1], target, case)
+            if program == "cargo":
+                self.assertIn(f"RUSTC={self.FIXTURE}/bin/rustc", argv, case)
+                flags = next(word for word in argv if word.startswith("CARGO_ENCODED_RUSTFLAGS="))
+                self.assertIn(f"--sysroot={self.FIXTURE}/sysroot", flags.split("\x1f")[0], case)
+                self.assertIn(f"-Clinker={self.FIXTURE}/bin/bld", flags.split("\x1f"), case)
+
+    def test_the_fixture_path_is_where_the_suite_staging_puts_it(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("rust_host_stage",
+                                                      rig.ROOT / "scripts/rust_host_stage.py")
+        stage = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(stage)
+        self.assertEqual(stage.HOSTED_TOOLCHAIN, self.FIXTURE)
+
+
 class BenchVolume(unittest.TestCase):
     """The disk rows run on the filesystems the R240 and the program target: BreenFS on
     Breenix and ext4 on Linux, each on a second virtio disk of the same shape."""
     MOUNTS = {"breenix": "/home/bench", "linux": "/mnt/bench"}
 
     def data_dir(self, system, case):
-        temp = tempfile.TemporaryDirectory()
-        self.addCleanup(temp.cleanup)
-        bench = rig.Rig.__new__(rig.Rig)
-        bench.args = type("Args", (), {"run": "qemu-vol"})()
-        bench.out = {system: Path(temp.name)}
-        guest = RecordingGuest(rig.LINUX_HOME if system == "linux" else "/etc/breenix/test-ssh/home")
-        bench.guests = {system: guest}
-        bench.endpoint = type("Endpoint", (), {"server_address": ("127.0.0.1", 9)})()
-        bench.sample(case, 1, system)
-        [argv] = [argv for argv in guest.argvs if "qemu-vol-" + case + "-1" in argv]
+        argv = sampled_argv(self, system, case)
         return argv[argv.index("qemu-vol-" + case + "-1") - 2]
 
     def test_disk_rows_use_the_bench_volume_and_other_rows_do_not(self):
