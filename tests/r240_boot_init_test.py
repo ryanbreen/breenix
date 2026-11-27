@@ -19,12 +19,14 @@ class BootInitTest(unittest.TestCase):
         handoff = re.search(r"task::kthread::kthread_run_on_cpu\(\s*"
                             r"run_x86_production_init,\s*\"production_init\",\s*0,?\s*\)", boot)
         self.assertIsNotNone(handoff, "submit the loader as a schedulable thread on the boot CPU")
-        tail = boot[handoff.end():].split("loop {", 1)[0]
-        self.assertIn("kernel::per_cpu::preempt_enable();", tail)
+        self.assertLess(handoff.end(), boot.index("CHECKPOINT B: scheduler has_runnable_threads"))
+        self.assertEqual(boot[handoff.end():].count("kernel::per_cpu::preempt_enable();"), 2)
         loader = source.split("fn run_x86_production_init() {", 1)[1].split("\n}", 1)[0]
         self.assertIn("let mut image = read_x86_production_init();", loader)
         self.assertIn("image = read_default_x86_init();", loader)
         self.assertNotIn("preempt_disable()", loader)
+        self.assertNotIn("without_interrupts", loader,
+                         "process construction must allow concurrent frame allocation")
 
 
 if __name__ == "__main__":
