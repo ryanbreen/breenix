@@ -17,9 +17,20 @@ fn between<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
 
 #[test]
 fn shared_description_transfers_are_atomic() {
+    run_fixture("scalar", None);
+}
+
+#[test]
+fn regular_file_vectors_are_atomic() {
+    run_fixture("vector", Some("vector_"));
+}
+
+fn run_fixture(kind: &str, filter: Option<&str>) {
     let kernel = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../kernel/src");
-    let temporary =
-        std::env::temp_dir().join(format!("breenix-shared-offset-{}", std::process::id()));
+    let temporary = std::env::temp_dir().join(format!(
+        "breenix-shared-offset-{}-{kind}",
+        std::process::id()
+    ));
     fs::create_dir(&temporary).unwrap();
 
     let variant = FD
@@ -62,6 +73,14 @@ fn shared_description_transfers_are_atomic() {
     let fixture = include_str!("fixtures/shared_offset.rs")
         .replace("// SLEEP_MUTEX", &gate)
         .replace(
+            "IOVEC_RANGE_PATH",
+            &format!("{:?}", kernel.join("syscall/iovec_range.rs")),
+        )
+        .replace(
+            "IOVEC_PATH",
+            &format!("{:?}", kernel.join("syscall/iovec.rs")),
+        )
+        .replace(
             "REGULAR_READ_PATH",
             &format!("{:?}", kernel.join("syscall/regular_read.rs")),
         )
@@ -77,6 +96,21 @@ fn shared_description_transfers_are_atomic() {
         .replace("// READ_ARM", read)
         .replace("// WRITE_BINDING", append)
         .replace("// WRITE_ARM", write)
+        .replace(
+            "// POSITIONED_HANDLERS",
+            &format!(
+                "pub(super) fn read_positional_file{}\npub(super) fn write_positional_file{}",
+                between(
+                    HANDLERS,
+                    "pub(super) fn read_positional_file",
+                    "/// pwrite64"
+                ),
+                HANDLERS
+                    .split_once("pub(super) fn write_positional_file")
+                    .unwrap()
+                    .1,
+            ),
+        )
         .replace(
             "// LSEEK",
             &format!(
@@ -95,7 +129,12 @@ fn shared_description_transfers_are_atomic() {
         .status()
         .unwrap();
     assert!(compiled.success(), "could not compile {}", source.display());
-    let status = Command::new(&binary).status().unwrap();
+    let mut command = Command::new(&binary);
+    match filter {
+        Some(filter) => command.arg(filter),
+        None => command.args(["--skip", "vector_"]),
+    };
+    let status = command.status().unwrap();
     fs::remove_dir_all(&temporary).unwrap();
     assert!(status.success(), "fixed interleavings failed");
 }
