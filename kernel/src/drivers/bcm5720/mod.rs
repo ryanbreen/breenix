@@ -405,6 +405,7 @@ struct Port {
     rbdi_at_init: u32,
     /// Return ring entries flagged in error, and the last one's error flags.
     rx_errored: u32,
+    tx_ring_full: u64,
     rx_last_error_flags: u32,
 }
 
@@ -457,6 +458,7 @@ impl Port {
             phy_configured_ms: 0,
             rbdi_at_init: 0,
             rx_errored: 0,
+            tx_ring_full: 0,
             rx_last_error_flags: 0,
         };
         port.initialize();
@@ -775,6 +777,7 @@ impl Port {
         // Section 4, p. 71: keep one entry empty. A consumer advance is the
         // only permission to reuse the corresponding DMA buffer.
         if next == self.send_consumer() {
+            self.tx_ring_full += 1;
             return Err("send ring full");
         }
         let tx_buffer = &self.tx_buffers[self.send_producer as usize];
@@ -1036,6 +1039,31 @@ impl Port {
             sleep_ms(1000);
         }
     }
+}
+
+pub struct ReceiveCounters {
+    pub msi: u64,
+    pub no_rx_bd: u32,
+    pub in_discards: u32,
+    pub in_errors: u32,
+    pub bad_completions: u32,
+    pub tx_ring_full: u64,
+}
+
+/// Cold procfs snapshot of the port the stack uses for output. Read only
+/// the host receive list placement counters, outside the interrupt path.
+pub fn receive_counters() -> Option<ReceiveCounters> {
+    let _guard = crate::net::net_lock_guard();
+    let ports = ATTACHED.lock();
+    let port = ports.first()?;
+    Some(ReceiveCounters {
+        msi: INTERRUPTS[port.slot].load(Ordering::Relaxed),
+        no_rx_bd: port.f.read32(STAT_NO_RX_BD),
+        in_discards: port.f.read32(STAT_IN_DISCARDS),
+        in_errors: port.f.read32(STAT_IN_ERRORS),
+        bad_completions: port.rx_errored,
+        tx_ring_full: port.tx_ring_full,
+    })
 }
 
 pub fn is_initialized() -> bool {

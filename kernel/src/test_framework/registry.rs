@@ -2632,6 +2632,7 @@ fn setup_loopback_tcp_pair(
         ProcessId::new(0),
         false,
         crate::net::ipv4::DEFAULT_TTL,
+        tcp::DEFAULT_RCVBUF * 2,
         None,
     ) else {
         return Err("tcp_listen failed during loopback setup");
@@ -2644,6 +2645,7 @@ fn setup_loopback_tcp_pair(
         listen_port,
         ProcessId::new(0),
         crate::net::ipv4::DEFAULT_TTL,
+        tcp::DEFAULT_RCVBUF * 2,
     ) {
         Ok(connection) => connection,
         Err(_) => {
@@ -3355,6 +3357,7 @@ fn tcp_accept_waits_for_final_ack() -> TestResult {
         ProcessId::new(0),
         false,
         crate::net::ipv4::DEFAULT_TTL,
+        tcp::DEFAULT_RCVBUF * 2,
         None,
     ) else {
         return TestResult::Fail("tcp_listen failed in the accept handshake fixture");

@@ -160,15 +160,19 @@ pub fn source_ip_in(config: &Config, _: [u8; 4]) -> [u8; 4] {
     config.ip_addr
 }
 
-const LOCAL: [u8; 4] = [127, 0, 0, 1];
-const PEER: [u8; 4] = [127, 0, 0, 2];
+const LOCAL: [u8; 4] = std::net::Ipv4Addr::LOCALHOST.octets();
+const PEER: [u8; 4] = LOCAL;
 const MSS: [u8; 4] = [2, 4, 5, 116];
 
 thread_local! {
     static CLOCK: Cell<u64> = const { Cell::new(1000) };
+    static REFUSE_NEXT_OUTPUT: Cell<bool> = const { Cell::new(false) };
     static OUTPUT: RefCell<Vec<Vec<u8>>> = const { RefCell::new(Vec::new()) };
 }
 pub fn send_ipv4_from(_: [u8; 4], _: [u8; 4], _: u8, _: u8, data: &[u8]) -> Result<(), ()> {
+    if REFUSE_NEXT_OUTPUT.replace(false) {
+        return Err(());
+    }
     OUTPUT.with_borrow_mut(|packets| packets.push(data.to_vec()));
     Ok(())
 }
@@ -176,6 +180,13 @@ pub fn send_ipv4_from(_: [u8; 4], _: [u8; 4], _: u8, _: u8, data: &[u8]) -> Resu
 #[path = "../kernel/src/net/tcp.rs"]
 pub mod tcp;
 use tcp::{ConnectionId, TcpFlags, TcpHeader};
+
+// The production TCP table and timer are global even though the wire and
+// clock belong to the test driving them.
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock()
+}
 
 fn take_output() -> Vec<Vec<u8>> {
     OUTPUT.with_borrow_mut(std::mem::take)
@@ -211,7 +222,8 @@ fn handshake(port: u16, seq: u32, options: &[u8]) -> (ConnectionId, u32, Vec<u8>
         remote_ip: PEER,
         remote_port: 44000,
     };
-    let listener = tcp::tcp_listen(LOCAL, port, 4, 1, false, ipv4::DEFAULT_TTL, None).unwrap();
+    let listener =
+        tcp::tcp_listen(LOCAL, port, 4, 1, false, ipv4::DEFAULT_TTL, 212_992, None).unwrap();
     receive(id, seq.wrapping_sub(1), 0, TcpFlags::syn(), options, &[]);
     tcp::drain_deferred_tx();
     let syn_ack = take_output().pop().unwrap();
@@ -233,6 +245,7 @@ fn ack_fields(packet: &[u8]) -> (u32, u16, &[u8]) {
 
 #[test]
 fn receive_path_releases_queued_bytes_and_fin_across_sequence_wrap() {
+    let _serial = serial();
     let start = u32::MAX - 1;
     let (id, ack, _) = handshake(40001, start, &MSS);
     receive(id, 1, ack, TcpFlags::fin_ack(), &[], b"def");
@@ -250,6 +263,7 @@ fn receive_path_releases_queued_bytes_and_fin_across_sequence_wrap() {
 
 #[test]
 fn receive_path_negotiates_sack_and_prioritizes_newest_merged_block() {
+    let _serial = serial();
     let options = [2, 4, 5, 116, 4, 2, 0, 0];
     let (id, ack, syn_ack) = handshake(40002, 100, &options);
     // RFC 2018 permits independent directions. The kernel can report blocks
@@ -283,6 +297,7 @@ fn receive_path_negotiates_sack_and_prioritizes_newest_merged_block() {
 
 #[test]
 fn receive_path_scales_only_after_syn_and_reopens_a_closed_window() {
+    let _serial = serial();
     let options = [2, 4, 5, 116, 3, 3, 5, 0];
     let (id, ack, syn_ack) = handshake(40003, 1000, &options);
     let (_, field, options) = ack_fields(&syn_ack);
@@ -321,6 +336,7 @@ fn receive_path_scales_only_after_syn_and_reopens_a_closed_window() {
 
 #[test]
 fn receive_path_clips_hole_and_fin_at_the_advertised_right_edge() {
+    let _serial = serial();
     let (id, ack, _) = handshake(40004, 100, &MSS);
     // The SYN window is 65535. The last two bytes straddle its right edge;
     // neither the byte beyond the edge nor the FIN may be accepted yet.
@@ -340,6 +356,7 @@ fn receive_path_clips_hole_and_fin_at_the_advertised_right_edge() {
 
 #[test]
 fn receive_path_acknowledges_a_pair_or_flushes_at_the_timer_deadline() {
+    let _serial = serial();
     let (id, ack, _) = handshake(40005, 500, &MSS);
     receive(id, 500, ack, TcpFlags::ack(), &[], b"abc");
     assert!(take_output().is_empty());
@@ -357,4 +374,95 @@ fn receive_path_acknowledges_a_pair_or_flushes_at_the_timer_deadline() {
     let output = take_output();
     assert_eq!(output.len(), 1);
     assert_eq!(ack_fields(&output[0]).0, 509);
+}
+
+#[test]
+fn receive_path_read_preserves_pending_ack_unless_window_closed() {
+    let _serial = serial();
+    let options = [2, 4, 5, 116, 3, 3, 0, 0];
+    let (id, ack, _) = handshake(40006, 300, &options);
+    tcp::tcp_set_options(&id, || tcp::ConnOptions {
+        rcvbuf: 212_992,
+        sndbuf: 212_992,
+        keepalive: false,
+        reuse: false,
+        ttl: 64,
+    });
+    take_output();
+    let payload = [0x5a; 1396];
+    receive(id, 300, ack, TcpFlags::ack(), &[], &payload);
+    assert!(take_output().is_empty());
+    let mut output = [0; 1396];
+    assert_eq!(tcp::tcp_recv(&id, &mut output), Ok(1396));
+    assert_eq!(output, payload);
+    assert!(take_output().is_empty());
+
+    receive(id, 1696, ack, TcpFlags::ack(), &[], &payload);
+    let packets = take_output();
+    assert_eq!(packets.len(), 1);
+    assert_eq!(ack_fields(&packets[0]).0, 3092);
+}
+
+#[test]
+fn receive_path_retries_refused_immediate_ack_with_current_sack() {
+    let _serial = serial();
+    let options = [2, 4, 5, 116, 4, 2, 0, 0];
+    let (id, ack, _) = handshake(40007, 500, &options);
+    REFUSE_NEXT_OUTPUT.set(true);
+    receive(id, 503, ack, TcpFlags::ack(), &[], b"def");
+    assert!(take_output().is_empty());
+    CLOCK.set(1010);
+    step_timer();
+    let packets = take_output();
+    assert_eq!(packets.len(), 1);
+    let (ack, _, options) = ack_fields(&packets[0]);
+    assert_eq!(ack, 500);
+    assert_eq!(&options[..10], &[5, 10, 0, 0, 1, 247, 0, 0, 1, 250]);
+}
+
+#[test]
+fn receive_path_uses_scaled_peer_window_only_after_active_handshake() {
+    let _serial = serial();
+    let id = tcp::tcp_connect(LOCAL, 40008, PEER, 44000, 1, 64, 212_992).unwrap();
+    let packets = take_output();
+    let syn = TcpHeader::parse(&packets[0]).unwrap().0;
+    assert_eq!(syn.window_size, u16::MAX);
+    assert!(packets[0][20..]
+        .windows(3)
+        .any(|option| option == [3, 3, 1]));
+
+    let start = 1200;
+    let ack = syn.seq_num.wrapping_add(1);
+    let options = [2, 4, 5, 116, 3, 3, 1, 0];
+    receive(id, start - 1, ack, TcpFlags::syn_ack(), &options, &[]);
+    let handshake_ack = take_output();
+    assert_eq!(usize::from(ack_fields(&handshake_ack[0]).1) << 1, 106_496);
+
+    tcp::tcp_set_options(&id, || tcp::ConnOptions {
+        rcvbuf: 212_992,
+        sndbuf: 212_992,
+        keepalive: false,
+        reuse: false,
+        ttl: 64,
+    });
+    let data = vec![0; 85_000];
+    assert_eq!(tcp::tcp_sendmsg(&id, &data, false), Ok(data.len()));
+    let payload_len = |packets: Vec<Vec<u8>>| -> usize {
+        packets
+            .iter()
+            .map(|p| TcpHeader::parse(p).unwrap().1.len())
+            .sum()
+    };
+    assert_eq!(
+        payload_len(take_output()),
+        60_000,
+        "SYN+ACK window is unscaled"
+    );
+    receive(id, start, ack, TcpFlags::ack(), &[], &[]);
+    tcp::drain_deferred_tx();
+    assert_eq!(
+        payload_len(take_output()),
+        25_000,
+        "ordinary peer ACK scales the window"
+    );
 }
