@@ -211,6 +211,28 @@ class GuestThatStaysDown(unittest.TestCase):
                              ["breenix VM could not be restarted"], case)
 
 
+class RunIds(unittest.TestCase):
+    """A run ID the series writer would refuse is refused before anything boots."""
+
+    def refused(self, run):
+        reached = mock.Mock(side_effect=AssertionError(f"{run!r} reached the run"))
+        with mock.patch.object(rig, "git", lambda *args: ""), \
+                mock.patch.object(rig, "check_breenix_inputs", reached), \
+                mock.patch.object(rig, "provision_linux", reached), \
+                mock.patch("sys.stderr"):
+            with self.assertRaises(SystemExit) as stopped:
+                rig.cli(["run", "--run", run])
+        self.assertEqual(stopped.exception.code, 2, run)
+
+    def test_a_host_name_in_the_id_is_refused(self):
+        # The note names the sidecar by the series ID, and Vigil refuses host names.
+        self.refused("localhost-baseline")
+
+    def test_an_id_too_long_for_the_breenix_series_is_refused(self):
+        # 113 + "-linux" fits Vigil's 120 characters; 113 + "-breenix" does not.
+        self.refused("a" * 113)
+
+
 class CryptoOptLevels(unittest.TestCase):
     """The release profiles build libbreenix (the crypto) at opt-level 3, so the
     opt-level z rows need a build that keeps libbreenix at z."""
