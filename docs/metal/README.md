@@ -1614,8 +1614,10 @@ transport failures, or a stalled feeder can let the timer expire. Readback
 detects lost configuration after a BMC restart and rearms it.
 Ordinary supervised boots do not arm KCS, retaining the driver’s silence/NMI capture;
 the persistent target and explicit watchdog fault builds enable it. The
-BMC's expiry flag is reported before configuration clears it. No interrupt or
-syscall path feeds the timer.
+BMC's expiry flag is reported at startup. Before each rearm, serial records
+the expiry flags, running bit, and remaining countdown in 100 ms ticks. An
+SMS/OS expiry flag sets the `expired-before-rearm` tag. No interrupt or syscall
+path feeds the timer.
 
 `boot --inject watchdog-feeder-hang|watchdog-health-hang` builds a watchdog
 fault-test kernel and stages its intent on a disposable RAM root. Its feeder

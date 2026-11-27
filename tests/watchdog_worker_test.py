@@ -12,9 +12,9 @@ class WatchdogWorker(unittest.TestCase):
         path = ROOT / 'kernel/src/drivers/watchdog.rs'
         source = path.read_text()
         imports = next(line for line in source.splitlines() if line.startswith('use policy'))
-        worker = source[source.index('fn run(port:'):source.index('pub fn start()')]
+        worker = source[source.index('impl policy::Transport for Kcs'):source.index('pub fn start()')]
         harness = r'''
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 #[path = "WATCHDOG_ROUND"] mod round;
 
 thread_local! {
@@ -23,6 +23,10 @@ thread_local! {
     static EXPIRED: Cell<bool> = const { Cell::new(false) };
     static ROOT_WEDGED: Cell<bool> = const { Cell::new(false) };
     static COMPLETED: Cell<u64> = const { Cell::new(0) };
+    static STALL: Cell<bool> = const { Cell::new(false) };
+    static RUNNING: Cell<bool> = const { Cell::new(false) };
+    static FLAGS: Cell<u8> = const { Cell::new(0) };
+    static EVENTS: RefCell<Vec<(u64, String)>> = const { RefCell::new(Vec::new()) };
 }
 mod policy {
     pub use super::round::{feed, Transport};
@@ -31,9 +35,15 @@ mod policy {
             .map_err(|_| "root metadata invalid")
     }
     pub fn wait(ms: u64) -> Result<(), &'static str> {
-        let now = super::NOW.with(|v| { v.set(v.get() + ms); v.get() });
+        let now = super::NOW.with(|v| {
+            let delay = if v.get() == 0 && super::STALL.with(|stall| stall.get()) { 120_000 } else { ms };
+            v.set(v.get() + delay);
+            v.get()
+        });
         if super::LAST_FEED.with(|v| v.get().is_some_and(|fed| now - fed >= 120_000)) {
             super::EXPIRED.with(|v| v.set(true));
+            super::RUNNING.with(|v| v.set(false));
+            super::FLAGS.with(|v| v.set(0x30));
         }
         if now < 180_000 { Ok(()) } else { Err("end of simulation") }
     }
@@ -73,31 +83,41 @@ impl Root {
 }
 #[macro_export]
 macro_rules! serial_println {
-    ($($arg:tt)*) => { println!($($arg)*) }
+    ($($arg:tt)*) => { record(format!($($arg)*)) }
 }
-struct Kcs { running: bool }
+fn record(message: String) {
+    EVENTS.with(|events| events.borrow_mut().push((NOW.with(Cell::get), message)));
+}
+struct Kcs;
 impl Kcs {
-    fn new(_: u32) -> Self { Self { running: false } }
+    fn new(_: u32) -> Self { Self }
     fn request(&mut self, command: u8, data: &[u8]) -> Result<([u8; 32], usize), &'static str> {
-        assert_eq!(command, 1);
-        assert!(data.is_empty());
+        match command {
+            1 => assert!(data.is_empty()),
+            0x24 => {
+                assert_eq!(data, TIMER);
+                record("set".to_string());
+                FLAGS.with(|flags| flags.set(flags.get() & !data[3]));
+                RUNNING.with(|v| v.set(false));
+            }
+            0x22 => {
+                assert!(data.is_empty());
+                RUNNING.with(|v| v.set(true));
+                LAST_FEED.with(|v| v.set(Some(NOW.with(Cell::get))));
+            }
+            _ => panic!("unexpected request {command:#x}"),
+        }
         Ok(([0; 32], 14))
     }
     fn get(&mut self) -> Result<[u8; 8], &'static str> {
-        let mut timer = [0; 8];
-        timer[0] = u8::from(self.running);
-        Ok(timer)
-    }
-}
-impl policy::Transport for Kcs {
-    type State = [u8; 8];
-    fn configured(state: &Self::State) -> bool { state[0] != 0 }
-    fn get(&mut self) -> Result<Self::State, &'static str> { Kcs::get(self) }
-    fn set(&mut self) -> Result<(), &'static str> { Ok(()) }
-    fn reset(&mut self) -> Result<(), &'static str> {
-        self.running = true;
-        LAST_FEED.with(|v| v.set(Some(NOW.with(|v| v.get()))));
-        Ok(())
+        let running = RUNNING.with(Cell::get);
+        let remaining = if running {
+            let last = LAST_FEED.with(Cell::get).unwrap();
+            ((120_000 - (NOW.with(Cell::get) - last)) / 100) as u16
+        } else { 0 };
+        let [lo, hi] = remaining.to_le_bytes();
+        Ok([TIMER[0] | (u8::from(running) << 6), TIMER[1], TIMER[2], FLAGS.with(Cell::get),
+            TIMER[4], TIMER[5], lo, hi])
     }
 }
 const PERIOD_MS: u64 = 20_000;
@@ -114,8 +134,24 @@ fn scheduled_feeder_lets_timer_expire_when_root_stops_progressing() {
     assert!(EXPIRED.with(Cell::get));
     assert_eq!(LAST_FEED.with(Cell::get), Some(0));
 }
+#[test]
+fn an_expired_timer_is_reported_before_set_clears_the_flag() {
+    STALL.with(|v| v.set(true));
+    assert_eq!(run(1), Err("end of simulation"));
+    assert!(EXPIRED.with(Cell::get));
+    assert_eq!(FLAGS.with(Cell::get), 0x20);
+    EVENTS.with(|events| {
+        let events = events.borrow();
+        let expired = events.iter().position(|(ms, event)| *ms == 120_000 &&
+            event == "[watchdog] expired-before-rearm flags=0x30 running=0 countdown-ticks=0")
+            .expect("pre-Set expiry state should reach serial");
+        let set = events.iter().position(|(ms, event)| *ms == 120_000 && event == "set").unwrap();
+        assert!(expired < set);
+    });
+}
 '''
         round_path = path.with_name('watchdog_round.rs')
+        timer = next(line for line in source.splitlines() if line.startswith('const TIMER:'))
         fs_source = (ROOT / 'kernel/src/fs/breenfs/vfs.rs').read_text()
         root_check = fs_source[fs_source.index('    fn check_durable_roots('):
                                fs_source.index('    fn probe_durable_roots(')]
@@ -124,7 +160,7 @@ fn scheduled_feeder_lets_timer_expire_when_root_stops_progressing() {
             test = Path(scratch) / 'kcs_worker.rs'
             binary = test.with_suffix('')
             test.write_text(harness.replace('WATCHDOG_ROUND', str(round_path))
-                            .replace('ROOT_CHECK', root_check) + imports + '\n' + worker)
+                            .replace('ROOT_CHECK', root_check) + imports + '\n' + timer + '\n' + worker)
             for cfg in ([], ['--cfg', 'feature="watchdog_fault_inject"']):
                 with self.subTest(cfg=cfg):
                     subprocess.run(['rustc', '--edition=2021', '--test', '-Dwarnings', *cfg,

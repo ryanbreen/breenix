@@ -104,6 +104,17 @@ impl policy::Transport for Kcs {
         timer[0] & 0x47 == 0x44 && timer[1] == 1 && timer[2] == 0 && timer[4..6] == TIMER[4..6]
     }
     fn get(&mut self) -> Result<[u8; 8], &'static str> { Kcs::get(self) }
+    fn before_rearm(&mut self, timer: &Self::State) {
+        let flags = timer[3];
+        let running = u8::from(timer[0] & 0x40 != 0);
+        let countdown = u16::from_le_bytes([timer[6], timer[7]]);
+        // Set clears the SMS/OS expiry flag, so keep the raw Get state first.
+        let event = if flags & TIMER[3] != 0 { "expired-before-rearm" } else { "state-before-rearm" };
+        crate::serial_println!(
+            "[watchdog] {} flags={:#04x} running={} countdown-ticks={}",
+            event, flags, running, countdown,
+        );
+    }
     fn set(&mut self) -> Result<(), &'static str> { self.request(0x24, &TIMER).map(|_| ()) }
     fn reset(&mut self) -> Result<(), &'static str> { self.request(0x22, &[]).map(|_| ()) }
 }

@@ -4,13 +4,18 @@ pub trait Transport {
     type State;
     fn configured(state: &Self::State) -> bool;
     fn get(&mut self) -> Result<Self::State, &'static str>;
+    fn before_rearm(&mut self, _state: &Self::State) {}
     fn set(&mut self) -> Result<(), &'static str>;
     fn reset(&mut self) -> Result<(), &'static str>;
 }
 pub fn feed<T: Transport>(transport: &mut T, health: impl FnOnce() -> Result<(), &'static str>) -> Result<bool, &'static str> {
     health()?;
-    let rearm = !T::configured(&transport.get()?);
-    if rearm { transport.set()?; }
+    let state = transport.get()?;
+    let rearm = !T::configured(&state);
+    if rearm {
+        transport.before_rearm(&state);
+        transport.set()?;
+    }
     transport.reset()?;
     if !T::configured(&transport.get()?) { return Err("watchdog settings readback"); }
     Ok(rearm)
