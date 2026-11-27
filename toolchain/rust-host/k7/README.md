@@ -5,7 +5,7 @@
 Use the retained K5 stage-1 compiler and sysroot for both Cargo builds.
 The hosted sysroot must include `proc_macro`. Use both hosts in one
 bootstrap configuration and select `scripts/rust-host/kd_link.py` as
-the linker for `x86_64-breenix-hosted`.
+the linker for `x86_64-breenix-hosted` or `aarch64-breenix-hosted`.
 
 Apply `rustix-1.0.7-breenix.patch` here after the K5 rustix patch.
 Apply `socket2-0.5.10-breenix.patch` to the pinned registry release.
@@ -22,12 +22,18 @@ and keeps bootstrap's dual proc-macro flag. It selects the patches and
 the custom getrandom backend for the hosted leg. The Mac leg uses the
 native libc bindings.
 
-Build shared libc with `userspace/programs/build.sh --arch x86_64 --kd-libc`
-before invoking bootstrap. Set `BREENIX_KD_BUILD_DIR` to the directory
-with `libc.so` and `breenix-crt.o`, and `BREENIX_X2_STAGE` to the
-receipt directory. Use the K5 linker environment for `BREENIX_X2_LLD`
-and `BREENIX_X2_FALLBACK_LINKER`. For `X2_RUSTC` and `X2_SYSROOT_DEPS`,
-use the stage-1 compiler and its hosted rlib directory.
+Build the CRT with `userspace/programs/build.sh --arch ARCH --kd-libc`.
+Set `BREENIX_KD_BUILD_DIR` to a directory containing `libc.so` and
+`breenix-crt.o`, and `BREENIX_X2_STAGE` to the receipt directory. For ARM,
+use the [pinned shared libc](../hosted-libc-aarch64.json). Use the K5 linker
+environment for `BREENIX_X2_LLD` and `BREENIX_X2_FALLBACK_LINKER`.
+For `X2_RUSTC` and `X2_SYSROOT_DEPS`, use the stage-1 compiler and its
+hosted rlib directory. Set `BREENIX_X2_ARCH=aarch64` and point
+`RUSTC_SYSROOT` to the stage-1 sysroot when building the ARM twin. If the
+ARM K5 sysroot lacks `proc_macro`, build `x.py build --stage 1 library
+--target <absolute-aarch64-breenix-hosted.json> --keep-stage 0` with the
+K5 PIC adapter and fallback linker, then stage those rlibs beside the
+Mac libraries. The K7 adapter selects PIC for the ARM Cargo build.
 
 Build bunwind with the same stage-1 compiler and its hosted sysroot.
 Set `BREENIX_K7_BUNWIND` to the resulting `libbunwind.rlib`. The linker
@@ -45,18 +51,25 @@ Use the Cargo binaries in the target-specific release directories under
 bootstrap's `stage0-tools` directory. Stage the hosted result under
 `bin/cargo` and the shared libc under
 `lib/libc.so` beside the linker's `maps/cargo.map`. Point
-`BREENIX_K7_STAGE` to that directory for the host checks.
+`BREENIX_K7_STAGE` to the x86 stage directory for the host checks, with
+the corresponding ARM files under its `aarch64/` subdirectory.
 
 ```sh
 python3 -m unittest \
     tests.cargo_port_test.CargoPort.test_cargo_is_breenix_elf_with_empty_undefined_set \
-    tests.cargo_port_test.CargoPort.test_cargo_one_process_state
+    tests.cargo_port_test.CargoPort.test_cargo_one_process_state \
+    tests.cargo_port_test.CargoPort.test_arm_cargo_dynamic_relocations_are_supported
 ```
 
 The x86-64 hosted output uses the KD interpreter and links bunwind.
 Its only dynamic dependency is the shared Breenix libc. The final ELF
 inventory is in [`x1.json`](../x1.json). The build and artifact
 digests are in [`x86_64.json`](x86_64.json).
+
+The ARM64 hosted executable uses the same interpreter and shared libc
+contract and links bunwind. [`aarch64.json`](aarch64.json) records its
+twin, hosted sysroot, artifact digests and ELF inventory. ARM image staging
+and guest acceptance are pending.
 
 ## X1 archive probe
 
@@ -114,9 +127,9 @@ console write when the log device cannot accept the message.
 
 The ARM64 archive inventory is in [`x1-aarch64.json`](../x1-aarch64.json).
 Its normal/build closure has the same packages and licenses as x86-64. The eight `-sys` crates produced 8/8 archives; their gaps subtract the pinned ARM
-`libc.so` exports. The archive probe failed later in Cargo's Rust library on
-Mac proc-macro routing. The ARM hosted `proc_macro` sysroot component and
-Cargo ELF inventory and guest acceptance remain outstanding.
+`libc.so` exports. The initial archive probe stopped on Mac proc-macro
+routing. The executable build uses bootstrap's dual proc-macro flag and
+the stage-1 ARM hosted `proc_macro` library recorded above.
 
 ## Offline Cargo suite
 
