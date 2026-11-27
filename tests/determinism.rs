@@ -1,11 +1,12 @@
-//! Opt-in Mac twin comparison: rustc --test tests/determinism.rs -o /tmp/determinism.
+//! Opt-in Mac twin comparison: compile with rustc --test, then run with --ignored.
 use std::fs;
 use std::process::Command;
 
 const OUTPUTS: [&str; 7] = ["bas", "bld", "bar", "bnm", "bmake", "bcc", "libbobj.rlib"];
 
-/// Ruling 161 Mac run: 136.093 s; receipt check failed on stale host bld.
+/// Ruling 161 Mac run: 138.343 s; both roots and refreshed receipt matched.
 #[test]
+#[ignore = "opt-in Mac twin comparison; ruling 161"]
 fn two_directories_same_bytes() {
     let fixture = std::env::var_os("BREENIX_K6_FIXTURE")
         .expect("set BREENIX_K6_FIXTURE for the opt-in Mac twin comparison");
@@ -67,8 +68,9 @@ fn two_directories_same_bytes() {
     println!("comparison artifacts: {}", work.display());
 }
 
-/// Ruling 161 Mac run: 140.275 s; both roots and receipt matched.
+/// Ruling 161 Mac run: 146.245 s; both roots and receipt matched.
 #[test]
+#[ignore = "opt-in Mac twin comparison; ruling 161"]
 fn two_directories_same_bytes_aarch64() {
     let fixture = std::env::var_os("BREENIX_K6_AARCH64_FIXTURE")
         .expect("set BREENIX_K6_AARCH64_FIXTURE for the opt-in Mac twin comparison");
