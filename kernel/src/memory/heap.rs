@@ -278,8 +278,94 @@ pub fn high_water_bytes() -> usize {
     HIGH_WATER.load(Ordering::Relaxed)
 }
 
+/// Print the failing allocation and its callers before the general panic
+/// handler. The heap and serial paths may already be under contention.
+#[cfg(target_arch = "x86_64")]
+#[cold]
+fn report_oom(layout: Layout) {
+    use crate::capture::record::Writer;
+    use crate::per_cpu;
+
+    let mut writer = Writer::new();
+    if !writer.open("OOM") {
+        return;
+    }
+    writer.kv_dec("size", layout.size() as u64);
+    writer.kv_dec("align", layout.align() as u64);
+    writer.kv_dec("high_water", high_water_bytes() as u64);
+    if let Some(guard) = ALLOCATOR.inner.try_lock() {
+        let free = guard.heap.free();
+        let (extents, largest) = guard.heap.free_shape();
+        drop(guard);
+        writer.kv_dec("free", free as u64);
+        writer.kv_dec("extents", u64::from(extents));
+        writer.kv_dec("largest", u64::from(largest));
+    }
+    if !per_cpu::is_initialized() {
+        let _ = writer.close();
+        return;
+    }
+    writer.kv_dec("cpu", per_cpu::cpu_id() as u64);
+    if let Some(tid) = per_cpu::current_thread_id_lock_free() {
+        writer.kv_dec("tid", tid);
+    }
+    // The matching ELF can use this symbol address to account for relocation.
+    writer.kv_hex("anchor", alloc_error_handler as *const () as u64);
+    if !writer.close() {
+        return;
+    }
+
+    let (mut frame, rsp): (u64, u64);
+    unsafe {
+        core::arch::asm!(
+            "mov {frame}, rbp", "mov {stack}, rsp",
+            frame = out(reg) frame, stack = out(reg) rsp,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+    let top = per_cpu::kernel_stack_top();
+    if !super::kernel_stack::kernel_stack_contains(top, rsp) {
+        return;
+    }
+    for index in 0..16 {
+        // Follow only upward, aligned links within the current mapped stack.
+        // The user frame and any unrelated RBP value will end the walk.
+        if frame < rsp || frame & 7 != 0 || frame > top.saturating_sub(16) {
+            break;
+        }
+        let (parent, pc) = unsafe {
+            let words = frame as *const u64;
+            (words.read(), words.add(1).read())
+        };
+        if !writer.open("OOM_FRAME") {
+            break;
+        }
+        writer.kv_dec("i", index);
+        writer.kv_hex("pc", pc);
+        if !writer.close() || parent <= frame {
+            break;
+        }
+        frame = parent;
+    }
+}
+
 /// Handle allocation errors
 #[alloc_error_handler]
 fn alloc_error_handler(layout: core::alloc::Layout) -> ! {
+    #[cfg(target_arch = "x86_64")]
+    {
+        use core::sync::atomic::AtomicBool;
+
+        // A secondary OOM must leave the first CPU's allocation record and
+        // general panic capture readable.
+        static REPORTING: AtomicBool = AtomicBool::new(false);
+        if REPORTING.swap(true, Ordering::AcqRel) {
+            x86_64::instructions::interrupts::disable();
+            loop {
+                x86_64::instructions::hlt();
+            }
+        }
+        x86_64::instructions::interrupts::without_interrupts(|| report_oom(layout));
+    }
     panic!("allocation error: {:?}", layout)
 }

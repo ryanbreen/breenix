@@ -35,7 +35,10 @@ impl<S> BudgetStore<'_, S> {
     }
     fn record_refusal<T>(&self, result: Result<T, btree::Error>) -> Result<T, btree::Error> {
         result.inspect_err(|error| {
-            if matches!(error, btree::Error::Read(failure) if failure.cause.pre_issue()) {
+            // A read refused for lack of memory says nothing about the bytes on disk.
+            if matches!(error, btree::Error::Read(failure)
+                if failure.cause.pre_issue() || failure.cause == btree::ReadCause::Allocation)
+            {
                 self.refusal.set(Some(*error));
             }
         })
