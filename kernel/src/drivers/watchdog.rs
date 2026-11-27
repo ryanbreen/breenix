@@ -1,12 +1,10 @@
 //! IPMI 2.0 sections 9 and 27: polled KCS, SMS/OS watchdog, hard reset.
-//! Only this kthread owns the interface. No interrupts feed the timer. A round
-//! must return from uncached root metadata I/O and validate the root inode
-//! before Reset Watchdog Timer is sent; a blocked round lets hardware expire.
+//! Only this kthread owns the interface. Each feed requires root-storage health.
 //! The transport accepts only S19's four application commands.
 use core::sync::atomic::{AtomicU32, Ordering};
 use x86_64::instructions::port::Port;
 use super::watchdog_round as policy;
-use policy::{health, wait};
+use policy::wait;
 
 static PORT: AtomicU32 = AtomicU32::new(0);
 const TIMEOUT_MS: u64 = 5_000;
@@ -106,6 +104,17 @@ impl policy::Transport for Kcs {
         timer[0] & 0x47 == 0x44 && timer[1] == 1 && timer[2] == 0 && timer[4..6] == TIMER[4..6]
     }
     fn get(&mut self) -> Result<[u8; 8], &'static str> { Kcs::get(self) }
+    fn before_rearm(&mut self, timer: &Self::State) {
+        let flags = timer[3];
+        let running = u8::from(timer[0] & 0x40 != 0);
+        let countdown = u16::from_le_bytes([timer[6], timer[7]]);
+        // Set clears the SMS/OS expiry flag, so keep the raw Get state first.
+        let event = if flags & TIMER[3] != 0 { "expired-before-rearm" } else { "state-before-rearm" };
+        crate::serial_println!(
+            "[watchdog] {} flags={:#04x} running={} countdown-ticks={}",
+            event, flags, running, countdown,
+        );
+    }
     fn set(&mut self) -> Result<(), &'static str> { self.request(0x24, &TIMER).map(|_| ()) }
     fn reset(&mut self) -> Result<(), &'static str> { self.request(0x22, &[]).map(|_| ()) }
 }
@@ -123,7 +132,7 @@ fn run(port: u32) -> Result<(), &'static str> {
                 crate::serial_println!("[watchdog] previous-expired={}", u8::from(previous[3] & 0x10 != 0));
                 identified = true;
             }
-            policy::feed(&mut kcs, health)
+            policy::feed(&mut kcs, policy::health)
         })();
         match result {
             Ok(rearmed) => {
@@ -138,8 +147,8 @@ fn run(port: u32) -> Result<(), &'static str> {
             }
             Err(reason) => crate::serial_println!("[watchdog] round failed; retrying: {}", reason),
         }
-        // A transient failure gets another health round; a blocked or persistently
-        // failing round still cannot keep an armed timer alive.
+        // Retry after the scheduler wait. A stalled feeder cannot keep an
+        // armed timer alive.
         wait(PERIOD_MS)?;
     }
 }

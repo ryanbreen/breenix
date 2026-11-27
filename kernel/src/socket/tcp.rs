@@ -219,8 +219,8 @@ impl ProtoOps for TcpSock {
         let backlog = backlog.max(0) as usize;
         let pid = super::object::caller_pid();
         let reuse = sk.common.reuseaddr();
-        let ttl = sk.common.ttl();
         let mut inner = self.inner.lock();
+        let (ttl, rcvbuf) = sk.common.with_opts(|o| (o.ttl, o.rcvbuf));
         let (addr, port, autobound) = match inner.state {
             TcpSockState::Bound { addr, port } => (addr, port, false),
             // Linux binds a socket that was never bound to an ephemeral port.
@@ -239,6 +239,7 @@ impl ProtoOps for TcpSock {
             pid,
             reuse,
             ttl,
+            rcvbuf,
             Some(Arc::downgrade(sk)),
         ) {
             Ok(id) => {
@@ -267,12 +268,15 @@ impl ProtoOps for TcpSock {
             addr: conn.remote_ip,
             port: conn.remote_port,
         };
-        // Preserve the TTL cloned by the handshake, even if the listener
-        // changed it while this connection waited in the accept queue.
-        let ttl = tcp::tcp_ttl(&conn).ok_or(errno::ECONNABORTED)?;
+        // Preserve the options used for this handshake even if the listener
+        // changed them while the connection waited in the accept queue.
+        let (ttl, rcvbuf) = tcp::tcp_inherited_options(&conn).ok_or(errno::ECONNABORTED)?;
         match Socket::new_child(sk, SocketProto::Tcp(TcpSock::connected(conn))) {
             Ok(socket) => {
-                socket.common.with_opts(|o| o.ttl = ttl);
+                socket.common.with_opts(|o| {
+                    o.ttl = ttl;
+                    o.rcvbuf = rcvbuf;
+                });
                 tcp::tcp_set_owner(&conn, Arc::downgrade(&socket));
                 apply_options(&socket, &conn);
                 Ok((socket, peer))
@@ -292,9 +296,9 @@ impl ProtoOps for TcpSock {
             _ => return Err(errno::EAFNOSUPPORT),
         };
         let pid = super::object::caller_pid();
-        let ttl = sk.common.ttl();
         let conn = {
             let mut inner = self.inner.lock();
+            let (ttl, rcvbuf) = sk.common.with_opts(|o| (o.ttl, o.rcvbuf));
             let (bind_addr, local_port, autobound) = match inner.state {
                 // An exhausted ephemeral range is EADDRNOTAVAIL for connect.
                 TcpSockState::Unbound => match tcp::tcp_bind_ephemeral([0; 4]) {
@@ -315,7 +319,7 @@ impl ProtoOps for TcpSock {
             };
             // The connection takes over the binding, or the socket keeps it.
             let conn =
-                match tcp::tcp_connect(bind_addr, local_port, remote_ip, remote_port, pid, ttl) {
+                match tcp::tcp_connect(bind_addr, local_port, remote_ip, remote_port, pid, ttl, rcvbuf) {
                     Ok(conn) => conn,
                     Err(error) => {
                         if autobound {
@@ -521,7 +525,9 @@ impl ProtoOps for TcpSock {
     fn option_set(&self, sk: &Socket, _level: i32, _name: i32) {
         match self.state() {
             TcpSockState::Connected(conn) => apply_options(sk, &conn),
-            TcpSockState::Listening { id, .. } => tcp::tcp_set_listener_ttl(id, || sk.common.ttl()),
+            TcpSockState::Listening { id, .. } => {
+                tcp::tcp_set_listener_options(id, || sk.common.with_opts(|o| (o.ttl, o.rcvbuf)));
+            }
             _ => {}
         }
     }

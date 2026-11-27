@@ -147,8 +147,10 @@ pub const RX_LIST_PLACEMENT_CONFIG: usize = 0x2010;
 /// One interrupt distribution list, sixteen active lists, one bad-frames class
 /// (step 28, p. 143).
 pub const RX_LIST_PLACEMENT_CONFIG_INIT: u32 = 0x181;
-/// Receive list placement discard counter (Section 13, p. 345).
+/// Receive list placement counters (Section 13, p. 345).
+pub const STAT_NO_RX_BD: usize = 0x224c;
 pub const STAT_IN_DISCARDS: usize = 0x2250;
+pub const STAT_IN_ERRORS: usize = 0x2254;
 pub const RX_LIST_PLACEMENT_STATS_CONTROL: usize = 0x2014;
 pub const RX_LIST_PLACEMENT_STATS_MASK: usize = 0x2018;
 pub const RX_DATA_BD_INITIATOR_MODE: usize = 0x2400;
