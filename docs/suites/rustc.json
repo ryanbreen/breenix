@@ -4,6 +4,10 @@
   "area": "Toolchain",
   "summary": "Checks the hosted Rust compiler and its staged sysroot.",
   "binary": "/sbin/suite-rustc",
+  "minimumGuestMemory": {
+    "mib": 1024,
+    "derivation": "E25 ruling 156. At 512 MiB, ARM boot 20261127T045753Z-qemu-76081 had a free-frame floor of 88,532. The uses-std case budgets 46,823 PT_LOAD frames, 21,157 frames for additional DSO file cache and private pages, and 21,588 frames for the Mac twin's peak RSS. The next power of two, 1024 MiB, projects 219,604 free frames and fits the 89,568-frame demand with a 25% reserve."
+  },
   "timingSensitive": true,
   "categories": [{
     "id": "rustc",

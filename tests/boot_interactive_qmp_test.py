@@ -181,7 +181,8 @@ class BootInteractiveQmpTest(unittest.TestCase):
             self.executable(scripts / name, f"#!/bin/sh\n{script}\n")
         self.executable(scripts / "create_ext2_disk.sh", '''#!/bin/sh
 set -eu
-mke2fs -q -t ext2 -b 4096 -F target/ext2-aarch64.img 16M
+mkdir -p disk-root/etc
+mke2fs -q -t ext2 -b 4096 -F -d disk-root target/ext2-aarch64.img 16M
 ''')
         programs = self.root / "userspace/programs"
         programs.mkdir(parents=True)
@@ -190,7 +191,7 @@ mke2fs -q -t ext2 -b 4096 -F target/ext2-aarch64.img 16M
         records = self.root / "toolchain/rust-host"
         records.parent.mkdir()
         records.symlink_to(ARM_K5_RECORDS, target_is_directory=True)
-        for name in ("aarch64-breenix.json", "aarch64-breenix-hosted.json"):
+        for name in ("aarch64-breenix.json", "aarch64-breenix-hosted.json", "rust-toolchain.toml"):
             shutil.copy2(ROOT / name, self.root / name)
         cache = Path(ARM_K5_TWIN).expanduser().resolve()
         kd = ARM_K5_TARGET / "kd/aarch64"
@@ -198,8 +199,10 @@ mke2fs -q -t ext2 -b 4096 -F target/ext2-aarch64.img 16M
         k5 = json.loads((records / "k5/aarch64.json").read_text())
         pin = json.loads((records / "hosted-libc-aarch64.json").read_text())
         path = os.pathsep.join((str(scripts), "/opt/homebrew/opt/e2fsprogs/sbin", os.environ["PATH"]))
-        with patch.dict(os.environ, PATH=path, BREENIX_K5_SYSROOT=str(cache / "sysroot"),
-                        BREENIX_KD_BUILD_DIR=str(kd)):
+        rustup_home = os.environ.get("RUSTUP_HOME", str(Path.home() / ".rustup"))
+        with patch.dict(os.environ, PATH=path, BREENIX_RUSTC_PORT_BUILDS=str(cache),
+                        BREENIX_K5_SYSROOT=str(cache / "sysroot"), BREENIX_KD_BUILD_DIR=str(kd),
+                        RUSTUP_HOME=rustup_home):
             args, _ = self.launch("--no-display", mode=("--mode", "suite", "--suite", "rustc,dynamic"),
                                   build=True, timeout=35)
             self.assertEqual([args[i + 1] for i, arg in enumerate(args) if arg == "-m"], ["1024"])

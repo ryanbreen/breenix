@@ -40,6 +40,11 @@ A case may declare a `targets` list of guest architectures (`aarch64` and
 Scorers and the deadline helper count only cases registered for the guest's
 architecture. Cases without `targets` run on both architectures.
 
+A suite may declare `minimumGuestMemory` with a positive integer `mib`
+and a nonempty `derivation`. The interactive ARM64 QEMU launcher uses
+the largest declared minimum among the selected suites. It uses 512 MiB
+when the selection has no declaration.
+
 A case may also have optional `expect` and `expectEnd` strings: non-empty visual
 guidance of at most 300 characters each. `expect` describes only the judged picture;
 `expectEnd` overrides it for an `end` checkpoint whose displayed content differs.
@@ -1990,6 +1995,30 @@ metal's 420-second DONE deadline. ARM64 guest acceptance follows at A5.
 itself. It checks close-on-exec pipe descriptors, wait statuses for exit 3
 and SIGTERM, and lock contention and acquisition after release for both
 `flock` and `fcntl(F_SETLK)`. Pipe events order the two processes.
+
+## Hosted Rust compiler
+
+ARM64 QEMU stages the compiler and driver together with the tool-target
+rlibs and both ARM target specifications. The compiler finds its driver through
+`$ORIGIN/../lib`. The `rustc,dynamic` selection shares the interpreter
+and the pinned libc in `/lib`. Set `BREENIX_RUSTC_PORT_BUILDS` to the
+ARM K5 twin cache for a build. Keep the pinned libc outside the KD output
+directory, at `shared-libc/libc.so` in that cache or in a file named by
+`BREENIX_HOSTED_LIBC`. Staging checks its digest against both the hosted
+libc pin and the K5 link record.
+
+The minimum in [rustc.json](rustc.json) uses the free-frame floor of the
+512 MiB ARM K4 boot. The host check adds page-rounded `PT_LOAD` frames
+for each case to the retained whole-file DSO cache and a conservative
+allowance for private copies of writable pages. It uses the pinned Mac
+twin's peak RSS as a proxy for the guest compile, and keeps a quarter of
+the projected free frames in reserve.
+
+Set `BREENIX_ARM_K5_TWIN` to the built twin cache when running the
+`test_arm_rustc_dynamic_stages_recorded_files` and
+`test_arm_rustc_and_dynamic_fit_declared_guest_memory` host checks in
+`tests/boot_interactive_qmp_test.py`. Build the ARM rustc and dynamic
+artifacts first. Both checks run on the host without QEMU.
 
 ## E25 self-host diagnostic
 

@@ -2,6 +2,7 @@
 """Resolve and score boots that run several effort suites (docs/suites/README.md, "Several suites in one boot").
 
     scripts/suite-sequence.py resolve SPEC --target TARGET [--gpu-3d]
+    scripts/suite-sequence.py memory SUITES
     scripts/suite-sequence.py score SUITES RECORDS_LOG [OTHER_LOG ...] [--arch ARCH] [--disk IMAGE]
     scripts/suite-sequence.py run SUITES SERIAL LAUNCHER [ARG ...]
 
@@ -133,6 +134,27 @@ def resolve(spec, target, has_3d=False, read=read_repo):
                 raise ValueError(f"suite {suite} checks the disk after the boot, so it runs last "
                                  "(or in a boot of its own)")
     return ids, skipped
+
+
+def guest_memory(suites, read=read_repo):
+    """Return the largest declared guest minimum for the resolved suite list."""
+    minima = []
+    for suite in suites:
+        if not ID.fullmatch(suite):
+            raise ValueError(f"invalid suite id {suite!r}")
+        manifest = read(f"docs/suites/{suite}.json")
+        if manifest is None:
+            raise ValueError(f"no manifest docs/suites/{suite}.json")
+        manifest = json.loads(manifest)
+        if "minimumGuestMemory" not in manifest:
+            continue
+        memory = manifest["minimumGuestMemory"]
+        if (not isinstance(memory, dict) or memory.keys() != {"mib", "derivation"}
+                or type(memory["mib"]) is not int or memory["mib"] <= 0
+                or not isinstance(memory["derivation"], str) or not memory["derivation"].strip()):
+            raise ValueError(f"suite {suite}: invalid minimumGuestMemory declaration")
+        minima.append(memory["mib"])
+    return max(minima, default=512)
 
 
 def lines(text):
@@ -339,6 +361,8 @@ def main():
     p.add_argument("spec")
     p.add_argument("--target", required=True, choices=TARGETS)
     p.add_argument("--gpu-3d", action="store_true", help="ARM64 QEMU with the GL device (boot-interactive.sh --gpu-gl)")
+    p = sub.add_parser("memory")
+    p.add_argument("suites", help="resolved list of suite IDs, joined by commas")
     p = sub.add_parser("score")
     p.add_argument("suites")
     p.add_argument("logs", nargs="+")
@@ -354,6 +378,13 @@ def main():
     args = parser.parse_args()
     if args.command == "run":
         return launch(args.suites, args.serial, args.launcher)
+    if args.command == "memory":
+        try:
+            print(guest_memory(args.suites.split(",")))
+        except ValueError as error:
+            print(f"suite-sequence: {error}", file=sys.stderr)
+            return 2
+        return 0
     if args.command == "resolve":
         try:
             ids, skipped = resolve(args.spec, args.target, gpu_3d(args.target, args.gpu_3d))

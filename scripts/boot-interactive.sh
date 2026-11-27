@@ -210,11 +210,13 @@ if [ "$MODE" = program ]; then
 elif [ -n "$PROGRAM" ]; then
     echo "--program is only for --mode program" >&2; exit 2
 fi
+GUEST_MEMORY_MIB=512
 if [ "$MODE" = suite ]; then
     [ -n "$SUITE" ] || { echo "--mode suite needs --suite ID" >&2; exit 2; }
     GPU_3D=()
     [ "$GPU_GL" -eq 0 ] || GPU_3D=(--gpu-3d)
     SUITE=$(python3 "$ROOT/scripts/suite-sequence.py" resolve "$SUITE" --target arm64-qemu ${GPU_3D[@]+"${GPU_3D[@]}"}) || exit 2
+    GUEST_MEMORY_MIB=$(python3 "$ROOT/scripts/suite-sequence.py" memory "$SUITE") || exit 2
     # Console observes the GPU core's scanout and suspended display-owner work;
     # the MMIO framebuffer alone cannot provide those operations.
     if [[ ",$SUITE," == *,console,* ]]; then GPU_GL=1; fi
@@ -424,6 +426,22 @@ if [ "$BUILD" -eq 1 ]; then
         run_build "$ROOT/userspace/programs/build.sh" --arch aarch64 --hosted-bin suite-llvm --features llvm
         run_build "$ROOT/userspace/programs/build.sh" --arch aarch64 --llvm
     fi
+    if [ "$MODE" = suite ] && [[ ",$SUITE," == *,rustc,* ]]; then
+        KD_ARM_DIR="${BREENIX_KD_BUILD_DIR:-$ROOT/userspace/programs/target/kd/aarch64}"
+        K5_CACHE="${BREENIX_RUSTC_PORT_BUILDS:-$ROOT/build/rustc-port}"
+        BREENIX_KD_LIBC_INPUT="${BREENIX_KD_LIBC_INPUT:-${BREENIX_HOSTED_LIBC:-$K5_CACHE/shared-libc/libc.so}}"
+        if [ ! -f "$BREENIX_KD_LIBC_INPUT" ] || [ "$BREENIX_KD_LIBC_INPUT" -ef "$KD_ARM_DIR/libc.so" ]; then
+            echo "ARM rustc needs the pinned libc.so as BREENIX_HOSTED_LIBC outside the KD output directory" >&2
+            exit 1
+        fi
+        export BREENIX_KD_LIBC_INPUT
+        run_build "$ROOT/userspace/programs/build.sh" --arch aarch64 --hosted-bin suite-rustc --features rustc
+        run_build "$ROOT/userspace/programs/build.sh" --arch aarch64 --rustc
+        if [[ ",$SUITE," != *,dynamic,* ]]; then
+            run_build "$ROOT/userspace/programs/build.sh" --arch aarch64 --kd-loader
+            cp "$BREENIX_KD_LIBC_INPUT" "$KD_ARM_DIR/libc.so"
+        fi
+    fi
     if [ "$MODE" = suite ] && [[ ",$SUITE," == *,dynamic,* ]]; then
         run_build "$ROOT/userspace/programs/build.sh" --arch aarch64 --dynamic
     fi
@@ -595,7 +613,7 @@ if [ "$MODE" = suite ]; then
     # The first suite runs from fw_cfg; the list on the disk tells each suite which runs next.
     SEQUENCE=
     if [[ "$SUITE" == *,* ]]; then SEQUENCE="$SUITE"; fi
-    if [[ ",$SUITE," == *,rust-host,* || ",$SUITE," == *,cxx-runtime,* || ",$SUITE," == *,llvm,* || ",$SUITE," == *,dynamic,* ]]; then
+    if [[ ",$SUITE," == *,rust-host,* || ",$SUITE," == *,cxx-runtime,* || ",$SUITE," == *,llvm,* || ",$SUITE," == *,dynamic,* || ",$SUITE," == *,rustc,* ]]; then
         python3 "$ROOT/scripts/rust_host_stage.py" --arch aarch64 --image "$WRITABLE" --suite "$SUITE"
     fi
     "$ROOT/scripts/write-boot-target.sh" "$WRITABLE" "${SUITE%%,*}" \
@@ -696,7 +714,7 @@ if [ "$BREENFS_DIAGNOSTIC" -eq 1 ]; then
         --serial "$SERIAL_LOG" --disk "$WRITABLE" --tools-dir "$BREENFS_TOOLS_TARGET/release" \
         --gate-timeout "$GATE_TIMEOUT" --profile "$QEMU_PROFILE" -- \
         python3 "$ROOT/scripts/qemu-arm64.py" "$QEMU" -rtc base=utc "${QEMU_PROFILE_ARGS[@]}" \
-        -m 512 -smp "$CPUS" -kernel "$KERNEL" "${DISPLAY_ARGS[@]}" -no-reboot \
+        -m "$GUEST_MEMORY_MIB" -smp "$CPUS" -kernel "$KERNEL" "${DISPLAY_ARGS[@]}" -no-reboot \
         -fw_cfg name=opt/breenix/mode,string=suite -fw_cfg name=opt/breenix/suite,string=filesystem \
         -device virtio-gpu-device -device virtio-rng-device \
         -device virtio-net-device,netdev=net0 -netdev "$NETDEV" <&3 &
@@ -847,7 +865,7 @@ if [ -n "$TOOLCHAIN_RECORD" ] && [ -z "$ONLY" ]; then
 fi
 python3 "$ROOT/scripts/watch-qemu.py" ${WATCH_READY_ARGS[@]+"${WATCH_READY_ARGS[@]}"} --serial "$SERIAL_LOG" --mode "$WATCH_MODE" \
     --suite "$SUITE" --case "$ONLY" --idle-exit "$IDLE_EXIT" --gate-timeout "$GATE_TIMEOUT" --disk "$WRITABLE" -- python3 "$ROOT/scripts/qemu-arm64.py" "$QEMU" \
-    -rtc base=utc "${QEMU_PROFILE_ARGS[@]}" -m 512 -smp "$CPUS" \
+    -rtc base=utc "${QEMU_PROFILE_ARGS[@]}" -m "$GUEST_MEMORY_MIB" -smp "$CPUS" \
     -kernel "$KERNEL" \
     "${DISPLAY_ARGS[@]}" -no-reboot \
     ${MODE_ARGS[@]+"${MODE_ARGS[@]}"} \

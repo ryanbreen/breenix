@@ -168,6 +168,17 @@ fn read_manifest(path: &Path, errors: &mut Vec<String>) -> Option<Manifest> {
         return None;
     };
     let mut expected = vec!["id", "title", "area", "summary", "binary", "categories"];
+    if let Some(memory) = object.get("minimumGuestMemory") {
+        expected.push("minimumGuestMemory");
+        if !memory.as_object().is_some_and(|fields| {
+            fields.len() == 2
+                && fields.get("mib").and_then(Value::as_u64).is_some_and(|mib| mib > 0)
+                && fields.get("derivation").and_then(Value::as_str)
+                    .is_some_and(|text| !text.trim().is_empty())
+        }) {
+            errors.push(format!("{at}: minimumGuestMemory needs positive integer mib and a derivation"));
+        }
+    }
     // A suite whose cases measure time waits for a quiet host before it boots.
     if let Some(sensitive) = object.get("timingSensitive") {
         expected.push("timingSensitive");
