@@ -1,11 +1,14 @@
 use breenfs_host_tests::{
+    block::{BlockDevice, BlockError},
     btree::{self, Error, NodeStore, ReadCause, ReadFailure},
-    format::{Key, NODE_SIZE},
+    commit::DeviceStore,
+    format::{Key, BLOCK_SIZE, NODE_SIZE},
 };
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,
     ptr,
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 thread_local! {
@@ -32,6 +35,52 @@ unsafe impl GlobalAlloc for Allocator {
 
 #[global_allocator]
 static ALLOCATOR: Allocator = Allocator;
+
+#[derive(Default)]
+struct ReadDevice(AtomicUsize);
+
+impl BlockDevice for ReadDevice {
+    fn read_block(&self, _: u64, _: &mut [u8]) -> Result<(), BlockError> {
+        panic!("expected a single bulk read")
+    }
+
+    fn read_blocks(&self, start: u64, count: usize, buf: &mut [u8]) -> Result<(), BlockError> {
+        assert_eq!((start, count, buf.len()), (24, NODE_SIZE / BLOCK_SIZE, NODE_SIZE));
+        self.0.fetch_add(1, Ordering::Relaxed);
+        buf.fill(42);
+        Ok(())
+    }
+
+    fn write_block(&self, _: u64, _: &[u8]) -> Result<(), BlockError> {
+        panic!("read-only test device")
+    }
+
+    fn block_size(&self) -> usize {
+        BLOCK_SIZE
+    }
+
+    fn num_blocks(&self) -> u64 {
+        16_384
+    }
+
+    fn flush(&self) -> Result<(), BlockError> {
+        panic!("read-only test device")
+    }
+}
+
+#[test]
+fn uncached_node_read_reports_allocation_failure_before_submitting_io() {
+    let device = ReadDevice::default();
+    let store = DeviceStore(&device);
+    REFUSE_NODE_BUFFER.set(true);
+    assert_eq!(
+        store.get(24),
+        Err(Error::Read(ReadFailure { cause: ReadCause::Allocation, addr: 24 }))
+    );
+    assert_eq!(device.0.load(Ordering::Relaxed), 0);
+    assert_eq!(store.get(24).unwrap(), vec![42; NODE_SIZE]);
+    assert_eq!(device.0.load(Ordering::Relaxed), 1);
+}
 
 #[derive(Default)]
 struct Store {
