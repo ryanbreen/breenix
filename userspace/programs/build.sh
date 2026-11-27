@@ -270,10 +270,26 @@ if [[ "$KD_LIBC" == 1 ]]; then
     mkdir -p "$kd_dir"
     shared_manifest="$(python3 "$PROJECT_ROOT/scripts/rust-host/prepare-kd-libc.py" \
         "$libc_dir" "$kd_dir/libc-source")"
+    libc_target="$HOSTED_TARGET_JSON"
+    if [[ "$ARCH" == aarch64 ]]; then
+        # Rust emits an archive here. LLD makes the DSO separately, so keep
+        # the archive and CRT on the target settings used for the libc pin.
+        libc_target="$kd_dir/libc-source/$TARGET_DIR-hosted.json"
+        python3 - "$HOSTED_TARGET_JSON" "$libc_target" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+source, destination = map(Path, sys.argv[1:])
+spec = json.loads(source.read_text())
+spec.pop("dynamic-linking", None)
+destination.write_text(json.dumps(spec, indent=2) + "\n")
+PY
+    fi
     CARGO_PROFILE_RELEASE_PANIC=abort \
         RUSTFLAGS="$REMAP_FLAGS --remap-path-prefix=$kd_dir/libc-source=/breenix/libs -D warnings -C relocation-model=pic" \
         cargo build --release --locked --message-format=json-render-diagnostics \
-        --manifest-path "$shared_manifest" --target "$HOSTED_TARGET_JSON" \
+        --manifest-path "$shared_manifest" --target "$libc_target" \
         --features hosted-rustc -Z build-std=core,compiler_builtins \
         -Z build-std-features=compiler-builtins-mem --target-dir "$kd_dir/libc" > "$kd_dir/libc-build.jsonl"
     "$rust_tools/llvm-objcopy" --rename-section \
@@ -301,7 +317,7 @@ PY
     builtins_rlib="${rlibs#*$'\n'}"
     for source in hosted_crt hosted_dso_handle; do
         rustc $REMAP_FLAGS -D warnings --edition=2021 --crate-type=lib --emit=obj \
-            -C panic=abort -C opt-level=2 -C relocation-model=pic --target "$HOSTED_TARGET_JSON" \
+            -C panic=abort -C opt-level=2 -C relocation-model=pic --target "$libc_target" \
             -L "dependency=$(dirname "$core_rlib")" --extern "core=$core_rlib" \
             --extern "compiler_builtins=$builtins_rlib" \
             "$libc_dir/src/$source.rs" -o "$kd_dir/$source.o"

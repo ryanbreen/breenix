@@ -119,6 +119,9 @@ def hosted_targets():
         if arch == "x86_64":
             # Ruling 103(2); see hosted_spec_citations in toolchain/rust-host/x2.json.
             expected["dynamic-linking"] = True
+        else:
+            # Ruling 153: rustc needs this to emit the hosted rustc_driver dylib.
+            expected["dynamic-linking"] = True
         target = ROOT / f"{arch}-breenix-hosted.json"
         require(target.exists(), f"missing hosted target {target}")
         require(json.loads(target.read_text()) == expected, f"{target}: hosted target fields differ")

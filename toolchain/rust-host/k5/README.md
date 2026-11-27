@@ -58,5 +58,47 @@ The bootstrap logs include the retained dependency warnings, unused macros in
 the pinned compiler builtins, and std dropping its dylib crate type for the
 soft-float target. The corpus compiles with `-Dwarnings`.
 
-ARM64 still needs its own hosted compiler and twin sysroot, X2 inventory, KD
-loader acceptance and K5 guest cases.
+## AArch64 bootstrap and X2
+
+Use a private checkout at the same hosted pin. The hosts are
+`aarch64-apple-darwin` and `aarch64-breenix-hosted`. The targets are
+`aarch64-breenix` and `aarch64-breenix-hosted`. Keep the bootstrap
+configuration, Cargo patch copies, build directory and receipts under
+`~/Library/Caches/breenix-e25/ak5`. Check that `compiler/` and
+`src/llvm-project` are clean before and after the invocation above.
+
+Select the Mac-native LLVM from the pinned gitlink and the K4 AArch64
+archives through their respective `llvm-config` executables. If the K4 cache
+retains only the archives, regenerate the K4 build graph's header outputs
+under `include/llvm`, including `CodeGen/GenVT.inc`. Point the AArch64
+`llvm-config` include flags at the regenerated headers. For the
+driver, build separate PIC archives with K3's CMake configuration and
+`CMAKE_POSITION_INDEPENDENT_CODE=ON`. Copy the approved Breenix locale
+header into the generated libc++ includes before building those archives.
+Apply the existing Breenix dependency patches through a build-local Cargo
+config and lockfile, as in the x86-64 route. Build an ARM hosted sysroot with
+the pinned stage-0 Cargo and `-Zbuild-std=std,panic_unwind`. Add its rlib
+directory to the hosted compiler build's Rust flags with `-Lall=`, and set
+`X2_SYSROOT_DEPS` to that directory for the getrandom provider. Scope
+`-Crelocation-model=pic` to Cargo builds for `aarch64-breenix-hosted` so the
+bootstrap can link the driver as a shared object. The target JSON's only
+dynamic-linking addition is `dynamic-linking` (ruling 153).
+For C++ compiler probes that link an executable, select the pinned ELF
+LLD with the ordinary ARM `libc.a` and `userspace/programs/linker.ld`.
+
+Configure the hosted linker as `scripts/rust-host/kd_link.py`, with
+`BREENIX_X2_ARCH=aarch64` and `BREENIX_KD_BUILD_DIR` naming u3's
+`libc.so`, CRT and DSO handle. The ARM `--kd-libc` build retains u3's
+archive target settings and links the shared object with LLD. Point
+`BREENIX_X2_BUNWIND` to a PIC `libbunwind.a` built for the hosted ARM target.
+The fallback linker for intermediate shared objects includes u3's shared
+libc and the PIC bunwind archive with its panic handler localized by
+`kd_link.prepare_bunwind`. Use `BREENIX_X2_RUNTIME`
+for the K3 archive directory in the layout described above and
+`BREENIX_X2_STAGE` for the X2 link maps.
+
+[`x2-aarch64.json`](../x2-aarch64.json) records the twin sysroot and ELF
+digests, runtime imports and PT_LOAD frame count.
+
+ARM64 still needs KD relocations and TLS, guest staging, and dynamic and
+rustc suite acceptance.
