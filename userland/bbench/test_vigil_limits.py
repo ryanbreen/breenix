@@ -15,6 +15,8 @@ LONG_HOST = "Apple M5 Max (Mac17,6), macOS 27.0.1 " + "with a long description "
 # An SSH failure names the forwarded loopback address, which Vigil refuses as an IPv4 literal.
 SSH_ERROR = ("no receipt (ssh exit 255: ssh: connect to host 127.0.0.1 port 50123: "
              "Connection refused " + "x" * 280 + ")")
+# getpid's one failed attempt has its own error, so a test can tell it from malloc's.
+GETPID_ERROR = "bbench getpid exited with signal 11 after 412 of 1000000 calls"
 
 
 class Args:
@@ -44,7 +46,7 @@ class LongProvenanceRun(unittest.TestCase):
         bench.out = {system: out}
         bench.notes = {system: [f"VM restarted after boot {n}" for n in (1, 2)]}
         bench.started = rig.datetime(2026, 11, 27, 22, 0, tzinfo=rig.timezone.utc)
-        samples = (("getpid", 1, None), ("getpid", 2, SSH_ERROR),
+        samples = (("getpid", 1, None), ("getpid", 2, GETPID_ERROR),
                    ("malloc-1t", 1, SSH_ERROR), ("malloc-1t", 2, SSH_ERROR.replace("50123", "50124")))
         for case, number, error in samples:
             sample = f"{Args.run}-{case}-{number}"
@@ -80,6 +82,14 @@ class LongProvenanceRun(unittest.TestCase):
         self.assertEqual(rows["memory.malloc-1t"]["state"], "failed")
         # The row's reason is shortened to fit; the sidecar keeps both errors in full.
         self.assertIn(SSH_ERROR.replace("50123", "50124"), json.dumps(sidecar))
+
+    def test_a_partly_measured_row_keeps_its_failed_attempts_reason(self):
+        series, sidecar = self.check(self.write("breenix", {}))
+        getpid = {row["id"]: row for row in series["rows"]}["process.getpid"]
+        self.assertEqual(getpid["state"], "measured")
+        self.assertIn(GETPID_ERROR, getpid["reason"] or "")
+        self.assertEqual(sidecar["failures"]["process.getpid"], [GETPID_ERROR])
+        self.assertEqual(len(sidecar["failures"]["memory.malloc-1t"]), 2)
 
 
 class CredentialRedaction(unittest.TestCase):
