@@ -430,7 +430,9 @@ fn test_checks_the_configured_btest_path_before_connecting() {
     .unwrap();
     let error = crate::testing::test(Some(&config), &["yes".into()]).unwrap_err();
     assert!(
-        error.to_string().starts_with("btest_path: box paths must be absolute"),
+        error
+            .to_string()
+            .starts_with("btest_path: box paths must be absolute"),
         "{error}"
     );
 }
@@ -441,7 +443,7 @@ fn test_keeps_the_summary_and_returns_the_runner_status() {
     let script = files.path().join("ssh");
     fs::write(&script, concat!(
         "#!/bin/sh\nfor request do :; done\n",
-        "case \"$request\" in *\"'btest' 'run' 'yes' '--json'\") ;; *) exit 90;; esac\n",
+        "case \"$request\" in *\"'/remote/home/bin/btest' 'run' 'yes' '--json'\") ;; *) exit 90;; esac\n",
         "printf '%s\\n' '{\"kind\":\"case\",\"pkg\":\"yes\",\"id\":\"default-y\",\"status\":\"fail\",\"diff\":\"--- expected.out\\n+++ actual.out\"}'\n",
         "printf '%s\\n' '{\"kind\":\"summary\",\"suites\":[]}'\nexit 7\n",
     )).unwrap();
@@ -455,8 +457,14 @@ fn test_keeps_the_summary_and_returns_the_runner_status() {
     };
     let receipt = files.path().join("run.json");
     let mut output = Vec::new();
-    let status =
-        crate::testing::run_btest(&remote, &["yes".into()], &receipt, &mut output).unwrap();
+    let status = crate::testing::run_btest(
+        &remote,
+        "/remote/home/bin/btest",
+        &["yes".into()],
+        &receipt,
+        &mut output,
+    )
+    .unwrap();
     assert_eq!(status, ExitCode::from(7));
     assert!(String::from_utf8(output)
         .unwrap()

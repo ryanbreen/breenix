@@ -18,7 +18,9 @@ Set `"jump": "bastion"` to use the specified OpenSSH bastion alias via
 ProxyJump, or set ProxyJump in the alias's OpenSSH config. An alternate
 OpenSSH configuration file can be specified with `ssh_config` in the
 JSON. To use a different bdev configuration, pass `--config FILE` before
-`test`. The remote PATH must contain the JSON-capable btest binary.
+`test`. By default bdev finds the JSON-capable btest on the SSH exec PATH.
+For a bootstrapped copy in `~/bin`, set `"btest_path": "/REMOTE/HOME/bin/btest"`
+using its absolute path on the box.
 
 From a Breenix checkout:
 

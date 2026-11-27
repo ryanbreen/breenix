@@ -18,6 +18,7 @@ struct Config {
     jump: Option<String>,
     ssh_config: Option<PathBuf>,
     source: String,
+    btest_path: Option<String>,
 }
 
 fn identifier(value: &str) -> bool {
@@ -202,6 +203,9 @@ pub(super) fn test(config_path: Option<&Path>, selectors: &[String]) -> Result<E
         return Err("host and jump must be SSH aliases".into());
     }
     validate_path(&config.source)?;
+    if let Some(path) = &config.btest_path {
+        validate_path(path).map_err(|error| format!("btest_path: {error}"))?;
+    }
 
     let checkout = String::from_utf8(git(Path::new("."), &["rev-parse", "--show-toplevel"])?)?;
     let checkout = Path::new(checkout.trim_end_matches('\n'));
@@ -239,17 +243,24 @@ pub(super) fn test(config_path: Option<&Path>, selectors: &[String]) -> Result<E
     sync(checkout, &remote, true, &manifest, &layout.roots, state)?;
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?;
     let receipt = runs.join(format!("{}-{:09}.json", now.as_secs(), now.subsec_nanos()));
-    run_btest(&remote, &programs, &receipt, &mut io::stdout().lock())
+    run_btest(
+        &remote,
+        config.btest_path.as_deref().unwrap_or("btest"),
+        &programs,
+        &receipt,
+        &mut io::stdout().lock(),
+    )
 }
 
 pub(super) fn run_btest(
     remote: &BoxPaths<'_>,
+    runner: &str,
     programs: &[String],
     receipt: &Path,
     output: &mut impl Write,
 ) -> Result<ExitCode> {
     let workspace = format!("BTEST_WORKSPACE={}/userland", remote.source);
-    let mut words = vec!["/bin/env", &workspace, "btest", "run"];
+    let mut words = vec!["/bin/env", &workspace, runner, "run"];
     words.extend(programs.iter().map(String::as_str));
     words.push("--json");
     let mut child = remote.ssh(&words).stdout(Stdio::piped()).spawn()?;
