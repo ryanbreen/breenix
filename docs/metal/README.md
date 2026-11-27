@@ -1074,9 +1074,12 @@ The persistent install runs bsshd on port 22 and no telnetd: x86 images start no
   than being replaced.
 
 bsshd sends its SSH identification before reading the client's (RFC 4253 section
-4.2), including for `ssh-keyscan`. It offers `aes256-gcm@openssh.com` (RFC 5647's
-packet format with the negotiation in draft-miller-sshm-aes-gcm) and `aes128-ctr`
-with HMAC-SHA256. A PTY session creates a session, acquires the slave as its
+4.2), including for `ssh-keyscan`. It offers, in this order,
+`chacha20-poly1305@openssh.com` (draft-ietf-sshm-chacha20-poly1305),
+`aes256-gcm@openssh.com` (RFC 5647's packet format with the negotiation in
+draft-miller-sshm-aes-gcm) and `aes128-ctr` with HMAC-SHA256, and it applies
+strict KEX (draft-ietf-sshm-strict-kex) when the client offers it. Its AES is
+bitsliced, with no table indexed by key or data. A PTY session creates a session, acquires the slave as its
 controlling terminal, sets its foreground group and gives the slave to the
 account with mode 0620; the server restores ownership when the session ends.
 The [server suite](../suites/README.md#server-host-driven-persistent-categories)
