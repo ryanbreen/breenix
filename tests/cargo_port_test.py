@@ -103,14 +103,30 @@ class CargoPort(unittest.TestCase):
         self.assertEqual(sorted(name for name, files in data.items() if len(files) > 1), [])
 
     def test_x1_c_dependencies_resolve_in_libc(self):
-        run = Path((CACHE / 'g2.path').read_text().strip())
-        messages = Path(os.environ.get(
-            'BREENIX_X1_CARGO_MESSAGES', run / 'bootstrap-x86-inventory.cargo.jsonl'))
-        target = 'x86_64-breenix-hosted'
-        libc = Path(os.environ.get('BREENIX_X1_LIBC', ROOT /
-                                  'userspace/programs/target/kd/libc.so'))
-        sysroot = Path(os.environ.get('BREENIX_X1_SYSROOT', run / 'stage1'))
-        record = json.loads((ROOT / 'toolchain/rust-host/x1.json').read_text())
+        for arch in ('x86_64', 'aarch64'):
+            with self.subTest(arch=arch):
+                self._check_x1_c_dependencies_resolve_in_libc(arch)
+
+    def _check_x1_c_dependencies_resolve_in_libc(self, arch):
+        directory = ROOT / 'toolchain/rust-host'
+        kd = ROOT / 'userspace/programs/target/kd'
+        target = f'{arch}-breenix-hosted'
+        if arch == 'x86_64':
+            run = Path((CACHE / 'g2.path').read_text().strip())
+            messages = Path(os.environ.get('BREENIX_X1_CARGO_MESSAGES_X86_64',
+                            os.environ.get('BREENIX_X1_CARGO_MESSAGES',
+                                           run / 'bootstrap-x86-inventory.cargo.jsonl')))
+            sysroot = Path(os.environ.get('BREENIX_X1_SYSROOT', run / 'stage1'))
+            libc = Path(os.environ.get('BREENIX_X1_LIBC', kd / 'libc.so'))
+            inventory = directory / 'x1.json'
+            machine = 'Advanced Micro Devices X86-64'
+        else:
+            messages = Path(os.environ['BREENIX_X1_CARGO_MESSAGES_AARCH64'])
+            sysroot = Path(os.environ['BREENIX_X1_SYSROOT_AARCH64'])
+            libc = Path(os.environ.get('BREENIX_X1_LIBC_AARCH64', kd / 'aarch64/libc.so'))
+            inventory = directory / 'x1-aarch64.json'
+            machine = 'AArch64'
+        record = json.loads(inventory.read_text())
         nm = os.environ.get('LLVM_NM', 'llvm-nm')
         readelf = os.environ.get('LLVM_READELF', 'llvm-readelf')
 
@@ -125,7 +141,7 @@ class CargoPort(unittest.TestCase):
 
         header = subprocess.check_output([readelf, '-h', '-d', libc], text=True)
         self.assertRegex(header, r'Type:\s+DYN\b')
-        self.assertRegex(header, r'Machine:\s+Advanced Micro Devices X86-64')
+        self.assertRegex(header, rf'Machine:\s+{machine}\b')
         self.assertRegex(header, r'\(SONAME\).*\[libc\.so\]')
         exports = symbols([libc], '--dynamic', '--defined-only')
         self.assertTrue(set(record['libc']['exports']) <= exports,
