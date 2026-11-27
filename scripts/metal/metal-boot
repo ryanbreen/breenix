@@ -476,8 +476,10 @@ class Driver:
                'input': input_kind(self.args),
                'session': session(self.args),
                'idleMinutes': getattr(self.args, 'idle_minutes', 30) if session(self.args) else None,
-               'evidenceEligible': not fault and self.args.payload not in (metal_export.PAYLOAD, metal_persist.RECLAIM_PAYLOAD)
+               'evidenceEligible': not fault and not getattr(self.args, 'replace_usr', False) and self.args.payload not in (metal_export.PAYLOAD, metal_persist.RECLAIM_PAYLOAD)
                and (persistent(self.args) or not session(self.args)) and getattr(self.args, 'case', None) is None}
+        if getattr(self.args, 'verify_writable_root', False):
+            run['verifyWritableRoot'] = True
         if self.migration_phase:
             run['migrationPhase'] = self.migration_phase
         if transfer_input := getattr(self.args, 'transfer_input', None):
@@ -487,6 +489,8 @@ class Driver:
         if self.args.mode == 'persistent-install':
             if getattr(self.args, 'kernel_only', False):
                 run['kernelOnly'] = True
+            if getattr(self.args, 'replace_usr', False):
+                run['replaceUsr'] = True
             if getattr(self.args, 'carry_local', False):
                 run['carryLocal'] = True
         if getattr(self.args, 'case', None) is not None:
@@ -817,7 +821,8 @@ class Driver:
         if self.args.mode == 'persistent-install':
             if metal_migration.in_progress():
                 raise Finish(m.EXIT_CANCELLED, 'the E24 migration has parked the persistent install in the test loop')
-            if (not getattr(self.args, 'kernel_only', False) and metal_persist.layout()
+            if (not (getattr(self.args, 'kernel_only', False) or getattr(self.args, 'replace_usr', False))
+                    and metal_persist.layout()
                     and build.get('localUserlandGuard') is not True):
                 raise Finish(m.EXIT_CANCELLED, 'the commit lacks the installer that protects on-box files')
             files, extracted = self.prepare_install(inputs, build)
@@ -1086,12 +1091,24 @@ class Driver:
         return files, extracted
 
     def prepare_install(self, inputs, build):
-        """The install boot (README, "Install and upgrade"): the request, the new kernel slot, the new userland on the
+        """The install boot: the request, the new kernel slot, the new userland on the
         test root, and the migration's intent. Returns the boot disk's files."""
         the_layout = metal_persist.layout()
         slots = metal_persist.read_disk().get('slots') or {}
         kernel_only = getattr(self.args, 'kernel_only', False)
+        replace_usr = getattr(self.args, 'replace_usr', False)
+        current = slots.get('current') or {}
         generation = self.id
+        if replace_usr:
+            generation = metal_persist.slot_userland(current)
+            if not (the_layout and current.get('writableRoot') and generation
+                    and build.get('writablePersistentRoot') is True and not slots.get('next')):
+                raise Finish(m.EXIT_CANCELLED, '/usr replacement requires a writable CURRENT, a supported build and no NEXT')
+            return self.prepare_replace_usr(inputs, build, the_layout, generation)
+        writable_install = any(slot.get('writableRoot') for name, slot in slots.items()
+                               if name in ('current', 'previous') and slot)
+        if not kernel_only and writable_install:
+            raise Finish(m.EXIT_CANCELLED, 'migration images cannot replace the writable persistent system')
         if kernel_only:
             generation = metal_persist.slot_userland(slots.get('current'))
             if not the_layout or generation is None:
@@ -1130,7 +1147,10 @@ class Driver:
             broken = scratch / 'broken-loader.efi'
             broken.write_bytes(b'deliberately invalid verification bootloader\n')
             slot_files['efi/boot/bootx64.efi'] = broken
-        metal_persist.slot_image(slot, slot_files, the_layout, scratch, generation)
+        if kernel_only and writable_install and build.get('writablePersistentRoot') is not True:
+            raise Finish(m.EXIT_CANCELLED, 'the kernel build does not support the writable persistent root')
+        writable_root = kernel_only and breenfs and build.get('writablePersistentRoot') is True
+        metal_persist.slot_image(slot, slot_files, the_layout, scratch, generation, writable_root=writable_root)
         note = scratch / 'next.txt'
         note.write_text(metal_persist.slot_note(self.args.commit, self.id))
         if kernel_only:
@@ -1156,6 +1176,8 @@ class Driver:
                                     'payload': request.data.stat().st_size}}
         if kernel_only:
             self.persist['kernelOnly'] = True
+            if writable_root:
+                self.persist['slot']['writableRoot'] = True
         elif breenfs:
             previous = slots.get('previous') or {}
             if previous.get('migration') == 'rescue':
@@ -1164,6 +1186,24 @@ class Driver:
         metal_persist.store_definition(self.dir / 'definition', self.args.commit)
         self.event('persist-requested', action=action, extents=request.extents, bytes=request.written,
                    payload=request.data.stat().st_size)
+        return files, extracted
+
+    def prepare_replace_usr(self, inputs, build, layout, generation):
+        extracted = self.stage / 'esp'
+        files = metal_image.extract_esp(inputs / 'uefi.img', extracted)
+        scratch = self.stage / 'persist'
+        scratch.mkdir(parents=True, exist_ok=True)
+        config, payload = metal_persist.replace_usr_request(scratch, layout, generation)
+        facts, staged = metal_disk.stage(self.dir, inputs, self.id, self.args.commit, self.site, build,
+                                         mode='persistent-install', the_layout=layout)
+        self.delivery['diskRoot'] = facts
+        intent = self.stage / 'boot-intent'
+        intent.write_bytes(metal_persist.replace_usr_intent(layout, generation))
+        self.replace_usr_generation = generation
+        part = layout['partitions']['breenfs-system']
+        self.replace_usr_range = f"{part['first']}-{part['last']}"
+        files.update(staged, ramdisk=intent)
+        files.update({'persist.cfg': config, 'persist.dat': payload})
         return files, extracted
 
     def stage_install_userland(self, inputs, build, the_layout, slots, breenfs):
@@ -1228,8 +1268,10 @@ class Driver:
             self.required_stages = []
         if self.args.mode == 'probe':
             self.final_marker = ('PROBE DONE ', 'contains')
+        if getattr(self.args, 'replace_usr', False):
+            self.required_stages = [[('[persistent] replacing /usr on the selected system root', 'contains')]]
         if self.args.mode == 'persistent-install':
-            # The migration's last line ends the install boot (README, "Install and upgrade").
+            # The installer's last line ends the install boot (README, "Install and upgrade").
             self.final_marker = (INSTALL_DONE, 'contains')
         if self.args.inject == FENCE_FAULT:
             marker = '[fence-fault] PASS: '
@@ -1270,7 +1312,8 @@ class Driver:
         self.progress_key = progress_key(baseline.get('bootProgress'))
         if baseline.get('power') != 'Off':
             if (self.args.payload in (metal_export.PAYLOAD, metal_persist.RECLAIM_PAYLOAD) or self.migration_phase
-                    or getattr(self.args, 'breenfs_upgrade', None) or getattr(self.args, 'kernel_only', False)):
+                    or getattr(self.args, 'breenfs_upgrade', None) or getattr(self.args, 'kernel_only', False)
+                    or getattr(self.args, 'replace_usr', False)):
                 raise Finish(m.EXIT_CANCELLED, 'this persistent operation requires a powered-off machine')
             if getattr(self.args, 'resting', False):
                 raise Finish(m.EXIT_CANCELLED, 'an existing power-on is left for boot manager adoption')
@@ -1917,6 +1960,12 @@ class Driver:
         # A prompt is often completed by the next kernel log line before the driver reads it unterminated.
         self.challenge_persistent(line)
         if metal_score.WRITE_FENCE in line:
+            if getattr(self.args, 'replace_usr', False):
+                fence = line.partition(metal_score.WRITE_FENCE)[2]
+                if ('replace-usr-fence' in self.seen or not re.fullmatch(
+                        r'(?:AHCI port [0-9]+|NVMe disk|VirtIO disk) LBA ' + self.replace_usr_range, fence)):
+                    raise Finish(m.EXIT_SHORT, '/usr replacement must grant only the system write range')
+                self.seen.add('replace-usr-fence')
             layout = self.persistent_fence_layout
             if self.args.mode == 'persistent-install' and getattr(self.args, 'breenfs_upgrade', None):
                 layout = self.persist['layout']
@@ -2010,6 +2059,14 @@ class Driver:
                     refs += ' carry-local'
                 self.console_send(refs, paced=True)
                 self.slot_refs_sent = True
+        if getattr(self.args, 'replace_usr', False):
+            if line == PERSIST_DONE:
+                if ('stub' not in self.seen or self.kernel_started is not None
+                        or self.slot_userlands != {'CURRENT': self.replace_usr_generation}):
+                    raise Finish(m.EXIT_SHORT, 'firmware did not verify CURRENT before /usr replacement')
+                self.seen.add('replace-usr-verified')
+            if INSTALL_DONE in line and not {'replace-usr-verified', 'replace-usr-fence'} <= self.seen:
+                raise Finish(m.EXIT_SHORT, '/usr replacement lacks CURRENT or the system-only write fence receipt')
         if self.persist and PERSIST_DONE in line and 'persist-written' not in self.seen:
             slot = self.persist['slot']
             if self.persist.get('kernelOnly') and (line != PERSIST_DONE or 'stub' not in self.seen
@@ -3023,7 +3080,7 @@ class Driver:
                 self.power_off(False)
             status = m.EXIT_INCOMPLETE if self.t0 is not None else m.EXIT_CANCELLED
         # Persistent sessions are scored like default boots; console sessions and fault tests never are.
-        scored = (not self.migration_phase and self.power_cut is None and getattr(self.args, 'case', None) is None
+        scored = (not self.migration_phase and not getattr(self.args, 'replace_usr', False) and self.power_cut is None and getattr(self.args, 'case', None) is None
                   and (not session(self.args) or persistent(self.args)) and not xhci_fault(self.args)
                   and self.args.inject not in (FENCE_FAULT, 'panic-reboot', *WATCHDOG_FAULTS))
         if scored and (self.dir / 'definition/docs/metal/boot-path.json').is_file():
@@ -3057,7 +3114,8 @@ class Driver:
                 self.event('cut-recovery-error', error=error.__class__.__name__)
                 m.release_lease(self.id)
                 return m.EXIT_SHORT
-        if self.args.mode == 'persistent-install' and status == m.EXIT_DONE and not self.gap:
+        if (self.args.mode == 'persistent-install' and status == m.EXIT_DONE and not self.gap
+                and not getattr(self.args, 'replace_usr', False)):
             self.cleanup(status, keep_lease=True)
             try:
                 return self.continue_verification()
@@ -3126,7 +3184,8 @@ class Driver:
             try:
                 if receipt.get('homeReadable') is not True:
                     raise ValueError('the BreenFS home is unreadable')
-                metal_migration.verify_mounts(receipt.get('mounts', ''), 'BreenFS upgrade')
+                metal_migration.verify_mounts(receipt.get('mounts', ''), 'BreenFS upgrade',
+                                              writable_root=getattr(self.args, 'verify_writable_root', False))
                 # The kernel seals this fence before launching a persistent init.
                 lines = (self.dir / 'serial.txt').read_text().splitlines()
                 if not metal_score.exact_breenfs_fence(lines, self.persistent_fence_layout):
@@ -3153,7 +3212,9 @@ class Driver:
                 args = argparse.Namespace(**(vars(self.args) | dict(
                     id=boot_id, mode='persistent', payload='persistent', suite=None, disk=None, session=False,
                     input=None, inject=None, entry='current', slot_action=action, verify=True, run=None, adopt=False,
-                    upgrade_parent=self.id, expected_generation=result['candidateGeneration' if action == 'commit' else 'previousGeneration'], commit='')))
+                    upgrade_parent=self.id,
+                    verify_writable_root=bool((slots.get('next' if action == 'commit' else 'current') or {}).get('writableRoot')),
+                    expected_generation=result['candidateGeneration' if action == 'commit' else 'previousGeneration'], commit='')))
                 child = Driver(args)
                 child.unit = self.unit
                 self.event('persistent-verification-next' if action == 'commit' else 'persistent-rollback-next',
@@ -3327,6 +3388,8 @@ def main():
         p.add_argument('--upgrade-parent', help='install whose S21 probe owns this verification')
         p.add_argument('--kernel-only', action='store_true', help=argparse.SUPPRESS)
         p.add_argument('--carry-local', action='store_true', help=argparse.SUPPRESS)
+        p.add_argument('--replace-usr', action='store_true', help=argparse.SUPPRESS)
+        p.add_argument('--migration-image', action='store_true', help=argparse.SUPPRESS)
         p.add_argument('--verify', action='store_true', help='a persistent boot that ends at the login prompt')
         p.add_argument('--resting', action='store_true', help=argparse.SUPPRESS)
         p.add_argument('--adopt', action='store_true', help=argparse.SUPPRESS)
@@ -3350,8 +3413,11 @@ def main():
     sub.add_parser('status')
     args, _ = parser.parse_known_args()
     if args.command in ('launch', 'run'):
-        if (args.kernel_only or args.carry_local) and (
-                args.mode != 'persistent-install' or args.kernel_only and (args.carry_local or args.inject)):
+        flashes = sum((args.kernel_only, args.replace_usr, args.migration_image))
+        if ((args.mode == 'persistent-install' and flashes != 1)
+                or (args.mode != 'persistent-install' and flashes)
+                or (args.carry_local or args.inject == 'upgrade-service-down') and not args.migration_image
+                or args.inject and args.replace_usr):
             parser.error('invalid persistent flash options')
         transfer = transfer_fixture.selected(args.suite)
         if transfer:

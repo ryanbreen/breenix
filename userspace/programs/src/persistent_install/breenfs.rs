@@ -19,6 +19,26 @@ use std::{
 const SYSTEM: &str = "/migrate/system";
 const HOME: &str = "/migrate/home";
 
+pub(super) fn replace_selected_usr(source: &Path) -> Result<Totals, String> {
+    let generation = std::env::args().nth(1).filter(|id| valid_id(id))
+        .ok_or("replacement boot has no selected root ID")?;
+    let mounts = fs::read_to_string("/proc/mounts").map_err(|error| error.to_string())?;
+    let mut storage = mounts.lines().filter_map(|line| {
+        let mut fields = line.split_ascii_whitespace().skip(1);
+        let (path, kind, mode) = (fields.next()?, fields.next()?, fields.next()?);
+        matches!(kind, "ext2" | "breenfs").then_some((path, kind, mode))
+    }).filter(|(path, _, _)| !matches!(*path, "/tmp" | "/run"));
+    if storage.next() != Some(("/", "ext2", "ro"))
+        || storage.next() != Some((SYSTEM, "breenfs", "rw"))
+        || storage.next().is_some()
+    {
+        return Err("/usr replacement requires a read-only test root and only the system volume writable".into());
+    }
+    remount(Some(&format!("gen-{generation}")), false)?;
+    println!("[persistent] replacing /usr on the selected system root");
+    super::replace_usr(source, Path::new(SYSTEM))
+}
+
 pub(super) struct Upgrade;
 
 impl Upgrade {

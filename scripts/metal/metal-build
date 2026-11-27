@@ -591,6 +591,9 @@ def inner(args):
                  'uefi': {'size': (out / 'uefi.img').stat().st_size, 'sha256': sha256(out / 'uefi.img')},
                  'stub': {'size': (out / 'stub.efi').stat().st_size, 'sha256': sha256(out / 'stub.efi')},
                  'manager': {'size': (out / 'manager.efi').stat().st_size, 'sha256': sha256(out / 'manager.efi')}}
+        breenfs_vfs = clone / 'kernel/src/fs/breenfs/vfs.rs'
+        build['writablePersistentRoot'] = (
+            breenfs_vfs.is_file() and 'fn mount_persistent_cached' in breenfs_vfs.read_text())
         if kernel_only:
             build['kernelOnly'] = True
         else:

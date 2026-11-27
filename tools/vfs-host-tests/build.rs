@@ -10,7 +10,7 @@ fn main() {
     let block = "../../kernel/src/block/mod.rs";
     println!("cargo:rerun-if-changed={block}");
     let block = fs::read_to_string(block).unwrap();
-    let root_functions = ["fn named_root(", "fn report_root_record("].map(|marker| {
+    let root_functions = ["fn named_root(", "fn report_root_record(", "fn test_root_fixtures("].map(|marker| {
         let start = block.find(marker).unwrap();
         let end = start + block[start..].find("\n}").unwrap() + 2;
         &block[start..end]

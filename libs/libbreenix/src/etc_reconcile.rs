@@ -46,14 +46,29 @@ fn machine_owned(name: &str) -> bool {
     matches!(name, "passwd" | "group" | "shadow" | "sudo.policy" | "login.defs") || name.starts_with("ssh/")
 }
 
-// On the first upgrade to the new default, replace only the stock policy.
-fn stock_sudo_policy(path: &Path, etc: &Path) -> Result<bool> {
+fn stock_sudo_policy(path: &Path, etc: &Path, expected: &[u8]) -> Result<bool> {
     let meta = io(fs::symlink_metadata(path), path)?;
     let parent = io(fs::metadata(etc), etc)?;
     Ok(meta.is_file() && meta.nlink() == 1 && meta.mode() & 0o7777 == 0o440
         && (meta.uid(), meta.gid()) == (parent.uid(), parent.gid())
-        && meta.len() == OLD_SUDO_DEFAULT.len() as u64
-        && regular(path)? == OLD_SUDO_DEFAULT)
+        && meta.len() == expected.len() as u64
+        && regular(path)? == expected)
+}
+
+/// Install the approved wheel rule on a running system during explicit administration.
+pub fn enable_wheel_nopass(root: &Path) -> Result<()> {
+    #[cfg(target_os = "breenix")]
+    crate::accounts::require_root()?;
+    let _lock = crate::accounts::Lock::acquire(root)?;
+    let etc = root.join("etc");
+    let policy = etc.join("sudo.policy");
+    if stock_sudo_policy(&policy, &etc, OLD_SUDO_DEFAULT)? {
+        return crate::accounts::replace(root, "sudo.policy", NEW_SUDO_DEFAULT, 0o440, &mut || Ok(()));
+    }
+    if stock_sudo_policy(&policy, &etc, NEW_SUDO_DEFAULT)? {
+        return sync(&etc);
+    }
+    Err("refusing to replace a non-stock /etc/sudo.policy".into())
 }
 fn walk(path: &Path, prefix: &str, files: &mut BTreeMap<String, (Vec<u8>, u32)>) -> Result<()> {
     for entry in io(fs::read_dir(path), path)? {
@@ -144,7 +159,7 @@ pub fn reconcile(root: &Path, generation: &str, checkpoint: &mut dyn FnMut() -> 
         if !exists(&path)? { writer.write(&path, bytes, *mode)?; continue; }
         if name == "sudo.policy" && bytes == NEW_SUDO_DEFAULT && *mode == 0o440
             && previous.1.get(name).is_none_or(|hash| *hash == digest(OLD_SUDO_DEFAULT))
-            && stock_sudo_policy(&path, &etc)? {
+            && stock_sudo_policy(&path, &etc, OLD_SUDO_DEFAULT)? {
             writer.write(&path, bytes, *mode)?;
         }
         if machine_owned(name) { continue; }
@@ -196,6 +211,17 @@ fn clear_volatile(root: &Path) -> Result<()> {
 }
 
 pub fn prepare(root: &Path) -> Result<Vec<String>> {
+    // Writable persistent roots own their configuration. Continue resetting
+    // volatile state at boot without applying image factory defaults to /etc.
+    if fs::read_to_string(root.join("proc/mounts")).is_ok_and(|mounts| mounts.lines().any(|line| {
+        let mut fields = line.split_ascii_whitespace();
+        fields.next().is_some_and(|source| source.starts_with("gen-"))
+            && fields.next() == Some("/") && fields.next() == Some("breenfs")
+            && fields.next().is_some_and(|options| options.split(',').next() == Some("rw"))
+    })) {
+        clear_volatile(root)?;
+        return Ok(Vec::new());
+    }
     // Existing generations may predate new standard directories and log modes.
     // Account contents remain governed by the machine-owned reconciliation rule.
     for line in crate::layout::TABLE.lines() {

@@ -83,8 +83,10 @@ const CUTOVER: &[(&str, &str, bool)] = &[(NEW_SYSTEM, "/", true), (NEW_HOME, "/h
 const RESCUE: &[(&str, &str, bool)] = &[(SYSTEM, "/", false), (HOME, "/home", false)];
 
 fn captured(lines: &[(&str, &str, bool)]) -> intent::Captured {
-    let mut payload = String::from(if lines == CUTOVER {
+    let mut payload = String::from(if lines == CUTOVER || lines == RESCUE {
         "BREENIX-BOOT 3\ntarget persistent\n"
+    } else if lines == MIGRATION {
+        "BREENIX-BOOT 3\ntarget persistent-migrate\n"
     } else {
         "BREENIX-BOOT 3\ntarget default\n"
     });
@@ -119,10 +121,12 @@ const BREENFS_BLOCKS: u64 = 16_384;
 const BREENFS_SECTORS: u64 =
     BREENFS_BLOCKS * (crate::breenfs::format::BLOCK_SIZE / gpt::SECTOR) as u64;
 
-#[derive(Default)]
-struct SparseBreenFsDisk(std::sync::Mutex<std::collections::BTreeMap<u64, [u8; gpt::SECTOR]>>);
+#[derive(Clone, Default)]
+struct SparseBreenFsDisk(Arc<std::sync::Mutex<std::collections::BTreeMap<u64, [u8; gpt::SECTOR]>>>);
 
 impl BlockDevice for SparseBreenFsDisk {
+    fn identity(&self) -> usize { Arc::as_ptr(&self.0) as usize }
+
     fn block_size(&self) -> usize {
         gpt::SECTOR
     }
@@ -195,6 +199,70 @@ fn formats() -> [Format; 2] {
             },
         },
     ]
+}
+
+#[test]
+fn persistent_root_is_writable_with_existing_data_binds() {
+    let _registry = crate::statfs_support::TEST_MOUNTS.lock().unwrap();
+    let payload = format!("BREENIX-BOOT 3\ntarget persistent\ncmdline persistent_root=rw\nmount {NEW_SYSTEM} / rw\nuserland install-42\n");
+    let intent = intent::parse(payload.as_bytes()).unwrap();
+    let disk = cutover_system();
+    let line = boot::prepare_mounts(Some(&intent), &formats(), |_, _, _| Ok(Box::new((*disk).clone())))
+        .unwrap().unwrap().pop().unwrap();
+    let id = mount::allocate_id().unwrap();
+    let point = line.point(id, None, None);
+    let root = line.mount(&formats(), &point).unwrap();
+    assert_eq!(root.read_only(), Ok(false));
+    assert!(!mount::flags_at(b"/generation").read_only);
+    assert!(std::str::from_utf8(&mount::mounts_text()).unwrap().lines()
+        .any(|line| line == "gen-install-42 / breenfs rw 0 0"));
+    let base = root.root().unwrap();
+    let etc = root.lookup(base, b"etc").unwrap();
+    let Some(mount::Entered::Fs(etc_id, source)) = mount::enter((id, etc)) else {
+        panic!("the original /etc must keep its bind");
+    };
+    let shared = mount::filesystem(etc_id).unwrap();
+    let file = || NewNode::Regular { attrs: crate::attrs::InodeAttrs::new(0o644, 0, 0) };
+    let root_file = root.create(base, b"root-write", file()).unwrap();
+    let etc_file = shared.create(source, b"etc-write", file()).unwrap();
+    let marker = root.open(root.lookup(base, b"generation").unwrap()).unwrap();
+    let root_node = root.open(root_file).unwrap();
+    let etc_node = shared.open(etc_file).unwrap();
+    let mut bytes = [0; 2];
+    assert_eq!(root.read(&marker, 0, &mut bytes), Ok(2));
+    assert_eq!(&bytes, b"os");
+    let write = || crate::vfs::WriteReq {
+        at: crate::vfs::WriteAt::Offset(0), limit: u64::MAX, clear_setid: false
+    };
+    root.write(&root_node, write(), b"os").unwrap();
+    shared.write(&etc_node, write(), b"ok").unwrap();
+    root.sync().unwrap();
+    root.check_live().unwrap();
+    let sb = crate::breenfs::recover::recover(disk.as_ref(), false).unwrap();
+    let os = Files::new(DeviceStore(disk.as_ref()), &sb, 2, false).unwrap();
+    let default = Files::new(DeviceStore(disk.as_ref()), &sb, 1, false).unwrap();
+    let mut check = |files: &Files<'_, _>, dir, name: &[u8], expected: &[u8]| {
+        let ino = files.lookup(dir, name).unwrap();
+        assert_eq!(files.read(disk.as_ref(), ino, 0, &mut bytes).unwrap(), 2);
+        assert_eq!(&bytes, expected);
+    };
+    check(&os, 2, b"root-write", b"os");
+    let etc = default.lookup(default.lookup(2, b".breenix-shared").unwrap(), b"etc").unwrap();
+    check(&default, etc, b"etc-write", b"ok");
+    for name in ["run", "tmp", "srv", "opt", "var", "etc", "root", "/"] {
+        let path = if name == "/" { name.to_owned() } else { format!("/{name}") };
+        mount::unmount(mount::find_mount(&path).unwrap(), true).unwrap();
+    }
+}
+
+#[test]
+fn automated_test_mount_plan_refuses_persistent_partitions_before_probe() {
+    let payload = format!("BREENIX-BOOT 3\ntarget tests\nmount {TEST} / ro\nmount {NEW_SYSTEM} /migrate/system rw\n");
+    let intent = intent::parse(payload.as_bytes()).unwrap();
+    assert!(boot::prepare_mounts(Some(&intent), &formats(), |guid, _, _| {
+        assert_eq!(guid, TEST, "the test boot must never open a persistent partition");
+        Ok(crate::host_mounts::Fixture::new().device_image())
+    }).is_err());
 }
 
 #[test]
