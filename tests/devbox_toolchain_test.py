@@ -3,6 +3,7 @@
 import hashlib
 import json
 from pathlib import Path
+import re
 import stat
 import subprocess
 import sys
@@ -60,12 +61,15 @@ class ToolchainStageTest(unittest.TestCase):
             'fixture_sha256': target_pins,
             'cargo_sha256': hashlib.sha256(b'cargo').hexdigest(),
         })
-        self.record(self.inputs['bld'] / 'build.json', {'files_sha256': {
-            'bld': self.put(self.inputs['bld'] / 'bld', b'bld'),
-        }})
+        bld_digest = self.put(self.inputs['bld'] / 'bld', b'bld')
+        self.record(self.inputs['bld'] / 'build.json', {'files_sha256': {'bld': bld_digest}})
         self.runtime = {name: self.put(self.inputs['kd'] / name, name.encode())
                         for name in ('ld-breenix.so', 'libc.so')}
         self.record(self.inputs['kd'] / 'build.json', self.runtime)
+        self.record(self.records / 'devbox-x86_64.json', {
+            'bld': bld_digest,
+            'ld-breenix.so': self.runtime['ld-breenix.so'],
+        })
         self.record(self.records / 'hosted-libc-x86_64.json', {'sha256': self.runtime['libc.so']})
 
     @staticmethod
@@ -79,7 +83,7 @@ class ToolchainStageTest(unittest.TestCase):
 
     def stage(self):
         # The ELF dependency audit takes real x86-64 ELF files and the host LLVM
-        # reader. Keep the real KD receipt and digest checks for these fixtures.
+        # reader. Keep the real repository pin checks for these fixtures.
         with patch.object(toolchain, 'verify_hosted_elf'):
             return toolchain.stage(self.out, self.records, **self.inputs)
 
@@ -96,6 +100,26 @@ class ToolchainStageTest(unittest.TestCase):
                 self.assertFalse(list(self.out.glob('x86_64-*')))
                 self.assertFalse((self.out.parent / 'runtime/x86_64').exists())
                 path.write_bytes(original)
+
+    def test_changed_payload_and_receipt_cannot_override_pins(self):
+        for directory, name in (('bld', 'bld'), ('kd', 'ld-breenix.so')):
+            with self.subTest(name=name):
+                self.out = self.root / f'publish-{directory}/toolchain'
+                source = self.inputs[directory] / name
+                receipt = self.inputs[directory] / 'build.json'
+                original, original_receipt = source.read_bytes(), receipt.read_bytes()
+                digest = self.put(source, b'changed fixture bytes')
+                record = json.loads(original_receipt)
+                (record['files_sha256'] if directory == 'bld' else record)[name] = digest
+                self.record(receipt, record)
+                try:
+                    with self.assertRaisesRegex(ValueError, f'SHA-256.*{re.escape(name)}'):
+                        self.stage()
+                    self.assertEqual(list(self.out.glob('x86_64-*')), [])
+                    self.assertFalse((self.out.parent / 'runtime').exists())
+                finally:
+                    source.write_bytes(original)
+                    receipt.write_bytes(original_receipt)
 
     def test_layout_and_manifest(self):
         toolchain_id = self.stage()

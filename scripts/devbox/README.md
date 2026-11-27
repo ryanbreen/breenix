@@ -2,7 +2,9 @@
 
 Run the stager on the Mac with Python 3.11 or later and the Rust host toolchain's
 `llvm-tools` component. It consumes retained E25 artifacts. The K5, K6, K7 and
-hosted libc pins are under `toolchain/rust-host/`.
+hosted libc pins are under `toolchain/rust-host/`. The same directory holds the
+`devbox-x86_64.json` pins for the linker and loader from the E25 self-host
+companion. Every staged file must match a repository pin.
 
 ```sh
 out="$HOME/Library/Caches/breenix-devbox/toolchain"
@@ -11,12 +13,8 @@ scripts/devbox/toolchain.py stage --arch x86_64 --out "$out"
 
 The command prints the version directory name. Use `--artifacts`, `--sysroot`,
 `--fixture`, `--cargo`, `--bld` and `--kd` to point at retained artifacts when
-they are outside the default build directories. The `--bld` directory includes
-the E25 build receipt with `files_sha256.bld`. The `--kd` directory includes the
-two runtime binaries and the KD `build.json` with their SHA-256 digests. For
-artifacts recovered from an E25 self-host companion image, take these fields
-from `toolchain.tools.bld.sha256` and `stagedFiles["/lib/<name>"]` in that image's
-build receipt.
+they are outside the default build directories. The `--bld` directory contains
+`bld`, and the `--kd` directory contains `ld-breenix.so` and `libc.so`.
 
 The version contains `bin/`, `lib/`, both target specs and the x86_64-breenix
 sysroot. Its `MANIFEST.json` records the fork commit and each payload's size,

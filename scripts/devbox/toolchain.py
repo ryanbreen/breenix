@@ -62,17 +62,19 @@ def stage(out, records, *, artifacts, sysroot, targets, fixture, cargo, bld, kd)
         raise ValueError('K6 and K7 compiler identities differ from K5')
     entries = list(rustc_fixture_entries(artifacts, sysroot, targets, k5))
     entries.extend(tool_target_link_inputs(fixture, k6))
+    devbox = read_json(records / f'devbox-{ARCH}.json')
     entries.extend([
         ('bin/cargo', cargo, '0755', k7['cargo_sha256']),
-        ('bin/bld', bld / 'bld', '0755', read_json(bld / 'build.json')['files_sha256']['bld']),
+        ('bin/bld', bld / 'bld', '0755', devbox['bld']),
     ])
 
-    kd_record = read_json(kd / 'build.json')
-    if kd_record['libc.so'] != read_json(records / f'hosted-libc-{ARCH}.json')['sha256']:
-        raise ValueError('KD libc.so SHA-256 differs from the hosted libc pin')
-    runtime_entries, runtime_digests = hosted_runtime_entries(kd, kd_record, {})
+    runtime_pins = {
+        'ld-breenix.so': devbox['ld-breenix.so'],
+        'libc.so': read_json(records / f'hosted-libc-{ARCH}.json')['sha256'],
+    }
+    runtime_entries, runtime_digests = hosted_runtime_entries(kd, runtime_pins, {})
 
-    # Both trees stay private until every copied file matches its receipt.
+    # Both trees stay private until every copied file matches its repository pin.
     out.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='.devbox-stage-', dir=out.parent) as temporary:
         version, runtime = (Path(temporary) / name for name in ('toolchain', 'runtime'))
@@ -147,9 +149,9 @@ def main():
     staging.add_argument('--cargo', type=Path, default=input_path(
         'BREENIX_K7_STAGE', cache / 'k7/stage1') / 'bin/cargo')
     staging.add_argument('--bld', type=Path, default=programs / 'rust-link' / ARCH,
-                         help='E25 bld and its build.json')
+                         help='directory containing the pinned E25 bld')
     staging.add_argument('--kd', type=Path, default=input_path(
-        'BREENIX_KD_BUILD_DIR', programs / 'kd'), help='E25 runtime and its build.json')
+        'BREENIX_KD_BUILD_DIR', programs / 'kd'), help='directory containing the pinned runtime')
     current = commands.add_parser('current', help='print the one-line activation payload')
     current.add_argument('--out', type=Path, required=True)
     current.add_argument('id')
