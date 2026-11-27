@@ -208,13 +208,19 @@ class CargoPort(unittest.TestCase):
                         self.assertEqual(types, ['REL'] * len(machines))
 
     def test_x1_c_dependency_inventory(self):
+        for arch in ('x86_64', 'aarch64'):
+            with self.subTest(arch=arch):
+                self._check_x1_c_dependency_inventory(arch)
+
+    def _check_x1_c_dependency_inventory(self, arch):
         directory = ROOT / 'toolchain/rust-host'
-        inventory = directory / 'x1.json'
+        inventory = directory / ('x1.json' if arch == 'x86_64' else 'x1-aarch64.json')
         self.assertTrue(inventory.is_file(), 'missing hosted Cargo archive inventory x1.json')
         record = json.loads(inventory.read_text())
-        licenses = json.loads((directory / 'x1-licenses.json').read_text())
+        licenses = (json.loads((directory / 'x1-licenses.json').read_text())
+                    if arch == 'x86_64' else record['licenses'])
         self.assertEqual(record['cargo_commit'], PIN)
-        self.assertEqual(record['target'], 'x86_64-breenix-hosted')
+        self.assertEqual(record['target'], f'{arch}-breenix-hosted')
         self.assertEqual(record['features'], licenses['features'])
         expected = {(p['name'], p['version']) for p in licenses['packages']
                     if p['name'].endswith('-sys')}
@@ -262,6 +268,11 @@ class CargoPort(unittest.TestCase):
                     self.assertIn(category, classes, name)
 
     def test_x1_licenses_recorded(self):
+        for arch in ('x86_64', 'aarch64'):
+            with self.subTest(arch=arch):
+                self._check_x1_licenses_recorded(arch)
+
+    def _check_x1_licenses_recorded(self, arch):
         cargo = CACHE / 'cargo'
         commit = subprocess.check_output(
             ['git', '-C', str(cargo), 'rev-parse', 'HEAD'], text=True).strip()
@@ -270,18 +281,24 @@ class CargoPort(unittest.TestCase):
         metadata = json.loads(subprocess.check_output(
             ['cargo', 'metadata', '--locked', '--offline', '--format-version', '1',
              '--manifest-path', str(cargo / 'Cargo.toml'), '--filter-platform',
-             'x86_64-breenix-hosted', '--features', 'all-static'], env=env, text=True))
+             f'{arch}-breenix-hosted', '--features', 'all-static'], env=env, text=True))
         tree = subprocess.check_output(
             ['cargo', 'tree', '--manifest-path', str(cargo / 'Cargo.toml'),
              '-p', 'cargo', '-e', 'normal,build', '--target',
-             'x86_64-breenix-hosted', '--locked', '--offline', '--prefix', 'none',
+             f'{arch}-breenix-hosted', '--locked', '--offline', '--prefix', 'none',
              '--features', 'all-static', '--format', '{p}'], env=env, text=True)
         closure = set()
         for line in tree.splitlines():
             match = re.match(r'^([^ ]+) v([^ ]+)', line)
             self.assertIsNotNone(match, line)
             closure.add(match.groups())
-        record = json.loads((ROOT / 'toolchain/rust-host/x1-licenses.json').read_text())
+        directory = ROOT / 'toolchain/rust-host'
+        if arch == 'x86_64':
+            record = json.loads((directory / 'x1-licenses.json').read_text())
+        else:
+            inventory = directory / 'x1-aarch64.json'
+            self.assertTrue(inventory.is_file(), 'missing ARM Cargo inventory')
+            record = json.loads(inventory.read_text())['licenses']
         self.assertEqual(record['cargo_commit'], PIN)
         self.assertEqual(record['features'], ['all-static'])
         packages = {(entry['name'], entry['version']): entry for entry in record['packages']}
