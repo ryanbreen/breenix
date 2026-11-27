@@ -62,6 +62,43 @@ class GuestThatStaysDown(unittest.TestCase):
                              ["breenix VM could not be restarted"], case)
 
 
+class BuildIdentity(unittest.TestCase):
+    """A series names the commit its Breenix binaries were built from, never just HEAD."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.dir = Path(temp.name)
+        self.artifacts = [self.dir / "kernel", self.dir / "bbench"]
+        for path in self.artifacts:
+            path.write_bytes(path.name.encode())
+        self.stamp = self.dir / "build.json"
+
+    def test_artifacts_built_at_head_are_accepted(self):
+        rig.write_build_stamp(self.stamp, "c0ffee", self.artifacts)
+        self.assertEqual(rig.verify_build_stamp(self.stamp, "c0ffee", self.artifacts), "c0ffee")
+
+    def test_artifacts_built_at_another_commit_are_refused(self):
+        rig.write_build_stamp(self.stamp, "0ld", self.artifacts)
+        with self.assertRaisesRegex(ValueError, "built at 0ld"):
+            rig.verify_build_stamp(self.stamp, "c0ffee", self.artifacts)
+
+    def test_an_artifact_changed_after_the_build_is_refused(self):
+        rig.write_build_stamp(self.stamp, "c0ffee", self.artifacts)
+        self.artifacts[1].write_bytes(b"rebuilt by hand")
+        with self.assertRaisesRegex(ValueError, "bbench"):
+            rig.verify_build_stamp(self.stamp, "c0ffee", self.artifacts)
+
+    def test_artifacts_with_no_stamp_are_refused(self):
+        with self.assertRaisesRegex(ValueError, "build-breenix"):
+            rig.verify_build_stamp(self.stamp, "c0ffee", self.artifacts)
+
+    def test_a_stamp_missing_an_artifact_is_refused(self):
+        rig.write_build_stamp(self.stamp, "c0ffee", self.artifacts[:1])
+        with self.assertRaisesRegex(ValueError, "bbench"):
+            rig.verify_build_stamp(self.stamp, "c0ffee", self.artifacts)
+
+
 class ImagePin(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
