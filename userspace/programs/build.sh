@@ -610,9 +610,10 @@ build_rust_programs() (
     fi 2>&1 | sed 's/^/  /'
 )
 
-# The QEMU bench rig's binaries: bbench and bbench-exit as shipped (opt-level z),
-# and bbench again at opt-level 3 in target/bench-o3 for the crypto rows. It reuses
-# the libc.a of an earlier ordinary build.
+# The QEMU bench rig's binaries: bbench and bbench-exit as shipped (opt-level z, with
+# libbreenix at 3), and for the crypto rows bbench again with libbreenix at opt-level z
+# (profile bench-oz) and at opt-level 3 throughout in target/bench-o3. It reuses the
+# libc.a of an earlier ordinary build.
 if [[ "$BBENCH" == 1 ]]; then
     if [ ! -f "$LIBC_RELEASE_DIR/libc.a" ]; then
         echo "  ERROR: --bbench needs $LIBC_RELEASE_DIR/libc.a from an ordinary build" >&2
@@ -627,6 +628,7 @@ if [[ "$BBENCH" == 1 ]]; then
         export __CARGO_TESTS_ONLY_SRC_ROOT="$RUST_FORK_LIBRARY"
         export RUSTFLAGS="$STD_RUSTFLAGS -C metadata=breenix_std_$STD_METADATA_SEED"
         cargo build --release --target "$TARGET_JSON" --bin bbench --bin bbench-exit || exit 1
+        cargo build --profile bench-oz --target "$TARGET_JSON" --bin bbench || exit 1
         CARGO_PROFILE_RELEASE_OPT_LEVEL=3 cargo build --release --target "$TARGET_JSON" \
             --target-dir "$SCRIPT_DIR/target/bench-o3" --bin bbench
     ) 2>&1 | sed 's/^/  /'

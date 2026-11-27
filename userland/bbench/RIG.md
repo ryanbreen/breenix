@@ -33,7 +33,7 @@ scripts/bench-qemu-arm64.sh build-breenix
 ```
 
 That runs these builds, then writes `~/Library/Caches/breenix-bench/breenix-arm64/build.json`
-with the commit and the SHA-256 of the kernel, the image and the three bbench
+with the commit and the SHA-256 of the kernel, the image and the four bbench
 binaries:
 
 ```sh
@@ -51,9 +51,11 @@ not built from. Running the builds by hand leaves no stamp. Linux builds bbench
 from the same commit (`git archive` of the stamped commit).
 
 The key directory keeps the image's test-only SSH key, so the rig can log in as
-`sshtest`. `--bbench` builds `bbench` and `bbench-exit` as shipped (opt-level z)
-and a second `bbench` at opt-level 3 for the crypto rows. The rig uploads those
-three binaries over SSH, so the system image keeps its standard contents.
+`sshtest`. `--bbench` builds `bbench` and `bbench-exit` as shipped (opt-level z,
+with libbreenix at 3), and for the crypto rows `bbench` twice more: with
+libbreenix at opt-level z (profile `bench-oz`), and at opt-level 3 throughout.
+The rig uploads those four binaries over SSH, so the system image keeps its
+standard contents. The Linux guest builds the same three profiles.
 
 `linux-arm64.json` pins Linux: the Ubuntu 24.04 LTS arm64 cloud image from a
 dated release directory and its SHA-256 from that release's `SHA256SUMS`.

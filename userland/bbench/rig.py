@@ -75,8 +75,11 @@ BREENIX_IMAGE = ROOT / "target/ext2-aarch64.img"
 BREENIX_RELEASE = ROOT / "userspace/programs/target/aarch64-breenix/release"
 BREENIX_O3 = ROOT / "userspace/programs/target/bench-o3/aarch64-breenix/release"
 BREENIX_KEY = CACHE / "breenix-arm64/test-ssh/id_ed25519"
+# bbench with libbreenix (the crypto) at opt-level z, for the -oz crypto rows.
+BREENIX_OZ = ROOT / "userspace/programs/target/aarch64-breenix/bench-oz"
 BREENIX_ARTIFACTS = (BREENIX_KERNEL, BREENIX_IMAGE, BREENIX_RELEASE / "bbench",
-                     BREENIX_RELEASE / "bbench-exit", BREENIX_O3 / "bbench")
+                     BREENIX_RELEASE / "bbench-exit", BREENIX_OZ / "bbench",
+                     BREENIX_O3 / "bbench")
 # build-breenix records the commit and each artifact's SHA-256; run refuses anything else.
 BUILD_STAMP = CACHE / "breenix-arm64/build.json"
 BREENIX_BUILD = (
@@ -112,6 +115,14 @@ TCP_BYTES = 32_000_000
 CRYPTO_BYTES = 8 * MIB
 SCP_BYTES = 8_000_000
 FIXTURE_BYTES = 64 * MIB
+
+
+def probe_binary(case):
+    """The bbench build a case runs: the crypto rows name their opt-level."""
+    for level in ("oz", "o3"):
+        if case.endswith(f"-{level}"):
+            return f"bbench-{level}"
+    return "bbench"
 
 
 def schedule(cases, count, systems, skip):
@@ -488,6 +499,7 @@ class Rig:
         if system == "breenix":
             for source, name in ((BREENIX_RELEASE / "bbench", "bbench"),
                                  (BREENIX_RELEASE / "bbench-exit", "bbench-exit"),
+                                 (BREENIX_OZ / "bbench", "bbench-oz"),
                                  (BREENIX_O3 / "bbench", "bbench-o3")):
                 result = guest.scp(source, guest.remote(f"{home}/bbench/bin/{name}"))
                 if result.returncode:
@@ -496,15 +508,18 @@ class Rig:
                                                ).stdout.decode().split()[0]:
                     raise RuntimeError(f"breenix: {name} arrived damaged")
             guest.ssh(["/bin/chmod", "755", *(f"{home}/bbench/bin/{name}"
-                                              for name in ("bbench", "bbench-exit", "bbench-o3"))])
+                                              for name in ("bbench", "bbench-exit", "bbench-oz",
+                                                           "bbench-o3"))])
         else:
             self.sync_source(guest)
             cargo = (f"cd {home}/src/userland && PATH={LINUX_TOOLCHAIN}:/usr/bin:/bin "
                      f"{LINUX_TOOLCHAIN}/cargo build -q --offline --frozen -p bbench")
             guest.ssh(f"{cargo} --profile release --target-dir {home}/bbench/target", timeout=1800)
+            guest.ssh(f"{cargo} --profile bench-oz --target-dir {home}/bbench/target", timeout=1800)
             guest.ssh(f"{cargo} --profile bench-o3 --target-dir {home}/bbench/target", timeout=1800)
             guest.ssh(f"cp {home}/bbench/target/release/bbench {home}/bbench/target/release/bbench-exit "
-                      f"{home}/bbench/bin/ && cp {home}/bbench/target/bench-o3/bbench "
+                      f"{home}/bbench/bin/ && cp {home}/bbench/target/bench-oz/bbench "
+                      f"{home}/bbench/bin/bbench-oz && cp {home}/bbench/target/bench-o3/bbench "
                       f"{home}/bbench/bin/bbench-o3")
         fixture = f"{home}/bbench/fixture.bin"
         made = self.bbench(system, f"{self.args.run}-fixture-boot{guest.boots}",
@@ -617,8 +632,8 @@ class Rig:
         if case == "cargo-noop" and number == 1:
             seed = f"{self.args.run}-noop-seed"
             self.save(system, seed, self.bbench(system, seed, self.workload(system, case, seed)))
-        binary = "bbench-o3" if case.endswith("-o3") else "bbench"
-        receipt = self.bbench(system, name, self.workload(system, case, name), binary=binary)
+        receipt = self.bbench(system, name, self.workload(system, case, name),
+                              binary=probe_binary(case))
         self.save(system, name, receipt)
         if receipt["error"]:
             print(f"{system} {name} failed: {receipt['error']}", flush=True)

@@ -708,6 +708,13 @@ opt-level = 3
 [profile.release.package.libbreenix]
 opt-level = 3
 
+# The QEMU bench rig's opt-level z crypto rows: release, with libbreenix kept at z.
+[profile.bench-oz]
+inherits = "release"
+
+[profile.bench-oz.package.libbreenix]
+opt-level = "z"
+
 [workspace]
 
 # Note: The libc patch is applied in rust-fork/library/Cargo.toml, not here.
