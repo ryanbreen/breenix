@@ -177,6 +177,10 @@ pub(super) mod publication_phases;
 pub(super) mod publication_cost;
 
 #[cfg(test)]
+#[path = "../../../../tools/breenfs-host-tests/src/metadata_cache.rs"]
+mod metadata_cache;
+
+#[cfg(test)]
 #[path = "../../../../tools/breenfs-host-tests/src/metadata_failure.rs"]
 mod metadata_failure;
 
