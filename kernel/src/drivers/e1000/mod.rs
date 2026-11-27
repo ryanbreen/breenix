@@ -337,12 +337,10 @@ impl E1000 {
         self.read_mac_from_ral()
     }
 
-    /// Get virtual address to physical address (identity mapped for now)
-    fn virt_to_phys(virt: usize) -> u64 {
-        // In Breenix, we use identity mapping for kernel addresses
-        // The physical address is the virtual address minus the kernel offset
-        // For now, assume identity mapping in the physical memory region
-        PhysAddr::from_kernel_virt(virt)
+    /// The physical address the device is given for a kernel buffer. An
+    /// address with no translation is refused, never programmed as is.
+    fn virt_to_phys(virt: usize) -> Result<u64, &'static str> {
+        PhysAddr::from_kernel_virt(virt).map_err(|_| "E1000: DMA buffer has no physical translation")
     }
 
     /// Reset the device
@@ -370,9 +368,8 @@ impl E1000 {
     }
 
     /// Initialize receive functionality
-    fn init_rx(&mut self) {
+    fn init_rx(&mut self, rx_ring_phys: u64) {
         // Set up receive descriptor ring physical address
-        let rx_ring_phys = Self::virt_to_phys(self.rx_ring.as_ptr() as usize);
         self.write_reg(REG_RDBAL, rx_ring_phys as u32);
         self.write_reg(REG_RDBAH, (rx_ring_phys >> 32) as u32);
 
@@ -398,11 +395,8 @@ impl E1000 {
     }
 
     /// Initialize transmit functionality
-    fn init_tx(&mut self) {
+    fn init_tx(&mut self, tx_ring_phys: u64) {
         // Set up transmit descriptor ring physical address
-        let tx_ring_virt = self.tx_ring.as_ptr() as usize;
-        let tx_ring_phys = Self::virt_to_phys(tx_ring_virt);
-
         self.write_reg(REG_TDBAL, tx_ring_phys as u32);
         self.write_reg(REG_TDBAH, (tx_ring_phys >> 32) as u32);
 
@@ -518,7 +512,7 @@ impl E1000 {
         let tx_buffer = &mut self.tx_buffers[idx];
         tx_buffer[..data.len()].copy_from_slice(data);
         let buf_virt = tx_buffer.as_ptr() as usize;
-        let phys_addr = Self::virt_to_phys(buf_virt);
+        let phys_addr = Self::virt_to_phys(buf_virt)?;
 
         // Set up the descriptor using volatile writes to ensure hardware sees the values
         let desc = &mut self.tx_ring[idx];
@@ -777,13 +771,17 @@ pub fn init() -> Result<(), &'static str> {
     driver.init_mac_filter();
 
     // Set up receive buffer addresses in descriptors
+    // Translate every DMA address before the device is told any of them, so a
+    // refusal leaves neither ring enabled over buffers that are then freed.
+    let rx_ring_phys = E1000::virt_to_phys(driver.rx_ring.as_ptr() as usize)?;
+    let tx_ring_phys = E1000::virt_to_phys(driver.tx_ring.as_ptr() as usize)?;
     for (i, buf) in driver.rx_buffers.iter().enumerate() {
-        driver.rx_ring[i].addr = E1000::virt_to_phys(buf.as_ptr() as usize);
+        driver.rx_ring[i].addr = E1000::virt_to_phys(buf.as_ptr() as usize)?;
     }
 
     // Initialize RX and TX
-    driver.init_rx();
-    driver.init_tx();
+    driver.init_rx(rx_ring_phys);
+    driver.init_tx(tx_ring_phys);
 
     // Enable link
     driver.enable_link();
