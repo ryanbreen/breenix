@@ -7,6 +7,16 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class BootInitTest(unittest.TestCase):
+    def test_serial_input_observes_tty_selection_after_executor_start(self):
+        source = (ROOT / "kernel/src/serial/command.rs").read_text()
+        task = source.split("pub async fn serial_command_task()", 1)[1]
+        task = task.split("\n}", 1)[0]
+        receive = task.index("input.next().await")
+        host_keys = task.index("if crate::input::host::armed()", receive)
+        route = task.index("crate::tty::push_char_from", host_keys)
+        self.assertIn("if TTY_INPUT.load(Ordering::Acquire)", task[host_keys:route],
+                      "a byte arriving after the loader selects the TTY must reach it")
+
     def test_pid1_load_runs_in_a_thread_that_can_wait_for_the_commit_owner(self):
         source = (ROOT / "kernel/src/main.rs").read_text()
         source = re.sub(r"(?m)^\s*//.*$", "", source)
