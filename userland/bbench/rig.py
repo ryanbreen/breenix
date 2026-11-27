@@ -754,12 +754,19 @@ class Rig:
                                                   check=False).returncode != 0:
                     self.restart(system)
             return
-        if case == "cargo-noop" and number == 1:
+        warmup = None
+        if case == "cargo-noop":
             seed = f"{self.args.run}-noop-seed"
-            self.save(system, seed, self.bbench(system, seed, self.workload(system, case, seed),
-                                                case=case))
-        receipt = self.bbench(system, name, self.workload(system, case, name),
-                              binary=probe_binary(case), case=case)
+            if number == 1:
+                self.save(system, seed, self.bbench(system, seed,
+                                                    self.workload(system, case, seed), case=case))
+            warmup = self.warmup_failure(system, seed)
+        if warmup:
+            # Without a built target the next build does the real work: never time it.
+            receipt = failure_receipt(name, [case], warmup)
+        else:
+            receipt = self.bbench(system, name, self.workload(system, case, name),
+                                  binary=probe_binary(case), case=case)
         self.save(system, name, receipt)
         if receipt["error"]:
             print(f"{system} {name} failed: {receipt['error']}", flush=True)
@@ -767,6 +774,15 @@ class Rig:
             if not guest.alive() or guest.ssh(["/bin/true"], timeout=30,
                                               check=False).returncode != 0:
                 self.restart(system)
+
+    def warmup_failure(self, system, seed):
+        """Why the Cargo no-op warm-up gave no built target, from its saved receipt, or
+        None when it succeeded."""
+        path = self.out[system] / f"{seed}.json"
+        if not path.exists():
+            return "Cargo no-op warm-up failed: it did not run"
+        error = json.loads(path.read_text())["error"]
+        return f"Cargo no-op warm-up failed: {error}" if error else None
 
     def restart(self, system):
         guest = self.guests[system]
