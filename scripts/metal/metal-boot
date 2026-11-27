@@ -3079,8 +3079,10 @@ class Driver:
             if self.t0 is not None:
                 self.power_off(False)
             status = m.EXIT_INCOMPLETE if self.t0 is not None else m.EXIT_CANCELLED
-        # Persistent sessions are scored like default boots; console sessions and fault tests never are.
-        scored = (not self.migration_phase and not getattr(self.args, 'replace_usr', False) and self.power_cut is None and getattr(self.args, 'case', None) is None
+        # Kernel-only staging ends in firmware. The persistent verification boot still runs and scores a kernel.
+        kernel_staging = self.args.mode == 'persistent-install' and getattr(self.args, 'kernel_only', False)
+        scored = (not self.migration_phase and not kernel_staging and not getattr(self.args, 'replace_usr', False)
+                  and self.power_cut is None and getattr(self.args, 'case', None) is None
                   and (not session(self.args) or persistent(self.args)) and not xhci_fault(self.args)
                   and self.args.inject not in (FENCE_FAULT, 'panic-reboot', *WATCHDOG_FAULTS))
         if scored and (self.dir / 'definition/docs/metal/boot-path.json').is_file():
