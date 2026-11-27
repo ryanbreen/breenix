@@ -3433,15 +3433,13 @@ fn wake_connection(conn: &mut TcpConnection, changed: u8) {
     wake_waiting_threads(&mut waiting);
 }
 
-/// Wake every thread in `waiting`, keeping only those the scheduler refused,
-/// for the next wake. Allocates nothing: it runs in the NetRx softirq.
+/// Hand each waiter to the scheduler. A retired waiter can be discarded.
 fn wake_waiting_threads(waiting: &mut Vec<u64>) {
-    waiting.retain(|&thread_id| {
-        let rejected = crate::task::scheduler::wake_thread_any_context(thread_id)
-            == crate::task::scheduler::WakeOutcome::Rejected;
-        if rejected {
+    for tid in waiting.drain(..) {
+        if crate::task::scheduler::wake_thread_any_context(tid)
+            == crate::task::scheduler::WakeOutcome::NoTarget
+        {
             TCP_WAKE_REJECTED.fetch_add(1, Ordering::Relaxed);
         }
-        rejected
-    });
+    }
 }

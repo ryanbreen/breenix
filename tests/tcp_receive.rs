@@ -53,7 +53,7 @@ pub mod task {
     pub mod scheduler {
         #[derive(PartialEq)]
         pub enum WakeOutcome {
-            Rejected,
+            NoTarget,
             Woken,
         }
         pub fn wake_thread_any_context(_: u64) -> WakeOutcome {

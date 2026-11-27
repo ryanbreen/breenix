@@ -126,17 +126,10 @@ around `env -i` and Cargo.
 Two attempts stopped at Cargo's compiler probe with a loader
 `MissingDependency` for `librustc_driver`, the symptom tracked in [#3208].
 Reading the expanded RUNPATH candidate returned the ELF magic, and the
-standalone installed compiler reported its expected version. For the timed
-run, `bcargo` set `RUSTC_WRAPPER` to the following launcher. Its time is
-included in the R240 measurements.
-
-```sh
-#!/bin/sh
-set -eu
-compiler=$1
-/bin/head -c 4 "${compiler%/*}/../lib/librustc_driver-2e1bf4637bebadba.so" > /dev/null
-exec "$@"
-```
+standalone installed compiler reported its expected version. The timed
+run used a wrapper that read four bytes from the driver before each rustc
+exec. The R240 measurements include that overhead. The kernel fix in
+[#3232](https://github.com/ryanbreen/breenix/pull/3232) retired the workaround.
 
 Before the edit, the release binary printed `y` on each of three lines
 through `head -n 3`. With operands `a b`, it printed `a b` on each of three
