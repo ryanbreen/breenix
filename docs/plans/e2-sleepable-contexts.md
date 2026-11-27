@@ -444,12 +444,28 @@ fields `page_table`, `vmas`, `heap_*`, `mmap_*`) into `Arc<AddressSpace>`.
   lock is held, and never held while acquiring it, because a sleeping lock cannot be taken under a spin
   lock. Exec builds the new address space outside PROCESS_MANAGER, swaps pointers under it and tears the
   old one down after releasing it. <!-- claim-lint:ok: normative requirement of docs/plans/e2-sleepable-contexts.md under ruling DEV-37(2), not a measured result. -->
-- **Fork.** The fork copy takes the parent's mapping lock exclusive. A parent thread that faults during
-  the copy then sleeps until the copy ends, where today it faults again and again
+- **Fork.** The fork copy takes the parent's mapping lock exclusive. From E2.9, a parent thread that
+  faults during the copy sleeps until the copy ends, where today it faults again and again
   (`kernel/src/memory/fork_copy.rs`, `anon_map.rs:34`).
+- **No sleeping in E2.8.** E2.8 changes which locks a fault takes, not whether it may sleep. Its faults
+  take the mapping lock shared with a try-acquire and the page-table lock as a spin lock. On contention
+  they keep today's behaviour, a bounded retry and then a refault. E2.9 replaces that with a park, once
+  the exception paths can resume a thread that slept (§5.2).
 - **Signal frames.** Delivery stops writing frames under PROCESS_MANAGER. The PROCESS_MANAGER section
-  chooses the signal and records the disposition in the thread. The frame is written on the
-  return-to-user path in sleepable context, where a fault on the user stack can sleep and restart.
+  chooses the signal and records the disposition in the thread. Today the frame is written from two
+  places: the syscall return and the return from an interrupt or exception taken in user mode
+  (`kernel/src/interrupts/context_switch.rs:318-323`; `kernel/src/arch_impl/aarch64/context_switch.rs:5415-5422`).
+  The second runs in the interrupt's atomic context, and moving the write out of PROCESS_MANAGER does
+  not change that. So the change is staged:
+  - in E2.8, both places write the frame outside PROCESS_MANAGER, in the context each runs in today,
+    with the nofault copy. A copy that would need to wait keeps today's failure handling;
+  - in E2.9, the interrupt- and exception-return paths stop writing frames. When one of them finds work
+    owed to the thread before it reaches user mode (a signal frame today), it sets the thread's
+    `user_work` flag and, after the interrupt's own work and its EOI, runs a task-context continuation
+    on the thread's own kernel stack: depth at the thread's baseline, interrupts enabled. The
+    continuation writes the frame, may fault, sleep and restart, and then takes the normal masked exit,
+    which rechecks `user_work`. The syscall return reaches the same continuation, so only one path
+    writes frames.
 
 E8 keeps everything else in R12 and R25: the VMA tree, mremap, real vfork and posix_spawn, sharded PID
 lookup, and fd tables off PROCESS_MANAGER. E8 starts from this object and does not need to create it.
@@ -813,8 +829,10 @@ should own each, not several agents on one PR (DEV-30(3)).
 - **Tests:**
   - a host model of the address-space lifetime: a fault holding a reference across a concurrent munmap
     and an exec teardown frees frames only after the last reference;
-  - a host model of the fork copy: a parent fault during the copy sleeps, then resolves against the
-    finished copy;
+  - a host model of the fork copy: a parent fault during the copy does not sleep and does not install
+    an entry, and refaults until the copy ends (today's behaviour, now under the mapping lock);
+  - a structure test that no E2.8 fault path calls `park::wait` or takes the mapping lock with a
+    sleeping acquire;
   - a structure test that the fault paths in `interrupts.rs`, `arch_impl/aarch64/exception.rs`,
     `memory/anon_map.rs` and `memory/file_map.rs` do not name PROCESS_MANAGER, `poll_manager` or
     `find_process_by_cr3*`;
@@ -832,7 +850,9 @@ should own each, not several agents on one PR (DEV-30(3)).
 
 ### E2.9: restartable sleeping faults
 
-- **Scope.** §5.2.
+- **Scope.** §5.2, and the return-to-user continuation for signal frames (§5.1). The continuation lands
+  in this PR, before or with the first fault that may park. The interrupt- and exception-return paths
+  stop writing frames in the same commit.
 - **Tests,** as host fixed interleavings against the fault model, each red on the old code, which returns
   `Resolved` without sleeping:
   - a fault sleeps behind a munmap holding the lock exclusive; after the wake the VMA is gone, the result
@@ -842,7 +862,11 @@ should own each, not several agents on one PR (DEV-30(3)).
     copy completes;
   - SIGKILL during a fault's sleep: the thread exits, and no entry is installed;
   - two faults on one page: one frame, and the second fault sees it;
-  - an atomic-context user access that would need to wait takes the EFAULT fixup and does not park.
+  - an atomic-context user access that would need to wait takes the EFAULT fixup and does not park;
+  - a signal posted during an interrupt taken in user mode: the interrupt return sets `user_work` and
+    writes no frame, and the continuation writes the frame. With the user stack page absent, the
+    continuation's write faults, parks and completes. A structure test pins that the interrupt- and
+    exception-return paths on both architectures do not call the frame writer.
 - **Risk retired.** Faults that cannot wait, which T1 names as the reason for R1, R6 and R12. The busy
   refault loop (T8). It also unblocks E3's lazy mmap.
 - **Rows.** `memory.anonymous-touch`, `memory.driver-touch` and `memory.malloc-4t` under contention.
@@ -954,10 +978,11 @@ Notes on the table:
   through `preempt::depth()`, the guard types and `park::context()`. E9's shootdowns as ordinary IPIs
   depend on E2.7, so that CPUs no longer spin in syscalls with IF clear.
 - **E6 (userspace ABI, `docs/plans/e6-userspace-abi.md`).** E6 changes what a signal frame holds: an
-  XSAVE standard image, plus validation on sigreturn. E2.8 changes where and in what context the frame is
-  written: outside PROCESS_MANAGER, on the sleepable return-to-user path. The two touch the same delivery
-  code. Whichever lands second merges the other's change and keeps both properties. A larger XSAVE frame
-  is also more likely to fault on the user stack, which E2.8 lets sleep and restart.
+  XSAVE standard image, plus validation on sigreturn. E2 changes where and in what context the frame is
+  written: E2.8 moves the write outside PROCESS_MANAGER, and E2.9 moves it onto the return-to-user
+  continuation, where it may sleep (§5.1). The two efforts touch the same delivery code. Whichever lands
+  second merges the other's change and keeps both properties. A larger XSAVE frame is also more likely to
+  fault on the user stack, which E2.9 lets sleep and restart.
 - **R17 (#3238, merged).** The durable interrupt wake transport E2.1 calls.
 
 ## 12. Decisions for the coordinator
