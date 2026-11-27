@@ -32,7 +32,7 @@ fn manifest_scopes_sync_and_protects_local_outputs() {
         fs::write(path, b"example").unwrap();
     }
     let excludes = Excludes::new(&manifest.excludes).unwrap();
-    let local = scan(files.path(), &excludes).unwrap();
+    let local = source_tree(files.path(), &excludes).unwrap();
     assert_eq!(
         local.keys().map(String::as_str).collect::<Vec<_>>(),
         ["", "src", "src/lib.rs"]
@@ -90,12 +90,7 @@ fn build_uses_current_and_the_selfhost_recipe() {
         assert!(toolchain_id(invalid).is_err());
     }
 
-    let words = cargo_words(
-        "/home/developer/src/breenix",
-        "/home/developer/.cache/btest",
-        current,
-        "bobj",
-    );
+    let words = cargo_words("/work/src/breenix", "/work/.cache/btest", current, "bobj");
     let fixture = "/opt/breenix/rust/x86_64-12345678-abcdef01";
     assert_eq!(
         &words[..5],
@@ -106,6 +101,10 @@ fn build_uses_current_and_the_selfhost_recipe() {
         &words[13..],
         [
             &format!("{fixture}/bin/cargo"),
+            "-Z",
+            "unstable-options",
+            "-C",
+            "/work/src/breenix/toolchain",
             "build",
             "--offline",
             "--frozen",
@@ -114,11 +113,11 @@ fn build_uses_current_and_the_selfhost_recipe() {
             "--target",
             &format!("{fixture}/targets/x86_64-breenix.json"),
             "--manifest-path",
-            "/home/developer/src/breenix/toolchain/Cargo.toml",
+            "/work/src/breenix/toolchain/Cargo.toml",
             "-p",
             "bobj",
             "--target-dir",
-            "/home/developer/.cache/btest/target",
+            "/work/.cache/btest/target",
         ]
     );
     let encoded = words
@@ -134,7 +133,7 @@ fn build_uses_current_and_the_selfhost_recipe() {
             &format!("-Lnative={fixture}/lib"),
             "-Clink-arg=--allow-multiple-definition",
             "-Cdefault-linker-libraries=no",
-            "--remap-path-prefix=/home/developer/src/breenix=/breenix-src",
+            "--remap-path-prefix=/work/src/breenix=/breenix-src",
         ]
     );
     assert_eq!(
