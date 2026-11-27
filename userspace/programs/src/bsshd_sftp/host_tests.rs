@@ -221,6 +221,39 @@ fn answers_malformed_requests_with_id_and_continues() {
 }
 
 #[test]
+fn reports_unknown_request_types_as_unsupported() {
+    let requests = [
+        request(42, 1, &[b"opaque request fields"]),
+        request(43, 2, &[]),
+        request(16, 3, &[&string(b".")]),
+    ];
+    let output = session(&requests, false);
+    status(&output[0], OP_UNSUPPORTED);
+    status(&output[1], OP_UNSUPPORTED);
+    name(&output[2]);
+}
+
+#[test]
+fn truncates_existing_file_before_appending() {
+    let scratch = Scratch::new("append-truncate");
+    let file = scratch.path("file");
+    fs::write(&file, b"existing data").unwrap();
+    let file_handle = handle(1);
+    let requests = [
+        request(3, 1, &[&path(&file), &u32_field(0x1e), &u32_field(0)]),
+        request(6, 2, &[&file_handle, &100u64.to_be_bytes(), &string(b"new")]),
+        request(6, 3, &[&file_handle, &0u64.to_be_bytes(), &string(b" data")]),
+        request(4, 4, &[&file_handle]),
+    ];
+    let output = session(&requests, false);
+    assert_eq!(reply_payload(&output[0], 102), file_handle);
+    for response in &output[1..] {
+        status(response, OK);
+    }
+    assert_eq!(fs::read(&file).unwrap(), b"new data");
+}
+
+#[test]
 fn transfers_data_and_updates_attributes_by_handle_and_path() {
     let scratch = Scratch::new("transfer");
     let file = path(&scratch.path("file"));
