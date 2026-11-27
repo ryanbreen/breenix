@@ -9,7 +9,7 @@ use crate::error::Error;
 use crate::types::Fd;
 
 use super::auth;
-use super::channel::{self, Channel};
+use super::channel::{self, Channel, SessionCommand};
 use super::kex::{self, KexState};
 use super::keys::{HostKey, Identity, ServerHostKeyInfo};
 use super::packet::PacketIo;
@@ -162,15 +162,9 @@ impl<'a> ServerSession<'a> {
         Ok(self.username.clone())
     }
 
-    /// Wait for the client to open a channel and request a shell.
-    ///
-    /// Handles CHANNEL_OPEN and CHANNEL_REQUEST messages until a shell
-    /// or exec request is received. Returns true if a PTY was requested.
-    pub fn wait_for_channel(&mut self) -> Result<bool, SshError> {
-        let mut pty_requested = false;
-        let mut shell_requested = false;
-
-        while !shell_requested {
+    /// Wait for the client to open a channel and choose a program.
+    pub fn wait_for_channel(&mut self) -> Result<SessionCommand, SshError> {
+        loop {
             let msg = self.io.recv_packet().map_err(|_| SshError::Io)?;
             if msg.is_empty() {
                 return Err(SshError::Disconnected);
@@ -183,12 +177,10 @@ impl<'a> ServerSession<'a> {
                 }
                 SSH_MSG_CHANNEL_REQUEST => {
                     if let Some(ref mut ch) = self.channel {
-                        let req_type =
-                            channel::server_handle_channel_request(&mut self.io, &msg, ch)?;
-                        match req_type.as_str() {
-                            "pty-req" => pty_requested = true,
-                            "shell" | "exec" => shell_requested = true,
-                            _ => {}
+                        if let Some(command) =
+                            channel::server_handle_channel_request(&mut self.io, &msg, ch, true)?
+                        {
+                            return Ok(command);
                         }
                     }
                 }
@@ -216,8 +208,11 @@ impl<'a> ServerSession<'a> {
                 _ => {}
             }
         }
+    }
 
-        Ok(pty_requested)
+    /// The peer's SSH identification string.
+    pub fn client_version(&self) -> &str {
+        &self.client_version
     }
 
     /// The terminal type the client's pty-req named, if any.
@@ -260,13 +255,6 @@ impl<'a> ServerSession<'a> {
     pub fn consume_input(&mut self, bytes: usize) -> Result<(), SshError> {
         let ch = self.channel.as_mut().ok_or(SshError::ChannelNotFound)?;
         channel::send_window_adjust(&mut self.io, ch, bytes as u32)
-    }
-
-    /// Take the command supplied by an SSH "exec" request, if any.
-    pub fn take_exec_command(&mut self) -> Option<String> {
-        self.channel
-            .as_mut()
-            .and_then(|channel| channel.exec_command.take())
     }
 
     /// Report an exec command's exit status to the SSH client.
@@ -360,7 +348,7 @@ impl<'a> ServerSession<'a> {
             SSH_MSG_CHANNEL_REQUEST => {
                 // Handle window-change during session
                 if let Some(ref mut ch) = self.channel {
-                    let _ = channel::server_handle_channel_request(&mut self.io, &msg, ch);
+                    channel::server_handle_channel_request(&mut self.io, msg, ch, false)?;
                 }
                 Ok(None)
             }
