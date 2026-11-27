@@ -1921,6 +1921,8 @@ impl<W: Wait + 'static> BreenFs<W> {
     fn check_durable_roots(&self, generation: Option<u64>) -> Result<(), Errno> {
         // Keep this durable generation pinned against install and reuse while
         // reading it. An in-flight publication still protects its blocks.
+        #[cfg(all(target_arch = "x86_64", not(test)))]
+        crate::drivers::watchdog::root_probe_waiting(self.inner.device.hardware_disk());
         let state = self.inner.state.lock_interruptible()?;
         #[cfg(all(not(test), target_arch = "x86_64"))]
         let progress = match self.inner.device.hardware_disk() {
@@ -1946,6 +1948,8 @@ impl<W: Wait + 'static> BreenFs<W> {
 
         let device = self.inner.device.as_ref();
         let mut superblock_error = Errno(EIO);
+        #[cfg(all(target_arch = "x86_64", not(test)))]
+        crate::drivers::watchdog::root_probe_reading(false);
         let has_superblock = (0..2).any(|ring| {
             let slot = commit::slot_block(sb.total_blocks, ring, sb.slot);
             let bytes = match commit::read(device, slot, BLOCK_SIZE) {
@@ -1966,6 +1970,8 @@ impl<W: Wait + 'static> BreenFs<W> {
             return Err(superblock_error);
         }
 
+        #[cfg(all(target_arch = "x86_64", not(test)))]
+        crate::drivers::watchdog::root_probe_reading(true);
         let store = commit::DeviceStore(device);
         // Each point lookup verifies the on-disk parent pointers and CRCs.
         // Both trees used by the namespace must have valid durable roots.

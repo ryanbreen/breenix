@@ -1095,6 +1095,22 @@ pub(crate) fn completed_io(port: usize) -> u64 {
     PORT_IO_COMPLETED[port].load(Ordering::Relaxed)
 }
 
+/// Diagnostic-only snapshot. The feeder can be stuck waiting for the port,
+/// so the observer must not take either the port or controller mutex.
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn report_watchdog_port(port: usize) {
+    let abar = AHCI_ABAR.load(Ordering::Acquire);
+    if abar == 0 || port >= MAX_PORTS {
+        return;
+    }
+    crate::serial_println!(
+        "[watchdog] AHCI port={} owner={} completed={} command={} ci={:#x} tfd={:#x}",
+        port, PORT_IO_OWNER[port].load(Ordering::Acquire), completed_io(port),
+        PORT_ACTIVE_CMD_NUM[port].load(Ordering::Acquire),
+        port_read(abar, port, PORT_CI), port_read(abar, port, PORT_TFD),
+    );
+}
+
 fn wait_cmd_slot0_inner(token: CmdToken) -> Result<(), &'static str> {
     let abar = AHCI_ABAR.load(Ordering::Relaxed);
     let port = token.port;

@@ -5,6 +5,7 @@ bindeps = true
 # claim-lint:ok: none is part of the kernel artifact target triple in Cargo.toml.
 [target.x86_64-unknown-none]
 linker = "scripts/kernel-link.sh"
+rustflags = ["-Cforce-frame-pointers=yes"]
 
 [target.x86_64-breenix]
 linker = "scripts/kernel-link.sh"
