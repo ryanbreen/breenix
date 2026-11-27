@@ -7,7 +7,9 @@ import os
 from pathlib import Path
 import re
 import shlex
+import shutil
 import subprocess
+import sys
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -44,6 +46,43 @@ class CxxRuntimeProbeTest(unittest.TestCase):
                     self.assertEqual((result.returncode, result.stdout), (0, expected))
                 else:
                     self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+
+    def test_arm_cxx_runtime_image_ready(self):
+        spec = importlib.util.spec_from_file_location('rust_host_stage', ROOT / 'scripts/rust_host_stage.py')
+        stage = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(stage)
+        debugfs, = stage.require_e2fsprogs('debugfs')
+        seed = ROOT / 'target/ext2-aarch64.img'
+        hosted = PROGRAMS / 'target/hosted/aarch64-breenix-hosted/release/suite-cxx-runtime'
+        probes = PROGRAMS / 'target/cxx-runtime/aarch64'
+        self.assertTrue(seed.is_file(), 'run scripts/create_ext2_disk.sh --arch aarch64 first')
+
+        with tempfile.TemporaryDirectory() as directory:
+            image = Path(directory) / 'cxx-runtime.img'
+            shutil.copyfile(seed, image)
+            for command in (
+                [sys.executable, ROOT / 'scripts/rust_host_stage.py', '--arch', 'aarch64',
+                 '--image', image, '--suite', 'cxx-runtime'],
+                [ROOT / 'scripts/write-boot-target.sh', image, 'cxx-runtime',
+                 PROGRAMS / 'aarch64/suite-cxx-runtime.elf', '', '', '', 'ext2', hosted],
+            ):
+                result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+            def read_image(command):
+                return subprocess.check_output([debugfs, '-R', command, image],
+                                               stderr=subprocess.DEVNULL, timeout=10)
+
+            self.assertEqual(read_image('cat /etc/breenix/boot-target'), b'suite cxx-runtime\n')
+            self.assertEqual(read_image('cat /sbin/suite-cxx-runtime'), hosted.read_bytes())
+            for name in PROBES:
+                with self.subTest(probe=name):
+                    path = f'/usr/libexec/breenix/cxx-runtime/{name}'
+                    self.assertEqual(read_image(f'cat {path}'), (probes / name).read_bytes())
+                    self.assertIn(b'Type: regular    Mode:  0755', read_image(f'stat {path}'))
+            for name in ('startup-probe', 'process-probe', 'unwind-probe', 'mmap-fixture'):
+                with self.subTest(rust_host=name):
+                    self.assertNotIn(b'Inode:', read_image(f'stat /usr/libexec/breenix/rust-host/{name}'))
 
     def test_probes_staged_only_under_cxx_runtime(self):
         spec = importlib.util.spec_from_file_location('rust_host_stage', ROOT / 'scripts/rust_host_stage.py')
