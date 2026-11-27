@@ -42,8 +42,8 @@ asynchronous frames. The targets may still decline to generate red-zone
 references. Wider vectors and crypto remain optional and confined to
 feature-specific functions, whose public interfaces use baseline types.
 Retain the separate x86 [kernel artifact target](../../Cargo.toml#L103)
-and its general-register code generation. [AMD64 psABI, machine interface, function calling sequence and
-initial process stack](https://gitlab.com/x86-psABIs/x86-64-ABI/-/raw/master/x86-64-ABI/low-level-sys-info.tex).
+and its general-register code generation. [AMD64 psABI, machine interface,
+function calling sequence and initial process stack](https://gitlab.com/x86-psABIs/x86-64-ABI/-/raw/master/x86-64-ABI/low-level-sys-info.tex).
 
 Use AAPCS64 LP64 and the AAELF64 object ABI on ARM64. Retain the 16-byte stack
 rule, FP/SIMD and homogeneous floating-point aggregate argument rules, and
@@ -80,10 +80,10 @@ mask. Check arithmetic, offsets, bounds and non-overlap before allocation.
 Distinguish reported, enabled and in-use state. Enable dependency-closed
 user feature groups, including AVX together with SSE, both MPX components
 where applicable, the full AVX-512 group with AVX, and both AMX components
-where applicable. Require complete leaf-0xD accounting, with an enable, ownership and
-restore policy for each reported component from the SDM. For example, AMX needs valid tile
-configuration and XFD policy, and PKRU needs an explicit order for user
-accesses by the kernel and restore on return. Start with eager backing
+where applicable. Require complete leaf-0xD accounting, with an enable,
+ownership and restore policy for each reported component from the SDM.
+For example, AMX needs valid tile configuration and XFD policy, and PKRU
+needs an explicit order for user accesses by the kernel and restore on return. Start with eager backing
 for enabled components and clear XFD for those components where supported.
 Supervisor components use XSS and kernel-owned state only. Classify their
 scope before programming XSS, including features with per-CPU ownership
@@ -91,15 +91,17 @@ such as tracing, and keep their state out of user images. A reported
 component whose enable or restore semantics cannot be established stays
 disabled and gets an explicit implementation blocker before claiming coverage
 of that CPU. A CPU may join the userspace scheduler only when it supports
-the published user mask and layouts. Extra AP features stay off. Check
-this before admission, including on any later CPU bring-up. The common
+the published mask, save/restore backend and image layouts. Extra AP
+features stay off. Check this before admission, including on any later CPU
+bring-up. The common
 layout and capabilities are immutable once published to userspace.
 [Intel SDM Vol. 1 §§13.1–13.5 and §13.14, Vol. 3A §15.5](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).
 
 Use matching save and restore pairs. With supervisor state enabled use
 `XSAVES/XRSTORS` for its owner and use the compacted layout for that save.
-On CPUs with XSAVES use a compacted pair for thread state as well, using
-only the thread-owned mask. Otherwise use the standard layout with
+Keep supervisor images separate from user images even when both have a
+thread owner. On CPUs with XSAVES use a compacted pair for thread user
+state with the XCR0 mask. Otherwise use the standard layout with
 `XSAVEOPT/XRSTOR` if supported and `XSAVE/XRSTOR` otherwise. Keep a
 baseline FXSAVE path on x86 CPUs without XSAVE. Save optimized images back
 to their persistent, initialized, 64-byte-aligned backing. Intel's modified
@@ -109,6 +111,22 @@ image to standard format by descriptor when exporting it. Use the same
 canonical user image for fork or clone before encoding it in the child's
 own backing. Preserve supervisor state independently on sigreturn.
 [Intel SDM Vol. 1 §§13.6–13.12](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).
+
+Registers are authoritative for a CPU's owner. The persistent image is
+authoritative for an off-CPU thread. Software prepares a replacement image
+in separate preallocated backing. Software writes to the owner's backing
+are forbidden while its registers are authoritative. For exec and
+sigreturn, exclude local scheduling and interrupts
+for the commit. Save the old live state into its existing image if the new
+restore can fault. Restore the prepared image, then swap its backing into
+the persistent role at the same address the instruction used. On a restore
+fault, reload the old image and retain the old ownership before reporting
+failure. A switch observes either the old or the installed state. An
+optimized save can target a replacement backing only after restore from
+that address. For an off-CPU replacement, store the prepared image and
+restore it on the next dispatch before granting register ownership. Keep
+the mask and image format of each save consistent with its matching
+restore. [Intel SDM Vol. 1 §§13.6, 13.8–13.9, 13.11–13.12](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).
 
 Replace the fixed `Copy` state in `Thread` and the process/clone state with
 a stable, fallibly allocated area before the thread becomes runnable. Back
@@ -130,13 +148,13 @@ hot-path restrictions on allocation, logging, I/O and contended locks apply.
 
 Keep the existing `ucontext_t` prefix and `uc_mcontext.fpstate` pointer.
 Reserve Breenix `UC_BREENIX_XSTATE_V1` (`1ULL << 32`) in `uc_flags` and
-publish it in the C and Rust user headers. Point to a 64-byte-aligned Intel **standard** image.
+publish it in the C and Rust user headers. Point to a 64-byte-aligned
+Intel **standard** image.
 Bytes 0–511 are the legacy region, 512–575 the XSAVE header
 (`XSTATE_BV` at 512, `XCOMP_BV=0` at 520 and reserved bytes set to 0).
 Each extended user component is at the standard CPUID offset, including
 the 256-byte YMM upper-half component (bit 2) at offset 576 on the
-standard AVX layout. Use the kernel's user standard size as
-the frame length. Export zeroed gaps, reserved bytes and absent component
+standard AVX layout. Use the kernel's user standard size as the frame length. Export zeroed gaps, reserved bytes and absent component
 storage, with legacy defaults in the fields that represent initial state.
 Use the 512-byte frame when the enabled user mask consists of x87 and SSE.
 Keep the legacy-shaped prefix and stack convention for existing handlers.
@@ -169,8 +187,8 @@ fixed frame, the user image, up to 63 bytes for image alignment, the
 optional trampoline and its 15 bytes of alignment slack, 15 bytes plus
 8 for handler stack placement, and 128 for the nested red zone. For ARM64,
 use the existing FPSIMD frame, trampoline and stack-alignment rules. Export it as
-`AT_MINSIGSTKSZ` (51) on both targets and expose it through libc's runtime
-signal-stack query. Fixed public constants remain lower bounds. Teach
+`AT_MINSIGSTKSZ` (51) on both targets and expose it in libc through
+`getauxval(AT_MINSIGSTKSZ)` and `sysconf(_SC_MINSIGSTKSZ)`. Fixed public constants remain lower bounds. Teach
 in-tree callers with fixed buffers to allocate for the runtime minimum
 plus handler headroom. Use the runtime minimum to admit registrations.
 For delivery, check the entire frame range against the configured stack,
@@ -260,9 +278,9 @@ verify code generation with the exact compiler and sysroot that ship.
 | --- | --- | --- |
 | 0 | This design and rollout plan. | No. |
 | 1 | Kernel CPU bring-up and XSAVE ownership, signal frames and runtime stack minimum, usable HWCAP words, ARM64 normal-memory alignment policy. Establish corresponding save and restore before enabling a group or advertising its capabilities. | No. Breenix kernel and existing assembler support. |
-| 2 | Targets and staged sysroot for both architectures. Drop `x86-softfloat` and use the existing C/hosted feature settings. Remove `+strict-align` from ARM64 userspace. Prepare new baseline build roots and regenerate Rust sysroot artifacts. Keep existing release artifacts until the staged libc and complete image are available. | No. JSON and build recipes through existing target interfaces. Use the pinned fork libraries and rebuild against the new target identity. |
-| 3 | libc, CRT, public ABI headers, ld-breenix and link inputs. Unify x86's ordinary and C libc ABI, rebuild shared libc and loader, wire HWCAP startup tables and runtime signal-stack query, and rebuild and verify bld against the staged sysroot. | No. Breenix runtime and in-tree bld. Ordinary ELF relocations with the pinned linkers. |
-| 4 | Rebuild the complete static program inventory and dependent image artifacts for both architectures. Verify and publish the whole generation. | No. Artifact build and publication. |
+| 2 | Opt-in targets and staged sysroot for both architectures. Drop `x86-softfloat` and use the existing C/hosted feature settings in the staged target. Remove `+strict-align` from staged ARM64 userspace. Build in isolated roots and add the generation and publication guard. Release defaults continue to use the existing generation. | No. JSON and build recipes through existing target interfaces. Use the pinned fork libraries and rebuild against the new target identity. |
+| 3 | libc, CRT, public ABI headers, ld-breenix and link inputs. Unify x86's ordinary and C libc ABI in the staged generation, rebuild shared libc and loader, wire HWCAP startup tables and runtime signal-stack query, and rebuild and verify bld against the staged sysroot. | No. Breenix runtime and in-tree bld. Ordinary ELF relocations with the pinned linkers. |
+| 4 | Rebuild the complete static program inventory and dependent image artifacts for both architectures. Verify and publish the complete generation and flip the release defaults. | No. Artifact build and publication. |
 | 5 | Hardware crypto for R16. Isolate AES-NI, PCLMULQDQ, Arm AES and PMULL from baseline code. Keep the portable constant-time path available, and choose AES and polynomial multiply separately so AES-only CPUs are safe. Make the benchmark and bsshd/bssh use the same selected production functions. | No. Per-function target features or existing workspace assembler interfaces. |
 | 6 | R30 vector strings. Use SSE2 and then usable AVX2 variants where they win on x86, and ASIMD on ARM64. Keep bounded tails, safe page-boundary handling for sentinel searches, and correct overlap direction for memmove. Measure small and large sizes before changing copy thresholds. | No. Breenix libc and existing target features or assembler interfaces. |
 
@@ -288,10 +306,24 @@ has that dependency.
    separately staged K5/KD and self-host artifacts. Classify by produced
    ELF and link inputs so PIE and custom-CRT artifacts are covered and
    hosted DSOs are rebuilt with their matching runtime. Reconcile the
-   inventory with both architectures' images and install manifests, including applet hard
-   links and aliases. Use existing package interfaces for external program
+   inventory with both architectures' images and install manifests,
+   including applet hard links and aliases. Use existing package interfaces for external program
    inputs without consulting their implementation source.
-2. Build in clean, generation-specific output directories. Rebuild
+2. Land the generation guard with the opt-in targets in PR 2. Stage JSON
+   under distinct roots with the canonical target basenames and separate
+   target, sysroot, install and image directories. Default builds keep the
+   old targets and inputs until PR 4. Gate PR 3 changes to shared CRT, libc
+   and headers by generation where the default path still uses them. The
+   SDK, image, metal build and devbox publishers must reject staged E6 inputs on the legacy path and
+   refuse publication of an incomplete E6 generation. Stamp each
+   generation with the architecture, target JSON digest, compiler identity,
+   and fork library commit. The generation manifest records each produced
+   artifact's digest, build profile and link-input digests.
+   Enforce generation membership and input hashes in staged links and at
+   publication, rejecting unrecorded and legacy inputs. The existing
+   publishers consume a verified complete manifest before replacing an
+   image, SDK bundle or `CURRENT`.
+3. Build in clean, generation-specific output directories. Rebuild
    `core`, `alloc`, `std`, panic runtimes, compiler-builtins, unwind
    libraries, CRT objects, C/C++ runtime archives and sysroot headers, then
    `libc.a`, `libc.so`, ld-breenix and binutils/toolchain artifacts. Confirm
@@ -299,15 +331,16 @@ has that dependency.
    floating-point ABI, including variadic calls in both directions.
    Keep one ABI across static input archives even where feature profiles
    or panicking policies need distinct builds. Audit libc's variadic,
-   math and long-double code paths for assumptions about the old target. Include target contents,
-   fork library commit, compiler identity and link inputs in fingerprints
+   math and long-double code paths for assumptions about the old target.
+   Include target contents, fork library commit, compiler identity and
+   link inputs in fingerprints
    and rebuild SDK artifacts and native sysroot libraries with the same
    generation. No previously built rlibs, cached objects, CRTs, ELF copies
    or prebuilt images can satisfy a new-generation input. [SDK libc and
    Rust stages](../../sdk/builder/stages/20-libc.sh),
    [SDK Rust sysroot](../../sdk/builder/stages/40-rust.sh),
    [native toolchain builder](../../scripts/toolchain-build-tools.py).
-3. Relink the complete static binary inventory from those inputs and verify
+4. Relink the complete static binary inventory from those inputs and verify
    inputs and outputs for both toolchains, bld and the pinned reference
    linker. Include boot-embedded assets, both ext2 seeds, staged suite
    images, SDK and delivery bundles, and optionally installed copies in
@@ -319,7 +352,7 @@ has that dependency.
    verification](../../scripts/userspace-manifest.py),
    [seed construction](../../scripts/create_ext2_disk.sh),
    [toolchain image sealing](../../scripts/toolchain-image.py).
-4. Stage the matching sysroot, userland image, loader and dependencies as
+5. Stage the matching sysroot, userland image, loader and dependencies as
    a single release. The kernel PR can merge first. Before using it
    independently on an existing image, verify the runtime alternate-stack
    minimum against the old image's consumers. Use a coordinated kernel
@@ -344,10 +377,10 @@ x86-64 and ARM64. The documentation PR needs neither a guest build nor a boot.
 
 | PR | Check and defect it catches |
 | --- | --- |
-| 1 | Host CPUID table cases for legacy, XSAVE, XSAVEOPT and XSAVES. A fixture puts AVX at standard offset 576, a later user component after a standard gap and an aligned XSS component in compacted layout. Assert exact offsets and sizes against independent fixture values and leaf-0xD EBX, plus reserved-bit, overflow and incompatible AP rejection. Use a fixed switch/rollback and clone/exec state sequence with distinct per-thread sentinel data to detect stale initial state, optimized-save omission or cross-thread reuse. |
+| 1 | Host CPUID table cases for legacy, XSAVE, XSAVEOPT and XSAVES. A fixture puts AVX at standard offset 576, a later user component after a standard gap and an aligned XSS component in compacted layout. Assert exact offsets and sizes against independent fixture values and leaf-0xD EBX, plus reserved-bit, overflow and incompatible AP rejection. Use a fixed switch/rollback and clone/exec state sequence with distinct per-thread sentinel data. Attempt a switch before and after each replacement commit, including sigreturn and failed restore. Drive a save that omits unmodified components to catch stale backing, lost imports and cross-thread reuse. |
 | 1 | Host frame placement and import/export tests with synthetic YMM high halves, a later component, mixed `XSTATE_BV`, and a nested alternate stack at the exact fit boundary. Verify byte offsets, 64-byte image alignment, handler stack alignment, red-zone preservation, absence of supervisor data, legacy import, and rejection of truncated or compacted images and illegal component content before context commit. The state test drives a deliberate handler clobber and return to expose a lost upper half. |
-| 1 | Initial stack byte fixtures for static and interpreted exec on both ISAs. Assert the HWCAP entries, a value of 0 versus absent, unchanged credential and interpreter entries, signal-stack minimum and final terminator. Toggle x86 hardware AVX with XCR0 off, toggle AVX2 and the full AVX-512 group, and exercise ARM AES-only versus AES+PMULL and FP/ASIMD disabled, including a weaker CPU. |
-| 2 | Inspect relocatable Rust objects and call boundaries from the pinned compiler and C driver on both architectures. Use f32/f64, a mixed aggregate, an ARM HFA, x86 long-double return from C, and a variadic case with register and stack arguments. A separate ARM packed-copy fixture uses a deliberately unaligned normal-memory address. Audit emitted objects and fixed data results for the ABI change, while preserving alignment requirements for atomic and Device accesses. |
+| 1 | Initial stack byte fixtures for static and interpreted exec on both ISAs. Assert the HWCAP entries, a value of 0 versus absent, unchanged credential and interpreter entries, signal-stack minimum and final terminator. Toggle x86 hardware AVX with XCR0 off, the AVX2 and AVX-512 predicates, and independent AES-NI, PCLMULQDQ, ERMS and FSRM flags. Exercise ARM AES-only versus AES+PMULL and FP/ASIMD disabled, including a weaker CPU. |
+| 2 | Inspect relocatable Rust objects and call boundaries from the pinned compiler and C driver on both architectures. Use f32/f64, a mixed aggregate, an ARM HFA, x86 long-double return from C, and a variadic case with register and stack arguments. A separate ARM packed-copy fixture uses a deliberately unaligned normal-memory address. Audit emitted objects and fixed data results for the ABI change, while preserving alignment requirements for atomic and Device accesses. A mixed-generation target/archive pair and an incomplete manifest must fail during staging/publication. Submit a staged artifact through a legacy publisher and check that it leaves the prior release in place, then check that the legacy publisher accepts its own inputs. |
 | 3 | Feed synthetic auxv to the static and loader startup paths. A preinit/constructor reads its selected implementation before main and reads the same choice after a repeated init and via a dynamic consumer. Check absent capabilities, an explicit 0 mask and an enabled selection. Inspect that both link outputs retain ordinary relocations and that the static bld and reference linker resolve the intended ABI-consistent CRT and libc. |
 | 4 | Validate the full expected ELF and alias inventory against both staged images and SDK/toolchain bundles. A stale input archive or omitted executable must fail publication before any bundle becomes current. |
 | 5–6 | Fixed crypto known-answer and cross-implementation vectors, including AES without carryless multiply and AEAD rejection, with selection driven by fake masks and execution confined to usable implementations. For strings, use guarded page ends, unaligned offsets, empty ranges, overlapping memmove in both directions and exact first-match/difference results. |
