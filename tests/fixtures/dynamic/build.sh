@@ -37,13 +37,15 @@ done
     -rpath '$ORIGIN/missing:$ORIGIN/lib' -o fixture main.o lib/libouter.so
 
 set -- fixture lib/libouter.so lib/private/libinner.so
-if [ "$arch" = x86_64 ]; then
-    "$clang" --target=x86_64-unknown-none-elf -std=c17 -ffreestanding \
-        -nostdinc -fno-stack-protector -fPIC -ftls-model=local-dynamic \
-        -Wall -Wextra -Werror -c "$src/tls.c" -o tls.o
-    "$lld" -shared --hash-style=sysv -z relro -z now -o libtls.so tls.o
-    set -- "$@" libtls.so
-fi
+case "$arch" in
+    x86_64) model=local-dynamic; tls_source=tls ;;
+    aarch64) model=global-dynamic; tls_source=tls-aarch64 ;;
+esac
+"$clang" --target="$arch-unknown-none-elf" -std=c17 -ffreestanding \
+    -nostdinc -fno-stack-protector -fPIC -ftls-model="$model" \
+    -Wall -Wextra -Werror -c "$src/$tls_source.c" -o tls.o
+"$lld" -shared --hash-style=sysv -z relro -z now -o libtls.so tls.o
+set -- "$@" libtls.so
 
 for file do
     "$readelf" -W -r -d -l "$file" > "$file.readelf"

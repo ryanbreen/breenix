@@ -468,6 +468,80 @@ mod aarch64 {
     }
 
     #[test]
+    fn tls_kinds_resolve_aarch64() {
+        let [fixture] = build_fixtures("aarch64", ["libtls.so"]);
+        let first = Object::parse(b"/first.so", &fixture.file, BIASES[0]).unwrap();
+        let second = Object::parse(b"/second.so", &fixture.file, BIASES[1]).unwrap();
+        let template = second.tls_module().unwrap();
+        assert_eq!((template.align, template.file_size, template.mem_size), (32, 8, 48));
+        let mut patches = BTreeMap::new();
+        second.relocate(&[first, second], |Patch { address, value }| {
+            assert!(patches.insert(address, value).is_none());
+        }).unwrap();
+
+        // AAELF64 §5.7.11: two words per descriptor. Variant I puts the first
+        // aligned template at TP+32 and the second at TP+96. The named
+        // definition binds to the first object, and the null symbol names
+        // the second object's template plus the signed relocation addend.
+        let descriptors: Vec<_> = fixture.readelf.lines().filter_map(|line| {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            if fields.get(2) != Some(&"R_AARCH64_TLSDESC") {
+                return None;
+            }
+            let slot = BIASES[1] + hex(fields[0]);
+            let pair = [patches[&slot], patches[&(slot + 8)]];
+            let expected = if hex(fields[1]) >> 32 == 0 {
+                assert_eq!(hex(fields[3]), 8);
+                104
+            } else {
+                assert_eq!(&fields[4..], ["initial", "+", "0"]);
+                32
+            };
+            assert_eq!(pair[1], expected);
+            (pair[0] != 0).then_some((pair, expected as usize))
+        }).collect();
+        assert_eq!(descriptors.len(), 2);
+        assert_eq!(patches.len(), 4);
+
+        let offset = |pair: &[u64; 2]| {
+            // SAFETY: word zero is the loader's resolver and pair is the
+            // two-word descriptor it expects in x0 (the first argument).
+            let resolver: unsafe extern "C" fn(*const u64) -> usize =
+                unsafe { std::mem::transmute(pair[0] as usize) };
+            // SAFETY: the resolver reads only the two live descriptor words.
+            unsafe { resolver(pair.as_ptr()) }
+        };
+        let new_thread_block = || {
+            let mut block = [0u64; 18];
+            block[4] = 73;
+            block[12] = 73;
+            block
+        };
+        let mut main = new_thread_block();
+        for (pair, expected) in &descriptors {
+            assert_eq!(offset(pair), *expected);
+            assert_eq!(main[expected / 8], if *expected == 32 { 73 } else { 0 });
+            main[expected / 8] = 91;
+        }
+        let main_address = main.as_ptr() as usize;
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let mut child = new_thread_block();
+                assert_ne!(child.as_ptr() as usize, main_address);
+                for (pair, expected) in &descriptors {
+                    let slot = offset(pair) / 8;
+                    assert_eq!(child[slot], if *expected == 32 { 73 } else { 0 });
+                    child[slot] = 19;
+                    assert_eq!(child[offset(pair) / 8], 19);
+                }
+            }).join().unwrap();
+        });
+        for (pair, _) in &descriptors {
+            assert_eq!(main[offset(pair) / 8], 91);
+        }
+    }
+
+    #[test]
     fn two_dso_fixture_resolves_every_value_aarch64() {
         let files = fixtures();
         let objects: [Object<'_>; 3] =

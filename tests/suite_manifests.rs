@@ -2396,6 +2396,36 @@ fn llvm_manifest_matches_table() {
 }
 
 #[test]
+fn aarch64_dynamic_manifest_matches_guest_table() {
+    let root = repo_root();
+    let mut errors = Vec::new();
+    let manifest = read_manifest(&root.join("docs/suites/dynamic.json"), &mut errors)
+        .expect("dynamic manifest");
+    assert!(errors.is_empty(), "{}", errors.join("\n"));
+    let (_, files) = suite_files(&root, "dynamic").expect("dynamic suite source");
+    let (suite, guest) = source_suite_files(&files).expect("dynamic guest table");
+    assert_eq!(suite.id, manifest.id);
+    assert_eq!(suite.title, manifest.title);
+    assert_eq!(guest, manifest.categories);
+    assert_eq!(manifest.categories.len(), 1);
+    let cases = &manifest.categories[0].cases;
+    assert_eq!(
+        cases.iter().map(|case| case.id.as_str()).collect::<Vec<_>>(),
+        ["interp-runs-program", "missing-interp-fails", "dso-relocs-and-tls", "panic-across-dso"],
+    );
+    assert!(cases.iter().all(|case| {
+        case.targets.is_empty() || case.targets.iter().any(|target| target == "aarch64")
+    }));
+    for (_, source) in files {
+        let file = syn::parse_file(&source).expect("dynamic suite parses");
+        assert!(
+            file.attrs.iter().all(|attribute| !attribute.path().is_ident("cfg")),
+            "the shared guest runner must be compiled on AArch64",
+        );
+    }
+}
+
+#[test]
 fn rustc_manifest_matches_table() {
     let root = repo_root();
     let mut errors = Vec::new();
