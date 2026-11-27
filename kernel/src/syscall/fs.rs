@@ -4,6 +4,7 @@
 
 use alloc::string::String;
 use super::SyscallResult;
+use crate::fs::vfs::RenameMode;
 use crate::ipc::fd::FdKind;
 
 /// Open flags (POSIX compatible)
@@ -1438,11 +1439,11 @@ fn remove_entry(
 ///   ext2 allows
 /// * EIO - I/O error
 pub fn sys_rename(oldpath: u64, newpath: u64) -> SyscallResult {
-    sys_rename_from(AT_FDCWD, oldpath, AT_FDCWD, newpath)
+    sys_rename_from(AT_FDCWD, oldpath, AT_FDCWD, newpath, RenameMode::Replace)
 }
-fn sys_rename_from(olddirfd: i32, oldpath: u64, newdirfd: i32, newpath: u64) -> SyscallResult {
-    use super::errno::{EBUSY, EINVAL, ENOENT, EXDEV};
-    use crate::fs::{errno::Errno, namei::{Last, Target}, vfs::{names, NodeKind, RenameMode}};
+fn sys_rename_from(olddirfd: i32, oldpath: u64, newdirfd: i32, newpath: u64, mode: RenameMode) -> SyscallResult {
+    use super::errno::{EBUSY, EINVAL, ENOENT, EOPNOTSUPP, EXDEV};
+    use crate::fs::{errno::Errno, namei::{Last, Target}, vfs::{names, NodeKind}};
 
     // rename acts on the names themselves: neither final symlink is followed.
     let old = match resolve_user_rename_at(olddirfd, oldpath) {
@@ -1454,7 +1455,11 @@ fn sys_rename_from(olddirfd: i32, oldpath: u64, newdirfd: i32, newpath: u64) -> 
         Err(e) => return e,
     };
 
-    if let Some(result) = crate::ipc::shmem::rename_path(old.virtual_path().unwrap_or(""), new.virtual_path().unwrap_or("")) {
+    if let Some(result) = crate::ipc::shmem::rename_path(
+        old.virtual_path().unwrap_or(""),
+        new.virtual_path().unwrap_or(""),
+        mode == RenameMode::NoReplace,
+    ) {
         return result;
     }
     log::debug!("sys_rename: old={}, new={}", String::from_utf8_lossy(&old.path), String::from_utf8_lossy(&new.path));
@@ -1471,6 +1476,8 @@ fn sys_rename_from(olddirfd: i32, oldpath: u64, newdirfd: i32, newpath: u64) -> 
         (Target::User { mount, node, parent }, Target::User { mount: dest_mount, parent: dest_parent, .. }) => {
             if node == 0 { return SyscallResult::Err(ENOENT as u64); }
             if mount != dest_mount { return SyscallResult::Err(EXDEV as u64); }
+            // The userspace filesystem protocol has no no-replace rename.
+            if mode == RenameMode::NoReplace { return SyscallResult::Err(EOPNOTSUPP as u64); }
             let (Some(parent), Some(dest_parent)) = (parent, dest_parent) else { return SyscallResult::Err(EBUSY as u64); };
             let cred = match current_file_credentials() { Ok(c) => c, Err(e) => return SyscallResult::Err(e) };
             return ufs_status(crate::fs::ufs::path::rename(mount, node, parent, old.final_name(), dest_parent,
@@ -1500,7 +1507,7 @@ fn sys_rename_from(olddirfd: i32, oldpath: u64, newdirfd: i32, newpath: u64) -> 
     let result = (|| {
         let (fs, old_dir, _) = names::entry_dir(&old)?;
         let (_, new_dir, _) = names::entry_dir(&new)?;
-        fs.rename(old_dir.ino, old.final_name(), new_dir.ino, new.final_name(), RenameMode::Replace,
+        fs.rename(old_dir.ino, old.final_name(), new_dir.ino, new.final_name(), mode,
             &|parent, dest_parent, source, victim| {
                 super::fifo_policy::check_parent_access(parent.attrs, parent.nlink, &cred, Some(source.attrs.uid))
                     .map_err(|errno| Errno(errno as i32))?;
@@ -3833,7 +3840,18 @@ pub fn sys_linkat(
 
 /// renameat(olddirfd, oldpath, newdirfd, newpath) - replacement for rename
 pub fn sys_renameat(olddirfd: i32, oldpath: u64, newdirfd: i32, newpath: u64) -> SyscallResult {
-    sys_rename_from(olddirfd, oldpath, newdirfd, newpath)
+    sys_rename_from(olddirfd, oldpath, newdirfd, newpath, RenameMode::Replace)
+}
+
+/// The SFTP v3 rename operation must fail when a destination already exists.
+/// Carry RENAME_NOREPLACE to the filesystem's locked namespace transaction.
+pub fn sys_renameat2(olddirfd: i32, oldpath: u64, newdirfd: i32, newpath: u64, flags: u32) -> SyscallResult {
+    let mode = match flags {
+        0 => RenameMode::Replace,
+        1 => RenameMode::NoReplace,
+        _ => return SyscallResult::Err(super::errno::EINVAL as u64),
+    };
+    sys_rename_from(olddirfd, oldpath, newdirfd, newpath, mode)
 }
 
 /// readlinkat(dirfd, pathname, buf, bufsiz) - replacement for readlink

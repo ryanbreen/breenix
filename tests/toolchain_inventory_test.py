@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 import pathlib
 import re
@@ -14,6 +15,13 @@ spec.loader.exec_module(inventory)
 
 
 class Inventory(unittest.TestCase):
+    def test_busybox_config_pins(self):
+        digest = inventory.digest(ROOT / 'vendor/busybox/breenix-libc.config')
+        for name in ('busybox-c-inventory.json', 'kbuild-make-inventory.json'):
+            with self.subTest(inventory=name):
+                report = json.loads((ROOT / 'toolchain/docs' / name).read_text())
+                self.assertEqual(report['inputs']['config'], digest)
+
     def test_classifies_diagnostic_messages(self):
         fixtures = ROOT / 'tests/toolchain_inventory_fixtures'
         for name, message in {

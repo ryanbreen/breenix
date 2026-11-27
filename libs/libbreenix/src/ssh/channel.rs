@@ -41,8 +41,6 @@ pub struct Channel {
     pub pty_term: Option<String>,
     /// PTY dimensions (cols, rows).
     pub pty_size: (u32, u32),
-    /// Command from an SSH "exec" request, if this is a non-interactive session.
-    pub exec_command: Option<String>,
 }
 
 impl Channel {
@@ -60,9 +58,20 @@ impl Channel {
             eof_sent: false,
             pty_term: None,
             pty_size: (80, 24),
-            exec_command: None,
         }
     }
+}
+
+/// Program selected by the client's RFC 4254 section 6.5 start request.
+pub enum SessionCommand {
+    Shell,
+    Exec(String),
+    Sftp,
+}
+
+pub(super) enum ChannelRequestPhase {
+    Setup,
+    Running,
 }
 
 /// Handle an incoming "session" channel open request (server side).
@@ -94,6 +103,9 @@ pub fn server_handle_channel_open(
         return Err(SshError::Protocol("unsupported channel type"));
     }
 
+    if max_packet == 0 {
+        return Err(SshError::Protocol("zero channel max packet"));
+    }
     let channel = Channel::new(local_id, sender_channel, initial_window, max_packet);
 
     // Send CHANNEL_OPEN_CONFIRMATION
@@ -108,16 +120,13 @@ pub fn server_handle_channel_open(
     Ok(channel)
 }
 
-/// Handle a channel request (server side).
-///
-/// Processes "pty-req", "shell", "exec", and "env" requests.
-/// Returns the request type name for the caller to act on.
-pub fn server_handle_channel_request(
+/// Handle a channel request, returning the accepted program during setup.
+pub(super) fn server_handle_channel_request(
     io: &mut PacketIo,
     msg: &[u8],
     channel: &mut Channel,
-    running: bool,
-) -> Result<String, SshError> {
+    phase: ChannelRequestPhase,
+) -> Result<Option<SessionCommand>, SshError> {
     let mut pos = 1;
     let recipient =
         SshBuf::get_u32(msg, &mut pos).ok_or(SshError::Protocol("bad channel id in request"))?;
@@ -128,60 +137,63 @@ pub fn server_handle_channel_request(
         SshBuf::get_string(msg, &mut pos).ok_or(SshError::Protocol("bad request type"))?;
     let want_reply = SshBuf::get_bool(msg, &mut pos).ok_or(SshError::Protocol("bad want_reply"))?;
 
-    let req_name = String::from_utf8_lossy(request_type).into_owned();
-
-    if running && (request_type != b"window-change" || channel.pty_term.is_none()) {
-        if want_reply {
-            send_channel_failure(io, channel)?;
-        }
-        return Ok(req_name);
-    }
-
-    match request_type {
-        b"pty-req" => {
+    let setup = matches!(phase, ChannelRequestPhase::Setup);
+    let mut command = None;
+    let accepted = match request_type {
+        b"pty-req" if setup => {
             let term = SshBuf::get_string(msg, &mut pos).unwrap_or(b"xterm");
             let cols = SshBuf::get_u32(msg, &mut pos).unwrap_or(80);
             let rows = SshBuf::get_u32(msg, &mut pos).unwrap_or(24);
             // width_px, height_px, terminal modes (ignored)
             channel.pty_term = Some(String::from_utf8_lossy(term).into_owned());
             channel.pty_size = (if cols == 0 { 80 } else { cols }, if rows == 0 { 24 } else { rows });
-
-            if want_reply {
-                send_channel_success(io, channel)?;
-            }
+            true
         }
-        b"shell" => {
-            if want_reply {
-                send_channel_success(io, channel)?;
-            }
+        b"shell" if setup => {
+            command = Some(SessionCommand::Shell);
+            true
         }
-        b"exec" => {
-            let command =
+        b"exec" if setup => {
+            let exec =
                 SshBuf::get_string(msg, &mut pos).ok_or(SshError::Protocol("bad exec command"))?;
-            channel.exec_command = Some(String::from_utf8_lossy(command).into_owned());
-            if want_reply {
-                send_channel_success(io, channel)?;
+            command = Some(SessionCommand::Exec(String::from_utf8_lossy(exec).into_owned()));
+            true
+        }
+        b"subsystem" if setup => {
+            let name = SshBuf::get_string(msg, &mut pos)
+                .ok_or(SshError::Protocol("bad subsystem name"))?;
+            if name == b"sftp" && pos == msg.len() && channel.pty_term.is_none() {
+                command = Some(SessionCommand::Sftp);
+                true
+            } else {
+                false
             }
         }
-        b"env" | b"window-change" => {
-            if request_type == b"window-change" {
-                let cols = SshBuf::get_u32(msg, &mut pos).ok_or(SshError::Protocol("missing PTY columns"))?;
-                let rows = SshBuf::get_u32(msg, &mut pos).ok_or(SshError::Protocol("missing PTY rows"))?;
-                if cols != 0 { channel.pty_size.0 = cols; }
-                if rows != 0 { channel.pty_size.1 = rows; }
+        b"window-change" if setup || channel.pty_term.is_some() => {
+            let cols = SshBuf::get_u32(msg, &mut pos)
+                .ok_or(SshError::Protocol("missing PTY columns"))?;
+            let rows = SshBuf::get_u32(msg, &mut pos)
+                .ok_or(SshError::Protocol("missing PTY rows"))?;
+            if cols != 0 {
+                channel.pty_size.0 = cols;
             }
-            if want_reply {
-                send_channel_success(io, channel)?;
+            if rows != 0 {
+                channel.pty_size.1 = rows;
             }
+            true
         }
-        _ => {
-            if want_reply {
-                send_channel_failure(io, channel)?;
-            }
+        b"env" if setup => true,
+        _ => false,
+    };
+
+    if want_reply {
+        if accepted {
+            send_channel_success(io, channel)?;
+        } else {
+            send_channel_failure(io, channel)?;
         }
     }
-
-    Ok(req_name)
+    Ok(command)
 }
 
 /// Send channel data to the peer.
