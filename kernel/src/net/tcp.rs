@@ -37,6 +37,9 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::Mutex;
 
+#[path = "tcp/receive.rs"]
+mod receive;
+
 use super::icmp::TcpMtuQuote;
 use super::ipv4::{Ipv4Packet, PROTOCOL_TCP};
 use crate::socket::object::Socket;
@@ -67,6 +70,26 @@ impl Drop for DeferredTx {
 
 static DEFERRED_TX_QUEUE: Mutex<Vec<DeferredTx>> = Mutex::new(Vec::new());
 static TCP_WAKE_REJECTED: AtomicU64 = AtomicU64::new(0);
+static RX_CHECKSUM_REJECTED: AtomicU64 = AtomicU64::new(0);
+static RX_OUTSIDE_WINDOW: AtomicU64 = AtomicU64::new(0);
+static RX_GAP_SEGMENTS: AtomicU64 = AtomicU64::new(0);
+static RX_ACK_OUTPUT_FAILED: AtomicU64 = AtomicU64::new(0);
+
+pub struct ReceiveCounters {
+    pub checksum_rejected: u64,
+    pub outside_window: u64,
+    pub gap_segments: u64,
+    pub ack_output_failed: u64,
+}
+
+pub fn receive_counters() -> ReceiveCounters {
+    ReceiveCounters {
+        checksum_rejected: RX_CHECKSUM_REJECTED.load(Ordering::Relaxed),
+        outside_window: RX_OUTSIDE_WINDOW.load(Ordering::Relaxed),
+        gap_segments: RX_GAP_SEGMENTS.load(Ordering::Relaxed),
+        ack_output_failed: RX_ACK_OUTPUT_FAILED.load(Ordering::Relaxed),
+    }
+}
 
 /// Set when some connection holds output it could not send: data or a FIN that IP
 /// output refused, or data a newly opened peer window lets out. `drain_deferred_tx`
@@ -188,6 +211,11 @@ pub const TCP_HEADER_MIN_SIZE: usize = 20;
 const TCP_OPT_END: u8 = 0;
 const TCP_OPT_NOP: u8 = 1;
 const TCP_OPT_MSS: u8 = 2;
+const TCP_OPT_WINDOW_SCALE: u8 = 3;
+const TCP_OPT_SACK_PERMITTED: u8 = 4;
+const SYN_OPTION_CAPACITY: usize = 12;
+const MAX_WINDOW_SHIFT: u8 = 14;
+const ACK_DELAY_MS: u64 = 10;
 
 /// Maximum segment size over Ethernet: a 1500-byte MTU less the IPv4 and TCP headers.
 pub const ETHERNET_MSS: u16 = 1460;
@@ -198,9 +226,8 @@ pub const LOOPBACK_MSS: u16 = 16384;
 /// The peer's MSS when its SYN carries no MSS option (RFC 9293 3.7.1).
 const DEFAULT_PEER_MSS: u16 = 536;
 
-/// Receive buffer of a connection: the largest window a 16-bit window field can
-/// advertise without window scaling.
-pub const DEFAULT_RCVBUF: usize = 65535;
+/// Fallback receive budget for callers without a socket.
+pub const DEFAULT_RCVBUF: usize = 106_496;
 /// Send buffer of a connection: unacknowledged and unsent bytes together.
 pub const DEFAULT_SNDBUF: usize = 65536;
 
@@ -318,6 +345,10 @@ fn run_timers() -> Option<u64> {
             for conn in connections.values_mut() {
                 if conn.rtx_deadline_ms != 0 && now >= conn.rtx_deadline_ms {
                     conn.retransmit_timeout(now);
+                }
+                if conn.ack_deadline_ms.is_some_and(|deadline| now >= deadline) {
+                    conn.ack_deadline_ms = None;
+                    conn.try_send_ack();
                 }
                 if conn.keepalive_due(now) {
                     conn.keepalive_timeout();
@@ -545,6 +576,8 @@ pub struct TcpHeader {
     pub urgent_ptr: u16,
     /// The MSS option's value, when the segment carries one.
     pub mss_option: Option<u16>,
+    window_shift: Option<u8>,
+    sack_permitted: bool,
     /// Bytes of data after the header.
     pub payload_len: usize,
 }
@@ -573,7 +606,11 @@ impl TcpHeader {
         let window_size = u16::from_be_bytes([data[14], data[15]]);
         let checksum = u16::from_be_bytes([data[16], data[17]]);
         let urgent_ptr = u16::from_be_bytes([data[18], data[19]]);
-        let mss_option = parse_mss_option(&data[TCP_HEADER_MIN_SIZE..header_len]);
+        let options = if flags.syn {
+            SynOptions::parse(&data[TCP_HEADER_MIN_SIZE..header_len])
+        } else {
+            SynOptions::default()
+        };
 
         let payload = &data[header_len..];
 
@@ -588,7 +625,9 @@ impl TcpHeader {
                 window_size,
                 checksum,
                 urgent_ptr,
-                mss_option,
+                mss_option: options.mss,
+                window_shift: options.window_shift,
+                sack_permitted: options.sack_permitted,
                 payload_len: payload.len(),
             },
             payload,
@@ -596,25 +635,42 @@ impl TcpHeader {
     }
 }
 
-/// The MSS option among a header's options, if present and well formed.
-fn parse_mss_option(mut options: &[u8]) -> Option<u16> {
-    while let Some(&kind) = options.first() {
-        match kind {
-            TCP_OPT_END => return None,
-            TCP_OPT_NOP => options = &options[1..],
-            _ => {
-                let len = *options.get(1)? as usize;
-                if len < 2 || len > options.len() {
-                    return None;
+#[derive(Default)]
+struct SynOptions {
+    mss: Option<u16>,
+    window_shift: Option<u8>,
+    sack_permitted: bool,
+}
+
+impl SynOptions {
+    fn parse(mut bytes: &[u8]) -> Self {
+        let mut options = Self::default();
+        while let Some(&kind) = bytes.first() {
+            match kind {
+                TCP_OPT_END => break,
+                TCP_OPT_NOP => bytes = &bytes[1..],
+                _ => {
+                    let Some(&len) = bytes.get(1) else { break };
+                    let len = usize::from(len);
+                    if len < 2 || len > bytes.len() {
+                        break;
+                    }
+                    match (kind, len) {
+                        (TCP_OPT_MSS, 4) if options.mss.is_none() => {
+                            options.mss = Some(u16::from_be_bytes([bytes[2], bytes[3]]));
+                        }
+                        (TCP_OPT_WINDOW_SCALE, 3) if options.window_shift.is_none() => {
+                            options.window_shift = Some(bytes[2].min(MAX_WINDOW_SHIFT));
+                        }
+                        (TCP_OPT_SACK_PERMITTED, 2) => options.sack_permitted = true,
+                        _ => {}
+                    }
+                    bytes = &bytes[len..];
                 }
-                if kind == TCP_OPT_MSS && len == 4 {
-                    return Some(u16::from_be_bytes([options[2], options[3]]));
-                }
-                options = &options[len..];
             }
         }
+        options
     }
-    None
 }
 
 /// Build a TCP packet (header + payload)
@@ -768,10 +824,33 @@ fn transmit(seg: &Segment, options: &[u8], parts: [&[u8]; 2]) -> bool {
     }
 }
 
-/// The MSS option bytes advertising `mss`.
-fn mss_option(mss: u16) -> [u8; 4] {
+/// Encode MSS, optional window scale, and optional SACK-Permitted (RFC 2018 §2).
+fn syn_options(
+    mss: u16,
+    shift: Option<u8>,
+    sack_permitted: bool,
+    bytes: &mut [u8; SYN_OPTION_CAPACITY],
+) -> &[u8] {
     let [hi, lo] = mss.to_be_bytes();
-    [TCP_OPT_MSS, 4, hi, lo]
+    bytes[..4].copy_from_slice(&[TCP_OPT_MSS, 4, hi, lo]);
+    let mut len = 4;
+    if let Some(shift) = shift {
+        bytes[len..len + 3].copy_from_slice(&[TCP_OPT_WINDOW_SCALE, 3, shift]);
+        len += 3;
+    }
+    if sack_permitted {
+        bytes[len..len + 2].copy_from_slice(&[TCP_OPT_SACK_PERMITTED, 2]);
+        len += 2;
+    }
+    let padded_len = len.next_multiple_of(4);
+    bytes[len..padded_len].fill(TCP_OPT_END);
+    &bytes[..padded_len]
+}
+
+fn window_shift(capacity: usize) -> u8 {
+    (0..MAX_WINDOW_SHIFT)
+        .find(|shift| (capacity >> shift) <= u16::MAX as usize)
+        .unwrap_or(MAX_WINDOW_SHIFT)
 }
 
 /// The MSS this host offers for a connection with `remote_ip`.
@@ -834,10 +913,18 @@ pub struct TcpConnection {
     pub recv_next: u32,
     /// Initial receive sequence number
     pub recv_initial: u32,
-    /// The window this end last advertised.
-    pub recv_window: u16,
-    /// Remote's window size
-    pub send_window: u16,
+    /// Furthest right edge this end has advertised, including any bytes lost
+    /// to scaling's rounding. It only moves forward.
+    recv_right: u32,
+    /// Local shift offered on SYN and peer shift if both sides offered one.
+    recv_shift: Option<u8>,
+    peer_shift: Option<u8>,
+    /// Remote's window size in bytes.
+    send_window: u32,
+    /// The peer permits us to report selectively received data.
+    sack_permitted: bool,
+    pending_rx: receive::Pending,
+    ack_deadline_ms: Option<u64>,
     /// Pending data to receive.
     ///
     /// #693: private, and written only by `publish_rx`. The instant bytes enter
@@ -906,7 +993,7 @@ pub struct TcpConnection {
     send_max: u32,
     /// The largest window the peer has offered, which bounds how old an
     /// acceptable ACK may be (RFC 5961 5.2).
-    max_send_window: u16,
+    max_send_window: u32,
     /// IP output refused a segment of queued output: the retransmission timer
     /// tries it again if nothing else does.
     tx_blocked: bool,
@@ -962,7 +1049,7 @@ impl TcpConnection {
     /// Returns how many bytes went in: at most the free receive space, and fewer
     /// when memory for them cannot be had.
     pub fn publish_rx(&mut self, bytes: &[u8]) -> usize {
-        let take = bytes.len().min(self.rcv_space());
+        let take = bytes.len().min(self.rcv_space().max(self.advertised_space()));
         if take == 0 || self.rx_buffer.try_reserve(take).is_err() {
             return 0;
         }
@@ -1027,8 +1114,13 @@ impl TcpConnection {
             send_unack: initial_seq,
             recv_next: 0,
             recv_initial: 0,
-            recv_window: DEFAULT_RCVBUF.min(u16::MAX as usize) as u16,
+            recv_right: DEFAULT_RCVBUF.min(u16::MAX as usize) as u32,
+            recv_shift: None,
+            peer_shift: None,
             send_window: 0,
+            sack_permitted: false,
+            pending_rx: receive::Pending::default(),
+            ack_deadline_ms: None,
             rx_buffer: VecDeque::new(),
             rx_publish_ns: 0,
             tx_buffer: VecDeque::new(),
@@ -1078,15 +1170,50 @@ impl TcpConnection {
         self.rcv_cap.saturating_sub(self.rx_buffer.len())
     }
 
-    /// The window to advertise now: the free receive space, as far as 16 bits carry it.
-    fn rcv_window(&self) -> u16 {
-        self.rcv_space().min(u16::MAX as usize) as u16
+    fn advertised_space(&self) -> usize {
+        if seq_lt(self.recv_next, self.recv_right) {
+            self.recv_right.wrapping_sub(self.recv_next) as usize
+        } else {
+            0
+        }
     }
 
-    /// A segment of this connection carrying `flags` at `seq`, acknowledging
-    /// `recv_next` and advertising the current window.
-    fn segment(&mut self, seq: u32, flags: TcpFlags) -> Segment {
-        self.recv_window = self.rcv_window();
+    fn recv_shift(&self, syn: bool) -> u8 {
+        if syn || self.peer_shift.is_none() {
+            0
+        } else {
+            self.recv_shift.unwrap_or(0)
+        }
+    }
+
+    /// RFC 1122 receiver-side silly-window avoidance. Keep the previous right
+    /// edge until the reader earns at least an MSS (or half a small buffer).
+    /// The first SYN is a separate, unscaled offer.
+    fn rcv_window(&self, syn: bool) -> u16 {
+        let available = self.rcv_space();
+        let offered = self.advertised_space();
+        let threshold = (self.mss as usize).min(self.rcv_cap / 2).max(1);
+        let space = if syn || available >= offered + threshold {
+            available
+        } else {
+            offered
+        };
+        (space >> self.recv_shift(syn)).min(u16::MAX as usize) as u16
+    }
+
+    /// Preserve previously offered bytes even when rounding loses low bits or
+    /// a socket requests a smaller receive buffer while bytes are in flight.
+    fn record_window(&mut self, seg: &Segment) {
+        let right = seg.ack.wrapping_add((seg.window as u32) << self.recv_shift(seg.flags.syn));
+        if seq_lt(self.recv_right, right) {
+            self.recv_right = right;
+        }
+        if seg.flags.ack {
+            self.ack_deadline_ms = None;
+        }
+    }
+
+    fn segment(&self, seq: u32, flags: TcpFlags) -> Segment {
         Segment {
             src_ip: self.id.local_ip,
             dst_ip: self.id.remote_ip,
@@ -1095,22 +1222,54 @@ impl TcpConnection {
             seq,
             ack: self.recv_next,
             flags,
-            window: self.recv_window,
+            window: self.rcv_window(flags.syn),
             urgent: 0,
             ttl: self.ttl,
         }
     }
 
-    /// Acknowledge everything received so far.
-    fn send_ack(&mut self) {
+    fn try_send_ack(&mut self) -> bool {
         let seg = self.segment(self.send_next, TcpFlags::ack());
-        transmit(&seg, &[], [&[], &[]]);
+        let mut stack = [0; 36];
+        let options = if self.sack_permitted {
+            self.pending_rx.sack_option(&mut stack)
+        } else {
+            &[]
+        };
+        if !transmit(&seg, options, [&[], &[]]) {
+            RX_ACK_OUTPUT_FAILED.fetch_add(1, Ordering::Relaxed);
+            return false;
+        }
+        self.record_window(&seg);
+        true
     }
 
-    /// Send the SYN+ACK again: a duplicate SYN came, or its timer ran out.
+    fn schedule_ack(&mut self) {
+        let deadline = now_ms().saturating_add(ACK_DELAY_MS);
+        self.ack_deadline_ms = Some(deadline);
+        note_timer_deadline(deadline);
+    }
+
+    /// Acknowledge immediately; if output is transiently full, try once more
+    /// from the timer with the latest cumulative ACK and window.
+    fn send_ack(&mut self) {
+        if !self.try_send_ack() {
+            self.schedule_ack();
+        }
+    }
+
     fn send_syn_ack(&mut self) {
         let seg = self.segment(self.send_initial, TcpFlags::syn_ack());
-        transmit(&seg, &mss_option(local_mss(self.id.remote_ip)), [&[], &[]]);
+        let mut stack = [0; SYN_OPTION_CAPACITY];
+        let options = syn_options(
+            local_mss(self.id.remote_ip),
+            self.recv_shift,
+            self.sack_permitted,
+            &mut stack,
+        );
+        if transmit(&seg, options, [&[], &[]]) {
+            self.record_window(&seg);
+        }
     }
 
     /// Reset the connection from this end (RFC 9293 3.5.2): RST at `send_next`.
@@ -1158,13 +1317,15 @@ impl TcpConnection {
     /// the receive window (RFC 9293 3.10.7.4, the four cases of the
     /// acceptability test), judged against the window last advertised.
     fn segment_acceptable(&self, seq: u32, len: u32) -> bool {
-        let window = self.recv_window as u32;
-        let in_window = |s: u32| s.wrapping_sub(self.recv_next) < window;
+        let window = self.advertised_space() as u32;
         match (len, window) {
             (0, 0) => seq == self.recv_next,
-            (0, _) => in_window(seq),
+            (0, _) => seq.wrapping_sub(self.recv_next) < window,
             (_, 0) => false,
-            _ => in_window(seq) || in_window(seq.wrapping_add(len - 1)),
+            _ => {
+                seq.wrapping_sub(self.recv_next) < window
+                    || (seq_lt(seq, self.recv_next) && self.recv_next.wrapping_sub(seq) < len)
+            }
         }
     }
 
@@ -1221,7 +1382,11 @@ impl TcpConnection {
         } else {
             [&front[offset..], &back[..end - front.len()]]
         };
-        transmit(&seg, &[], parts)
+        let sent = transmit(&seg, &[], parts);
+        if sent {
+            self.record_window(&seg);
+        }
+        sent
     }
 
     /// Note that sequence space up to `send_next` has been sent: time it if it is
@@ -1276,6 +1441,7 @@ impl TcpConnection {
             if !transmit(&seg, &[], [&[], &[]]) {
                 return false;
             }
+            self.record_window(&seg);
             self.fin_seq = Some(self.send_next);
             self.send_next = self.send_next.wrapping_add(1);
             self.sent_through_next();
@@ -1317,6 +1483,8 @@ impl TcpConnection {
     /// Enter CLOSED, dropping whatever was waiting to be sent.
     fn close_now(&mut self) {
         self.state = TcpState::Closed;
+        self.pending_rx.clear();
+        self.ack_deadline_ms = None;
         self.tx_buffer.clear();
         self.tx_sent = 0;
         self.send_shutdown = true;
@@ -1337,7 +1505,7 @@ impl TcpConnection {
     fn establish(&mut self, header: &TcpHeader) {
         self.state = TcpState::Established;
         self.send_unack = header.ack_num;
-        self.take_peer_window(header.window_size);
+        self.take_peer_window(header);
         self.retries = 0;
         self.restart_retransmit();
         if self.parent.is_some() {
@@ -1346,9 +1514,29 @@ impl TcpConnection {
         wake_connection_waiters(self);
     }
 
-    fn take_peer_window(&mut self, window: u16) {
+    fn take_peer_window(&mut self, header: &TcpHeader) {
+        let shift = if header.flags.syn { 0 } else { self.peer_shift.unwrap_or(0) };
+        let window = u32::from(header.window_size) << shift;
         self.send_window = window;
         self.max_send_window = self.max_send_window.max(window);
+    }
+
+    fn take_peer_syn(&mut self, header: &TcpHeader) {
+        let syn_window = if self.state == TcpState::SynSent {
+            self.recv_right
+        } else {
+            u32::from(self.rcv_window(true))
+        };
+        self.recv_initial = header.seq_num;
+        self.recv_next = header.seq_num.wrapping_add(1);
+        self.recv_right = self.recv_next.wrapping_add(syn_window);
+        self.peer_shift = header.window_shift;
+        if self.peer_shift.is_none() {
+            self.recv_shift = None;
+        }
+        self.sack_permitted = header.sack_permitted;
+        self.take_peer_window(header);
+        self.mss = effective_mss(self.id.remote_ip, header.mss_option);
     }
 
     /// Fold a round-trip sample into the timeout (RFC 6298 2.2-2.4).
@@ -1434,7 +1622,9 @@ impl TcpConnection {
             self.rtx_deadline_ms = now + backoff.min(RTO_MAX_MS);
             note_timer_deadline(self.rtx_deadline_ms);
             let seg = self.segment(self.send_unack.wrapping_sub(1), TcpFlags::ack());
-            transmit(&seg, &[], [&[], &[]]);
+            if transmit(&seg, &[], [&[], &[]]) {
+                self.record_window(&seg);
+            }
             return;
         }
         self.rto_ms = (self.rto_ms * 2).min(RTO_MAX_MS);
@@ -1443,7 +1633,12 @@ impl TcpConnection {
         match self.state {
             TcpState::SynSent => {
                 let seg = self.segment(self.send_initial, TcpFlags::syn());
-                transmit(&seg, &mss_option(local_mss(self.id.remote_ip)), [&[], &[]]);
+                let mut stack = [0; SYN_OPTION_CAPACITY];
+                let options =
+                    syn_options(local_mss(self.id.remote_ip), self.recv_shift, true, &mut stack);
+                if transmit(&seg, options, [&[], &[]]) {
+                    self.record_window(&seg);
+                }
             }
             TcpState::SynReceived => self.send_syn_ack(),
             _ if self.send_unack != self.send_max => {
@@ -1466,7 +1661,7 @@ impl TcpConnection {
             return;
         }
         let window_was = self.send_window;
-        self.take_peer_window(header.window_size);
+        self.take_peer_window(header);
         if self.send_window == 0 {
             // The peer answers while its window stays shut: it is alive, so the
             // probes it answers do not count toward giving up.
@@ -1557,6 +1752,50 @@ impl TcpConnection {
         self.publish_rx(payload)
     }
 
+    /// Append in-order bytes and any newly contiguous queued spans. When a
+    /// retransmission overlaps queued data, keep the first copy we received.
+    fn receive_payload(&mut self, seq: u32, payload: &[u8]) -> u32 {
+        let start = self.recv_next;
+        if seq != start {
+            RX_GAP_SEGMENTS.fetch_add(1, Ordering::Relaxed);
+            self.pending_rx.insert(seq, payload);
+            return 0;
+        }
+        let end = start.wrapping_add(payload.len() as u32);
+        loop {
+            let cursor = self.recv_next;
+            let until_fin = self.pending_rx.fin
+                .map_or(usize::MAX, |fin| fin.wrapping_sub(cursor) as usize);
+            if until_fin == 0 {
+                break;
+            }
+            let next = self.pending_rx.next_seq();
+            if next == Some(cursor) {
+                let span = self.pending_rx.take_front();
+                let len = span.bytes.len().min(until_fin);
+                let taken = self.take_payload(cursor, &span.bytes[..len]);
+                self.recv_next = cursor.wrapping_add(taken as u32);
+                if taken < len {
+                    self.pending_rx.restore_front(span, taken);
+                    break;
+                }
+                continue;
+            }
+            if !seq_lt(cursor, end) {
+                break;
+            }
+            let until_span = next.map_or(usize::MAX, |at| at.wrapping_sub(cursor) as usize);
+            let len = (end.wrapping_sub(cursor) as usize).min(until_span).min(until_fin);
+            let offset = cursor.wrapping_sub(start) as usize;
+            let taken = self.take_payload(cursor, &payload[offset..offset + len]);
+            self.recv_next = cursor.wrapping_add(taken as u32);
+            if taken < len {
+                break;
+            }
+        }
+        self.recv_next.wrapping_sub(start)
+    }
+
     /// When the next keepalive probe is due, while SO_KEEPALIVE is on and the
     /// connection sits idle with nothing outstanding.
     fn keepalive_deadline(&self) -> Option<u64> {
@@ -1589,24 +1828,27 @@ impl TcpConnection {
         }
         self.keepalive_probes += 1;
         let seg = self.segment(self.send_unack.wrapping_sub(1), TcpFlags::ack());
-        transmit(&seg, &[], [&[], &[]]);
+        if transmit(&seg, &[], [&[], &[]]) {
+            self.record_window(&seg);
+        }
     }
 
     /// The next instant a timer of this connection is due, if any runs.
     fn next_deadline(&self) -> Option<u64> {
-        match self.state {
+        let other = match self.state {
             TcpState::TimeWait if self.orphaned => Some(self.timer_since_ms + TIME_WAIT_MS),
             TcpState::FinWait2 if self.orphaned => {
                 Some(self.timer_since_ms + ORPHAN_FIN_WAIT2_MS)
             }
             _ => {
                 let rtx = (self.rtx_deadline_ms != 0).then_some(self.rtx_deadline_ms);
-                match (rtx, self.keepalive_deadline()) {
-                    (Some(a), Some(b)) => Some(a.min(b)),
-                    (a, b) => a.or(b),
-                }
+                [rtx, self.keepalive_deadline()]
+                    .into_iter()
+                    .flatten()
+                    .min()
             }
-        }
+        };
+        other.into_iter().chain(self.ack_deadline_ms).min()
     }
 
     /// True when the connection has served its purpose and can leave the table:
@@ -1645,6 +1887,7 @@ pub struct ListenSocket {
     reuse: bool,
     /// The listening socket's IP_TTL, which its SYN+ACKs and children take.
     ttl: u8,
+    rcv_cap: usize,
     /// The listening socket, told when a connection is ready for accept.
     owner: Option<Weak<Socket>>,
 }
@@ -1931,6 +2174,7 @@ pub fn tcp_set_options(conn_id: &ConnectionId, options: impl FnOnce() -> ConnOpt
         // snapshot after a newer setter has updated this connection.
         let options = options();
         conn.set_buffer_sizes(options.rcvbuf / 2, options.sndbuf / 2);
+        update_window(conn);
         conn.reuse = options.reuse;
         conn.ttl = options.ttl;
         if options.keepalive && !conn.keepalive {
@@ -1945,9 +2189,11 @@ pub fn tcp_set_options(conn_id: &ConnectionId, options: impl FnOnce() -> ConnOpt
     });
 }
 
-/// The TTL inherited when the handshake created this connection.
-pub fn tcp_ttl(conn_id: &ConnectionId) -> Option<u8> {
-    with_tcp_connections(|connections| connections.get(conn_id).map(|conn| conn.ttl))
+/// Options inherited when the listener's handshake created this connection.
+pub fn tcp_inherited_options(conn_id: &ConnectionId) -> Option<(u8, usize)> {
+    with_tcp_connections(|connections| {
+        connections.get(conn_id).map(|conn| (conn.ttl, conn.rcv_cap * 2))
+    })
 }
 
 /// poll's view of a connection, as Linux's `tcp_poll` reports it: POLLHUP once
@@ -2150,6 +2396,7 @@ pub fn handle_tcp(ip: &Ipv4Packet, data: &[u8]) {
     // A segment whose checksum does not hold over the pseudo-header is dropped
     // unread (RFC 9293 3.1).
     if tcp_checksum(ip.src_ip, ip.dst_ip, data) != 0 {
+        RX_CHECKSUM_REJECTED.fetch_add(1, Ordering::Relaxed);
         return;
     }
     let Some((header, payload)) = TcpHeader::parse(data) else {
@@ -2220,10 +2467,7 @@ fn handle_syn_sent(conn: &mut TcpConnection, header: &TcpHeader) {
     if !header.flags.syn {
         return;
     }
-    conn.recv_initial = header.seq_num;
-    conn.recv_next = header.seq_num.wrapping_add(1);
-    conn.take_peer_window(header.window_size);
-    conn.mss = effective_mss(conn.id.remote_ip, header.mss_option);
+    conn.take_peer_syn(header);
     conn.last_recv_ms = now_ms();
     if !header.flags.ack {
         // Simultaneous open: the peer's SYN crossed ours. Acknowledge it with
@@ -2270,6 +2514,9 @@ fn handle_tcp_for_connection(conn: &mut TcpConnection, header: &TcpHeader, paylo
 
     let seg_len = payload.len() as u32 + header.flags.syn as u32 + header.flags.fin as u32;
     if !conn.segment_acceptable(header.seq_num, seg_len) {
+        if !payload.is_empty() {
+            RX_OUTSIDE_WINDOW.fetch_add(1, Ordering::Relaxed);
+        }
         // Outside the window: acknowledge it, unless it is a reset, and
         // otherwise ignore it. A retransmitted FIN in TIME_WAIT means the
         // peer did not see our ACK of it: the wait starts again.
@@ -2316,7 +2563,7 @@ fn handle_tcp_for_connection(conn: &mut TcpConnection, header: &TcpHeader, paylo
         // The ACK that completes the handshake may carry data or a FIN.
     } else {
         let ack = header.ack_num;
-        let oldest = conn.send_unack.wrapping_sub(conn.max_send_window as u32);
+        let oldest = conn.send_unack.wrapping_sub(conn.max_send_window);
         if seq_lt(conn.send_max, ack) || seq_lt(ack, oldest) {
             // It acknowledges something never sent, or is older than any window
             // the peer offered: answer with an ACK and drop it (RFC 9293
@@ -2344,63 +2591,71 @@ fn handle_tcp_for_connection(conn: &mut TcpConnection, header: &TcpHeader, paylo
         }
     }
 
-    // Drop the front of a segment that repeats bytes already received: after a
-    // retransmission, segment boundaries need not match the first sending.
-    let mut seq = header.seq_num;
-    let mut payload = payload;
-    let behind = conn.recv_next.wrapping_sub(seq) as usize;
-    if !payload.is_empty() && seq_lt(seq, conn.recv_next) && behind < payload.len() {
-        payload = &payload[behind..];
-        seq = conn.recv_next;
+    if payload.is_empty() && !header.flags.fin {
+        return;
+    }
+    if !conn.may_receive_data() {
+        conn.send_ack();
+        return;
     }
 
-    let mut need_ack = false;
-    let mut in_sequence = payload.is_empty();
-    if !payload.is_empty() {
-        need_ack = true;
-        if conn.may_receive_data() && seq == conn.recv_next {
-            if conn.recv_shutdown
-                && matches!(conn.state, TcpState::FinWait1 | TcpState::FinWait2)
-            {
-                // Data for an end that will never read it: reset, as Linux
-                // does for a socket that has shut down both directions.
-                conn.send_reset();
-                conn.close_now();
-                return;
-            }
-            let taken = conn.take_payload(seq, payload);
-            conn.recv_next = conn.recv_next.wrapping_add(taken as u32);
-            in_sequence = taken == payload.len();
-            if taken > 0 {
-                wake_connection_readers(conn);
-            }
+    let start = conn.recv_next;
+    let window = conn.advertised_space();
+    let had_gap = !conn.pending_rx.is_empty();
+    let fin = header.seq_num.wrapping_add(payload.len() as u32);
+    // A FIN beyond the advertised window must be retransmitted with its byte
+    // position in-window. An in-window FIN waits for any preceding hole.
+    if header.flags.fin && (fin.wrapping_sub(start) as usize) < window {
+        conn.pending_rx.fin.get_or_insert(fin);
+    }
+    let trim = if seq_lt(header.seq_num, start) {
+        (start.wrapping_sub(header.seq_num) as usize).min(payload.len())
+    } else {
+        0
+    };
+    let seq = header.seq_num.wrapping_add(trim as u32);
+    let offset = seq.wrapping_sub(start) as usize;
+    let right = conn.pending_rx.fin.map_or(window, |at| at.wrapping_sub(start) as usize);
+    let len = (payload.len() - trim).min(right.saturating_sub(offset));
+    if len != 0 && conn.recv_shutdown && matches!(conn.state, TcpState::FinWait1 | TcpState::FinWait2) {
+        // Data for an end that will never read it.
+        conn.send_reset();
+        conn.close_now();
+        return;
+    }
+    let advanced = if len != 0 {
+        conn.receive_payload(seq, &payload[trim..trim + len])
+    } else {
+        0
+    };
+    let reached_fin = conn.pending_rx.fin == Some(conn.recv_next);
+    if reached_fin {
+        conn.pending_rx.clear();
+        conn.recv_next = conn.recv_next.wrapping_add(1);
+        conn.peer_fin = true;
+        match conn.state {
+            TcpState::Established => conn.state = TcpState::CloseWait,
+            TcpState::FinWait1 if conn.fin_acked => conn.enter_time_wait(),
+            TcpState::FinWait1 => conn.state = TcpState::Closing,
+            TcpState::FinWait2 => conn.enter_time_wait(),
+            _ => {}
         }
     }
-
-    if header.flags.fin {
-        need_ack = true;
-        let fin_seq = seq.wrapping_add(payload.len() as u32);
-        if in_sequence && fin_seq == conn.recv_next && !conn.peer_fin {
-            conn.recv_next = conn.recv_next.wrapping_add(1); // FIN consumes sequence
-            conn.peer_fin = true;
-            match conn.state {
-                TcpState::Established => conn.state = TcpState::CloseWait,
-                TcpState::FinWait1 => {
-                    if conn.fin_acked {
-                        conn.enter_time_wait();
-                    } else {
-                        conn.state = TcpState::Closing;
-                    }
-                }
-                TcpState::FinWait2 => conn.enter_time_wait(),
-                _ => {}
-            }
-            // Wake threads blocked in recv() so they see EOF
-            wake_connection_readers(conn);
-        }
+    if advanced != 0 || reached_fin {
+        wake_connection_readers(conn);
     }
 
-    if need_ack {
+    // RFC 5681 §4.2: never delay feedback for gaps, repairs, or FIN. For
+    // uncomplicated in-order data, acknowledge every second segment.
+    let in_order = !had_gap && seq == start && advanced as usize == payload.len();
+    if in_order
+        && !header.flags.fin
+        && !header.flags.urg
+        && conn.rcv_window(false) != 0
+        && conn.ack_deadline_ms.is_none()
+    {
+        conn.schedule_ack();
+    } else {
         conn.send_ack();
     }
 }
@@ -2468,17 +2723,17 @@ fn handle_syn_for_listener(
     };
     let isn = generate_isn();
     let mut child = TcpConnection::new(conn_id, TcpState::SynReceived, isn, listener.owner_pid);
-    child.recv_initial = header.seq_num;
-    child.recv_next = header.seq_num.wrapping_add(1);
-    child.take_peer_window(header.window_size);
-    child.mss = effective_mss(src_ip, header.mss_option);
+    child.rcv_cap = listener.rcv_cap;
+    child.recv_shift = header.window_shift.map(|_| window_shift(child.rcv_cap));
+    child.take_peer_syn(header);
     child.parent = Some(id);
     child.parent_owner = listener.owner.clone();
     child.reuse = listener.reuse;
     child.ttl = listener.ttl;
     let seg = child.segment(isn, TcpFlags::syn_ack());
-    let Some(syn_ack) = try_build_segment(&seg, &mss_option(local_mss(src_ip)), [&[], &[]])
-    else {
+    let mut stack = [0; SYN_OPTION_CAPACITY];
+    let options = syn_options(local_mss(src_ip), child.recv_shift, child.sack_permitted, &mut stack);
+    let Some(syn_ack) = try_build_segment(&seg, options, [&[], &[]]) else {
         return;
     };
     if tables.conns.reserve_one().is_err() {
@@ -2562,6 +2817,7 @@ pub fn tcp_connect(
     remote_port: u16,
     owner_pid: crate::process::process::ProcessId,
     ttl: u8,
+    rcvbuf: usize,
 ) -> Result<ConnectionId, i32> {
     ensure_timer_thread()?;
     let config = super::config();
@@ -2585,7 +2841,11 @@ pub fn tcp_connect(
     let mut conn = TcpConnection::new(conn_id, TcpState::SynSent, isn, owner_pid);
     conn.mss = local_mss(remote_ip);
     conn.ttl = ttl;
+    conn.rcv_cap = (rcvbuf / 2).max(1);
+    let shift = window_shift(conn.rcv_cap);
+    conn.recv_shift = Some(shift);
     let syn = conn.segment(isn, TcpFlags::syn());
+    conn.recv_right = u32::from(syn.window);
     // The SYN is outstanding until the SYN+ACK comes; the timer resends it.
     conn.arm_retransmit();
 
@@ -2606,7 +2866,9 @@ pub fn tcp_connect(
     })?;
 
     // Send SYN. One lost here is sent again by the retransmission timer.
-    transmit(&syn, &mss_option(local_mss(remote_ip)), [&[], &[]]);
+    let mut stack = [0; SYN_OPTION_CAPACITY];
+    let options = syn_options(local_mss(remote_ip), Some(shift), true, &mut stack);
+    transmit(&syn, options, [&[], &[]]);
 
     Ok(conn_id)
 }
@@ -2622,6 +2884,7 @@ pub fn tcp_listen(
     owner_pid: crate::process::process::ProcessId,
     reuse: bool,
     ttl: u8,
+    rcvbuf: usize,
     owner: Option<Weak<Socket>>,
 ) -> Result<ListenerId, i32> {
     // Children retransmit their SYN+ACKs; the timer thread must be there for them.
@@ -2645,6 +2908,7 @@ pub fn tcp_listen(
             owner_pid,
             reuse,
             ttl,
+            rcv_cap: (rcvbuf / 2).max(1),
             owner,
         });
         Ok(id)
@@ -2657,12 +2921,13 @@ fn listen_backlog(backlog: usize) -> usize {
     backlog.clamp(1, MAX_BACKLOG)
 }
 
-/// IP_TTL set on a listening socket: the SYN+ACKs and children of later
-/// connection requests take it.
-pub fn tcp_set_listener_ttl(id: ListenerId, ttl: impl FnOnce() -> u8) {
+/// Options set on a listener apply to later SYN+ACKs and their children.
+pub fn tcp_set_listener_options(id: ListenerId, options: impl FnOnce() -> (u8, usize)) {
     with_tcp(|tables| {
         if let Some(listener) = tables.listener(id) {
-            listener.ttl = ttl();
+            let (ttl, rcvbuf) = options();
+            listener.ttl = ttl;
+            listener.rcv_cap = (rcvbuf / 2).max(1);
         }
     });
 }
@@ -2906,8 +3171,12 @@ fn update_window(conn: &mut TcpConnection) {
     if !conn.may_receive_data() {
         return;
     }
-    let threshold = (conn.mss as usize).min(conn.rcv_cap / 2).max(1);
-    if conn.rcv_window() as usize >= conn.recv_window as usize + threshold {
+    let shift = conn.recv_shift(false);
+    let offered = conn.advertised_space();
+    let window = (conn.rcv_window(false) as usize) << shift;
+    // A pending ACK already carries the update. Reopen a closed window
+    // immediately because the peer cannot send a second segment.
+    if window > offered && (conn.ack_deadline_ms.is_none() || offered >> shift == 0) {
         conn.send_ack();
     }
 }
@@ -3007,7 +3276,7 @@ pub fn tcp_close_connection(
         conn.owner = None;
         conn.recv_shutdown = true;
         conn.reuse = reuse;
-        let reset = abort || !conn.rx_buffer.is_empty();
+        let reset = abort || !conn.rx_buffer.is_empty() || conn.pending_rx.next_seq().is_some();
         match conn.state {
             TcpState::Established
             | TcpState::CloseWait
