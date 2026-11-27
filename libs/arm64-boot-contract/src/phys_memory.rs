@@ -258,6 +258,64 @@ pub fn frame_pool_from_fdt(
 
 pub use fdt::FdtError;
 
+/// Smallest kernel heap: the fixed budgets the kernel carves out of its heap
+/// (BreenFS's dirty and cache budgets are one eighth of this) assume it.
+pub const KERNEL_HEAP_MIN: u64 = 64 << 20;
+/// Largest kernel heap. The heap is one fixed reservation taken out of the
+/// frame pool for the whole boot, and its largest measured user (legacy
+/// VirGL at 1280x960, about 52 MiB, #1914) plus the console fit in this.
+/// Above it, more heap would only be frames the pool loses.
+pub const KERNEL_HEAP_MAX: u64 = 128 << 20;
+/// Alignment of the heap and kernel-stack pool: one L2 block.
+pub const KERNEL_POOL_ALIGN: u64 = 2 << 20;
+
+/// The heap size for a frame pool describing `pool_bytes` of RAM: one eighth
+/// of it, rounded down to `KERNEL_POOL_ALIGN`, within
+/// [`KERNEL_HEAP_MIN`, `KERNEL_HEAP_MAX`].
+pub const fn kernel_heap_size(pool_bytes: u64) -> u64 {
+    let eighth = (pool_bytes / 8) & !(KERNEL_POOL_ALIGN - 1);
+    if eighth < KERNEL_HEAP_MIN {
+        KERNEL_HEAP_MIN
+    } else if eighth > KERNEL_HEAP_MAX {
+        KERNEL_HEAP_MAX
+    } else {
+        eighth
+    }
+}
+
+/// Where the kernel heap and kernel-stack pool live, in physical memory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KernelPools {
+    pub heap: PhysRange,
+    pub stacks: PhysRange,
+}
+
+/// The lowest `KERNEL_POOL_ALIGN`-aligned run of `size` bytes inside one
+/// range of `pool`.
+fn first_fit(pool: &RangeSet, size: u64) -> Option<PhysRange> {
+    pool.as_slice().iter().find_map(|range| {
+        let start = range.start.checked_add(KERNEL_POOL_ALIGN - 1)? & !(KERNEL_POOL_ALIGN - 1);
+        let end = start.checked_add(size)?;
+        (end <= range.end).then_some(PhysRange::new(start, end))
+    })
+}
+
+/// Carve the kernel heap (sized by [`kernel_heap_size`] from what `pool`
+/// describes) and a `stack_bytes` kernel-stack pool out of `pool`, each the
+/// lowest aligned run that fits, and take both out of it. `pool` is what the
+/// frame allocator may hand out, so what this returns is RAM the firmware
+/// described that no other kernel range covers. When either does not fit it
+/// places neither and leaves `pool` as it was.
+pub fn place_kernel_pools(pool: &mut RangeSet, stack_bytes: u64) -> Option<KernelPools> {
+    let mut rest = *pool;
+    let heap = first_fit(&rest, kernel_heap_size(pool.total_bytes()))?;
+    rest.subtract(heap);
+    let stacks = first_fit(&rest, stack_bytes)?;
+    rest.subtract(stacks);
+    *pool = rest;
+    Some(KernelPools { heap, stacks })
+}
+
 /// A reader for the parts of a flattened device tree (Devicetree
 /// Specification v0.4, chapter 5) that describe physical memory and PCI hosts.
 pub mod fdt {
@@ -1077,7 +1135,7 @@ mod tests {
     /// does not describe.
     #[test]
     fn kernel_pools_refuse_a_map_without_room() {
-        let mut pool = set(&[r(0x4400_0000, 0x4800_0000), r(0x4a00_0000, 0x4c00_0000)]);
+        let mut pool = set(&[r(0x4400_0000, 0x4800_0000), r(0x4a00_0000, 0x4b00_0000)]);
         let before = pool;
         assert_eq!(place_kernel_pools(&mut pool, STACKS), None);
         assert_eq!(pool.as_slice(), before.as_slice(), "a refused placement takes nothing");

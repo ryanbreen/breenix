@@ -2621,13 +2621,13 @@ const _: () = assert!(
 #[inline(always)]
 fn reusable_kstack_slot_for_address(address: u64) -> Option<usize> {
     use crate::memory::kernel_stack::{
-        ARM64_KERNEL_STACK_BASE, ARM64_KERNEL_STACK_END, ARM64_STACK_SLOT_SIZE,
+        arm64_kernel_stack_base, arm64_kernel_stack_end, ARM64_STACK_SLOT_SIZE,
     };
 
-    if address < ARM64_KERNEL_STACK_BASE || address >= ARM64_KERNEL_STACK_END {
+    if address < arm64_kernel_stack_base() || address >= arm64_kernel_stack_end() {
         return None;
     }
-    Some(((address - ARM64_KERNEL_STACK_BASE) / ARM64_STACK_SLOT_SIZE) as usize)
+    Some(((address - arm64_kernel_stack_base()) / ARM64_STACK_SLOT_SIZE) as usize)
 }
 
 #[inline(always)]

@@ -42,7 +42,7 @@ class LayoutTest(unittest.TestCase):
                 check.layout(root)
             contract.write_text(original)
             platform = root / paths[4]
-            platform.write_text(platform.read_text().replace('0x5A20_0000', '0x5010_0000'))
+            platform.write_text(platform.read_text().replace('0x5000_0000, 0x5020_0000', '0x5000_0000, 0x5010_0000'))
             with self.assertRaisesRegex(ValueError, 'DMA block.*leaves'):
                 check.layout(root)
 

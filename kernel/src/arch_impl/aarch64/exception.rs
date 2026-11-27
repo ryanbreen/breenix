@@ -766,7 +766,7 @@ fn dump_fatal_postmortem_once(label: &str) {
 fn dump_stack_classification(frame_addr: u64) {
     let stack_base = super::constants::percpu_stack_region_base();
     let stack_end = stack_base + super::constants::PERCPU_STACK_REGION_SIZE as u64;
-    use crate::memory::kernel_stack::{ARM64_KERNEL_STACK_BASE, ARM64_KERNEL_STACK_END};
+    use crate::memory::kernel_stack::{arm64_kernel_stack_base, arm64_kernel_stack_end};
 
     if frame_addr >= stack_base && frame_addr < stack_end {
         let mut line = crate::serial_line::Line::new();
@@ -780,7 +780,7 @@ fn dump_stack_classification(frame_addr: u64) {
         }
         line.dec(cpu_id);
         line.text("\n");
-    } else if frame_addr >= ARM64_KERNEL_STACK_BASE && frame_addr < ARM64_KERNEL_STACK_END {
+    } else if frame_addr >= arm64_kernel_stack_base() && frame_addr < arm64_kernel_stack_end() {
         let mut line = crate::serial_line::Line::new();
         line.text("  STACK=alloc_kstack");
         if let Some((slot, tid)) =
@@ -1604,7 +1604,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     let boot_stack_end =
                         boot_stack_base + super::constants::PERCPU_STACK_REGION_SIZE as u64;
                     use crate::memory::kernel_stack::{
-                        ARM64_KERNEL_STACK_BASE, ARM64_KERNEL_STACK_END,
+                        arm64_kernel_stack_base, arm64_kernel_stack_end,
                     };
                     line.text("\n");
                     dump_stack_classification(frame_addr);
@@ -1618,8 +1618,8 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     // OUTER FRAME: Read the frame 272 bytes above (if on a valid stack)
                     let outer_frame_addr = frame_addr + 272;
                     if outer_frame_addr + 272 <= boot_stack_end
-                        || (outer_frame_addr >= ARM64_KERNEL_STACK_BASE
-                            && outer_frame_addr + 272 <= ARM64_KERNEL_STACK_END)
+                        || (outer_frame_addr >= arm64_kernel_stack_base()
+                            && outer_frame_addr + 272 <= arm64_kernel_stack_end())
                     {
                         let outer = outer_frame_addr as *const u64;
                         unsafe {
