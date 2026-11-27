@@ -127,7 +127,7 @@ pub mod ssh {
         // @CHANNEL_TYPES@
         // @GLOBAL_REQUEST@
         // @CHANNEL_REQUEST@
-        pub fn server_handle_channel_open(_: &mut PacketIo, _: &[u8], _: u32) -> Result<Channel, SshError> {
+        pub fn server_handle_channel_open(_: &mut PacketIo, _: &[u8], _: Option<u32>) -> Result<Option<Channel>, SshError> {
             unreachable!("the relay fixture starts with an open channel")
         }
         pub fn send_window_adjust(io: &mut PacketIo, ch: &mut Channel, n: u32) -> Result<(), SshError> {
@@ -155,6 +155,7 @@ pub mod ssh {
     pub mod transport {
         use super::*;
         use super::channel::{ChannelRequestPhase, SessionCommand};
+        fn ssh_io_error(_: ()) -> SshError { SshError::Io }
         pub struct ServerSession {
             pub channel: Option<Channel>,
             pub io: PacketIo,
@@ -162,6 +163,7 @@ pub mod ssh {
         impl ServerSession {
             // @HANDLER@
             // @WAIT_FOR_CHANNEL@
+            // @CHANNEL_CLOSED@
             pub fn io(&mut self) -> &mut PacketIo { &mut self.io }
             pub fn input_eof(&self) -> bool { self.channel.as_ref().unwrap().eof_received }
             pub fn pty_size(&self) -> (u32, u32) { self.channel.as_ref().unwrap().pty_size }
