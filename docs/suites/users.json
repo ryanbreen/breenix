@@ -408,11 +408,11 @@
       "cases": [
         {
           "id": "sudo-wheel-ok",
-          "title": "A wheel member runs a command as root with their own password"
+          "title": "A wheel member runs a command as root without a password"
         },
         {
           "id": "sudo-nonwheel-refused",
-          "title": "sudo refuses a caller no rule permits without asking for a password"
+          "title": "A valid password cannot authorize a caller who has no matching rule"
         },
         {
           "id": "sudo-wrong-password",
@@ -424,7 +424,7 @@
         },
         {
           "id": "sudo-bad-policy-mode-refused",
-          "title": "sudo refuses to run under a policy with the wrong mode or one that does not parse"
+          "title": "An unsafe mode or malformed policy cannot waive the password"
         },
         {
           "id": "sudo-cache-session",

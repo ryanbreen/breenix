@@ -91,6 +91,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn sudo_policy_requires_a_password_unless_a_matching_rule_waives_it() {
+        let rules = parse_policy("permit %wheel as root nopass\npermit fixture cmd /usr/bin/id\n").unwrap();
+        let wheel = group_names("wheel:x:10:member\n", "member", 100);
+        assert_eq!(authentication(Some(&rules), "member", &wheel, "root", "/usr/bin/id"), Authentication::Passwordless);
+        let other = group_names("wheel:x:10:member\nalias:x:10:other\n", "other", 100);
+        let denied = authentication(Some(&rules), "other", &other, "root", "/usr/bin/id");
+        assert_eq!(denied, Authentication::Denied);
+        assert!(denied.requires_password());
+        assert_eq!(authentication(Some(&rules), "fixture", &[], "root", "/usr/bin/id"), Authentication::Password);
+        assert_eq!(authentication(Some(&rules), "fixture", &[], "root", "/bin/sh"), Authentication::Denied);
+    }
+
+    #[test]
+    fn sudo_policy_ignores_untrusted_metadata() {
+        assert!(trusted_policy(0, 0, 0o100440, 1));
+        for (uid, gid, mode, links) in [
+            (1000, 0, 0o100440, 1),
+            (0, 10, 0o100440, 1),
+            (0, 0, 0o100460, 1),
+            (0, 0, 0o100442, 1),
+            (0, 0, 0o120440, 1),
+            (0, 0, 0o100440, 2),
+        ] {
+            assert!(!trusted_policy(uid, gid, mode, links), "{uid}:{gid} {mode:o} {links}");
+        }
+    }
+
+    #[test]
+    fn sudo_policy_missing_or_invalid_uses_legacy_password_requirement() {
+        let missing = std::path::Path::new("/dev/null").join("sudo.policy");
+        let rules = read_policy(&missing);
+        assert!(rules.is_err());
+        let wheel = vec!["wheel".to_string()];
+        assert_eq!(authentication(rules.as_deref().ok(), "member", &wheel, "root", "/usr/bin/id"), Authentication::Password);
+        assert_eq!(authentication(rules.as_deref().ok(), "other", &[], "root", "/usr/bin/id"), Authentication::Denied);
+        assert_eq!(authentication(None, "member", &wheel, "fixture", "/usr/bin/id"), Authentication::Denied);
+        let malformed = parse_policy("# defaults\npermit %wheel nopass\n\npermit %wheel as\n");
+        assert_eq!(malformed.unwrap_err(), "line 4 does not parse");
+    }
+
+    #[test]
     fn rules_parse_strictly() {
         let rules = parse_policy("# defaults\npermit %wheel as root\n\npermit ua as ub cmd /usr/bin/id nopass\n").unwrap();
         assert_eq!(rules.len(), 2);

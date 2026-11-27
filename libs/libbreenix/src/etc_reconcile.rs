@@ -286,6 +286,35 @@ mod tests {
     }
 
     #[test]
+    fn sudo_policy_flash_updates_only_the_stock_policy() {
+        const OLD: &[u8] = b"permit %wheel as root\n";
+        const NEW: &[u8] = b"permit %wheel as root nopass\n";
+        for (local, mode, expected) in [
+            (OLD, 0o440, NEW),
+            (OLD, 0o660, OLD),
+            (b"permit %wheel cmd /usr/bin/id\n".as_slice(), 0o440, b"permit %wheel cmd /usr/bin/id\n".as_slice()),
+        ] {
+            let tree = Tree::new();
+            tree.factory("sudo.policy", OLD);
+            tree.apply("old");
+            tree.put("etc/sudo.policy", local);
+            let policy = tree.0.join("etc/sudo.policy");
+            fs::set_permissions(&policy, fs::Permissions::from_mode(mode)).unwrap();
+            tree.factory("sudo.policy", NEW);
+            fs::set_permissions(tree.0.join("usr/share/factory/etc/sudo.policy"), fs::Permissions::from_mode(0o440)).unwrap();
+            tree.apply("new");
+            assert_eq!(tree.read("etc/sudo.policy"), expected);
+            assert_eq!(fs::metadata(&policy).unwrap().mode() & 0o777, mode);
+            // An administrator can restore the original password rule.
+            fs::remove_file(&policy).unwrap();
+            tree.put("etc/sudo.policy", OLD);
+            fs::set_permissions(&policy, fs::Permissions::from_mode(0o440)).unwrap();
+            tree.apply("later");
+            assert_eq!(tree.read("etc/sudo.policy"), OLD);
+        }
+    }
+
+    #[test]
     fn upgrade_and_rollback_preserve_edits_and_machine_accounts() {
         let tree = upgrade_tree(); tree.apply("new"); assert_upgrade(&tree);
         tree.factory("unchanged", b"old"); tree.factory("local", b"old");

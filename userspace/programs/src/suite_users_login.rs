@@ -932,11 +932,16 @@ fn passwd_command() -> CaseResult {
 
 fn sudo_prompt(user: &User) -> String { format!("[sudo] password for {}: ", user.name) }
 
+fn sudo_password_policy() -> Result<EtcGuard, String> {
+    let guard = EtcGuard::save(&["/etc/sudo.policy"])?;
+    fs::write("/etc/sudo.policy", "permit %wheel as root\n").map_err(|e| e.to_string())?;
+    Ok(guard)
+}
+
 fn sudo_wheel_ok() -> CaseResult {
     let _shells = probe_shells()?;
     let caller = User::probe("sdw", &["wheel"])?;
-    let prompt = sudo_prompt(&caller);
-    let run = as_caller(&caller, &["/usr/bin/sudo", PROBE], &[], "/", &[(&prompt, &caller.password)])?;
+    let run = as_caller(&caller, &["/usr/bin/sudo", "-n", PROBE], &[], "/", &[])?;
     report_has(&run.probe()?, &[("uid", "0,0,0".into()), ("gid", "0,0,0".into()), ("SUDO_USER", caller.name.clone())])?;
     Ok(run.exited(0)?)
 }
@@ -948,13 +953,14 @@ fn sudo_nonwheel_refused() -> CaseResult {
     let run = as_caller(&caller, &["/usr/bin/sudo", PROBE], &[], "/", &[(&prompt, &caller.password)])?;
     run.exited(1)?;
     run.says("may not run")?;
-    want(!run.output.contains(&prompt), "sudo asked a caller no rule permits for a password")?;
+    run.says(&prompt)?;
     want(run.probe().is_err(), "a caller outside wheel ran a command as root")?;
     Ok(logged("sudo", &caller.name, "root", "refused:policy")?)
 }
 
 fn sudo_wrong_password() -> CaseResult {
     let _shells = probe_shells()?;
+    let _policy = sudo_password_policy()?;
     let caller = User::probe("sdp", &["wheel"])?;
     let prompt = sudo_prompt(&caller);
     let run = as_caller(&caller, &["/usr/bin/sudo", PROBE], &[], "/", &[(&prompt, "not-the-password")])?;
@@ -981,27 +987,26 @@ fn sudo_bad_policy_mode() -> CaseResult {
     let _shells = probe_shells()?;
     let _etc = EtcGuard::save(&["/etc/sudo.policy"])?;
     let caller = User::probe("sdb", &["wheel"])?;
-    let prompt = sudo_prompt(&caller);
-    let script = [(prompt.as_str(), caller.password.as_str())];
-    ok("chmod", chmod("/etc/sudo.policy", 0o644))?;
-    let run = as_caller(&caller, &["/usr/bin/sudo", PROBE], &[], "/", &script)?;
+    ok("chmod", chmod("/etc/sudo.policy", 0o466))?;
+    let run = as_caller(&caller, &["/usr/bin/sudo", "-n", PROBE], &[], "/", &[])?;
     run.exited(1)?;
-    run.says("not a valid policy")?;
-    want(run.probe().is_err() && !run.output.contains(&prompt), "sudo ran under a policy any user may write")?;
-    logged("sudo", &caller.name, "root", "refused:policy-mode")?;
+    run.says("a password is required")?;
+    want(run.probe().is_err(), "sudo ran passwordless under a policy any user may write")?;
+    logged("sudo", &caller.name, "root", "refused:password-required")?;
     ok("chmod", chmod("/etc/sudo.policy", 0o440))?;
     append_etc("/etc/sudo.policy", "permit %wheel as")?;
-    let run = as_caller(&caller, &["/usr/bin/sudo", PROBE], &[], "/", &script)?;
+    let run = as_caller(&caller, &["/usr/bin/sudo", "-n", PROBE], &[], "/", &[])?;
     run.exited(1)?;
-    want(run.probe().is_err(), "sudo ran under a policy that does not parse")?;
-    logged("sudo", &caller.name, "root", "refused:policy-syntax")?;
+    run.says("line 2 does not parse")?;
+    want(run.probe().is_err(), "sudo ran passwordless under a policy that does not parse")?;
     // The shipped policy, at its mode, permits the same call.
     drop(_etc);
-    Ok(report_has(&as_caller(&caller, &["/usr/bin/sudo", PROBE], &[], "/", &script)?.probe()?, &[("uid", "0,0,0".into())])?)
+    Ok(report_has(&as_caller(&caller, &["/usr/bin/sudo", "-n", PROBE], &[], "/", &[])?.probe()?, &[("uid", "0,0,0".into())])?)
 }
 
 fn sudo_cache_session() -> CaseResult {
     let _shells = probe_shells()?;
+    let _policy = sudo_password_policy()?;
     let caller = User::probe("sdc", &["wheel"])?;
     let prompt = sudo_prompt(&caller);
     let both = format!("/usr/bin/sudo {PROBE} && /usr/bin/sudo -n {PROBE}");
@@ -1085,7 +1090,8 @@ fn sudo_logged() -> CaseResult {
     let _shells = probe_shells()?;
     let caller = User::probe("sdl", &["wheel"])?;
     let prompt = sudo_prompt(&caller);
-    as_caller(&caller, &["/usr/bin/sudo", PROBE], &[], "/", &[(&prompt, &caller.password)])?.probe()?;
+    as_caller(&caller, &["/usr/bin/sudo", "-n", PROBE], &[], "/", &[])?.probe()?;
+    let _policy = sudo_password_policy()?;
     as_caller(&caller, &["/usr/bin/sudo", PROBE], &[], "/", &[(&prompt, "not-the-password")])?.exited(1)?;
     let log = fs::read_to_string(AUTH_LOG).map_err(|e| e.to_string())?;
     let mine: Vec<&str> = log.lines().filter(|l| l.contains(" sudo[") && l.contains(&format!(" user={} ", caller.name))).collect();
