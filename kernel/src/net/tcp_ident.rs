@@ -36,6 +36,60 @@ pub fn isn(
     m.wrapping_add(u32::from_le_bytes(f))
 }
 
+/// The kernel's random pool, as connection setup draws from it.
+pub trait Pool {
+    /// Fill `out` from the pool, whether or not it is ready, and return
+    /// whether it was ready before the draw: credited with the entropy it
+    /// needs to be unpredictable (`random::is_ready`, which once true stays
+    /// true).
+    fn fill(&self, out: &mut [u8]) -> bool;
+}
+
+/// The ISN key, drawn from the pool the first time a connection needs one.
+pub struct IsnKey(spin::Once<[u8; ISN_SECRET_LEN]>);
+
+impl IsnKey {
+    pub const fn new() -> Self {
+        Self(spin::Once::new())
+    }
+
+    /// The ISN for a connection on this 4-tuple at `now_us` (`isn`).
+    pub fn isn(
+        &self,
+        pool: &impl Pool,
+        local_ip: [u8; 4],
+        local_port: u16,
+        remote_ip: [u8; 4],
+        remote_port: u16,
+        now_us: u64,
+    ) -> u32 {
+        let secret = self.0.call_once(|| {
+            let mut key = [0u8; ISN_SECRET_LEN];
+            pool.fill(&mut key);
+            key
+        });
+        isn(secret, local_ip, local_port, remote_ip, remote_port, now_us)
+    }
+}
+
+/// Bind a socket that has no port to the first free one of a search that
+/// starts at a fresh draw from `pool` (`ephemeral_candidates`). `bind(port)`
+/// takes the port: true if it did, false if another socket holds it.
+/// `Ok(None)` when the range has no free port; `bind`'s error otherwise.
+pub fn bind_ephemeral(
+    pool: &impl Pool,
+    mut bind: impl FnMut(u16) -> Result<bool, i32>,
+) -> Result<Option<u16>, i32> {
+    let mut draw = [0u8; 8];
+    pool.fill(&mut draw);
+    for candidate in ephemeral_candidates(u64::from_le_bytes(draw)) {
+        if bind(candidate)? {
+            return Ok(Some(candidate));
+        }
+    }
+    Ok(None)
+}
+
 /// The ephemeral range, 32768-60999, unchanged by the move to random selection.
 pub const EPHEMERAL_FIRST: u16 = 32768;
 pub const EPHEMERAL_LAST: u16 = 60999;

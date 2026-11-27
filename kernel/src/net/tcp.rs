@@ -2029,10 +2029,19 @@ fn overlaps(a: [u8; 4], b: [u8; 4]) -> bool {
 /// Every TCP table, under one lock.
 static TCP_CONNECTIONS: Mutex<TcpTables> = Mutex::new(TcpTables::new());
 
-/// The RFC 6528 key for initial sequence numbers, drawn from the random pool
-/// the first time a connection needs one. `random::init` has already run by
-/// then: it seeds the pool before the network stack starts.
-static ISN_SECRET: spin::Once<[u8; super::tcp_ident::ISN_SECRET_LEN]> = spin::Once::new();
+/// The RFC 6528 key for initial sequence numbers (`tcp_ident::IsnKey`).
+static ISN_KEY: super::tcp_ident::IsnKey = super::tcp_ident::IsnKey::new();
+
+/// The kernel's random pool, as `tcp_ident` draws from it.
+struct KernelPool;
+
+impl super::tcp_ident::Pool for KernelPool {
+    fn fill(&self, out: &mut [u8]) -> bool {
+        let ready = crate::random::is_ready();
+        crate::random::fill(out);
+        ready
+    }
+}
 
 fn with_tcp<R>(f: impl FnOnce(&mut TcpTables) -> R) -> R {
     let _guard = super::net_lock_guard();
@@ -2132,14 +2141,14 @@ pub fn tcp_unbind_port(addr: [u8; 4], port: u16) {
 /// when the search finds the range's 28,232 ports taken; connect reports that as Linux does,
 /// with EADDRNOTAVAIL.
 pub fn tcp_bind_ephemeral(addr: [u8; 4]) -> Result<u16, i32> {
-    for candidate in super::tcp_ident::ephemeral_candidates(crate::random::next_u64()) {
+    let bound = super::tcp_ident::bind_ephemeral(&KernelPool, |candidate| {
         match tcp_bind_port(addr, candidate, false) {
-            Ok(()) => return Ok(candidate),
-            Err(EADDRINUSE) => {}
-            Err(error) => return Err(error),
+            Ok(()) => Ok(true),
+            Err(EADDRINUSE) => Ok(false),
+            Err(error) => Err(error),
         }
-    }
-    Err(EADDRINUSE)
+    })?;
+    bound.ok_or(EADDRINUSE)
 }
 
 /// What a socket's options mean for its connection.
@@ -2250,16 +2259,11 @@ pub fn tcp_port_in_use(port: u16, reuse: bool) -> bool {
 }
 
 /// The initial sequence number for a connection on `id` (RFC 6528): the keyed
-/// hash of its 4-tuple plus the 4-microsecond clock (`tcp_ident::isn`).
+/// hash of its 4-tuple plus the 4-microsecond clock (`tcp_ident::IsnKey`).
 pub fn generate_isn(id: &ConnectionId) -> u32 {
-    let secret = ISN_SECRET.call_once(|| {
-        let mut key = [0u8; super::tcp_ident::ISN_SECRET_LEN];
-        crate::random::fill(&mut key);
-        key
-    });
     let (secs, nanos) = crate::time::get_monotonic_time_ns();
     let now_us = secs.saturating_mul(1_000_000).saturating_add(nanos / 1_000);
-    super::tcp_ident::isn(secret, id.local_ip, id.local_port, id.remote_ip, id.remote_port, now_us)
+    ISN_KEY.isn(&KernelPool, id.local_ip, id.local_port, id.remote_ip, id.remote_port, now_us)
 }
 
 /// A socket to wake once the TCP tables are released. A reset's errno is
