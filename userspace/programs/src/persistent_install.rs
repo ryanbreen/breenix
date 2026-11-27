@@ -837,8 +837,70 @@ fn recovered_slots(source: &Path) -> Result<([String; 3], bool), String> {
     Ok(([words[1].into(), words[2].into(), words[3].into()], carry))
 }
 
+/// The installer boots from the test image, with the persistent OS offline.
+pub(crate) fn replace_usr(source: &Path, target: &Path) -> Result<Totals, String> {
+    const STAGING: &str = ".breenix-replace-usr";
+    let source = source.join("usr");
+    let usr = target.join("usr");
+    require_directory(&source)?;
+    require_directory(&usr)?;
+    if present(&source.join(STAGING))? {
+        return Err("the image uses the reserved /usr replacement directory".into());
+    }
+
+    let staging = usr.join(STAGING);
+    let remove = |path: &Path| {
+        let meta = fs::symlink_metadata(path).map_err(|error| fail("stat", path, error))?;
+        let result = if meta.is_dir() { fs::remove_dir_all(path) } else { fs::remove_file(path) };
+        result.map_err(|error| fail("remove old /usr entry", path, error))
+    };
+    if present(&staging)? {
+        remove(&staging)?;
+    }
+    let mut copier = Copier {
+        totals: Totals::default(),
+        // The installed /sbin/init may still be from the read-only era.
+        // Factory defaults would make it rewrite /etc at its next boot.
+        skip: vec![source.join("share/factory/etc")], linked: HashMap::new(),
+        buffer: vec![0; 64 * 1024], checkpoint: &mut || Ok(()),
+    };
+    copier.ensure_directory(&staging, 0o700)?;
+    let new = staging.join("usr");
+    copier.copy_tree(&source, &new)?;
+    layout::check_setid(&staging, false)?;
+    copier.sync(&staging)?;
+
+    // Finish the staged copy before removing any files from the old /usr.
+    // All names changed by this operation are inside /usr.
+    let names = |dir: &Path| {
+        fs::read_dir(dir).and_then(|entries| entries.map(|entry| entry.map(|entry| entry.file_name())).collect::<Result<Vec<_>, _>>())
+            .map_err(|error| fail("read", dir, error))
+    };
+    let incoming = names(&new)?;
+    for name in names(&usr)? {
+        if name != STAGING {
+            remove(&usr.join(name))?;
+        }
+    }
+    for name in incoming {
+        let target = usr.join(&name);
+        fs::rename(new.join(name), &target).map_err(|error| fail("publish /usr entry", &target, error))?;
+    }
+    let meta = fs::symlink_metadata(&new).map_err(|error| fail("stat", &new, error))?;
+    own(&usr, &meta, true).map_err(|error| fail("chown", &usr, error))?;
+    fs::set_permissions(&usr, fs::Permissions::from_mode(meta.mode() & 0o7777))
+        .map_err(|error| fail("chmod", &usr, error))?;
+    remove(&staging)?;
+    copier.sync(&usr)?;
+    Ok(copier.totals)
+}
+
 fn install() -> Result<Totals, String> {
     let source = Path::new("/");
+    #[cfg(target_os = "breenix")]
+    if std::env::args().nth(2).as_deref() == Some("replace-usr") {
+        return breenfs::replace_selected_usr(source);
+    }
     #[cfg(target_os = "breenix")]
     if let Some(upgrade) = breenfs::Upgrade::detect()? {
         return upgrade.install(source);

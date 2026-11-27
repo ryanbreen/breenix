@@ -249,11 +249,13 @@ def tests_ramdisk(output, target, root, binaries):
     return output
 
 
-def slot_image(output, esp_files, the_layout, scratch, generation):
+def slot_image(output, esp_files, the_layout, scratch, generation, *, writable_root=False):
     """A kernel slot: the build's bootloader, kernel and boot.json, and the persistent boot's intent as `ramdisk`."""
     ramdisk = Path(scratch) / 'slot-intent'
     if the_layout['version'] in (2, 3):
         boot = migration_intent(the_layout, 'cutover', generation)
+        if writable_root:
+            boot += b'cmdline persistent_root=rw\n'
     else:
         system, home = persistent_partition_guids(the_layout)
         boot = intent('persistent', root=system, home=home, userland=generation)
@@ -567,6 +569,29 @@ def upgrade_request(directory, the_layout, files, slot, note, site, *, rescue=No
             request.lines.append('manager-config ' + line)
         request.lines.append('load-option ' + LOAD_OPTION)
     return request.finish(), request
+
+
+def replace_usr_request(directory, layout, generation):
+    """Verify physical CURRENT before starting the installer, with no ESP writes."""
+    if check_layout(layout)['version'] not in (2, 3) or not slot_userland({'userland': generation}):
+        raise ValueError('replacing /usr requires the selected BreenFS system root')
+    request = Request(directory, 'replace-usr')
+    parts = layout['partitions']
+    roles = BREENFS_ROLES + (EXT2_ROLES if layout['version'] == 2 else ())
+    request.lines += ['expect-disk ' + layout['diskGuid'],
+                      'esp ' + parts['esp']['guid'],
+                      'breenfs-upgrade ' + ' '.join(parts[role]['guid'] for role in roles),
+                      'current-userland ' + generation]
+    return request.finish(), request.data
+
+
+def replace_usr_intent(layout, generation):
+    guids = {role: part['guid'] for role, part in layout['partitions'].items()}
+    return intent('persistent-install', userland=generation, previous_userland='replace-usr',
+                  mount_guids=guids, mounts=[
+                      (guids['test'], '/', False),
+                      (guids['breenfs-system'], '/migrate/system', True),
+                  ])
 
 
 def file_facts(path):

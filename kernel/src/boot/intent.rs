@@ -204,6 +204,19 @@ impl Captured {
     }
 
     /// Distinguish a refused format-3 intent from a legacy boot.
+    pub(crate) fn target(&self) -> &[u8] {
+        &self.target[..self.target_len]
+    }
+
+    pub(crate) fn test_root_only(&self) -> bool {
+        !matches!(self.target(), b"persistent\n" | b"persistent-install\n" | b"persistent-migrate\n")
+    }
+
+    pub(crate) fn writable_persistent_root(&self) -> bool {
+        self.target() == b"persistent\n"
+            && self.cmdline_len.is_some_and(|len| &self.cmdline[..len] == b"persistent_root=rw")
+    }
+
     pub fn explicit_mounts(&self) -> Result<bool, &'static str> {
         if self.format_3 {
             if let Some(reason) = self.refused {
@@ -301,6 +314,11 @@ pub fn root_generation() -> Result<Option<&'static str>, &'static str> {
 }
 
 /// The selected target line, without the format header; absent for a refused intent.
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn test_root_only() -> bool {
+    BOOT_INTENT.get().is_none_or(Captured::test_root_only)
+}
+
 pub fn get() -> Option<&'static [u8]> {
     BOOT_INTENT.get().filter(|captured| captured.refused.is_none()).map(|captured| &captured.target[..captured.target_len])
 }

@@ -179,6 +179,17 @@ fn clear_volatile(root: &Path) -> Result<()> {
 }
 
 pub fn prepare(root: &Path) -> Result<Vec<String>> {
+    // Writable persistent roots own their configuration. Continue resetting
+    // volatile state at boot without applying image factory defaults to /etc.
+    if fs::read_to_string(root.join("proc/mounts")).is_ok_and(|mounts| mounts.lines().any(|line| {
+        let mut fields = line.split_ascii_whitespace();
+        fields.next().is_some_and(|source| source.starts_with("gen-"))
+            && fields.next() == Some("/") && fields.next() == Some("breenfs")
+            && fields.next().is_some_and(|options| options.split(',').next() == Some("rw"))
+    })) {
+        clear_volatile(root)?;
+        return Ok(Vec::new());
+    }
     // Existing generations may predate new standard directories and log modes.
     // Account contents remain governed by the machine-owned reconciliation rule.
     for line in crate::layout::TABLE.lines() {

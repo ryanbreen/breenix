@@ -83,8 +83,10 @@ const CUTOVER: &[(&str, &str, bool)] = &[(NEW_SYSTEM, "/", true), (NEW_HOME, "/h
 const RESCUE: &[(&str, &str, bool)] = &[(SYSTEM, "/", false), (HOME, "/home", false)];
 
 fn captured(lines: &[(&str, &str, bool)]) -> intent::Captured {
-    let mut payload = String::from(if lines == CUTOVER {
+    let mut payload = String::from(if lines == CUTOVER || lines == RESCUE {
         "BREENIX-BOOT 3\ntarget persistent\n"
+    } else if lines == MIGRATION {
+        "BREENIX-BOOT 3\ntarget persistent-migrate\n"
     } else {
         "BREENIX-BOOT 3\ntarget default\n"
     });
@@ -212,6 +214,8 @@ fn persistent_root_is_writable_with_existing_data_binds() {
     let root = line.mount(&formats(), &point).unwrap();
     assert_eq!(root.read_only(), Ok(false));
     assert!(!mount::flags_at(b"/generation").read_only);
+    assert!(std::str::from_utf8(&mount::mounts_text()).unwrap().lines()
+        .any(|line| line == "gen-install-42 / breenfs rw 0 0"));
     let base = root.root().unwrap();
     let etc = root.lookup(base, b"etc").unwrap();
     let Some(mount::Entered::Fs(etc_id, source)) = mount::enter((id, etc)) else {

@@ -43,6 +43,7 @@ const PART_TYPES: [&str; PARTITIONS] = [
 enum Action {
     Install,
     Upgrade,
+    ReplaceUsr,
     AddBreenfs,
     ReclaimExt2,
 }
@@ -52,6 +53,7 @@ impl Action {
         match self {
             Self::Install => "install",
             Self::Upgrade => "upgrade",
+            Self::ReplaceUsr => "replace-usr",
             Self::AddBreenfs => "add-breenfs",
             Self::ReclaimExt2 => "reclaim-ext2",
         }
@@ -103,7 +105,7 @@ struct Request<'t> {
     load_option: Option<&'t str>,
     migration_slots: bool,
     breenfs_upgrade: Option<[[u8; 16]; 4]>,
-    kernel_only: Option<&'t str>,
+    expected_userland: Option<&'t str>,
     keep_generations: Option<[&'t str; 2]>,
 }
 
@@ -124,7 +126,7 @@ fn parse<'t>(text: &'t str) -> Result<Request<'t>, Status> {
         load_option: None,
         migration_slots: false,
         breenfs_upgrade: None,
-        kernel_only: None,
+        expected_userland: None,
         keep_generations: None,
     };
     let mut action = None;
@@ -201,8 +203,11 @@ fn parse<'t>(text: &'t str) -> Result<Request<'t>, Status> {
                 }
                 request.breenfs_upgrade = Some(guids);
             }
-            "kernel-only" if request.kernel_only.is_none() && valid_generation(value)
-                && !matches!(value, "flat" | "empty") => request.kernel_only = Some(value),
+            "kernel-only" | "current-userland" if request.expected_userland.is_none()
+                && valid_generation(value) && !matches!(value, "flat" | "empty") =>
+            {
+                request.expected_userland = Some(value);
+            }
             "rescue-file" if !value.is_empty() => {}
             "extent" | "esp-file" if !value.is_empty() => {}
             _ => return Err(INVALID_PARAMETER),
@@ -211,6 +216,7 @@ fn parse<'t>(text: &'t str) -> Result<Request<'t>, Status> {
     request.action = match action {
         Some("install") => Action::Install,
         Some("upgrade") => Action::Upgrade,
+        Some("replace-usr") => Action::ReplaceUsr,
         Some("add-breenfs") => Action::AddBreenfs,
         Some("reclaim-ext2") => Action::ReclaimExt2,
         _ => return Err(INVALID_PARAMETER),
@@ -234,24 +240,30 @@ fn parse<'t>(text: &'t str) -> Result<Request<'t>, Status> {
         return Err(INVALID_PARAMETER);
     }
     if request.breenfs_upgrade.is_some()
-        && (request.action != Action::Upgrade || request.migration_slots
+        && (!matches!(request.action, Action::Upgrade | Action::ReplaceUsr) || request.migration_slots
             || request.expect_record.is_some() || request.parts.iter().any(Option::is_some)
             || text.lines().any(|line| line.starts_with("extent ")))
     {
         return Err(INVALID_PARAMETER);
     }
-    if request.kernel_only.is_some() {
+    if request.expected_userland.is_some() {
         let mut files = text.lines().filter_map(|line| line.strip_prefix("esp-file "));
-        if request.action != Action::Upgrade || request.migration_slots || request.expect_record.is_some()
+        let valid_files = match request.action {
+            Action::ReplaceUsr => files.next().is_none() && request.breenfs_upgrade.is_some(),
+            Action::Upgrade => files.next().is_some_and(|line| line.starts_with(r"\EFI\BREENIX\NEXT.IMG "))
+                && files.next().is_some_and(|line| line.starts_with(r"\EFI\BREENIX\NEXT.TXT "))
+                && files.next().is_none(),
+            _ => false,
+        };
+        if !valid_files || request.migration_slots || request.expect_record.is_some()
             || request.parts.iter().any(Option::is_some) || request.config_len != 0
             || request.load_option.is_some() || request.keep_generations.is_some()
             || text.lines().any(|line| line.starts_with("extent "))
-            || !files.next().is_some_and(|line| line.starts_with(r"\EFI\BREENIX\NEXT.IMG "))
-            || !files.next().is_some_and(|line| line.starts_with(r"\EFI\BREENIX\NEXT.TXT "))
-            || files.next().is_some()
         {
             return Err(INVALID_PARAMETER);
         }
+    } else if request.action == Action::ReplaceUsr {
+        return Err(INVALID_PARAMETER);
     }
     let (original, additions) = request.parts.split_at(ORIGINAL_PARTS);
     match request.action {
@@ -264,7 +276,7 @@ fn parse<'t>(text: &'t str) -> Result<Request<'t>, Status> {
             }
             request.esp = request.parts[0].map(|part| part.unique);
         }
-        Action::Upgrade => {
+        Action::Upgrade | Action::ReplaceUsr => {
             if request.expect_disk.is_none()
                 || request.esp.is_none()
                 || additions.iter().any(Option::is_some)
@@ -893,7 +905,10 @@ fn slot_intent<'a>(
         if !rescue && (root != (Some(guids[0]), "/ rw") || home != (Some(guids[1]), "/home rw")) {
             return Err(VOLUME_CORRUPTED);
         }
-        if !lines.next().is_some_and(|line| line.starts_with("userland ")) || lines.next().is_some() {
+        if !lines.next().is_some_and(|line| line.starts_with("userland "))
+            || lines.next().is_some_and(|line| rescue || line != "cmdline persistent_root=rw")
+            || lines.next().is_some()
+        {
             return Err(VOLUME_CORRUPTED);
         }
     } else if !(text.starts_with("BREENIX-BOOT 2\n") || migration && text.starts_with("BREENIX-BOOT 3\n")) {
@@ -1006,7 +1021,7 @@ unsafe fn report_slot(
     name[prefix.len()+slot.len()..prefix.len()+slot.len()+4].copy_from_slice(b".IMG");
     let path = core::str::from_utf8(&name[..prefix.len()+slot.len()+4]).map_err(|_| INVALID_PARAMETER)?;
     match root.size(path) {
-        Err(NOT_FOUND) if request.kernel_only.is_some() && slot != "PREVIOUS" => return Err(NOT_FOUND),
+        Err(NOT_FOUND) if request.expected_userland.is_some() && slot != "PREVIOUS" => return Err(NOT_FOUND),
         Err(NOT_FOUND) if request.breenfs_upgrade.is_none() || slot == "PREVIOUS" => {
             say!("slot userland: {} empty", slot);
             return Ok(());
@@ -1018,14 +1033,19 @@ unsafe fn report_slot(
     let (memory, size, len) = read_slot_intent(boot, root, path, &mut intent)?;
     let text = core::str::from_utf8(&intent[..len]).map_err(|_| VOLUME_CORRUPTED)?;
     let (id, rescue) = slot_intent(text, request.migration_slots, request.breenfs_upgrade, slot)?;
-    if let Some(expected) = request.kernel_only {
+    if request.action == Action::ReplaceUsr
+        && !text.lines().any(|line| line == "cmdline persistent_root=rw")
+    {
+        return Err(VOLUME_CORRUPTED);
+    }
+    if let Some(expected) = request.expected_userland {
         if slot == "PREVIOUS" {
             if rescue {
                 root.size(r"\EFI\BREENIX\RESCUE.IMG")?;
                 root.size(r"\EFI\BREENIX\RESCUE.TXT")?;
             }
         } else if id != expected {
-            say!("kernel-only flash refused: {} userland differs from the requested generation", slot);
+            say!("persistent request refused: {} userland differs from the requested root", slot);
             return Err(VOLUME_CORRUPTED);
         }
         say!("slot userland: {} {}", slot, id);
@@ -1120,8 +1140,25 @@ pub(super) unsafe fn run(boot: &BootServices, runtime: &RuntimeServices, volume:
             Err(status) => return Err(status),
         }
     }
+    if request.action == Action::ReplaceUsr {
+        // The manager already recovered before launching the test image.
+        // This path must never recover or write a kernel slot.
+        for path in [r"\EFI\BREENIX\SLOT.TXN", r"\EFI\BREENIX\SLOT0.OK", r"\EFI\BREENIX\SLOT1.OK",
+                     r"\EFI\BREENIX\SLOT2.OK", r"\EFI\BREENIX\SWAP.IMG",
+                     r"\EFI\BREENIX\SWAP.TXT", r"\EFI\BREENIX\NEXT.IMG", r"\EFI\BREENIX\NEXT.TXT"] {
+            if !matches!(root.size(path), Err(NOT_FOUND)) {
+                return Err(VOLUME_CORRUPTED);
+            }
+        }
+        if delivered.size("persist.dat")? != 0 {
+            return Err(INVALID_PARAMETER);
+        }
+        report_slot(boot, &root, &request, "CURRENT")?;
+        say!("persistent install request complete");
+        return Ok(());
+    }
     metal_efi::slot_transaction::recover(&metal_efi::slot_store::SlotStore(&root))?;
-    if request.kernel_only.is_some() {
+    if request.expected_userland.is_some() {
         for slot in ["CURRENT", "PREVIOUS"] {
             report_slot(boot, &root, &request, slot)?;
         }

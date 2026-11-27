@@ -94,7 +94,12 @@ pub(crate) fn explicit_mount_device(
     fence: &mut Fence,
     root_role: &mut u8,
 ) -> Result<alloc::boxed::Box<dyn BlockDevice>, &'static str> {
-    let (mut device, entry, hardware) = named_partition(guid, boot_mount::partition_types(path))?;
+    let types = if path == "/" && crate::boot::intent::test_root_only() {
+        &[gpt::TEST_ROOT_TYPE]
+    } else {
+        boot_mount::partition_types(path)
+    };
+    let (mut device, entry, hardware) = named_partition(guid, types)?;
     if path == "/" {
         let test_root = entry.type_guid == gpt::TEST_ROOT_TYPE;
         if test_root {
@@ -154,7 +159,9 @@ fn named_root() -> Option<alloc::boxed::Box<dyn BlockDevice>> {
         log::warn!("[storage] root refused: {}", why);
         return None;
     };
-    let (mut device, entry, hardware) = match named_partition(text, &[gpt::TEST_ROOT_TYPE, gpt::SYSTEM_TYPE]) {
+    let allowed: &[_] = if crate::boot::intent::test_root_only() { &[gpt::TEST_ROOT_TYPE] }
+        else { &[gpt::TEST_ROOT_TYPE, gpt::SYSTEM_TYPE] };
+    let (mut device, entry, hardware) = match named_partition(text, allowed) {
         Ok(found) => found,
         Err(why) => {
             log::warn!("[storage] root refused: {}", why);
@@ -253,7 +260,7 @@ pub fn named_home() -> Option<alloc::boxed::Box<dyn BlockDevice>> {
     let text = crate::boot::intent::home_partition()?;
     let wanted = match ROOT_ROLE.load(core::sync::atomic::Ordering::Acquire) {
         ROLE_SYSTEM => gpt::HOME_TYPE,
-        ROLE_TEST_ROOT => gpt::SYSTEM_TYPE,
+        ROLE_TEST_ROOT if crate::boot::intent::get() == Some(b"persistent-install\n") => gpt::SYSTEM_TYPE,
         _ => {
             log::warn!("[storage] home refused: no partition root was chosen");
             return None;

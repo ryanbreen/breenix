@@ -288,6 +288,7 @@ struct Mount<W: Wait + 'static> {
     id: usize,
     root_id: u64,
     mounted_root: MountedRoot,
+    default_root: Option<MountedRoot>,
     frozen: bool,
     writable: bool,
     signal: Arc<CommitSignal>,
@@ -1407,7 +1408,7 @@ impl<W: Wait> MountState<W> {
         // Settlement prices queued orphan cleanup at the resulting root
         // height. Growing a level adds twelve FS nodes per orphan to that
         // estimate and can increase its SPACE charge too.
-        let result = self.files.orphan_growth_paths(3 + usize::from(inline));
+        let result = self.files.orphan_growth_paths(dir, 3 + usize::from(inline));
         let fs_nodes = fs_nodes.checked_add(self.observed(result)?).ok_or(Errno(ENOSPC))?;
         let estimate = Estimate {
             fs_levels: fs_nodes,
@@ -1607,7 +1608,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         mount: usize,
         root_id: u64,
     ) -> Result<Arc<Self>, Errno> {
-        Self::mount_with(device, Cache::Shared(cache), mount, root_id, None, false, false)
+        Self::mount_with(device, Cache::Shared(cache), mount, root_id, None, false, false, false)
     }
     /// Writable recovery repairs the rings before opening the first transaction.
     /// The caller starts the per-mount worker through init_service().
@@ -1617,7 +1618,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         mount: usize,
         root_id: u64,
     ) -> Result<Arc<Self>, Errno> {
-        Self::mount_with(device, Cache::Shared(cache), mount, root_id, None, true, false)
+        Self::mount_with(device, Cache::Shared(cache), mount, root_id, None, true, false, false)
     }
     /// Kernel read mounts borrow the system cache.
     pub fn mount_cached(
@@ -1626,7 +1627,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         mount: usize,
         root_id: u64,
     ) -> Result<Arc<Self>, Errno> {
-        Self::mount_with(device, Cache::Kernel(cache), mount, root_id, None, false, false)
+        Self::mount_with(device, Cache::Kernel(cache), mount, root_id, None, false, false, false)
     }
     /// Writable kernel mounts borrow the system cache, as read mounts do.
     pub fn mount_writable_cached(
@@ -1635,8 +1636,23 @@ impl<W: Wait + 'static> BreenFs<W> {
         mount: usize,
         root_id: u64,
     ) -> Result<Arc<Self>, Errno> {
-        Self::mount_with(device, Cache::Kernel(cache), mount, root_id, None, true, true)
+        Self::mount_with(device, Cache::Kernel(cache), mount, root_id, None, true, true, false)
     }
+    /// Recover the selected OS and the default tree's data under one writer.
+    pub(crate) fn mount_persistent_cached(
+        device: Arc<dyn BlockDevice>,
+        cache: &'static BufferCache<W>,
+        mount: usize,
+        name: &[u8],
+    ) -> Result<Arc<Self>, Errno> {
+        Self::mount_with(device, Cache::Kernel(cache), mount, 1, Some(name), true, true, true)
+    }
+
+    pub(crate) fn default_root_inode(&self) -> u64 {
+        debug_assert!(self.inner.default_root.is_some());
+        ops::DEFAULT_TREE | 2
+    }
+
     /// Pin the selected root after writable recovery. The view reuses the
     /// writer's Files transaction and cache.
     pub fn generation_view(&self, id: usize, name: &[u8]) -> Result<Arc<dyn FileSystem>, Errno> {
@@ -1661,14 +1677,14 @@ impl<W: Wait + 'static> BreenFs<W> {
         data: Option<&[u8]>, writable: bool,
     ) -> Result<Arc<Self>, Errno> {
         let name = super::mount_args::parse_root(data).map_err(|e| Errno(e as i32))?;
-        Self::mount_with(device, Cache::Shared(cache), mount, 1, name, writable, false)
+        Self::mount_with(device, Cache::Shared(cache), mount, 1, name, writable, false, false)
     }
     pub fn mount_named_cached(
         device: Arc<dyn BlockDevice>, cache: &'static BufferCache<W>, mount: usize,
         data: Option<&[u8]>, writable: bool,
     ) -> Result<Arc<Self>, Errno> {
         let name = super::mount_args::parse_root(data).map_err(|e| Errno(e as i32))?;
-        Self::mount_with(device, Cache::Kernel(cache), mount, 1, name, writable, false)
+        Self::mount_with(device, Cache::Kernel(cache), mount, 1, name, writable, false, false)
     }
     /// Query for snapshot deletion admission; shutdown alone retains custody.
     pub fn check_root_unmounted(&self, root_id: u64) -> Result<(), Errno> {
@@ -1686,6 +1702,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         root_name: Option<&[u8]>,
         writable: bool,
         boot: bool,
+        with_default: bool,
     ) -> Result<Arc<Self>, Errno> {
         let report = |details: core::fmt::Arguments<'_>| {
             #[cfg(any(target_os = "none", target_os = "breenix"))]
@@ -1734,7 +1751,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             report(format_args!("stage=breenfs-root-select space_root={} expected=root-{} found=absent", block, root_id));
             Errno(ENOENT)
         })?;
-        let files = Files::new(store, &durable, root_id, writable).map_err(|error| {
+        let mut files = Files::new(store, &durable, root_id, writable).map_err(|error| {
             let block = match error {
                 ops::Error::Metadata(failure) => failure.addr,
                 _ => block,
@@ -1743,6 +1760,12 @@ impl<W: Wait + 'static> BreenFs<W> {
             errno(error)
         })?;
         let mounted_root = MountedRoot::claim(mounts.clone(), root_id)?;
+        let default_root = if with_default {
+            files.include_default_tree().map_err(errno)?;
+            Some(MountedRoot::claim(mounts.clone(), 1)?)
+        } else {
+            None
+        };
         drop(publication);
         drop(selection);
         let dead_remaining = roots.iter().filter(|(key, _)| key.item_type == format::DEAD).count() as u64;
@@ -1821,6 +1844,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             id: mount,
             root_id,
             mounted_root,
+            default_root,
             frozen,
             writable,
             signal,
@@ -1915,8 +1939,9 @@ impl<W: Wait + 'static> BreenFs<W> {
 
         let store = commit::DeviceStore(device);
         // Each point lookup verifies the on-disk parent pointers and CRCs.
-        // A generation view also needs the default root for its shared binds.
-        for id in [Some(self.inner.root_id), generation].into_iter().flatten() {
+        // Both trees used by the namespace must have valid durable roots.
+        let default = self.inner.default_root.as_ref().map(|root| root.id);
+        for id in [Some(self.inner.root_id), default, generation].into_iter().flatten() {
             let root = ops::persisted_root(&store, sb, id).map_err(|_| Errno(EIO))?;
             let bytes = btree::search(&store, root.root, ops::key(2, format::INODE, 0))
                 .map_err(|_| Errno(EIO))?
@@ -2861,7 +2886,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             && !state.closed && !state.reap_shutdown && state.dead_remaining != 0;
         let growing_edits = core::mem::take(&mut state.drain_growth);
         state.files.replay_bounds = state.durable_pending.and_then(PendingSummary::census)
-            .filter(|_| !reap && !files.has_orphans())
+            .filter(|_| !reap && !files.has_orphans() && !files.includes_default_tree())
             .map(|(pending, _)| {
                 // N can allocate at most durable FREE plus eligible PENDING.
                 // A four-block node's REF costs 21 slot + 16 value bytes.
@@ -3943,6 +3968,9 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         let _operation = self.inner.costs.span(CostOp::Link, CostPhase::Operation);
         let state = self.mutation_admission_lock(CostOp::Link)?;
         state.writable()?;
+        if state.files.tag(ino) != state.files.tag(dir) {
+            return Err(Errno(EXDEV));
+        }
         let (mut state, grant) = self.reserve_with_pressure(CostOp::Link, state, || self.mutation_admission_lock(CostOp::Link), |state| {
             let parent = state.directory(dir)?;
             let source = state.attrs(ino)?;
@@ -4014,6 +4042,9 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         let _operation = self.inner.costs.span(CostOp::Rename, CostPhase::Operation);
         let state = self.mutation_admission_lock(CostOp::Rename)?;
         state.writable()?;
+        if state.files.tag(from_dir) != state.files.tag(to_dir) {
+            return Err(Errno(EXDEV));
+        }
         let (mut state, (grant, objects, replaced)) = self.reserve_with_pressure(CostOp::Rename, state, || self.mutation_admission_lock(CostOp::Rename), |state| {
             if mode == RenameMode::Exchange {
                 return Err(Errno(EINVAL).into());

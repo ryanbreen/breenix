@@ -209,7 +209,7 @@ def join_manifests(shared, generation, home, userland):
     return b''.join(rows[path] for path in sorted(rows))
 
 
-def verify_mounts(text, phase):
+def verify_mounts(text, phase, *, writable_root=False):
     mounts = {}
     for line in text.splitlines():
         _, path, fstype, flags, *_ = line.split()
@@ -220,7 +220,7 @@ def verify_mounts(text, phase):
         {'/': ('ext2', {'ro'}), '/home': ('ext2', {'ro'}),
          '/tmp': ('breenfs', {'rw'}), '/run': ('breenfs', {'rw'})}
         if phase == 'rescue' else
-        {'/': ('breenfs', {'ro'}), '/home': ('breenfs', {'rw', 'nosuid', 'nodev'}),
+        {'/': ('breenfs', {'rw' if writable_root else 'ro'}), '/home': ('breenfs', {'rw', 'nosuid', 'nodev'}),
          **{path: ('breenfs', {'rw'}) for path in ('/etc', '/var', '/opt', '/srv', '/tmp', '/run', '/root')}}
     )
     for path, (kind, flags) in required.items():
