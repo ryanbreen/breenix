@@ -4,6 +4,10 @@
   "area": "Toolchain",
   "summary": "Checks offline Cargo builds and registry isolation.",
   "binary": "/sbin/suite-cargo",
+  "minimumGuestMemory": {
+    "mib": 1024,
+    "derivation": "E25 ruling 156. The 512 MiB ARM free-frame floor is 88,532, and the K5 uses-std budget is 89,568. Add 24,800 frames for the pinned Mac Cargo twin's peak RSS during the offline workspace build (101,580,800 bytes from macOS time -l), 6,755 PT_LOAD frames for Cargo, 455 for the Cargo runner, 118 for its interpreter and 395 for libc PT_LOAD and extra DSO pages. The 122,091-frame total fits the projected 219,604 free frames at 1024 MiB with a 25% reserve."
+  },
   "timingSensitive": true,
   "categories": [{
     "id": "cargo",

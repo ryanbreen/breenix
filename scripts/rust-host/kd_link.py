@@ -114,9 +114,8 @@ def main(args):
             if arg not in ('-lc', '-lc++', '-lbunwind') and Path(arg).name != 'libc.a']
     runpath = '$ORIGIN/../lib:/lib'
     if arch == 'aarch64':
-        if cargo:
-            sys.exit('ARM X2 only links rustc and its driver')
-        require_bunwind_only(link, lld, 'ARM hosted rustc')
+        if not cargo:
+            require_bunwind_only(link, lld, 'ARM hosted rustc')
         link = list(without_runpath(link))
         runpath = '$ORIGIN/../lib'
         link.extend(('--fatal-warnings', '-z', 'max-page-size=4096'))
@@ -141,7 +140,7 @@ def main(args):
                      inputs / 'breenix-crt.o', '--no-pie', '--fatal-warnings',
                      '--no-allow-shlib-undefined',
                      '--image-base=0x40000000', '--dynamic-linker=/lib/ld-breenix.so',
-                     prepare_getrandom(link, cargo_runtime),
+                     prepare_getrandom(link, cargo_runtime, arch=arch),
                      prepare_bunwind(cargo_runtime, lld,
                                      rlib=Path(os.environ['BREENIX_K7_BUNWIND']))))
         map_name = 'cargo'

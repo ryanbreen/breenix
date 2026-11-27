@@ -34,6 +34,10 @@ static SUITE: Suite = suite(
 
 const FIXTURE: &str = "/usr/libexec/breenix/rustc";
 const CORPUS: &str = "/usr/libexec/breenix/cargo/corpus";
+#[cfg(target_arch = "aarch64")]
+const CARGO_TARGET: &str = "aarch64-breenix";
+#[cfg(target_arch = "x86_64")]
+const CARGO_TARGET: &str = "x86_64-breenix";
 
 // tests/cargo_suite_test.py projects these commands onto the Mac twin fixture.
 const INVOCATIONS: &str = r#"{
@@ -115,6 +119,7 @@ fn run_step(step: &Value, expected: &Value, workspace: &Path) -> Result<(), Stri
             .as_str()
             .map(|value| {
                 value
+                    .replace("x86_64-breenix", CARGO_TARGET)
                     .replace("{fixture}", FIXTURE)
                     .replace("{workspace}", &workspace.to_string_lossy())
             })

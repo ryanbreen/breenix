@@ -415,12 +415,14 @@ def stage_hosted_toolchain(image, suites, release, artifacts, rust_link, sysroot
     files = list(rustc_fixture_entries(artifacts, sysroot, ROOT, k5, arch=arch))
     self_host = 'self-host' in suites
     if cargo is not None:
-        k6 = json.loads((records / 'k6/x86_64.json').read_text())
-        k7 = json.loads((records / 'k7/x86_64.json').read_text())
+        k6 = json.loads((records / f'k6/{arch}.json').read_text())
+        k7 = json.loads((records / f'k7/{arch}.json').read_text())
         if (any(k5[name] != digest for name, digest in k7['k5_compiler_digests'].items())
                 or (k6['rustc_sha256'], k6['rustc_commit']) !=
                 (k5['mac_rustc_sha256'], k5['fork_commit'])):
             raise ValueError('K7 and K6 compiler identities must match the K5 build record')
+        if arch == 'aarch64' and k7['libc_sha256'] != kd_record['libc.so']:
+            raise ValueError('ARM K7 and hosted libc build records disagree')
         if self_host:
             files.extend(tool_target_link_inputs(fixture, k6))
         else:
@@ -488,6 +490,10 @@ def main():
     parser.add_argument('--image', type=Path, required=True)
     args = parser.parse_args()
     suites = args.suite.split(',')
+    if args.arch == 'aarch64':
+        for suite in ('d1', 'self-host'):
+            if suite in suites:
+                parser.error(f'hosted {suite} staging requires x86-64')
     release = PROGRAMS / f'target/hosted/{args.arch}-breenix-hosted/release'
     kd_default = PROGRAMS / 'target/kd'
     if args.arch == 'aarch64':
@@ -504,10 +510,10 @@ def main():
     cargo_needed = bool({'cargo', 'd1', 'self-host'}.intersection(suites))
     hosted_toolchain = 'rustc' in suites or cargo_needed
     if hosted_toolchain:
-        if cargo_needed and args.arch != 'x86_64':
-            parser.error('hosted Cargo staging requires x86-64')
         sysroot = Path(os.environ.get('BREENIX_K5_SYSROOT', cache / 'sysroot'))
         k7_stage = Path(os.environ.get('BREENIX_K7_STAGE', cache / 'k7/stage1'))
+        if args.arch == 'aarch64':
+            k7_stage /= 'aarch64'
         k5 = json.loads((records / f'k5/{args.arch}.json').read_text())
         cargo = k7_stage / 'bin/cargo' if cargo_needed else None
         kd_record = verify_hosted_libc(kd, records, k5, rustc, cargo, arch=args.arch)
