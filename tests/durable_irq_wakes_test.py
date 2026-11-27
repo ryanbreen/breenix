@@ -84,81 +84,22 @@ impl Queue {
 
     fn drain(&self, mut wake: impl FnMut(usize)) -> (usize, bool) {
         let mut visited = 0;
-        let more = self.inbox.drain(|tid, _| {
-            visited += 1;
-            wake(tid as usize);
-        });
+        // The fixtures drain sequentially, as the scheduler does under its lock.
+        let more = unsafe {
+            self.inbox.drain(|tid, _| {
+                visited += 1;
+                wake(tid as usize);
+            })
+        };
         (visited, more)
     }
 }
 """
 
 
-def legacy_adapter():
-    """Run the same assertions against the old slot buffer and held-wake scan."""
-    scheduler = (SCHEDULER / "scheduler.rs").read_text()
-    rq = (SCHEDULER / "scheduler/rq.rs").read_text()
-    buffer = scheduler[scheduler.index("const ISR_WAKEUP_SLOTS"):scheduler.index("static ISR_WAKEUP_BUFFERS")]
-    buffer = buffer.replace(
-        "fn take_each(&self, mut apply: impl FnMut(u64)) {\n        for slot in &self.slots {",
-        "fn take_each(&self, mut apply: impl FnMut(u64), visited: &mut usize) {\n"
-        "        for slot in &self.slots {\n            *visited += 1;",
-    )
-    scan = rq[rq.index("pub(super) fn take_held"):rq.index("/// Uncount a held placement")]
-    scan = scan.replace(
-        "pub(super) fn take_held(mut apply: impl FnMut(u64, u64, usize))",
-        "fn take_held(&self, mut apply: impl FnMut(u64, u64, usize), visited: &mut usize)",
-    ).replace("HELD_SLOTS", "self.held_slots").replace(
-        "for slot in INDEX.iter() {",
-        "for slot in self.index.iter() {\n        *visited += 1;",
-    ).replace("release_held_place(word);", "")
-    return buffer + r"""
-use std::sync::atomic::{AtomicU64, Ordering};
-const HELD_TID_SHIFT: u32 = 16;
-const HELD_HOME_SHIFT: u32 = 8;
-const HELD_BITS: u64 = 0xff;
-
-struct Slot { held: AtomicU64 }
-struct Queue {
-    buffer: IsrWakeupBuffer,
-    held_slots: AtomicU64,
-    index: Box<[Slot]>,
-}
-
-impl Queue {
-    fn new() -> Self {
-        Self {
-            buffer: IsrWakeupBuffer::new(),
-            held_slots: AtomicU64::new(0),
-            index: (0..4096).map(|_| Slot { held: AtomicU64::new(0) }).collect(),
-        }
-    }
-
-    fn publish(&self, tid: usize) {
-        // Hard IRQ returns without doing anything with a Full result.
-        let _ = self.buffer.push(tid as u64);
-    }
-
-    fn hold(&self, tid: usize) {
-        self.held_slots.fetch_add(1, Ordering::Relaxed);
-        self.index[tid - 1].held.store((tid as u64) << HELD_TID_SHIFT | 1, Ordering::Release);
-    }
-
-    fn drain(&self, mut wake: impl FnMut(usize)) -> (usize, bool) {
-        let mut visited = 0;
-        self.buffer.take_each(|tid| wake(tid as usize), &mut visited);
-        self.take_held(|tid, _, _| wake(tid as usize), &mut visited);
-        (visited, false)
-    }
-""" + scan + "}"
-
-
 class DurableIrqWakes(unittest.TestCase):
     def test_fixed_interleavings(self):
-        if TRANSPORT.exists():
-            adapter = f'#[path = "{TRANSPORT}"] mod wake_inbox;\n' + LIVE_ADAPTER
-        else:
-            adapter = legacy_adapter()
+        adapter = f'#[path = "{TRANSPORT}"] mod wake_inbox;\n' + LIVE_ADAPTER
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "wake.rs"
             binary = Path(directory) / "wake"

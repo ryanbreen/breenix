@@ -169,111 +169,25 @@ fn observe_exit_kick(thread_pid: u64) -> bool {
 use crate::arch_interrupts_enabled as are_enabled;
 use crate::arch_without_interrupts as without_interrupts;
 
-// ---------------------------------------------------------------------------
-// Lock-free interrupt-context wakeup buffer
-//
-// AHCI completion and network softirq paths write thread IDs into a per-CPU
-// slot array using atomic CAS — no lock, no allocation.
-// The scheduler drains these buffers under its own lock at the top of every
-// `schedule_deferred_requeue()` / `schedule()` call, performing the actual
-// state transition + queue push.
-//
-// This breaks the ISR's dependency on the global SCHEDULER mutex, which was
-// the root cause of CPU 0's IRQ death: the AHCI ISR on CPU 0 would spin on
-// the lock (held by another CPU) with IRQs masked, starving the timer.
-// ---------------------------------------------------------------------------
+#[cfg(target_arch = "aarch64")]
+mod wake_index;
 
-const ISR_WAKEUP_SLOTS: usize = 64;
-const ISR_WAKEUP_EMPTY: u64 = 0;
+use super::wake_inbox::WakeInbox;
 
-/// Per-CPU lock-free buffer shared by AHCI completion wakeups
-/// (`task/completion.rs`, `task/waitqueue.rs`) and loopback-pump/TCP wakes.
-///
-/// It is sized for the reviewed worst-case burst of 64 distinct tids between
-/// two `schedule()` calls. Duplicate tids consume one slot, but all shared
-/// producers count against this capacity, so sizing must cover their combined
-/// burst rather than either subsystem in isolation.
-struct IsrWakeupBuffer {
-    slots: [AtomicU64; ISR_WAKEUP_SLOTS],
-}
-
-enum IsrWakePush {
-    Inserted,
-    AlreadyPending,
-    Full,
-}
-
-// SAFETY: All access is via atomics.
-unsafe impl Sync for IsrWakeupBuffer {}
-
-impl IsrWakeupBuffer {
-    const fn new() -> Self {
-        Self {
-            slots: [const { AtomicU64::new(ISR_WAKEUP_EMPTY) }; ISR_WAKEUP_SLOTS],
-        }
-    }
-
-    /// Push a thread ID from interrupt context without locks or allocation.
-    fn push(&self, tid: u64) -> IsrWakePush {
-        for slot in &self.slots {
-            let pending = slot.load(Ordering::Acquire);
-            if pending == tid {
-                return IsrWakePush::AlreadyPending;
-            }
-            if pending == ISR_WAKEUP_EMPTY {
-                match slot.compare_exchange(
-                    ISR_WAKEUP_EMPTY,
-                    tid,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                ) {
-                    Ok(_) => return IsrWakePush::Inserted,
-                    Err(actual) if actual == tid => return IsrWakePush::AlreadyPending,
-                    Err(_) => {}
-                }
-            }
-        }
-        IsrWakePush::Full
-    }
-
-    /// Take each entry out and pass it to `apply`, in place: the scheduler's
-    /// passes call this under their locks, where no allocation is allowed. An empty
-    /// slot is only read; an entry written after the read is announced by its
-    /// producer's `ISR_WAKEUP_PENDING` bit, which the next pass takes.
-    fn take_each(&self, mut apply: impl FnMut(u64)) {
-        for slot in &self.slots {
-            if slot.load(Ordering::Relaxed) == ISR_WAKEUP_EMPTY {
-                continue;
-            }
-            let tid = slot.swap(ISR_WAKEUP_EMPTY, Ordering::AcqRel);
-            if tid != ISR_WAKEUP_EMPTY {
-                apply(tid);
-            }
-        }
-    }
-
-    /// Count pending entries without modifying the buffer.
-    fn depth(&self) -> usize {
-        self.slots
-            .iter()
-            .filter(|slot| slot.load(Ordering::Acquire) != ISR_WAKEUP_EMPTY)
-            .count()
-    }
-}
-
-static ISR_WAKEUP_BUFFERS: [IsrWakeupBuffer; 8] = [const { IsrWakeupBuffer::new() }; 8];
-
-/// Bit `n` is set after CPU `n`'s buffer takes an entry and stays set until a
-/// scheduling pass takes it, so a pass reads only the buffers that hold entries.
-/// A pass used to swap the 64 slots of each of the 8 buffers under the
-/// scheduler lock, three quarters of the time that lock was held on Parallels
-/// (#2038).
-///
-/// A producer sets its bit after its entry is written, and a pass takes the
-/// mask before it reads a buffer, so an entry is read by the pass that took its
-/// bit or, written after that pass read its slot, announced by a bit that pass
-/// left set. An entry found already pending was announced when it was written.
-static ISR_WAKEUP_PENDING: AtomicU64 = AtomicU64::new(0);
+static WAKE_INBOXES: [WakeInbox; MAX_CPUS] = [const { WakeInbox::new() }; MAX_CPUS];
+/// Exactly which inboxes may require a pass, for stalled-owner recovery.
+static WAKE_INBOX_CPUS: AtomicU64 = AtomicU64::new(0);
+const WAKE_IO: u64 = 1;
+const WAKE_GENERIC: u64 = 2;
+#[cfg(target_arch = "x86_64")]
+const WAKE_SIGNAL: u64 = 4;
+#[cfg(target_arch = "x86_64")]
+const WAKE_CHILD_EXIT: u64 = 8;
+#[cfg(target_arch = "x86_64")]
+const WAKE_PLACE: u64 = 16;
+#[cfg(target_arch = "x86_64")]
+const WAKE_HOME_SHIFT: u32 = 8;
+const WAKE_HOME_MASK: u64 = 0xff << 8;
 
 const WAKE_ATTRIB_MAX_TIDS: usize = 4096;
 const READY_SITE_NONE: u64 = 0;
@@ -312,7 +226,6 @@ pub static ENQUEUE_ISR_BUFFER_DEDUP: AtomicU64 = AtomicU64::new(0);
 pub static ENQUEUE_DEFERRED_DRAINED_OK: AtomicU64 = AtomicU64::new(0);
 pub static ENQUEUE_ISR_BUFFER_DRAINED_OK: AtomicU64 = AtomicU64::new(0);
 pub static ENQUEUE_ALREADY_QUEUED_OK: AtomicU64 = AtomicU64::new(0);
-pub static ENQUEUE_ISR_BUFFER_FULL: AtomicU64 = AtomicU64::new(0);
 pub static ENQUEUE_OFFLINE_RECLAIMED: AtomicU64 = AtomicU64::new(0);
 pub static ENQUEUE_STALLED_RECLAIMED: AtomicU64 = AtomicU64::new(0);
 
@@ -454,7 +367,7 @@ pub fn emit_wake_attribution_counters() {
         ENQUEUE_DEFERRED_DRAINED_OK.load(Ordering::Relaxed),
         ENQUEUE_ISR_BUFFER_DRAINED_OK.load(Ordering::Relaxed),
         ENQUEUE_ALREADY_QUEUED_OK.load(Ordering::Relaxed),
-        ENQUEUE_ISR_BUFFER_FULL.load(Ordering::Relaxed)
+        isr_wakeup_buffer_full()
     );
 }
 
@@ -2395,7 +2308,7 @@ pub fn x86_idle_pass() -> bool {
         return true;
     }
     scheduler.cpu_state[cpu].last_schedule_ticks = crate::time::get_ticks();
-    scheduler.apply_isr_wakeups();
+    scheduler.apply_wake_inbox(cpu);
     scheduler.wake_expired_timers();
     // An idle peer the kill's kick reaches goes no further than this pass
     // when no queue has work, so it observes the kick here.
@@ -2719,6 +2632,23 @@ fn request_resched_x86(cpu: usize) {
     send_reschedule_vector_x86(cpu);
 }
 
+/// Ring an IRQ wake inbox without polling the APIC. Retain the request
+/// even when the ICR is busy; the target consumes it on interrupt return.
+#[cfg(target_arch = "x86_64")]
+fn kick_irq_wake_x86(cpu: usize) {
+    use crate::arch_impl::x86_64::{apic, smp};
+    if !smp::is_cpu_online(cpu) {
+        return;
+    }
+    RESCHED_REQUESTED[cpu].store(true, Ordering::Release);
+    let here = current_cpu_id_raw();
+    if here < MAX_CPUS && resched_ipi_deferred(here) {
+        DEFERRED_RESCHED[here].fetch_or(1 << cpu, Ordering::Relaxed);
+    } else if let Some(apic_id) = smp::cpu_apic_id(cpu) {
+        apic::try_send_reschedule(apic_id, crate::interrupts::RESCHEDULE_VECTOR);
+    }
+}
+
 /// x86_64: bring another CPU out of a halt with an interrupt, without asking
 /// it to reschedule. Takes no lock, so an interrupt handler may call it.
 #[cfg(target_arch = "x86_64")]
@@ -3013,7 +2943,7 @@ fn note_pinned_hold(thread_id: u64, home: usize) {
     // no longer holds has nothing left to place and is not counted: counted
     // here instead, nothing on this path would ever uncount it, and its home
     // would never halt again.
-    rq::hold(thread_id, rq::HELD_PLACE, home);
+    rq::hold(thread_id, WAKE_PLACE, home);
     let holds = PINNED_HOME_CPU_UNAVAILABLE.fetch_add(1, Ordering::Relaxed) + 1;
     if !PINNED_HOME_CPU_UNAVAILABLE_MARKED.swap(true, Ordering::Relaxed) {
         let mut line = crate::tracing::output::Record::new();
@@ -3124,9 +3054,8 @@ pub struct Scheduler {
     #[cfg(target_arch = "aarch64")]
     drains_wake_inboxes: bool,
 
-    /// x86_64: reclaimed threads dropped from the thread index while a
-    /// reader held a pin, freed by a later pass once none does (`rq::Pin`).
-    #[cfg(target_arch = "x86_64")]
+    /// Unlinked threads retained while a publisher can still see them or
+    /// their inbox link still needs to be consumed.
     unpinned_free: alloc::vec::Vec<Box<Thread>>,
 }
 
@@ -3242,8 +3171,7 @@ impl Scheduler {
             exit_kick_watch: [(0, 0); crate::tracing::providers::teardown::EXIT_KICK_BUCKETS],
             exit_kick_watched: 0,
             #[cfg(target_arch = "aarch64")]
-            drains_wake_inboxes: true,
-            #[cfg(target_arch = "x86_64")]
+            drains_wake_inboxes: false,
             unpinned_free: alloc::vec::Vec::new(),
         };
         scheduler.admit_thread(idle_thread);
@@ -3438,6 +3366,14 @@ impl Scheduler {
     /// x86_64 does not reserve: its spawns reach a queue before this list
     /// (`rq::splice_spawned`), and the asserting requeue is ARM64-only.
     fn admit_thread(&mut self, thread: Box<Thread>) {
+        self.admit_thread_unindexed(thread);
+        #[cfg(target_arch = "aarch64")]
+        if self.drains_wake_inboxes {
+            wake_index::insert(self.threads.last_mut().expect("just admitted"));
+        }
+    }
+
+    fn admit_thread_unindexed(&mut self, thread: Box<Thread>) {
         #[cfg(target_arch = "aarch64")]
         {
             let admitted = self.threads.len() + 1;
@@ -3448,6 +3384,29 @@ impl Scheduler {
             }
         }
         self.threads.push(thread);
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn publish_wake_index(&mut self) {
+        for thread in &mut self.threads {
+            wake_index::insert(thread);
+        }
+        self.drains_wake_inboxes = true;
+    }
+
+    fn collect_unlinked_threads(&mut self, freed: &mut alloc::vec::Vec<Box<Thread>>) {
+        let released = self.unpinned_free.extract_if(.., |thread| {
+            if thread.wake.as_ref().is_some_and(|wake| wake.node.is_pending()) {
+                return false;
+            }
+            // Test pins after PENDING. Otherwise a new producer could
+            // still sample this node at the head of an inbox we just read.
+            #[cfg(target_arch = "x86_64")]
+            return rq::unpinned();
+            #[cfg(target_arch = "aarch64")]
+            return wake_index::unpinned();
+        });
+        freed.extend(released);
     }
 
     /// Queue a new thread and return the CPU whose queue it went to.
@@ -3552,10 +3511,12 @@ impl Scheduler {
         // so those calls make no heap call under the scheduler lock (#2038).
         // Threads leave the list only below, which also clears their queue
         // entries, so with no thread terminated no queue entry is stale.
+        let mut freed = alloc::vec::Vec::new();
+        self.collect_unlinked_threads(&mut freed);
         if self.retirement_grace.is_empty()
             && !self.threads.iter().any(|thread| thread.state == ThreadState::Terminated)
         {
-            return alloc::vec::Vec::new();
+            return freed;
         }
         for queue in self.per_cpu_queues.iter_mut() {
             queue.retain(|&thread_id| self.threads.iter().any(|thread| thread.id() == thread_id));
@@ -3628,13 +3589,24 @@ impl Scheduler {
             reclaimed_threads.push(thread);
         }
         self.threads = retained_threads;
+        #[cfg(target_arch = "aarch64")]
+        let indexed = self.drains_wake_inboxes;
         #[cfg(target_arch = "x86_64")]
-        if rq::is_live(self) {
+        let indexed = rq::is_live(self);
+        if indexed {
+            #[cfg(target_arch = "aarch64")]
+            for thread in &reclaimed_threads {
+                wake_index::remove(thread);
+            }
+            #[cfg(target_arch = "x86_64")]
             for &tid in reclaimed_ids.iter() {
                 rq::remove(tid);
             }
+            self.unpinned_free.append(&mut reclaimed_threads);
+            self.collect_unlinked_threads(&mut freed);
+            #[cfg(target_arch = "x86_64")]
             TERMINATED_UNRECLAIMED.store(
-                terminated_ids.len().saturating_sub(reclaimed_ids.len()) as u64,
+                (terminated_ids.len() - reclaimed_ids.len() + self.unpinned_free.len()) as u64,
                 Ordering::Release,
             );
         }
@@ -3643,7 +3615,8 @@ impl Scheduler {
         for queue in self.per_cpu_queues.iter_mut() {
             queue.retain(|thread_id| !reclaimed_ids.contains(thread_id));
         }
-        reclaimed_threads
+        freed.append(&mut reclaimed_threads);
+        freed
     }
 
     /// Add a thread as the current running thread without scheduling.
@@ -3682,6 +3655,35 @@ impl Scheduler {
         );
         #[cfg(not(target_arch = "x86_64"))]
         let _ = (thread_id, thread_name);
+    }
+
+    /// Indexed lookup for wake application on ARM64. Isolated scheduler
+    /// oracles still use their private list.
+    fn wake_thread_mut(&mut self, tid: u64) -> Option<&mut Thread> {
+        #[cfg(target_arch = "aarch64")]
+        if self.drains_wake_inboxes {
+            // SAFETY: the live scheduler lock protects the index and thread.
+            // The pin oracle has an unpublished, private test thread.
+            #[cfg(feature = "boot_tests")]
+            if PIN_GUARD_ORACLE_PROBE_TID.load(Ordering::Relaxed) == tid {
+                return self.get_thread_mut(tid);
+            }
+            return unsafe { wake_index::thread_mut(tid) };
+        }
+        self.get_thread_mut(tid)
+    }
+
+    fn wake_thread_ref(&self, tid: u64) -> Option<&Thread> {
+        #[cfg(target_arch = "aarch64")]
+        if self.drains_wake_inboxes {
+            // SAFETY: the live scheduler lock protects the index and thread.
+            #[cfg(feature = "boot_tests")]
+            if PIN_GUARD_ORACLE_PROBE_TID.load(Ordering::Relaxed) == tid {
+                return self.get_thread(tid);
+            }
+            return unsafe { wake_index::thread_ref(tid) };
+        }
+        self.get_thread(tid)
     }
 
     /// Get a mutable thread by ID
@@ -3806,6 +3808,10 @@ impl Scheduler {
             if pin.cpu == cpu {
                 pin.relocating = false;
             }
+        }
+        #[cfg(target_arch = "aarch64")]
+        if let Some(wake) = &thread.wake {
+            wake.cpu.store(cpu, Ordering::Release);
         }
         thread.set_running();
         thread.run_start_ticks = crate::time::get_cpu_ticks();
@@ -3975,8 +3981,12 @@ impl Scheduler {
         // scheduler lock with interrupts masked, and a line takes the port
         // milliseconds to write while every other CPU waits for the lock.
 
-        // Drain lock-free ISR wakeup buffers (see schedule_deferred_requeue for rationale).
-        self.apply_isr_wakeups();
+        #[cfg(target_arch = "x86_64")]
+        self.apply_wake_inbox(Self::current_cpu_id());
+        #[cfg(target_arch = "aarch64")]
+        if self.drains_wake_inboxes {
+            self.apply_arm_wake_inboxes(current_cpu);
+        }
         self.observe_watched_exit_kicks();
 
         if crate::net::loopback_queue_has_work() {
@@ -4643,12 +4653,9 @@ impl Scheduler {
                 | self.ready_queue_length() as u32,
         );
 
-        // Drain lock-free ISR wakeup buffers — ISRs (AHCI, etc.) push thread IDs
-        // here via isr_unblock_for_io() to avoid spinning on SCHEDULER from ISR
-        // context.  We drain ALL CPUs' buffers because the ISR that completed the
-        // I/O may have run on any CPU.
+        // The IRQ producer published to this CPU without taking SCHEDULER.
         if self.drains_wake_inboxes {
-            self.apply_isr_wakeups();
+            self.apply_arm_wake_inboxes(cpu);
         }
         self.observe_watched_exit_kicks();
 
@@ -5414,6 +5421,10 @@ impl Scheduler {
             return;
         };
         if let Some(current) = self.get_thread_mut(current_id) {
+            #[cfg(target_arch = "aarch64")]
+            if let Some(wake) = &current.wake {
+                wake.cpu.store(Self::current_cpu_id(), Ordering::Release);
+            }
             // A thread a SIGKILL is pending for does not sleep here:
             // `Thread::must_not_sleep`. Its wait goes on to its signal check.
             if current.must_not_sleep() {
@@ -5544,7 +5555,7 @@ impl Scheduler {
         UNBLOCK_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
 
         let mut outcome = UnblockOutcome::NotFound;
-        if let Some(thread) = self.get_thread_mut(thread_id) {
+        if let Some(thread) = self.wake_thread_mut(thread_id) {
             if thread.state == ThreadState::Blocked
                 || thread.state == ThreadState::BlockedOnSignal
                 || thread.state == ThreadState::BlockedOnTimer
@@ -6188,8 +6199,13 @@ impl Scheduler {
     }
 
     fn block_current_for_io_publish(&mut self, wake_time_ns: Option<u64>) -> Option<u64> {
-        let current_id = self.cpu_state[Self::current_cpu_id()].current_thread?;
+        let cpu = Self::current_cpu_id();
+        let current_id = self.cpu_state[cpu].current_thread?;
         let thread = self.get_thread_mut(current_id)?;
+        #[cfg(target_arch = "aarch64")]
+        if let Some(wake) = &thread.wake {
+            wake.cpu.store(cpu, Ordering::Release);
+        }
         #[cfg(target_arch = "aarch64")]
         let wait_queue = core::mem::take(&mut thread.wait_site.queue_hint);
         // A thread a SIGKILL is pending for does not sleep here:
@@ -6294,46 +6310,48 @@ impl Scheduler {
         self.unblock_for_io_attributed(tid, false);
     }
 
-    fn unblock_for_io_from_isr_buffer(&mut self, tid: u64) {
-        self.unblock_for_io_attributed(tid, true);
+    #[cfg(target_arch = "aarch64")]
+    fn apply_arm_wake_inboxes(&mut self, cpu: usize) {
+        self.apply_wake_inbox(cpu);
+        // The global scheduler lock also allows an available CPU to apply
+        // one stalled owner's batch. Only inspect inboxes with advertised work.
+        let pending = WAKE_INBOX_CPUS.load(Ordering::Acquire) & !(1 << cpu);
+        let remote = (0..MAX_CPUS).find(|&peer| {
+            pending & (1 << peer) != 0
+                && (peer >= self.online_cpu_count() || self.cpu_dispatch_stale(peer))
+        });
+        if let Some(remote) = remote {
+            self.apply_wake_inbox(remote);
+        }
     }
 
-    /// Apply the wakes interrupt handlers buffered with
-    /// `isr_unblock_for_io()`. Every CPU's buffer is drained, because the
-    /// completing interrupt may have run on any CPU.
-    ///
-    /// x86_64: the wakes held because the thread's CPU had its lock held
-    /// (`rq::hold`) are applied too.
-    fn apply_isr_wakeups(&mut self) {
-        let mut pending = ISR_WAKEUP_PENDING.swap(0, Ordering::Acquire);
-        while pending != 0 {
-            let cpu = pending.trailing_zeros() as usize;
-            pending &= pending - 1;
-            if let Some(buf) = ISR_WAKEUP_BUFFERS.get(cpu) {
-                buf.take_each(|tid| self.unblock_for_io_from_isr_buffer(tid));
+    /// Consume pending wake nodes under the full scheduler lock, normally
+    /// for this CPU, or on behalf of a stalled owner.
+    fn apply_wake_inbox(&mut self, cpu: usize) {
+        drain_wake_inbox(cpu, |tid, bits| {
+            if bits & WAKE_IO != 0 {
+                self.unblock_for_io_attributed(tid, true);
             }
-        }
-        #[cfg(target_arch = "x86_64")]
-        if rq::is_live(self) {
-            rq::take_held(|tid, bits, home| {
-                if bits & rq::HELD_IO != 0 {
-                    self.unblock_for_io_from_isr_buffer(tid);
-                }
-                if bits & rq::HELD_GENERIC != 0 {
-                    self.unblock(tid);
-                }
-                if bits & rq::HELD_SIGNAL != 0 {
+            if bits & WAKE_GENERIC != 0 {
+                self.unblock(tid);
+            }
+            #[cfg(target_arch = "x86_64")]
+            {
+                if bits & WAKE_SIGNAL != 0 {
                     self.unblock_for_signal(tid);
                 }
-                if bits & rq::HELD_CHILD_EXIT != 0 {
+                if bits & WAKE_CHILD_EXIT != 0 {
                     self.unblock_for_child_exit(tid);
                 }
-                if bits & rq::HELD_PLACE != 0 && home < MAX_CPUS && self.pinned_wake_is_waiting_here(tid, home) {
-                    self.per_cpu_queues[home].push_back(tid);
-                    PINNED_WAKES_DELIVERED.fetch_add(1, Ordering::Relaxed);
+                if bits & WAKE_PLACE != 0 {
+                    let home = rq::release_held_place(bits);
+                    if self.pinned_wake_is_waiting_here(tid, home) {
+                        self.per_cpu_queues[home].push_back(tid);
+                        PINNED_WAKES_DELIVERED.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
-            });
-        }
+            }
+        });
     }
 
     fn unblock_for_io_attributed(&mut self, tid: u64, from_isr_buffer: bool) {
@@ -6383,7 +6401,7 @@ impl Scheduler {
 
     fn wake_io_thread_locked(&mut self, tid: u64, from_isr_buffer: bool) -> IoWakeResult {
         let mut wake = IoWakeResult::default();
-        if let Some(thread) = self.get_thread_mut(tid) {
+        if let Some(thread) = self.wake_thread_mut(tid) {
             let mut published_ready = false;
             let should_queue = match thread.state {
                 ThreadState::BlockedOnIO => {
@@ -7194,7 +7212,7 @@ impl Scheduler {
     /// redden on it, are in tests/loopback_pump_structure.rs
     fn find_target_cpu_for_wakeup(&mut self, tid: u64) -> Option<usize> {
         let current_cpu = Self::current_cpu_id();
-        if let Some(pin) = self.get_thread(tid).and_then(|thread| thread.cpu_affinity) {
+        if let Some(pin) = self.wake_thread_ref(tid).and_then(|thread| thread.cpu_affinity) {
             // The pinned CPU is a placement decision like the other arms in
             // this function, so it is judged by the same liveness filter: a
             // wake is not routed onto a CPU the scheduler has already
@@ -7277,10 +7295,15 @@ impl Scheduler {
     /// pinned to.
     fn hold_pinned_wake_for_home(&self, thread_id: u64) {
         let home = self
-            .get_thread(thread_id)
+            .wake_thread_ref(thread_id)
             .and_then(|thread| thread.cpu_affinity)
             .map(|pin| pin.cpu)
             .unwrap_or(usize::MAX);
+        #[cfg(target_arch = "x86_64")]
+        if rq::is_live(self) {
+            note_pinned_hold(thread_id, home);
+            return;
+        }
         if home < MAX_CPUS {
             PINNED_HOLDS_OUTSTANDING[home].fetch_add(1, Ordering::Relaxed);
         }
@@ -7362,6 +7385,10 @@ impl Scheduler {
     /// of this CPU's holds, so it clears them. A thread that later returns to
     /// the held shape gets there through a placement that holds again.
     fn deliver_pinned_wakes_for_this_cpu(&mut self) {
+        #[cfg(target_arch = "x86_64")]
+        if rq::is_live(self) {
+            return;
+        }
         let cpu = Self::current_cpu_id();
         if PINNED_HOLDS_OUTSTANDING[cpu].load(Ordering::Relaxed) == 0 {
             return;
@@ -7568,7 +7595,7 @@ impl Scheduler {
     /// the move `set_user_affinity` asked for is done.
     fn end_pin_relocation(&mut self, thread_id: u64) {
         if let Some(pin) = self
-            .get_thread_mut(thread_id)
+            .wake_thread_mut(thread_id)
             .and_then(|thread| thread.cpu_affinity.as_mut())
         {
             pin.relocating = false;
@@ -7637,7 +7664,7 @@ impl Scheduler {
         // so the refusal site can attribute the 3 refusals below to the probe.
         PIN_GUARD_ORACLE_PROBE_TID.store(tid, Ordering::Relaxed);
         thread.set_ready();
-        self.admit_thread(thread);
+        self.admit_thread_unindexed(thread);
 
         let census_before = (
             PINNED_HOME_CPU_UNAVAILABLE.load(Ordering::Relaxed),
@@ -8069,9 +8096,11 @@ pub fn init(idle_thread: Box<Thread>) {
     without_interrupts(|| {
         let mut scheduler_lock = lock_scheduler();
         *scheduler_lock = Some(Scheduler::new(idle_thread));
-        #[cfg(target_arch = "x86_64")]
         if let Some(scheduler) = scheduler_lock.as_mut() {
+            #[cfg(target_arch = "x86_64")]
             rq::publish_live(scheduler);
+            #[cfg(target_arch = "aarch64")]
+            scheduler.publish_wake_index();
         }
         // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
         #[cfg(target_arch = "x86_64")]
@@ -8104,9 +8133,11 @@ pub fn init_with_current(current_thread: Box<Thread>) {
         scheduler.cpu_state[0].current_thread = Some(thread_id);
 
         *scheduler_lock = Some(scheduler);
-        #[cfg(target_arch = "x86_64")]
         if let Some(scheduler) = scheduler_lock.as_mut() {
+            #[cfg(target_arch = "x86_64")]
             rq::publish_live(scheduler);
+            #[cfg(target_arch = "aarch64")]
+            scheduler.publish_wake_index();
         }
         // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
         #[cfg(target_arch = "x86_64")]
@@ -10249,7 +10280,7 @@ pub fn check_and_clear_need_resched() -> bool {
         if per_cpu {
             crate::per_cpu::set_need_resched(false);
         }
-        per_cpu
+        per_cpu || wake_inbox_pending_here()
     }
     #[cfg(target_arch = "aarch64")]
     {
@@ -10257,7 +10288,7 @@ pub fn check_and_clear_need_resched() -> bool {
         if per_cpu {
             crate::per_cpu_aarch64::set_need_resched(false);
         }
-        per_cpu
+        per_cpu || wake_inbox_pending_here()
     }
 }
 
@@ -10266,38 +10297,31 @@ pub fn check_and_clear_need_resched() -> bool {
 pub fn is_need_resched() -> bool {
     #[cfg(target_arch = "x86_64")]
     {
-        crate::per_cpu::need_resched()
+        crate::per_cpu::need_resched() || wake_inbox_pending_here()
     }
     #[cfg(target_arch = "aarch64")]
     {
-        crate::per_cpu_aarch64::need_resched()
+        crate::per_cpu_aarch64::need_resched() || wake_inbox_pending_here()
     }
 }
 
-/// Count pending ISR wakeups for one CPU.
-///
-/// This is diagnostic-only and lock-free; it reads the wake buffer atomically
-/// without draining it.
+/// Count pending wake nodes for one CPU, for diagnosis.
 pub fn isr_wakeup_depth(cpu: usize) -> usize {
-    if cpu < ISR_WAKEUP_BUFFERS.len() {
-        ISR_WAKEUP_BUFFERS[cpu].depth()
-    } else {
-        0
-    }
+    WAKE_INBOXES.get(cpu).map_or(0, WakeInbox::depth)
 }
 
-/// Whether an interrupt-context wake may be waiting in a buffer for a
-/// scheduling pass (`ISR_WAKEUP_PENDING`). Read without a lock.
+/// Whether this CPU has published work for its next scheduling pass.
+#[cfg(target_arch = "aarch64")]
 pub fn isr_wakeups_pending() -> bool {
-    ISR_WAKEUP_PENDING.load(Ordering::Acquire) != 0
+    wake_inbox_pending_here()
 }
 
-/// Number of interrupt-context wakes that could not be buffered.
+/// The legacy overflow statistic. Admission reserves a node for each task.
 pub fn isr_wakeup_buffer_full() -> u64 {
-    ENQUEUE_ISR_BUFFER_FULL.load(Ordering::Relaxed)
+    0
 }
 
-/// Number of interrupt-context wakes deduplicated against an existing slot.
+/// Number of interrupt-context wakes coalesced into an already pending node.
 pub fn isr_wakeup_buffer_dedup() -> u64 {
     ENQUEUE_ISR_BUFFER_DEDUP.load(Ordering::Relaxed)
 }
@@ -10329,20 +10353,20 @@ pub enum WakeOutcome {
     Applied,
     /// The target thread exists and is already Ready or Running.
     AlreadyRunnable,
-    /// Buffered lock-free into the per-CPU ISR wakeup buffer; the next schedule() applies it.
+    /// Published to its CPU's wake inbox or coalesced with a pending wake.
     Buffered,
-    /// The wake was neither applied nor buffered. The caller must retain it.
+    /// The scheduler found no live target for this TID.
     Rejected,
 }
 
 /// Wake `tid` from any context.
 pub fn wake_thread_any_context(tid: u64) -> WakeOutcome {
     if crate::per_cpu::is_initialized() && crate::per_cpu::in_interrupt() {
-        let outcome = buffer_isr_wakeup(tid);
-        if outcome == WakeOutcome::Buffered {
-            set_need_resched();
+        if publish_irq_wake(tid, WAKE_GENERIC).is_some() {
+            WakeOutcome::Buffered
+        } else {
+            WakeOutcome::Rejected
         }
-        outcome
     } else {
         match unblock_thread(tid) {
             Some(UnblockOutcome::Transitioned) => {
@@ -10355,56 +10379,95 @@ pub fn wake_thread_any_context(tid: u64) -> WakeOutcome {
     }
 }
 
-fn buffer_isr_wakeup(tid: u64) -> WakeOutcome {
-    let cpu = current_cpu_id_raw();
-    if cpu >= ISR_WAKEUP_BUFFERS.len() {
-        ENQUEUE_ISR_BUFFER_FULL.fetch_add(1, Ordering::Relaxed);
-        return WakeOutcome::Rejected;
-    }
+/// Post an I/O wake before the caller gives up ownership of its wait entry.
+/// Every live waiter has room for a wake. A missing or retired TID needs no
+/// delivery, so the caller can remove that entry too.
+pub fn isr_unblock_for_io(tid: u64) {
+    publish_irq_wake(tid, WAKE_IO);
+}
 
-    WAKE_SITE_ISR_UNBLOCK.fetch_add(1, Ordering::Relaxed);
-    match ISR_WAKEUP_BUFFERS[cpu].push(tid) {
-        IsrWakePush::Inserted => {
-            ISR_WAKEUP_PENDING.fetch_or(1 << cpu, Ordering::Release);
-            ENQUEUE_ISR_BUFFER.fetch_add(1, Ordering::Relaxed);
-            WakeOutcome::Buffered
+fn publish_irq_wake(tid: u64, bits: u64) -> Option<u64> {
+    crate::arch_without_interrupts(|| {
+        let previous = publish_wake(tid, bits, None)?;
+        WAKE_SITE_ISR_UNBLOCK.fetch_add(1, Ordering::Relaxed);
+        let count = if previous == 0 { &ENQUEUE_ISR_BUFFER } else { &ENQUEUE_ISR_BUFFER_DEDUP };
+        count.fetch_add(1, Ordering::Relaxed);
+        Some(previous)
+    })
+}
+
+/// IRQs stay masked from the first producer's claim through the link
+/// publication. A concurrent producer may coalesce while that claim is
+/// in flight: the first producer remains responsible for completing it.
+fn publish_wake(tid: u64, bits: u64, placement_home: Option<usize>) -> Option<u64> {
+    #[cfg(target_arch = "x86_64")]
+    let pin = rq::Pin::new();
+    #[cfg(target_arch = "aarch64")]
+    let pin = wake_index::Pin::new();
+    let (node, owner) = pin.lookup(tid)?;
+    let cpu = placement_home.unwrap_or(owner);
+    let inbox = WAKE_INBOXES.get(cpu)?;
+    let replace = placement_home.map_or(0, |_| WAKE_HOME_MASK);
+    // SAFETY: the lookup pin protects the publisher and a pending node
+    // keeps its thread in retirement until the consumer unlinks it.
+    let previous = unsafe { inbox.publish(node, bits, replace) }?;
+    if previous == 0 {
+        WAKE_INBOX_CPUS.fetch_or(1 << cpu, Ordering::Release);
+        kick_wake_inbox(cpu);
+    }
+    Some(previous)
+}
+
+fn kick_wake_inbox(cpu: usize) {
+    if cpu == current_cpu_id_raw() {
+        set_need_resched();
+        return;
+    }
+    #[cfg(target_arch = "aarch64")]
+    if cpu < online_cpus() {
+        send_sgi_outside_scheduler_lock(crate::arch_impl::aarch64::constants::SGI_RESCHEDULE, cpu);
+    }
+    #[cfg(target_arch = "x86_64")]
+    kick_irq_wake_x86(cpu);
+}
+
+fn wake_inbox_advertised(cpu: usize) -> bool {
+    WAKE_INBOX_CPUS.load(Ordering::Acquire) & (1 << cpu) != 0
+}
+
+#[cfg(target_arch = "x86_64")]
+fn stalled_wake_inbox_advertised(here: usize) -> bool {
+    let mut pending = WAKE_INBOX_CPUS.load(Ordering::Acquire) & !(1 << here);
+    while pending != 0 {
+        let cpu = pending.trailing_zeros() as usize;
+        pending &= pending - 1;
+        if !rq::dispatching(cpu) {
+            return true;
         }
-        IsrWakePush::AlreadyPending => {
-            ENQUEUE_ISR_BUFFER_DEDUP.fetch_add(1, Ordering::Relaxed);
-            WakeOutcome::Buffered
-        }
-        IsrWakePush::Full => {
-            if !crate::per_cpu::in_interrupt() {
-                match unblock_thread(tid) {
-                    Some(UnblockOutcome::Transitioned) => WakeOutcome::Applied,
-                    Some(UnblockOutcome::AlreadyRunnable) => WakeOutcome::AlreadyRunnable,
-                    Some(UnblockOutcome::NotFound) | None => WakeOutcome::Rejected,
-                }
-            } else {
-                ENQUEUE_ISR_BUFFER_FULL.fetch_add(1, Ordering::Relaxed);
-                WakeOutcome::Rejected
-            }
-        }
+    }
+    false
+}
+
+/// Caller has the owner run-queue lock, or the full scheduler lock.
+fn drain_wake_inbox(cpu: usize, apply: impl FnMut(u64, u64)) {
+    let inbox = &WAKE_INBOXES[cpu];
+    if !inbox.has_work() && !wake_inbox_advertised(cpu) {
+        return;
+    }
+    // Clear before taking the batch. A publisher racing this pass either
+    // contributes to the detached batch or sets the bit for a later pass.
+    let bit = 1 << cpu;
+    WAKE_INBOX_CPUS.fetch_and(!bit, Ordering::AcqRel);
+    // SAFETY: callers serialize the drain with the inbox owner's lock.
+    if unsafe { inbox.drain(apply) } {
+        WAKE_INBOX_CPUS.fetch_or(bit, Ordering::Release);
+        set_need_resched();
     }
 }
 
-/// Buffer an I/O waiter wake from interrupt or thread context.
-///
-/// Called from the AHCI ISR (via `Completion::complete()`) instead of
-/// `with_scheduler(|s| s.unblock_for_io(tid))`.  This avoids acquiring the
-/// global SCHEDULER mutex on the normal completion path, which was the root
-/// cause of CPU 0's IRQ death: the ISR would spin on the lock with IRQs masked,
-/// starving the timer for milliseconds. On thread-context buffer overflow,
-/// `buffer_isr_wakeup` applies the wake inline so it is not lost.
-///
-/// The scheduler drains the buffer under its own lock at the top of every
-/// `schedule_deferred_requeue()` / `schedule()` call.
-pub fn isr_unblock_for_io(tid: u64) {
-    let _ = buffer_isr_wakeup(tid);
-    set_need_resched();
-    // The current CPU will drain the wake buffer on IRQ-return scheduling.
-    // Avoid broadcasting reschedule SGIs from hard IRQ context; Linux's TTWU
-    // path queues wake work to a selected target CPU rather than scanning idle CPUs.
+#[inline]
+fn wake_inbox_pending_here() -> bool {
+    WAKE_INBOXES.get(current_cpu_id_raw()).is_some_and(WakeInbox::has_work)
 }
 
 /// Read the current CPU ID without taking a lock. ARM64 reads MPIDR_EL1;
