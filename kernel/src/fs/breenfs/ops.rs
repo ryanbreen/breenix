@@ -131,6 +131,30 @@ impl Mapped {
 // claim-lint:ok: in ops.rs the only FS-tree edits are Files::insert, Files::delete and create_empty_root's INODE insert.
 const EXTENT_MAP_BYTES: usize = 1 << 20;
 const EXTENT_MAPS: usize = 64;
+
+// Host tests refuse the extent-map cache's own allocations one at a time
+// (tools/breenfs-host-tests/src/extent_runs.rs); a scope marks them.
+#[cfg(test)]
+pub mod cache_allocations {
+    extern crate std;
+    std::thread_local! {
+        static DEPTH: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
+    }
+    pub struct Scope;
+    impl Drop for Scope {
+        fn drop(&mut self) {
+            let _ = DEPTH.try_with(|depth| depth.set(depth.get() - 1));
+        }
+    }
+    pub fn scope() -> Scope {
+        let _ = DEPTH.try_with(|depth| depth.set(depth.get() + 1));
+        Scope
+    }
+    /// Whether this thread is inside a cache allocation.
+    pub fn active() -> bool {
+        DEPTH.try_with(|depth| depth.get() > 0).unwrap_or(false)
+    }
+}
 const MAP_OVERHEAD: usize = 128;
 const CRCS_OVERHEAD: usize = 64;
 
@@ -1354,9 +1378,13 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
                 last = m.end;
                 // Grow geometrically, capped at `limit` items.
                 let grow = extents.len().clamp(16, limit).min(limit - extents.len());
-                if extents.len() == limit
-                    || (extents.len() == extents.capacity() && extents.try_reserve_exact(grow).is_err())
-                {
+                #[cfg(test)]
+                let cache = cache_allocations::scope();
+                let refused = extents.len() == limit
+                    || (extents.len() == extents.capacity() && extents.try_reserve_exact(grow).is_err());
+                #[cfg(test)]
+                drop(cache);
+                if refused {
                     complete = false;
                     return Ok(false);
                 }
@@ -1385,9 +1413,13 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         if !maps.make_room(bytes) {
             return Ok(false);
         }
+        #[cfg(test)]
+        let cache = cache_allocations::scope();
         maps.maps.insert(ino, ExtentMap {
             extents, oversized, crcs: BTreeMap::new(), bytes, used: maps.clock,
         });
+        #[cfg(test)]
+        drop(cache);
         maps.bytes += bytes;
         Ok(!oversized)
     }
@@ -1414,7 +1446,12 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
                 if *used + cost <= EXTENT_MAP_BYTES {
                     *used += cost;
                     map.bytes += cost;
-                    runs.push(m, map.crcs.entry(phys).or_insert(crcs))?;
+                    #[cfg(test)]
+                    let cache = cache_allocations::scope();
+                    let kept = map.crcs.entry(phys).or_insert(crcs);
+                    #[cfg(test)]
+                    drop(cache);
+                    runs.push(m, kept)?;
                 } else {
                     runs.push(m, &crcs)?;
                 }

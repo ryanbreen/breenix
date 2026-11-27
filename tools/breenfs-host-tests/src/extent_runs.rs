@@ -26,14 +26,19 @@ impl Wait for NoWait {
 /// requests made on the disk itself in `reads`, and requests made through a
 /// `Data` handle in `data_reads`.
 struct Disk {
+    blocks: u64,
     bytes: HostMutex<Vec<u8>>,
     reads: HostMutex<Vec<(u64, usize)>>,
     data_reads: HostMutex<Vec<(u64, usize)>>,
 }
 impl Disk {
     fn new() -> Self {
+        Self::with_blocks(DISK_BLOCKS)
+    }
+    fn with_blocks(blocks: u64) -> Self {
         Self {
-            bytes: HostMutex::new(vec![0; DISK_BLOCKS as usize * BLOCK_SIZE]),
+            blocks,
+            bytes: HostMutex::new(vec![0; blocks as usize * BLOCK_SIZE]),
             reads: HostMutex::new(Vec::new()),
             data_reads: HostMutex::new(Vec::new()),
         }
@@ -63,7 +68,7 @@ impl BlockDevice for Disk {
         Ok(())
     }
     fn block_size(&self) -> usize { BLOCK_SIZE }
-    fn num_blocks(&self) -> u64 { DISK_BLOCKS }
+    fn num_blocks(&self) -> u64 { self.blocks }
     fn flush(&self) -> Result<(), BlockError> { Ok(()) }
 }
 
@@ -82,7 +87,7 @@ impl BlockDevice for Data<'_> {
     }
     fn write_block(&self, block: u64, bytes: &[u8]) -> Result<(), BlockError> { self.0.write_block(block, bytes) }
     fn block_size(&self) -> usize { BLOCK_SIZE }
-    fn num_blocks(&self) -> u64 { DISK_BLOCKS }
+    fn num_blocks(&self) -> u64 { self.0.blocks }
     fn flush(&self) -> Result<(), BlockError> { Ok(()) }
 }
 
@@ -108,7 +113,10 @@ fn commit<'d>(files: &mut Files<'d, DeviceStore<'d>>, disk: &'d Disk, committer:
 
 fn at(tick: i64) -> Time { Time { seconds: tick, nanos: 7 } }
 fn superblock(tag: u8) -> Superblock {
-    Superblock { fs_uuid: [tag; 16], generation: 1, slot: 1, total_blocks: DISK_BLOCKS,
+    superblock_of(tag, DISK_BLOCKS)
+}
+fn superblock_of(tag: u8, total_blocks: u64) -> Superblock {
+    Superblock { fs_uuid: [tag; 16], generation: 1, slot: 1, total_blocks,
         global_reserve: 1024, next_root_id: 2, ..Superblock::default() }
 }
 
@@ -361,4 +369,97 @@ fn population_reads_runs_not_pages() {
         "{pages} pages in {} extents: population made {data_reads} data requests", extents.len());
     drop(binding);
     drop(population);
+}
+
+/// Block `i` of file `f` in the sparse layouts below.
+fn block_bytes(f: usize, i: u64) -> Vec<u8> {
+    (0..BLOCK_SIZE).map(|n| (i as usize * 31 + n * 7 + f * 101) as u8).collect()
+}
+
+/// Files of `counts[f]` single-block extents each: block `i` of file `f`
+/// sits at file block 2i, so a one-block hole follows each item. Returns the
+/// durable superblock and the inodes.
+fn sparse(disk: &Disk, tag: u8, counts: &[u64]) -> (Superblock, Vec<u64>) {
+    let sb = superblock_of(tag, disk.blocks);
+    let mut committer = Committer::format(sb.clone());
+    let mut files = Files::format(DeviceStore(disk), &sb).unwrap();
+    let mut inos = Vec::new();
+    let mut writes = 0;
+    for (f, &count) in counts.iter().enumerate() {
+        let ino = files.create(2, format!("f{f}").as_bytes(), 0o100644, at(1)).unwrap();
+        inos.push(ino);
+        for i in 0..count {
+            files.write(&Data(disk), ino, 2 * i * BLOCK_SIZE as u64, &block_bytes(f, i), at(2)).unwrap();
+            writes += 1;
+            if writes % 5000 == 0 { commit(&mut files, disk, &mut committer); }
+        }
+    }
+    (commit(&mut files, disk, &mut committer), inos)
+}
+
+/// The extent-map cache's budget is 1 MiB per Files view (ops.rs
+/// EXTENT_MAP_BYTES), and it bounds the map being built as well as the maps
+/// kept. Fifty small maps fill most of it; a cold read of a 5,000-extent
+/// file must then evict before it builds its map. The check: the view's heap
+/// grows by at most the budget plus the read's own transient buffers.
+#[test]
+fn extent_maps_stay_within_their_budget_while_a_map_is_built() {
+    const BUDGET: isize = 1 << 20;
+    // Node buffers and decoded nodes on root-to-leaf paths, the REF
+    // checksums of one extent and the staging for one run.
+    const TRANSIENT: isize = 128 << 10;
+    // Items are 40 bytes: each small map is 20,000 bytes, the large one 200,000.
+    let mut counts = vec![500; 50];
+    counts.push(5_000);
+    let disk = Disk::with_blocks(65_536);
+    let (durable, inos) = sparse(&disk, 0x64, &counts);
+    let files = Files::new(DeviceStore(&disk), &durable, 1, false).unwrap();
+    assert_eq!(files.extents(inos[50]).unwrap().len(), 5_000);
+    let mut one = vec![0; BLOCK_SIZE];
+    let base = super::dirty_heap_bound::reset_peak();
+    let reads = (0..50).map(|f| (f, 7)).chain([(50, 4_321), (0, 499), (49, 3)]);
+    for (f, i) in reads {
+        files.read(&Data(&disk), inos[f], 2 * i * BLOCK_SIZE as u64, &mut one).unwrap();
+        assert!(one == block_bytes(f, i), "file {f} block {i}");
+    }
+    let grew = super::dirty_heap_bound::peak() - base;
+    assert!(grew <= BUDGET + TRANSIENT,
+        "cold reads of 50 small files and one large one grew the heap by {grew} bytes; budget {BUDGET} + {TRANSIENT}");
+}
+
+/// Each heap allocation the extent-map cache makes during a cold read may be
+/// refused, as the kernel heap refuses under pressure; an infallible one
+/// would take the heap's failure path, which panics the kernel. The read
+/// still returns the file's bytes, through the B-tree seek when the cache
+/// cannot hold its map, and the same view reads correctly afterwards.
+#[test]
+fn a_cold_read_survives_each_refused_cache_allocation() {
+    const BLOCKS: u64 = 40;
+    let disk = Disk::new();
+    let (durable, inos) = sparse(&disk, 0x65, &[BLOCKS]);
+    let a = inos[0];
+    let size = (2 * BLOCKS as usize - 1) * BLOCK_SIZE;
+    let mut expected = vec![0; size];
+    for i in 0..BLOCKS {
+        write_shadow(&mut expected, 2 * i as usize * BLOCK_SIZE, &block_bytes(0, i));
+    }
+    let mut buf = vec![0; size + BLOCK_SIZE];
+    let mut nth = 1;
+    loop {
+        let files = Files::new(DeviceStore(&disk), &durable, 1, false).unwrap();
+        buf.fill(0xa5);
+        let (result, reached) = super::dirty_heap_bound::fail_nth_cache_allocation(nth, || {
+            files.read(&Data(&disk), a, 0, &mut buf)
+        });
+        assert_eq!(result.ok(), Some(size), "cache allocation {nth} refused");
+        assert!(buf[..size] == expected[..], "cache allocation {nth} refused: bytes differ");
+        buf.fill(0xa5);
+        assert_eq!(files.read(&Data(&disk), a, 0, &mut buf).unwrap(), size, "after refusal {nth}");
+        assert!(buf[..size] == expected[..], "after refusal {nth}: bytes differ");
+        if !reached {
+            break;
+        }
+        nth += 1;
+    }
+    assert!(nth > 2, "a cold read made only {} cache allocations", nth - 1);
 }
