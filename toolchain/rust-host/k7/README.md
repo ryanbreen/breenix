@@ -157,6 +157,15 @@ contains the stage-1 Mac rlibs retained from the twin build.
 
 ## Cargo image staging
 
+The ARM64 QEMU launcher stages the hosted Cargo runner for `cargo` and
+`rustc,cargo`. Set `BREENIX_K7_STAGE` to the retained stage root with the
+ARM Cargo executable at `aarch64/bin/cargo`. Set `BREENIX_RUSTC_PORT_BUILDS`
+to the ARM K5 cache. `BREENIX_K5_SYSROOT` and `BREENIX_K6_AARCH64_FIXTURE`
+can select the retained sysroot and linker capture. Use the ARM
+[hosted libc pin](../hosted-libc-aarch64.json) for `BREENIX_HOSTED_LIBC`.
+The ARM launcher reads its memory minimum from the
+[Cargo suite manifest](../../../docs/suites/cargo.json).
+
 Select `cargo`, `rustc`, or `rustc,cargo` on the Mac metal builder. For Cargo,
 set `BREENIX_K7_STAGE` to the directory containing `bin/cargo`. Set `BREENIX_RUSTC_PORT_BUILDS`
 pointing at the retained K5 build. The [retained K8 fixture](../k6/README.md#retained-fixture-for-k8)

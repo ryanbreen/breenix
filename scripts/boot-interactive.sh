@@ -426,10 +426,10 @@ if [ "$BUILD" -eq 1 ]; then
         run_build "$ROOT/userspace/programs/build.sh" --arch aarch64 --hosted-bin suite-llvm --features llvm
         run_build "$ROOT/userspace/programs/build.sh" --arch aarch64 --llvm
     fi
-    if [ "$MODE" = suite ] && [[ ",$SUITE," == *,rust-link,* ]]; then
+    if [ "$MODE" = suite ] && [[ ",$SUITE," =~ ,(rust-link|cargo), ]]; then
         run_build "$ROOT/userspace/programs/build.sh" --arch aarch64 --rust-link
     fi
-    if [ "$MODE" = suite ] && [[ ",$SUITE," == *,rustc,* ]]; then
+    if [ "$MODE" = suite ] && [[ ",$SUITE," =~ ,(rustc|cargo), ]]; then
         KD_ARM_DIR="${BREENIX_KD_BUILD_DIR:-$ROOT/userspace/programs/target/kd/aarch64}"
         K5_CACHE="${BREENIX_RUSTC_PORT_BUILDS:-$ROOT/build/rustc-port}"
         BREENIX_KD_LIBC_INPUT="${BREENIX_KD_LIBC_INPUT:-${BREENIX_HOSTED_LIBC:-$K5_CACHE/shared-libc/libc.so}}"
@@ -438,7 +438,12 @@ if [ "$BUILD" -eq 1 ]; then
             exit 1
         fi
         export BREENIX_KD_LIBC_INPUT
-        run_build "$ROOT/userspace/programs/build.sh" --arch aarch64 --hosted-bin suite-rustc --features rustc
+        if [[ ",$SUITE," == *,rustc,* ]]; then
+            run_build "$ROOT/userspace/programs/build.sh" --arch aarch64 --hosted-bin suite-rustc --features rustc
+        fi
+        if [[ ",$SUITE," == *,cargo,* ]]; then
+            run_build "$ROOT/userspace/programs/build.sh" --arch aarch64 --cargo-suite
+        fi
         run_build "$ROOT/userspace/programs/build.sh" --arch aarch64 --rustc
         if [[ ",$SUITE," != *,dynamic,* ]]; then
             run_build "$ROOT/userspace/programs/build.sh" --arch aarch64 --kd-loader
@@ -616,7 +621,7 @@ if [ "$MODE" = suite ]; then
     # The first suite runs from fw_cfg; the list on the disk tells each suite which runs next.
     SEQUENCE=
     if [[ "$SUITE" == *,* ]]; then SEQUENCE="$SUITE"; fi
-    if [[ ",$SUITE," == *,rust-host,* || ",$SUITE," == *,cxx-runtime,* || ",$SUITE," == *,llvm,* || ",$SUITE," == *,dynamic,* || ",$SUITE," == *,rustc,* || ",$SUITE," == *,rust-link,* ]]; then
+    if [[ ",$SUITE," =~ ,(rust-host|cxx-runtime|llvm|dynamic|rustc|rust-link|cargo), ]]; then
         python3 "$ROOT/scripts/rust_host_stage.py" --arch aarch64 --image "$WRITABLE" --suite "$SUITE"
     fi
     "$ROOT/scripts/write-boot-target.sh" "$WRITABLE" "${SUITE%%,*}" \
