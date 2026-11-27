@@ -107,24 +107,38 @@ impl block::BlockDevice for Disk {
 pub struct Fixture(MountPin, Arc<AtomicBool>, Arc<AtomicBool>);
 impl Fixture {
     pub fn new() -> Self {
+        Self::with_layout(512, 21)
+    }
+    /// A 15-block (60 KiB) volume: smaller than one 64 KiB mmap population
+    /// run. Its root directory is block 12, right after the inode table.
+    pub fn small() -> Self {
+        Self::with_layout(15, 12)
+    }
+    /// One group of `blocks` 4 KiB blocks: bitmaps in blocks 3 and 4, the
+    /// 128-inode table in blocks 8 to 11, and the root directory in block
+    /// `root`. Blocks 0 to `root` are in use.
+    fn with_layout(blocks: u32, root: usize) -> Self {
+        let root_block = root as u32;
         let mut bytes = vec![0; 512 * 4096];
-        bytes[3 * 4096..3 * 4096 + 2].fill(0xff);
-        bytes[3 * 4096 + 2] = 0x3f;
+        for block in 0..=root {
+            bytes[3 * 4096 + block / 8] |= 1 << (block % 8);
+        }
         bytes[4 * 4096] = 3;
-        bytes[21 * 4096 + 4..21 * 4096 + 6].copy_from_slice(&4096u16.to_le_bytes());
+        bytes[root * 4096 + 4..root * 4096 + 6].copy_from_slice(&4096u16.to_le_bytes());
+        let free = blocks - root as u32 - 1;
         let mut sb = Ext2Superblock::from_bytes(&[0; 1024]).unwrap();
-        sb.s_blocks_count = 512;
-        sb.s_free_blocks_count = 490;
+        sb.s_blocks_count = blocks;
+        sb.s_free_blocks_count = free;
         sb.s_inodes_count = 128;
         sb.s_free_inodes_count = 126;
         sb.s_log_block_size = 2;
-        sb.s_blocks_per_group = 512;
+        sb.s_blocks_per_group = blocks;
         sb.s_inodes_per_group = 128;
         let mut group: Ext2BlockGroupDesc = unsafe { core::mem::zeroed() };
         group.bg_inode_table = 8;
         group.bg_block_bitmap = 3;
         group.bg_inode_bitmap = 4;
-        group.bg_free_blocks_count = 490;
+        group.bg_free_blocks_count = free as u16;
         group.bg_free_inodes_count = 126;
         let read_only = Arc::new(AtomicBool::new(false));
         let fail_write = Arc::new(AtomicBool::new(false));
@@ -140,7 +154,7 @@ impl Fixture {
         let mut root = Ext2Inode::new_directory(0o755);
         root.i_size = 4096;
         root.i_blocks = 8;
-        root.i_block[0] = 21;
+        root.i_block[0] = root_block;
         fs.write_inode(2, &root).unwrap();
         fs.superblock.write_to(fs.device.as_ref()).unwrap();
         Ext2BlockGroupDesc::write_table(fs.device.as_ref(), &fs.superblock, &fs.block_groups)
