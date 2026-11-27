@@ -31,18 +31,45 @@ class StartupProbeTest(unittest.TestCase):
         suite = release / 'suite-rust-host'
         self.assertEqual((ROOT / 'userspace/programs/aarch64/suite-rust-host.elf').read_bytes(),
                          suite.read_bytes())
-        for elf in (suite, *(release / f'rust-host-{name}-probe'
-                             for name in ('startup', 'process', 'unwind'))):
-            with self.subTest(elf=elf.name):
-                [report] = json.loads(subprocess.check_output([
-                    READELF, '--elf-output-style=JSON', '--file-header', '--program-headers', elf,
-                ]))
-                self.assertEqual(report['ElfHeader']['Machine']['Value'], 183)
-                headers = {row['ProgramHeader']['Type']['Value']: row['ProgramHeader']
-                           for row in report['ProgramHeaders']}
-                self.assertIn(0x6474E550, headers)  # PT_GNU_EH_FRAME
-                self.assertGreater(headers[7]['MemSize'], 0)  # PT_TLS
-                self.assertIn(0x6474E551, headers)  # PT_GNU_STACK
+        x86_release = HOSTED / 'x86_64-breenix-hosted/release'
+        for name in ('suite-rust-host', 'rust-host-startup-probe', 'rust-host-process-probe',
+                     'rust-host-unwind-probe'):
+            with self.subTest(elf=name):
+                arm_elf = release / name
+                x86_elf = x86_release / name
+                arm_machine, arm_headers = self.elf_headers(arm_elf)
+                x86_machine, x86_headers = self.elf_headers(x86_elf)
+                self.assertEqual(arm_machine, 183)
+                self.assertEqual(x86_machine, 62)
+                self.assertIn(0x6474E550, arm_headers)  # PT_GNU_EH_FRAME
+                self.assertIn(0x6474E551, arm_headers)  # PT_GNU_STACK
+
+                # Ruling 145(1): only the startup probe requires native TLS.
+                # Its startup-order guest case checks that the TLS works.
+                arm_tls = arm_headers.get(7)  # PT_TLS
+                x86_tls = x86_headers.get(7)
+                if x86_tls and x86_tls['MemSize'] > 0:
+                    self.assertGreater((arm_tls or {}).get('MemSize', 0), 0,
+                                       'ARM twin lacks the x86 TLS template')
+                for elf, tls in ((arm_elf, arm_tls), (x86_elf, x86_tls)):
+                    with self.subTest(elf=elf):
+                        if name == 'rust-host-startup-probe':
+                            self.assertIsNotNone(tls)
+                            self.assertGreater(tls['MemSize'], 0)
+                        elif tls is not None:
+                            self.assertGreaterEqual(tls['MemSize'], tls['FileSize'])
+                            align = tls['Alignment']
+                            self.assertTrue(align > 0 and (align & (align - 1)) == 0,
+                                            f'PT_TLS p_align={align} must be a power of two')
+                            self.assertLessEqual(tls['Offset'] + tls['FileSize'], elf.stat().st_size)
+
+    def elf_headers(self, elf):
+        [report] = json.loads(subprocess.check_output([
+            READELF, '--elf-output-style=JSON', '--file-header', '--program-headers', elf,
+        ]))
+        headers = {row['ProgramHeader']['Type']['Value']: row['ProgramHeader']
+                   for row in report['ProgramHeaders']}
+        return report['ElfHeader']['Machine']['Value'], headers
 
     def test_unwind_personality_slot_is_readable_by_bunwind(self):
         for arch in ('x86_64', 'aarch64'):
