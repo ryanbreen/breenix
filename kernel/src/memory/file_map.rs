@@ -220,6 +220,9 @@ struct MapInner {
     poisoned: PageVec<()>,
     /// Sorted by id: ids are issued under this lock, in increasing order.
     bindings: Vec<BindingRec>,
+    /// Page ranges `[first, last)` of populations whose binding is not yet
+    /// published. Eviction treats them as bound (see `Population`).
+    populating: Vec<(u64, u64)>,
     writable_shared: usize,
     writeback_cursor: u64,
     /// The request generation the traversal at `writeback_cursor` began
@@ -630,6 +633,7 @@ impl MapState {
                     pages: PageVec::new(),
                     poisoned: PageVec::new(),
                     bindings: Vec::new(),
+                    populating: Vec::new(),
                     writable_shared: 0,
                     writeback_cursor: 0,
                     writeback_epoch: 0,
@@ -1101,16 +1105,25 @@ impl MapState {
     }
 
     /// Retire cache pages no binding covers. The filesystem write guard
-    /// excludes population and every mutation hook.
+    /// excludes every mutation hook. Population reads and publishes without
+    /// that guard, so a page a population still has to bind counts as bound
+    /// here; its eviction stays pending until the population ends.
     pub(crate) fn evict(&self, budget: &mut usize) -> bool {
         let mut inner = self.state.inner.lock();
         let MapInner {
             pages,
             poisoned,
             bindings,
+            populating,
             ..
         } = &mut *inner;
-        let unbound = |index: u64| !bindings.iter().any(|rec| rec.covers(index));
+        let unmapped = |index: u64| !bindings.iter().any(|rec| rec.covers(index));
+        let unbound = |index: u64| {
+            unmapped(index)
+                && !populating
+                    .iter()
+                    .any(|&(first, last)| first <= index && index < last)
+        };
         poisoned.retain(|index| !unbound(index));
         // Retired frames are released in place: the frame allocator follows
         // the map lock in the lock order.
@@ -1129,8 +1142,9 @@ impl MapState {
             .store(!pages.is_empty() || !poisoned.is_empty(), Ordering::Release);
         // Dirty unbound pages still owe eviction after writeback. Preserve
         // that request even when this pass has no clean page left to retire;
-        // writeback owns rescheduling until those pages become clean.
-        let pending = pages.entries.iter().any(|(index, _)| unbound(*index));
+        // writeback owns rescheduling until those pages become clean. Pages
+        // only a population holds stay pending; its drop requests the pass.
+        let pending = pages.entries.iter().any(|(index, _)| unmapped(*index));
         self.state.eviction_pending.store(pending, Ordering::Release);
         more
     }
@@ -1467,22 +1481,71 @@ pub(crate) enum MapError {
     Io,
 }
 
+/// A population's transfer lease and its claim on the pages it populates.
+/// Until it is dropped, after mmap has published the binding or given up,
+/// eviction keeps the pages of `[first, last)`: the binding is published
+/// later, and a fault on a bound page the cache lacks maps a zero page.
+pub(crate) struct Population {
+    file: Box<dyn MappingIo>,
+    map: MapState,
+    first: u64,
+    last: u64,
+}
+
+impl core::ops::Deref for Population {
+    type Target = dyn MappingIo;
+
+    fn deref(&self) -> &Self::Target {
+        &*self.file
+    }
+}
+
+impl Drop for Population {
+    fn drop(&mut self) {
+        {
+            let mut inner = self.map.state.inner.lock();
+            let range = (self.first, self.last);
+            if let Some(slot) = inner.populating.iter().position(|claim| *claim == range) {
+                inner.populating.swap_remove(slot);
+            }
+        }
+        // An eviction deferred for these pages may proceed now.
+        if self.map.eviction_pending() {
+            self.map.state.filesystem.request_eviction();
+        }
+    }
+}
+
 /// Populate absent pages through a stable per-inode transfer lease. File
 /// bytes are read without a mount guard; the map lock publishes the cache.
+/// The returned population holds the pages against eviction until dropped.
 pub(crate) fn populate(
     handle: &VNode,
     first: u64,
     count: u64,
-) -> Result<Box<dyn MappingIo>, MapError> {
+) -> Result<Population, MapError> {
     let file = handle.filesystem.mapping_io(handle).map_err(|_| MapError::Io)?;
     let map = &handle.map;
     let size = handle.size.load(Ordering::Acquire);
     let last = first.saturating_add(count).min(pages(size));
+    // Claim the range before looking at the cache, so a page found resident
+    // here is still resident when the binding is published.
     let wanted = {
-        let inner = map.state.inner.lock();
+        let mut inner = map.state.inner.lock();
+        inner
+            .populating
+            .try_reserve(1)
+            .map_err(|_| MapError::NoMemory)?;
+        inner.populating.push((first, last));
         (first..last)
             .filter(|index| !inner.pages.contains(*index))
             .count()
+    };
+    let file = Population {
+        file,
+        map: map.clone(),
+        first,
+        last,
     };
     if wanted == 0 {
         return Ok(file);
@@ -1521,8 +1584,9 @@ pub(crate) fn populate(
 }
 
 /// Register a binding for a new file VMA. PROCESS_MANAGER held, and the
-/// population lease and the mount read guard held through publication, so
-/// no content mutation or eviction has removed the populated pages.
+/// population (its lease and its claim on the range) and the mount read guard
+/// held through publication, so no content mutation or eviction has removed
+/// the populated pages.
 pub(crate) fn bind(
     handle: Arc<VNode>,
     pid: ProcessId,

@@ -37,6 +37,9 @@ fn main() {
         "fn bound_runs(",
         // Population is production code; MappingIo is the host BreenFS transfer.
         "pub(crate) enum MapError",
+        "pub(crate) struct Population",
+        "impl core::ops::Deref for Population",
+        "impl Drop for Population",
         "pub(crate) fn populate(",
     ] {
         out.push_str(&item(&source, marker));
