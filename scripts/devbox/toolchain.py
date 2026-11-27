@@ -52,6 +52,22 @@ def copy_pinned(root, name, source, mode, digest):
     return {'size': path.stat().st_size, 'mode': mode, 'sha256': digest}
 
 
+def runtime_path(out, toolchain_id):
+    return out.parent / 'runtime' / toolchain_id
+
+
+def verify_retained_runtime(directory, files):
+    if (directory.is_symlink() or not directory.is_dir() or
+            {path.name for path in directory.iterdir()} != {Path(name).name for name in files}):
+        raise ValueError(f'staged runtime differs: {directory}')
+    for name, facts in files.items():
+        path = directory / Path(name).name
+        if (path.is_symlink() or not path.is_file() or
+                stat.S_IMODE(path.stat().st_mode) != int(facts['mode'], 8) or
+                sha256(path) != facts['sha256']):
+            raise ValueError(f'staged runtime differs: {path}')
+
+
 def stage(out, records, *, artifacts, sysroot, targets, fixture, cargo, bld, kd):
     k5, k6, k7 = (read_json(records / name / f'{ARCH}.json')
                   for name in ('k5', 'k6', 'k7'))
@@ -96,21 +112,11 @@ def stage(out, records, *, artifacts, sysroot, targets, fixture, cargo, bld, kd)
                 Path(directory).chmod(0o755)
 
         destination = out / toolchain_id
-        runtime_destination = out.parent / 'runtime' / ARCH
+        runtime_destination = runtime_path(out, toolchain_id)
         if destination.exists() or destination.is_symlink():
             raise ValueError(f'staged toolchain already exists: {destination}')
         if runtime_destination.exists() or runtime_destination.is_symlink():
-            # Multiple versions can share an identical runtime in one cache.
-            if (runtime_destination.is_symlink() or
-                    {path.name for path in runtime_destination.iterdir()} !=
-                    {Path(name).name for name in runtime_files}):
-                raise ValueError(f'staged runtime differs: {runtime_destination}')
-            for name, facts in runtime_files.items():
-                path = runtime_destination / Path(name).name
-                if (path.is_symlink() or not path.is_file() or
-                        stat.S_IMODE(path.stat().st_mode) != int(facts['mode'], 8) or
-                        sha256(path) != facts['sha256']):
-                    raise ValueError(f'staged runtime differs: {path}')
+            verify_retained_runtime(runtime_destination, runtime_files)
         else:
             runtime_destination.parent.mkdir(parents=True, exist_ok=True)
             runtime.rename(runtime_destination)
@@ -118,13 +124,24 @@ def stage(out, records, *, artifacts, sysroot, targets, fixture, cargo, bld, kd)
     return toolchain_id
 
 
-def current_line(out, toolchain_id):
+def current_line(out, toolchain_id, installed_digests):
     if not TOOLCHAIN_ID.fullmatch(toolchain_id):
         raise ValueError('invalid toolchain id')
     path = out / toolchain_id / 'MANIFEST.json'
     manifest = read_json(path)
     if manifest.pop('id') != toolchain_id or manifest_id(manifest) != toolchain_id:
         raise ValueError(f'manifest does not match {toolchain_id}')
+    runtime = manifest['runtime']
+    verify_retained_runtime(runtime_path(out, toolchain_id), runtime)
+    installed = {}
+    for line in installed_digests:
+        match = re.fullmatch(r'([0-9a-f]{64}) [ *](/lib/[a-z.-]+)', line.rstrip('\n'))
+        if not match or match[2] not in runtime or match[2] in installed:
+            raise ValueError('invalid installed runtime SHA-256 listing')
+        installed[match[2]] = match[1]
+    for name, facts in runtime.items():
+        if installed.get(name) != facts['sha256']:
+            raise ValueError(f'installed runtime SHA-256 for {name} differs from {toolchain_id}')
     return toolchain_id
 
 
@@ -152,7 +169,7 @@ def main():
                          help='directory containing the pinned E25 bld')
     staging.add_argument('--kd', type=Path, default=input_path(
         'BREENIX_KD_BUILD_DIR', programs / 'kd'), help='directory containing the pinned runtime')
-    current = commands.add_parser('current', help='print the one-line activation payload')
+    current = commands.add_parser('current', help='check installed SHA-256s from stdin and print CURRENT')
     current.add_argument('--out', type=Path, required=True)
     current.add_argument('id')
     args = parser.parse_args()
@@ -162,7 +179,7 @@ def main():
                            sysroot=args.sysroot, targets=ROOT, fixture=args.fixture,
                            cargo=args.cargo, bld=args.bld, kd=args.kd)
         else:
-            result = current_line(args.out, args.id)
+            result = current_line(args.out, args.id, sys.stdin)
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
         parser.exit(1, f'{parser.prog}: {error}\n')
     print(result)

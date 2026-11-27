@@ -87,6 +87,13 @@ class ToolchainStageTest(unittest.TestCase):
         with patch.object(toolchain, 'verify_hosted_elf'):
             return toolchain.stage(self.out, self.records, **self.inputs)
 
+    def current(self, candidate, runtime):
+        digests = ''.join(f'{digest}  /lib/{name}\n' for name, digest in runtime.items())
+        return subprocess.run(
+            [sys.executable, toolchain.__file__, 'current', '--out', self.out, candidate],
+            input=digests.encode(), capture_output=True, check=False, timeout=10,
+        )
+
     def test_digest_refusal_leaves_no_candidate(self):
         for path in (self.inputs['artifacts'] / DRIVER, self.inputs['sysroot'] / TOOL_RLIB,
                      self.inputs['cargo'], self.inputs['targets'] / 'x86_64-breenix.json',
@@ -98,7 +105,7 @@ class ToolchainStageTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'SHA-256'):
                     self.stage()
                 self.assertFalse(list(self.out.glob('x86_64-*')))
-                self.assertFalse((self.out.parent / 'runtime/x86_64').exists())
+                self.assertFalse((self.out.parent / 'runtime').exists())
                 path.write_bytes(original)
 
     def test_changed_payload_and_receipt_cannot_override_pins(self):
@@ -146,7 +153,7 @@ class ToolchainStageTest(unittest.TestCase):
             })
         self.assertEqual(set(manifest['runtime']), {f'/lib/{name}' for name in self.runtime})
         for name, digest in self.runtime.items():
-            path = self.out.parent / 'runtime/x86_64' / name
+            path = self.out.parent / 'runtime' / toolchain_id / name
             self.assertEqual(manifest['runtime'][f'/lib/{name}'], {
                 'size': path.stat().st_size, 'mode': '0755', 'sha256': digest,
             })
@@ -158,21 +165,46 @@ class ToolchainStageTest(unittest.TestCase):
         toolchain_id = self.stage()
         self.assertEqual(existing.read_bytes(), b'x86_64-12345678-abcdef01\n')
 
-        def current(candidate):
-            return subprocess.run(
-                [sys.executable, toolchain.__file__, 'current', '--out', self.out, candidate],
-                capture_output=True, check=False, timeout=10,
-            )
-
-        valid = current(toolchain_id)
+        valid = self.current(toolchain_id, self.runtime)
         self.assertEqual(valid.returncode, 0, valid.stderr)
         self.assertEqual(valid.stdout, f'{toolchain_id}\n'.encode())
         for candidate in ('../' + toolchain_id, toolchain_id + '\n', 'x86_64-12345678-abcdef01'):
             with self.subTest(candidate=candidate):
-                invalid = current(candidate)
+                invalid = self.current(candidate, self.runtime)
                 self.assertNotEqual(invalid.returncode, 0)
                 self.assertEqual(invalid.stdout, b'')
         self.assertEqual(existing.read_bytes(), b'x86_64-12345678-abcdef01\n')
+
+    def test_rollback_requires_both_installed_runtime_digests(self):
+        previous = self.stage()
+        for installed in ({}, {'ld-breenix.so': '0' * 64, 'libc.so': '1' * 64},
+                          {**self.runtime, 'ld-breenix.so': '0' * 64},
+                          {**self.runtime, 'libc.so': '1' * 64}):
+            with self.subTest(installed=installed):
+                refused = self.current(previous, installed)
+                self.assertNotEqual(refused.returncode, 0)
+                self.assertEqual(refused.stdout, b'')
+                self.assertIn(b'installed runtime', refused.stderr)
+        restored = self.current(previous, self.runtime)
+        self.assertEqual(restored.returncode, 0, restored.stderr)
+        self.assertEqual(restored.stdout, f'{previous}\n'.encode())
+        (self.out.parent / 'runtime' / previous / 'libc.so').unlink()
+        missing_backup = self.current(previous, self.runtime)
+        self.assertNotEqual(missing_backup.returncode, 0)
+        self.assertEqual(missing_backup.stdout, b'')
+        self.assertIn(b'staged runtime differs', missing_backup.stderr)
+
+    def test_staging_changed_runtime_retains_previous_runtime(self):
+        previous = self.stage()
+        previous_runtime = self.runtime.copy()
+        self.runtime['libc.so'] = self.put(self.inputs['kd'] / 'libc.so', b'next libc')
+        self.record(self.records / 'hosted-libc-x86_64.json', {'sha256': self.runtime['libc.so']})
+        candidate = self.stage()
+        self.assertNotEqual(previous, candidate)
+        for version, runtime in ((previous, previous_runtime), (candidate, self.runtime)):
+            for name, digest in runtime.items():
+                path = self.out.parent / 'runtime' / version / name
+                self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), digest)
 
 
 if __name__ == '__main__':
