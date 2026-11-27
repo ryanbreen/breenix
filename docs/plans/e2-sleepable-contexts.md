@@ -195,23 +195,52 @@ The event-queue half is brief B1, rewritten in PR E2.1. The park half wraps it.
 park::wait(queue, cond, deadline, mode) -> WaitEnd
   0. ctx = context(); if ctx != Sleepable -> receipt, return Err(NotSleepable)
   1. reserve the waiter node; failure -> return NoMemory (nothing published; B1 req. 3)
-  2. lock queue; if cond() -> unlock, return Condition
-     link the node; state := Parking(mode, deadline); unlock          (B1 req. 1-2)
-  3. if mode allows signals and one is pending -> end Interrupted     (#1230 order)
-  4. commit: release the baseline, switch out if still Parking -> Parked
-  5. on return: unlink if still linked, state := Running, restore the baseline (B1 req. 6, 9)
+  2. seq := ++thread.wait_seq
+     lock queue; if cond() -> unlock, return Condition
+     link the node tagged seq; state := Parking(seq, mode, deadline); unlock   (B1 req. 1-2)
+  3. commit, one scheduler transaction (the owning CPU's run-queue lock, interrupts masked):
+       state is Runnable(seq, reason)      -> end reason   (a wake, signal or deadline landed first)
+       deadline has passed                 -> end Timeout
+       mode admits a pending signal        -> end Interrupted or Killed          (#1230 order)
+       otherwise: state := Parked(seq); arm the one-shot deadline;
+                  release the baseline (and E2.2's publication level, §3.2); switch out
+  4. on every end, from step 2 on: unlink each node tagged seq, cancel the deadline, state := Running,
+     restore the entry depth and the entry interrupt mask                         (B1 req. 6, 9)
   -> WaitEnd::{Condition, Woken, Timeout, Interrupted(EINTR | ERESTARTSYS), Killed, NoMemory}
 ```
+
+- **Wait identity.** `wait_seq` is a per-thread counter, distinct from the process-manager `WaitEpoch`
+  that `tests/wait_epoch.rs` pins. Each node, deadline and wake carries the `seq` it was made for. Every
+  end of a wait is one transition, `Parking(seq)` or `Parked(seq)` to `Runnable(seq, reason)`, made under
+  the owning CPU's run-queue lock. A transition whose `seq` does not match the thread's current one, or
+  that finds the thread already `Runnable` or `Running`, does nothing. So the first of wake, deadline,
+  signal and kill to reach the thread wins and records its reason, and the rest are no-ops. <!-- claim-lint:ok: normative requirement of docs/plans/e2-sleepable-contexts.md under ruling DEV-37(2), not a measured result. -->
+- **Arrivals before the commit.** A signal sender, the deadline and a waker all make that transition
+  whether the thread is `Parking` or `Parked`. A signal sent between step 2 and step 3 is therefore seen
+  either as `Runnable(seq, Interrupted)` when the commit looks, or by the commit's own pending-signal
+  check. The two orders end the same way. The same holds for a deadline that passes before the commit:
+  either the commit sees it has passed, or the timer, armed in the commit, fires at once and makes the
+  transition. <!-- claim-lint:ok: normative requirement of docs/plans/e2-sleepable-contexts.md under ruling DEV-37(2), not a measured result. -->
+- **Rollback.** Step 4 runs on every exit after step 2, including `Condition` from step 2 itself and the
+  ends from step 3 that never switched. It restores the entry depth and the entry interrupt mask, not
+  merely the baseline, so a caller that entered with interrupts masked (an x86 syscall until §4.3) leaves
+  with them masked. <!-- claim-lint:ok: normative requirement of docs/plans/e2-sleepable-contexts.md under ruling DEV-37(2), not a measured result. -->
+- **Assertions.** In testing builds, the commit and each transition write a receipt if they find a
+  state other than the ones above for their `seq`. They sit at the scheduler boundary, in the run-queue
+  code, not in the callers.
 
 - **Wakers.** A waker makes the condition true with a release store, then takes the queue lock. From task
   context it hands each chosen node to the scheduler, which moves `Parking` or `Parked` to `Runnable`. It
   unlinks the node only after the scheduler has accepted the wake (B1 requirement 7). From hard IRQ it
   uses try-lock and the durable `isr_unblock_for_io` (B1 requirement 4).
-- **Waiting on several queues.** `park::wait_any` registers on each of its queues, publishes once, rechecks each
-  condition, then commits. It is the `add_waiter` / `take_waiter` shape from B1's caller table, used by
-  poll, select, epoll and the GPU and console multi-waits.
-- **Timeouts.** A timeout and a wake race to move the state from `Parked` to `Runnable`. Whichever moves it
-  first records the end reason, so the wait ends once (B1 requirement 8).
+- **Waiting on several queues.** `park::wait_any` takes one `seq` for the whole wait. It registers a node
+  tagged `seq` on each of its queues, checking that queue's condition under that queue's lock, and
+  publishes `Parking(seq)` once. It then runs the same step 3 once and the same step 4, which unlinks
+  every node tagged `seq`. A wake through any one queue makes the transition, and wakes through the
+  others find it made. It is the `add_waiter` / `take_waiter` shape from B1's caller table, used by poll,
+  select, epoll and the GPU and console multi-waits. <!-- claim-lint:ok: normative requirement of docs/plans/e2-sleepable-contexts.md under ruling DEV-37(2), not a measured result. -->
+- **Timeouts.** A timeout and a wake race to make the transition. Whichever makes it first records the
+  end reason, so the wait ends once (B1 requirement 8).
 - **Signals and kill.** An `Interruptible` wait ends on any pending unblocked signal. A `Killable` wait ends
   only on SIGKILL. An `Uninterruptible` wait ends only on its condition or its deadline. Kill delivery stays
   with `KillCustody`.
@@ -242,7 +271,7 @@ to a different location, so x86 needs a locked instruction or MFENCE. Arm needs 
   reason (`kernel/src/interrupts/context_switch.rs:243-281`). <!-- claim-lint:ok: read from kernel/src/arch_impl/aarch64/context_switch.rs at f52fd83c. -->
 - **Under E2.** `Parking` is a published but uncommitted state. An involuntary switch out of a `Parking`
   thread treats it as runnable and requeues it. A wake that lands meanwhile turns it into `Runnable` and
-  `Woken`. Only step 4 of §3.3 dequeues the thread.
+  `Woken`. Only the commit, step 3 of §3.3, dequeues the thread.
 - **Halting as current.** Halting or WFI-ing as the current thread survives only in idle, in the early-boot
   polled path and in x86's existing "pinned here and nothing else is queued" case
   (`kernel/src/lib.rs:638-644`). That case is equivalent to running idle. Non-preemptible callers of
@@ -616,6 +645,11 @@ should own each, not several agents on one PR (DEV-30(3)).
 - **Tests:**
   - a host table test of `context()` across its input space;
   - a host model of the baseline: each `WaitEnd` returns with the caller's entry depth (B1 requirement 9);
+  - a host model of the commit transaction, for `wait` and for `wait_any` over two queues. It places a
+    wake, a signal of each mode, a kill and a passed deadline at each point from step 2 to after the
+    switch, including between step 2 and step 3. It asserts that each wait ends once with the first
+    arrival's reason, that no node tagged with its `seq` stays linked, that a stale-`seq` wake or
+    deadline does nothing, and that entry depth and mask are restored on every end; <!-- claim-lint:ok: normative requirement of docs/plans/e2-sleepable-contexts.md under ruling DEV-37(2), not a measured result. -->
   - a host model of publication: from the moment a baseline-0 waiter publishes `Parking` until its
     switch, no interrupt exit in the model reads depth 0;
   - a structure test that no file outside `kernel/src/task/park*` compares `preempt_count()` with 1 or 0
