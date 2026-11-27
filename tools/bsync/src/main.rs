@@ -42,10 +42,12 @@ fn run() -> Result<()> {
     let [source, remote] = operands.as_slice() else {
         return Err(USAGE.into());
     };
-    let destination = Destination::parse(remote.to_str().ok_or("destination must be UTF-8")?)?;
+    let mut destination = Destination::parse(remote.to_str().ok_or("destination must be UTF-8")?)?;
     let excludes = Excludes::new(&patterns)?;
     let source: PathBuf = std::path::Path::new(source).components().collect();
     let local = scan(&source, &excludes)?;
+    // Held until the sync ends: the listing and each action are channels on it.
+    let _connection = destination.share_connection()?;
     let listing = destination.inventory(sudo, &excludes)?;
     let actions = plan(&local, &listing.entries, &excludes, delete)?;
 

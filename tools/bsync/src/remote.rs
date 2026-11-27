@@ -3,7 +3,7 @@ use crate::tree::{Action, Entry, Excludes, Tree};
 use crate::{normal_relative, parent, Result};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 const GUARD: &str = r#"
@@ -324,6 +324,44 @@ impl Destination {
         self
     }
 
+    /// Open one SSH connection (an OpenSSH ControlMaster) that the listing
+    /// and every action of this sync then share as channels, instead of a
+    /// connection and key exchange per command. A caller whose SSH options
+    /// already name a control socket keeps its own, and gets None.
+    pub fn share_connection(&mut self) -> Result<Option<SharedConnection>> {
+        if self
+            .ssh_args
+            .iter()
+            .any(|arg| arg == "-S" || arg.starts_with("ControlPath"))
+        {
+            return Ok(None);
+        }
+        let directory = private_directory()?;
+        let socket = directory.join("sock");
+        let socket_arg = socket.to_str().ok_or("control socket path must be UTF-8")?.to_owned();
+        let status = Command::new("/usr/bin/ssh")
+            .args(&self.ssh_args)
+            .args(["-S", &socket_arg, "-MNf", "-o", "ControlPersist=no", "-o", "ClearAllForwardings=yes"])
+            .args(["--", &self.peer])
+            .stdin(Stdio::null())
+            .status();
+        let connection = SharedConnection {
+            directory,
+            socket: socket_arg.clone(),
+            peer: self.peer.clone(),
+        };
+        let status = status?;
+        if !status.success() {
+            return Err(format!("open SSH connection to {} ({status})", self.peer).into());
+        }
+        // A command may only use this connection: if the socket is lost,
+        // fail instead of quietly opening a fresh connection midway.
+        self.ssh_args.extend(
+            ["-o", "ControlMaster=no", "-o", "ProxyCommand=false", "-S", &socket_arg].map(String::from),
+        );
+        Ok(Some(connection))
+    }
+
     fn command(&self, script: &str, sudo: bool) -> Command {
         let prefix = if sudo { "/usr/bin/sudo -n " } else { "" };
         let mut command = Command::new("/usr/bin/ssh");
@@ -450,6 +488,37 @@ impl Destination {
         }
         Ok(())
     }
+}
+
+/// The shared connection of one sync. Dropping it closes the connection
+/// and removes its socket directory.
+pub struct SharedConnection {
+    directory: PathBuf,
+    socket: String,
+    peer: String,
+}
+
+impl Drop for SharedConnection {
+    fn drop(&mut self) {
+        let _ = Command::new("/usr/bin/ssh")
+            .args(["-S", &self.socket, "-O", "exit", "--", &self.peer])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        let _ = std::fs::remove_dir_all(&self.directory);
+    }
+}
+
+/// A new directory only this user can enter, for the control socket. It is
+/// short because macOS limits UNIX socket paths to 104 bytes.
+fn private_directory() -> Result<PathBuf> {
+    use std::os::unix::fs::DirBuilderExt;
+    let mut nonce = [0u8; 8];
+    File::open("/dev/urandom")?.read_exact(&mut nonce)?;
+    let directory = PathBuf::from(format!("/tmp/bsync-{:016x}", u64::from_be_bytes(nonce)));
+    std::fs::DirBuilder::new().mode(0o700).create(&directory)?;
+    Ok(directory)
 }
 
 const STAGE: &str = r#"
