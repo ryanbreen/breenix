@@ -27,6 +27,17 @@ class AlternatingSchedule(unittest.TestCase):
         self.assertEqual(order, [("fsync", 1, "linux"), ("fsync", 1, "breenix")])
 
 
+class Ratios(unittest.TestCase):
+    def test_above_one_always_means_breenix_is_slower(self):
+        def row(row_id, better, median):
+            return {"id": row_id, "title": row_id, "better": better, "unit": "s",
+                    "state": "measured" if median else "deferred", "median": median}
+        linux = {"rows": [row("a", "lower", 2.0), row("b", "higher", 100.0), row("c", "lower", 1.0)]}
+        breenix = {"rows": [row("a", "lower", 5.0), row("b", "higher", 25.0), row("c", "lower", None)]}
+        self.assertEqual({r["id"]: r["ratio"] for r in rig.ratios(linux, breenix)},
+                         {"a": 2.5, "b": 4.0, "c": None})
+
+
 class ImagePin(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
