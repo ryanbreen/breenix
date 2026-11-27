@@ -24,7 +24,7 @@ def function(code, name):
     return code[start:end]
 
 
-def check(name, **parts):
+def check(name, *args, **parts):
     code = (FIXTURES / f"{name}.rs").read_text()
     for field, value in parts.items():
         code = code.replace(f"// @{field}@", value)
@@ -36,7 +36,7 @@ def check(name, **parts):
             ["rustc", "--edition=2021", "check.rs", "-o", "check"],
             cwd=path, check=True, timeout=20,
         )
-        subprocess.run(["./check"], cwd=path, check=True, timeout=5)
+        subprocess.run(["./check", *args], cwd=path, check=True, timeout=5)
 
 
 class BtopSsh(unittest.TestCase):
@@ -47,15 +47,25 @@ class BtopSsh(unittest.TestCase):
         ))
 
     def test_blocked_child_does_not_block_ssh_requests_or_disconnect(self):
+        self.check_relay()
+
+    def test_accepts_channel_starts_during_setup_only(self):
+        self.check_relay("channel-starts")
+
+    def check_relay(self, *args):
         transport = source("libs/libbreenix/src/ssh/transport.rs")
         channel = source("libs/libbreenix/src/ssh/channel.rs")
         wire = source("libs/libbreenix/src/ssh/mod.rs")
         daemon = source("userspace/programs/src/bsshd.rs")
         check(
-            "relay",
+            "relay", *args,
             CONSTANTS="\n".join(line for line in wire.splitlines() if "const SSH_MSG_" in line),
             BUFFER=wire[wire.index("pub struct SshBuf;"):],
             HANDLER=function(transport, "handle_channel_packet"),
+            WAIT_FOR_CHANNEL="pub " + function(transport, "wait_for_channel"),
+            CHANNEL_TYPES=channel[channel.index("pub enum SessionCommand"):
+                                  channel.index("/// Handle an incoming")],
+            CHANNEL_STARTS=(FIXTURES / "channel_starts.rs").read_text(),
             GLOBAL_REQUEST="pub(super) " + function(channel, "handle_client_global_request"),
             CHANNEL_REQUEST="pub(super) " + function(channel, "server_handle_channel_request"),
             SHUTTLE=function(daemon, "data_shuttle"),

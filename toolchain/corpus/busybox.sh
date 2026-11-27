@@ -38,7 +38,7 @@ verify_inputs() {
 # These pins match toolchain/docs/busybox-c-inventory.json.
 verify "$archive" 3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4
 verify patches/series 5d0e09b0c8dc1da1f1a1f1877d56971dba00f5636995bd54809d8270f5856da4
-verify "$fragment" c7761f177c6c5b83e54e9050dcdbc1caea41aa6bcefa0a038fcdbdd0d3674d04
+verify "$fragment" 2a82d7fa4126c9a26b8e28247d252215632708b93add33d779595a29b02155f9
 while read -r name checksum; do
     verify "patches/$name" "$checksum"
 done <<'PATCH_PINS'

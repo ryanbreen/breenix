@@ -166,6 +166,7 @@ pub mod nr {
     pub const MKNODAT: u64 = 259;
     pub const UNLINKAT: u64 = 263;
     pub const RENAMEAT: u64 = 264;
+    pub const RENAMEAT2: u64 = 316;
     pub const LINKAT: u64 = 265;
     pub const SYMLINKAT: u64 = 266;
     pub const READLINKAT: u64 = 267;
@@ -254,6 +255,7 @@ pub mod nr {
     pub const SYMLINKAT: u64 = 36;
     pub const LINKAT: u64 = 37;
     pub const RENAMEAT: u64 = 38;
+    pub const RENAMEAT2: u64 = 276;
     pub const TRUNCATE: u64 = 45;
     pub const FTRUNCATE: u64 = 46;
     pub const FACCESSAT: u64 = 48;

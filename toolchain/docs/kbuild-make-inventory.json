@@ -12,7 +12,7 @@
   "inputs": {
     "archive": "3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4",
     "series": "5d0e09b0c8dc1da1f1a1f1877d56971dba00f5636995bd54809d8270f5856da4",
-    "config": "c7761f177c6c5b83e54e9050dcdbc1caea41aa6bcefa0a038fcdbdd0d3674d04",
+    "config": "2a82d7fa4126c9a26b8e28247d252215632708b93add33d779595a29b02155f9",
     "patches": {
       "diff-normal-format.patch": "29cfd1ddc368de2c2a61bf4ccf2901f69a39189bc92b1a16e6477aa155f991ef",
       "find-exec-plus-status.patch": "e236ee2e655db034d7cc87d2425607580c92c59ad8d3e8f2e928014c0a0c51e8",

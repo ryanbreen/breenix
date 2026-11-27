@@ -102,7 +102,6 @@ pub mod ssh {
         pub closed: bool,
         pub pty_term: Option<String>,
         pub pty_size: (u32, u32),
-        pub exec_command: Option<String>,
     }
     pub struct PacketIo {
         pub input: std::collections::VecDeque<Vec<u8>>,
@@ -114,6 +113,9 @@ pub mod ssh {
             self.sent.push(packet.to_vec());
             Ok(())
         }
+        pub fn recv_packet(&mut self) -> Result<Vec<u8>, ()> {
+            self.input.pop_front().ok_or(())
+        }
         pub fn start_relay(&mut self) -> Result<(), ()> { Ok(()) }
         pub fn finish_relay(&mut self) -> Result<(), ()> { Ok(()) }
         pub fn flush_relay(&mut self) -> Result<(), ()> { Ok(()) }
@@ -122,8 +124,12 @@ pub mod ssh {
     }
     pub mod channel {
         use super::*;
+        // @CHANNEL_TYPES@
         // @GLOBAL_REQUEST@
         // @CHANNEL_REQUEST@
+        pub fn server_handle_channel_open(_: &mut PacketIo, _: &[u8], _: u32) -> Result<Channel, SshError> {
+            unreachable!("the relay fixture starts with an open channel")
+        }
         pub fn send_window_adjust(io: &mut PacketIo, ch: &mut Channel, n: u32) -> Result<(), SshError> {
             let mut packet = vec![SSH_MSG_CHANNEL_WINDOW_ADJUST];
             SshBuf::put_u32(&mut packet, ch.remote_id);
@@ -148,12 +154,14 @@ pub mod ssh {
 
     pub mod transport {
         use super::*;
+        use super::channel::{ChannelRequestPhase, SessionCommand};
         pub struct ServerSession {
             pub channel: Option<Channel>,
             pub io: PacketIo,
         }
         impl ServerSession {
             // @HANDLER@
+            // @WAIT_FOR_CHANNEL@
             pub fn io(&mut self) -> &mut PacketIo { &mut self.io }
             pub fn input_eof(&self) -> bool { self.channel.as_ref().unwrap().eof_received }
             pub fn pty_size(&self) -> (u32, u32) { self.channel.as_ref().unwrap().pty_size }
@@ -177,6 +185,7 @@ pub mod ssh {
 }
 // @PTY_SIZE@
 // @SHUTTLE@
+// @CHANNEL_STARTS@
 
 fn request(kind: u8, name: &[u8], want_reply: bool) -> Vec<u8> {
     let mut packet = vec![kind];
@@ -187,6 +196,10 @@ fn request(kind: u8, name: &[u8], want_reply: bool) -> Vec<u8> {
 }
 
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("channel-starts") {
+        check_channel_starts();
+        return;
+    }
     let mut data = vec![SSH_MSG_CHANNEL_DATA];
     SshBuf::put_u32(&mut data, 0);
     SshBuf::put_string(&mut data, b"abc");
@@ -199,7 +212,6 @@ fn main() {
         channel: Some(Channel {
             local_id: 0, remote_id: 7, recv_window: 16, send_window: 0, eof_received: false,
             closed: false, pty_term: Some(String::from("xterm")), pty_size: (80, 24),
-            exec_command: None,
         }),
         io: PacketIo { input: [
             data,

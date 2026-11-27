@@ -715,7 +715,7 @@ pub fn link_path(old: &str, new: &str) -> Option<SyscallResult> {
         Ok(0)
     })()))
 }
-pub fn rename_path(old: &str, new: &str) -> Option<SyscallResult> {
+pub fn rename_path(old: &str, new: &str, no_replace: bool) -> Option<SyscallResult> {
     let old_name = component(old);
     let new_name = component(new);
     if old_name.is_none() && new_name.is_none() {
@@ -742,6 +742,9 @@ pub fn rename_path(old: &str, new: &str) -> Option<SyscallResult> {
                 return Err(errno::EPERM as u64);
             }
             let target = names.iter().position(|e| e.name == new);
+            if no_replace && target.is_some() {
+                return Err(errno::EEXIST as u64);
+            }
             if target.is_some_and(|to| Arc::ptr_eq(&names[to].object, &names[from].object)) {
                 return Ok(0);
             }
