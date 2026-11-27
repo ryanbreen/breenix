@@ -17,6 +17,9 @@ fn image(root: &Path, name: &str) {
 fn main() {
     let scratch = std::env::args_os().nth(1).expect("an empty fixture directory");
     let scratch = Path::new(&scratch);
+    if std::env::args().nth(2).as_deref() == Some("legacy-breenfs") {
+        return legacy_breenfs(scratch);
+    }
     let old = scratch.join("old-image");
     let new = scratch.join("new-image");
     let system = scratch.join("system");
@@ -52,4 +55,26 @@ fn main() {
     assert_eq!(fs::metadata(archived).unwrap().permissions().mode() & 0o7777, 0o755);
     assert!(!next.join("bin/retired").exists());
     assert_eq!(fs::read(live.join("bin/payload")).unwrap(), b"delivered on the box");
+}
+
+fn legacy_breenfs(scratch: &Path) {
+    use installer::local::LocalFiles;
+
+    let current = scratch.join("current");
+    let source = scratch.join("incoming");
+    image(&current, "old image");
+    image(&source, "new image");
+    fs::write(current.join("bin/retired"), b"old image only").unwrap();
+    fs::write(current.join(".complete"), b"BREENIX-USERLAND 2\nold\n").unwrap();
+
+    let result = LocalFiles::inspect(&current, &source, true, false);
+    let files = result.unwrap_or_else(|error| panic!("the legacy BreenFS image should upgrade: {error}"));
+    assert!(files.is_empty(), "the legacy image should use the empty draft");
+
+    let ext2 = LocalFiles::inspect(&current, &source, false, false);
+    assert!(ext2.err().unwrap().contains("/bin/payload"));
+
+    fs::write(current.join(".breenix-image"), b"BREENIX-IMAGE-1\0").unwrap();
+    let with_baseline = LocalFiles::inspect(&current, &source, true, false);
+    assert!(with_baseline.err().unwrap().contains("/bin/payload"));
 }

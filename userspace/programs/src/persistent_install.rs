@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 #[path = "../../../libs/libbreenix/src/layout.rs"]
 mod layout;
 #[path = "persistent_install/local.rs"]
-mod local;
+pub(crate) mod local;
 #[cfg(target_os = "breenix")]
 #[path = "persistent_install/breenfs.rs"]
 mod breenfs;

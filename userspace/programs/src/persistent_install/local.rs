@@ -148,13 +148,13 @@ fn incoming(root: &Path, path: &Path, breenfs: bool) -> Result<Option<String>, S
 }
 
 #[derive(Default)]
-pub(super) struct LocalFiles {
+pub(crate) struct LocalFiles {
     paths: Vec<PathBuf>,
     archived: bool,
 }
 
 impl LocalFiles {
-    pub(super) fn inspect(current: &Path, source: &Path, breenfs: bool, carry: bool) -> Result<Self, String> {
+    pub(crate) fn inspect(current: &Path, source: &Path, breenfs: bool, carry: bool) -> Result<Self, String> {
         let legacy_shared = !breenfs && match fs::read(current.join(READY)) {
             Ok(record) => record.starts_with(b"BREENIX-USERLAND 1\n"),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => true, // Flat ext2 root.
@@ -195,8 +195,7 @@ impl LocalFiles {
         Ok(Self { paths, archived })
     }
 
-    #[cfg(target_os = "breenix")]
-    pub(super) fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.paths.is_empty() && !self.archived
     }
 
