@@ -67,6 +67,14 @@ impl Framer {
         self.cipher_recv = Some(cipher);
     }
 
+    /// Test support: behave as if `packets` more packets had passed each
+    /// way under the current keys, without sealing them.
+    #[doc(hidden)]
+    pub fn advance_sequence_numbers(&mut self, packets: u32) {
+        self.seq_send = self.seq_send.wrapping_add(packets);
+        self.seq_recv = self.seq_recv.wrapping_add(packets);
+    }
+
     /// Strict KEX: both sequence numbers restart at 0 once NEWKEYS has
     /// been sent and received.
     pub fn reset_sequence_numbers(&mut self) {

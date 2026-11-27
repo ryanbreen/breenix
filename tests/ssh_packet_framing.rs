@@ -215,3 +215,42 @@ fn chacha20_is_negotiated_only_under_strict_kex() {
         (CipherKind::ChaCha20Poly1305, CipherKind::ChaCha20Poly1305)
     );
 }
+
+#[test]
+fn no_sequence_number_is_used_twice_under_one_set_of_keys() {
+    for kind in KINDS[1..].iter().copied() {
+        let (mut sender, mut receiver) = framers(kind);
+        // As if 2^32 - 1 packets had already passed each way under these keys.
+        sender.advance_sequence_numbers(u32::MAX);
+        receiver.advance_sequence_numbers(u32::MAX);
+        let mut stream = Vec::new();
+        sender.seal(b"last", &mut stream).unwrap();
+        feed(&mut receiver, &stream);
+        assert_eq!(receiver.open().unwrap().as_deref(), Some(&b"last"[..]), "{kind:?}");
+
+        // The next number would be 0 again, whose keystream and Poly1305 key
+        // were already used: the sender refuses to seal it.
+        let mut wrapped = Vec::new();
+        assert!(sender.seal(b"wrapped", &mut wrapped).is_err(), "{kind:?}");
+        assert!(wrapped.is_empty(), "{kind:?}");
+        // And the receiver refuses a packet sealed at 0 under the same keys,
+        // which would otherwise replay the first packet of the connection.
+        let (mut first, _) = framers(kind);
+        let mut replay = Vec::new();
+        first.seal(b"replayed", &mut replay).unwrap();
+        feed(&mut receiver, &replay);
+        assert!(receiver.open().is_err(), "{kind:?}");
+
+        // New keys start a new count.
+        let (mut sender, mut receiver) = framers(kind);
+        sender.advance_sequence_numbers(u32::MAX);
+        sender.seal(b"last", &mut Vec::new()).unwrap();
+        let (send, recv) = ciphers(kind);
+        sender.set_cipher_send(send.unwrap());
+        receiver.set_cipher_recv(recv.unwrap());
+        let mut stream = Vec::new();
+        sender.seal(b"rekeyed", &mut stream).unwrap();
+        feed(&mut receiver, &stream);
+        assert_eq!(receiver.open().unwrap().as_deref(), Some(&b"rekeyed"[..]), "{kind:?}");
+    }
+}
