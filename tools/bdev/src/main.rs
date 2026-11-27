@@ -20,7 +20,7 @@ mod tests;
 const STAMP: &str = ".btest-tree.json";
 const TOOLCHAIN: &str = "/opt/breenix/rust";
 const USAGE: &str =
-    "usage: bdev --host USER@HOST --source /BOX/SOURCE --cache /BOX/CACHE sync | build PACKAGE";
+    "usage: bdev --host USER@HOST --source /BOX/SOURCE --cache /BOX/CACHE sync [--delete] | build PACKAGE";
 
 #[derive(Deserialize)]
 struct SyncManifest {
@@ -204,11 +204,16 @@ fn source_tree(source: &Path, excludes: &Excludes) -> Result<Tree> {
     Ok(tree)
 }
 
-fn source_plan(local: &Tree, remote: &Tree, excludes: &Excludes) -> Result<Vec<Action>> {
+fn source_plan(
+    local: &Tree,
+    remote: &Tree,
+    excludes: &Excludes,
+    delete: bool,
+) -> Result<Vec<Action>> {
     let actions = plan(local, remote, excludes, true)?;
     if let Some(action) = actions
         .iter()
-        .find(|action| matches!(action, Action::RemoveFile(_) | Action::RemoveDir(_)))
+        .find(|action| !delete && matches!(action, Action::RemoveFile(_) | Action::RemoveDir(_)))
     {
         return Err(format!("sync would remove unexpected box path {:?}", action.path()).into());
     }
@@ -290,7 +295,7 @@ fn checked(output: Output, step: &str) -> Result<Vec<u8>> {
     Ok(output.stdout)
 }
 
-fn sync(checkout: &Path, remote: &BoxPaths<'_>) -> Result<()> {
+fn sync(checkout: &Path, remote: &BoxPaths<'_>, delete: bool) -> Result<()> {
     let git = git_state(checkout)?;
     let manifest = SyncManifest::load()?;
     let roots = manifest.roots(checkout)?;
@@ -315,7 +320,7 @@ fn sync(checkout: &Path, remote: &BoxPaths<'_>) -> Result<()> {
         let tree = source_tree(&source, &excludes)?;
         let destination = remote.destination(&path)?;
         let listing = destination.inventory(false, &excludes)?;
-        let actions = source_plan(&tree, &listing.entries, &excludes)?;
+        let actions = source_plan(&tree, &listing.entries, &excludes, delete)?;
         work.push((root, source, tree, destination, listing, actions));
     }
     publish_source(remote, || {
@@ -567,10 +572,16 @@ fn run() -> Result<ExitCode> {
     };
     remote.destination(source)?;
     match command {
-        [verb] if verb == "sync" => {
+        [verb, options @ ..]
+            if verb == "sync" && (options.is_empty() || options == ["--delete"]) =>
+        {
             let directory =
                 String::from_utf8(git(Path::new("."), &["rev-parse", "--show-toplevel"])?)?;
-            sync(Path::new(directory.trim_end_matches('\n')), &remote)?;
+            sync(
+                Path::new(directory.trim_end_matches('\n')),
+                &remote,
+                !options.is_empty(),
+            )?;
             Ok(ExitCode::SUCCESS)
         }
         [verb, package] if verb == "build" => build(&remote, package),

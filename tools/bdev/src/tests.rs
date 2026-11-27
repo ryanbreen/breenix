@@ -40,10 +40,69 @@ fn manifest_scopes_sync_and_protects_local_outputs() {
 
     let mut remote = local.clone();
     remote.insert("target".into(), Entry::Other);
-    assert!(source_plan(&local, &remote, &excludes).unwrap().is_empty());
+    assert!(source_plan(&local, &remote, &excludes, false)
+        .unwrap()
+        .is_empty());
     remote.insert("old.rs".into(), local["src/lib.rs"].clone());
-    assert!(source_plan(&local, &remote, &excludes).is_err());
+    assert!(source_plan(&local, &remote, &excludes, false).is_err());
     assert!(remote.contains_key("old.rs"));
+}
+
+#[test]
+fn source_sync_resumes_with_bsync_staging_and_can_prune_removed_sources() {
+    let manifest = SyncManifest::load().unwrap();
+    let excludes = Excludes::new(&manifest.excludes).unwrap();
+    let dir = Entry::Dir(0o755);
+    let file = Entry::File {
+        size: 4,
+        mode: 0o644,
+        digest: "source-digest".into(),
+    };
+    let local = [
+        ("".into(), dir.clone()),
+        ("src".into(), dir.clone()),
+        ("src/new.rs".into(), file.clone()),
+    ]
+    .into();
+    let mut remote: Tree = [
+        ("".into(), dir.clone()),
+        ("src".into(), dir.clone()),
+        (
+            "src/.bsync-e4f4fda39a28e6c798ca06e1e41d4b71".into(),
+            Entry::Other,
+        ),
+        ("target".into(), Entry::Other),
+    ]
+    .into();
+    let plan = |remote: &Tree, delete| source_plan(&local, remote, &excludes, delete);
+    assert_eq!(
+        plan(&remote, false)
+            .unwrap()
+            .iter()
+            .map(Action::label)
+            .collect::<Vec<_>>(),
+        ["UPLOAD"]
+    );
+
+    remote.extend([
+        ("src/old.rs".into(), file.clone()),
+        ("unused".into(), dir),
+        ("unused/lib.rs".into(), file),
+    ]);
+    assert!(plan(&remote, false).is_err());
+    assert_eq!(
+        plan(&remote, true)
+            .unwrap()
+            .iter()
+            .map(|action| (action.label(), action.path()))
+            .collect::<Vec<_>>(),
+        [
+            ("UPLOAD", "src/new.rs"),
+            ("DELETE", "src/old.rs"),
+            ("DELETE", "unused/lib.rs"),
+            ("RMDIR", "unused"),
+        ]
+    );
 }
 
 #[test]

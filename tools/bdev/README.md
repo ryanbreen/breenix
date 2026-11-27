@@ -9,12 +9,18 @@ bdev --host "$BOX_LOGIN" --source "$BOX_SOURCE" --cache "$BOX_CACHE" sync
 bdev --host "$BOX_LOGIN" --source "$BOX_SOURCE" --cache "$BOX_CACHE" build bobj
 ```
 
-Use a single writer for the checkout on the box. Run long syncs as a
-detached Mac process with a log. The source directory must be dedicated to
-the sync. If a preflight finds a path that would require deletion or a
-file type change, it stops before transferring files. After preflight,
-the driver removes the previous tree stamp before applying any changes.
-If an interruption leaves no stamp, builds refuse until a sync completes.
+Serialize syncs and builds for each checkout on the box. Run long syncs
+as a detached Mac process with a log. The source directory must be
+dedicated to the sync. Use `sync --delete` when a dedicated mirror needs
+to reflect removed or renamed source files. This authorizes removal of
+unexcluded paths inside the listed roots only. Without that flag,
+preflight refuses plans that require removal. Sync skips bsync's reserved
+`.bsync-*` staging paths, so interrupted uploads can be resumed while
+their temporary files remain untouched.
+
+After preflight, the driver removes the previous tree stamp before
+applying any changes. If an interruption leaves no stamp, builds refuse
+until a sync completes.
 
 The sync stages tracked and unignored files from the allowlisted roots
 and uses the bsync engine once per root. `sync.json` lists the roots and
