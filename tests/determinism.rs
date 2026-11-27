@@ -26,6 +26,7 @@ fn two_directories_same_bytes() {
         .success());
     assert!(
         Command::new(&runner)
+            .arg("x86_64")
             .arg(&root)
             .arg(&fixture)
             .arg(&work)
@@ -54,6 +55,7 @@ fn two_directories_same_bytes() {
             .arg(root.join("tests/selfhost_mac_receipt.py"))
             .arg(root.join("toolchain/rust-host/selfhost/x86_64-mac.json"))
             .arg(&work)
+            .arg("x86_64")
             .args(OUTPUTS)
             .status()
             .unwrap()
@@ -115,6 +117,7 @@ fn two_directories_same_bytes_aarch64() {
             .arg(root.join("tests/selfhost_mac_receipt.py"))
             .arg(root.join("toolchain/rust-host/selfhost/aarch64-mac.json"))
             .arg(&work)
+            .arg("aarch64")
             .args(OUTPUTS)
             .status()
             .unwrap()

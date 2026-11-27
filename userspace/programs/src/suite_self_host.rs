@@ -163,7 +163,14 @@ fn verify_record(run: &Path, package: &str, current: &Snapshot) -> CaseResult {
 
 fn cargo(run: &Path, package: &str) -> Command {
     let fixture = Path::new(FIXTURE);
-    d1::cargo(Path::new(SOURCE), fixture, Path::new(LINKER), run, package)
+    d1::cargo(
+        Path::new(SOURCE),
+        fixture,
+        Path::new(LINKER),
+        run,
+        package,
+        "x86_64-breenix",
+    )
 }
 
 fn run_cargo(command: &mut Command, log: &Path, window: Duration) -> CaseResult {
@@ -172,7 +179,10 @@ fn run_cargo(command: &mut Command, log: &Path, window: Duration) -> CaseResult 
     let mut last_progress = Duration::ZERO;
     let build = d1::measure(command, log, window, |_, elapsed| {
         if elapsed - last_progress >= Duration::from_secs(75) {
-            case_diagnostic(&format!("SELF_HOST Cargo elapsed_ms={}", elapsed.as_millis()));
+            case_diagnostic(&format!(
+                "SELF_HOST Cargo elapsed_ms={}",
+                elapsed.as_millis()
+            ));
             last_progress = elapsed;
         }
         Ok(0)

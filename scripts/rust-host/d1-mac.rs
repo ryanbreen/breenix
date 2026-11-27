@@ -56,7 +56,7 @@ fn main() -> io::Result<()> {
     for package in d1::PACKAGES {
         let log = work.join(format!("{package}.log"));
         let build = d1::measure(
-            &mut d1::cargo(&source, &fixture, &linker, &run, package),
+            &mut d1::cargo(&source, &fixture, &linker, &run, package, "x86_64-breenix"),
             &log,
             Duration::from_secs(600),
             |group, _| group_rss(group),
