@@ -1199,6 +1199,44 @@ mod tests {
     }
 
     #[test]
+    fn block_local_frame_for_startup_script() {
+        assert_eq!(
+            eval_and_capture("if (true) { const major = 40; let minor = 2; print(major + minor); }"),
+            "42\n"
+        );
+    }
+
+    #[test]
+    fn block_local_frame_for_nested_blocks() {
+        assert_eq!(
+            eval_and_capture(
+                "{ let outer = 40; { const inner = 2; print(outer + inner); } print(outer); }"
+            ),
+            "42\n40\n"
+        );
+    }
+
+    #[test]
+    fn block_local_frame_for_function() {
+        assert_eq!(
+            eval_and_capture(
+                "function addTwo(n) { { const two = 2; return n + two; } } print(addTwo(40));"
+            ),
+            "42\n"
+        );
+    }
+
+    #[test]
+    fn block_local_frame_for_loop() {
+        assert_eq!(
+            eval_and_capture(
+                "for (let i = 0; i < 3; i += 1) { const doubled = i * 2; print(doubled); }"
+            ),
+            "0\n2\n4\n"
+        );
+    }
+
+    #[test]
     fn test_while_loop() {
         assert_eq!(
             eval_and_capture("let i = 0; while (i < 5) { i = i + 1; } print(i);"),
