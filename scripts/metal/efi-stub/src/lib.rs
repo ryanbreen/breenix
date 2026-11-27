@@ -17,6 +17,7 @@ pub mod slot_store;
 
 pub mod live_flash;
 pub mod breenfs_files;
+pub mod live_sequence;
 
 #[cfg(test)]
 #[path = "../tests/live_flash.rs"]
