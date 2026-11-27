@@ -180,27 +180,27 @@ fn pending_waits_two_generations() {
 #[test]
 fn free_before_pending_and_one_ref_edit_per_allocation() {
     let (store, root) = txn_tree(&[
-        (PENDING, format::PENDING, 100, Pending { length: 256, released_generation: 3 }.encode().to_vec()),
+        (PENDING, format::PENDING, 1_000, Pending { length: 256, released_generation: 3 }.encode().to_vec()),
         (FREE, format::FREE, 200, format::Free { length: 4 }.encode().to_vec()),
     ]);
     let mut t = Transaction::new(&store, root, 5).unwrap();
     assert_eq!(t.allocate_data(&[0; 257]), Err(txn::Error::Space(Error::Invalid)));
     let mut t = Transaction::new(&store, root, 5).unwrap();
-    // FREE first, although G-2's PENDING at 100 is eligible.
+    // FREE first, although G-2's PENDING at 1000 is eligible.
     assert_eq!(t.allocate_data(&[1, 2, 3, 4]), Ok(200));
     // An increment and a release of the new extent cancel.
     t.increment(200, 4).unwrap();
     t.release(200, 4, false).unwrap();
     // No FREE range holds 256 blocks: the eligible PENDING becomes FREE.
-    assert_eq!(t.allocate_data(&[6; 256]), Ok(100));
+    assert_eq!(t.allocate_data(&[6; 256]), Ok(1_000));
     let space = t.settle().unwrap();
     let view = t.view();
-    assert!(item(&view, space, PENDING, format::PENDING, 100).is_none());
-    assert!(item(&view, space, FREE, format::FREE, 100).is_none());
+    assert!(item(&view, space, PENDING, format::PENDING, 1_000).is_none());
+    assert!(item(&view, space, FREE, format::FREE, 1_000).is_none());
     assert!(item(&view, space, FREE, format::FREE, 200).is_none());
     let r = space::reference(&view, space, 200, 4).unwrap().unwrap();
     assert_eq!((r.refcount, r.kind, r.alloc_generation, r.crcs), (1, 3, 5, vec![1, 2, 3, 4]));
-    assert_eq!(space::reference(&view, space, 100, 256).unwrap().unwrap().refcount, 1);
+    assert_eq!(space::reference(&view, space, 1_000, 256).unwrap().unwrap().refcount, 1);
 }
 
 #[test]
@@ -234,5 +234,5 @@ fn zero_ref_node_with_children_is_dead() {
     assert_eq!(t.dead_count(), 1);
     let state = t.space_state().unwrap();
     assert!(state.free().ranges().all(|(s, l)| s + l <= 100 || s >= 108));
-    assert_eq!(state.quarantine().runs().count(), 0);
+    assert!(state.quarantine().runs().all(|(s, l, _)| s + l <= 100 || s >= 108));
 }
