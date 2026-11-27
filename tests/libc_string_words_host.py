@@ -47,7 +47,7 @@ with tempfile.TemporaryDirectory(prefix="breenix-string-check-") as temporary:
             name = alias[1]
         label = re.search(rf"^_?breenix_{name}:[ \t]*(?:[#/].*)?$", assembly, flags=re.M)
         assert label, name
-        return re.split(r"\.(?:cfi_endproc|section|globl)", assembly[label.end():], 1)[0]
+        return re.split(r"\.(?:cfi_endproc|section|globl)", assembly[label.end():], maxsplit=1)[0]
 
     errors = []
     for name in ("memcmp", "memchr", "strlen"):

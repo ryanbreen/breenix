@@ -19,6 +19,29 @@ unsafe fn byte(p: *const u8, i: usize) -> u8 {
     *p.add(i)
 }
 
+const WORD: usize = size_of::<usize>();
+const BYTE_ONES: usize = usize::MAX / 255;
+const BYTE_HIGHS: usize = BYTE_ONES << 7;
+
+#[inline(always)]
+unsafe fn load_word(p: *const u8) -> usize {
+    let word: usize;
+    #[cfg(target_arch = "x86_64")]
+    core::arch::asm!("mov {word}, [{p}]", p = in(reg) p, word = out(reg) word,
+                     options(readonly, nostack, preserves_flags));
+    #[cfg(target_arch = "aarch64")]
+    core::arch::asm!("ldr {word}, [{p}]", p = in(reg) p, word = out(reg) word,
+                     options(readonly, nostack, preserves_flags));
+    usize::from_le(word)
+}
+
+#[inline]
+fn zero_bytes(word: usize) -> usize {
+    // The lowest marked byte is the first zero. A borrow can also mark
+    // neighboring higher bytes, which the first-match search never uses.
+    word.wrapping_sub(BYTE_ONES) & !word & BYTE_HIGHS
+}
+
 fn lower(c: u8) -> u8 {
     if c.is_ascii_uppercase() { c + 32 } else { c }
 }
@@ -30,6 +53,16 @@ fn lower(c: u8) -> u8 {
 #[no_mangle]
 pub unsafe extern "C" fn memcmp(a: *const u8, b: *const u8, n: usize) -> i32 {
     let mut i = 0;
+    while n - i >= WORD {
+        let x = load_word(a.add(i));
+        let y = load_word(b.add(i));
+        let different = x ^ y;
+        if different != 0 {
+            let first = different.trailing_zeros() & !7;
+            return ((x >> first) as u8) as i32 - ((y >> first) as u8) as i32;
+        }
+        i += WORD;
+    }
     while i < n {
         let (x, y) = (byte(a, i), byte(b, i));
         if x != y {
@@ -49,6 +82,14 @@ pub unsafe extern "C" fn bcmp(a: *const u8, b: *const u8, n: usize) -> i32 {
 pub unsafe extern "C" fn memchr(s: *const u8, c: i32, n: usize) -> *mut u8 {
     let c = c as u8;
     let mut i = 0;
+    let repeated = usize::from(c) * BYTE_ONES;
+    while n - i >= WORD {
+        let matches = zero_bytes(load_word(s.add(i)) ^ repeated);
+        if matches != 0 {
+            return s.add(i + matches.trailing_zeros() as usize / 8).cast_mut();
+        }
+        i += WORD;
+    }
     while i < n {
         if byte(s, i) == c {
             return s.add(i) as *mut u8;
@@ -133,10 +174,21 @@ pub unsafe extern "C" fn bcopy(src: *const u8, dst: *mut u8, n: usize) {
 #[no_mangle]
 pub unsafe extern "C" fn strlen(s: *const u8) -> usize {
     let mut i = 0;
-    while byte(s, i) != 0 {
+    while s.wrapping_add(i).addr() % WORD != 0 {
+        if byte(s, i) == 0 {
+            return i;
+        }
         i += 1;
     }
-    i
+    // An aligned word never straddles a page. Use a machine load so Rust
+    // does not assume that the bytes past the terminator belong to the object.
+    loop {
+        let matches = zero_bytes(load_word(s.wrapping_add(i)));
+        if matches != 0 {
+            return i + matches.trailing_zeros() as usize / 8;
+        }
+        i += WORD;
+    }
 }
 
 #[no_mangle]

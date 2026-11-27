@@ -1,5 +1,5 @@
-//! memcpy, memmove and memset in assembly, so no optimizer pass can rewrite their loops
-//! into calls to themselves.
+//! Scalar copy and fill loops in assembly, so no optimizer pass can rewrite
+//! them into calls to themselves.
 
 #[cfg(target_arch = "aarch64")]
 #[unsafe(naked)]
@@ -90,13 +90,108 @@ pub unsafe extern "C" fn memset(dst: *mut u8, c: i32, n: usize) -> *mut u8 {
 }
 
 #[cfg(target_arch = "x86_64")]
-#[unsafe(naked)]
+fn enhanced_rep_movsb() -> bool {
+    use core::arch::x86_64::{__cpuid, __cpuid_count};
+    use core::sync::atomic::{AtomicU8, Ordering::Relaxed};
+
+    static ERMS: AtomicU8 = AtomicU8::new(0);
+    match ERMS.load(Relaxed) {
+        0 => {
+            // Intel Optimization Reference Manual vol. 1, §3.7.6:
+            // CPUID.07H.0H:EBX[9] enumerates enhanced REP MOVSB/STOSB.
+            let supported =
+                unsafe { __cpuid(0).eax >= 7 && __cpuid_count(7, 0).ebx & (1 << 9) != 0 };
+            ERMS.store(1 + u8::from(supported), Relaxed);
+            supported
+        }
+        cached => cached == 2,
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
 #[no_mangle]
 pub unsafe extern "C" fn memcpy(dst: *mut u8, src: *const u8, n: usize) -> *mut u8 {
+    // Avoid string-engine startup on short copies. For a bulk copy use the
+    // enhanced engine only when CPUID advertises it.
+    if n >= 256 && enhanced_rep_movsb() {
+        core::arch::asm!(
+            "rep movsb",
+            inout("rdi") dst => _,
+            inout("rsi") src => _,
+            inout("rcx") n => _,
+            options(nostack, preserves_flags),
+        );
+        dst
+    } else {
+        copy_scalar(dst, src, n)
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[unsafe(naked)]
+unsafe extern "C" fn copy_scalar(dst: *mut u8, src: *const u8, n: usize) -> *mut u8 {
     core::arch::naked_asm!(
         "mov rax, rdi",
-        "mov rcx, rdx",
-        "rep movsb",
+        "cmp rdx, 32",
+        "jb 2f",
+        "1:",
+        "mov rcx, [rsi]",
+        "mov r8, [rsi + 8]",
+        "mov r9, [rsi + 16]",
+        "mov r10, [rsi + 24]",
+        "mov [rdi], rcx",
+        "mov [rdi + 8], r8",
+        "mov [rdi + 16], r9",
+        "mov [rdi + 24], r10",
+        "add rsi, 32",
+        "add rdi, 32",
+        "sub rdx, 32",
+        "cmp rdx, 32",
+        "jae 1b",
+        "2:",
+        // For each short size, adjacent or overlapping first/last transfers
+        // cover exactly the requested range.
+        "cmp rdx, 16",
+        "jb 3f",
+        "mov rcx, [rsi]",
+        "mov r8, [rsi + 8]",
+        "mov r9, [rsi + rdx - 16]",
+        "mov r10, [rsi + rdx - 8]",
+        "mov [rdi], rcx",
+        "mov [rdi + 8], r8",
+        "mov [rdi + rdx - 16], r9",
+        "mov [rdi + rdx - 8], r10",
+        "ret",
+        "3:",
+        "cmp rdx, 8",
+        "jb 4f",
+        "mov rcx, [rsi]",
+        "mov r8, [rsi + rdx - 8]",
+        "mov [rdi], rcx",
+        "mov [rdi + rdx - 8], r8",
+        "ret",
+        "4:",
+        "cmp rdx, 4",
+        "jb 5f",
+        "mov ecx, [rsi]",
+        "mov r8d, [rsi + rdx - 4]",
+        "mov [rdi], ecx",
+        "mov [rdi + rdx - 4], r8d",
+        "ret",
+        "5:",
+        "cmp rdx, 2",
+        "jb 6f",
+        "mov cx, [rsi]",
+        "mov r8w, [rsi + rdx - 2]",
+        "mov [rdi], cx",
+        "mov [rdi + rdx - 2], r8w",
+        "ret",
+        "6:",
+        "test rdx, rdx",
+        "jz 7f",
+        "mov cl, [rsi]",
+        "mov [rdi], cl",
+        "7:",
         "ret",
     )
 }
