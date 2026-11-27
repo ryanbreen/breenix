@@ -9,7 +9,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-const PROFILE: &str = "target/x86_64-breenix/selfhost";
+#[cfg(target_arch = "x86_64")]
+pub const PROFILE: &str = "target/x86_64-breenix/selfhost";
+#[cfg(target_arch = "aarch64")]
+pub const PROFILE: &str = "target/aarch64-breenix/selfhost";
 const TOOLS: [(&str, &str); 6] = [
     ("bcc", "cc"),
     ("bas", "as"),
@@ -19,10 +22,17 @@ const TOOLS: [(&str, &str); 6] = [
     ("bmake", "make"),
 ];
 
+#[cfg(target_arch = "x86_64")]
 // 20261124T033037Z-metal, accepted into main by #3145 (E25 ruling 75).
 // Assembler (3/3): 150 + 65 + 26. Linker (6/6): 10881 + 392 + 396
 // + 614 + 803 + 539. Corpus-three-producers: 22663. Builds-and-runs: 1398.
 const WINDOW: Duration = Duration::from_millis((37_927u64 * 3).div_ceil(2));
+
+#[cfg(target_arch = "aarch64")]
+// 20261126T234303Z-qemu-62721, accepted into main by #3182 (E25 ruling 144).
+// Assembler (3/3): 11 + 13 + 3. Linker (6/6): 2134 + 93 + 83
+// + 110 + 142 + 84. Corpus-three-producers: 3703. Builds-and-runs: 179.
+const WINDOW: Duration = Duration::from_millis((6_555u64 * 3).div_ceil(2));
 
 pub struct ToolTable {
     bin: PathBuf,
@@ -222,7 +232,12 @@ fn field<const N: usize>(bytes: &[u8], offset: usize) -> Option<[u8; N]> {
 pub fn text_bytes(object: &[u8]) -> Option<&[u8]> {
     if !object.starts_with(b"\x7fELF\x02\x01\x01")
         || u16::from_le_bytes(field(object, 16)?) != 1
-        || u16::from_le_bytes(field(object, 18)?) != 62
+        || u16::from_le_bytes(field(object, 18)?)
+            != if cfg!(target_arch = "aarch64") {
+                183
+            } else {
+                62
+            }
         || u16::from_le_bytes(field(object, 58)?) != 64
     {
         return None;
@@ -261,7 +276,14 @@ mod corpus {
     const CORPUS: &str = "/usr/share/breenix/toolchain";
     const SYSROOT: &str = "/opt/breenix-dev/25.2";
     const CASES: &str = include_str!("../../../../toolchain/corpus/cases");
+    #[cfg(target_arch = "x86_64")]
     const CC_CASES: &str = include_str!("../fixture/toolchain-cc-cases");
+    #[cfg(target_arch = "aarch64")]
+    const CC_CASES: &str = include_str!("../fixture/toolchain-cc-cases-aarch64");
+    #[cfg(target_arch = "x86_64")]
+    const BAS_PROGRAMS: &[&str] = &["sse-exit", "x87-exit"];
+    #[cfg(target_arch = "aarch64")]
+    const BAS_PROGRAMS: &[&str] = &["fp-exit", "call-exit"];
 
     pub fn exercise(run: &Path, recorded: &BTreeMap<String, String>) -> Result<(), String> {
         let table = ToolTable::stage(run, recorded)?;
@@ -313,15 +335,47 @@ mod corpus {
             let object = self.work.join("encodings.o");
             let bytes = at(&object, fs::read(&object))?;
             let hex = dir.join("encodings.hex");
-            let expected = at(&hex, fs::read_to_string(&hex))?
+            let hex_table = at(&hex, fs::read_to_string(&hex))?;
+            #[cfg(target_arch = "x86_64")]
+            let expected = hex_table
                 .split_ascii_whitespace()
                 .map(|n| u8::from_str_radix(n, 16))
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|error| format!("{}: {error}", hex.display()))?;
+            #[cfg(target_arch = "aarch64")]
+            let expected =
+                hex_table
+                    .lines()
+                    .enumerate()
+                    .try_fold(Vec::new(), |mut bytes, (index, row)| {
+                        let word = row.split_once('#').map_or(row, |(word, _)| word).trim();
+                        if word.len() != 8
+                            || !word
+                                .bytes()
+                                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                        {
+                            return Err(format!(
+                                "{}:{}: expected an eight-digit instruction word",
+                                hex.display(),
+                                index + 1
+                            ));
+                        }
+                        let word = u32::from_str_radix(word, 16)
+                            .map_err(|error| format!("{}:{}: {error}", hex.display(), index + 1))?;
+                        bytes.extend_from_slice(&word.to_le_bytes());
+                        Ok(bytes)
+                    })?;
             if expected.is_empty() || text_bytes(&bytes) != Some(expected.as_slice()) {
-                return Err("rebuilt as: .text differs from the Intel SDM encoding fixture".into());
+                return Err(format!(
+                    "rebuilt as: .text differs from the {} encoding fixture",
+                    if cfg!(target_arch = "aarch64") {
+                        "Arm ARM"
+                    } else {
+                        "Intel SDM"
+                    }
+                ));
             }
-            for name in ["sse-exit", "x87-exit"] {
+            for &name in BAS_PROGRAMS {
                 success(name, self.assemble(name)?)?;
                 self.link_and_run(
                     name,
@@ -394,9 +448,16 @@ mod corpus {
                 "nm -Pg got.a",
                 self.invoke("nm", [Path::new("-Pg"), &archive])?,
             )?;
+            #[cfg(target_arch = "x86_64")]
             let wanted = format!(
                 "{0}[got-entry.o]:\narchive_cell U\narchive_entry T 0 17\narchive_value U\n\
                  {0}[archive-value-with-long-name.o]:\narchive_cell R 0 4\narchive_value T 0 6\n",
+                archive.display(),
+            );
+            #[cfg(target_arch = "aarch64")]
+            let wanted = format!(
+                "{0}[got-entry.o]:\narchive_cell U\narchive_entry T 0 20\narchive_value U\n\
+                 {0}[archive-value-with-long-name.o]:\narchive_cell R 0 4\narchive_value T 0 8\n",
                 archive.display(),
             );
             if symbols != wanted.as_bytes() {
@@ -438,8 +499,11 @@ mod corpus {
                     || !stderr.lines().any(|line| {
                         line.starts_with(&diagnostic)
                             && (name == "duplicate"
-                                || (line.contains("R_X86_64_PLT32")
-                                    && line.ends_with(" archive_entry: undefined symbol")))
+                                || (line.contains(if cfg!(target_arch = "aarch64") {
+                                    "R_AARCH64_CALL26"
+                                } else {
+                                    "R_X86_64_PLT32"
+                                }) && line.ends_with(" archive_entry: undefined symbol")))
                     })
                 {
                     return Err(format!("rebuilt ld {name}: expected exit 1, no ELF and {diagnostic:?}; got {}: {stderr}", result.status));
@@ -589,8 +653,6 @@ mod corpus {
             ))
         }
     }
-
-
 }
 
 #[cfg(not(test))]
