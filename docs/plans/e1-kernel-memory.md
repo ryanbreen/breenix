@@ -240,10 +240,26 @@ The lease rules carry over word for word:
   `LostContended` disappears: a free list threaded through the metadata needs no capacity, so each return can
   be recorded.
 - A block of order n is claimed frame by frame: each frame's generation advances. The block lease records
-  the head pfn, the order and the head's generation. A block return checks the head's generation, then that
-  each tail is still `ST_ALLOCATED`, flagged `TAIL`, with the same order. Anything else is a refused return that leaks the
-  block. `split_lease` turns a block lease into per-frame leases, for callers that free pages one at a time.
-  The existing `allocate_contiguous_frames` keeps its per-frame contract by calling it.
+  the head pfn, the order and the head's generation.
+- `BlockLease` is neither `Copy` nor `Clone`, unlike today's `FrameLease` (`frame_allocator.rs:241`). A
+  return or a split takes it by value, so one block lease authorises exactly one of them.
+- A block return runs in two passes. Both apply to each of the block's 2^n frames, the head included:
+  1. Check, with no writes: the head's generation matches; each tail is `ST_ALLOCATED`, flagged `TAIL`,
+     with the lease's order; and each frame's `leaf_refs` is 0. A failure refuses the return
+     (`RefusedLiveLeaf` for a mapped frame) and leaks the block, as a refusal does today.
+  2. Transition each frame by today's per-frame rule (`return_lease`, `frame_allocator.rs:1119-1132`):
+     re-read `leaf_refs`, then compare-exchange `ST_ALLOCATED` to `ST_FREE`.
+     `acquire_leaf_mapping` raises `leaf_refs` before it re-checks the state (lines 524-533), so a mapping
+     that races the return either sees `ST_FREE` and backs out, or is seen by the return's re-read.
+     If any frame is refused in this pass, the block is leaked whole. Frames already moved stay `ST_FREE`
+     with no list flag, are counted as leaked, and are not put on a list. So a later return of one of
+     them is refused as a double release, and 0 of them are reused.
+  The block is inserted into the buddy only when 2^n of its 2^n frames have moved.
+- `split_lease(BlockLease) -> per-frame leases` consumes the block lease. Under the zone lock it clears
+  `TAIL` and sets order 0 on each frame, and it advances the head's generation. The per-frame leases it
+  issues carry each frame's current generation. A forged or retained copy of the block lease then fails
+  the head-generation and `TAIL` checks. `split_lease` is for callers that free pages one at a time; the
+  existing `allocate_contiguous_frames` keeps its per-frame contract by calling it.
 - `EXTERNAL_LEAF_SPANS` is deleted (section 1.1: no code writes it). `register_external_leaf_frame`, which
   marks RAM frames, is unchanged.
 
@@ -974,6 +990,16 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
   - OOM: with each frame allocated, `alloc_pages` returns `AllocError` after draining and shrinking, and
     does not panic.
   - The lease suite from E1-3 runs again over buddy-backed frames.
+  - Block returns. A block return that checks only the head and the `TAIL` flags is red in each of these
+    cases, and the two-pass return refuses each one:
+    - an order-2 block whose third frame has `leaf_refs` = 1 is returned. The red result is that the
+      tail goes back to the buddy while it is mapped; the two-pass return refuses it with
+      `RefusedLiveLeaf`, and 0 of its frames reach a free list;
+    - an `acquire_leaf_mapping` on a tail is interleaved between the two passes, in the fixed order
+      check (return), increment (acquire), transition (return), re-check (acquire). Exactly one side
+      wins: either the return is refused with the frame mapped, or the acquire backs out. In 0 runs is a mapped frame on a free list;
+    - after `split_lease`, the block is returned using the head generation a caller recorded before the
+      split. The red result is a double return; the new code refuses it as stale.
 - Boot: one ARM64 QEMU boot of the boot-path gate. This replaces the allocator the boot stages use.
   Cases: the boot-path milestone stages and the census.
 - Rows: `memory.anonymous-touch`, since an allocation becomes a per-CPU pop; `process.fork-exec`, for
