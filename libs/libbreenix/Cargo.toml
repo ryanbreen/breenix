@@ -85,3 +85,8 @@ required-features = ["std"]
 name = "reset_termios"
 path = "../../tests/reset_termios.rs"
 required-features = ["std"]
+
+[[test]]
+name = "sudo"
+path = "../../userspace/programs/src/sudo.rs"
+required-features = ["std"]

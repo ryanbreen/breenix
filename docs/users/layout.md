@@ -36,6 +36,10 @@ are added while existing lines are kept. Reconciliation applies in either
 direction between v2 generations. A v1 rollback uses its own configuration;
 the v2 shared data remains on the partition for the return.
 
+On the first upgrade to the passwordless wheel default, reconciliation
+replaces the previous stock `sudo.policy` when its bytes and metadata match
+the shipped file. Other policies stay in place.
+
 A first v2 boot has no factory record for the old v1 configuration. Existing
 files that differ from the new defaults are therefore preserved with a
 `.factory` sibling. This includes old defaults for which the installer has

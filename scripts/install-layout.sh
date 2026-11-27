@@ -87,7 +87,7 @@ for fixture in ua:2001 ub:2002 uw:2003; do
     set_owner "$id:$id" "$root/etc/breenix/test-users/$name"
     chmod 0700 "$root/etc/breenix/test-users/$name"
 done
-printf 'permit %%wheel as root\n' > "$root/etc/sudo.policy"
+printf 'permit %%wheel as root nopass\n' > "$root/etc/sudo.policy"
 printf 'UMASK 022\nROOT_LOGIN no\nFAIL_DELAY 2\n' > "$root/etc/login.defs"
 printf '/bin/sh\n/bin/bsh\n' > "$root/etc/shells"
 cat >> "$root/etc/group" <<'GROUPS'

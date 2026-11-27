@@ -11,6 +11,12 @@
 //! `cmd`, any command. The first rule that matches the caller, the target and
 //! the command decides, and `nopass` lets it run without the caller's password.
 use super::parse;
+use std::fs::{self, File};
+use std::io::Read;
+use std::os::unix::fs::MetadataExt;
+use std::path::Path;
+
+const MAX_POLICY_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Who {
@@ -24,6 +30,37 @@ pub struct Rule {
     pub target: String,
     pub command: Option<String>,
     pub nopass: bool,
+}
+
+fn trusted_policy(uid: u32, gid: u32, mode: u32, links: u64) -> bool {
+    uid == 0 && gid == 0 && mode == 0o100440 && links == 1
+}
+
+/// Check the path and the opened inode, then parse the bytes from that inode.
+pub fn read_policy(path: &Path) -> Result<Vec<Rule>, String> {
+    fn read(path: &Path) -> Result<Vec<Rule>, String> {
+        let trusted = |meta: &fs::Metadata| {
+            trusted_policy(meta.uid(), meta.gid(), meta.mode(), meta.nlink())
+        };
+        let before = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+        if !trusted(&before) {
+            return Err("expected a regular root:root file at mode 0440 with one link".into());
+        }
+        let file = File::open(path).map_err(|e| e.to_string())?;
+        let opened = file.metadata().map_err(|e| e.to_string())?;
+        if !trusted(&opened) || (before.dev(), before.ino()) != (opened.dev(), opened.ino()) {
+            return Err("policy changed during open".into());
+        }
+        let mut text = String::new();
+        file.take(MAX_POLICY_BYTES + 1)
+            .read_to_string(&mut text)
+            .map_err(|e| e.to_string())?;
+        if text.len() as u64 > MAX_POLICY_BYTES {
+            return Err("policy is too large".into());
+        }
+        parse_policy(&text)
+    }
+    read(path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// Parse a whole policy; the error names the first line that does not parse.
@@ -86,9 +123,99 @@ pub fn decide<'a>(rules: &'a [Rule], caller: &str, groups: &[String], target: &s
     })
 }
 
+/// Named primary and supplementary memberships from the account database.
+pub fn group_names(group_file: &str, caller: &str, primary_gid: u32) -> Vec<String> {
+    group_file
+        .lines()
+        .filter_map(|line| parse::Group::parse(line.as_bytes()))
+        .filter(|group| {
+            group.gid == primary_gid
+                || group.fields[3].split(|b| *b == b',').any(|member| member == caller.as_bytes())
+        })
+        .filter_map(|group| std::str::from_utf8(group.fields[0]).ok().map(str::to_owned))
+        .collect()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Authentication {
+    Passwordless,
+    Password,
+    Denied,
+}
+
+impl Authentication {
+    pub fn requires_password(self) -> bool {
+        self != Self::Passwordless
+    }
+}
+
+/// Only a matching rule from a successfully loaded policy grants authority.
+pub fn authentication(
+    rules: Option<&[Rule]>,
+    caller: &str,
+    groups: &[String],
+    target: &str,
+    command: &str,
+) -> Authentication {
+    let Some(rules) = rules else {
+        return Authentication::Denied;
+    };
+    match decide(rules, caller, groups, target, command) {
+        Some(rule) if rule.nopass => Authentication::Passwordless,
+        Some(_) => Authentication::Password,
+        None => Authentication::Denied,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sudo_policy_requires_a_password_unless_a_matching_rule_waives_it() {
+        let rules = parse_policy("permit %wheel as root nopass\npermit fixture cmd /usr/bin/id\n").unwrap();
+        let wheel = group_names("wheel:x:10:member\n", "member", 100);
+        assert_eq!(authentication(Some(&rules), "member", &wheel, "root", "/usr/bin/id"), Authentication::Passwordless);
+        let other = group_names("wheel:x:10:member\nalias:x:10:other\n", "other", 100);
+        let denied = authentication(Some(&rules), "other", &other, "root", "/usr/bin/id");
+        assert_eq!(denied, Authentication::Denied);
+        assert!(denied.requires_password());
+        assert_eq!(authentication(Some(&rules), "fixture", &[], "root", "/usr/bin/id"), Authentication::Password);
+        assert_eq!(authentication(Some(&rules), "fixture", &[], "root", "/bin/sh"), Authentication::Denied);
+    }
+
+    #[test]
+    fn sudo_policy_ignores_untrusted_metadata() {
+        assert!(trusted_policy(0, 0, 0o100440, 1));
+        for (uid, gid, mode, links) in [
+            (1000, 0, 0o100440, 1),
+            (0, 10, 0o100440, 1),
+            (0, 0, 0o100460, 1),
+            (0, 0, 0o100442, 1),
+            (0, 0, 0o120440, 1),
+            (0, 0, 0o100440, 2),
+        ] {
+            assert!(!trusted_policy(uid, gid, mode, links), "{uid}:{gid} {mode:o} {links}");
+        }
+    }
+
+    #[test]
+    fn sudo_policy_missing_or_invalid_grants_no_authority() {
+        let missing = std::path::Path::new("/dev/null").join("sudo.policy");
+        let rules = read_policy(&missing);
+        assert!(rules.is_err());
+        let wheel = vec!["wheel".to_string()];
+        let malformed = parse_policy("# defaults\npermit %wheel nopass\n\npermit %wheel as\n");
+        assert_eq!(malformed.as_ref().unwrap_err(), "line 4 does not parse");
+        for unusable in [rules, malformed] {
+            assert_eq!(
+                authentication(unusable.as_deref().ok(), "member", &wheel, "root", "/usr/bin/id"),
+                Authentication::Denied,
+            );
+        }
+        assert_eq!(authentication(None, "other", &[], "root", "/usr/bin/id"), Authentication::Denied);
+        assert_eq!(authentication(None, "member", &wheel, "fixture", "/usr/bin/id"), Authentication::Denied);
+    }
 
     #[test]
     fn rules_parse_strictly() {
