@@ -859,9 +859,7 @@ pub(crate) fn replace_usr(source: &Path, target: &Path) -> Result<Totals, String
     }
     let mut copier = Copier {
         totals: Totals::default(),
-        // The installed /sbin/init may still be from the read-only era.
-        // Factory defaults would make it rewrite /etc at its next boot.
-        skip: vec![source.join("share/factory/etc")], linked: HashMap::new(),
+        skip: vec![source.join("share/factory")], linked: HashMap::new(),
         buffer: vec![0; 64 * 1024], checkpoint: &mut || Ok(()),
     };
     copier.ensure_directory(&staging, 0o700)?;
@@ -876,20 +874,40 @@ pub(crate) fn replace_usr(source: &Path, target: &Path) -> Result<Totals, String
         fs::read_dir(dir).and_then(|entries| entries.map(|entry| entry.map(|entry| entry.file_name())).collect::<Result<Vec<_>, _>>())
             .map_err(|error| fail("read", dir, error))
     };
-    let incoming = names(&new)?;
-    for name in names(&usr)? {
-        if name != STAGING {
-            remove(&usr.join(name))?;
+    let publish = |incoming: Option<&Path>, destination: &Path, keep: &[&str]| {
+        let incoming_names = incoming.map(&names).transpose()?.unwrap_or_default();
+        for name in names(destination)? {
+            if !keep.iter().any(|kept| name == *kept) {
+                remove(&destination.join(name))?;
+            }
         }
+        if let Some(incoming) = incoming {
+            for name in incoming_names {
+                let target = destination.join(&name);
+                fs::rename(incoming.join(name), &target).map_err(|error| fail("publish /usr entry", &target, error))?;
+            }
+            let meta = fs::symlink_metadata(incoming).map_err(|error| fail("stat", incoming, error))?;
+            own(destination, &meta, true).map_err(|error| fail("chown", destination, error))?;
+            fs::set_permissions(destination, fs::Permissions::from_mode(meta.mode() & 0o7777))
+                .map_err(|error| fail("chmod", destination, error))?;
+        }
+        Ok::<_, String>(())
+    };
+    let share = usr.join("share");
+    if present(&share)? { require_directory(&share)?; }
+    let mut keep = vec![STAGING];
+    if present(&share.join("factory"))? {
+        // Legacy init recreates a missing factory/etc, then treats the empty
+        // tree as a new generation. Keep its defaults and identity in place.
+        let staged_share = new.join("share");
+        let has_incoming = present(&staged_share)?;
+        if has_incoming { require_directory(&staged_share)?; }
+        publish(has_incoming.then_some(staged_share.as_path()), &share, &["factory"])?;
+        copier.sync(&share)?;
+        if has_incoming { remove(&staged_share)?; }
+        keep.push("share");
     }
-    for name in incoming {
-        let target = usr.join(&name);
-        fs::rename(new.join(name), &target).map_err(|error| fail("publish /usr entry", &target, error))?;
-    }
-    let meta = fs::symlink_metadata(&new).map_err(|error| fail("stat", &new, error))?;
-    own(&usr, &meta, true).map_err(|error| fail("chown", &usr, error))?;
-    fs::set_permissions(&usr, fs::Permissions::from_mode(meta.mode() & 0o7777))
-        .map_err(|error| fail("chmod", &usr, error))?;
+    publish(Some(&new), &usr, &keep)?;
     remove(&staging)?;
     copier.sync(&usr)?;
     Ok(copier.totals)
