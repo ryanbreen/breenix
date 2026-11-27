@@ -102,7 +102,28 @@ taskpolicy -b python3 scripts/rust-host/k6_record.py --arch aarch64 \
 The output is `build/rustc-port/k6/aarch64`; retain a copy at
 `~/Library/Caches/breenix-e25/k6/aarch64`, or set
 `BREENIX_K6_AARCH64_FIXTURE` to its location. Verify it with
-`python3 scripts/rust-host/check-k6-fixture.py --arch aarch64`. The record
-lists `R_AARCH64_PREL64` in `needs_bld`; ARM bld replay remains to be done.
+`python3 scripts/rust-host/check-k6-fixture.py --arch aarch64`. The recorded
+ARM bld replay supports `R_AARCH64_PREL64` and has no remaining `needs_bld`
+entries.
 The hosted reference is static and carries `PT_GNU_EH_FRAME`. The observed
 arguments introduce no new linker argument kind beyond the x86 capture.
+
+## AArch64 replay and archive controls
+
+[expect-aarch64.json](expect-aarch64.json) records native bld and rust-lld
+reference hashes for both links. The ARM fixture's `control/non-elf.rlib`
+is a byte copy of its recorded panic-abort `libstd` archive, with the
+`notes.bin` payload from the expectations appended using the Rust `bar r`
+command. Its digest and the exact refusal are recorded there. The positive
+whole-archive control reuses `control/raw-metadata.rlib` from this directory;
+it is architecture-neutral. Run the two ARM checks with:
+
+```sh
+PYTHONPATH=tests python3 -m unittest \
+    rust_link_suite_test.RustLinkSuite.test_aarch64_suite_and_replay \
+    rust_link_suite_test.RustLinkSuite.test_aarch64_rlib_members_skipped
+```
+
+The fixture must contain the constructed `control/non-elf.rlib`. ARM guest
+execution and the remaining ARM K6 acceptance suites still need their
+scheduled acceptance boot.

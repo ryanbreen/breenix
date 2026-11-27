@@ -1,0 +1,23 @@
+{
+  "metadata": {
+    "archive": "control/raw-metadata.rlib",
+    "sha256": "fa0f50e5b861a18336a7062f9062db80331859d7e2f77f83be8a2be1be7043ff"
+  },
+  "control": {
+    "original": "sysroot/lib/rustlib/aarch64-breenix/lib/libstd-0e8040b4e1a0bc8a.rlib",
+    "archive": "control/non-elf.rlib",
+    "member": "notes.bin",
+    "payload": "K6 archive control: non-ELF payload\n",
+    "payload_sha256": "81704b53e418b8831791e62fee8f0ef6ad9fcae0a0976227fc473480c597e96a",
+    "sha256": "f7038e5fad6781ff34ce87df74e9ad31b79d270f87ac3085c27570be4ab78253",
+    "diagnostic": "control/non-elf.rlib(notes.bin): expected an ELF archive member\n"
+  },
+  "panic-abort": {
+    "bld_sha256": "916f07974aedff9c200abc710bab388f182e436c5361805d84e482d54b2a524b",
+    "reference_sha256": "a48f088261123bffb5664ec966cedf0fb58e2f460f70638ff54e2d7124d6fcbb"
+  },
+  "catch-unwind": {
+    "bld_sha256": "3dcb99c27567f188dc53b771e82490b904a65615d85036e1e8e339643867c050",
+    "reference_sha256": "3872642372d99e5f919df43596d3d9b23540fb4e60f06c5e733e88d414286afc"
+  }
+}
