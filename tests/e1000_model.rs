@@ -137,6 +137,10 @@ struct Device {
     loads_address: bool,
     /// Until when hardware owns the NVM semaphore; `u64::MAX` for always.
     hardware_owns_nvm_until: u64,
+    /// An 82574 whose master requests never drain, or whose NVM auto-read
+    /// never finishes.
+    master_stuck: bool,
+    auto_read_stuck: bool,
     nvm: [u16; 3],
     rx_ring: Vec<[u64; 2]>,
     tx_ring: Vec<[u64; 2]>,
@@ -160,6 +164,8 @@ impl Device {
             auto_read_at: None,
             loads_address,
             hardware_owns_nvm_until: 0,
+            master_stuck: false,
+            auto_read_stuck: false,
             nvm: NVM_WORDS,
             rx_ring: vec![[0; 2]; nic::RX_RING],
             tx_ring: vec![[0; 2]; nic::TX_RING],
@@ -255,7 +261,7 @@ impl Device {
                 self.reset_at = None;
                 self.master_idle_at = None;
                 self.power_on();
-                if self.model == Model::Pcie82574 {
+                if self.model == Model::Pcie82574 && !self.auto_read_stuck {
                     self.auto_read_at = Some(at + AUTO_READ_NS);
                 }
             }
@@ -429,7 +435,7 @@ impl Registers for Device {
                 self.set(CTRL, value & !CTRL_RST);
             }
             CTRL => {
-                if is_82574 && value & CTRL_GIO_MASTER_DISABLE != 0 {
+                if is_82574 && value & CTRL_GIO_MASTER_DISABLE != 0 && !self.master_stuck {
                     self.master_idle_at = Some(self.now_ns + 20_000);
                 }
                 self.set(CTRL, value);
@@ -685,6 +691,33 @@ fn station_address_comes_through_the_nvm_and_its_semaphore() {
     let mut blank = Device::new(Model::Pci8254x, false);
     blank.nvm = [0xFFFF; 3];
     assert_eq!(Nic::bring_up(&mut blank, Model::Pci8254x).err(), Some(InitError::NoStationAddress));
+}
+
+#[test]
+fn bring_up_refuses_an_82574_that_does_not_quiesce_or_load_its_nvm() {
+    // Master requests never drain: no reset while they may be in flight (DS
+    // 10.2.2.1), and the master disable stays set, blocking new requests.
+    let mut stuck = Device::new(Model::Pcie82574, true);
+    stuck.master_stuck = true;
+    let refused = Nic::bring_up(&mut stuck, Model::Pcie82574).err();
+    assert_eq!(refused, Some(InitError::MasterDrainTimeout));
+    assert!(!refused.unwrap().as_str().is_empty());
+    assert!(stuck.first_write(CTRL, |value| value & CTRL_RST != 0).is_none(), "no reset");
+    assert_ne!(stuck.reg(CTRL) & CTRL_GIO_MASTER_DISABLE, 0, "master disable held");
+    assert_eq!(stuck.reg(IMS), 0, "interrupts masked");
+    assert!(stuck.violations.is_empty(), "{:?}", stuck.violations);
+
+    // The NVM auto-read never finishes: a late load could rewrite CTRL after
+    // configuration (DS 4.2, 10.2.2.1), so nothing is configured.
+    let mut unloaded = Device::new(Model::Pcie82574, true);
+    unloaded.auto_read_stuck = true;
+    let refused = Nic::bring_up(&mut unloaded, Model::Pcie82574).err();
+    assert_eq!(refused, Some(InitError::NvmLoadTimeout));
+    assert!(!refused.unwrap().as_str().is_empty());
+    let reset = unloaded.first_write(CTRL, |value| value & CTRL_RST != 0).expect("reset");
+    assert!(unloaded.written(CTRL).iter().all(|&(at, value)| at <= reset || value & CTRL_SLU == 0));
+    assert!(unloaded.written(RCTL).is_empty() && unloaded.written(TCTL).is_empty());
+    assert!(unloaded.violations.is_empty(), "{:?}", unloaded.violations);
 }
 
 #[test]
