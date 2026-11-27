@@ -10,6 +10,35 @@ fn section_index(elf: &Elf<'_>, name: &[u8]) -> usize {
 }
 
 #[test]
+fn semicolons_separate_a64_statements() {
+    let assemble = |source: &[u8]| assemble_for(Target::Aarch64, source).unwrap();
+    assert_eq!(assemble(b"nop; nop"), assemble(b"nop\nnop\n"));
+
+    let source = br#"
+.macro pair value; mov x0, #\value; nop; .endm
+pair 1; /* ; */ pair 2; // ; ignored
+nop; # ; ignored
+.data; .ascii "a;\"b"; .byte 0
+"#;
+    let separate = br#"
+mov x0, #1
+nop
+mov x0, #2
+nop
+nop
+.data
+.ascii "a;\"b"
+.byte 0
+"#;
+    assert_eq!(assemble(source), assemble(separate));
+
+    let error = assemble_for(Target::Aarch64, b"nop; bad_opcode")
+        .unwrap_err()
+        .to_string();
+    assert!(error.starts_with("1:6:"), "{error}");
+}
+
+#[test]
 fn privileged_a64_encodings() {
     let source = include_bytes!("../../corpus/kernel-asm/privileged-a64.s");
     let expected: Vec<u8> = include_str!("../../corpus/kernel-asm/privileged-a64.hex")
