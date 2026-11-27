@@ -21,3 +21,7 @@ pub mod breenfs_files;
 #[cfg(test)]
 #[path = "../tests/live_flash.rs"]
 mod live_flash_tests;
+
+#[cfg(test)]
+#[path = "../tests/live_sequence.rs"]
+mod live_sequence_tests;
