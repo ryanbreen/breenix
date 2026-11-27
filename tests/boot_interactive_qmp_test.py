@@ -193,7 +193,8 @@ case "${3:-}" in
     --llvm)
         out=target/llvm/aarch64
         mkdir -p "$out"
-        for name in llc llvm-mc bld libc.a; do printf '%s' "$name" > "$out/$name"; done ;;
+        for name in llc llvm-mc bld; do printf '\\177ELF%s' "$name" > "$out/$name"; done
+        printf archive > "$out/libc.a" ;;
     --cxx-runtime)
         out=target/cxx-runtime/aarch64
         mkdir -p "$out"

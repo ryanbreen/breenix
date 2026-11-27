@@ -13,7 +13,7 @@
 # SEQUENCE (suite ids joined by commas, SUITE_ID first) also writes /etc/breenix/suite-sequence,
 # so the boot runs each suite in turn (docs/suites/README.md, "Several suites in one boot");
 # each /sbin/suite-ID must match the ELF beside PID1_ELF.
-# CXX_RUNTIME_ELF supplies the hosted cxx-runtime ELF for either check.
+# CXX_RUNTIME_ELF names the hosted release directory for cxx-runtime and llvm checks.
 # ROOT_FS writes the host's root-fs ext2|breenfs declaration beside the suite list.
 #
 # Uses debugfs (e2fsprogs) when it is on PATH or in Homebrew's keg-only e2fsprogs,
@@ -35,9 +35,18 @@ PACE="${6:-}"
 ROOT_FS="${7:-}"
 CXX_RUNTIME_ELF="${8:-}"
 case "$ROOT_FS" in ''|ext2|breenfs) ;; *) echo "write-boot-target: unknown root filesystem: $ROOT_FS" >&2; exit 2 ;; esac
-if [ "$SUITE" = cxx-runtime ]; then
-    SUITE_ELF="${CXX_RUNTIME_ELF:-$SUITE_ELF}"
-fi
+suite_elf_path() {
+    local id="$1" fallback="$2"
+    case "$id" in
+        cxx-runtime|llvm)
+            if [ -n "$CXX_RUNTIME_ELF" ]; then
+                printf '%s/suite-%s' "$(dirname "$CXX_RUNTIME_ELF")" "$id"
+                return
+            fi ;;
+    esac
+    printf '%s' "$fallback"
+}
+SUITE_ELF="$(suite_elf_path "$SUITE" "$SUITE_ELF")"
 BOOT_TARGET="suite $SUITE"
 BINARY="/sbin/suite-$SUITE"
 if [ "$SUITE" = --program ]; then
@@ -155,10 +164,7 @@ if [ -n "$DEBUGFS" ]; then
         IFS=',' read -r -a sequence_ids <<< "$SEQUENCE"
         elf_dir="$(dirname "${3:-}")"
         for id in "${sequence_ids[@]}"; do
-            expected_elf="$elf_dir/suite-$id.elf"
-            if [ "$id" = cxx-runtime ]; then
-                expected_elf="${CXX_RUNTIME_ELF:-$expected_elf}"
-            fi
+            expected_elf="$(suite_elf_path "$id" "$elf_dir/suite-$id.elf")"
             "$DEBUGFS" -R "dump /sbin/suite-$id $WORK/$id.elf" "$IMAGE" >/dev/null 2>&1 || true
             cmp -s "$WORK/$id.elf" "$expected_elf" || { echo "write-boot-target: stale sequence binary $id" >&2; exit 1; }
         done

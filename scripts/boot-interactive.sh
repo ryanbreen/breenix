@@ -420,6 +420,10 @@ if [ "$BUILD" -eq 1 ]; then
         run_build "$ROOT/userspace/programs/build.sh" --arch aarch64 --hosted-bin suite-cxx-runtime --features cxx-runtime
         run_build "$ROOT/userspace/programs/build.sh" --arch aarch64 --cxx-runtime
     fi
+    if [ "$MODE" = suite ] && [[ ",$SUITE," == *,llvm,* ]]; then
+        run_build "$ROOT/userspace/programs/build.sh" --arch aarch64 --hosted-bin suite-llvm --features llvm
+        run_build "$ROOT/userspace/programs/build.sh" --arch aarch64 --llvm
+    fi
     echo "==> Building the ext2 disk"
     run_build "$ROOT/scripts/create_ext2_disk.sh" --arch aarch64
     if [ "$MODE" = tests ]; then
@@ -588,7 +592,7 @@ if [ "$MODE" = suite ]; then
     # The first suite runs from fw_cfg; the list on the disk tells each suite which runs next.
     SEQUENCE=
     if [[ "$SUITE" == *,* ]]; then SEQUENCE="$SUITE"; fi
-    if [[ ",$SUITE," == *,rust-host,* || ",$SUITE," == *,cxx-runtime,* ]]; then
+    if [[ ",$SUITE," == *,rust-host,* || ",$SUITE," == *,cxx-runtime,* || ",$SUITE," == *,llvm,* ]]; then
         python3 "$ROOT/scripts/rust_host_stage.py" --arch aarch64 --image "$WRITABLE" --suite "$SUITE"
     fi
     "$ROOT/scripts/write-boot-target.sh" "$WRITABLE" "${SUITE%%,*}" \
