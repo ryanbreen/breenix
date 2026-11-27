@@ -9,11 +9,23 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 CACHE = Path.home() / 'Library/Caches/breenix-e25/k7'
 PIN = '84709f085062cbf3c51fa507527c1b2334015178'
+MACHINES = {'x86_64': 'Advanced Micro Devices X86-64', 'aarch64': 'AArch64'}
+
+
+def cargo_stage(arch):
+    stage = Path(os.environ.get('BREENIX_K7_STAGE', CACHE / 'stage1'))
+    return stage / 'aarch64' if arch == 'aarch64' else stage
 
 
 class CargoPort(unittest.TestCase):
     def test_cargo_is_breenix_elf_with_empty_undefined_set(self):
-        stage = Path(os.environ.get('BREENIX_K7_STAGE', CACHE / 'stage1'))
+        for arch in MACHINES:
+            with self.subTest(arch=arch):
+                self._check_cargo_elf(arch)
+
+    def _check_cargo_elf(self, arch):
+        stage = cargo_stage(arch)
+        machine = MACHINES[arch]
         cargo = stage / 'bin/cargo'
         libc = stage / 'lib/libc.so'
         self.assertTrue(cargo.is_file(), 'missing hosted Cargo ELF')
@@ -25,13 +37,13 @@ class CargoPort(unittest.TestCase):
         elf = inspect(cargo, '-h', '-l', '-d')
         self.assertRegex(elf, r'Class:\s+ELF64\b')
         self.assertRegex(elf, r'Type:\s+EXEC\b')
-        self.assertRegex(elf, r'Machine:\s+Advanced Micro Devices X86-64')
+        self.assertRegex(elf, rf'Machine:\s+{machine}\b')
         self.assertEqual(re.findall(r'\[Requesting program interpreter: (.+?)\]', elf),
                          ['/lib/ld-breenix.so'])
         self.assertEqual(re.findall(r'\(NEEDED\).*\[(.+?)\]', elf), ['libc.so'])
         library = inspect(libc, '-h', '-d')
         self.assertRegex(library, r'Type:\s+DYN\b')
-        self.assertRegex(library, r'Machine:\s+Advanced Micro Devices X86-64')
+        self.assertRegex(library, rf'Machine:\s+{machine}\b')
         self.assertEqual(re.findall(r'\(SONAME\).*\[(.+?)\]', library), ['libc.so'])
         self.assertNotRegex(library, r'\(NEEDED\)')
 
@@ -44,7 +56,8 @@ class CargoPort(unittest.TestCase):
                 binding, visibility, index, name = fields[4:8]
                 if index == 'UND' and binding in ('GLOBAL', 'UNIQUE'):
                     undefined.add(name)
-                if (index != 'UND' and binding in ('GLOBAL', 'WEAK', 'UNIQUE')
+                if ((arch == 'x86_64' or path == libc)
+                        and index != 'UND' and binding in ('GLOBAL', 'WEAK', 'UNIQUE')
                         and visibility in ('DEFAULT', 'PROTECTED')):
                     # A default version also satisfies an unversioned lookup.
                     defined.add(name.replace('@@', '@'))
@@ -59,7 +72,14 @@ class CargoPort(unittest.TestCase):
             r'\b(?:libc(?:-pic)?|libbreenix[_-]libc)(?:-[0-9a-f]+)?\.(?:a|rlib)[(:]')
         self.assertNotRegex(link_map, r'\.a[(:][^\s)]*crt[^\s)]*\.o\b')
 
-        record = json.loads((ROOT / 'toolchain/rust-host/k7/x86_64.json').read_text())
+        record = json.loads((ROOT / f'toolchain/rust-host/k7/{arch}.json').read_text())
+        if arch == 'aarch64':
+            pin = json.loads((ROOT / 'toolchain/rust-host/hosted-libc-aarch64.json').read_text())
+            self.assertEqual(record['libc_sha256'], pin['sha256']['libc.so'])
+            self.assertRegex(link_map, r'\blibbunwind\.a\(bunwind-[^\s)]+\.o\)')
+            self.assertNotRegex(link_map, r'\blibunwind\.(?:a|so)(?:[(:.]|\s|$)')
+            for member in re.findall(r'\blibunwind-[0-9a-f]+\.rlib\(([^)]+)\)', link_map):
+                self.assertRegex(member, r'^unwind-.*\.rcgu\.o$')
         for path, key in ((cargo, 'cargo_sha256'), (libc, 'libc_sha256'),
                           (stage / 'maps/cargo.map', 'map_sha256')):
             with path.open('rb') as stream:
@@ -67,7 +87,12 @@ class CargoPort(unittest.TestCase):
                                  record[key], path.name)
 
     def test_cargo_one_process_state(self):
-        stage = Path(os.environ.get('BREENIX_K7_STAGE', CACHE / 'stage1'))
+        for arch in MACHINES:
+            with self.subTest(arch=arch):
+                self._check_cargo_process_state(arch)
+
+    def _check_cargo_process_state(self, arch):
+        stage = cargo_stage(arch)
         cargo, libc = stage / 'bin/cargo', stage / 'lib/libc.so'
         self.assertTrue(cargo.is_file(), 'missing hosted Cargo ELF')
         nm = os.environ.get('LLVM_NM', 'llvm-nm')
@@ -101,6 +126,19 @@ class CargoPort(unittest.TestCase):
                     name = re.sub(r'::h[0-9a-f]{16}(?: \(.*\))?$', '', name)
                     data.setdefault(name, set()).add(file)
         self.assertEqual(sorted(name for name, files in data.items() if len(files) > 1), [])
+
+    def test_arm_cargo_dynamic_relocations_are_supported(self):
+        cargo = cargo_stage('aarch64') / 'bin/cargo'
+        self.assertTrue(cargo.is_file(), 'missing hosted ARM Cargo ELF')
+        readobj = os.environ.get('LLVM_READOBJ', 'llvm-readobj')
+        output = subprocess.check_output([readobj, '--dyn-relocations', cargo],
+                                         text=True, timeout=30)
+        actual = set(re.findall(r'^\s*0x[0-9a-fA-F]+\s+(\S+)', output, re.MULTILINE))
+        self.assertTrue(actual, 'missing ARM Cargo dynamic relocations')
+        # The AArch64 handlers in libs/ld-breenix/src/object.rs::relocate_impl.
+        supported = {'R_AARCH64_ABS64', 'R_AARCH64_GLOB_DAT', 'R_AARCH64_JUMP_SLOT',
+                     'R_AARCH64_RELATIVE', 'R_AARCH64_TLSDESC'}
+        self.assertEqual(sorted(actual - supported), [], f'full inventory: {sorted(actual)}')
 
     def test_x1_c_dependencies_resolve_in_libc(self):
         for arch in ('x86_64', 'aarch64'):
