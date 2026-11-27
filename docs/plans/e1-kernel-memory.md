@@ -184,9 +184,25 @@ glue: locks, interrupt masking, the direct map and page tables.
 - Both architectures normalise their memory description into one sorted, disjoint, page-aligned set of
   usable RAM ranges.
   - x86: the bootloader's `MemoryRegions`, less the 1 MiB floor and the AP trampoline run.
-  - ARM64: `platform_config::frame_pool()`, with the clip to 4 GiB removed (section 4.4).
+  - ARM64: the same inputs `platform_config::frame_pool()` reads today, with the clip to 4 GiB removed
+    (section 4.4). Removing the kernel's clip is not enough on its own, because two limits upstream of it
+    also drop RAM:
+    - `arm64-boot-contract`'s `RangeSet` holds at most `MAX_RANGES = 32` ranges
+      (`libs/arm64-boot-contract/src/phys_memory.rs:35`) and sets `truncated` when it drops one
+      (lines 122-127, 168-171). A UEFI map or device tree with more fragments loses RAM before the kernel
+      sees it. E1-1 feeds the kernel's growable range set straight from the firmware description: the
+      device tree through the contract's existing visitor (`fdt::walk`, line 488), and the UEFI map through
+      `final_uefi_conventional_ranges`'s descriptor filter (line 16), split out so it yields ranges instead
+      of building the fixed set. The fixed set is then no longer on the frame-pool path. The fixed set stays for the loader's own early use, where its
+      `truncated` flag becomes a boot error rather than a silent drop.
+    - The output address width is fixed at 40 bits (`TCR_IPS_40BIT`, `arch_impl/aarch64/boot.S:82`, and
+      the same constant in `parallels-loader/src/page_tables.rs:112`), so RAM at or above 1 TiB cannot be
+      mapped. E1-2 sets TCR_EL1.IPS from ID_AA64MMFR0_EL1.PARange (Arm ARM, the ID_AA64MMFR0_EL1 and TCR_EL1
+      register descriptions) at both sites. RAM above the width the CPU reports is excluded from the range
+      set and counted in `/proc/breenix/kmem`, so it is reported rather than silently missing.
 - There is no `MAX_REGIONS`. The range set lives in a page carved from the largest range, and grows by
-  carving another page if the firmware describes more.
+  carving another page if the firmware describes more. Building it takes two passes over the firmware
+  description: the first finds the largest range, and the second fills the set.
 - A boot carve takes `(bytes, align, below)` and removes the highest fitting run from the range set. It
   feeds the metadata arrays (4.2), the section table, and ARM64's extra direct-map tables (4.4). It returns
   an error instead of panicking. A boot that cannot carve its metadata still stops, at an explicit
@@ -760,10 +776,15 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
   `init_aarch64` consume it. `MAX_REGIONS` goes.
 - x86-64: usable regions past the 128th are kept instead of dropped. Allocation behaviour is otherwise
   unchanged.
-- ARM64: the frame pool's ranges go through the same type. Behaviour is unchanged.
+- ARM64: the frame pool's ranges go through the same type, fed from the device tree visitor and the
+  split-out UEFI descriptor filter instead of the contract's 32-range `RangeSet` (4.1). On a map with at
+  most 32 ranges the result is unchanged.
 - Tests (host, new crate `tools/kmem-host-tests`):
   - Check first: the existing region-extraction logic, moved unchanged into the pure module, is given
     200 usable regions. It keeps 128, which is red. After the change it keeps 200 of 200.
+  - Check first, ARM64: `frame_pool_from_fdt` on a device tree with 40 disjoint memory ranges keeps 32 and
+    sets `truncated`, which is red. The new path keeps 40 of 40. The same holds for a UEFI map of 40
+    conventional descriptors through `final_uefi_conventional_ranges`.
   - Unsorted and overlapping firmware entries normalise to disjoint, page-aligned ranges, and the 1 MiB
     floor is applied.
   - A carve with alignment and a `below` limit returns the highest fitting run, or an error when no run fits;
@@ -777,9 +798,12 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
   - a pure planner turns ranges above the boot window into a minimal list of 1 GiB, 2 MiB and 4 KiB
     descriptors;
   - kernel glue writes them into the live TTBR1 tables, using table pages from the carve;
-  - `direct_map_ram_window`'s clip goes.
+  - `direct_map_ram_window`'s clip goes;
+  - TCR_EL1.IPS comes from ID_AA64MMFR0_EL1.PARange instead of the fixed 40-bit constant, in `boot.S` and
+    in `parallels-loader`'s `page_tables.rs`. RAM above the reported width is left out of the range set and
+    counted (4.1).
 - x86-64: no change.
-- ARM64: RAM above 4 GiB joins the frame pool.
+- ARM64: RAM above 4 GiB joins the frame pool, up to the CPU's physical address width.
 - Tests (host):
   - Check first: the kernel's window choice (`direct_map_ram_window`) moves unchanged into
     `arm64-boot-contract` as a pure function, and `frame_pool_from_fdt` is called with it on a device tree
@@ -787,6 +811,11 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
     6 GiB, less the fixed ranges and reservations.
   - Planner: each page of each range is covered exactly once; no descriptor covers a non-RAM address;
     blocks are used wherever alignment allows; the number of table pages is minimal for the input.
+  - Address width: the IPS encoding is a pure function of PARange. For each PARange value the Arm ARM
+    defines, the planner accepts ranges that end at or below 2^width and leaves out those above it, and
+    the excluded bytes are counted. Check first: today's choice, extracted as a function that ignores
+    PARange, returns the 40-bit encoding for PARange 0b0101 (48 bits). A device tree range at 2 TiB, which
+    that CPU can address, then cannot be mapped, which is red. The new choice maps it.
 - Boot: one ARM64 QEMU boot with the standard boot script and more than 4 GiB of guest RAM. Host tests
   cannot settle whether the MMU accepts the tables, which is a hardware effect. Cases: the boot-path
   milestone stages, and a census read showing frames above 4 GiB allocated. The prediction is written
