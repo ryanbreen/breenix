@@ -4,7 +4,9 @@
 //! the key installation bsshd uses), over loopback TCP. For each cipher the client pipes 200 KiB through
 //! an exec channel that echoes it back, so both directions carry bulk data
 //! in full-size packets. Host-key checking stays strict, against a known
-//! hosts file holding the test's own key.
+//! hosts file holding the test's own key. One case sets a small RekeyLimit,
+//! so the client starts key re-exchanges in the middle of the transfer and
+//! the server answers them with kex::server_rekey.
 
 use libbreenix::crypto::rand::Csprng;
 use libbreenix::error::Error;
@@ -75,11 +77,21 @@ fn string_at<'a>(message: &'a [u8], pos: &mut usize) -> &'a [u8] {
 }
 
 /// What the server saw: the negotiated ciphers, whether strict KEX applied,
-/// and the exec command.
+/// the exec command, and the client's re-exchanges with the ciphers each
+/// one chose.
 struct Transcript {
     kinds: (CipherKind, CipherKind),
     strict: bool,
     command: Vec<u8>,
+    rekeys: Vec<(CipherKind, CipherKind)>,
+}
+
+/// Answer a client KEXINIT that opens a re-exchange.
+fn rekey(wire: &mut Wire, host_key: &Ed25519Key, state: &mut kex::KexState, client_version: &str, kexinit: Vec<u8>)
+    -> (CipherKind, CipherKind)
+{
+    kex::server_rekey(wire, &mut rng(8), host_key, state, client_version, SERVER_VERSION, kexinit).unwrap();
+    kex::negotiate_ciphers_with(&state.peer_kexinit, &state.my_kexinit, state.strict).unwrap()
 }
 
 fn serve(stream: TcpStream, host_key: &Ed25519Key) -> Transcript {
@@ -113,6 +125,7 @@ fn serve(stream: TcpStream, host_key: &Ed25519Key) -> Transcript {
     assert_eq!(wire.recv()[0], 50, "USERAUTH_REQUEST");
     wire.send(&[52]);
 
+    let mut rekeys = Vec::new();
     let mut client_channel = None;
     let mut client_max_packet = 0usize;
     let mut command = Vec::new();
@@ -158,6 +171,7 @@ fn serve(stream: TcpStream, host_key: &Ed25519Key) -> Transcript {
                 input.extend_from_slice(string_at(&message, &mut pos));
             }
             96 => break,
+            20 => rekeys.push(rekey(&mut wire, host_key, &mut state, &client_version, message)),
             2 | 4 | 93 => {}
             kind => panic!("unexpected message {kind}"),
         }
@@ -183,14 +197,16 @@ fn serve(stream: TcpStream, host_key: &Ed25519Key) -> Transcript {
     }
     loop {
         let message = wire.recv();
-        if message[0] == 97 {
-            break;
+        match message[0] {
+            97 => break,
+            20 => rekeys.push(rekey(&mut wire, host_key, &mut state, &client_version, message)),
+            _ => {}
         }
     }
-    Transcript { kinds, strict, command }
+    Transcript { kinds, strict, command, rekeys }
 }
 
-fn exchange(cipher: CipherKind) {
+fn exchange(cipher: CipherKind, rekey_limit: Option<&str>) -> Transcript {
     let host_key = Ed25519Key::from_seed(&[0x42; 32]);
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -217,6 +233,9 @@ fn exchange(cipher: CipherKind) {
     if !cipher.is_aead() {
         options.extend(["-o".into(), "MACs=hmac-sha2-256".into()]);
     }
+    if let Some(limit) = rekey_limit {
+        options.extend(["-o".into(), format!("RekeyLimit={limit}")]);
+    }
     let mut client = Command::new("/usr/bin/ssh")
         .args(&options)
         .args(["-T", "interop@127.0.0.1", "echo-back"])
@@ -238,19 +257,32 @@ fn exchange(cipher: CipherKind) {
     assert_eq!(transcript.kinds, (cipher, cipher));
     assert!(transcript.strict, "OpenSSH offers strict KEX and the server accepted it");
     assert_eq!(transcript.command, b"echo-back");
+    transcript
 }
 
 #[test]
 fn openssh_round_trips_bulk_data_with_chacha20_poly1305() {
-    exchange(CipherKind::ChaCha20Poly1305);
+    exchange(CipherKind::ChaCha20Poly1305, None);
 }
 
 #[test]
 fn openssh_round_trips_bulk_data_with_aes256_gcm() {
-    exchange(CipherKind::Aes256Gcm);
+    exchange(CipherKind::Aes256Gcm, None);
 }
 
 #[test]
 fn openssh_round_trips_bulk_data_with_aes128_ctr() {
-    exchange(CipherKind::Aes128Ctr);
+    exchange(CipherKind::Aes128Ctr, None);
+}
+
+#[test]
+fn openssh_rekeys_in_the_middle_of_a_bulk_transfer() {
+    // 400 KiB cross the connection; a 64 KiB limit makes the client start
+    // several re-exchanges while channel data is flowing both ways.
+    let transcript = exchange(CipherKind::ChaCha20Poly1305, Some("64K"));
+    assert!(!transcript.rekeys.is_empty(), "the client re-exchanged keys");
+    // Strict KEX, settled by the first KEXINITs, keeps chacha20 eligible.
+    for kinds in &transcript.rekeys {
+        assert_eq!(*kinds, (CipherKind::ChaCha20Poly1305, CipherKind::ChaCha20Poly1305));
+    }
 }
