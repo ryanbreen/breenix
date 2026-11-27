@@ -214,6 +214,44 @@ fn file_digest(path: &Path) -> Result<String, String> {
     }
 }
 
+fn field<const N: usize>(bytes: &[u8], offset: usize) -> Option<[u8; N]> {
+    bytes.get(offset..offset.checked_add(N)?)?.try_into().ok()
+}
+
+// ELF gABI, ELF64 header and section header layouts.
+pub fn text_bytes(object: &[u8]) -> Option<&[u8]> {
+    if !object.starts_with(b"\x7fELF\x02\x01\x01")
+        || u16::from_le_bytes(field(object, 16)?) != 1
+        || u16::from_le_bytes(field(object, 18)?) != 62
+        || u16::from_le_bytes(field(object, 58)?) != 64
+    {
+        return None;
+    }
+    let start = usize::try_from(u64::from_le_bytes(field(object, 40)?)).ok()?;
+    let count = usize::from(u16::from_le_bytes(field(object, 60)?));
+    let names = usize::from(u16::from_le_bytes(field(object, 62)?));
+    let sections = object
+        .get(start..start.checked_add(64 * count)?)?
+        .chunks_exact(64);
+    let contents = |header: &[u8]| {
+        let offset = usize::try_from(u64::from_le_bytes(field(header, 24)?)).ok()?;
+        let size = usize::try_from(u64::from_le_bytes(field(header, 32)?)).ok()?;
+        object.get(offset..offset.checked_add(size)?)
+    };
+    let strings = contents(sections.clone().nth(names)?)?;
+    let mut text = None;
+    for header in sections {
+        let name = usize::try_from(u32::from_le_bytes(field(header, 0)?)).ok()?;
+        if strings.get(name..)?.starts_with(b".text\0")
+            && (u32::from_le_bytes(field(header, 4)?) != 1
+                || text.replace(contents(header)?).is_some())
+        {
+            return None;
+        }
+    }
+    text
+}
+
 #[cfg(not(test))]
 mod corpus {
     use super::*;
@@ -552,43 +590,7 @@ mod corpus {
         }
     }
 
-    fn field<const N: usize>(bytes: &[u8], offset: usize) -> Option<[u8; N]> {
-        bytes.get(offset..offset.checked_add(N)?)?.try_into().ok()
-    }
 
-    // ELF gABI, ELF64 header and section header layouts.
-    fn text_bytes(object: &[u8]) -> Option<&[u8]> {
-        if !object.starts_with(b"\x7fELF\x02\x01\x01")
-            || u16::from_le_bytes(field(object, 16)?) != 1
-            || u16::from_le_bytes(field(object, 18)?) != 62
-            || u16::from_le_bytes(field(object, 58)?) != 64
-        {
-            return None;
-        }
-        let start = usize::try_from(u64::from_le_bytes(field(object, 40)?)).ok()?;
-        let count = usize::from(u16::from_le_bytes(field(object, 60)?));
-        let names = usize::from(u16::from_le_bytes(field(object, 62)?));
-        let sections = object
-            .get(start..start.checked_add(64 * count)?)?
-            .chunks_exact(64);
-        let contents = |header: &[u8]| {
-            let offset = usize::try_from(u64::from_le_bytes(field(header, 24)?)).ok()?;
-            let size = usize::try_from(u64::from_le_bytes(field(header, 32)?)).ok()?;
-            object.get(offset..offset.checked_add(size)?)
-        };
-        let strings = contents(sections.clone().nth(names)?)?;
-        let mut text = None;
-        for header in sections {
-            let name = usize::try_from(u32::from_le_bytes(field(header, 0)?)).ok()?;
-            if strings.get(name..)?.starts_with(b".text\0")
-                && (u32::from_le_bytes(field(header, 4)?) != 1
-                    || text.replace(contents(header)?).is_some())
-            {
-                return None;
-            }
-        }
-        text
-    }
 }
 
 #[cfg(not(test))]

@@ -76,3 +76,22 @@ fn executes_only_the_digest_bound_rebuilt_path() {
     );
     assert!(table.verify_all().unwrap_err().contains("SHA-256 changed"));
 }
+
+#[test]
+fn aarch64_text_bytes_match_arm_encoding_fixture() {
+    let root = std::env::temp_dir().join(format!("breenix-arm-encodings-{}", std::process::id()));
+    fs::create_dir(&root).unwrap();
+    let fixture = Fixture(root);
+    let object = fixture.0.join("encodings.o");
+    let corpus = PathBuf::from("toolchain/corpus/assembler-aarch64");
+    let status = Command::new("toolchain/target/debug/bas")
+        .args(["--target", "aarch64", "-o"])
+        .arg(&object)
+        .arg(corpus.join("encodings.s"))
+        .status().unwrap();
+    assert!(status.success());
+    let expected: Vec<u8> = fs::read_to_string(corpus.join("encodings.hex")).unwrap()
+        .lines().flat_map(|line| u32::from_str_radix(line.split_ascii_whitespace().next().unwrap(), 16).unwrap().to_le_bytes()).collect();
+    assert!(!expected.is_empty());
+    assert_eq!(self_host_behave::text_bytes(&fs::read(object).unwrap()), Some(expected.as_slice()));
+}
