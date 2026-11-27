@@ -35,6 +35,37 @@ def git(*args, tree=TREE):
 
 
 class RustcPort(unittest.TestCase):
+    def test_arm_k5_pinned_inputs(self):
+        fork = ROOT / 'rust-fork'
+        pin = tomllib.loads((ROOT / 'rust-fork.toml').read_text())['commit']
+        self.assertEqual(git('rev-parse', 'HEAD', tree=fork), pin)
+        self.assertTrue((fork / 'compiler/rustc/Cargo.toml').is_file(), 'fork compiler checkout missing')
+        llvm = fork / 'src/llvm-project'
+        self.assertTrue((llvm / 'llvm/CMakeLists.txt').is_file(), 'LLVM checkout missing')
+        gitlink = git('ls-tree', pin, 'src/llvm-project', tree=fork).split()[2]
+        self.assertEqual(gitlink, 'ed6566573eb21b00a3f87815e14ff766fd56ef42')
+        self.assertEqual(git('rev-parse', 'HEAD', tree=llvm), gitlink)
+        self.assertEqual(git('status', '--porcelain', '--ignore-submodules=none',
+                             '--', 'compiler', 'src/llvm-project', tree=fork), '')
+        self.assertEqual(git('status', '--porcelain', '--untracked-files=all', tree=llvm), '')
+
+        k4 = json.loads((RECORDS.parent / 'k4/aarch64.json').read_text())
+        k3 = json.loads((RECORDS.parent / 'k3/aarch64.json').read_text())
+        llvm_build = Path(os.environ.get('BREENIX_LLVM_PORT_BUILDS', ROOT / 'build/llvm-port'))
+        cxx_build = Path(os.environ.get('BREENIX_CXX_RUNTIME_BUILDS', ROOT / 'build/cxx-runtime'))
+        self.assertTrue(k4['archives'])
+        for name, digest in k4['archives'].items():
+            path = llvm_build / 'aarch64/build' / name
+            self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), digest, str(path))
+        self.assertTrue(k3['archives'])
+        for name, entry in k3['archives'].items():
+            path = cxx_build / 'aarch64/build/lib' / name
+            self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), entry['sha256'], str(path))
+        llc = Path(os.environ.get('BREENIX_MAC_LLC', Path.home() /
+                   'Library/Caches/breenix-e25/k4/x86_64/native-llc/bin/llc'))
+        manifest = json.loads((RECORDS.parent / 'k4/corpus/expect-aarch64.json').read_text())
+        self.assertEqual(hashlib.sha256(llc.read_bytes()).hexdigest(), manifest['producer']['sha256'])
+
     def test_twin_spawn_environment_is_guest_set(self):
         with mock.patch.dict(os.environ, {"RUSTFLAGS": "ambient", "CARGO_HOME": "ambient"}):
             self.assertEqual(guest_environment(Path("/fixture/targets")),
