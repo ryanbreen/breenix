@@ -47,14 +47,15 @@ class RemoteSeries(unittest.TestCase):
             self.assertEqual(runner.main(self.args), 0)
             self.assertIn("fork-exec", self.workloads)
             self.assertNotIn("sequential", self.workloads)
+            self.assertNotIn("small-files", self.workloads)
             self.assertNotIn("walk", self.workloads)
             self.assertNotIn("fsync", self.workloads)
             network.assert_called_once()
 
             self.workloads.clear()
-            self.args.cases = "sequential,walk,fsync"
+            self.args.cases = "sequential,small-files,walk,fsync"
             self.assertEqual(runner.main(self.args), 0)
-            self.assertEqual(self.workloads, ["sequential", "walk", "fsync"])
+            self.assertEqual(self.workloads, ["sequential", "small-files", "walk", "fsync"])
 
     def test_network_resolves_alias_before_running_workloads(self):
         self.args.host = "bench-box"
