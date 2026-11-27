@@ -211,6 +211,48 @@ class GuestThatStaysDown(unittest.TestCase):
                              ["breenix VM could not be restarted"], case)
 
 
+class GuestWhoseWarmupFails(RecordingGuest):
+    """Cargo fails the no-op warm-up; every other command succeeds."""
+
+    def ssh(self, words, **kwargs):
+        words = list(map(str, words))
+        if not any(word.startswith("qemu-vol-") for word in words):
+            return rig.subprocess.CompletedProcess(words, 0, b"", b"")
+        result = super().ssh(words, **kwargs)
+        receipt = json.loads(result.stdout)
+        if receipt["sample"].endswith("noop-seed"):
+            receipt["error"] = "cargo build exited 101"
+        return rig.subprocess.CompletedProcess(words, 0, json.dumps(receipt).encode(), b"")
+
+
+class CargoNoopWarmup(unittest.TestCase):
+    """The no-op row times a build of an already built target. When the warm-up build
+    fails, the next build would do the real work, so it is not timed as a no-op."""
+
+    def test_a_failed_warmup_stops_the_timed_build(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        out = Path(temp.name)
+        bench = rig.Rig.__new__(rig.Rig)
+        bench.args = type("Args", (), {"run": "qemu-vol"})()
+        bench.out = {"breenix": out}
+        guest = GuestWhoseWarmupFails("/etc/breenix/test-ssh/home")
+        bench.guests = {"breenix": guest}
+        bench.endpoint = type("Endpoint", (), {"server_address": ("127.0.0.1", 9)})()
+        bench.restart = lambda system: None
+        for number in (1, 2):
+            bench.sample("cargo-noop", number, "breenix")
+        timed = [argv for argv in guest.argvs
+                 if any(word.startswith("qemu-vol-cargo-noop-") for word in argv)]
+        self.assertEqual(timed, [])
+        groups = rig.collect_receipts(out, ["qemu-vol"], "scp-upload")
+        errors = [sample["error"] for sample in groups["cargo-noop"]]
+        self.assertEqual(len(errors), 2)
+        for error in errors:
+            self.assertIn("warm-up", error or "")
+            self.assertIn("cargo build exited 101", error or "")
+
+
 class RunIds(unittest.TestCase):
     """A run ID the series writer would refuse is refused before anything boots."""
 
