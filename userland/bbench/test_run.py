@@ -40,7 +40,7 @@ class RemoteSeries(unittest.TestCase):
             return subprocess.CompletedProcess(command, 0, stdout=json.dumps(record).encode())
         return subprocess.CompletedProcess(command, 0, stdout=b"")
 
-    def test_remote_default_skips_sequential_and_walk(self):
+    def test_remote_default_skips_deferred_disk_workloads(self):
         with patch.object(runner.subprocess, "run", side_effect=self.ssh), \
                 patch.object(runner, "network_series") as network, \
                 contextlib.redirect_stdout(io.StringIO()):
@@ -48,20 +48,19 @@ class RemoteSeries(unittest.TestCase):
             self.assertIn("fork-exec", self.workloads)
             self.assertNotIn("sequential", self.workloads)
             self.assertNotIn("walk", self.workloads)
+            self.assertNotIn("fsync", self.workloads)
             network.assert_called_once()
 
             self.workloads.clear()
-            self.args.cases = "sequential,walk"
+            self.args.cases = "sequential,walk,fsync"
             self.assertEqual(runner.main(self.args), 0)
-            self.assertEqual(self.workloads, ["sequential", "walk"])
+            self.assertEqual(self.workloads, ["sequential", "walk", "fsync"])
 
     def test_network_resolves_alias_before_running_workloads(self):
         self.args.host = "bench-box"
         self.args.cases = "fork-exec,network"
-        payload = b"benchmark payload\n"
+        payload = b"x" * 8_000_000
         digest = hashlib.sha256(payload).hexdigest()
-        (self.args.out / "network").mkdir()
-        (self.args.out / "network/payload").write_bytes(payload)
         commands = []
 
         def execute(command, **kwargs):
@@ -72,6 +71,7 @@ class RemoteSeries(unittest.TestCase):
                     command, 0, stdout="user developer\nhostname configured.example\nport 2222\n"
                 )
             if command[0] == "bsync":
+                self.assertEqual((self.args.out / "network/payload").stat().st_size, len(payload))
                 self.assertEqual(command[-1], "developer@bench-box:/home/developer/cache/review/network/1")
                 return subprocess.CompletedProcess(command, 0)
             if command[0] == "/usr/bin/scp":
@@ -82,6 +82,7 @@ class RemoteSeries(unittest.TestCase):
             return self.ssh(command, **kwargs)
 
         with patch.object(runner.subprocess, "run", side_effect=execute), \
+                patch.object(runner.os, "urandom", side_effect=lambda count: b"x" * count), \
                 contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(runner.main(self.args), 0)
 
