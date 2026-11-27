@@ -105,3 +105,8 @@ required-features = ["std"]
 name = "chacha20_poly1305_vectors"
 path = "../../tests/chacha20_poly1305_vectors.rs"
 required-features = ["std"]
+
+[[test]]
+name = "aes_constant_time"
+path = "../../tests/aes_constant_time.rs"
+required-features = ["std"]
