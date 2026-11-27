@@ -1,0 +1,21 @@
+{
+  "program": "btest",
+  "binary": "btest",
+  "format": 1,
+  "cases": [
+    {
+      "id": "usage-help",
+      "argv": [
+        "--help"
+      ],
+      "source": "manual"
+    },
+    {
+      "id": "usage-bad-command",
+      "argv": [
+        "unknown"
+      ],
+      "source": "manual"
+    }
+  ]
+}

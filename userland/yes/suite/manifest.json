@@ -1,0 +1,44 @@
+{
+  "program": "yes",
+  "binary": "yes",
+  "format": 1,
+  "provenance": "Hand-written from the GNU yes and common-options manuals. Help and version use Breenix wording, the stderr diagnostic uses the Breenix EBADF wording, and the repeated output cases close a pipe after three lines. No GNU executable was used.",
+  "cases": [
+    {
+      "id": "default-y",
+      "argv": [],
+      "source": "manual",
+      "stdout_prefix_bytes": 6
+    },
+    {
+      "id": "multiple-strings",
+      "argv": [
+        "one",
+        "two words",
+        "three"
+      ],
+      "source": "manual",
+      "stdout_prefix_bytes": 60
+    },
+    {
+      "id": "option-help",
+      "argv": [
+        "--help"
+      ],
+      "source": "manual"
+    },
+    {
+      "id": "option-version",
+      "argv": [
+        "--version"
+      ],
+      "source": "manual"
+    },
+    {
+      "id": "closed-stdout",
+      "argv": [],
+      "source": "manual",
+      "stdout_closed": true
+    }
+  ]
+}
