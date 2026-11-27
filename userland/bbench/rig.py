@@ -98,7 +98,16 @@ LINUX_TOOLCHAIN = (f"{LINUX_HOME}/.rustup/toolchains/{FORK_BASE['channel']}"
                    "-aarch64-unknown-linux-gnu/bin")
 
 BREENIX_KERNEL = ROOT / "target/aarch64-breenix-kernel/release/kernel-aarch64"
-BREENIX_IMAGE = ROOT / "target/ext2-aarch64.img"
+# The standard image, copied and given the hosted toolchain by build-breenix.
+STANDARD_IMAGE = ROOT / "target/ext2-aarch64.img"
+BREENIX_IMAGE = CACHE / "breenix-arm64/root.raw"
+# The hosted aarch64 toolchain, staged by scripts/rust_host_stage.py --suite rustc,cargo
+# (the rustc and cargo suite boots' staging): the fork's rustc and driver, its sysroot
+# and target specs, K7 Cargo, and bld with libc.a and linker.ld.
+BREENIX_TOOLCHAIN = "/usr/libexec/breenix/rustc"
+BREENIX_TARGET = f"{BREENIX_TOOLCHAIN}/targets/aarch64-breenix.json"
+FORK = json.loads((ROOT / "toolchain/rust-host/k5/aarch64.json").read_text())["fork_commit"]
+FORK_AHEAD = 16  # commits of FORK past FORK_BASE (see FORK_BASE)
 BREENIX_RELEASE = ROOT / "userspace/programs/target/aarch64-breenix/release"
 BREENIX_O3 = ROOT / "userspace/programs/target/bench-o3/aarch64-breenix/release"
 BREENIX_KEY = CACHE / "breenix-arm64/test-ssh/id_ed25519"
@@ -110,10 +119,17 @@ BREENIX_ARTIFACTS = (BREENIX_KERNEL, BREENIX_IMAGE, BREENIX_RELEASE / "bbench",
                      BREENFS_TOOLS / "breenfs-check")
 # build-breenix records the commit and each artifact's SHA-256; run refuses anything else.
 BUILD_STAMP = CACHE / "breenix-arm64/build.json"
+# The rustc,cargo suite boot's builds (scripts/boot-interactive.sh) before the image.
 BREENIX_BUILD = (
     ["userspace/programs/build.sh", "--arch", "aarch64"],
     ["userspace/programs/build.sh", "--arch", "aarch64", "--bbench"],
-    ["scripts/create_ext2_disk.sh", "--arch", "aarch64", "--size", str(DISK_BYTES // MIB)],
+    ["userspace/programs/build.sh", "--arch", "aarch64", "--rust-link"],
+    ["userspace/programs/build.sh", "--arch", "aarch64", "--hosted-bin", "suite-rustc",
+     "--features", "rustc"],
+    ["userspace/programs/build.sh", "--arch", "aarch64", "--cargo-suite"],
+    ["userspace/programs/build.sh", "--arch", "aarch64", "--rustc"],
+    ["userspace/programs/build.sh", "--arch", "aarch64", "--kd-loader"],
+    ["scripts/create_ext2_disk.sh", "--arch", "aarch64"],
     ["cargo", "build", "--release", "--target", "aarch64-breenix-kernel.json",
      "-Z", "build-std=core,alloc", "-Z", "build-std-features=compiler-builtins-mem",
      "-p", "kernel", "--bin", "kernel-aarch64"],
@@ -128,12 +144,9 @@ SELFHOST = ("bobj", "bld", "bmake", "bcc")
 CASES = (*COMPILE, "fork-exec", "getpid", "malloc-1t", "malloc-4t", "anonymous", "file-map",
          "copy-bytes", "aes-gcm-oz", "aes-gcm-o3", "hmac-sha256-oz", "hmac-sha256-o3", "network",
          "tcp-send", "tcp-recv", "fsync", "small-files", "walk", "sequential")
-NO_BREENIX_RUSTC = ("No aarch64 Breenix-hosted rustc or Cargo in the standard image; "
-                    "the hosted ARM toolchain is staged only by the rustc and cargo suite boots")
-SKIP = {"breenix": set(COMPILE), "linux": set()}
+SKIP = {"breenix": set(), "linux": set()}
 DEFERRED = {
-    "breenix": {**{case: NO_BREENIX_RUSTC for case in COMPILE},
-                **{case: "The QEMU rig does not build the toolchain workspace" for case in SELFHOST},
+    "breenix": {**{case: "The QEMU rig does not build the toolchain workspace" for case in SELFHOST},
                 "bsync-upload": "bsync is measured on the R240 only"},
     "linux": {**{case: "The QEMU rig does not build the toolchain workspace" for case in SELFHOST},
               "bsync-upload": "bsync is measured on the R240 only"},
@@ -629,6 +642,8 @@ class Rig:
             guest.ssh(["/bin/chmod", "755", *(f"{home}/bbench/bin/{name}"
                                               for name in ("bbench", "bbench-exit", "bbench-oz",
                                                            "bbench-o3"))])
+            # The compile rows build userland's yes from the same source as Linux.
+            self.sync_source(guest)
         else:
             self.sync_source(guest)
             cargo = (f"cd {home}/src/userland && PATH={LINUX_TOOLCHAIN}:/usr/bin:/bin "
@@ -654,19 +669,42 @@ class Rig:
         paths = ["userland", "libs/libbreenix", "libs/input-abi", "libs/breengel-abi",
                  "libs/gpu-abi", "toolchain/rust-host/k5/corpus",
                  *sorted({str(path.resolve().relative_to(ROOT)) for path in targets})]
-        archive = subprocess.run(["git", "-C", ROOT, "archive", "--format=tar", self.commit, *paths],
-                                 check=True, capture_output=True).stdout
+        archive = self.run_dir / "source.tar"
+        if not archive.exists():
+            run_command(["git", "-C", ROOT, "archive", "--format=tar", "-o", archive, self.commit,
+                         *paths])
+        result = guest.scp(archive, guest.remote(f"{guest.home}/source.tar"))
+        if result.returncode:
+            raise RuntimeError(f"{guest.system}: source upload failed: {result.stderr!r}")
         guest.ssh(f"rm -rf {guest.home}/src && mkdir -p {guest.home}/src && "
-                  f"tar -xf - -C {guest.home}/src", input=archive)
+                  f"tar -xf {guest.home}/source.tar -C {guest.home}/src && "
+                  f"rm {guest.home}/source.tar", timeout=900)
 
-    def bbench(self, system, sample, words, binary="bbench", timeout=900, data=None):
+    def compile_env(self, system, case):
+        """The environment a compile row runs in. Linux: the pinned toolchain on PATH.
+        Breenix: the staged hosted toolchain, as the cargo suite's invocation sets it
+        (userspace/programs/src/suite_cargo.rs)."""
+        if system == "linux":
+            # Cargo finds rustc on PATH; name the toolchain's own binaries, not rustup's proxies.
+            return ["/usr/bin/env", f"PATH={LINUX_TOOLCHAIN}:/usr/bin:/bin",
+                    f"CARGO_BUILD_JOBS={CPUS}"]
+        if case not in COMPILE:
+            return []
+        fixture = BREENIX_TOOLCHAIN
+        flags = "\x1f".join([
+            f"--sysroot={fixture}/sysroot", f"-Clinker={fixture}/bin/bld",
+            f"-Clink-arg=-T{fixture}/lib/linker.ld", f"-Lnative={fixture}/lib",
+            "-Clink-arg=--allow-multiple-definition", "-Cdefault-linker-libraries=no", "-Dwarnings"])
+        return ["/bin/env", f"RUST_TARGET_PATH={fixture}/targets", f"RUSTC={fixture}/bin/rustc",
+                f"CARGO_HOME={self.guests[system].home}/bbench/cargo-home", "CARGO_TERM_COLOR=never",
+                f"CARGO_BUILD_JOBS={CPUS}", f"CARGO_ENCODED_RUSTFLAGS={flags}"]
+
+    def bbench(self, system, sample, words, binary="bbench", timeout=900, data=None, case=None):
         guest = self.guests[system]
         default, reports = self.dirs(system)
         data = data or default
-        argv = [self.bin(system, binary), data, reports, sample, *words]
-        if system == "linux":
-            # Cargo finds rustc on PATH; name the toolchain's own binaries, not rustup's proxies.
-            argv = ["/usr/bin/env", f"PATH={LINUX_TOOLCHAIN}:/usr/bin:/bin", *argv]
+        argv = [*self.compile_env(system, case),
+                self.bin(system, binary), data, reports, sample, *words]
         result = guest.ssh(argv, timeout=timeout, check=False)
         payload = result.stdout
         if result.returncode == 255 and not payload and guest.alive():
@@ -691,16 +729,26 @@ class Rig:
         # The host's loopback, as user networking presents it to the guest.
         tcp = f"10.0.2.2:{self.endpoint.server_address[1]}"
 
-        def build(profile, target):
-            return ["command", f"{home}/src/userland", f"{LINUX_TOOLCHAIN}/cargo", "build",
+        # The same compiles on both systems, each with its own toolchain and native target:
+        # Linux's pinned nightly, and Breenix's staged hosted build of the fork.
+        if system == "breenix":
+            rustc, cargo = f"{BREENIX_TOOLCHAIN}/bin/rustc", f"{BREENIX_TOOLCHAIN}/bin/cargo"
+            target = ["--target", BREENIX_TARGET]
+            sysroot = ["--sysroot", f"{BREENIX_TOOLCHAIN}/sysroot"]
+        else:
+            rustc, cargo = f"{LINUX_TOOLCHAIN}/rustc", f"{LINUX_TOOLCHAIN}/cargo"
+            target = sysroot = []
+
+        def build(profile, output):
+            return ["command", f"{home}/src/userland", cargo, "build",
                     "--offline", "--frozen", "--profile", profile, "-p", "yes",
-                    "--target-dir", target]
+                    "--target-dir", output, *target]
 
         return {
-            "rustc-version": lambda: ["command", data, f"{LINUX_TOOLCHAIN}/rustc", "-vV"],
+            "rustc-version": lambda: ["command", data, rustc, "-vV"],
             "hello-object": lambda: ["command", f"{home}/src/toolchain/rust-host/k5/corpus",
-                                     f"{LINUX_TOOLCHAIN}/rustc", "--edition=2021", "-Dwarnings",
-                                     "--emit=obj", "--crate-type=lib", "hello.rs", "-o",
+                                     rustc, "--edition=2021", *sysroot, "-Dwarnings",
+                                     "--emit=obj", *target, "--crate-type=lib", "hello.rs", "-o",
                                      f"{data}/{sample}.o"],
             "cargo-noop": lambda: build("dev-box", f"{data}/noop-artifacts"),
             "yes-dev-box": lambda: build("dev-box", f"{data}/{sample}-artifacts"),
@@ -751,9 +799,11 @@ class Rig:
             return
         if case == "cargo-noop" and number == 1:
             seed = f"{self.args.run}-noop-seed"
-            self.save(system, seed, self.bbench(system, seed, self.workload(system, case, seed)))
+            self.save(system, seed, self.bbench(system, seed, self.workload(system, case, seed),
+                                                case=case))
         receipt = self.bbench(system, name, self.workload(system, case, name),
-                              binary=probe_binary(case), data=self.data_dir(system, case))
+                              binary=probe_binary(case), data=self.data_dir(system, case),
+                              case=case)
         self.save(system, name, receipt)
         if receipt["error"]:
             print(f"{system} {name} failed: {receipt['error']}", flush=True)
@@ -867,7 +917,15 @@ class Rig:
             kernel = guest.ssh("uname -srv", check=False).stdout.decode().strip()
             toolchain = guest.ssh(f"{LINUX_TOOLCHAIN}/rustc -V", check=False).stdout.decode().strip()
             return {"kernel": kernel, "toolchain": toolchain}
-        return {}
+        identity = guest.ssh([f"{BREENIX_TOOLCHAIN}/bin/rustc", "-vV"], check=False)
+        return {"rustc": identity.stdout.decode(errors="replace").splitlines()}
+
+    @staticmethod
+    def breenix_toolchain(facts):
+        """The Breenix series' toolchain field: the hosted fork the compile rows ran."""
+        release = next(iter(facts.get("rustc") or []), "") or "rustc"
+        return (f"{release} hosted on Breenix: the Breenix Rust fork {FORK[:9]}, {FORK_AHEAD} "
+                f"commits ahead of {FORK_BASE['channel']} ({FORK_BASE['commit'][:9]})")
 
     def write(self, system, commit, before, after, facts):
         """Write the system's series inside Vigil's limits, with the full provenance in
@@ -882,9 +940,10 @@ class Rig:
                     f"({FORK_BASE['commit'][:9]}), the Breenix fork's upstream base.")
         else:
             kernel = short
-            toolchain = (f"rustc {FORK_BASE['channel']} ({FORK_BASE['commit'][:9]}) with the "
-                         "Breenix std fork via build-std")
-            note = f"Production kernel and system image at {short}; bbench run as sshtest."
+            toolchain = self.breenix_toolchain(facts)
+            note = (f"Production kernel and system image at {short}; bbench run as sshtest. "
+                    f"Compile rows: the staged hosted fork {FORK[:9]} ({FORK_AHEAD} commits "
+                    f"ahead of Linux's {FORK_BASE['channel']}).")
         note += f" Samples alternate Linux then Breenix. {tcp_summary(system, before, after)}."
         if self.notes[system]:
             note += f" {len(self.notes[system])} VM restart(s)."
@@ -902,6 +961,11 @@ class Rig:
         if system == "linux":
             provenance["image"] = PIN
             provenance["toolchain"] = FORK_BASE
+        else:
+            provenance["toolchain"] = {"fork": FORK, "commitsAhead": FORK_AHEAD, "base": FORK_BASE,
+                                       "staged": BREENIX_TOOLCHAIN,
+                                       "stamp": json.loads(BUILD_STAMP.read_text())
+                                       if BUILD_STAMP.exists() else None}
         metadata = {
             "system": system, "target": "arm64-qemu", "hardware": hardware(),
             "kernelCommit": kernel, "userlandCommit": short, "toolchain": toolchain,
@@ -993,13 +1057,55 @@ def build_breenix():
     if git("status", "--porcelain", "--untracked-files=no"):
         raise ValueError("commit the tree first: the build stamp records its commit")
     commit = git("rev-parse", "HEAD")
-    env = {**os.environ, "BREENIX_TEST_SSH_KEY_DIR": str(BREENIX_KEY.parent)}
+    env = toolchain_build_env()
     for words in BREENIX_BUILD:
         run_command(words, cwd=ROOT, env=env)
+    # As the suite boot does after --kd-loader: the pinned libc beside the loader.
+    kd = Path(env.get("BREENIX_KD_BUILD_DIR", ROOT / "userspace/programs/target/kd/aarch64"))
+    shutil.copyfile(env["BREENIX_KD_LIBC_INPUT"], kd / "libc.so")
+    stage_image(env)
     if git("rev-parse", "HEAD") != commit or git("status", "--porcelain", "--untracked-files=no"):
         raise ValueError(f"the tree moved from {commit} during the build; nothing was stamped")
     write_build_stamp(BUILD_STAMP, commit, BREENIX_ARTIFACTS)
     print(f"Breenix inputs built and stamped at {commit} ({BUILD_STAMP})")
+
+
+def toolchain_build_env():
+    """The environment of the rustc and cargo suite boots' builds and staging. The hosted
+    toolchain's inputs are the E25 build caches, named the way those boots name them."""
+    env = {key: value for key, value in os.environ.items() if key != "CARGO_TARGET_DIR"}
+    missing = [name for name in ("BREENIX_RUSTC_PORT_BUILDS", "BREENIX_K7_STAGE") if not env.get(name)]
+    if missing:
+        raise ValueError(f"set {' and '.join(missing)} to the ARM K5 cache and the K7 stage "
+                         "(userland/bbench/RIG.md, Inputs)")
+    cache = Path(env["BREENIX_RUSTC_PORT_BUILDS"])
+    env.setdefault("BREENIX_K5_SYSROOT", str(cache / "sysroot"))
+    env.setdefault("BREENIX_KD_LIBC_INPUT",
+                   env.get("BREENIX_HOSTED_LIBC") or str(cache / "shared-libc/libc.so"))
+    env["BREENIX_TEST_SSH_KEY_DIR"] = str(BREENIX_KEY.parent)
+    return env
+
+
+def stage_image(env):
+    """Copy the standard image, stage the hosted toolchain into it with the suite boots'
+    staging (scripts/rust_host_stage.py --suite rustc,cargo), then grow it to the rig's
+    disk size so both guests' roots are the same size."""
+    sys.path.insert(0, str(ROOT / "scripts/metal"))
+    from metal_root import require_e2fsprogs
+    resize2fs, = require_e2fsprogs("resize2fs")
+    BREENIX_IMAGE.parent.mkdir(parents=True, exist_ok=True)
+    partial = BREENIX_IMAGE.with_name(BREENIX_IMAGE.name + ".partial")
+    partial.unlink(missing_ok=True)
+    shutil.copyfile(STANDARD_IMAGE, partial)
+    run_command([sys.executable, ROOT / "scripts/rust_host_stage.py", "--arch", "aarch64",
+                 "--image", partial, "--suite", "rustc,cargo"], cwd=ROOT, env=env)
+    if partial.stat().st_size > DISK_BYTES:
+        raise ValueError(f"the staged image is {partial.stat().st_size} bytes, more than the "
+                         f"rig's {DISK_BYTES}-byte disk")
+    with open(partial, "r+b") as disk:
+        disk.truncate(DISK_BYTES)
+    run_command([resize2fs, partial], capture_output=True)
+    partial.rename(BREENIX_IMAGE)
 
 
 def check_breenix_inputs():
@@ -1010,7 +1116,7 @@ def check_breenix_inputs():
                          "build-breenix): " + ", ".join(map(str, missing)))
     if BREENIX_IMAGE.stat().st_size != DISK_BYTES:
         raise ValueError(f"{BREENIX_IMAGE} must be {DISK_BYTES // MIB} MiB, the rig's disk size "
-                         f"(scripts/create_ext2_disk.sh --arch aarch64 --size {DISK_BYTES // MIB})")
+                         "(scripts/bench-qemu-arm64.sh build-breenix)")
     return verify_build_stamp(BUILD_STAMP, git("rev-parse", "HEAD"), BREENIX_ARTIFACTS)
 
 
