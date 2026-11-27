@@ -124,6 +124,8 @@ PYTHONPATH=tests python3 -m unittest \
     rust_link_suite_test.RustLinkSuite.test_aarch64_rlib_members_skipped
 ```
 
-The fixture must contain the constructed `control/non-elf.rlib`. ARM guest
-execution and the remaining ARM K6 acceptance suites still need their
-scheduled acceptance boot.
+The fixture must contain the constructed `control/non-elf.rlib`.
+[ARM K6 acceptance](https://github.com/ryanbreen/breenix/pull/3214) ran both
+guest suites at `7f8f58d1`. Boot `20261127T110847Z-qemu-48586` passed
+`rust-link` (3/3) and `llvm` (6/6), with memory reclamation passing in each
+suite.
