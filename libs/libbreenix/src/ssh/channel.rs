@@ -116,15 +116,26 @@ pub fn server_handle_channel_request(
     io: &mut PacketIo,
     msg: &[u8],
     channel: &mut Channel,
+    running: bool,
 ) -> Result<String, SshError> {
     let mut pos = 1;
-    let _recipient =
+    let recipient =
         SshBuf::get_u32(msg, &mut pos).ok_or(SshError::Protocol("bad channel id in request"))?;
+    if recipient != channel.local_id {
+        return Err(SshError::ChannelNotFound);
+    }
     let request_type =
         SshBuf::get_string(msg, &mut pos).ok_or(SshError::Protocol("bad request type"))?;
     let want_reply = SshBuf::get_bool(msg, &mut pos).ok_or(SshError::Protocol("bad want_reply"))?;
 
     let req_name = String::from_utf8_lossy(request_type).into_owned();
+
+    if running && (request_type != b"window-change" || channel.pty_term.is_none()) {
+        if want_reply {
+            send_channel_failure(io, channel)?;
+        }
+        return Ok(req_name);
+    }
 
     match request_type {
         b"pty-req" => {
@@ -133,7 +144,7 @@ pub fn server_handle_channel_request(
             let rows = SshBuf::get_u32(msg, &mut pos).unwrap_or(24);
             // width_px, height_px, terminal modes (ignored)
             channel.pty_term = Some(String::from_utf8_lossy(term).into_owned());
-            channel.pty_size = (cols, rows);
+            channel.pty_size = (if cols == 0 { 80 } else { cols }, if rows == 0 { 24 } else { rows });
 
             if want_reply {
                 send_channel_success(io, channel)?;
@@ -154,9 +165,10 @@ pub fn server_handle_channel_request(
         }
         b"env" | b"window-change" => {
             if request_type == b"window-change" {
-                let cols = SshBuf::get_u32(msg, &mut pos).unwrap_or(80);
-                let rows = SshBuf::get_u32(msg, &mut pos).unwrap_or(24);
-                channel.pty_size = (cols, rows);
+                let cols = SshBuf::get_u32(msg, &mut pos).ok_or(SshError::Protocol("missing PTY columns"))?;
+                let rows = SshBuf::get_u32(msg, &mut pos).ok_or(SshError::Protocol("missing PTY rows"))?;
+                if cols != 0 { channel.pty_size.0 = cols; }
+                if rows != 0 { channel.pty_size.1 = rows; }
             }
             if want_reply {
                 send_channel_success(io, channel)?;
@@ -216,6 +228,9 @@ pub fn send_window_adjust(
     channel: &mut Channel,
     bytes_to_add: u32,
 ) -> Result<(), SshError> {
+    if bytes_to_add == 0 {
+        return Ok(());
+    }
     let mut msg = Vec::with_capacity(9);
     msg.push(SSH_MSG_CHANNEL_WINDOW_ADJUST);
     SshBuf::put_u32(&mut msg, channel.remote_id);
@@ -392,7 +407,7 @@ fn recv_client_control_packet(io: &mut PacketIo) -> Result<Vec<u8>, SshError> {
     }
 }
 
-fn handle_client_global_request(io: &mut PacketIo, msg: &[u8]) -> Result<(), SshError> {
+pub(super) fn handle_client_global_request(io: &mut PacketIo, msg: &[u8]) -> Result<(), SshError> {
     let mut pos = 1;
     let _request_name =
         SshBuf::get_string(msg, &mut pos).ok_or(SshError::Protocol("bad global request name"))?;
