@@ -12,6 +12,32 @@ import unittest
 WORKSPACE = Path(__file__).resolve().parents[1] / "userland"
 
 
+def cargo_metadata(root, *flags):
+    return json.loads(subprocess.check_output(
+        ["cargo", "metadata", "--format-version", "1", "--offline", "--frozen",
+         "--all-features", *flags, "--manifest-path", str(root / "Cargo.toml")],
+        cwd=root,
+    ))
+
+
+def dependency_features(metadata):
+    members = set(metadata["workspace_members"])
+    by_directory = {
+        str(Path(package["manifest_path"]).parent): package
+        for package in metadata["packages"]
+    }
+    features = set()
+    for member in metadata["packages"]:
+        if member["id"] not in members:
+            continue
+        for dependency in member["dependencies"]:
+            package = by_directory.get(dependency.get("path"))
+            if package is not None:
+                key = dependency["rename"] or dependency["name"]
+                features.update(f"{key}/{feature}" for feature in package["features"])
+    return sorted(features)
+
+
 def check_workspace(root):
     lock = root / "Cargo.lock"
     with lock.open("rb") as file:
@@ -27,11 +53,12 @@ def check_workspace(root):
     # Resolve the full graph, including path dependencies outside the workspace
     # and target-specific dependencies. Cargo identifies renamed proc macros
     # and custom build scripts by target kind.
-    metadata = json.loads(subprocess.check_output(
-        ["cargo", "metadata", "--format-version", "1", "--offline", "--frozen",
-         "--all-features", "--manifest-path", str(root / "Cargo.toml")],
-        cwd=root,
-    ))
+    metadata = cargo_metadata(root)
+    # --all-features selects workspace features. Cargo also accepts explicit
+    # dependency/feature arguments for direct path dependencies of members.
+    features = dependency_features(metadata)
+    if features:
+        metadata = cargo_metadata(root, "--features", ",".join(features))
     if not metadata["workspace_members"]:
         problems.append("userland workspace has no members")
     for package in metadata["packages"]:
