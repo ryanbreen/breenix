@@ -1078,7 +1078,11 @@ bsshd sends its SSH identification before reading the client's (RFC 4253 section
 `chacha20-poly1305@openssh.com` (draft-ietf-sshm-chacha20-poly1305),
 `aes256-gcm@openssh.com` (RFC 5647's packet format with the negotiation in
 draft-miller-sshm-aes-gcm) and `aes128-ctr` with HMAC-SHA256, and it applies
-strict KEX (draft-ietf-sshm-strict-kex) when the client offers it. Its AES is
+strict KEX (draft-ietf-sshm-strict-kex) when the client offers it. chacha20 is
+negotiated only under strict KEX, so a client without it gets AES. bsshd
+answers a key re-exchange the client starts after login (OpenSSH does once a
+connection reaches its RekeyLimit), and a connection ends rather than reuse a
+sequence number under one set of keys. Its AES is
 bitsliced, with no table indexed by key or data. A PTY session creates a session, acquires the slave as its
 controlling terminal, sets its foreground group and gives the slave to the
 account with mode 0620; the server restores ownership when the session ends.

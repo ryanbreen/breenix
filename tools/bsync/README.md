@@ -27,7 +27,9 @@ on it. It inventories the destination in one SSH exec using Breenix's
 file is skipped. A mode-only file change sends no file bytes over SSH.
 Ordinary uploads stage bytes through the SFTP v3 worker in `bsshd`, with up
 to 16 writes of 32 KiB in flight, and `bput --adopt` publishes the staged
-file itself, so its bytes are written once. With `--sudo`, `sudo -n` runs
+file itself, so its bytes are written once. bput holds the staging directory
+open from verification to rename and refuses one that anyone but the user
+could write in, so the file it publishes is the one it verified. With `--sudo`, `sudo -n` runs
 the guarded remote commands and `bput` receives the upload on stdin. In
 either case `bput` verifies the length and SHA-256 before publishing the
 file by rename. Uploads need a `bput` that accepts `--adopt`.
