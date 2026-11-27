@@ -119,3 +119,42 @@ pub fn lock_exclusive(fd: std::os::fd::BorrowedFd<'_>) -> io::Result<()> {
         Err(io::Error::last_os_error())
     }
 }
+
+/// Breenix resource IDs for limits inherited by children.
+#[repr(i32)]
+#[derive(Clone, Copy)]
+pub enum Resource {
+    CpuSeconds = 0,
+    FileSize = 1,
+    ProcessCount = 6,
+    AddressSpace = 9,
+}
+
+extern "C" {
+    fn prlimit(pid: i32, resource: i32, new: *const [u64; 2], old: *mut [u64; 2]) -> i32;
+}
+
+/// Cap the child's soft and hard limits before exec, preserving stricter limits.
+/// Failure to apply any cap fails the spawn.
+pub fn cap_child_resources(command: &mut std::process::Command, caps: &'static [(Resource, u64)]) {
+    use std::os::unix::process::CommandExt;
+    use std::ptr::{null, null_mut};
+
+    // SAFETY: the callback uses stack storage, the Breenix prlimit syscall
+    // wrapper and raw OS errors only, with no allocation or locks after fork.
+    unsafe {
+        command.pre_exec(move || {
+            for &(resource, cap) in caps {
+                let mut inherited = [0; 2];
+                if prlimit(0, resource as i32, null(), &mut inherited) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                let capped = inherited.map(|limit| limit.min(cap));
+                if prlimit(0, resource as i32, &capped, null_mut()) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+            }
+            Ok(())
+        });
+    }
+}

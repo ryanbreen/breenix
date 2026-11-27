@@ -44,6 +44,13 @@ starts in a separate process group with a cleared environment and
 `PATH=/usr/bin:/bin`, `HOME` set to the case directory, `TZ=UTC` and
 `LC_ALL=C.UTF-8`. Manifest environment entries override the defaults.
 
+Before exec the supervisor caps each child's soft and hard limits at 2 CPU
+seconds, 16 MiB per file, 16 processes for the case account, and 64 MiB of
+virtual address space per process. The child retains any stricter inherited
+limit and carries the caps to its descendants. If setup fails, the case
+fails to spawn. The case wall-clock timeout still applies to the process
+group. The build, fixture setup and report writer run outside the case caps.
+
 ## Bootstrap on the box
 
 Sync the source roots and tree stamp using the Mac driver documented in

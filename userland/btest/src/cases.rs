@@ -10,6 +10,12 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const WORK: &str = "/var/lib/btest/work";
+const RESOURCE_CAPS: &[(bu_sys::Resource, u64)] = &[
+    (bu_sys::Resource::CpuSeconds, 2),
+    (bu_sys::Resource::FileSize, 16 * 1024 * 1024),
+    (bu_sys::Resource::ProcessCount, 16),
+    (bu_sys::Resource::AddressSpace, 64 * 1024 * 1024),
+];
 
 pub fn supervisor(stage: &Path, id: &str) -> Result<Json, String> {
     let uid = fs::read_to_string("/etc/passwd")
@@ -131,6 +137,7 @@ fn run_case(
         .stdin(stdin)
         .stdout(stdout)
         .stderr(Stdio::piped());
+    bu_sys::cap_child_resources(&mut command, RESOURCE_CAPS);
     let (status, out, err) = execute(&mut command, deadline, case.stdout)?;
     let err = normalize_stderr(&err, binary);
     let status = match status.code() {
