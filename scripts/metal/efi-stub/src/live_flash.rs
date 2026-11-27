@@ -11,6 +11,7 @@ pub struct Manifest {
     pub commit: [u8; 40],
     pub size: usize,
     pub digest: [u8; 32],
+    base: [u8; 32],
 }
 
 fn hex(byte: u8) -> Option<u8> {
@@ -49,8 +50,13 @@ impl Manifest {
         let size = core::str::from_utf8(length).ok()?.parse::<usize>().ok()?;
         if size > MAX_IMAGE { return None; }
         let digest = decode_hex(lines.next()?)?;
+        let base = decode_hex(lines.next()?)?;
         if lines.next().is_some() { return None; }
-        Some(Self { token, commit, size, digest })
+        Some(Self { token, commit, size, digest, base })
+    }
+
+    pub fn matches_base(&self, note: &[u8]) -> bool {
+        sha256(note) == self.base
     }
 
     pub fn verifies(&self, image: &[u8]) -> bool {

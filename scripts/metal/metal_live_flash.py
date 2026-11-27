@@ -77,7 +77,7 @@ def site(m):
                 **{key: fields.get(key) for key in keys})
 
 
-def prepare(m, inputs_id, token, commit, lease_id, broken):
+def prepare(m, inputs_id, token, commit, lease_id, broken, acknowledged):
     import metal_image
     import metal_persist
     context = site(m)
@@ -94,6 +94,9 @@ def prepare(m, inputs_id, token, commit, lease_id, broken):
             or build.get('writablePersistentRoot') is not True):
         raise ValueError('live flash requires a production kernel with writable persistent root support')
     current = context['current']
+    session = m.read_json(m.boot_dir(lease_id) / 'run.json') or {}
+    if acknowledged and session.get('entry') == 'trial' and session.get('liveFlash') == acknowledged:
+        current = candidate(m, acknowledged, session['bootedCommit'])
     generation = metal_persist.slot_userland(current)
     if not generation:
         raise ValueError('CURRENT has no userland generation')
@@ -110,7 +113,8 @@ def prepare(m, inputs_id, token, commit, lease_id, broken):
                   baseInstall=current['installedBy'])
     metal_persist.store_definition(inputs / 'definition', commit)
     m.write_json(state, record)
-    return dict(record, image=str(slot))
+    base = metal_persist.slot_note(current['commit'], current['installedBy']).encode()
+    return dict(record, image=str(slot), baseNoteSha256=hashlib.sha256(base).hexdigest())
 
 
 @contextlib.contextmanager
@@ -133,7 +137,8 @@ def guest_access(context):
         known = Path(scratch) / 'known_hosts'
         known.write_text(json.loads(pinned.read_text())['known'])
         ssh = ['ssh', '-F', '/dev/null', '-p', str(context['SERVER_SSH_PORT'] or 22), '-o', 'ConnectTimeout=4',
-               '-o', 'ConnectionAttempts=1', '-o', 'StrictHostKeyChecking=yes', '-o', 'UserKnownHostsFile=' + str(known),
+               '-o', 'ConnectionAttempts=1', '-o', 'ServerAliveInterval=5', '-o', 'ServerAliveCountMax=3',
+               '-o', 'StrictHostKeyChecking=yes', '-o', 'UserKnownHostsFile=' + str(known),
                '-o', 'GlobalKnownHostsFile=/dev/null', '-o', 'HostKeyAlgorithms=ssh-ed25519', '-o', 'IdentitiesOnly=yes',
                '-o', 'IdentityAgent=none', '-o', 'BatchMode=yes', '-i', str(identity), user + '@' + host]
 
@@ -211,7 +216,11 @@ def run(runner, args):
                 if runner['build'](inputs_id, commit, kernel_only=True, live=True):
                     raise ValueError('live candidate build failed')
                 broken = args.inject == 'upgrade-no-ssh'
-                result = operation('prepare', inputs_id, token, commit, lease, str(int(broken)),
+                receipt = guest(f'sudo -n /bin/cat {GUEST}/committed')
+                acknowledged = receipt.stdout.decode(errors='replace').strip()
+                if receipt.returncode or not TOKEN.fullmatch(acknowledged):
+                    acknowledged = ''
+                result = operation('prepare', inputs_id, token, commit, lease, str(int(broken)), acknowledged,
                                    capture_output=True, text=True, check=True)
                 entry = json.loads(result.stdout)
                 directory = f'{state}/boots/{lease}'
@@ -224,18 +233,19 @@ def run(runner, args):
                 # Use a file descriptor for SSH stdin so a large image stays off the host Python heap.
                 with tempfile_image(service, entry['image']) as image:
                     publish(guest, 'kernel.img', image, entry['size'], entry['sha256'], guard)
-                manifest = f"BREENIX-FLASH 1\n{token}\n{commit}\n{entry['size']}\n{entry['sha256']}\n".encode()
+                manifest = (f"BREENIX-FLASH 1\n{token}\n{commit}\n{entry['size']}\n{entry['sha256']}\n"
+                            f"{entry['baseNoteSha256']}\n").encode()
                 capture = service('stat', '-c', '%s', directory + '/serial.txt', capture_output=True, check=True)
                 offset = int(capture.stdout)
                 publish(guest, 'manifest', manifest, guard=guard)
                 print(f'[metal-run] armed {token} for {commit} on {lease}', flush=True)
                 from_reboot = time.monotonic()
                 reboot = guest(guard + 'sudo -n /sbin/reboot', timeout=70)
-                if reboot.returncode not in (0, 255):
+                if reboot.returncode not in (0, 124, 255):
                     raise ValueError('guest refused the requested reboot')
                 while time.monotonic() - from_reboot < DEADLINE:
                     serial = service('tail', '-c', '+' + str(offset + 1), directory + '/serial.txt',
-                                     capture_output=True, text=True, check=True).stdout
+                                     capture_output=True, text=True, errors='replace', check=True).stdout
                     observed = monitor(serial, token, boot_id)
                     if observed:
                         phase, fallback_commit, new_boot = observed
@@ -286,9 +296,9 @@ if __name__ == '__main__':
         if sys.argv[1:] == ['site']:
             print(json.dumps(site(m)))
         else:
-            command, build_id, token, commit, lease, broken = sys.argv[1:]
+            command, build_id, token, commit, lease, broken, acknowledged = sys.argv[1:]
             if command != 'prepare' or broken not in ('0', '1'):
                 raise ValueError('invalid live flash operation')
-            print(json.dumps(prepare(m, build_id, token, commit, lease, broken == '1')))
+            print(json.dumps(prepare(m, build_id, token, commit, lease, broken == '1', acknowledged)))
     except (ValueError, OSError) as error:
         sys.exit(str(error))

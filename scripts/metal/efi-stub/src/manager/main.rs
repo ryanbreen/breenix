@@ -509,7 +509,7 @@ unsafe fn run(image: Handle, system: *const SystemTable) -> Status {
                 manager.show(true);
                 manager.menu(0)
             }
-            if entry == Entry::Current && action == SlotAction::None {
+            if entry == Entry::Current && action == SlotAction::None && manager.current.present {
                 if let Some(root) = manager.esp.as_ref() {
                     live::start(boot, runtime, image, root);
                 }
@@ -519,9 +519,6 @@ unsafe fn run(image: Handle, system: *const SystemTable) -> Status {
         }
         Answer::Busy(_) => manager.menu(0),
         Answer::None(_) => {
-            if let Some(root) = manager.esp.as_ref() {
-                live::start(boot, runtime, image, root);
-            }
             manager.select(Item::Slot(Entry::Current));
             manager.show(false);
             manager.menu(countdown)

@@ -15,7 +15,9 @@ use crate::slots;
 const CONFIG: &str = "\\EFI\\BREENIX\\LIVE.CFG";
 const IMAGE: &str = "\\EFI\\BREENIX\\TRY.IMG";
 const MARKER: &str = "LIVE.ID";
-const NOTE: &str = "TRY.TXT";
+const NEXT: &str = r"\EFI\BREENIX\NEXT.IMG";
+const CURRENT_NOTE: &str = "CURRENT.TXT";
+const NEXT_NOTE: &str = "NEXT.TXT";
 
 #[repr(align(4096))]
 struct Aligned<const N: usize>([u8; N]);
@@ -105,29 +107,13 @@ unsafe fn process(
     };
 
     if !try_new {
-        if live_flash::choose(None, attempted.map(|m| m.token), acknowledged, store.exists("TRY.IMG"))
-            == Action::Promote
-        {
-            let m = attempted.unwrap();
-            let mut note = [0; 256];
-            let length = store.read(NOTE, &mut note)?;
-            if &note[..length] != slot_note(&m) {
-                return Err(VOLUME_CORRUPTED);
-            }
-            if root.size(IMAGE)? != m.size as u64 { return Err(VOLUME_CORRUPTED); }
-            let (base, size) = root.read_pages(boot, IMAGE)?;
-            let verified = m.verifies(core::slice::from_raw_parts(base, size));
-            (boot.free_pages)(base as u64, size.div_ceil(BLOCK));
-            if !verified { return Err(VOLUME_CORRUPTED); }
-            slot_transaction::promote_trial(&store)?;
-            files::flush_volume(boot, files::own_device(boot, image)?)?;
-        }
         if let Some(m) = attempted.filter(|m| acknowledged == Some(m.token)) {
-            let mut current = [0; 256];
-            if let Ok(size) = store.read("CURRENT.TXT", &mut current) {
-                if current[..size] == slot_note(&m) {
-                    say!("live flash: promoted {} {}", ascii(&m.token), ascii(&m.commit));
-                }
+            let note = slot_note(&m);
+            if !read_matches(&store, CURRENT_NOTE, &note)? {
+                promote(boot, image, root, &store, &m, &note)?;
+            }
+            if read_matches(&store, CURRENT_NOTE, &note)? {
+                say!("live flash: promoted {} {}", ascii(&m.token), ascii(&m.commit));
             }
         }
         return Ok(None);
@@ -146,6 +132,16 @@ unsafe fn process(
         return Ok(None);
     }
 
+    let mut base_note = [0; 256];
+    let base_len = store.read(CURRENT_NOTE, &mut base_note)?;
+    if !m.matches_base(&base_note[..base_len]) {
+        say!("live flash: stale base for {}", ascii(&m.token));
+        return Ok(None);
+    }
+    if store.exists("NEXT.IMG") || store.exists(NEXT_NOTE) {
+        return Err(ACCESS_DENIED);
+    }
+
     let file = fs.file(b"kernel.img").map_err(|_| NOT_FOUND)?;
     if file.size != m.size { return Err(VOLUME_CORRUPTED); }
     let pages = m.size.div_ceil(BLOCK);
@@ -157,12 +153,10 @@ unsafe fn process(
         fs.read_file(file, bytes).map_err(|_| VOLUME_CORRUPTED)?;
         if !m.verifies(&bytes[..m.size]) { return Err(VOLUME_CORRUPTED); }
         root.write(IMAGE, &bytes[..m.size])?;
-        store.write(NOTE, &slot_note(&m))?;
-        // The retained slot and its note must precede the durable attempt.
+        // The retained slot and complete manifest must precede the durable attempt.
         let esp = files::own_device(boot, image)?;
         files::flush_volume(boot, esp)?;
-        store.write(MARKER, text)?;
-        files::flush_volume(boot, esp)?;
+        publish(boot, esp, &store, "LIVE.NEW", MARKER, text)?;
         Ok(())
     })();
     if let Err(status) = staged {
@@ -171,6 +165,60 @@ unsafe fn process(
     }
     say!("live flash: trial {} {}", ascii(&m.token), ascii(&m.commit));
     Ok(Some((base, m.size)))
+}
+
+/// Publish a complete record through an alternate name. No caller starts
+/// a trial until the rename has reached the device.
+unsafe fn publish(
+    boot: &BootServices, esp: Handle, store: &SlotStore<'_>, temp: &str, name: &str, bytes: &[u8],
+) -> Result<(), Status> {
+    store.write(temp, bytes)?;
+    files::flush_volume(boot, esp)?;
+    if store.exists(name) { store.delete(name)?; }
+    store.rename(temp, name)?;
+    files::flush_volume(boot, esp)
+}
+
+fn read_matches(store: &SlotStore<'_>, name: &str, expected: &[u8]) -> Result<bool, Status> {
+    let mut actual = [0; 256];
+    match store.read(name, &mut actual) {
+        Ok(len) => Ok(&actual[..len] == expected),
+        Err(NOT_FOUND) => Ok(false),
+        Err(status) => Err(status),
+    }
+}
+
+/// Hand a confirmed trial to the original slot journal. NEXT.IMG only
+/// appears after both the complete trial image and NEXT.TXT are durable.
+unsafe fn promote(
+    boot: &BootServices, image: Handle, root: &Root, store: &SlotStore<'_>, m: &Manifest, note: &[u8],
+) -> Result<(), Status> {
+    let next = store.exists("NEXT.IMG");
+    let ours = read_matches(store, NEXT_NOTE, note)?;
+    let retained = (next && ours) || (!next && store.exists("TRY.IMG"));
+    if live_flash::choose(None, Some(m.token), Some(m.token), retained) != Action::Promote {
+        return Ok(());
+    }
+    let mut base = [0; 256];
+    let len = store.read(CURRENT_NOTE, &mut base)?;
+    if !m.matches_base(&base[..len]) || (!ours && store.exists(NEXT_NOTE)) {
+        return Ok(());
+    }
+    let source = if next { NEXT } else { IMAGE };
+    if root.size(source)? != m.size as u64 { return Err(VOLUME_CORRUPTED); }
+    let (base, size) = root.read_pages(boot, source)?;
+    let verified = m.verifies(core::slice::from_raw_parts(base, size));
+    (boot.free_pages)(base as u64, size.div_ceil(BLOCK));
+    if !verified { return Err(VOLUME_CORRUPTED); }
+
+    let esp = files::own_device(boot, image)?;
+    if !ours { publish(boot, esp, store, "TRY.NEW", NEXT_NOTE, note)?; }
+    if !next {
+        store.rename("TRY.IMG", "NEXT.IMG")?;
+        files::flush_volume(boot, esp)?;
+    }
+    slot_transaction::begin(store, false)?;
+    files::flush_volume(boot, esp)
 }
 
 fn ascii(bytes: &[u8]) -> &str { core::str::from_utf8(bytes).unwrap_or("") }

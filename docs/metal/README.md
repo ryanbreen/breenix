@@ -1004,7 +1004,8 @@ Without either option it builds the current tip of main.
 The boot host uses the operator's SSH key and the trusted host-key pin from persistent verification.
 Through `sudo -n /bin/bput` it publishes `kernel.img` and then `manifest` in `/root/.breenix-flash`
 on the BreenFS system partition. Publication includes a file and directory sync. The manifest
-arms a unique attempt and contains the kernel commit, image size and SHA-256.
+arms a unique attempt and contains the kernel commit, image size and SHA-256. It also binds the
+attempt to the physical CURRENT note.
 The running kernel uses the existing format-3 write fence.
 
 The guest reboots under its existing lease. The manager checks the on-disk ownership, lengths and
@@ -1053,7 +1054,7 @@ was requested, repeat `metal-run install-persistent --kernel-only --recovery --s
 For BreenFS the driver checks the earlier request and the CURRENT root ID against the recorded NEXT
 before allowing the retry. The stub rechecks physical CURRENT and writes and reads back NEXT again.
 A pending slot from another commit or an attempt that already requested promotion requires diagnosis.
-The legacy NEXT remains reserved for network recovery. A plain `metal-run boot --persistent` leaves it in place.
+The network installer and acknowledged live promotions share the existing NEXT journal. A plain `metal-run boot --persistent` leaves it in place.
 
 Ordinary runtime activity resumes when the verification kernel boots. It includes filesystem recovery,
 service startup and clearing `/tmp` and `/run`. The flash operates on kernel slots. The writable boot

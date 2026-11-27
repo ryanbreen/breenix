@@ -1183,7 +1183,7 @@ pub(super) unsafe fn run(boot: &BootServices, runtime: &RuntimeServices, volume:
         write_esp_files(boot, &root, payload.handle(), text, "esp-file ")?;
         root.write(LIVE_CONFIG, &system)?;
         files::flush_volume(boot, esp)?;
-        load_option(boot, runtime, esp, "Breenix live boot manager", LIVE_MANAGER, recorded_http_option(&root))?;
+        load_option(boot, runtime, esp, "Breenix live boot manager", LIVE_MANAGER, None)?;
         say!("live manager installed; the prior boot option is retained");
         say!("persistent install request complete");
         metal_efi::com1::halt();
