@@ -6,7 +6,7 @@
 //! the root is published only after the buffered puts succeed.
 use super::preempt::preemption_point;
 use super::format::{self, BlockPtr, InternalEntry, Key, LeafItemHeader, NodeHeader, NODE_SIZE};
-use alloc::{collections::BTreeMap, sync::Arc, vec, vec::Vec};
+use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 
 const HEADER: usize = 48;
 const CAPACITY: usize = NODE_SIZE - HEADER;
@@ -314,7 +314,7 @@ impl Node {
             *c.encoded.entry(self.header.addr).or_default() += 1;
             c.slots += self.len() as u64;
         });
-        let mut bytes = vec![0; NODE_SIZE];
+        let mut bytes = node_buffer(self.header.addr, 0u8)?;
         let header = NodeHeader { nitems: self.len() as u16, ..self.header };
         if self.header.level == 0 {
             let mut tail = NODE_SIZE;
@@ -346,6 +346,16 @@ impl Node {
             bytes,
         ))
     }
+}
+
+fn node_buffer<T: Copy>(addr: u64, initial: T) -> Result<Vec<T>, Error> {
+    let mut buffer = Vec::new();
+    buffer.try_reserve_exact(NODE_SIZE).map_err(|_| Error::Read(ReadFailure {
+        addr,
+        cause: ReadCause::Allocation,
+    }))?;
+    buffer.resize(NODE_SIZE, initial);
+    Ok(buffer)
 }
 
 fn decode(bytes: &[u8], ptr: BlockPtr, header: NodeHeader) -> Result<Node, Error> {
@@ -384,7 +394,7 @@ fn decode(bytes: &[u8], ptr: BlockPtr, header: NodeHeader) -> Result<Node, Error
     if end > NODE_SIZE {
         return Err(Error::InvalidNode);
     }
-    let mut used = vec![false; NODE_SIZE];
+    let mut used = node_buffer(header.addr, false)?;
     used[..end].fill(true);
     let mut node = Node {
         header,
