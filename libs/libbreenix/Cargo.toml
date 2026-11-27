@@ -100,3 +100,23 @@ required-features = ["std"]
 name = "ssh_cipher_throughput"
 path = "../../tests/ssh_cipher_throughput.rs"
 required-features = ["std"]
+
+[[test]]
+name = "chacha20_poly1305_vectors"
+path = "../../tests/chacha20_poly1305_vectors.rs"
+required-features = ["std"]
+
+[[test]]
+name = "aes_constant_time"
+path = "../../tests/aes_constant_time.rs"
+required-features = ["std"]
+
+[[test]]
+name = "ssh_packet_framing"
+path = "../../tests/ssh_packet_framing.rs"
+required-features = ["std"]
+
+[[test]]
+name = "ssh_openssh_interop"
+path = "../../tests/ssh_openssh_interop.rs"
+required-features = ["std"]

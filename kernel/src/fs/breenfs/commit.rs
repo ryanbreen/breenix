@@ -652,8 +652,21 @@ pub(crate) fn partition_blocks(device: &dyn BlockDevice) -> Result<u64, Error> {
         .ok_or(Error::EIO)
 }
 pub(crate) fn read(device: &dyn BlockDevice, addr: u64, len: usize) -> Result<Vec<u8>, Error> {
+    if len % BLOCK_SIZE != 0 {
+        return Err(Error::EIO);
+    }
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(len).map_err(|_| Error::BlockRead(BlockError::OutOfMemory))?;
+    bytes.resize(len, 0);
+    read_into(device, addr, &mut bytes)?;
+    Ok(bytes)
+}
+/// Read whole blocks starting at block `addr` into `bytes`, in one device
+/// request (E24 ledger 372, #3040).
+pub(crate) fn read_into(device: &dyn BlockDevice, addr: u64, bytes: &mut [u8]) -> Result<(), Error> {
     let total = partition_blocks(device)?;
     let sector = device.block_size();
+    let len = bytes.len();
     if len % BLOCK_SIZE != 0
         || addr
             .checked_add((len / BLOCK_SIZE) as u64)
@@ -664,14 +677,9 @@ pub(crate) fn read(device: &dyn BlockDevice, addr: u64, len: usize) -> Result<Ve
     let start = addr
         .checked_mul((BLOCK_SIZE / sector) as u64)
         .ok_or(Error::EIO)?;
-    let mut bytes = Vec::new();
-    bytes.try_reserve_exact(len).map_err(|_| Error::BlockRead(BlockError::OutOfMemory))?;
-    bytes.resize(len, 0);
-    // One device request per read (E24 ledger 372, #3040).
     device
-        .read_blocks(start, len / sector, &mut bytes)
-        .map_err(Error::BlockRead)?;
-    Ok(bytes)
+        .read_blocks(start, len / sector, bytes)
+        .map_err(Error::BlockRead)
 }
 pub(crate) fn write(device: &dyn BlockDevice, addr: u64, bytes: &[u8]) -> Result<(), Error> {
     let total = partition_blocks(device)?;

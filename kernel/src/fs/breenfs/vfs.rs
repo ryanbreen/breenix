@@ -188,6 +188,10 @@ mod frozen_generation;
 #[path = "../../../../tools/breenfs-host-tests/src/frozen_review.rs"]
 mod frozen_review;
 
+#[cfg(test)]
+#[path = "../../../../tools/breenfs-host-tests/src/extent_runs.rs"]
+mod extent_runs;
+
 // Extended attributes use ABI errno 61 for an absent attribute.
 const ENODATA: i32 = 61;
 
@@ -1322,8 +1326,9 @@ impl<W: Wait> MountState<W> {
             return Ok(DataGrant { grant, metadata: metadata + 4, first_write_space, funded_debt,
                 replay_space: replay.map(|(_, space)| space), drain_growth: 1 });
         }
-        // A run inserts at most 256 data EXTENTs and can retain up to 510
-        // one-page slices at its old boundaries (ops::remove_range). Their
+        // A run inserts at most 256 data EXTENTs. ops::remove_range now keeps
+        // at most two bookend items at its old boundaries, where it once kept
+        // up to 510 one-page slices; this bound still allows the slices. Their
         // 45-byte items fit in three nodes' payload space; allow four split
         // paths, their COW siblings, a new root level and the inode edit.
         let fs_levels = runs.checked_add(1)
@@ -3792,12 +3797,15 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             state.files.files = state.edited(&[], Ok(files))?;
             state.durable = sb.clone();
         }
-        buf.fill(0);
         let size = state.regular(node.ino)?.size;
         if off >= size || buf.is_empty() {
+            buf.fill(0);
             return Ok(0);
         }
         let length = (size - off).min(buf.len() as u64) as usize;
+        // Bytes past EOF read as 00; Files zeroes holes itself, and the
+        // pages copied below cover the rest.
+        buf[length..].fill(0);
         let mut done = 0;
         while done < length {
             let pos = off + done as u64;
@@ -4457,8 +4465,9 @@ impl<W: Wait + 'static> FileSystem for GenerationView<W> {
     }
     fn read(&self, node: &VNode, off: u64, buf: &mut [u8]) -> Result<usize, Errno> {
         self.check_node(node)?;
-        buf.fill(0);
-        self.read_files(|files| files.read_verified(&self.writer.data_reader(), node.ino, off, buf))
+        let read = self.read_files(|files| files.read_verified(&self.writer.data_reader(), node.ino, off, buf))?;
+        buf[read..].fill(0);
+        Ok(read)
     }
     fn fsync(&self, node: &VNode, _: bool) -> Result<(), Errno> {
         self.check_node(node)
@@ -4610,6 +4619,21 @@ impl BlockDevice for DataBlocks {
             .ok_or(BlockError::OutOfBounds)?;
         self.device.read_blocks(start, BLOCK_SIZE / sector, bytes)
     }
+    /// One device request for `count` consecutive data blocks.
+    fn read_blocks(&self, block: u64, count: usize, bytes: &mut [u8]) -> Result<(), BlockError> {
+        let length = count.checked_mul(BLOCK_SIZE).ok_or(BlockError::OutOfBounds)?;
+        if block.checked_add(count as u64).is_none_or(|end| end > self.blocks) || bytes.len() < length {
+            return Err(BlockError::OutOfBounds);
+        }
+        let sector = self.device.block_size();
+        if sector == 0 || BLOCK_SIZE % sector != 0 {
+            return Err(BlockError::IoError);
+        }
+        let start = block
+            .checked_mul((BLOCK_SIZE / sector) as u64)
+            .ok_or(BlockError::OutOfBounds)?;
+        self.device.read_blocks(start, length / sector, &mut bytes[..length])
+    }
     fn write_block(&self, _: u64, _: &[u8]) -> Result<(), BlockError> {
         Err(BlockError::IoError)
     }
@@ -4635,6 +4659,11 @@ impl<W: Wait> BlockDevice for DataReader<'_, W> {
         // Files verifies the returned block against its extent REF before use.
         self.cache
             .read_verified(self.blocks, block, bytes, |_| true)
+    }
+    /// A clean run of file blocks: resident copies come from memory, and each
+    /// LBA-contiguous run of misses is one device request (audit R7).
+    fn read_blocks(&self, block: u64, count: usize, bytes: &mut [u8]) -> Result<(), BlockError> {
+        self.cache.read_blocks(self.blocks, block, count, bytes)
     }
     fn write_block(&self, _: u64, _: &[u8]) -> Result<(), BlockError> {
         Err(BlockError::IoError)
@@ -4682,6 +4711,9 @@ impl<W: Wait + 'static> MappingIo for Mapping<W> {
         // population can tell it from file bytes of 00.
         bytes.truncate(read);
         Ok(bytes)
+    }
+    fn read_into(&self, offset: u64, bytes: &mut [u8]) -> Result<usize, Errno> {
+        self.node.filesystem.read(&self.node, offset, bytes)
     }
     fn needs_flush(&self) -> bool {
         self.writable

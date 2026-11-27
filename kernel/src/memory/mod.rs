@@ -8,6 +8,7 @@ pub mod frame_allocator;
 pub mod frame_metadata;
 pub mod heap;
 pub mod kernel_page_table;
+pub mod kernel_walk;
 pub mod kernel_stack;
 pub mod layout;
 pub mod paging;
@@ -335,150 +336,52 @@ pub fn map_mmio(phys_addr: u64, size: usize) -> Result<usize, &'static str> {
     Ok(virt_addr as usize)
 }
 
-/// Wrapper for PhysAddr operations that converts kernel virtual addresses
-/// to physical addresses
+pub use kernel_walk::WalkError;
+
+/// Converts kernel virtual addresses to the physical addresses devices use.
 pub struct PhysAddrWrapper;
 
 impl PhysAddrWrapper {
-    /// Convert a kernel virtual address to a physical address
+    /// The physical address mapped at kernel virtual address `virt`, from the
+    /// translation the CPU itself uses, or why it has no translation.
     ///
-    /// This function handles several types of kernel addresses:
-    /// 1. Direct physical memory mappings (starting at phys_offset) - subtract offset
-    /// 2. Heap and other mapped regions - walk page tables to find physical address
-    ///
-    /// NOTE: The direct physical memory map starts at phys_offset and extends for
-    /// the size of physical RAM (~500MB in QEMU). Addresses like the heap (0x4444_4444_0000)
-    /// are NOT in this region even though they may be numerically greater than phys_offset.
-    pub fn from_kernel_virt(virt: usize) -> u64 {
-        let phys_offset = physical_memory_offset();
-
-        // Check if this is a heap address - these are mapped, not direct on x86_64.
-        // On aarch64, the heap IS directly mapped via HHDM (boot.S maps all RAM),
-        // so we can always use the fast subtraction path.
+    /// On x86-64 this walks the active page tables (`kernel_walk::walk_x86_64`)
+    /// for direct-map addresses as for the rest, so it has no assumption about
+    /// where RAM ends. On ARM64 the MMU translates it (`AT S1E1R`, read back
+    /// from PAR_EL1), which covers both translation tables and the
+    /// direct-map offset the loader chose.
+    pub fn from_kernel_virt(virt: usize) -> Result<u64, WalkError> {
         #[cfg(target_arch = "x86_64")]
-        let is_heap = {
-            let heap_start = crate::memory::heap::HEAP_START;
-            let heap_end = heap_start + crate::memory::heap::HEAP_SIZE;
-            (virt as u64) >= heap_start && (virt as u64) < heap_end
-        };
+        {
+            use x86_64::registers::control::Cr3;
+            let phys_offset = physical_memory_offset().as_u64();
+            let (pml4_frame, _) = Cr3::read();
+            kernel_walk::walk_x86_64(pml4_frame.start_address().as_u64(), virt as u64, |table, index| {
+                // SAFETY: page-table frames are RAM, which the direct map at
+                // `phys_offset` covers, and `index` is below 512.
+                unsafe { core::ptr::read_volatile((phys_offset + table + 8 * index as u64) as *const u64) }
+            })
+        }
         #[cfg(target_arch = "aarch64")]
-        let is_heap = false;
-
-        // The direct physical memory map starts at phys_offset.
-        // We can detect if an address is truly in the direct map by checking:
-        // 1. It's >= phys_offset
-        // 2. Subtracting phys_offset gives a reasonable physical address (< 4GB typically)
-        // 3. It's NOT in a known non-direct-mapped region (heap on x86_64, MMIO, stack, etc.)
-        if !is_heap && (virt as u64) >= phys_offset.as_u64() {
-            #[cfg(target_arch = "x86_64")]
-            let candidate_phys = (virt as u64) - phys_offset.as_u64();
-            #[cfg(target_arch = "aarch64")]
-            let candidate_phys = crate::platform_config::kernel_va_to_ipa(virt as u64);
-            // Physical RAM is typically < 4GB in our setup
-            if candidate_phys < 0x1_0000_0000 {
-                return candidate_phys;
-            }
+        {
+            // PAR_EL1 belongs to whoever ran the last AT on this CPU, so the
+            // translation and its read stay together with interrupts masked.
+            let par = crate::arch_without_interrupts(|| {
+                let par: u64;
+                // SAFETY: AT only translates; it does not access the address.
+                unsafe {
+                    core::arch::asm!(
+                        "at s1e1r, {virt}",
+                        "isb",
+                        "mrs {par}, par_el1",
+                        virt = in(reg) virt as u64,
+                        par = out(reg) par,
+                        options(nostack, preserves_flags),
+                    );
+                }
+                par
+            });
+            kernel_walk::decode_par_el1(par, virt as u64)
         }
-
-        // For heap and other mapped regions, use the page table entry directly
-        // We can't use translate_addr because it adds the offset back when reading PTEs
-        #[cfg(not(target_arch = "x86_64"))]
-        use crate::memory::arch_stub::Cr3;
-        #[cfg(not(target_arch = "x86_64"))]
-        use crate::memory::arch_stub::PageTable;
-        #[cfg(target_arch = "x86_64")]
-        use x86_64::registers::control::Cr3;
-        #[cfg(target_arch = "x86_64")]
-        use x86_64::structures::paging::PageTable;
-
-        let virt_addr = VirtAddr::new(virt as u64);
-
-        // Get page table indices for this virtual address
-        let p4_idx = (virt_addr.as_u64() >> 39) & 0x1FF;
-        let p3_idx = (virt_addr.as_u64() >> 30) & 0x1FF;
-        let p2_idx = (virt_addr.as_u64() >> 21) & 0x1FF;
-        let p1_idx = (virt_addr.as_u64() >> 12) & 0x1FF;
-        let page_offset = virt_addr.as_u64() & 0xFFF;
-
-        // Get the CR3 (PML4 physical address)
-        let (pml4_frame, _) = Cr3::read();
-        let pml4_phys = pml4_frame.start_address().as_u64();
-
-        // Access PML4 through physical memory mapping
-        let pml4_virt = phys_offset.as_u64() + pml4_phys;
-        let pml4 = unsafe { &*(pml4_virt as *const PageTable) };
-
-        let p4_entry = &pml4[p4_idx as usize];
-        if !p4_entry.flags().contains(PageTableFlags::PRESENT) {
-            log::error!(
-                "PhysAddrWrapper: PML4[{}] not present for virt {:#x}",
-                p4_idx,
-                virt
-            );
-            return virt as u64;
-        }
-
-        // Get PDPT
-        let pdpt_phys = p4_entry.addr().as_u64();
-        let pdpt_virt = phys_offset.as_u64() + pdpt_phys;
-        let pdpt = unsafe { &*(pdpt_virt as *const PageTable) };
-
-        let p3_entry = &pdpt[p3_idx as usize];
-        if !p3_entry.flags().contains(PageTableFlags::PRESENT) {
-            log::error!(
-                "PhysAddrWrapper: PDPT[{}] not present for virt {:#x}",
-                p3_idx,
-                virt
-            );
-            return virt as u64;
-        }
-
-        // Check for 1GB huge page
-        if p3_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
-            let phys = p3_entry.addr().as_u64() + (virt_addr.as_u64() & 0x3FFFFFFF);
-            return phys;
-        }
-
-        // Get PD
-        let pd_phys = p3_entry.addr().as_u64();
-        let pd_virt = phys_offset.as_u64() + pd_phys;
-        let pd = unsafe { &*(pd_virt as *const PageTable) };
-
-        let p2_entry = &pd[p2_idx as usize];
-        if !p2_entry.flags().contains(PageTableFlags::PRESENT) {
-            log::error!(
-                "PhysAddrWrapper: PD[{}] not present for virt {:#x}",
-                p2_idx,
-                virt
-            );
-            return virt as u64;
-        }
-
-        // Check for 2MB huge page
-        if p2_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
-            let phys = p2_entry.addr().as_u64() + (virt_addr.as_u64() & 0x1FFFFF);
-            return phys;
-        }
-
-        // Get PT
-        let pt_phys = p2_entry.addr().as_u64();
-        let pt_virt = phys_offset.as_u64() + pt_phys;
-        let pt = unsafe { &*(pt_virt as *const PageTable) };
-
-        let p1_entry = &pt[p1_idx as usize];
-        if !p1_entry.flags().contains(PageTableFlags::PRESENT) {
-            log::error!(
-                "PhysAddrWrapper: PT[{}] not present for virt {:#x}",
-                p1_idx,
-                virt
-            );
-            return virt as u64;
-        }
-
-        // Final physical address
-        let frame_phys = p1_entry.addr().as_u64();
-        let phys = frame_phys + page_offset;
-
-        phys
     }
 }

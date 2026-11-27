@@ -1564,6 +1564,8 @@ pub(crate) fn populate(
     count: u64,
 ) -> Result<Population, MapError> {
     static NEXT_CLAIM: AtomicU64 = AtomicU64::new(0);
+    // The block cache's per-request limit, in pages.
+    const POPULATE_RUN_PAGES: u64 = crate::block::cache::RUN_BYTES as u64 / PAGE_SIZE;
     let file = handle.filesystem.mapping_io(handle).map_err(|_| MapError::Io)?;
     let map = &handle.map;
     let id = NEXT_CLAIM.fetch_add(1, Ordering::Relaxed);
@@ -1584,6 +1586,7 @@ pub(crate) fn populate(
         id,
     };
     let mut range = (first, end);
+    let mut staging: Vec<u8> = Vec::new();
     loop {
         let (size, last, wanted) = {
             let inner = map.state.inner.lock();
@@ -1597,24 +1600,63 @@ pub(crate) fn populate(
         let mut read = Vec::new();
         read.try_reserve(wanted).map_err(|_| MapError::NoMemory)?;
         let mut short = None;
-        for index in range.0..last {
-            if map.state.inner.lock().pages.contains(index) {
-                continue;
+        let mut index = range.0;
+        while index < last {
+            // A run of absent pages, at most one device request long
+            // (Phase 1.1, the audit's R6 interim): one read for the run.
+            let (low, high) = {
+                let inner = map.state.inner.lock();
+                let mut low = index;
+                while low < last && inner.pages.contains(low) {
+                    low += 1;
+                }
+                let mut high = low;
+                while high < last && high - low < POPULATE_RUN_PAGES && !inner.pages.contains(high) {
+                    high += 1;
+                }
+                (low, high)
+            };
+            if low == high {
+                break;
             }
-            if read.len() == read.capacity() {
-                read.try_reserve(1).map_err(|_| MapError::NoMemory)?;
+            let pages = (high - low) as usize;
+            if read.capacity() - read.len() < pages {
+                read.try_reserve(pages).map_err(|_| MapError::NoMemory)?;
             }
-            let page = CachePage::allocate().map_err(|_| MapError::NoMemory)?;
-            let bytes = file
-                .read(index * PAGE_SIZE, PAGE_SIZE as usize)
-                .map_err(|_| MapError::Io)?;
-            let length = bytes.len().min(PAGE_SIZE as usize);
-            if (length as u64) < (size - index * PAGE_SIZE).min(PAGE_SIZE) {
-                short = short.or(Some(index));
+            let start = read.len();
+            for page in low..high {
+                read.push((page, CachePage::allocate().map_err(|_| MapError::NoMemory)?));
             }
-            // SAFETY: a fresh cache frame; `length` is at most one page.
-            unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), page.ptr(), length) };
-            read.push((index, page));
+            let length = if pages == 1 {
+                // SAFETY: a fresh cache frame, reached only through `read`.
+                let frame = unsafe { core::slice::from_raw_parts_mut(read[start].1.ptr(), PAGE_SIZE as usize) };
+                file.read_into(low * PAGE_SIZE, frame).map_err(|_| MapError::Io)?
+            } else {
+                // One staging buffer for the population's multi-page runs.
+                let bytes = pages * PAGE_SIZE as usize;
+                if staging.len() < bytes {
+                    staging.try_reserve_exact(bytes - staging.len()).map_err(|_| MapError::NoMemory)?;
+                    staging.resize(bytes, 0);
+                }
+                let length = file
+                    .read_into(low * PAGE_SIZE, &mut staging[..bytes])
+                    .map_err(|_| MapError::Io)?;
+                for (n, (_, page)) in read[start..].iter().enumerate() {
+                    let from = n * PAGE_SIZE as usize;
+                    let take = length.saturating_sub(from).min(PAGE_SIZE as usize);
+                    // SAFETY: a fresh cache frame; `take` is at most one page.
+                    unsafe { core::ptr::copy_nonoverlapping(staging[from..].as_ptr(), page.ptr(), take) };
+                }
+                length
+            };
+            for page in low..high {
+                let from = ((page - low) * PAGE_SIZE) as usize;
+                let have = length.saturating_sub(from).min(PAGE_SIZE as usize);
+                if (have as u64) < (size - page * PAGE_SIZE).min(PAGE_SIZE) {
+                    short = short.or(Some(page));
+                }
+            }
+            index = high;
         }
         let mut inner = map.state.inner.lock();
         let stale = inner
