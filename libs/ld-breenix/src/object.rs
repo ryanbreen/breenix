@@ -1,6 +1,6 @@
 use core::ops::Range;
 
-use crate::elf::{Bytes, Image, PF_R, PF_W, PT_DYNAMIC, PT_GNU_RELRO, PT_TLS};
+use crate::elf::{Bytes, Image, Machine, PF_R, PF_W, PT_DYNAMIC, PT_GNU_RELRO, PT_TLS};
 use crate::tls_module::TlsModule;
 use crate::{Error, ErrorKind};
 
@@ -48,6 +48,12 @@ const R_X86_64_GLOB_DAT: u32 = 6;
 const R_X86_64_JUMP_SLOT: u32 = 7;
 const R_X86_64_RELATIVE: u32 = 8;
 const R_X86_64_DTPMOD64: u32 = 16;
+
+// AAELF64 2025Q1 §5.7.15, limited to the non-TLS kinds reported by ARM X2.
+const R_AARCH64_ABS64: u32 = 257;
+const R_AARCH64_GLOB_DAT: u32 = 1025;
+const R_AARCH64_JUMP_SLOT: u32 = 1026;
+const R_AARCH64_RELATIVE: u32 = 1027;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Object<'a> {
@@ -225,7 +231,7 @@ struct Symbol<'a> {
 }
 
 impl<'a> Object<'a> {
-    /// Read an AMD64 ELF file through its program headers. `name` is the
+    /// Read an ELF64 file through its program headers. `name` is the
     /// caller's canonical absolute pathname for dependency search and errors.
     pub fn parse(name: &'a [u8], file: &'a [u8], bias: u64) -> Result<Self, Error<'a>> {
         Self::from_image(Image::parse(
@@ -620,29 +626,45 @@ impl<'a> Object<'a> {
             for pos in (0..table.data.len() as u64).step_by(RELA_SIZE as usize) {
                 let entry = table.slice(pos, RELA_SIZE)?;
                 let address = self.image.address(entry.u64(0)?, 8, PF_W, entry.offset)?;
+                let machine = self.image.machine;
+                if machine == Machine::Aarch64 && address % 8 != 0 {
+                    return Err(entry.error(ErrorKind::InvalidRelocation));
+                }
                 let info = entry.u64(8)?;
                 let index = info >> 32;
                 let addend = entry.u64(16)? as i64;
-                let value = match info as u32 {
-                    R_X86_64_RELATIVE if index == 0 => self
-                        .bias()
-                        .checked_add_signed(addend)
-                        .ok_or_else(|| entry.error(ErrorKind::InvalidRelocation))?,
-                    R_X86_64_RELATIVE => return Err(entry.error(ErrorKind::InvalidRelocation)),
+                let value = match (machine, info as u32) {
+                    (Machine::Amd64, R_X86_64_RELATIVE)
+                    | (Machine::Aarch64, R_AARCH64_RELATIVE) => {
+                        // Breenix's single-bias RELATIVE records name the null symbol.
+                        if index != 0 {
+                            return Err(entry.error(ErrorKind::InvalidRelocation));
+                        }
+                        self.bias()
+                            .checked_add_signed(addend)
+                            .ok_or_else(|| entry.error(ErrorKind::InvalidRelocation))?
+                    }
                     // The result of S + A occupies an ELF word64, including signed addends.
-                    R_X86_64_64 => self
+                    // Breenix honors the explicit RELA addend for AArch64 JUMP_SLOT.
+                    (Machine::Amd64, R_X86_64_64)
+                    | (
+                        Machine::Aarch64,
+                        R_AARCH64_ABS64 | R_AARCH64_GLOB_DAT | R_AARCH64_JUMP_SLOT,
+                    ) => self
                         .resolve(scope, index, entry.offset)?
                         .wrapping_add_signed(addend),
-                    R_X86_64_GLOB_DAT | R_X86_64_JUMP_SLOT => {
+                    (Machine::Amd64, R_X86_64_GLOB_DAT | R_X86_64_JUMP_SLOT) => {
                         self.resolve(scope, index, entry.offset)?
                     }
                     // AMD64 psABI §4.4.1: the local-dynamic GOT pair names
                     // this object's module and has a 0 offset.
-                    R_X86_64_DTPMOD64 if index == 0 && addend == 0 && module != 0 => module as u64,
-                    R_X86_64_DTPMOD64 if index == 0 && addend == 0 => {
-                        return Err(entry.error(ErrorKind::InvalidRelocation))
+                    (Machine::Amd64, R_X86_64_DTPMOD64) if index == 0 && addend == 0 => {
+                        if module == 0 {
+                            return Err(entry.error(ErrorKind::InvalidRelocation));
+                        }
+                        module as u64
                     }
-                    kind => return Err(entry.error(ErrorKind::UnsupportedRelocation(kind))),
+                    (_, kind) => return Err(entry.error(ErrorKind::UnsupportedRelocation(kind))),
                 };
                 write(Patch { address, value });
             }

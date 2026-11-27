@@ -12,6 +12,9 @@ libbreenix = { path = "../libbreenix", default-features = false, optional = true
 [features]
 interpreter = ["dep:libbreenix"]
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("breenix"))'] }
+
 [[bin]]
 name = "ld-breenix"
 path = "src/entry.rs"

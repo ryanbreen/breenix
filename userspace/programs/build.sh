@@ -42,8 +42,8 @@
 #     Link the hosted compiler's libc.so and executable CRT.
 #   ./userspace/programs/build.sh --dynamic
 #     Build the x86-64 dynamic suite, its runtime and fixtures into target/kd.
-#   ./userspace/programs/build.sh --kd-loader
-#     Link the x86-64 ELF interpreter into target/kd.
+#   ./userspace/programs/build.sh --arch x86_64|aarch64 --kd-loader
+#     Link the ELF interpreter into target/kd (x86-64) or target/kd/aarch64.
 
 set -e
 
@@ -157,7 +157,7 @@ if [[ "$DYNAMIC" == 1 ]]; then
        "$RUST_HOST" == 0 && -z "$HOSTED_BIN" && ${#HOSTED_FEATURES[@]} -eq 0 ]] || usage
 fi
 if [[ "$KD_LIBC" == 1 || "$KD_LOADER" == 1 ]]; then
-    [[ "$ARCH" == x86_64 || ( "$ARCH" == aarch64 && "$KD_LIBC" == 1 ) ]] || usage
+    [[ "$ARCH" == x86_64 || "$ARCH" == aarch64 ]] || usage
     [[ "$KD_LIBC" != "$KD_LOADER" && "$CXX_RUNTIME" == 0 && "$LLVM" == 0 &&
        "$BUNWIND" == 0 && "$RUST_HOST" == 0 && -z "$HOSTED_BIN" && ${#HOSTED_FEATURES[@]} -eq 0 ]] || usage
 fi
@@ -219,8 +219,12 @@ if [[ "$BUNWIND" == 1 ]]; then
 fi
 
 HOSTED_TARGET_JSON="$PROJECT_ROOT/$TARGET_DIR-hosted.json"
+KD_BUILD_DEFAULT="$SCRIPT_DIR/target/kd"
+if [[ "$ARCH" == aarch64 ]]; then
+    KD_BUILD_DEFAULT="$KD_BUILD_DEFAULT/aarch64"
+fi
 if [[ "$DYNAMIC" == 1 ]]; then
-    kd_dir="${BREENIX_KD_BUILD_DIR:-$SCRIPT_DIR/target/kd}"
+    kd_dir="${BREENIX_KD_BUILD_DIR:-$KD_BUILD_DEFAULT}"
     mkdir -p "$kd_dir"
     BREENIX_KD_BUILD_DIR="$(cd "$kd_dir" && pwd)"
     export BREENIX_KD_BUILD_DIR
@@ -243,7 +247,7 @@ if [[ "$DYNAMIC" == 1 ]]; then
     exit 0
 fi
 if [[ "$KD_LOADER" == 1 ]]; then
-    kd_dir="${BREENIX_KD_BUILD_DIR:-$SCRIPT_DIR/target/kd}"
+    kd_dir="${BREENIX_KD_BUILD_DIR:-$KD_BUILD_DEFAULT}"
     cd "$SCRIPT_DIR"
     unset CARGO_ENCODED_RUSTFLAGS __CARGO_TESTS_ONLY_SRC_ROOT
     RUSTFLAGS="$REMAP_FLAGS -D warnings -C relocation-model=pic -C default-linker-libraries=no" \
@@ -258,11 +262,7 @@ if [[ "$KD_LOADER" == 1 ]]; then
     exit 0
 fi
 if [[ "$KD_LIBC" == 1 ]]; then
-    kd_default="$SCRIPT_DIR/target/kd"
-    if [[ "$ARCH" == aarch64 ]]; then
-        kd_default="$kd_default/aarch64"
-    fi
-    kd_dir="${BREENIX_KD_BUILD_DIR:-$kd_default}"
+    kd_dir="${BREENIX_KD_BUILD_DIR:-$KD_BUILD_DEFAULT}"
     libc_dir="$PROJECT_ROOT/libs/libbreenix-libc"
     cd "$SCRIPT_DIR"
     rust_tools="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin"
