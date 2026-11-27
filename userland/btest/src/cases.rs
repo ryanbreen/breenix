@@ -17,7 +17,7 @@ const RESOURCE_CAPS: &[(bu_sys::Resource, u64)] = &[
     (bu_sys::Resource::AddressSpace, 64 * 1024 * 1024),
 ];
 
-pub fn supervisor(stage: &Path, id: &str) -> Result<Json, String> {
+pub fn supervisor(stage: &Path, id: &str, json: bool) -> Result<Json, String> {
     let uid = fs::read_to_string("/etc/passwd")
         .map_err(|e| format!("/etc/passwd: {e}"))?
         .lines()
@@ -38,6 +38,7 @@ pub fn supervisor(stage: &Path, id: &str) -> Result<Json, String> {
     let deadline = Instant::now() + Duration::from_secs(60);
     let mut failed = 0;
     let mut cases = Vec::new();
+    let mut stream_error = None;
     for case in &suite.cases {
         let start = Instant::now();
         let scratch = root.join(&case.id);
@@ -65,9 +66,25 @@ pub fn supervisor(stage: &Path, id: &str) -> Result<Json, String> {
             let key = if status == "fail" { "diff" } else { "error" };
             entry.push((key.into(), diagnostic));
         }
-        cases.push(Json::Object(entry.into_iter().collect()));
+        let mut fields: std::collections::BTreeMap<_, _> = entry.into_iter().collect();
+        if json && stream_error.is_none() {
+            fields.insert("kind".into(), "case".into());
+            fields.insert("pkg".into(), suite.program.clone().into());
+            let event = Json::Object(fields);
+            stream_error = super::write_case_line(&event.to_string()).err();
+            let Json::Object(result) = event else {
+                unreachable!();
+            };
+            fields = result;
+            fields.remove("kind");
+            fields.remove("pkg");
+        }
+        cases.push(Json::Object(fields));
     }
     remove_scratch(&root).map_err(|e| format!("{}: {e}", root.display()))?;
+    if let Some(error) = stream_error {
+        return Err(error);
+    }
     Ok(Json::object([
         ("passed", Json::number(cases.len() - failed)),
         ("failed", Json::number(failed)),
