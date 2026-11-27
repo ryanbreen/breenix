@@ -322,22 +322,25 @@ pub fn mounts_text() -> Vec<u8> {
     use alloc::format;
     let table = MOUNT_TABLE.lock();
     let native: Vec<_> = table.iter().filter(|m| !matches!(m.backend, Backend::User(_)))
-        .map(|m| (m.path.clone(), m.kind, m.flags, match &m.backend {
-            Backend::Fs(fs) => Some(fs.clone()), _ => None,
-        })).collect();
+        .map(|m| {
+            let source = if m.path == b"/" { m.source.clone() } else { Vec::new() };
+            let fs = match &m.backend { Backend::Fs(fs) => Some(fs.clone()), _ => None };
+            (source, m.path.clone(), m.kind, m.flags, fs)
+        }).collect();
     let mut out = Vec::new();
     let users: Vec<_> = table.iter().filter(|m| matches!(m.backend, Backend::User(_)))
         .map(|m| crate::fs::ufs::mounts_line::format_mount_line(&m.source, &m.path)).collect();
     drop(table);
-    for (path, kind, mut flags, fs) in native {
+    for (source, path, kind, mut flags, fs) in native {
         let failure = fs.as_ref().and_then(|fs| fs.failure());
         if failure.is_some() { flags.read_only = true; }
         let mut options = flags.options();
         if let Some(fs) = fs {
             super::mount_table::append_failure_options(&mut options, fs.failure());
         }
-        out.extend_from_slice(format!("none {} {} {} 0 0\n",
-            String::from_utf8_lossy(&path), kind, options).as_bytes());
+        let source = if source.is_empty() { "none".into() } else { String::from_utf8_lossy(&source) };
+        out.extend_from_slice(format!("{} {} {} {} 0 0\n",
+            source, String::from_utf8_lossy(&path), kind, options).as_bytes());
     }
     for line in users { out.extend_from_slice(&line); }
     out

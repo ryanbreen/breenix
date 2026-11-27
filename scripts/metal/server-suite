@@ -2106,9 +2106,32 @@ def probe_upgrade_attempt(args):
                     receipt['sshAttempts'] += 1
                     uid = probe.ssh('id -u', timeout=min(15, max(1, power + 600 - time.time())))
                 probe.require(uid, site['OPERATOR_UID'])
-                receipt['sshAttempts'] += 1
-                generation = probe.ssh('cat /usr/share/factory/generation')
-                probe.require(generation)
+                mounts = None
+                if phase or boot.get('breenfsUpgrade'):
+                    receipt['sshAttempts'] += 1
+                    mounts = probe.ssh('/bin/cat /proc/mounts')
+                    probe.require(mounts)
+                if boot.get('verifyWritableRoot'):
+                    roots = [line.split()[0] for line in mounts.stdout.splitlines() if line.split()[1:2] == ['/']]
+                    if len(roots) != 1 or not re.fullmatch(r'gen-[A-Za-z0-9-]{1,64}', roots[0]):
+                        raise ValueError('writable root mount lacks the selected BreenFS root identity')
+                    generation = roots[0][4:]
+                else:
+                    # Older BreenFS kernels retain the completion record even
+                    # when a writable kernel has since replaced /usr.
+                    lines = []
+                    if mounts and ' / breenfs ' in mounts.stdout:
+                        receipt['sshAttempts'] += 1
+                        legacy = probe.ssh('/bin/cat /.complete')
+                        if not legacy.returncode:
+                            lines = legacy.stdout.splitlines()
+                    if len(lines) >= 2 and lines[0] == 'BREENIX-USERLAND 2':
+                        generation = lines[1]
+                    else:
+                        receipt['sshAttempts'] += 1
+                        legacy = probe.ssh('/bin/cat /usr/share/factory/generation')
+                        probe.require(legacy)
+                        generation = legacy.stdout.strip()
                 receipt['sshAttempts'] += 1
                 state = probe.ssh('cat /run/breenix/services')
                 probe.require(state)
@@ -2117,14 +2140,13 @@ def probe_upgrade_attempt(args):
                     row = services.get(name, {})
                     if row.get('starts', 0) < 1 or (name != 'ntp' and (row.get('state') != 'running' or not row.get('pid'))):
                         raise ValueError('service not started: ' + name)
-                if phase or boot.get('breenfsUpgrade'):
-                    mounts = probe.ssh('/bin/cat /proc/mounts')
-                    probe.require(mounts)
+                if mounts is not None:
+                    receipt['sshAttempts'] += 2
                     probe.require(probe.ssh('/bin/ls -a "$HOME"'))
                     probe.require(probe.ssh('/usr/bin/sync'))
                     receipt.update(mounts=mounts.stdout, homeReadable=True)
                 receipt.update(authenticated=True, strictHostKey=True, servicesStarted=True,
-                               generation=generation.stdout.strip(), fingerprint=fingerprint, serviceState=state.stdout)
+                               generation=generation, fingerprint=fingerprint, serviceState=state.stdout)
                 if console or not cache.exists():
                     # Publish only a key whose strict authenticated probe succeeded.
                     staged = cache.with_suffix('.new-' + args.boot)

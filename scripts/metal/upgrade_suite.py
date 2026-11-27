@@ -131,7 +131,7 @@ class UpgradeSuite:
     def attempt(self, broken, bootable=False):
         before = self.snapshot()
         self.stop()
-        arguments = ['install-persistent', '--branch', self.args.branch, '--sha', self.args.sha]
+        arguments = ['install-persistent', '--migration-image', '--branch', self.args.branch, '--sha', self.args.sha]
         if broken: arguments += ['--inject', 'upgrade-service-down' if bootable else 'upgrade-no-ssh']
         boot = self.launch(arguments)
         result = json.loads(self.wait(boot, 'upgrade-result.json'))

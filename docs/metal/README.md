@@ -684,8 +684,9 @@ RAM-disk root. The driver therefore does not wait for `disk-filesystem` on an in
 The machine keeps a persistent Breenix install on its disk and still runs the unattended test loop. A Breenix boot
 manager on the disk's EFI system partition starts first, asks the boot host whether the lab has a test boot pending,
 and then either starts the network test path or boots the persistent install. A test boot rewrites only the test
-root partition; the persistent install's system and home partitions are written by persistent boots and by
-`metal-run install-persistent` only.
+root partition. The persistent system is a writable BreenFS root with one installed OS. Live changes go directly
+into its normal paths. The default flash replaces the kernel in the EFI system partition. The explicit `--replace-usr`
+flash replaces `/usr` on the system partition.
 
 ### Disk layout
 
@@ -994,123 +995,52 @@ then run `metal-run boot --persistent --verify` and follow that boot to confirme
 The idle manager continues to answer test. If reclaim is refused or its capture is
 incomplete, preserve the evidence and stop the acceptance for diagnosis.
 
-### Install and upgrade
+### Kernel flash and /usr replacement
 
-`metal-run install-persistent --sha <commit> --kernel-only` builds the production kernel without userland.
-The delivery stub recovers any pending slot transaction, checks the requested userland ID against the boot
-intent in the physical CURRENT slot, and writes only `NEXT.IMG` and `NEXT.TXT` to the EFI system partition.
-NEXT names the same userland generation as CURRENT. The firmware ends the staging boot, then the usual
-SSH verification boot promotes NEXT. A failed verification restores the previous kernel and checks it over
-SSH. The flash stages no test root and copies no files on the system or home partitions. Those partitions
-are available to the verification boot as they are in a regular persistent boot. A missing or unreadable
-CURRENT userland ID refuses the flash.
+`metal-run install-persistent --sha <commit>` builds the production kernel without a userland image.
+Use `--branch` for a pinned commit on a pushed branch. The machine must be powered off before the flash.
 
-`metal-run install-persistent --sha <commit>` (with `--branch` for a pushed branch) installs or upgrades the
-persistent install with one leased run of two boots. The kernel slot and its userland share an immutable install
-ID (the install boot's ID), recorded as `userland <id>` in the slot's format-2 intent. The installation path is:
+1. The manager takes the network boot path under the flash lease. The delivery stub recovers any pending
+   slot transaction, checks physical CURRENT and stages only `NEXT.IMG` and `NEXT.TXT` on the EFI system
+   partition. Its boot intent keeps CURRENT's selected BreenFS tree and requests a writable root with
+   `cmdline persistent_root=rw`. This phase stages no test root and opens neither the system nor home filesystem.
+2. The manager promotes NEXT to CURRENT and retains the old CURRENT in PREVIOUS. The new kernel
+   opens the existing named BreenFS tree in place and publishes it as writable `/`. On the first flash
+   this is the same tree the old kernel mounted read-only. The seven existing binds at `/etc`, `/var`,
+   `/opt`, `/srv`, `/tmp`, `/run` and `/root` keep their original inodes in the system partition's
+   default tree. Both trees use one BreenFS writer. The separate `/home` partition stays mounted
+   with `nosuid,nodev`.
+3. The boot host authenticates over SSH with strict host-key checking and checks init's started services,
+   the selected root identity and mount flags reported by `/proc/mounts`, `/home` readability and the exact
+   system and home write fence. The verifier has 600 seconds from power-on. A failed candidate that
+   was promoted triggers a slot swap and verification of the restored kernel under the same lease.
+   `upgrade-result.json` and each boot's `ssh-verification.json` record the result.
 
-1. **The install boot.** The build is the production kernel and userland of the commit, the delivery stub and the
-   manager. The driver makes the slot image `NEXT.IMG` (the commit's kernel, intent `target persistent`, the system
-   and home GUIDs and `userland <id>`) and serves a boot disk whose stub carries an install request:
-   - On a disk without the persistent layout (the one-time install), the request carries the layout and the
-     partitions' contents as extents (byte ranges of data, and ranges to clear): the protective MBR and both GPT
-     copies, a FAT32 EFI system partition holding the manager, `MANAGER.CFG`, `\EFI\BOOT\BOOTX64.EFI` and the
-     `NEXT` slot, and empty ext2 filesystems for the system and home partitions. The stub refuses unless exactly one
-     fixed, writable, 512-byte-sector disk at least as large as the layout is attached, writes the extents with each
-     written range read back and compared, reconnects the disk so the firmware reads the new partition table, and
-     writes the load option and `BootOrder`. This boot is delivered by the `UefiHttp` override, as boots on the old
-     layout are.
-   - On the persistent layout (an upgrade), the request carries the files to write into the EFI system partition
-     (`NEXT.IMG`, `NEXT.TXT`, the manager and `MANAGER.CFG`), written through the firmware's FAT driver; the boot
-     comes through the manager.
+Ordinary runtime activity resumes when the verification kernel boots. It includes filesystem recovery,
+service startup and clearing `/tmp` and `/run`. The flash operates on kernel slots. The writable boot
+uses the named BreenFS root and checks its mount points and durable metadata. Its SSH verification
+reads the kernel's mount identity. The image-generation completion and factory records are used by
+legacy install and rescue paths. A legacy PREVIOUS kernel can still serve its original read-only view
+of the same tree on the first rollback.
 
-   The stub then stages the new userland on the test root and starts the kernel with `target persistent-install`,
-   the test root as root and the system partition at `/home`. The same `userland <id>` intent item becomes the
-   installer's first argument. `/sbin/persistent-install` copies the new userland into
-   `/.breenix-generations/<id>.new` on the system partition. It preserves file bytes, ownership, modes, symlinks
-   and hard links within the copied tree. It copies `/etc` into each generation and keeps existing `/root`; when absent, it copies `/root` into
-   private scratch space outside the generation, flushes it, and publishes it with a rename. It also creates the
-   machine state store `/.breenix-shared` (root's, mode 0700) when absent and stages the operator's account in it
-   ("SSH and the machine state store", below). It leaves the test image's SSH credentials behind: the test-only client
-   key and the `sshtest` account's home in `/etc/breenix/test-ssh`, that account's lines in `/etc/passwd` and
-   `/etc/group`, a copied `/root/.ssh`, and the staged `/etc/breenix/operator-account`. The generation has empty directory mount
-   points for `/root`, `/home` and the virtual filesystems. The installer writes and flushes a completion
-   record (`.complete`, containing the ID), flushes the staging directory, renames the tree once to
-   `/.breenix-generations/<id>`, then flushes its parent. Only then does it print
-   `[persistent] install complete: ...`. File and directory barriers report I/O errors; an advisory `sync` result
-   cannot certify completion. The home partition is not mounted, and the system partition's existing `/home`
-   mount point and `lost+found` are untouched. The kernel's path calls refuse names
-   that are not UTF-8 (#2102), so such a name is reported (`[persistent] left out ...`) and counted (`left-out=`);
-   the root image's one such name is the rust-std suite's second link to a file the migration copies.
-2. **The verification boot**, under the same lease: a persistent session whose answer is `persistent <boot> current
-   commit`. The manager commits `NEXT` to `CURRENT` (the old current becomes `PREVIOUS`) and boots it; the boot
-   passes after the boot host authenticates over SSH as the site operator with strict host-key checking and reads init's started services, within 600 seconds of power-on (S21). Before publishing its root filesystem, the kernel
-   requires the selected generation's matching completion record and directory mount points. It uses that tree's
-   inode as `/`, including its `/etc`, with `/root` bound from the partition root and `/home` mounted from the separate home
-   partition. Path lookup, relative paths and working-directory reconstruction use the selected namespace.
+`metal-run install-persistent --sha <commit> --replace-usr` stages the build on the test root and checks
+the physical CURRENT intent in firmware. The install runs with CURRENT offline. The kernel mounts the test
+image read-only and grants writes only to the system partition. The installer opens the same named tree and
+copies the replacement under `/usr` before removing the old contents. It preserves the image's ownership,
+modes, symlinks and hard links within `/usr`. The installed `/usr/share/factory` tree and its generation marker
+stay in place so older init binaries continue to see the same factory defaults. The installer reports
+completion after a directory barrier. The ESP slots, `/bin`, `/sbin`, the rest of the system tree and the
+home partition are outside the replacement.
+An interruption during publication can leave a partially replaced `/usr`. Repeat the same explicit
+replacement from the test image before starting a persistent session.
 
-Host fault injection covers failed copies, ENOSPC and failed barriers at operation boundaries while retaining
-the old slots and trees. It does not model torn writes on unjournaled ext2 or establish power-loss durability.
-A completed rename can leave an unselected tree; publication does not switch the running install. The driver
-requests slot promotion only after the install completion line. The manager recovers its existing ESP slot
-transaction before choosing a kernel; the embedded userland identity moves with the image, including a one-time
-previous-slot boot. There is no second current-userland pointer to update across the two partitions. A legacy slot
-without a userland item still uses the flat partition root, which migration leaves intact.
+`metal-run install-persistent --rollback` swaps CURRENT and PREVIOUS. `metal-run boot --persistent --entry
+previous` selects the previous kernel once. After the cutover both normal slots point to the same root.
+Rollback leaves live file edits and any explicit `/usr` replacement in place.
 
-Before copying an upgrade, the stub recovers the ESP slot transaction and reads the embedded boot intents of
-CURRENT, PREVIOUS and NEXT from the physical disk. An unreadable slot or malformed identity stops the install.
-The stub prints these recovered identities; the leased driver supplies them to the installer's console request,
-`BREENIX-SLOTS-1 <current> <previous> <next>`. The installer validates retained completion records and protects
-those generations and the in-flight generation. The host's `disk.json` does not authorize deletion.
-
-Before copying the new userland or reclaiming generations, `/sbin/persistent-install` checks the selected
-generation offline. It compares regular files and symlinks by path, contents or link target, mode and owner
-against the pristine manifest recorded at install and against the incoming image. It lists local paths in the
-install boot's serial log and refuses publication. For an older BreenFS generation without a manifest, a matching
-read-only `pre-upgrade-<id>` home snapshot identifies a generation installed directly from an image. Its
-`/bin`, `/sbin` and `/usr` were served read-only, so normal image differences use the empty draft. With no
-manifest or matching snapshot, including a generation copied from ext2 by migration, every difference from the
-incoming image is a possible local change.
-
-Rerun with `--carry-local` to install the new image and retain the listed paths. A path the new image leaves
-available keeps its original location. A conflict is saved under `/.breenix-carried/<previous-id>/` with its
-original relative path and any set-ID bits cleared. The installer carries earlier archives forward. Shared machine directories, `/root`
-and `/home` already live outside the replaced tree. On BreenFS, the carry-forward uses a private clone of the
-selected generation on the system partition as its draft. The old slot and its generation stay available
-for rollback.
-
-Reclamation discovers directory identities before changing paths. It removes unreferenced published trees and
-unpublished scratch, with checked directory barriers, while retaining trees that share directory identities with
-another candidate, a retained generation, or shared machine data. It does not follow symbolic links. Ambiguous
-directory aliases are retained and reported rather than traversed. Flat paths remain intact for legacy slots;
-`/root`, `/.breenix-shared` and the home partition remain outside generation reclamation. A retry can resume a
-partially deleted unreferenced tree. Lack of space still fails the upgrade while keeping the selected trees.
-
-The boot host's detached probe worker uses its private operator key; that key stays on the boot host. It pins the
-Ed25519 key against a protected bsshd log read over the leased SOL console for its first successful probe, then
-retains that authenticated pin in its private state directory, keyed by the system partition GUID and address.
-Once a verification boot reaches the protected console, its service log supplies a fresh pin; only a strict
-authenticated SSH success publishes it. The rotation recovery path has mocked unit coverage; physical
-key-rotation recovery remains unverified (#2356). Later verification boots use the cached pin to attempt
-SSH during POST as well as after kernel startup, including when the candidate cannot reach a console prompt. The
-probe requires an authenticated operator login and started services. The driver waits for that receipt instead of accepting a login
-prompt. A failed verification automatically swaps CURRENT and PREVIOUS and verifies the restored generation with
-the same probe and a fresh 600-second power-on deadline, under the inherited machine lease. Cancellation stops
-the flow. `upgrade-result.json` in the install boot's private store names the outcome and both probe receipts;
-`ssh-verification.json` belongs to each verification boot. The install boot's own exit status describes its copy
-phase, while the aggregate result describes the upgrade. `--inject upgrade-no-ssh` stages an invalid EFI loader
-only in NEXT to exercise the failed-candidate path. `--inject upgrade-service-down` instead removes bsshd from
-the candidate userland: its kernel, init and console boot, but SSH verification must fail and trigger rollback.
-Both faults leave the installation boot and previous slot intact.
-
-`metal-run install-persistent --rollback` is one persistent boot whose answer carries `rollback`: the manager swaps
-the current and previous slots and boots the new current. `metal-run boot --persistent --entry previous` boots the
-previous slot once without swapping. Rollback restores the previous kernel and selects its unchanged userland
-tree. `/etc` follows the selected userland generation; operator data in `/root`, the machine state store and the
-separate home filesystem stay shared across promotion and rollback.
-Host transaction tests in `persistent_install.rs` interrupt filesystem operations and the manager's slot actions;
-they check retained bytes and metadata, shared data and selection of the paired tree. Hardware validation of this
-generation protocol is pending review and a later hardware window (#2114).
+The old image installer remains available to bootstrap a legacy layout and produce the archived migration
+and rescue evidence. Its completion records, generation reclamation and carry-local handling apply to
+those legacy operations. The tools refuse the legacy image path once CURRENT is writable.
 
 ### SSH and the machine state store
 
@@ -1139,10 +1069,11 @@ account with mode 0620; the server restores ownership when the session ends.
 The [server suite](../suites/README.md#server-host-driven-persistent-categories)
 measures these properties from the boot host on a persistent boot.
 
-**The machine state store.** An upgrade copies the new image's `/etc`, so the state the machine owns lives in
-`/.breenix-shared` on the system partition, outside the generations. The kernel binds it at `/.breenix-shared` in
-each generation, as it binds `/root`. Before bsshd starts, init reconciles it into the running generation's `/etc`
-(`libs/libbreenix/src/ssh/machine_state.rs`):
+**The machine state store.** The original ext2 installer used `/.breenix-shared` to seed machine-owned
+accounts and SSH keys. Legacy boots that expose the store still reconcile it before bsshd starts
+(`libs/libbreenix/src/ssh/machine_state.rs`). The live BreenFS system keeps its original writable
+`/etc`, along with the existing host key and account files. Changes to site provisioning fields are
+handled by the legacy installer. Edit the live account and key files to administer the running system.
 
 | In the store | Reconciled as |
 |---|---|
@@ -1154,7 +1085,7 @@ The store must be root's and mode 0700, and each file read from it root's and no
 shadow file and private keys also unreadable by others); otherwise init prints `[init] machine state refused: ...`
 and leaves `/etc` as it was. init reports what it applied as `[init] machine state: ...` lines.
 
-**The operator account.** `metal-run install-persistent` reads four private site fields: `OPERATOR_USER`, the
+**Legacy operator provisioning.** The legacy image installer reads four private site fields: `OPERATOR_USER`, the
 account name; `OPERATOR_UID`, its uid (1000 to 60000); `OPERATOR_PASSWORD_HASH`, a SHA-512-crypt hash of its
 password (quoted in the site file, which `sh` sources; a password is refused); and `OPERATOR_SSH_PUBLIC_KEY`, one
 `ssh-ed25519` or `ssh-rsa` public key line (quoted; a private key is refused). Additional keys use
@@ -1166,14 +1097,42 @@ into the store: the uid as uid and gid, a group of the same name, home `/home/<n
 membership of `wheel` and the hash, with every key in its pending authorized-key file. An account the store already holds
 keeps its line, comment and home included, and must already have the site's uid and gid, or the install is refused
 before it writes; its group keeps its members. The site's hash replaces only a password an install locked (`!`), so a
-password set on the machine is kept. Each upgrade stages them again and updates the operator shell; a key already
+password set on the machine is kept. Each legacy image install stages them again and updates the operator shell; a key already
 listed is not added twice and existing authorized_keys bytes are retained. To revoke a site-managed key, remove
-it from both the site file and the account's authorized_keys; a key retained in the site file is added again on upgrade. First-boot reconciliation validates the
+it from both the site file and the account's authorized_keys; a key retained in the site file is added again by the legacy installer. First-boot reconciliation validates the
 entire pending file before adding any key and removes it only after every key succeeds; a retry keeps keys already
 added. The users suite's `operator` category checks every configured key and
 measures the result on a persistent boot ([the suites README](../suites/README.md#users--permissions)).
 SSH exec requests run through `/bin/bsh -c COMMAND` and return the command status; POSIX scripts use explicit `sh -c`.
 Channel data feeds command stdin, and channel EOF closes stdin while output drains (RFC 4254 section 5.3). <!-- claim-lint:ok: scripts/metal/metal_root.py operator_keys validates and stages the configured key list; libs/libbreenix/src/ssh/machine_state.rs reconcile validates the list before authorize_key appends missing keys. -->
+
+**Root-owned live files.** Send bytes with `/bin/bput` into a private directory under the operator's home,
+then use a separate SSH command with a PTY to publish the verified bytes through sudo.
+
+```sh
+ssh -T "$host" "/bin/sh -c 'exec /bin/bput \"\$HOME/.incoming/tool\" LENGTH SHA256 755'" < ./tool
+ssh -t "$host" "/bin/sh -c 'exec /usr/bin/sudo /bin/bput /usr/bin/tool LENGTH SHA256 755 < \"\$HOME/.incoming/tool\"'"
+```
+
+Create `$HOME/.incoming` with mode 0700 first. Substitute the byte length and SHA-256 of the local file.
+The session shell opens the staged file as the operator. The installed `/etc/sudo.policy` decides authorization
+and whether sudo prompts on the terminal. bput verifies the length and digest and publishes the root-owned file
+by same-directory rename. SSH continues to refuse root login. Kernel flashes preserve the live policy file.
+
+**Enable DEV-12 during the writable-root cutover.** After the kernel flash, use the existing sudo
+password to deliver the cutover build's `sudo` and `etc-reconcile` over SSH. Stage sudo with bput
+at a temporary path in `/usr/bin` with mode 0755. As root, set the verified file to mode 4755 and
+rename it over `/usr/bin/sudo`. Publish `etc-reconcile` at `/sbin/etc-reconcile` with mode 0755
+using the root-owned delivery above. Then activate and verify the policy from separate sessions.
+
+```sh
+ssh -t "$host" '/usr/bin/sudo /sbin/etc-reconcile --enable-wheel-nopass'
+ssh -T "$host" '/usr/bin/sudo -n /bin/id -u'
+```
+
+The first command upgrades the exact older stock policy and accepts an already active stock rule.
+It refuses a missing, edited or unsafe policy file. For a locally managed policy, the administrator
+decides which rules to edit. The second command must print `0` without prompting.
 
 Test images carry a test-only key pair generated at image build (not committed), authorized for the `sshtest`
 account (uid 2000, home `/etc/breenix/test-ssh/home`, since `/home` is a separate disk) and for root. init's loopback
@@ -1422,10 +1381,9 @@ Measured on the R240 on 2026-10-20, while the disk carried the persistent layout
   disk until the next one-time install rewrites them. UEFI 2.10 (section 5.2.3) puts a GPT behind a protective MBR
   in LBA 0, which then holds the storage record instead.
 
-**Landing.** The kernel and the tools land together in one change, and the disk has to carry the layout before
-this change's kernel can boot on it: after this lands, the machine's first boot is
-`metal-run install-persistent --sha <the merge commit>`, the one-time install from the old format. Until then, boots
-of main refuse their root.
+**Legacy bootstrap.** The original one-time install uses
+`metal-run install-persistent --migration-image --sha <commit>` on the old layout.
+Existing persistent layouts use the kernel flash described above.
 
 ## Clean-room rule
 
@@ -1797,9 +1755,8 @@ python3 ~/.local/share/breenix-metal/metal-run boot --payload hang-img   # metal
 python3 ~/.local/share/breenix-metal/metal-run boot --payload hang-iso [--serve-as boot.iso] \
     [--content-type application/octet-stream]                           # ... in a small El Torito ISO
 python3 ~/.local/share/breenix-metal/metal-run boot --payload manager    # the boot manager in probe mode, over HTTP
-python3 ~/.local/share/breenix-metal/metal-run install-persistent --branch NAME --sha SHA   # install or upgrade, then verify
-python3 ~/.local/share/breenix-metal/metal-run install-persistent --sha SHA --kernel-only   # upgrade the kernel using CURRENT userland
-python3 ~/.local/share/breenix-metal/metal-run install-persistent --sha SHA --carry-local    # upgrade userland, retaining local files
+python3 ~/.local/share/breenix-metal/metal-run install-persistent --branch NAME --sha SHA   # replace and verify the kernel
+python3 ~/.local/share/breenix-metal/metal-run install-persistent --sha SHA --replace-usr   # replace /usr from the build
 python3 ~/.local/share/breenix-metal/metal-run install-persistent --rollback                # swap the kernel slots
 python3 ~/.local/share/breenix-metal/metal-run boot --persistent          # an operator session on the persistent install
 python3 ~/.local/share/breenix-metal/metal-run boot --persistent --run 'CMD' [--run 'CMD' ...]   # log in over SOL, run, power off

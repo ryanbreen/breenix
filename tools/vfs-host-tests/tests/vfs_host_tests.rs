@@ -1156,12 +1156,20 @@ fn exec_image_returns_bytes_and_setid_identity() {
     let mut user = Credentials::kernel();
     user.euid = 90000;
     user.egid = 90001;
-    let (image, identity) = crate::exec::read_image(&fs, &node, MountFlags::default(), &user, || false).unwrap();
+    let load = |node: &crate::vfs::VNode| {
+        crate::exec::read_image(&fs, node, MountFlags::default(), &user, || false, false,
+            |size, read| {
+                let mut image = vec![0; size as usize];
+                read(0, &mut image)?;
+                Ok(image)
+            })
+    };
+    let (image, identity) = load(&node).unwrap();
     assert_eq!(image, bytes);
     assert_eq!((identity.uid, identity.gid), (Some(70000), None));
     fs.setattr(ino, SetAttr { mode: Some(0o4644), ..SetAttr::default() }).unwrap();
-    assert_eq!(crate::exec::read_image(&fs, &node, MountFlags::default(), &user, || false).err(), Some(Errno(EACCES)));
-    assert_eq!(crate::exec::read_image(&fs, &fs.open(root).unwrap(), MountFlags::default(), &user, || false).err(), Some(Errno(EISDIR)));
+    assert_eq!(load(&node).err(), Some(Errno(EACCES)));
+    assert_eq!(load(&fs.open(root).unwrap()).err(), Some(Errno(EISDIR)));
 }
 
 #[test]

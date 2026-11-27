@@ -90,3 +90,8 @@ required-features = ["std"]
 name = "sudo"
 path = "../../userspace/programs/src/sudo.rs"
 required-features = ["std"]
+
+[[test]]
+name = "etc_reconcile"
+path = "../../userspace/programs/src/etc_reconcile.rs"
+required-features = ["std"]

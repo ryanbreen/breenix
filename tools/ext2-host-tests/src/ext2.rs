@@ -1,5 +1,19 @@
 #[path = "../../../kernel/src/fs/ext2/write.rs"]
-mod write;
+mod disk_write;
+pub mod write {
+    pub struct Preallocation(super::disk_write::Preallocation);
+    impl Preallocation {
+        pub fn new(fs: &super::Ext2Fs, offset: u64, len: u64) -> Result<Self, &'static str> {
+            super::disk_write::Preallocation::new(fs, offset, len).map(Self)
+        }
+        pub fn advance(&mut self, fs: &mut super::Ext2Fs, ino: u32, epoch: u64, clear: bool) -> Result<bool, &'static str> {
+            self.0.advance(fs, ino, epoch, clear)
+        }
+    }
+}
+pub mod writeback {
+    pub fn pause(_: u64) { std::thread::yield_now(); }
+}
 #[path = "../../../kernel/src/fs/ext2/data_ops.rs"]
 mod data_ops;
 #[path = "../../../kernel/src/fs/ext2/errno.rs"]
@@ -60,6 +74,7 @@ pub struct LiveInode {
     pub key: FileKey,
     pub map: FileMap,
     pub orphan: core::sync::atomic::AtomicBool,
+    pub size_epoch: core::sync::atomic::AtomicU64,
 }
 impl LiveInode {
     pub fn unused(&self) -> bool { true }
@@ -130,7 +145,7 @@ impl Ext2Fs {
     pub(crate) fn pin_loaded_inode(&self, ino: u32, _size: u64) -> Result<live_inode::FileHandle, &'static str> {
         Ok(live_inode::FileHandle {
             ino,
-            object: LiveInode { key: FileKey { incarnation: ino.into() }, map: FileMap, orphan: core::sync::atomic::AtomicBool::new(false) },
+            object: LiveInode { key: FileKey { incarnation: ino.into() }, map: FileMap, orphan: core::sync::atomic::AtomicBool::new(false), size_epoch: core::sync::atomic::AtomicU64::new(0) },
         })
     }
     // The host fixture completes reclaim synchronously; no shrink is pending.

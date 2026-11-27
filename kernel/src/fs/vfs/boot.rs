@@ -50,6 +50,7 @@ pub(crate) struct MountLine<'a> {
     writable: bool,
     kind: &'static str,
     generation: Option<&'a str>,
+    persistent_rw: bool,
     device: Box<dyn BlockDevice>,
 }
 
@@ -67,6 +68,10 @@ pub(crate) fn prepare_mounts<'a>(
         reason,
     })? {
         return Ok(None);
+    }
+
+    if intent.test_root_only() && intent.mounts().any(|(_, path, rw)| rw && path != "/") {
+        return Err(MountFailure { source: None, reason: "a test boot requires read-only access to persistent data" });
     }
 
     let mut mounts: Vec<MountLine<'_>> = Vec::new();
@@ -98,6 +103,7 @@ pub(crate) fn prepare_mounts<'a>(
             writable,
             kind: format.kind,
             generation: userland.filter(|_| path == "/" && writable && format.kind == "breenfs"),
+            persistent_rw: intent.writable_persistent_root(),
             device,
         });
     }
@@ -123,7 +129,7 @@ impl<'a> MountLine<'a> {
         } else {
             Default::default()
         };
-        flags.read_only = !self.writable || self.generation.is_some();
+        flags.read_only = !self.writable || (self.generation.is_some() && !self.persistent_rw);
         ExplicitMount {
             id,
             path: self.path,
@@ -147,7 +153,7 @@ impl<'a> MountLine<'a> {
             crate::block::read_only::device(self.device)
         };
         if let Some(generation) = self.generation {
-            return mount_cutover(point, device.into(), generation);
+            return mount_cutover(point, device.into(), generation, self.persistent_rw);
         }
         let format = formats
             .iter()
@@ -157,30 +163,38 @@ impl<'a> MountLine<'a> {
     }
 }
 
-/// Recover the default root's writer before attaching its generation view.
+/// Attach the selected OS and the default tree’s data binds together.
 fn mount_cutover(
     point: &ExplicitMount<'_>,
     device: Arc<dyn BlockDevice>,
     generation: &str,
+    persistent_rw: bool,
 ) -> Result<Arc<dyn FileSystem>, Errno> {
     use crate::fs::{breenfs::vfs::BreenFs, vfs::NodeKind};
 
-    // /root is the writer's native inode identity. The other binds use this
-    // same identity, distinct from the generation's overlapping inode ids.
-    let writer_id = registry::allocate_id()?;
-    let writer = BreenFs::mount_writable_cached(
-        device,
-        crate::block::cache_kernel::system_cache(),
-        writer_id,
-        1,
-    )?;
+    let cache = crate::block::cache_kernel::system_cache();
     let name = alloc::format!("gen-{generation}");
-    let view = writer.generation_view(point.id, name.as_bytes())?;
+    let (writer, view, writer_id, default): (_, Arc<dyn FileSystem>, _, _) = if persistent_rw {
+        let fs = BreenFs::mount_persistent_cached(device, cache, point.id, name.as_bytes())?;
+        let default = fs.default_root_inode();
+        (fs.clone(), fs, point.id, default)
+    } else {
+        // The historical cutover still uses a read-only view of the OS.
+        // /root retains the writer's separate native identity.
+        let id = registry::allocate_id()?;
+        let fs = BreenFs::mount_writable_cached(device, cache, id, 1)?;
+        let view = fs.generation_view(point.id, name.as_bytes())?;
+        let default = fs.root()?;
+        (fs, view, id, default)
+    };
     let root = view.root()?;
-    let default = writer.root()?;
     let shared = writer.lookup(default, b".breenix-shared")?;
     let mut entries = Vec::new();
-    entries.push(point.entry(view.clone())?);
+    let mut entry = point.entry(view.clone())?;
+    if persistent_rw {
+        entry.source = name.into_bytes();
+    }
+    entries.push(entry);
     let writer: Arc<dyn FileSystem> = writer;
     for (path, source_parent) in [
         ("/root", default),
@@ -199,7 +213,7 @@ fn mount_cutover(
         {
             return Err(Errno(ENOTDIR));
         }
-        let id = if path == "/root" { writer_id } else { registry::allocate_id()? };
+        let id = if path == "/root" && !persistent_rw { writer_id } else { registry::allocate_id()? };
         let mut entry = registry::MountPoint::new(
             id,
             path.as_bytes().to_vec(),

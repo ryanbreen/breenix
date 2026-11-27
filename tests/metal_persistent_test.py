@@ -304,6 +304,16 @@ class DriverPersistentTest(unittest.TestCase):
     def tearDown(self):
         self.fixture.tearDown()
 
+    def test_default_flash_stages_only_kernel_slots(self):
+        run = existing.load_script('metal-run')
+        args = run.argument_parser().parse_args(['install-persistent', '--sha', 'a' * 40])
+        with patch.object(run, 'boot', return_value=1) as launch:
+            self.assertEqual(run.install_persistent(args), 1)
+        options = launch.call_args.args[0]
+        self.assertTrue(options.kernel_only)
+        self.assertIsNone(options.disk)
+        self.test_kernel_only_stages_next_with_current_userland_and_no_partition_extents()
+
     def test_kernel_only_stages_next_with_current_userland_and_no_partition_extents(self):
         d = self.driver
         d.args.commit, d.args.kernel_only = 'a' * 40, True
