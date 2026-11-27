@@ -351,6 +351,26 @@ class DriverPersistentTest(unittest.TestCase):
             with self.assertRaisesRegex(boot.Finish, 'CURRENT.*userland'):
                 d.prepare_install(inputs, build)
 
+    def test_successful_kernel_staging_skips_scoring_and_continues_verification(self):
+        d = self.driver
+        d.args.mode, d.args.kernel_only = 'persistent-install', True
+        definition = d.dir / 'definition/docs/metal/boot-path.json'
+        definition.parent.mkdir(parents=True)
+        definition.write_text('{}')
+        d.create_record = d.claim = d.prepare_payload = d.preflight = Mock()
+        d.do_stage = d.start_console = d.power_on = Mock()
+        d.watch = Mock(side_effect=boot.Finish(m.EXIT_DONE, 'the kernel-only NEXT slot was staged'))
+        d.power_off = Mock(return_value=True)
+        d.cleanup = Mock()
+        d.continue_verification = Mock(return_value=m.EXIT_DONE)
+        with patch.object(metal_score, 'score', return_value={}) as score, \
+             patch.object(metal_score, 'falls_short', return_value=True):
+            status = d.run()
+        score.assert_not_called()
+        d.cleanup.assert_called_once_with(m.EXIT_DONE, keep_lease=True)
+        d.continue_verification.assert_called_once_with()
+        self.assertEqual(status, m.EXIT_DONE)
+
     def test_automated_boot_stages_only_test_root_and_refuses_live_watchdog_recovery(self):
         d = self.driver
         layout = persistent_disk_records()[3]['layout']
