@@ -227,22 +227,19 @@ pub fn shift_rows(state: &mut [u8; 16]) {
 /// Treats each column of the state as a polynomial over GF(2^8) and
 /// multiplies it by the fixed polynomial {03}x^3 + {01}x^2 + {01}x + {02}.
 pub fn mix_columns(state: &mut [u8; 16]) {
-    for col in 0..4 {
-        let base = col * 4;
-        let s0 = state[base];
-        let s1 = state[base + 1];
-        let s2 = state[base + 2];
-        let s3 = state[base + 3];
+    for column in state.chunks_exact_mut(4) {
+        let a = column[0];
+        let b = column[1];
+        let c = column[2];
+        let d = column[3];
+        let sum = a ^ b ^ c ^ d;
 
-        // The MixColumns matrix multiplication:
-        // [2 3 1 1]   [s0]
-        // [1 2 3 1] * [s1]
-        // [1 1 2 3]   [s2]
-        // [3 1 1 2]   [s3]
-        state[base] = gmul(2, s0) ^ gmul(3, s1) ^ s2 ^ s3;
-        state[base + 1] = s0 ^ gmul(2, s1) ^ gmul(3, s2) ^ s3;
-        state[base + 2] = s0 ^ s1 ^ gmul(2, s2) ^ gmul(3, s3);
-        state[base + 3] = gmul(3, s0) ^ s1 ^ s2 ^ gmul(2, s3);
+        // Multiplication by 3 is xtime(x) ^ x. By linearity the two
+        // multiplications in each row share one xtime of adjacent bytes.
+        column[0] = a ^ sum ^ xtime(a ^ b);
+        column[1] = b ^ sum ^ xtime(b ^ c);
+        column[2] = c ^ sum ^ xtime(c ^ d);
+        column[3] = d ^ sum ^ xtime(d ^ a);
     }
 }
 

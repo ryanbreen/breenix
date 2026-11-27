@@ -22,45 +22,28 @@ impl BlockCipher {
 
 /// Reduction polynomial for GF(2^128): x^128 + x^7 + x^2 + x + 1.
 /// Represented as the high byte 0xe1 in big-endian (MSB-first) format.
-const R: [u8; 16] = [0xe1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+const R: u128 = 0xe1 << 120;
 
 /// Multiply two elements in GF(2^128) using bit-by-bit schoolbook multiplication.
 ///
 /// The field uses the reduction polynomial x^128 + x^7 + x^2 + x + 1.
 /// Both inputs and the output are 128-bit values in big-endian (MSB-first) byte order.
 pub fn ghash_multiply(x: &[u8; 16], h: &[u8; 16]) -> [u8; 16] {
-    let mut z = [0u8; 16]; // accumulator (result)
-    let mut v = *h; // running value of H shifted
+    let mut x = u128::from_be_bytes(*x);
+    let mut v = u128::from_be_bytes(*h);
+    let mut product = 0;
 
-    for i in 0..128 {
-        let byte_idx = i / 8;
-        let bit_idx = 7 - (i % 8);
-        let xi = (x[byte_idx] >> bit_idx) & 1;
+    // Walk the bits in the order specified by SP 800-38D. Each mask is
+    // either all zeros or all ones, so the loop has no data-dependent branches.
+    for _ in 0..128 {
+        let select = 0u128.wrapping_sub(x >> 127);
+        product ^= v & select;
+        x <<= 1;
 
-        // If the current bit of x is set, XOR v into the accumulator
-        if xi == 1 {
-            for j in 0..16 {
-                z[j] ^= v[j];
-            }
-        }
-
-        // Multiply v by x in GF(2^128): shift right by 1, conditionally XOR with R
-        let lsb = v[15] & 1;
-        // Shift v right by 1 bit
-        for j in (1..16).rev() {
-            v[j] = (v[j] >> 1) | (v[j - 1] << 7);
-        }
-        v[0] >>= 1;
-
-        // If the LSB was set before the shift, reduce by XORing with R
-        if lsb == 1 {
-            for j in 0..16 {
-                v[j] ^= R[j];
-            }
-        }
+        let reduce = 0u128.wrapping_sub(v & 1);
+        v = (v >> 1) ^ (R & reduce);
     }
-
-    z
+    product.to_be_bytes()
 }
 
 /// XOR a 16-byte block into an accumulator in place.
