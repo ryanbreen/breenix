@@ -20,7 +20,7 @@ class RemoteSeries(unittest.TestCase):
         self.args = argparse.Namespace(
             host="developer@bench-box", mac_ssh=None, source="/home/developer/src",
             data="/home/developer/cache", driver="/opt/driver.so", run="review",
-            out=Path(temp.name), probe="/home/developer/bin/bbench", wrap_rustc=False,
+            out=Path(temp.name), probe="/home/developer/bin/bbench",
             bcargo="/home/developer/bin/bcargo", bsync="bsync", noop_target=None,
             cases=None, count=1,
         )
