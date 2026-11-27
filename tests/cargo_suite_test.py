@@ -76,6 +76,12 @@ class RegistryListener(HTTPServer):
 
 class CargoSuite(unittest.TestCase):
     def test_suite_and_twin_replay(self):
+        self.replay("x86_64")
+
+    def test_aarch64_suite_and_twin_replay(self):
+        self.replay("aarch64")
+
+    def replay(self, arch):
         source_path = ROOT / "userspace/programs/src/suite_cargo.rs"
         self.assertTrue(source_path.is_file(), "missing K7 guest suite")
         source = source_path.read_text()
@@ -106,11 +112,18 @@ class CargoSuite(unittest.TestCase):
             r'const INVOCATIONS: &str = r#"(.*?)"#;', source, re.S,
         )[1])
         self.assertEqual({case["id"] for case in case_table}, set(invocations))
+        if arch == "aarch64":
+            self.assertRegex(source, r'#\[cfg\(target_arch = "aarch64"\)\]\s*const CARGO_TARGET: &str = "aarch64-breenix";')
+            self.assertIn('.replace("x86_64-breenix", CARGO_TARGET)', source)
+            invocations = json.loads(json.dumps(invocations).replace("x86_64-breenix", "aarch64-breenix"))
+        self.assertIn(f"{{fixture}}/targets/{arch}-breenix.json", invocations["offline-path-workspace"]["build"]["argv"])
+        self.assertEqual(invocations["offline-path-workspace"]["run"]["argv"],
+                         [f"{{workspace}}/target/{arch}-breenix/release/k7-app"])
         expect = read_json(K7 / "corpus/expect.json")
         self.assertEqual(set(expect), set(invocations))
 
         with tempfile.TemporaryDirectory(prefix="breenix-k7-") as directory:
-            fixture = self.stage_twins(Path(directory).resolve())
+            fixture = self.stage_twins(Path(directory).resolve(), arch)
             for name, check in (("offline-path-workspace", self.check_path_workspace),
                                 ("no-network", self.check_no_network)):
                 with self.subTest(case=name):
@@ -121,12 +134,14 @@ class CargoSuite(unittest.TestCase):
                              for key, step in invocations[name].items()}
                     self.assertEqual(steps["build"][0].count("--offline"), 1)
                     self.assertEqual(steps["build"][0].count("--frozen"), 1)
-                    check(steps, expect[name], workspace, deadline)
+                    check(steps, expect[name], workspace, deadline, arch)
 
-    def stage_twins(self, fixture):
-        k7 = read_json(K7 / "x86_64.json")
-        default_rustc = CACHE / "k5/twin/mac/bin/rustc"
-        default_sysroot = CACHE / "k5/twin/sysroot"
+    def stage_twins(self, fixture, arch):
+        k7 = read_json(K7 / f"{arch}.json")
+        default_rustc = (CACHE / "ak5/build/aarch64-apple-darwin/stage1/bin/rustc"
+                         if arch == "aarch64" else CACHE / "k5/twin/mac/bin/rustc")
+        default_sysroot = (CACHE / "k6/aarch64/sysroot" if arch == "aarch64"
+                           else CACHE / "k5/twin/sysroot")
         target = k7["mac_target"]
         cargo = os.environ.get("BREENIX_K7_MAC_CARGO")
         mac_std = os.environ.get("BREENIX_K7_MAC_STDLIB")
@@ -139,9 +154,8 @@ class CargoSuite(unittest.TestCase):
         rustc = Path(os.environ.get("BREENIX_K5_MAC_RUSTC", default_rustc)).resolve()
         sysroot = Path(os.environ.get("BREENIX_K5_SYSROOT", default_sysroot)).resolve()
         bld = Path(os.environ.get("BREENIX_K7_BLD", ROOT / "toolchain/target/release/bld")).resolve()
-        libc = Path(os.environ.get("BREENIX_K7_LIBC", ROOT / (
-            "libs/libbreenix-libc/target/x86_64-breenix/release/libc.a"
-        ))).resolve()
+        k6 = Path(os.environ.get("BREENIX_K6_AARCH64_FIXTURE", CACHE / "k6/aarch64"))
+        libc = Path(os.environ.get("BREENIX_K7_LIBC", k6 / "lib/tools/libc.a" if arch == "aarch64" else ROOT / "libs/libbreenix-libc/target/x86_64-breenix/release/libc.a")).resolve()
 
         self.assertEqual(digest(cargo), k7["mac_cargo_sha256"])
         self.assertEqual(digest(rustc), k7["k5_compiler_digests"]["mac_rustc_sha256"])
@@ -159,8 +173,8 @@ class CargoSuite(unittest.TestCase):
         mac_rustlib.mkdir(parents=True)
         (mac_rustlib / "lib").symlink_to(mac_std)
         (fixture / "lib/libc.a").symlink_to(libc)
-        shutil.copyfile(ROOT / "userspace/programs/linker.ld", fixture / "lib/linker.ld")
-        for target in ("x86_64-breenix", "x86_64-breenix-hosted"):
+        shutil.copyfile(k6 / "lib/tools/linker.ld" if arch == "aarch64" else ROOT / "userspace/programs/linker.ld", fixture / "lib/linker.ld")
+        for target in (f"{arch}-breenix", f"{arch}-breenix-hosted"):
             shutil.copyfile(ROOT / f"{target}.json", fixture / f"targets/{target}.json")
         return fixture
 
@@ -171,7 +185,7 @@ class CargoSuite(unittest.TestCase):
                 value = expected[stream].replace("{workspace}", str(workspace))
                 self.assertEqual(getattr(result, stream), value.encode())
 
-    def check_path_workspace(self, steps, expected, workspace, deadline):
+    def check_path_workspace(self, steps, expected, workspace, deadline, arch):
         self.assertEqual(set(steps), {"build", "run"})
         build = steps["build"]
         self.check_result(run(build, deadline), expected["build"], workspace)
@@ -179,7 +193,7 @@ class CargoSuite(unittest.TestCase):
         with binary.open("rb") as elf:
             header = elf.read(20)
         self.assertEqual(header[:7], b"\x7fELF\x02\x01\x01")
-        self.assertEqual(struct.unpack_from("<HH", header, 16), (2, 62))
+        self.assertEqual(struct.unpack_from("<HH", header, 16), (2, {"x86_64": 62, "aarch64": 183}[arch]))
 
         # macOS cannot exec the built x86-64 ELF. Build its native equivalent
         # with the same twins, then replay the run's argv, cwd and environment.
@@ -203,7 +217,7 @@ class CargoSuite(unittest.TestCase):
         native_binary = target_dir / native / binary.parent.name / binary.name
         self.check_result(run(steps["run"], deadline, executable=native_binary), expected["run"], workspace)
 
-    def check_no_network(self, steps, expected, workspace, deadline):
+    def check_no_network(self, steps, expected, workspace, deadline, arch):
         self.assertEqual(set(steps), {"build"})
         argv, cwd, env = steps["build"]
         config = workspace / ".cargo/config.toml"
