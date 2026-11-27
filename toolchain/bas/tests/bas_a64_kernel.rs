@@ -18,7 +18,7 @@ fn semicolons_separate_a64_statements() {
 .macro pair value; mov x0, #\value; nop; .endm
 pair 1; /* ; */ pair 2; // ; ignored
 nop; # ; ignored
-.data; .ascii "a;\"b"; .byte 0
+.section .data; .ascii "a;\"b"; .byte 0
 "#;
     let separate = br#"
 mov x0, #1
@@ -26,7 +26,7 @@ nop
 mov x0, #2
 nop
 nop
-.data
+.section .data
 .ascii "a;\"b"
 .byte 0
 "#;

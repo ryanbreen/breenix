@@ -20,7 +20,7 @@ struct Macro<'src> {
 #[derive(Clone, Copy)]
 struct Line<'src> {
     bytes: &'src [u8],
-    number: usize,
+    start: Location,
 }
 
 struct Repeat {
@@ -38,15 +38,21 @@ struct Expander<'src> {
 }
 
 pub(crate) fn assemble(source: &[u8], object: &mut Object) -> Result<()> {
-    let source = mask_block_comments(source)?;
-    let lines: Vec<_> = source
-        .split(|&byte| byte == b'\n')
-        .enumerate()
-        .map(|(index, bytes)| Line {
-            bytes,
-            number: index + 1,
-        })
-        .collect();
+    let source = mark_statement_boundaries(source)?;
+    let mut lines = Vec::new();
+    for (index, line) in source.split(|&byte| byte == b'\n').enumerate() {
+        let mut column = 1;
+        for bytes in line.split(|&byte| byte == 0) {
+            lines.push(Line {
+                bytes,
+                start: Location {
+                    line: index + 1,
+                    column,
+                },
+            });
+            column += bytes.len() + 1;
+        }
+    }
     // Pick a prefix absent from the source so ordinary named labels cannot
     // accidentally share a generated label's ELF name.
     let dollars = source
@@ -65,7 +71,9 @@ pub(crate) fn assemble(source: &[u8], object: &mut Object) -> Result<()> {
     .lines(&lines, None, object)
 }
 
-fn mask_block_comments(source: &[u8]) -> Result<Cow<'_, [u8]>> {
+// Mask block comments and mark separators with NUL after validating the input
+// line contains none. Both replacements preserve the original byte columns.
+fn mark_statement_boundaries(source: &[u8]) -> Result<Cow<'_, [u8]>> {
     let mut masked = Cow::Borrowed(source);
     let mut block = None;
     let mut start = 0;
@@ -73,6 +81,7 @@ fn mask_block_comments(source: &[u8]) -> Result<Cow<'_, [u8]>> {
         check_source_line(line, index + 1)?;
         let bytes = line.strip_suffix(b"\n").unwrap_or(line);
         let mut cursor = 0;
+        let mut statement_start = start;
         let mut quoted = false;
         while cursor < bytes.len() {
             let rest = &bytes[cursor..];
@@ -99,11 +108,14 @@ fn mask_block_comments(source: &[u8]) -> Result<Cow<'_, [u8]>> {
                 masked.to_mut()[start + cursor..start + cursor + 2].fill(b' ');
                 cursor += 2;
             } else if rest.starts_with(b"//")
-                || rest[0] == b';'
                 || (rest[0] == b'#'
-                    && masked[start..start + cursor].iter().all(u8::is_ascii_whitespace))
+                    && masked[statement_start..start + cursor].iter().all(u8::is_ascii_whitespace))
             {
                 break;
+            } else if rest[0] == b';' {
+                masked.to_mut()[start + cursor] = 0;
+                cursor += 1;
+                statement_start = start + cursor;
             } else {
                 quoted = rest[0] == b'"';
                 cursor += 1;
@@ -142,13 +154,13 @@ impl<'src> Expander<'src> {
         let mut repeats = Vec::<Repeat>::new();
         let mut skipped_repeat_depth = 0;
         let mut cursor = 0;
-        while let Some(&Line { bytes, number }) = lines.get(cursor) {
+        while let Some(&Line { bytes, start }) = lines.get(cursor) {
             cursor += 1;
             let line = match &invocation {
-                Some(call) => call.substitute(bytes, number)?,
+                Some(call) => call.substitute(bytes, start)?,
                 None => Cow::Borrowed(bytes),
             };
-            let mut parser = Parser::new(&line, number, object);
+            let mut parser = Parser::new_at(&line, start, object);
             let op = parser.word();
             let at = parser.location(op.column);
             if depth != 0 || !repeats.is_empty() {
@@ -231,7 +243,7 @@ impl<'src> Expander<'src> {
                 }
                 _ => {
                     let operands = parser.column;
-                    let rewritten = labels.rewrite(&line, number)?;
+                    let rewritten = labels.rewrite(&line, start)?;
                     if let Some(definition) = self.macros.get(op.text).cloned() {
                         if depth == MAX_MACRO_DEPTH {
                             return Err(
@@ -254,7 +266,7 @@ impl<'src> Expander<'src> {
                             parser.object,
                         )?;
                     } else {
-                        let mut parser = Parser::new(&rewritten, number, parser.object);
+                        let mut parser = Parser::new_at(&rewritten, start, parser.object);
                         parser.constants = Some(&mut self.constants);
                         parser.assemble_line()?;
                     }
@@ -277,16 +289,16 @@ fn macro_body<'a, 'src>(
     object: &mut Object,
     at: Location,
 ) -> Result<&'a [Line<'src>]> {
-    let start = *cursor;
-    while let Some(&Line { bytes, number }) = lines.get(*cursor) {
+    let body_start = *cursor;
+    while let Some(&Line { bytes, start }) = lines.get(*cursor) {
         let end = *cursor;
         *cursor += 1;
-        let mut parser = Parser::new(bytes, number, object);
+        let mut parser = Parser::new_at(bytes, start, object);
         let op = parser.word();
         match op.text {
             ".endm" => {
                 parser.require_end()?;
-                return Ok(&lines[start..end]);
+                return Ok(&lines[body_start..end]);
             }
             ".macro" => return Err(parser.error(op.column, "nested .macro definition")),
             _ => {}
@@ -335,7 +347,7 @@ fn macro_arguments(line: &[u8], operands: usize, at: Location) -> Result<Vec<&[u
 }
 
 impl Invocation<'_, '_> {
-    fn substitute<'a>(&self, line: &'a [u8], number: usize) -> Result<Cow<'a, [u8]>> {
+    fn substitute<'a>(&self, line: &'a [u8], location: Location) -> Result<Cow<'a, [u8]>> {
         let mut result = Vec::new();
         let mut cursor = 0;
         for (start, end) in words(line) {
@@ -343,8 +355,8 @@ impl Invocation<'_, '_> {
                 continue;
             };
             let at = Location {
-                line: number,
-                column: start + 1,
+                line: location.line,
+                column: location.column + start,
             };
             let index = self
                 .definition
@@ -377,7 +389,7 @@ struct NumericLabels {
 }
 
 impl NumericLabels {
-    fn rewrite<'a>(&mut self, line: &'a [u8], number: usize) -> Result<Cow<'a, [u8]>> {
+    fn rewrite<'a>(&mut self, line: &'a [u8], location: Location) -> Result<Cow<'a, [u8]>> {
         let mut result = Vec::new();
         let mut cursor = 0;
         let mut label_end = Some(0);
@@ -405,8 +417,8 @@ impl NumericLabels {
                 .expect("numeric label contains only ASCII digits")
                 .trim_start_matches('0');
             let at = Location {
-                line: number,
-                column: start + 1,
+                line: location.line,
+                column: location.column + start,
             };
             let label = self.numbers.entry(name.to_owned()).or_default();
             let instance = match direction {
@@ -464,7 +476,7 @@ fn words(line: &[u8]) -> impl Iterator<Item = (usize, usize)> + '_ {
     std::iter::from_fn(move || {
         let rest = line[cursor..].trim_ascii_start();
         let &first = rest.first()?;
-        if first == b';' || rest.starts_with(b"//") {
+        if rest.starts_with(b"//") {
             return None;
         }
         let start = line.len() - rest.len();

@@ -51,7 +51,7 @@ pub(crate) fn signed_value(value: u64, negative: bool) -> Option<i64> {
 
 pub(crate) struct Parser<'src, 'obj> {
     line: &'src [u8],
-    line_number: usize,
+    start: Location,
     pub(crate) column: usize,
     pub(crate) object: &'obj mut Object,
     nasm: Option<&'obj mut Syntax>,
@@ -61,9 +61,20 @@ pub(crate) struct Parser<'src, 'obj> {
 
 impl<'src, 'obj> Parser<'src, 'obj> {
     pub(crate) fn new(line: &'src [u8], line_number: usize, object: &'obj mut Object) -> Self {
+        Self::new_at(
+            line,
+            Location {
+                line: line_number,
+                column: 1,
+            },
+            object,
+        )
+    }
+
+    fn new_at(line: &'src [u8], start: Location, object: &'obj mut Object) -> Self {
         Self {
             line,
-            line_number,
+            start,
             column: 0,
             object,
             nasm: None,
@@ -80,8 +91,8 @@ impl<'src, 'obj> Parser<'src, 'obj> {
 
     fn location(&self, column: usize) -> Location {
         self.origin.unwrap_or(Location {
-            line: self.line_number,
-            column: column + 1,
+            line: self.start.line,
+            column: self.start.column + column,
         })
     }
 
@@ -118,7 +129,8 @@ impl<'src, 'obj> Parser<'src, 'obj> {
 
     pub(crate) fn at_end(&mut self) -> bool {
         match self.peek() {
-            0 | b';' => true,
+            0 => true,
+            b';' => self.object.target == Target::X86_64,
             b'/' if self.object.target == Target::Aarch64 => {
                 self.line[self.column..].starts_with(b"//")
             }
