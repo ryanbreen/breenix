@@ -306,37 +306,13 @@ pub fn generate_counters() -> String {
     #[cfg(target_arch = "aarch64")]
     append_net_pci_diag(&mut output);
 
-    append_tcp_receive_diag(&mut output);
-    #[cfg(target_arch = "x86_64")]
-    append_bcm5720_diag(&mut output);
+    super::receive_counters::append_receive_counters(&mut output);
 
     if count == 0 {
         output.push_str("# (no counters registered)\n");
     }
 
     output
-}
-
-fn append_tcp_receive_diag(output: &mut String) {
-    use core::fmt::Write;
-    let stats = crate::net::tcp::receive_counters();
-    let _ = writeln!(output, "tcp_rx_checksum_rejected: {}", stats.checksum_rejected);
-    let _ = writeln!(output, "tcp_rx_outside_window: {}", stats.outside_window);
-    let _ = writeln!(output, "tcp_rx_gap_segments: {}", stats.gap_segments);
-    let _ = writeln!(output, "tcp_rx_ack_output_failed: {}", stats.ack_output_failed);
-}
-
-#[cfg(target_arch = "x86_64")]
-fn append_bcm5720_diag(output: &mut String) {
-    use core::fmt::Write;
-    if let Some(stats) = crate::drivers::bcm5720::receive_counters() {
-        let _ = writeln!(output, "bcm5720_msi: {}", stats.msi);
-        let _ = writeln!(output, "bcm5720_rx_no_bd: {}", stats.no_rx_bd);
-        let _ = writeln!(output, "bcm5720_rx_discards: {}", stats.in_discards);
-        let _ = writeln!(output, "bcm5720_rx_errors: {}", stats.in_errors);
-        let _ = writeln!(output, "bcm5720_rx_bad_completions: {}", stats.bad_completions);
-        let _ = writeln!(output, "bcm5720_tx_ring_full: {}", stats.tx_ring_full);
-    }
 }
 
 /// Generate the test-scoped, per-PID teardown evidence used by the P2 gate.

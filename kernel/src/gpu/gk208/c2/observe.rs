@@ -270,12 +270,25 @@ fn measure_enabled(io: &mut impl CounterAccess, attempts: &mut [Option<Attempt>;
                 let bracket_ns = b0 + b1;
                 let khz = u32::try_from(u64::from(cycles) * 1_000_000 / elapsed)
                     .map_err(|_| "measured clock overflow")?;
-                attempts[attempt] = Some(Attempt { khz, cycles, b0_ns: b0, b1_ns: b1, interval_ns: elapsed, accepted: bracket_ns <= elapsed / 100 });
-                if bracket_ns > elapsed / 100 {
+                let sample = Attempt {
+                    khz,
+                    cycles,
+                    b0_ns: b0,
+                    b1_ns: b1,
+                    interval_ns: elapsed,
+                    accepted: bracket_ns <= elapsed / 100,
+                };
+                attempts[attempt] = Some(sample);
+                if !sample.accepted {
                     if attempt == 2 { return Err("counter/PTIMER bracket exceeds 1 percent"); }
                     break;
                 }
-                return Ok(Measurement { khz, cycles, ptimer_ns: elapsed, bracket_ns });
+                return Ok(Measurement {
+                    khz: sample.khz,
+                    cycles: sample.cycles,
+                    ptimer_ns: sample.interval_ns,
+                    bracket_ns: sample.b0_ns + sample.b1_ns,
+                });
             }
         }
         Err("counter/PTIMER bracket exceeds 1 percent")

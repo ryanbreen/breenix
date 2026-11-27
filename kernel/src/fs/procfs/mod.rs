@@ -23,6 +23,7 @@
 //! - `/proc/trace/events` - List of available trace points
 //! - `/proc/trace/buffer` - Trace buffer contents
 //! - `/proc/trace/counters` - Trace counter values
+//! - `/proc/trace/rx_counters` - Network receive counters for wheel
 //! - `/proc/trace/providers` - Registered trace providers
 //!
 //! # Architecture
@@ -43,6 +44,7 @@
 mod net;
 mod pid_stat;
 mod pid_path;
+mod receive_counters;
 mod status_memory;
 
 use alloc::string::String;
@@ -51,6 +53,8 @@ use spin::Mutex;
 
 mod trace;
 mod xhci;
+
+pub use receive_counters::receive_counters_attrs;
 
 /// Procfs entry types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,6 +77,8 @@ pub enum ProcEntryType {
     TraceBuffer,
     /// /proc/trace/counters - trace counter values
     TraceCounters,
+    /// /proc/trace/rx_counters - TCP and NIC receive diagnostics, readable by wheel
+    TraceReceiveCounters,
     /// /proc/trace/providers - registered providers
     TraceProviders,
     /// /proc/trace/teardown - per-PID teardown evidence directory
@@ -214,6 +220,7 @@ impl ProcEntryType {
             ProcEntryType::TraceEvents => "events",
             ProcEntryType::TraceBuffer => "buffer",
             ProcEntryType::TraceCounters => "counters",
+            ProcEntryType::TraceReceiveCounters => "rx_counters",
             ProcEntryType::TraceProviders => "providers",
             ProcEntryType::TraceTeardownDir => "teardown",
             ProcEntryType::TraceTeardownPid(_) => "pid",
@@ -304,6 +311,7 @@ impl ProcEntryType {
             ProcEntryType::TraceEvents => "/proc/trace/events",
             ProcEntryType::TraceBuffer => "/proc/trace/buffer",
             ProcEntryType::TraceCounters => "/proc/trace/counters",
+            ProcEntryType::TraceReceiveCounters => receive_counters::RECEIVE_COUNTERS_PATH,
             ProcEntryType::TraceProviders => "/proc/trace/providers",
             ProcEntryType::TraceTeardownDir => "/proc/trace/teardown",
             ProcEntryType::TraceTeardownPid(_) => "/proc/trace/teardown/<pid>",
@@ -395,6 +403,7 @@ impl ProcEntryType {
             ProcEntryType::TraceEvents => 102,
             ProcEntryType::TraceBuffer => 103,
             ProcEntryType::TraceCounters => 104,
+            ProcEntryType::TraceReceiveCounters => 107,
             ProcEntryType::TraceProviders => 105,
             ProcEntryType::TraceTeardownDir => 106,
             ProcEntryType::TraceTeardownPid(pid) => pid_inode(*pid, 3),
@@ -654,6 +663,7 @@ pub fn init() {
     procfs
         .entries
         .push(ProcEntry::new(ProcEntryType::TraceCounters));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::TraceReceiveCounters));
     procfs
         .entries
         .push(ProcEntry::new(ProcEntryType::TraceProviders));
@@ -679,9 +689,12 @@ pub fn lookup(name: &str) -> Option<ProcEntry> {
 
         for entry in &procfs.entries {
             let entry_path = entry.entry_type.path();
-            // Check if the full path matches or the relative path matches
             let relative = entry_path.trim_start_matches("/proc/");
-            if relative == normalized || entry.entry_type.name() == normalized {
+            // The receive counters' open permissions apply at their registered path.
+            if relative == normalized
+                || (entry.entry_type != ProcEntryType::TraceReceiveCounters
+                    && entry.entry_type.name() == normalized)
+            {
                 return Some(entry.clone());
             }
         }
@@ -746,6 +759,7 @@ pub fn list_entries() -> Result<Vec<String>, i32> {
                     | ProcEntryType::TraceEvents
                     | ProcEntryType::TraceBuffer
                     | ProcEntryType::TraceCounters
+                    | ProcEntryType::TraceReceiveCounters
                     | ProcEntryType::TraceProviders
                     | ProcEntryType::TraceTeardownDir
                     | ProcEntryType::BreenixTesting
@@ -865,6 +879,7 @@ pub fn list_trace_entries() -> Vec<String> {
                     | ProcEntryType::TraceEvents
                     | ProcEntryType::TraceBuffer
                     | ProcEntryType::TraceCounters
+                    | ProcEntryType::TraceReceiveCounters
                     | ProcEntryType::TraceProviders
                     | ProcEntryType::TraceTeardownDir
             )
@@ -1018,6 +1033,7 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         ProcEntryType::TraceEvents => require(Operation::Trace).and_then(|()| text(trace::generate_events())),
         ProcEntryType::TraceBuffer => require(Operation::Trace).and_then(|()| text(trace::generate_buffer())),
         ProcEntryType::TraceCounters => require(Operation::Trace).and_then(|()| text(trace::generate_counters())),
+        ProcEntryType::TraceReceiveCounters => receive_counters::generate_receive_counters().map(String::into_bytes),
         ProcEntryType::TraceProviders => require(Operation::Trace).and_then(|()| text(trace::generate_providers())),
         ProcEntryType::TraceTeardownDir => require(Operation::Trace).and_then(|()| text(String::from("<pid>\n"))),
         ProcEntryType::TraceTeardownPid(pid) => {
