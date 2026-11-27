@@ -17,7 +17,7 @@ use super::{SshBuf, SshError, BSSH_VERSION};
 use super::{
     SSH_MSG_CHANNEL_CLOSE, SSH_MSG_CHANNEL_DATA, SSH_MSG_CHANNEL_EXTENDED_DATA, SSH_MSG_CHANNEL_EOF, SSH_MSG_CHANNEL_OPEN,
     SSH_MSG_CHANNEL_REQUEST, SSH_MSG_CHANNEL_SUCCESS, SSH_MSG_CHANNEL_WINDOW_ADJUST,
-    SSH_MSG_DISCONNECT, SSH_MSG_GLOBAL_REQUEST, SSH_MSG_IGNORE, SSH_MSG_KEXINIT, SSH_MSG_KEX_ECDH_INIT, SSH_MSG_NEWKEYS,
+    SSH_MSG_DISCONNECT, SSH_MSG_GLOBAL_REQUEST, SSH_MSG_IGNORE, SSH_MSG_KEXINIT, SSH_MSG_NEWKEYS,
     SSH_MSG_UNIMPLEMENTED,
 };
 
@@ -81,74 +81,16 @@ impl<'a> ServerSession<'a> {
             return Err(SshError::Protocol("unsupported SSH version"));
         }
 
-        // 2. Key exchange
-        let mut rng = Csprng::new();
-        let my_kexinit = kex::build_kexinit(&mut rng);
-        self.kex.my_kexinit = my_kexinit.clone();
-        self.io.send_packet(&my_kexinit).map_err(|_| SshError::Io)?;
-
-        // Receive client's KEXINIT
-        let peer_kexinit = self.io.recv_packet().map_err(|_| SshError::Io)?;
-        if peer_kexinit.is_empty() || peer_kexinit[0] != SSH_MSG_KEXINIT {
-            return Err(SshError::Protocol("expected KEXINIT"));
-        }
-        self.kex.peer_kexinit = peer_kexinit;
-
-        // Receive KEX init (type 30). The only message accepted here, so a
-        // peer cannot shift sequence numbers before strict KEX takes effect.
-        let kex_init = self.io.recv_packet().map_err(|_| SshError::Io)?;
-        if kex_init.first() != Some(&SSH_MSG_KEX_ECDH_INIT) {
-            return Err(SshError::Protocol("expected KEX_ECDH_INIT"));
-        }
-
-        // Dispatch: hybrid C_INIT is 1216 bytes, X25519 Q_C is 32 bytes
-        let c_init_len = if kex_init.len() > 5 {
-            u32::from_be_bytes([kex_init[1], kex_init[2], kex_init[3], kex_init[4]]) as usize
-        } else {
-            0
-        };
-
-        let (exchange_hash, shared_secret) = if c_init_len == 1216 {
-            println!("bsshd: KEX mlkem768x25519-sha256 (post-quantum)");
-            kex::server_kex_hybrid(
-                &mut self.io,
-                self.host_key,
-                &mut self.kex,
-                &self.client_version,
-                BSSH_VERSION,
-                &kex_init,
-            )?
-        } else {
-            println!("bsshd: KEX curve25519-sha256");
-            kex::server_kex_ecdh(
-                &mut self.io,
-                self.host_key,
-                &mut self.kex,
-                &self.client_version,
-                BSSH_VERSION,
-                &kex_init,
-            )?
-        };
-
-        // Receive client's NEWKEYS
-        let newkeys = self.io.recv_packet().map_err(|_| SshError::Io)?;
-        if newkeys.is_empty() || newkeys[0] != SSH_MSG_NEWKEYS {
-            return Err(SshError::Protocol("expected NEWKEYS"));
-        }
-
-        // Derive and install session keys
-        let session_id = self.kex.session_id.as_ref().unwrap();
-        let (c2s, s2c) = kex::negotiate_ciphers(&self.kex.peer_kexinit, &self.kex.my_kexinit)?;
-        let (cipher_c2s, cipher_s2c) = kex::derive_keys(
-            &shared_secret, &exchange_hash, session_id, c_init_len == 1216, c2s, s2c,
-        );
-
-        self.io.set_cipher_recv(cipher_c2s); // client→server = our recv
-        self.io.set_cipher_send(cipher_s2c); // server→client = our send
-        // Both NEWKEYS have passed; the next packet each way is the first encrypted one.
-        if kex::strict_kex(&self.kex.peer_kexinit, &self.kex.my_kexinit) {
-            self.io.reset_sequence_numbers();
-        }
+        // 2. Key exchange, ending with the session keys installed.
+        kex::server_key_exchange(
+            &mut self.io,
+            &mut Csprng::new(),
+            self.host_key,
+            &mut self.kex,
+            &self.client_version,
+            BSSH_VERSION,
+        )?;
+        let session_id = self.kex.session_id.as_ref().ok_or(SshError::KeyExchange)?;
 
         // Send EXT_INFO (RFC 8308) to advertise supported pubkey algorithms.
         // Without this, modern OpenSSH (which disables ssh-rsa SHA-1 by default)
@@ -545,11 +487,9 @@ impl ClientSession {
             &shared_secret, &exchange_hash, session_id, false, send_cipher, recv_cipher,
         );
 
-        self.io.set_cipher_send(cipher_c2s); // client→server = our send
-        self.io.set_cipher_recv(cipher_s2c); // server→client = our recv
-        if kex::strict_kex(&self.kex.my_kexinit, &self.kex.peer_kexinit) {
-            self.io.reset_sequence_numbers();
-        }
+        // client to server is our send direction
+        let strict = kex::strict_kex(&self.kex.my_kexinit, &self.kex.peer_kexinit);
+        self.io.install_keys(cipher_s2c, cipher_c2s, strict);
 
         // 3. Authentication
         auth::client_request_service(&mut self.io)?;

@@ -91,11 +91,16 @@ impl Framer {
         self.received_under_keys += u64::from(packets);
     }
 
-    /// Strict KEX: both sequence numbers restart at 0 once NEWKEYS has
-    /// been sent and received.
-    pub fn reset_sequence_numbers(&mut self) {
-        self.seq_send = 0;
-        self.seq_recv = 0;
+    /// Install the keys of a finished key exchange, once NEWKEYS has been
+    /// sent and received. Under strict KEX both sequence numbers restart
+    /// at 0 (draft-ietf-sshm-strict-kex).
+    pub fn install_keys(&mut self, recv: SshCipher, send: SshCipher, strict: bool) {
+        self.set_cipher_recv(recv);
+        self.set_cipher_send(send);
+        if strict {
+            self.seq_send = 0;
+            self.seq_recv = 0;
+        }
     }
 
     /// Append one complete wire packet for `payload` to `out`.
@@ -229,6 +234,28 @@ impl Framer {
     }
 }
 
+/// What a key exchange needs from a connection: whole packets each way,
+/// and installing the keys it produced.
+pub trait KexTransport {
+    fn send_packet(&mut self, payload: &[u8]) -> Result<(), Error>;
+    fn recv_packet(&mut self) -> Result<Vec<u8>, Error>;
+    fn install_keys(&mut self, recv: SshCipher, send: SshCipher, strict: bool);
+}
+
+impl KexTransport for PacketIo {
+    fn send_packet(&mut self, payload: &[u8]) -> Result<(), Error> {
+        PacketIo::send_packet(self, payload)
+    }
+
+    fn recv_packet(&mut self) -> Result<Vec<u8>, Error> {
+        PacketIo::recv_packet(self)
+    }
+
+    fn install_keys(&mut self, recv: SshCipher, send: SshCipher, strict: bool) {
+        PacketIo::install_keys(self, recv, send, strict);
+    }
+}
+
 /// SSH packet reader/writer over a connected socket.
 pub struct PacketIo {
     fd: Fd,
@@ -251,19 +278,9 @@ impl PacketIo {
         }
     }
 
-    /// Install encryption for outgoing packets.
-    pub fn set_cipher_send(&mut self, cipher: SshCipher) {
-        self.framer.set_cipher_send(cipher);
-    }
-
-    /// Install encryption for incoming packets.
-    pub fn set_cipher_recv(&mut self, cipher: SshCipher) {
-        self.framer.set_cipher_recv(cipher);
-    }
-
-    /// Strict KEX: restart both sequence numbers after NEWKEYS.
-    pub fn reset_sequence_numbers(&mut self) {
-        self.framer.reset_sequence_numbers();
+    /// Install a finished key exchange's keys (see [`Framer::install_keys`]).
+    pub fn install_keys(&mut self, recv: SshCipher, send: SshCipher, strict: bool) {
+        self.framer.install_keys(recv, send, strict);
     }
 
     /// Read exactly `n` bytes from the socket.

@@ -11,7 +11,7 @@ use crate::crypto::x25519::{x25519, x25519_basepoint};
 
 use super::cipher::{CipherKind, SshCipher};
 use super::keys::{HostKey, ServerHostKeyInfo};
-use super::packet::PacketIo;
+use super::packet::{KexTransport, PacketIo};
 use super::SshBuf;
 use super::*;
 
@@ -45,6 +45,9 @@ pub struct KexState {
     pub peer_kexinit: Vec<u8>,
     /// Exchange hash (H) — also the session_id for the first KEX.
     pub session_id: Option<Vec<u8>>,
+    /// Whether the initial KEXINITs agreed on strict KEX. It holds for the
+    /// whole connection, whatever later KEXINITs offer.
+    pub strict: bool,
 }
 
 impl KexState {
@@ -53,6 +56,7 @@ impl KexState {
             my_kexinit: Vec::new(),
             peer_kexinit: Vec::new(),
             session_id: None,
+            strict: false,
         }
     }
 }
@@ -107,7 +111,8 @@ fn build_kexinit_with_algorithms(rng: &mut Csprng, kex_algorithms: &str, host_ke
 ///
 /// Returns the exchange hash H and the shared secret K.
 pub fn server_kex_ecdh(
-    io: &mut PacketIo,
+    io: &mut impl KexTransport,
+    rng: &mut Csprng,
     host_key: &HostKey,
     kex: &mut KexState,
     client_version: &str,
@@ -125,7 +130,6 @@ pub fn server_kex_ecdh(
     }
 
     // Generate server's ephemeral key pair
-    let mut rng = Csprng::new();
     let mut server_secret = [0u8; 32];
     rng.fill(&mut server_secret);
     let server_public = x25519_basepoint(&server_secret);
@@ -179,9 +183,74 @@ pub fn server_kex_ecdh(
     Ok((h, shared_secret.to_vec()))
 }
 
+/// The server side of the initial key exchange, from sending our KEXINIT
+/// through both NEWKEYS, ending with the new keys installed in `io`.
+///
+/// Only the messages of the exchange are accepted, in order: the client's
+/// KEXINIT first, then its KEX_ECDH_INIT, then NEWKEYS. Anything else ends
+/// the connection, so under strict KEX no packet can shift the sequence
+/// numbers before they restart.
+pub fn server_key_exchange(
+    io: &mut impl KexTransport,
+    rng: &mut Csprng,
+    host_key: &HostKey,
+    kex: &mut KexState,
+    client_version: &str,
+    server_version: &str,
+) -> Result<(), SshError> {
+    kex.my_kexinit = build_kexinit(rng);
+    io.send_packet(&kex.my_kexinit).map_err(|_| SshError::Io)?;
+    let peer_kexinit = io.recv_packet().map_err(|_| SshError::Io)?;
+    if peer_kexinit.first() != Some(&SSH_MSG_KEXINIT) {
+        return Err(SshError::Protocol("expected KEXINIT"));
+    }
+    kex.peer_kexinit = peer_kexinit;
+    kex.strict = strict_kex(&kex.peer_kexinit, &kex.my_kexinit);
+    exchange_after_kexinit(io, rng, host_key, kex, client_version, server_version)
+}
+
+/// The rest of a server key exchange once both KEXINITs are in `kex`.
+fn exchange_after_kexinit(
+    io: &mut impl KexTransport,
+    rng: &mut Csprng,
+    host_key: &HostKey,
+    kex: &mut KexState,
+    client_version: &str,
+    server_version: &str,
+) -> Result<(), SshError> {
+    let kex_init = io.recv_packet().map_err(|_| SshError::Io)?;
+    if kex_init.first() != Some(&SSH_MSG_KEX_ECDH_INIT) {
+        return Err(SshError::Protocol("expected KEX_ECDH_INIT"));
+    }
+
+    // Dispatch: hybrid C_INIT is 1216 bytes, X25519 Q_C is 32 bytes
+    let hybrid = kex_init.len() > 5
+        && u32::from_be_bytes([kex_init[1], kex_init[2], kex_init[3], kex_init[4]]) == 1216;
+    let (exchange_hash, shared_secret) = if hybrid {
+        println!("bsshd: KEX mlkem768x25519-sha256 (post-quantum)");
+        server_kex_hybrid(io, rng, host_key, kex, client_version, server_version, &kex_init)?
+    } else {
+        println!("bsshd: KEX curve25519-sha256");
+        server_kex_ecdh(io, rng, host_key, kex, client_version, server_version, &kex_init)?
+    };
+
+    let newkeys = io.recv_packet().map_err(|_| SshError::Io)?;
+    if newkeys.first() != Some(&SSH_MSG_NEWKEYS) {
+        return Err(SshError::Protocol("expected NEWKEYS"));
+    }
+
+    let session_id = kex.session_id.as_ref().ok_or(SshError::KeyExchange)?;
+    let (c2s, s2c) = negotiate_ciphers_with(&kex.peer_kexinit, &kex.my_kexinit, kex.strict)?;
+    let (cipher_c2s, cipher_s2c) = derive_keys(&shared_secret, &exchange_hash, session_id, hybrid, c2s, s2c);
+    // client to server is our receive direction
+    io.install_keys(cipher_c2s, cipher_s2c, kex.strict);
+    Ok(())
+}
+
 /// Server-side hybrid post-quantum key exchange (mlkem768x25519-sha256).
 pub fn server_kex_hybrid(
-    io: &mut PacketIo,
+    io: &mut impl KexTransport,
+    rng: &mut Csprng,
     host_key: &HostKey,
     kex: &mut KexState,
     client_version: &str,
@@ -194,8 +263,6 @@ pub fn server_kex_hybrid(
     if c_init.len() != 1216 {
         return Err(SshError::Protocol("invalid hybrid C_INIT length"));
     }
-
-    let mut rng = Csprng::new();
 
     // X25519
     let mut x25519_secret = [0u8; 32];
@@ -409,9 +476,18 @@ fn name_lists(packet: &[u8]) -> Result<Vec<&str>, SshError> {
 /// cannot detect packets deleted from the start of the encrypted stream
 /// (the Terrapin attack), so such a client gets its next common cipher.
 pub fn negotiate_ciphers(client: &[u8], server: &[u8]) -> Result<(CipherKind, CipherKind), SshError> {
+    negotiate_ciphers_with(client, server, strict_kex(client, server))
+}
+
+/// [`negotiate_ciphers`] for a connection whose strict KEX was settled by
+/// its initial KEXINITs, which a re-exchange's KEXINITs do not repeat.
+pub fn negotiate_ciphers_with(
+    client: &[u8],
+    server: &[u8],
+    strict: bool,
+) -> Result<(CipherKind, CipherKind), SshError> {
     let c = name_lists(client)?;
     let s = name_lists(server)?;
-    let strict = strict_kex(client, server);
     let eligible = |index: usize, name: &str| {
         !name.is_empty()
             && (strict || CipherKind::from_name(name) != Some(CipherKind::ChaCha20Poly1305))
