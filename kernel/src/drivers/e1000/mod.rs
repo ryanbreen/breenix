@@ -14,7 +14,7 @@
 //! guests as `e1000e`.
 //!
 //! Interrupts: on x86-64 the function interrupts by MSI where it can, or on
-//! IRQ 10/11 (`drivers::init`). Its causes stay masked until the driver state
+//! the IRQ 10 or 11 line its Interrupt Line register names (`drivers::init`). Its causes stay masked until the driver state
 //! is published. `handle_interrupt` acknowledges ICR through the register
 //! window, without a lock, and raises NetRx. On ARM64 the causes stay masked
 //! and `net::rx_poll` polls `can_receive` once per tick.
@@ -493,6 +493,16 @@ pub fn interrupt_by_msi() -> Result<u8, &'static str> {
         crate::task::softirqd::raise_softirq(crate::task::softirqd::SoftirqType::NetRx);
     }
     Ok(vector)
+}
+
+/// The line the function's Interrupt Line register names (SDM 4.1; DS
+/// 9.1.2.16), for the INTx fallback.
+#[cfg(target_arch = "x86_64")]
+pub fn irq_line() -> Option<u8> {
+    let _guard = crate::net::net_lock_guard();
+    let slot = DRIVER.lock();
+    let line = slot.as_ref().map(|driver| driver.device.interrupt_line);
+    line
 }
 
 pub fn is_initialized() -> bool {
