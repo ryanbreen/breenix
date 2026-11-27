@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
-"""Build both arches with build.sh --rust-host before running this check."""
+"""Build both arches with build.sh --rust-host before running these checks.
+
+The ARM sequence check also needs the seed from create_ext2_disk.sh --arch aarch64.
+"""
 import hashlib
 import importlib.util
 import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -19,6 +24,56 @@ READELF = os.environ.get('LLVM_READELF', 'llvm-readelf')
 
 
 class StartupProbeTest(unittest.TestCase):
+    def test_arm_sequence_image_ready(self):
+        SPEC.loader.exec_module(STAGE)
+        debugfs, = STAGE.require_e2fsprogs('debugfs')
+        suites = ('rust-host', 'libc', 'utilities', 'rust-std', 'threads', 'memory', 'processes', 'signals')
+        sequence = ','.join(suites)
+        elfs = ROOT / 'userspace/programs/aarch64'
+        seed = ROOT / 'target/ext2-aarch64.img'
+        self.assertTrue(seed.is_file(), 'run scripts/create_ext2_disk.sh --arch aarch64 first')
+
+        with tempfile.TemporaryDirectory() as directory:
+            image = Path(directory) / 'sequence.img'
+            shutil.copyfile(seed, image)
+            cxx_suite = HOSTED / 'aarch64-breenix-hosted/release/suite-cxx-runtime'
+            for command in (
+                [sys.executable, ROOT / 'scripts/rust_host_stage.py',
+                 '--arch', 'aarch64', '--image', image, '--suite', sequence],
+                [ROOT / 'scripts/write-boot-target.sh', image, suites[0], elfs / 'suite-rust-host.elf',
+                 sequence, '', '', 'ext2', cxx_suite],
+            ):
+                result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+            def read_image(command):
+                return subprocess.check_output([debugfs, '-R', command, image],
+                                               stderr=subprocess.DEVNULL, timeout=10)
+
+            self.assertEqual(read_image('cat /etc/breenix/boot-target'), b'suite rust-host\n')
+            self.assertEqual(read_image('cat /etc/breenix/suite-sequence'), (sequence + '\n').encode())
+            for suite in suites:
+                with self.subTest(suite=suite):
+                    self.assertEqual(read_image(f'cat /sbin/suite-{suite}'),
+                                     (elfs / f'suite-{suite}.elf').read_bytes())
+
+            probes = '/usr/libexec/breenix/rust-host'
+            for name, mode in (('startup-probe', b'0755'), ('process-probe', b'0755'),
+                               ('unwind-probe', b'0755'), ('mmap-fixture', b'0444')):
+                with self.subTest(file=name):
+                    stat = read_image(f'stat {probes}/{name}')
+                    self.assertIn(b'Type: regular    Mode:  ' + mode, stat)
+                    self.assertRegex(stat, rb'User:\s+0\s+Group:\s+0\s')
+
+            fixture = Path(directory) / 'mmap-fixture'
+            read_image(f'dump {probes}/mmap-fixture "{fixture}"')
+            self.assertEqual(fixture.stat().st_size, 163_067_344)
+            with fixture.open('rb') as stream:
+                self.assertEqual(
+                    hashlib.file_digest(stream, 'sha256').hexdigest(),
+                    '641a09f91a4a48c8fad03a45411ab8e714f1612914175abae70e74d09b92427f',
+                )
+
     def test_arm_rust_host_build_matches_sequence_elf(self):
         build = ROOT / 'userspace/programs/build.sh'
         for args in (('--arch', 'aarch64'), ('--arch', 'aarch64', '--rust-host')):
