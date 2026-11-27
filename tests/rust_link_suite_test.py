@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 import subprocess
 import tempfile
+import tomllib
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,6 +15,28 @@ FIXTURE = Path(os.environ.get('BREENIX_K6_FIXTURE', ROOT / 'build/rustc-port/k6/
 AARCH64_FIXTURE = Path(os.environ.get('BREENIX_K6_AARCH64_FIXTURE', Path.home() / 'Library/Caches/breenix-e25/k6/aarch64'))
 
 class RustLinkSuite(unittest.TestCase):
+    def test_aarch64_rust_link_build(self):
+        subprocess.run([str(ROOT / 'userspace/programs/build.sh'), '--arch', 'aarch64', '--rust-link'],
+                       cwd=ROOT, check=True)
+        output = ROOT / 'userspace/programs/target/rust-link/aarch64'
+        record = json.loads((output / 'build.json').read_text())
+        rustc = Path(subprocess.check_output(['rustup', 'which', 'rustc'],
+                                             cwd=ROOT / 'toolchain', text=True).strip())
+        digest = lambda path: hashlib.file_digest(path.open('rb'), 'sha256').hexdigest()
+        pin = tomllib.loads((ROOT / 'rust-fork.toml').read_text())['commit']
+        self.assertEqual(record['target'], 'aarch64-breenix')
+        self.assertEqual(record['cargo_package'], 'bld')
+        self.assertEqual(record['rust_fork_commit'], pin)
+        self.assertEqual(record['stage0'], {
+            'version': subprocess.check_output([str(rustc), '--version'], text=True).strip(),
+            'sha256': digest(rustc),
+        })
+        self.assertEqual(record['bld_libc_sha256'], digest(
+            ROOT / 'libs/libbreenix-libc/target/aarch64-breenix/release/libc.a'))
+        self.assertEqual(record['files_sha256'], {
+            name: digest(output / name) for name in ('bld', 'suite-rust-link')
+        })
+
     def test_suite_and_replay(self):
         manifest = json.loads((ROOT / 'docs/suites/rust-link.json').read_text())
         source = (ROOT / 'userspace/programs/src/suite_rust_link.rs').read_text()
