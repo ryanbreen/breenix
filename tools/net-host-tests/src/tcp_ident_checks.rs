@@ -28,8 +28,8 @@ fn isns_differ_across_four_tuples_at_the_same_instant() {
     assert_ne!(base, isn(&SECRET, LOCAL, 40000, REMOTE, 23, now));
     assert_ne!(base, isn(&[0xa5; ISN_SECRET_LEN], LOCAL, 40000, REMOTE, 22, now));
 
-    // 4096 connections opened at once from consecutive ports: no two share an
-    // ISN, and none is a fixed step from the one before (the counter this
+    // 4096 connections opened at once from consecutive ports: the 4096 ISNs
+    // are distinct, and the steps between neighbours vary (the counter this
     // replaced advanced by 64,000 per connection).
     let isns: Vec<u32> = (0..4096u16).map(|n| isn(&SECRET, LOCAL, 32768 + n, REMOTE, 80, now)).collect();
     assert_eq!(isns.iter().collect::<BTreeSet<_>>().len(), isns.len());
@@ -42,7 +42,7 @@ fn an_isn_advances_with_the_four_microsecond_clock_for_one_four_tuple() {
     let at = |us: u64| isn(&SECRET, LOCAL, 40000, REMOTE, 22, us);
     let start = 1_000_000u64;
     let first = at(start);
-    // RFC 6528 section 3: M is a timer that ticks every 4 microseconds.
+    // RFC 6528 section 3: M is a timer that ticks once per 4 microseconds.
     assert_eq!(at(start + 3), first);
     assert_eq!(at(start + 4).wrapping_sub(first), 1);
     let mut previous = first;
@@ -61,7 +61,7 @@ fn an_isn_advances_with_the_four_microsecond_clock_for_one_four_tuple() {
 #[test]
 fn ephemeral_ports_are_random_in_range_and_cover_the_range() {
     let span = u32::from(EPHEMERAL_LAST - EPHEMERAL_FIRST) + 1;
-    // One search visits every port in the range exactly once.
+    // One search visits each of the range's 28,232 ports once.
     let all: Vec<u16> = ephemeral_candidates(0x1234_5678_9abc_def0).collect();
     assert_eq!(all.len() as u32, span);
     assert_eq!(all.iter().collect::<BTreeSet<_>>().len() as u32, span);

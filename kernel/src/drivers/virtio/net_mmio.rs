@@ -4,8 +4,8 @@
 //! queues and buffers in static memory.
 //!
 //! Each queue has its own lock: `TX` holds the transmit queue's bookkeeping
-//! (`net_tx_queue::TxQueue`) and `RX` the receive queue's, and every access to
-//! a queue's memory happens under its lock. The device's addresses are written
+//! (`net_tx_queue::TxQueue`) and `RX` the receive queue's, and the driver
+//! reaches a queue's memory under that queue's lock. The device's addresses are written
 //! once, at the end of `init`, into `DEVICE`.
 
 use super::mmio::{
@@ -165,12 +165,12 @@ const _: () = assert!(TX_POOL_SIZE == RING_ENTRIES as usize);
 
 /// Memory the device reaches by DMA. The driver touches it only through raw
 /// pointers: a queue's ring and buffers under that queue's lock (`TX` or
-/// `RX`), and every ring during `init`, before `DEVICE` is published.
+/// `RX`), and both rings during `init`, before `DEVICE` is published.
 #[repr(transparent)]
 struct Dma<T>(UnsafeCell<T>);
 
-// SAFETY: every access goes through `get` under the owning queue's lock, as
-// described on the type; the cell itself is never handed out by reference.
+// SAFETY: accesses go through `get` under the owning queue's lock, as
+// described on the type; `Dma` hands out raw pointers only.
 unsafe impl<T> Sync for Dma<T> {}
 
 impl<T> Dma<T> {
@@ -237,7 +237,7 @@ struct DeviceInfo {
 static DEVICE: spin::Once<DeviceInfo> = spin::Once::new();
 
 /// The transmit queue: descriptor ownership, the available index and the used
-/// cursor, all changed under this lock (virtio 1.2 section 2.7.13).
+/// cursor, changed under this lock (virtio 1.2 section 2.7.13).
 static TX: IrqSafeMutex<TxQueue<MmioTxRing>> = IrqSafeMutex::new(TxQueue::new(MmioTxRing));
 
 /// The receive queue's driver state.

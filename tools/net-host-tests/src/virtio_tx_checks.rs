@@ -6,7 +6,7 @@
 //! `TxQueue::submit` and stops it after each of its stores to queue memory to
 //! let the second CPU try to submit through the same lock. Behind
 //! `spin::Mutex`, the lock type the kernel's `IrqSafeMutex` wraps, the second
-//! CPU must find the lock held at every one of those points and go only after
+//! CPU must find the lock held at each of those six points and go only after
 //! the first CPU's index store.
 
 use crate::net_tx_queue::{TxError, TxQueue, TxRing};
@@ -144,7 +144,7 @@ fn data(slot: u16) -> (u64, u32) {
 
 #[test]
 fn a_second_cpu_cannot_publish_inside_the_first_cpus_submission() {
-    // A submission with nothing to reclaim makes six accesses: used.idx, the
+    // A submission with no completions to reclaim makes six accesses: used.idx, the
     // descriptor, the ring entry, the barrier, avail.idx and the notify barrier.
     for hook_at in 1..=6 {
         let dev = Rc::new(RefCell::new(Device::default()));
@@ -210,7 +210,7 @@ fn a_full_queue_is_reclaimed_by_the_next_transmit_at_the_devices_queue_size() {
     }
     assert_eq!(queue.submit(data), Err(TxError::Full));
 
-    // A used entry for a descriptor the driver never handed over frees nothing.
+    // A used entry for a descriptor the driver did not hand over leaves the queue full.
     dev.borrow_mut().complete(8, 31);
     assert_eq!(queue.submit(data), Err(TxError::Full));
 

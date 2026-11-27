@@ -2127,9 +2127,9 @@ pub fn tcp_unbind_port(addr: [u8; 4], port: u16) {
 }
 
 /// Bind an unbound socket at `addr` to a free port from the ephemeral range,
-/// as connect and listen do for a socket that was never bound. The search
+/// as connect and listen do for a socket that has not been bound. The search
 /// starts at a random port (RFC 6056 Algorithm 1, `tcp_ident`). EADDRINUSE
-/// when every port in the range is taken; connect reports that as Linux does,
+/// when the search finds the range's 28,232 ports taken; connect reports that as Linux does,
 /// with EADDRNOTAVAIL.
 pub fn tcp_bind_ephemeral(addr: [u8; 4]) -> Result<u16, i32> {
     for candidate in super::tcp_ident::ephemeral_candidates(crate::random::next_u64()) {

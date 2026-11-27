@@ -343,10 +343,10 @@ pub struct PhysAddrWrapper;
 
 impl PhysAddrWrapper {
     /// The physical address mapped at kernel virtual address `virt`, from the
-    /// translation the CPU itself uses, or the reason there is none.
+    /// translation the CPU itself uses, or why it has no translation.
     ///
     /// On x86-64 this walks the active page tables (`kernel_walk::walk_x86_64`)
-    /// for every address, the direct map included, so it assumes nothing about
+    /// for direct-map addresses as for the rest, so it has no assumption about
     /// where RAM ends. On ARM64 the MMU translates it (`AT S1E1R`, read back
     /// from PAR_EL1), which covers both translation tables and the
     /// direct-map offset the loader chose.

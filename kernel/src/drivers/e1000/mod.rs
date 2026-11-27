@@ -338,7 +338,7 @@ impl E1000 {
     }
 
     /// The physical address the device is given for a kernel buffer. An
-    /// address with no translation is refused, never programmed as is.
+    /// address with no translation is refused rather than programmed as is.
     fn virt_to_phys(virt: usize) -> Result<u64, &'static str> {
         PhysAddr::from_kernel_virt(virt).map_err(|_| "E1000: DMA buffer has no physical translation")
     }
@@ -771,8 +771,9 @@ pub fn init() -> Result<(), &'static str> {
     driver.init_mac_filter();
 
     // Set up receive buffer addresses in descriptors
-    // Translate every DMA address before the device is told any of them, so a
-    // refusal leaves neither ring enabled over buffers that are then freed.
+    // Translate both rings and the RX buffers before the device is told any
+    // address, so a refusal leaves neither ring enabled over buffers that are
+    // then freed.
     let rx_ring_phys = E1000::virt_to_phys(driver.rx_ring.as_ptr() as usize)?;
     let tx_ring_phys = E1000::virt_to_phys(driver.tx_ring.as_ptr() as usize)?;
     for (i, buf) in driver.rx_buffers.iter().enumerate() {

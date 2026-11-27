@@ -5,8 +5,8 @@
 //! One `TxQueue` per transmit queue, behind that queue's own lock. A submission
 //! takes the descriptor, writes it and its available-ring entry, orders those
 //! stores before the index, and stores `avail.idx` in one critical section, so
-//! the index moves forward by exactly one per buffer and is never stored past an
-//! entry that has not been written (section 2.7.13, "Supplying Buffers to The
+//! the index moves forward by exactly one per buffer and is not stored before
+//! the entry it covers is written (section 2.7.13, "Supplying Buffers to The
 //! Device"). A submission first takes back the descriptors the device has
 //! finished with (section 2.7.14), so a full queue drains on the transmit path
 //! and does not wait for receive processing.
@@ -42,11 +42,11 @@ pub trait TxRing {
 pub enum TxError {
     /// The queue has not been configured with a size.
     NotReady,
-    /// Every descriptor is still held by the device.
+    /// The device still holds the queue's descriptors.
     Full,
 }
 
-/// One transmit queue's driver state. Every method needs `&mut self`: the lock
+/// One transmit queue's driver state. Its methods take `&mut self`: the lock
 /// that holds the queue is what serializes CPUs.
 pub struct TxQueue<R> {
     ring: R,
@@ -91,8 +91,9 @@ impl<R: TxRing> TxQueue<R> {
         self.in_flight.count_ones()
     }
 
-    /// Take back every descriptor the device has returned. A used entry naming
-    /// a descriptor the driver did not hand over is skipped; it frees nothing.
+    /// Take back the descriptors the device has returned since the last call.
+    /// A used entry naming a descriptor the driver did not hand over is skipped
+    /// without freeing a descriptor.
     pub fn reclaim(&mut self) -> usize {
         if self.size == 0 {
             return 0;

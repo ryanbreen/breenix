@@ -1,5 +1,5 @@
 //! What a TCP connection is told to start from: its initial sequence number
-//! (RFC 6528) and, for a socket that never bound one, its local port (RFC 6056).
+//! (RFC 6528) and, for a socket that did not bind one, its local port (RFC 6056).
 //!
 //! Pure computation, so the host tests compile this file as is.
 
@@ -9,11 +9,11 @@ use crate::random::blake2s::Blake2s;
 pub const ISN_SECRET_LEN: usize = 32;
 
 /// RFC 6528 section 3: ISN = M + F(localip, localport, remoteip, remoteport,
-/// secretkey). M is a timer that ticks every 4 microseconds, so one 4-tuple's
+/// secretkey). M is a timer that ticks once per 4 microseconds, so one 4-tuple's
 /// ISNs advance with time; F is a keyed pseudorandom function, here BLAKE2s
 /// keyed with the boot-time secret (RFC 7693 section 2.5), so the ISNs of
-/// different 4-tuples are unrelated and an observer of one connection learns
-/// nothing about another's.
+/// different 4-tuples are unrelated: one connection's ISN does not predict
+/// another's without the key.
 pub fn isn(
     secret: &[u8; ISN_SECRET_LEN],
     local_ip: [u8; 4],

@@ -467,7 +467,7 @@ fn boot_timestamp_ns() -> u64 {
     crate::arch_read_timestamp()
 }
 
-/// Convert a virtual address to a physical address, or report why there is none.
+/// Convert a virtual address to a physical address, or give the reason it has no translation.
 fn virt_to_phys(virt: usize) -> Result<usize, crate::memory::WalkError> {
     #[cfg(target_arch = "x86_64")]
     {

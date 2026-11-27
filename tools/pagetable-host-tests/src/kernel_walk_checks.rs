@@ -1,5 +1,5 @@
 //! The translation a device is given for a kernel address
-//! (`kernel/src/memory/kernel_walk.rs`): a missing level is an error, never the
+//! (`kernel/src/memory/kernel_walk.rs`): a missing level is an error, not the
 //! virtual address handed back as physical, and physical addresses above 4 GiB
 //! come through whole.
 

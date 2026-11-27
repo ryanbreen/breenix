@@ -60,7 +60,7 @@ const E1000_CARRIER_POLL_MS: u32 = 50;
 /// do not touch these tables, while e1000 hardirq handling only raises NetRx and
 /// the NetRx softirq is the sole interrupt-context table user. Drop performs the
 /// `local_bh_enable` equivalent, dispatching pending softirqs only when the
-/// complete per-CPU preempt count reaches zero, exactly as `irq_exit` already
+/// complete per-CPU preempt count reaches 0, exactly as `irq_exit` already
 /// does. On aarch64 it preserves the existing DAIF IRQ-mask semantics.
 #[must_use = "bind the guard as `let _guard = net_lock_guard();` so it remains active"]
 pub(crate) struct NetLockGuard {
