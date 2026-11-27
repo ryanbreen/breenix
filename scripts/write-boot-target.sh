@@ -9,11 +9,13 @@
 # "program GUEST_PATH [WORD]" (ARM64: probe runs the program, passing WORD),
 # replacing the prior target. Use a copy so ordinary boots keep their disk.
 # The image must contain /sbin/suite-SUITE_ID, /sbin/probe or GUEST_PATH respectively.
-# When PID1_ELF is supplied, readback must match its bytes before accepting the image.
+# PID1_ELF supplies the default ELF for PID 1 readback.
 # SEQUENCE (suite ids joined by commas, SUITE_ID first) also writes /etc/breenix/suite-sequence,
-# so the boot runs each suite in turn (docs/suites/README.md, "Several suites in one boot");
-# each /sbin/suite-ID must match the ELF beside PID1_ELF.
-# CXX_RUNTIME_ELF names the hosted release directory for cxx-runtime and llvm checks.
+# so the boot runs each suite in turn (docs/suites/README.md, "Several suites in one boot").
+# Sequence ELFs default to files beside PID1_ELF.
+# CXX_RUNTIME_ELF is the path to an ELF file inside the hosted release directory.
+# When supplied, cxx-runtime and llvm use suite-cxx-runtime and suite-llvm from that
+# directory for both PID 1 and sequence readback checks.
 # ROOT_FS writes the host's root-fs ext2|breenfs declaration beside the suite list.
 #
 # Uses debugfs (e2fsprogs) when it is on PATH or in Homebrew's keg-only e2fsprogs,
