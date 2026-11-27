@@ -97,10 +97,10 @@ pub(super) fn record(copier: &mut Copier, staged: &Path, scratch: Option<&Path>)
     copier.write_file(&staged.join(BASELINE), &text, 0o600)
 }
 
-fn read_baseline(current: &Path) -> Result<BTreeMap<PathBuf, String>, String> {
+fn read_baseline(current: &Path) -> Result<Option<BTreeMap<PathBuf, String>>, String> {
     let path = current.join(BASELINE);
     let meta = match fs::symlink_metadata(&path) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         result => result.map_err(|error| fail("stat image baseline", &path, error))?,
     };
     if !meta.is_file() {
@@ -121,14 +121,16 @@ fn read_baseline(current: &Path) -> Result<BTreeMap<PathBuf, String>, String> {
             return Err("invalid image baseline path".into());
         }
     }
-    Ok(files)
+    Ok(Some(files))
+}
+
+fn breenfs_payload(path: &Path) -> bool {
+    matches!(top_level(path), "bin" | "sbin" | "usr")
 }
 
 /// Traverse the incoming tree without following a symlink in a parent.
 fn incoming(root: &Path, path: &Path, breenfs: bool) -> Result<Option<String>, String> {
-    if breenfs && !path.components().next().is_some_and(|name| {
-        matches!(name.as_os_str().to_str(), Some("bin" | "sbin" | "usr"))
-    }) {
+    if breenfs && !breenfs_payload(path) {
         return Ok(None);
     }
     let mut components = path.components().peekable();
@@ -154,17 +156,20 @@ pub(crate) struct LocalFiles {
 }
 
 impl LocalFiles {
-    pub(crate) fn inspect(current: &Path, source: &Path, breenfs: bool, carry: bool) -> Result<Self, String> {
+    pub(crate) fn inspect(current: &Path, source: &Path, breenfs: bool, carry: bool,
+                          installed_breenfs_image: impl FnOnce() -> Result<bool, String>) -> Result<Self, String> {
         let legacy_shared = !breenfs && match fs::read(current.join(READY)) {
             Ok(record) => record.starts_with(b"BREENIX-USERLAND 1\n"),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => true, // Flat ext2 root.
             Err(error) => return Err(fail("read current layout record", current, error)),
         };
         let baseline = read_baseline(current)?;
+        let legacy_image = baseline.is_none() && breenfs && installed_breenfs_image()?;
         let mut paths = Vec::new();
         let mut uncopyable = false;
         for (path, current_digest) in entries(current, None, legacy_shared)? {
-            if baseline.get(&path) == Some(&current_digest)
+            if (legacy_image && breenfs_payload(&path))
+                || baseline.as_ref().and_then(|files| files.get(&path)) == Some(&current_digest)
                 || (!layout::SHARED.contains(&top_level(&path))
                     && incoming(source, &path, breenfs)?.as_ref() == Some(&current_digest))
             {

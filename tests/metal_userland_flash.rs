@@ -67,14 +67,17 @@ fn legacy_breenfs(scratch: &Path) {
     fs::write(current.join("bin/retired"), b"old image only").unwrap();
     fs::write(current.join(".complete"), b"BREENIX-USERLAND 2\nold\n").unwrap();
 
-    let result = LocalFiles::inspect(&current, &source, true, false);
+    let result = LocalFiles::inspect(&current, &source, true, false, || Ok(true));
     let files = result.unwrap_or_else(|error| panic!("the legacy BreenFS image should upgrade: {error}"));
     assert!(files.is_empty(), "the legacy image should use the empty draft");
 
-    let ext2 = LocalFiles::inspect(&current, &source, false, false);
+    let migrated = LocalFiles::inspect(&current, &source, true, false, || Ok(false));
+    assert!(migrated.err().unwrap().contains("/bin/payload"));
+
+    let ext2 = LocalFiles::inspect(&current, &source, false, false, || panic!("ext2 has no BreenFS snapshots"));
     assert!(ext2.err().unwrap().contains("/bin/payload"));
 
     fs::write(current.join(".breenix-image"), b"BREENIX-IMAGE-1\0").unwrap();
-    let with_baseline = LocalFiles::inspect(&current, &source, true, false);
+    let with_baseline = LocalFiles::inspect(&current, &source, true, false, || panic!("the manifest takes precedence"));
     assert!(with_baseline.err().unwrap().contains("/bin/payload"));
 }

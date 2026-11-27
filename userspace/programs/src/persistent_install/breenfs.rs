@@ -60,7 +60,9 @@ impl Upgrade {
         let draft = format!("{id}.new");
         let current = format!("gen-{}", slots[0]);
         remount(Some(&current), true)?;
-        let local_files = local::LocalFiles::inspect(Path::new(SYSTEM), source, true, carry)?;
+        let local_files = local::LocalFiles::inspect(Path::new(SYSTEM), source, true, carry, || {
+            installed_image(slots[0])
+        })?;
         remount(None, false)?;
         {
             let system = open(SYSTEM)?;
@@ -121,6 +123,25 @@ impl Upgrade {
         })?;
         println!("[persistent] layout set-ID check passed");
         Ok(totals)
+    }
+}
+
+fn installed_image(id: &str) -> Result<bool, String> {
+    // Every BreenFS image install snapshots home before it publishes gen-{id}.
+    // The ext2 migration can import modified files and creates no such snapshot.
+    // Persistent boots expose gen-{id} only through a read-only generation view.
+    let expected = format!("pre-upgrade-{id}");
+    let home = open(HOME)?;
+    let mut roots = SnapshotNext { id: 0, root: request("", 0) };
+    loop {
+        ioctl(&home, SNAPSHOT_NEXT, &mut roots)?;
+        if roots.id == 0 { return Ok(false); }
+        let root = &roots.root;
+        if root.flags == SNAPSHOT_READ_ONLY
+            && root.name.get(..root.name_len as usize) == Some(expected.as_bytes())
+        {
+            return Ok(true);
+        }
     }
 }
 

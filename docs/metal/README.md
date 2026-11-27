@@ -1066,8 +1066,11 @@ those generations and the in-flight generation. The host's `disk.json` does not 
 Before copying the new userland or reclaiming generations, `/sbin/persistent-install` checks the selected
 generation offline. It compares regular files and symlinks by path, contents or link target, mode and owner
 against the pristine manifest recorded at install and against the incoming image. It lists local paths in the
-install boot's serial log and refuses publication. For an older generation without a manifest, every difference
-from the incoming image is a possible local change.
+install boot's serial log and refuses publication. For an older BreenFS generation without a manifest, a matching
+read-only `pre-upgrade-<id>` home snapshot identifies a generation installed directly from an image. Its
+`/bin`, `/sbin` and `/usr` were served read-only, so normal image differences use the empty draft. With no
+manifest or matching snapshot, including a generation copied from ext2 by migration, every difference from the
+incoming image is a possible local change.
 
 Rerun with `--carry-local` to install the new image and retain the listed paths. A path the new image leaves
 available keeps its original location. A conflict is saved under `/.breenix-carried/<previous-id>/` with its

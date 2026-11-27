@@ -619,7 +619,7 @@ pub(crate) fn install_tree_with_local(source: &Path, target: &Path, id: &str, pr
         Some(_) => return Err("invalid current userland generation".into()),
         None => None,
     };
-    let local_files = current.as_ref().map(|path| local::LocalFiles::inspect(path, source, false, carry))
+    let local_files = current.as_ref().map(|path| local::LocalFiles::inspect(path, source, false, carry, || Ok(false)))
         .transpose()?.unwrap_or_default();
     if let Some(retained) = retained {
         reclaim(target, retained, copier.checkpoint)?;
