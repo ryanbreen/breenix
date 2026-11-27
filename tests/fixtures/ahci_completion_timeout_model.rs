@@ -451,14 +451,26 @@ fn active_timeout_stops_the_engine_and_blocks_dma_reuse() {
     assert!(wait_for_first().is_err());
     MODEL.with_borrow(|device| assert_eq!(device.stop_writes, 1));
     assert!(ensure_port_ready(1, 0).is_err(), "CI and CR still set");
-    MODEL.with_borrow_mut(|device| device.cmd &= !PORT_CMD_CR);
-    assert!(ensure_port_ready(1, 0).is_err(), "CI still set");
+    // Even after COMRESET, clearing just one of CR and CI is insufficient.
+    for (ci, cr) in [(1, 0), (0, PORT_CMD_CR)] {
+        reset();
+        assert!(wait_for_first().is_err());
+        MODEL.with_borrow_mut(|device| {
+            device.ci[0] = ci;
+            device.cmd = cr;
+            device.interrupts_enabled = true;
+        });
+        assert!(ensure_port_ready(1, 0).is_err(), "CI={ci:#x} CR={cr:#x}");
+        MODEL.with_borrow(|device| {
+            assert!(device.reset_finished);
+            assert_eq!(device.cmd & PORT_CMD_ST, 0);
+        });
+    }
+
+    reset();
+    assert!(wait_for_first().is_err());
     MODEL.with_borrow_mut(|device| {
         device.ci[0] = 0;
-        device.cmd |= PORT_CMD_CR;
-    });
-    assert!(ensure_port_ready(1, 0).is_err(), "CR still set");
-    MODEL.with_borrow_mut(|device| {
         device.cmd &= !PORT_CMD_CR;
         device.interrupts_enabled = true;
     });
