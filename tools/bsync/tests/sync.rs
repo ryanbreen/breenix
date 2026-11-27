@@ -44,6 +44,21 @@ fn steps(actions: &[Action]) -> Vec<(&'static str, &str)> {
 }
 
 #[test]
+fn trailing_slash_excludes_build_at_any_depth_from_deletion() {
+    let local = Fixture::new();
+    let remote = Fixture::new();
+    remote.file("nested/build/keep", "protected", 0o644);
+    remote.file("nested/build-output", "remote only", 0o644);
+    let excludes = Excludes::new(&["build/".into()]).unwrap();
+    let src = scan(&local.0, &excludes).unwrap();
+    let dst = scan(&remote.0, &Excludes::default()).unwrap();
+    assert_eq!(
+        steps(&plan(&src, &dst, &excludes, true).unwrap()),
+        [("DELETE", "nested/build-output")]
+    );
+}
+
+#[test]
 fn plans_content_metadata_and_deletions_from_fixture_trees() {
     let local = Fixture::new();
     fs::set_permissions(&local.0, fs::Permissions::from_mode(0o755)).unwrap();

@@ -28,6 +28,7 @@ impl Excludes {
     pub fn new(patterns: &[String]) -> Result<Self> {
         let mut compiled = Vec::new();
         for text in patterns {
+            let text = text.trim_end_matches('/');
             let pattern = text.strip_prefix('/').unwrap_or(text);
             if pattern.is_empty() {
                 return Err("empty exclude glob".into());

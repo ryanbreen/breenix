@@ -30,7 +30,8 @@ verifies the length and SHA-256 before publishing the file by rename.
 
 Repeat `--exclude` to skip multiple patterns. A pattern without a slash
 matches names at any depth. A pattern with a slash matches a path relative
-to the tree root, with an optional leading slash. `*` and `?` stay within
+to the tree root, with an optional leading slash. Trailing slashes are
+ignored, so `build/` matches the same paths as `build`. `*` and `?` stay within
 a path component and `**` as a full component spans directories. An
 excluded directory and its descendants are also protected from deletion.
 `--delete` removes destination-only entries and allows file/directory
