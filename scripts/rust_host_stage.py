@@ -349,12 +349,10 @@ def tool_target_link_inputs(fixture, k6):
 
 
 def stage_rust_link(image, arch, artifacts, fixture, records):
-    if arch != 'x86_64':
-        raise ValueError('the recorded Rust linker fixture is only built for x86-64')
     prefix = '/usr/libexec/breenix/rust-link'
-    k5 = json.loads((records / 'k5/x86_64.json').read_text())
-    receipt = records / 'k6/x86_64.json'
-    expectations = records / 'k6/expect.json'
+    k5 = json.loads((records / f'k5/{arch}.json').read_text())
+    receipt = records / f'k6/{arch}.json'
+    expectations = records / 'k6' / ('expect.json' if arch == 'x86_64' else f'expect-{arch}.json')
     k6 = json.loads(receipt.read_text())
     expect = json.loads(expectations.read_text())
     if (k6['rustc_sha256'], k6['rustc_commit']) != (k5['mac_rustc_sha256'], k5['fork_commit']):
@@ -499,7 +497,7 @@ def main():
     records = ROOT / 'toolchain/rust-host'
     rustc = PROGRAMS / 'target/rustc' / args.arch
     rust_link = PROGRAMS / 'target/rust-link' / args.arch
-    retained = Path.home() / 'Library/Caches/breenix-e25/k6/fixture'
+    retained = Path.home() / 'Library/Caches/breenix-e25/k6' / ('fixture' if args.arch == 'x86_64' else args.arch)
     fixture = Path(os.environ.get('BREENIX_K6_FIXTURE', retained)).expanduser()
     cargo_needed = bool({'cargo', 'd1', 'self-host'}.intersection(suites))
     hosted_toolchain = 'rustc' in suites or cargo_needed
