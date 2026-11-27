@@ -40,7 +40,41 @@ def select_hosted_tls(crate):
         replace_line(pthread, line, f'{line}{indent}{enabled}\n{addition}\n')
 
 
-def prepare(source, build):
+def select_aarch64_hosted_tls(crate):
+    # Keep the ordinary pthread source and its artifact locations untouched.
+    root = crate / 'src/lib.rs'
+    with root.open('a') as source:
+        source.write('\nmod entropy;\nmod tls_module;\nmod tls_variant_i;\nmod dl_abi;\n')
+    pthread = crate / 'src/pthread.rs'
+    for original, replacement in (
+        ('\nmod spin;\n',
+         '\nmod spin;\n#[path = "pthread/hosted_tls_aarch64.rs"]\npub(crate) mod hosted_tls;\n'),
+        ('\n    reads: *mut ReadBlock,\n',
+         "\n    reads: *mut ReadBlock,\n    dl_error: core::cell::Cell<Option<&'static core::ffi::CStr>>,\n"),
+        ('\n            reads: null_mut(),\n',
+         '\n            reads: null_mut(),\n            dl_error: core::cell::Cell::new(None),\n'),
+        ('unsafe fn control_len() -> Option<usize> {\n    let align = TLS_ALIGN.max(16);',
+         'unsafe fn control_len() -> Option<usize> {\n'
+         '    let (size, align) = hosted_tls::layout()\n'
+         '        .map_or((TLS_SIZE, TLS_ALIGN.max(16)), |layout| (layout.end, layout.align));'),
+        ('\n        .checked_add(TLS_SIZE)?\n        .checked_add(align * 2)?',
+         '\n        .checked_add(size)?\n        .checked_add(align.checked_mul(2)?)?'),
+        ('\n    let align = TLS_ALIGN.max(16);\n    let block',
+         '\n    let layout = hosted_tls::layout();\n'
+         '    let align = layout.map_or(TLS_ALIGN.max(16), |layout| layout.align);\n'
+         '    let block'),
+        ('(tp, rounded(tp + 16, align).unwrap())',
+         '(tp, rounded(tp + 16, TLS_ALIGN.max(16)).unwrap())'),
+        ('    if TLS_FILE != 0 {\n',
+         '    if layout.is_some() {\n'
+         '        hosted_tls::initialize(tp as *mut u8);\n'
+         '    } else if TLS_FILE != 0 {\n'),
+        ('\npub(crate) fn static_tls_data()', '\n#[cfg(not(feature = "hosted-rustc"))]\npub(crate) fn static_tls_data()'),
+    ):
+        replace_line(pthread, original, replacement)
+
+
+def prepare(source, build, arch):
     crate = build / source.name
     crate.mkdir(parents=True, exist_ok=True)
     for name in ('Cargo.toml', 'Cargo.lock'):
@@ -59,12 +93,18 @@ def prepare(source, build):
                  '\n#[path = "crt_shared.rs"]\nmod crt;\n')
     replace_line(crate / 'src/lifecycle.rs', '\npub(crate) unsafe fn run_main<T>(',
                  '\n#[cfg(not(feature = "hosted-rustc"))]\npub(crate) unsafe fn run_main<T>(')
-    replace_line(crate / 'src/lib.rs', '\nmod link;\n',
-                 '\n#[cfg_attr(all(feature = "hosted-rustc", target_arch = "x86_64"), '
-                 'path = "link_hosted.rs")]\nmod link;\n')
-    select_hosted_tls(crate)
+    if arch == 'aarch64':
+        replace_line(crate / 'src/lib.rs', '\nmod link;\n',
+                     '\n#[path = "link_hosted.rs"]\nmod link;\n')
+        select_aarch64_hosted_tls(crate)
+    else:
+        replace_line(crate / 'src/lib.rs', '\nmod link;\n',
+                     '\n#[cfg_attr(all(feature = "hosted-rustc", target_arch = "x86_64"), '
+                     'path = "link_hosted.rs")]\nmod link;\n')
+        select_hosted_tls(crate)
     print(crate / 'Cargo.toml')
 
 
 if __name__ == '__main__':
-    prepare(*[Path(arg).resolve() for arg in sys.argv[1:]])
+    source, build = (Path(arg).resolve() for arg in sys.argv[1:3])
+    prepare(source, build, sys.argv[3])

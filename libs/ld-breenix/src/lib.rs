@@ -10,6 +10,8 @@ pub mod runtime;
 mod scope;
 #[path = "../../libbreenix-libc/src/tls_module.rs"]
 pub mod tls_module;
+#[path = "../../libbreenix-libc/src/tls_variant_i.rs"]
+mod tls_variant_i;
 
 pub use object::{Object, Patch};
 pub use scope::{Dependency, InitArray, InitKind, InitState, Scope};

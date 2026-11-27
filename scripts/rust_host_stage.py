@@ -141,11 +141,9 @@ def stage_llvm(image, selection, arch, suite, artifacts, corpus, linker):
     return stage_files(image, [prefix, f'{prefix}/bin', f'{prefix}/lib', f'{prefix}/corpus'], entries)
 
 
-def stage_dynamic(image, selection, arch, artifacts):
+def stage_dynamic(image, selection, artifacts):
     if 'dynamic' not in selection.split(','):
         return {}
-    if arch != 'x86_64':
-        raise ValueError('the dynamic interpreter is only built for x86-64')
     prefix = '/usr/libexec/breenix/dynamic'
     entries = [('/sbin/suite-dynamic', artifacts / 'suite-dynamic', '0755')]
     entries.extend((f'/lib/{name}', artifacts / name, '0755') for name in ('ld-breenix.so', 'libc.so'))
@@ -476,7 +474,10 @@ def main():
     args = parser.parse_args()
     suites = args.suite.split(',')
     release = PROGRAMS / f'target/hosted/{args.arch}-breenix-hosted/release'
-    kd = Path(os.environ.get('BREENIX_KD_BUILD_DIR', PROGRAMS / 'target/kd'))
+    kd_default = PROGRAMS / 'target/kd'
+    if args.arch == 'aarch64':
+        kd_default /= 'aarch64'
+    kd = Path(os.environ.get('BREENIX_KD_BUILD_DIR', kd_default))
     cache = Path(os.environ.get('BREENIX_RUSTC_PORT_BUILDS', ROOT / 'build/rustc-port'))
     records = ROOT / 'toolchain/rust-host'
     rustc = PROGRAMS / 'target/rustc' / args.arch
@@ -499,7 +500,7 @@ def main():
     staged.update(stage_llvm(args.image, args.suite, args.arch, release / 'suite-llvm',
                              PROGRAMS / 'target/llvm' / args.arch,
                              ROOT / 'toolchain/rust-host/k4/corpus', PROGRAMS / 'linker.ld'))
-    staged.update(stage_dynamic(args.image, args.suite, args.arch, kd))
+    staged.update(stage_dynamic(args.image, args.suite, kd))
     if 'rust-link' in suites:
         staged.update(stage_rust_link(args.image, args.arch, rust_link, fixture, records))
     if hosted_toolchain:

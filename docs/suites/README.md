@@ -2029,10 +2029,11 @@ artifacts, fixture replay and guest acceptance.
 
 ## Dynamic linking
 
-Select `dynamic` explicitly on x86-metal. The launcher builds the feature-gated
+Select `dynamic` explicitly on x86-metal or ARM64 QEMU. The launcher builds the
 runner, interpreter, shared libc and fixtures with
-`userspace/programs/build.sh --dynamic`. It stages them on the selected test
-image and records the verified file digests in `build.json` under `stagedFiles`.
+`userspace/programs/build.sh --arch ARCH --dynamic`. The stager verifies each
+file digest by reading it back from the test image. The metal build stores
+the digests in `build.json` under `stagedFiles`.
 
 The probe uses the hosted CRT, `libkd-probe.so` from its own directory via
 `$ORIGIN`, and the shared `libc.so` from `/lib`. It checks
@@ -2040,8 +2041,12 @@ The probe uses the hosted CRT, `libkd-probe.so` from its own directory via
 `AT_BASE` against the mapped interpreter header and backing file. A second
 link names an absent interpreter and the runner checks that `execve` returns
 `ENOENT` in the original caller with no child. The relocation probe checks
-the AMD64 X2 values and TLS module descriptor, then checks that a spawned
-thread starts with a distinct zeroed 48-byte TLS block.
+the target's X2 values and TLS descriptor, then checks that a spawned thread
+starts with a distinct zeroed 48-byte TLS block. On AArch64 it checks the
+TLSDESC result against TPIDR_EL0 in both threads. The panic probe catches a
+Rust panic across a DSO boundary and checks that the DSO cleanup ran.
+
+The original KD plan set these provisional R240 allowances.
 
 | Case | Predicted R240 time | Provisional allowance |
 |---|---:|---:|
@@ -2051,9 +2056,7 @@ thread starts with a distinct zeroed 48-byte TLS block.
 
 Each positive case loads two small DSOs and performs a bounded set of
 comparisons, with one thread creation and join in the TLS case. The negative
-case ends during interpreter lookup. The allowances total 180 seconds, or
-225 seconds with 25% reserve, within the 420-second metal suite deadline.
-The times are predictions pending KD acceptance.
+case ends during interpreter lookup.
 
 ## Developer SDK
 

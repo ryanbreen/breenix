@@ -643,7 +643,8 @@ mod aarch64 {
                 "{name}"
             );
         }
-        for kind in [8, 1031, u32::MAX] {
+        assert_eq!(error(slot, 1031, 0), ErrorKind::InvalidRelocation);
+        for kind in [8, u32::MAX] {
             assert_eq!(error(slot, kind, 0), ErrorKind::UnsupportedRelocation(kind));
         }
     }

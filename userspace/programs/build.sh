@@ -41,7 +41,7 @@
 #   ./userspace/programs/build.sh --arch x86_64|aarch64 --kd-libc
 #     Link the hosted compiler's libc.so and executable CRT.
 #   ./userspace/programs/build.sh --dynamic
-#     Build the x86-64 dynamic suite, its runtime and fixtures into target/kd.
+#     Build the dynamic suite, its runtime and fixtures into target/kd.
 #   ./userspace/programs/build.sh --arch x86_64|aarch64 --kd-loader
 #     Link the ELF interpreter into target/kd (x86-64) or target/kd/aarch64.
 
@@ -152,7 +152,7 @@ if [[ "$RUSTC_PORT" == 1 ]]; then
         --stage-hosted "$SCRIPT_DIR/target/rustc/$ARCH"
 fi
 if [[ "$DYNAMIC" == 1 ]]; then
-    [[ "$ARCH" == x86_64 && "$KD_LIBC" == 0 && "$KD_LOADER" == 0 &&
+    [[ ( "$ARCH" == x86_64 || "$ARCH" == aarch64 ) && "$KD_LIBC" == 0 && "$KD_LOADER" == 0 &&
        "$CXX_RUNTIME" == 0 && "$LLVM" == 0 && "$BUNWIND" == 0 &&
        "$RUST_HOST" == 0 && -z "$HOSTED_BIN" && ${#HOSTED_FEATURES[@]} -eq 0 ]] || usage
 fi
@@ -228,21 +228,21 @@ if [[ "$DYNAMIC" == 1 ]]; then
     mkdir -p "$kd_dir"
     BREENIX_KD_BUILD_DIR="$(cd "$kd_dir" && pwd)"
     export BREENIX_KD_BUILD_DIR
-    "$SCRIPT_DIR/build.sh" --arch x86_64 --kd-libc
+    "$SCRIPT_DIR/build.sh" --arch "$ARCH" --kd-libc
     # A combined image links the dynamic probes against the staged runtime.
     if [[ -n "${BREENIX_KD_LIBC_INPUT:-}" ]]; then
         cp "$BREENIX_KD_LIBC_INPUT" "$BREENIX_KD_BUILD_DIR/libc.so"
     fi
-    "$SCRIPT_DIR/build.sh" --arch x86_64 --kd-loader
-    "$SCRIPT_DIR/build.sh" --arch x86_64 --hosted-bin suite-dynamic --features dynamic
+    "$SCRIPT_DIR/build.sh" --arch "$ARCH" --kd-loader
+    "$SCRIPT_DIR/build.sh" --arch "$ARCH" --hosted-bin suite-dynamic --features dynamic
     cp "$SCRIPT_DIR/target/hosted/$TARGET_DIR-hosted/release/suite-dynamic" "$BREENIX_KD_BUILD_DIR/"
     cd "$SCRIPT_DIR"
     rust_tools="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin"
-    clang="${BREENIX_CC_CLANG:-$("$PROJECT_ROOT/scripts/breenix-cc" --arch x86_64 --tool-dir)/clang}"
+    clang="${BREENIX_CC_CLANG:-$("$PROJECT_ROOT/scripts/breenix-cc" --arch "$ARCH" --tool-dir)/clang}"
     # The panic probe links bunwind as the hosted compiler's driver does.
-    "$SCRIPT_DIR/build.sh" --arch x86_64 --bunwind
+    "$SCRIPT_DIR/build.sh" --arch "$ARCH" --bunwind
     python3 "$PROJECT_ROOT/scripts/rust-host/build-dynamic-fixtures.py" \
-        "$BREENIX_KD_BUILD_DIR" "$rust_tools" "$clang" \
+        "$ARCH" "$BREENIX_KD_BUILD_DIR" "$rust_tools" "$clang" \
         "$("$PROJECT_ROOT/scripts/rust-fork.sh" hosted-library)"
     exit 0
 fi
@@ -269,7 +269,7 @@ if [[ "$KD_LIBC" == 1 ]]; then
     unset CARGO_ENCODED_RUSTFLAGS __CARGO_TESTS_ONLY_SRC_ROOT
     mkdir -p "$kd_dir"
     shared_manifest="$(python3 "$PROJECT_ROOT/scripts/rust-host/prepare-kd-libc.py" \
-        "$libc_dir" "$kd_dir/libc-source")"
+        "$libc_dir" "$kd_dir/libc-source" "$ARCH")"
     libc_target="$HOSTED_TARGET_JSON"
     if [[ "$ARCH" == aarch64 ]]; then
         # Rust emits an archive here. LLD makes the DSO separately, so keep

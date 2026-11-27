@@ -910,7 +910,7 @@ impl SuiteBuilds {
             .collect::<Vec<_>>().join(" ");
         let hosted = staged.iter().filter(|entry| {
             if entry.as_str() == "suite-dynamic" {
-                let call = r#""$SCRIPT_DIR/build.sh" --arch x86_64 --hosted-bin suite-dynamic --features dynamic"#;
+                let call = r#""$SCRIPT_DIR/build.sh" --arch "$ARCH" --hosted-bin suite-dynamic --features dynamic"#;
                 return build.lines().any(|line| line.trim() == call);
             }
             let shell_call = format!("--hosted-bin {entry} --features ");

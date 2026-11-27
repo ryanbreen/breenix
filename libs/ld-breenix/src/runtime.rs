@@ -508,10 +508,12 @@ fn initialize_libc(
     }
     let libc = objects
         .iter()
-        .find(|object| object.name().ends_with(b"/libc.so"));
+        .find(|object| object.matches_name(b"libc.so"));
     let lookup =
         |name| libc.and_then(|object| object.lookup(name).unwrap_or_else(|error| fail(error)));
     if count != 0 {
+        // On AArch64 this installs the same initial layout used to relocate
+        // TLSDESC, before libc allocates the main thread or runs constructors.
         let address = lookup(b"__breenix_libc_register_tls")
             .unwrap_or_else(|| fail("no Breenix libc TLS registration export"));
         // SAFETY: the shared libc export uses the TlsModule startup ABI.

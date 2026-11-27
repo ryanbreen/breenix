@@ -2,7 +2,7 @@
   "target": "aarch64-breenix-hosted",
   "stage0": "nightly-2025-06-24",
   "sha256": {
-    "libc.so": "4a259ccfd9f834c9ec630cd0309f8bb4b2af0b6ae03178ace877f009ca85ea40",
+    "libc.so": "572bc86088a24df8ef184999f7b95e2318bcceb1e3145f43831dcc478809093b",
     "breenix-crt.o": "71b96b0a7b6e8eb37ffe65ac0d899f1905c1adc5726060675dd168180f1cee6f",
     "hosted_dso_handle.o": "82c49b57ddabd0149be187af14ee82844b188766e3550063925088ef1a9513b8"
   }

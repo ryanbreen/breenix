@@ -2,6 +2,7 @@ use core::ops::Range;
 
 use crate::elf::{Bytes, Image, Machine, PF_R, PF_W, PT_DYNAMIC, PT_GNU_RELRO, PT_TLS};
 use crate::tls_module::TlsModule;
+use crate::tls_variant_i::StaticTls;
 use crate::{Error, ErrorKind};
 
 const DT_NEEDED: u64 = 1;
@@ -42,6 +43,7 @@ const STB_GLOBAL: u8 = 1;
 const STB_WEAK: u8 = 2;
 const STV_DEFAULT: u8 = 0;
 const STV_PROTECTED: u8 = 3;
+const STT_TLS: u8 = 6;
 
 const R_X86_64_64: u32 = 1;
 const R_X86_64_GLOB_DAT: u32 = 6;
@@ -49,11 +51,26 @@ const R_X86_64_JUMP_SLOT: u32 = 7;
 const R_X86_64_RELATIVE: u32 = 8;
 const R_X86_64_DTPMOD64: u32 = 16;
 
-// AAELF64 2025Q1 §5.7.15, limited to the non-TLS kinds reported by ARM X2.
+// AAELF64 2025Q1 §5.7.15, limited to the kinds reported by ARM X2.
 const R_AARCH64_ABS64: u32 = 257;
 const R_AARCH64_GLOB_DAT: u32 = 1025;
 const R_AARCH64_JUMP_SLOT: u32 = 1026;
 const R_AARCH64_RELATIVE: u32 = 1027;
+const R_AARCH64_TLSDESC: u32 = 1031;
+
+// AAELF64 §5.7.11: the resolver replaces x0 with the TP-relative offset,
+// leaving the remaining register state intact. The caller adds TPIDR_EL0.
+#[cfg(target_arch = "aarch64")]
+#[unsafe(naked)]
+unsafe extern "C" fn tlsdesc_resolver(_descriptor: *const u64) -> u64 {
+    core::arch::naked_asm!("ldr x0, [x0, #8]", "ret");
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+unsafe extern "C" fn tlsdesc_resolver(descriptor: *const u64) -> u64 {
+    // SAFETY: the caller supplies the two live descriptor words.
+    unsafe { descriptor.add(1).read() }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct Object<'a> {
@@ -471,6 +488,12 @@ impl<'a> Object<'a> {
 
     /// Find an externally visible definition in this object's SysV hash table.
     pub fn lookup(self, name: &[u8]) -> Result<Option<u64>, Error<'a>> {
+        self.lookup_symbol(name)?
+            .map(|symbol| self.symbol_address(symbol))
+            .transpose()
+    }
+
+    fn lookup_symbol(self, name: &[u8]) -> Result<Option<Symbol<'a>>, Error<'a>> {
         let bucket = u64::from(elf_hash(name)) % self.buckets;
         let mut link = 4 * (2 + bucket);
         // An index visited twice can't lead to an unseen definition.
@@ -488,7 +511,7 @@ impl<'a> Object<'a> {
                 && matches!(symbol.binding, STB_GLOBAL | STB_WEAK)
                 && matches!(symbol.visibility, STV_DEFAULT | STV_PROTECTED)
             {
-                return self.symbol_address(symbol).map(Some);
+                return Ok(Some(symbol));
             }
             link = 4 * (2 + self.buckets + index);
         }
@@ -604,6 +627,59 @@ impl<'a> Object<'a> {
         })
     }
 
+    fn tlsdesc_offset(
+        self,
+        scope: &[Self],
+        index: u64,
+        addend: i64,
+        entry: Bytes<'a>,
+    ) -> Result<u64, Error<'a>> {
+        let invalid = || entry.error(ErrorKind::InvalidRelocation);
+        // A null symbol describes a local offset in the requesting template.
+        let mut owner = self;
+        let mut value = 0;
+        if index != 0 {
+            if index >= self.chains {
+                return Err(invalid());
+            }
+            let mut symbol = self.symbol(index)?;
+            if symbol.binding != STB_LOCAL && symbol.visibility == STV_DEFAULT {
+                let mut definition = None;
+                for &object in scope {
+                    if let Some(found) = object.lookup_symbol(symbol.name)? {
+                        definition = Some((object, found));
+                        break;
+                    }
+                }
+                (owner, symbol) = definition.ok_or_else(|| Error {
+                    detail: symbol.name,
+                    ..entry.error(ErrorKind::UndefinedSymbol)
+                })?;
+            }
+            if symbol.kind != STT_TLS
+                || !matches!(symbol.binding, STB_LOCAL | STB_GLOBAL | STB_WEAK)
+                || !(1..=0xfeff).contains(&symbol.section)
+            {
+                return Err(owner.at(symbol.offset, ErrorKind::InvalidSymbol));
+            }
+            value = symbol.value;
+        }
+
+        let mut layout = StaticTls::new();
+        for &object in scope {
+            if let Some(template) = object.tls {
+                let base = layout.push(template).ok_or_else(invalid)? as u64;
+                if object.name() == owner.name() && object.bias() == owner.bias() {
+                    return value.checked_add_signed(addend)
+                        .filter(|&offset| offset < template.mem_size as u64)
+                        .and_then(|offset| base.checked_add(offset))
+                        .ok_or_else(invalid);
+                }
+            }
+        }
+        Err(invalid())
+    }
+
     /// Calculate stores from immutable file bytes for eager relocation.
     /// Discard the pending load on error. Stores emitted before the error
     /// may already have been applied to the pending image by the caller.
@@ -613,27 +689,47 @@ impl<'a> Object<'a> {
             .filter(|object| object.tls.is_some())
             .position(|object| object.name() == self.name() && object.bias() == self.bias())
             .map_or(0, |slot| slot + 1);
-        self.relocate_with_module(scope, module, write)
+        self.relocate_impl(scope, module, true, write)
     }
 
+    #[cfg(feature = "interpreter")]
     pub(crate) fn relocate_with_module(
         self,
         scope: &[Self],
         module: usize,
+        write: impl FnMut(Patch),
+    ) -> Result<(), Error<'a>> {
+        self.relocate_impl(scope, module, false, write)
+    }
+
+    fn relocate_impl(
+        self,
+        scope: &[Self],
+        module: usize,
+        static_tls: bool,
         mut write: impl FnMut(Patch),
     ) -> Result<(), Error<'a>> {
         for table in [self.rela, self.plt].into_iter().flatten() {
             for pos in (0..table.data.len() as u64).step_by(RELA_SIZE as usize) {
                 let entry = table.slice(pos, RELA_SIZE)?;
-                let address = self.image.address(entry.u64(0)?, 8, PF_W, entry.offset)?;
                 let machine = self.image.machine;
+                let info = entry.u64(8)?;
+                let kind = info as u32;
+                let tlsdesc = machine == Machine::Aarch64 && kind == R_AARCH64_TLSDESC;
+                let size = if tlsdesc { 16 } else { 8 };
+                let address = self.image.address(entry.u64(0)?, size, PF_W, entry.offset)?;
                 if machine == Machine::Aarch64 && address % 8 != 0 {
                     return Err(entry.error(ErrorKind::InvalidRelocation));
                 }
-                let info = entry.u64(8)?;
                 let index = info >> 32;
                 let addend = entry.u64(16)? as i64;
-                let value = match (machine, info as u32) {
+                if tlsdesc && static_tls {
+                    let offset = self.tlsdesc_offset(scope, index, addend, entry)?;
+                    write(Patch { address, value: tlsdesc_resolver as *const () as u64 });
+                    write(Patch { address: address + 8, value: offset });
+                    continue;
+                }
+                let value = match (machine, kind) {
                     (Machine::Amd64, R_X86_64_RELATIVE)
                     | (Machine::Aarch64, R_AARCH64_RELATIVE) => {
                         // Breenix's single-bias RELATIVE records name the null symbol.

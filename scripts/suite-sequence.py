@@ -108,8 +108,8 @@ def resolve(spec, target, has_3d=False, read=read_repo):
         if len(set(ids)) != len(ids):
             raise ValueError(f"a suite is listed twice: {spec}")
         for suite in ids:
-            if suite == "dynamic" and target != "x86-metal":
-                raise ValueError("suite dynamic requires x86-metal")
+            if suite == "dynamic" and target not in ("x86-metal", "arm64-qemu"):
+                raise ValueError("suite dynamic requires x86-metal or arm64-qemu")
             loaded = manifest(suite)
             if loaded is None:
                 raise ValueError(f"no manifest docs/suites/{suite}.json")
