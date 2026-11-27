@@ -8,6 +8,8 @@ use std::path::{Component, Path, PathBuf};
 use crate::crypto::sha256::sha256;
 
 const RECORD: &str = ".breenix-factory";
+const OLD_SUDO_DEFAULT: &[u8] = b"permit %wheel as root\n";
+const NEW_SUDO_DEFAULT: &[u8] = b"permit %wheel as root nopass\n";
 type Result<T> = std::result::Result<T, String>;
 
 fn io<T>(result: std::io::Result<T>, path: &Path) -> Result<T> {
@@ -42,6 +44,16 @@ fn legacy_default(name: &str) -> Option<&'static [u8]> {
 }
 fn machine_owned(name: &str) -> bool {
     matches!(name, "passwd" | "group" | "shadow" | "sudo.policy" | "login.defs") || name.starts_with("ssh/")
+}
+
+// On the first upgrade to the new default, replace only the stock policy.
+fn stock_sudo_policy(path: &Path, etc: &Path) -> Result<bool> {
+    let meta = io(fs::symlink_metadata(path), path)?;
+    let parent = io(fs::metadata(etc), etc)?;
+    Ok(meta.is_file() && meta.nlink() == 1 && meta.mode() & 0o7777 == 0o440
+        && (meta.uid(), meta.gid()) == (parent.uid(), parent.gid())
+        && meta.len() == OLD_SUDO_DEFAULT.len() as u64
+        && regular(path)? == OLD_SUDO_DEFAULT)
 }
 fn walk(path: &Path, prefix: &str, files: &mut BTreeMap<String, (Vec<u8>, u32)>) -> Result<()> {
     for entry in io(fs::read_dir(path), path)? {
@@ -130,6 +142,11 @@ pub fn reconcile(root: &Path, generation: &str, checkpoint: &mut dyn FnMut() -> 
         let path = writer.parents(&etc, name)?;
         if matches!(name.as_str(), "passwd" | "group" | "shadow") { continue; }
         if !exists(&path)? { writer.write(&path, bytes, *mode)?; continue; }
+        if name == "sudo.policy" && bytes == NEW_SUDO_DEFAULT && *mode == 0o440
+            && previous.1.get(name).is_none_or(|hash| *hash == digest(OLD_SUDO_DEFAULT))
+            && stock_sudo_policy(&path, &etc)? {
+            writer.write(&path, bytes, *mode)?;
+        }
         if machine_owned(name) { continue; }
         // A symlink or another kind is a local edit. Do not follow it.
         let existing = if io(fs::symlink_metadata(&path), &path)?.is_file() { Some(regular(&path)?) } else { None };

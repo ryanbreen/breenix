@@ -4,8 +4,8 @@
 //! operator's habit; the policy grammar (`libbreenix::accounts::policy`) is
 //! Breenix's own.
 //!
-//! - The policy must be a regular file, root's, mode 0440, one link, and must
-//!   parse, or sudo refuses to run anything.
+//! - The policy must be a regular root:root file at mode 0440 with one link.
+//!   An unavailable or invalid policy leaves wheel with its password rule.
 //! - The command resolves to an absolute path (through PATH
 //!   `/usr/sbin:/usr/bin:/sbin:/bin` when it has no `/`) before the policy check.
 //! - A caller other than root types its own password unless the rule says
@@ -79,15 +79,6 @@ fn resolve(name: &str) -> Option<String> {
         .map(|path| path.to_string_lossy().into_owned())
 }
 
-fn read_policy() -> Result<Vec<policy::Rule>, String> {
-    let meta = fs::symlink_metadata(POLICY).map_err(|e| format!("{POLICY}: {e}"))?;
-    if !meta.is_file() || meta.uid() != 0 || meta.gid() != 0 || meta.mode() & 0o7777 != 0o440 || meta.nlink() != 1 {
-        return Err("policy-mode".into());
-    }
-    policy::parse_policy(&fs::read_to_string(POLICY).map_err(|e| format!("{POLICY}: {e}"))?)
-        .map_err(|_| "policy-syntax".into())
-}
-
 fn cache_path(uid: u32, sid: i32) -> String {
     format!("{CACHE}/{uid}/{sid}")
 }
@@ -141,18 +132,19 @@ fn refuse(caller: &str, target: &str, tty: &str, cmd: &str, why: &str, message: 
 fn run() -> Result<std::convert::Infallible, String> {
     let root = Path::new("/");
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let request = parse(&args).map_err(|e| format!("{e}\nusage: sudo [-u user] [-i] [-n] [command [args...]]"))?;
-    accounts::require_root().map_err(|_| "sudo must be installed set-user-ID root".to_string())?;
-    let defs = session::LoginDefs::read(root);
     let caller_uid = session::real_uid();
     let caller = session::account_by_uid(root, caller_uid);
     let caller_name = caller.as_ref().map(|a| a.name.clone()).unwrap_or_else(|| caller_uid.to_string());
     let tty = session::terminal_name(0).unwrap_or_else(|| "-".into());
+    let request = parse(&args).unwrap_or_else(|e| {
+        refuse(&caller_name, "-", &tty, &args.join(" "), "usage",
+            &format!("{e}\nusage: sudo [-u user] [-i] [-n] [command [args...]]"))
+    });
     let shown = request.command.join(" ");
-    let rules = match read_policy() {
-        Ok(rules) => rules,
-        Err(why) => refuse(&caller_name, &request.target, &tty, &shown, &why, &format!("{POLICY} is not a valid policy ({why}); refusing")),
-    };
+    if accounts::require_root().is_err() {
+        refuse(&caller_name, &request.target, &tty, &shown, "setuid", "sudo must be installed set-user-ID root");
+    }
+    let defs = session::LoginDefs::read(root);
     let entry = match session::validate(root, &request.target) {
         Ok(entry) => entry,
         Err(why) => refuse(&caller_name, &request.target, &tty, &shown, &why.replace(' ', "-"), &format!("cannot run as {}", request.target)),
@@ -167,34 +159,55 @@ fn run() -> Result<std::convert::Infallible, String> {
     };
     let cmd = std::iter::once(program.clone()).chain(request.command.iter().skip(1).cloned()).collect::<Vec<_>>().join(" ");
     if caller_uid != 0 {
-        let caller_account = caller.as_ref().ok_or("the caller has no account")?;
-        let db = accounts::Database::read(root)?;
-        let groups: Vec<String> = db.group.lines()
-            .filter_map(|l| accounts::parse::Group::parse(l.as_bytes()))
-            .filter(|g| caller_account.groups.contains(&g.gid))
-            .filter_map(|g| std::str::from_utf8(g.fields[0]).ok().map(str::to_owned))
-            .collect();
-        let Some(rule) = policy::decide(&rules, &caller_name, &groups, &target.name, &program) else {
+        let db = accounts::Database::read(root).unwrap_or_else(|e| {
+            refuse(&caller_name, &target.name, &tty, &cmd, "accounts", &e)
+        });
+        let caller_account = db.account(&caller_name).filter(|a| a.uid == caller_uid).unwrap_or_else(|| {
+            refuse(&caller_name, &target.name, &tty, &cmd, "caller", "the caller has no account")
+        });
+        let groups = policy::group_names(&db.group, &caller_name, caller_account.gid);
+        let rules = policy::read_policy(Path::new(POLICY));
+        if let Err(why) = &rules {
+            eprintln!("sudo: {why}");
+        }
+        let authentication = policy::authentication(rules.as_deref().ok(), &caller_name, &groups, &target.name, &program);
+        let denied = authentication == policy::Authentication::Denied;
+        let refuse_policy = || {
             refuse(&caller_name, &target.name, &tty, &cmd, "policy", &format!("{caller_name} may not run {program} as {}", target.name));
         };
-        let sid = libbreenix::process::getsid(0).map(|p| p.raw() as i32).unwrap_or(-1);
-        if !rule.nopass && !(tty != "-" && cached(caller_uid, sid, &tty)) {
-            if request.no_prompt {
-                refuse(&caller_name, &target.name, &tty, &cmd, "password-required", "a password is required");
-            }
-            let own = session::validate(root, &caller_name).map_err(|_| "your account cannot authenticate".to_string())?;
-            let terminal = libbreenix::fs::open("/dev/tty", libbreenix::fs::O_RDWR)
-                .map_err(|e| format!("no terminal for the password: {e}"))?;
-            let secret = session::read_password(terminal.raw() as i32, &format!("[sudo] password for {caller_name}: "))?;
-            let _ = libbreenix::io::close(terminal);
-            if !own.password_matches(&secret.0) {
+        if denied && request.no_prompt {
+            refuse_policy();
+        }
+        if authentication.requires_password() {
+            let sid = libbreenix::process::getsid(0).map(|p| p.raw() as i32).unwrap_or(-1);
+            if denied || tty == "-" || !cached(caller_uid, sid, &tty) {
+                if request.no_prompt {
+                    refuse(&caller_name, &target.name, &tty, &cmd, "password-required", "a password is required");
+                }
+                let own = session::validate(root, &caller_name).unwrap_or_else(|_| {
+                    refuse(&caller_name, &target.name, &tty, &cmd, "caller", "your account cannot authenticate")
+                });
+                let terminal = libbreenix::fs::open("/dev/tty", libbreenix::fs::O_RDWR).unwrap_or_else(|e| {
+                    refuse(&caller_name, &target.name, &tty, &cmd, "terminal", &format!("no terminal for the password: {e}"))
+                });
+                let password = session::read_password(terminal.raw() as i32, &format!("[sudo] password for {caller_name}: "));
+                let _ = libbreenix::io::close(terminal);
+                let secret = password.unwrap_or_else(|e| {
+                    refuse(&caller_name, &target.name, &tty, &cmd, "password-input", &e)
+                });
+                let authenticated = own.password_matches(&secret.0);
                 drop(secret);
-                defs.fail_wait();
-                refuse(&caller_name, &target.name, &tty, &cmd, "password", "Authentication failure");
-            }
-            if tty != "-" {
-                if let Err(why) = remember(caller_uid, sid, &tty) {
-                    eprintln!("sudo: authentication not remembered: {why}");
+                if !authenticated {
+                    defs.fail_wait();
+                    refuse(&caller_name, &target.name, &tty, &cmd, "password", "Authentication failure");
+                }
+                if denied {
+                    refuse_policy();
+                }
+                if tty != "-" {
+                    if let Err(why) = remember(caller_uid, sid, &tty) {
+                        eprintln!("sudo: authentication not remembered: {why}");
+                    }
                 }
             }
         }

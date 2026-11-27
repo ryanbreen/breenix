@@ -33,14 +33,20 @@ shipped file says `ROOT_LOGIN no`, so root logs in on the console only. bsshd re
 | `getty [ttyN \| pts/N]` | Serves the console, a virtual terminal or a pseudo-terminal line. Before the prompt it returns a line that the previous session left owned by an account to root (0620, group tty) and records the logout, so that account cannot open the line again; then it revokes the line from the descriptors still open on it (`vhangup`) and opens it again, so a process left from the previous session cannot read the next login's input or write to its screen. |
 | `/bin/login NAME` | Reads the password with echo off, validates the account, refuses root on a pseudo-terminal line under `ROOT_LOGIN no`, prints `Login incorrect` after the failure delay for each refusal, and records the attempt with its reason. A session then follows the steps above. The kernel's console input-provenance report runs on the console and the virtual terminals only. |
 | `/bin/su [-] [-c command] [name]` | 4755 root. The target is root unless named. A caller other than root types the target's password on `/dev/tty`; becoming uid 0 also needs the caller's account in wheel, checked before any password is asked. `-` gives the target's login environment, umask and home; without it the caller's environment and directory stay, with HOME, SHELL, USER and LOGNAME set to the target's and PATH reset for root. |
-| `/usr/bin/sudo [-u user] [-i] [-n] [command]` | 4755 root. The policy `/etc/sudo.policy` must be a regular root-owned file at 0440 with one link and must parse. The command resolves to an absolute path (through `/usr/sbin:/usr/bin:/sbin:/bin` when it has no `/`) before the policy check, and runs as that path with its arguments as given, not through a shell. The caller types their own password unless the rule says `nopass`; a success is remembered for 5 minutes for that session and terminal in `/run/sudo/<uid>/<session>`, and `-n` does not ask. The command gets PATH as above, the target's HOME, USER and LOGNAME, TERM kept, SUDO_USER and SUDO_COMMAND, umask 022 and the target's groups and IDs; `-i` also sets SHELL and starts in the target's home, and with no command runs the target's login shell there. |
+| `/usr/bin/sudo [-u user] [-i] [-n] [command]` | 4755 root. Each invocation by a non-root caller reads `/etc/sudo.policy`. The command resolves to an absolute path (through `/usr/sbin:/usr/bin:/sbin:/bin` when it has no `/`) before the policy check and runs with its arguments as given. When a password is required, sudo asks for the caller's own password and remembers a successful authentication for 5 minutes for that session and terminal in `/run/sudo/<uid>/<session>`. Use `-n` to disable prompting. The command gets PATH as above, the target's HOME, USER and LOGNAME, TERM kept, SUDO_USER and SUDO_COMMAND, umask 022 and the target's groups and IDs. The `-i` flag also sets SHELL, starts in the target's home and runs the target's login shell when no command is given. |
 | `/usr/bin/passwd [name]` | 4755 root. Your own password after the current one, typed twice; root may set any account's. The accounts library checks the caller from the kernel's real user ID and writes a fresh 100000-round hash. |
 | `bsshd` | Resolves the account through `session::validate`, refuses uid 0, reads `~/.ssh/authorized_keys` only when the file, `~/.ssh`, the home and each directory above are owned by root or the account and not group- or world-writable, gives an interactive session's PTY to the account (0620, group tty) and returns it to root when the session ends, and becomes the account through `session::become_account`. |
 
-The policy grammar, `libbreenix::accounts::policy`, is Breenix's own:
-`permit (USER | %GROUP) [as TARGET] [cmd /ABSOLUTE/PATH] [nopass]`. A rule without `as` permits root only, and one
-without `cmd` any command; the first rule matching the caller, target and command decides. The shipped policy is
-`permit %wheel as root`. Root running sudo is not checked against the policy.
+Write one `permit (USER | %GROUP) [as TARGET] [cmd /ABSOLUTE/PATH] [nopass]` rule per line.
+Blank lines and lines beginning with `#` are allowed. A rule without `as` permits root only, and a
+rule without `cmd` permits any command. The first rule matching the caller, target and command decides.
+Group rules require membership in the named group. The shipped rule `permit %wheel as root nopass`
+allows wheel to run any command as root without a password. Remove `nopass` to require a password.
+
+Keep `/etc/sudo.policy` a regular root:root file at mode 0440 with one link. A missing, unreadable,
+unsafe or malformed file falls back to wheel's original password rule for running as root. A syntax
+diagnostic includes the file and line number. With a valid policy, a request without a matching
+rule is refused even after password authentication. Root can invoke sudo directly.
 
 ## The authentication log
 

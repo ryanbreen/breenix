@@ -160,9 +160,10 @@ without a shadow line cannot log in.
 **sudo-style admin.** The command is named `sudo` for the operator's habit; the policy grammar is ours and claims
 no sudoers compatibility.
 
-- **Policy file:** `/etc/sudo.policy`, which must be 0440 root:root and must parse, or sudo refuses to run.
-- **Grammar:** `permit (user|%group) [as user] [cmd /abs/path] [nopass]`, first match wins. The default policy is
-  `permit %wheel as root`.
+- **Policy file** `/etc/sudo.policy` must be a regular root:root file at 0440 with one link. If it
+  cannot be used, wheel can run as root with password authentication.
+- **Grammar** `permit (user|%group) [as user] [cmd /abs/path] [nopass]`, first match wins. The shipped
+  policy is `permit %wheel as root nopass`. A valid policy authorizes only matching rules.
 - **Authentication:** the caller's own password, cached 5 minutes in `/run/sudo/<uid>/<session>` for that session
   and terminal. `-n` does not prompt.
 - **Execution:** the command resolves to an absolute path before the policy check and runs as that path with its
@@ -276,7 +277,7 @@ Example only: `operator:x:1000:1000:Operator:/home/operator:/bin/bsh` (S12), gro
 - **SSH:** port 22, keys only, as `operator`. Root has no SSH login (D4): bsshd refuses uid 0 whatever keys it has,
   and no install gives root an `authorized_keys` (the installer leaves a test image's `/root/.ssh` behind). The
   `operator` category's `root-ssh-refused` checks both on the persistent install.
-- **Root:** reached through `sudo` (operator's password) or `su -` (root's password, wheel only).
+- **Root** is available through the stock wheel `sudo` rule or `su -` with root's password.
 - **Recovery:** a test-root boot through metal-run runs as root on the RAM disk and can repair
   `/.breenix-shared`.
 

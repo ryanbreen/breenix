@@ -11,6 +11,12 @@
 //! `cmd`, any command. The first rule that matches the caller, the target and
 //! the command decides, and `nopass` lets it run without the caller's password.
 use super::parse;
+use std::fs::{self, File};
+use std::io::Read;
+use std::os::unix::fs::MetadataExt;
+use std::path::Path;
+
+const MAX_POLICY_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Who {
@@ -24,6 +30,37 @@ pub struct Rule {
     pub target: String,
     pub command: Option<String>,
     pub nopass: bool,
+}
+
+fn trusted_policy(uid: u32, gid: u32, mode: u32, links: u64) -> bool {
+    uid == 0 && gid == 0 && mode == 0o100440 && links == 1
+}
+
+/// Check the path and the opened inode, then parse the bytes from that inode.
+pub fn read_policy(path: &Path) -> Result<Vec<Rule>, String> {
+    fn read(path: &Path) -> Result<Vec<Rule>, String> {
+        let trusted = |meta: &fs::Metadata| {
+            trusted_policy(meta.uid(), meta.gid(), meta.mode(), meta.nlink())
+        };
+        let before = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+        if !trusted(&before) {
+            return Err("expected a regular root:root file at mode 0440 with one link".into());
+        }
+        let file = File::open(path).map_err(|e| e.to_string())?;
+        let opened = file.metadata().map_err(|e| e.to_string())?;
+        if !trusted(&opened) || (before.dev(), before.ino()) != (opened.dev(), opened.ino()) {
+            return Err("policy changed during open".into());
+        }
+        let mut text = String::new();
+        file.take(MAX_POLICY_BYTES + 1)
+            .read_to_string(&mut text)
+            .map_err(|e| e.to_string())?;
+        if text.len() as u64 > MAX_POLICY_BYTES {
+            return Err("policy is too large".into());
+        }
+        parse_policy(&text)
+    }
+    read(path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// Parse a whole policy; the error names the first line that does not parse.
@@ -84,6 +121,55 @@ pub fn decide<'a>(rules: &'a [Rule], caller: &str, groups: &[String], target: &s
         };
         who && rule.target == target && rule.command.as_deref().is_none_or(|c| c == command)
     })
+}
+
+/// Named primary and supplementary memberships from the account database.
+pub fn group_names(group_file: &str, caller: &str, primary_gid: u32) -> Vec<String> {
+    group_file
+        .lines()
+        .filter_map(|line| parse::Group::parse(line.as_bytes()))
+        .filter(|group| {
+            group.gid == primary_gid
+                || group.fields[3].split(|b| *b == b',').any(|member| member == caller.as_bytes())
+        })
+        .filter_map(|group| std::str::from_utf8(group.fields[0]).ok().map(str::to_owned))
+        .collect()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Authentication {
+    Passwordless,
+    Password,
+    Denied,
+}
+
+impl Authentication {
+    pub fn requires_password(self) -> bool {
+        self != Self::Passwordless
+    }
+}
+
+/// An unavailable policy falls back to the original wheel password rule.
+/// A valid policy, including an empty one, supplies its own authorizations.
+pub fn authentication(
+    rules: Option<&[Rule]>,
+    caller: &str,
+    groups: &[String],
+    target: &str,
+    command: &str,
+) -> Authentication {
+    let Some(rules) = rules else {
+        return if target == "root" && groups.iter().any(|group| group == "wheel") {
+            Authentication::Password
+        } else {
+            Authentication::Denied
+        };
+    };
+    match decide(rules, caller, groups, target, command) {
+        Some(rule) if rule.nopass => Authentication::Passwordless,
+        Some(_) => Authentication::Password,
+        None => Authentication::Denied,
+    }
 }
 
 #[cfg(test)]
