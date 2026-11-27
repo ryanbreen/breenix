@@ -458,8 +458,8 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
             is_nonblocking: bool,
         },
         RegularFile {
-            file: alloc::sync::Arc<spin::Mutex<crate::ipc::fd::RegularFile>>,
-            append: bool,
+            file: alloc::sync::Arc<crate::ipc::fd::RegularFile>,
+            description: alloc::sync::Arc<crate::ipc::fd::OpenFileDescription>,
             unprivileged: bool,
             size_limit: u64,
         },
@@ -528,7 +528,7 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
                 FdKind::RegularFile(_) if !fd_entry.writable() => WriteOperation::Ebadf,
                 FdKind::RegularFile(file) => WriteOperation::RegularFile {
                     file: file.clone(),
-                    append: (fd_entry.status_flags() & crate::ipc::fd::status_flags::O_APPEND) != 0,
+                    description: fd_entry.open_description(),
                     unprivileged: !process?.cred.privileged(),
                     size_limit: process?.limits.get(crate::process::limits::FSIZE).soft,
                 },
@@ -690,35 +690,35 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
         }
         WriteOperation::RegularFile {
             file,
-            append,
+            description,
             unprivileged,
             size_limit,
         } => {
             use crate::fs::vfs::{WriteAt, WriteReq};
 
-            let (fs, node, position) = {
-                let file_guard = file.lock();
-                (
-                    file_guard.open.fs.clone(),
-                    file_guard.open.node.clone(),
-                    file_guard.position,
-                )
+            let mut position = match file.position.enter() {
+                Ok(position) => position,
+                Err(error) => return SyscallResult::Err(error),
             };
+            let append = description.status_flags() & crate::ipc::fd::status_flags::O_APPEND != 0;
             let req = WriteReq {
                 at: if append {
                     WriteAt::Append
                 } else {
-                    WriteAt::Offset(position)
+                    WriteAt::Offset(*position)
                 },
                 limit: size_limit,
                 clear_setid: unprivileged,
             };
-            match fs.write(&node, req, &buffer) {
+            // Append chooses EOF under backend write exclusion, including
+            // when another open description writes to the same inode.
+            match file.open.fs.write(&file.open.node, req, &buffer) {
                 Ok(written) => {
-                    file.lock().position = written.offset + written.bytes as u64;
+                    *position = written.offset + written.bytes as u64;
                     SyscallResult::Ok(written.bytes as u64)
                 }
                 Err(error) => {
+                    drop(position);
                     if matches!(error, crate::fs::vfs::WriteError::FileSizeLimit) && signal_limit {
                         super::resource::signal_fsize();
                     }
@@ -1300,26 +1300,27 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
         // A description opened O_WRONLY is not readable (EBADF).
         FdKind::RegularFile(_) if !fd_entry.readable() => SyscallResult::Err(9),
         FdKind::RegularFile(file_ref) => {
-            // Retain the backend and node while PM is held, then release PM
-            // before I/O so disk completions can run with IRQs enabled.
-            let file_ref_owned = file_ref.clone();
-            let (fs, node, position) = {
-                let file = file_ref.lock();
-                (file.open.fs.clone(), file.open.node.clone(), file.position)
-            };
+            // Keep the open description alive and release PM before waiting
+            // for its cursor or doing I/O.
+            let file = file_ref.clone();
             drop(manager_guard);
-
+            let mut position = match file.position.enter() {
+                Ok(position) => position,
+                Err(error) => return SyscallResult::Err(error),
+            };
+            let fs = &file.open.fs;
+            let node = &file.open.node;
             let attrs = match fs.getattr(node.ino) {
                 Ok(attrs) => attrs,
                 Err(error) => return SyscallResult::Err(error.into()),
             };
-            let to_read = count.min(attrs.size.saturating_sub(position)) as usize;
+            let to_read = count.min(attrs.size.saturating_sub(*position)) as usize;
             // A bounded buffer in a loop, not one sized to the request (#3040).
             let bytes_read = match regular_read::read(
-                position,
+                *position,
                 to_read,
                 regular_read::CHUNK,
-                |offset, piece| fs.read(&node, offset, piece),
+                |offset, piece| fs.read(node, offset, piece),
                 |at, bytes| {
                     let user = buf_ptr.checked_add(at as u64).ok_or(())?;
                     copy_to_user(user, bytes.as_ptr() as u64, bytes.len()).map_err(|_| ())
@@ -1335,11 +1336,8 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 Err(regular_read::Failure::Fault) => return SyscallResult::Err(14), // EFAULT
             };
 
-            // Update file position (use the owned Arc we cloned before dropping PM lock)
-            {
-                let mut file = file_ref_owned.lock();
-                file.position += bytes_read as u64;
-            }
+            *position += bytes_read as u64;
+            drop(position);
 
             log::debug!(
                 "sys_read: Read {} bytes from regular file (inode {})",
@@ -3005,7 +3003,7 @@ fn fcntl_record_lock(thread_id: u64, fd: i32, cmd: i32, flock_ptr: u64) -> Sysca
     use crate::ipc::fd::fcntl_cmd::{F_GETLK, F_SETLKW};
     use crate::ipc::FdKind;
 
-    let (owner, key, access, position, handle) = {
+    let (owner, key, access, file) = {
         let manager_guard = crate::process::manager();
         let Some((_pid, process)) = manager_guard
             .as_ref()
@@ -3017,19 +3015,15 @@ fn fcntl_record_lock(thread_id: u64, fd: i32, cmd: i32, flock_ptr: u64) -> Sysca
             return SyscallResult::Err(EBADF as u64);
         };
         match &entry.kind {
-            FdKind::RegularFile(file) => {
-                let file = file.lock();
-                (
-                    process.lock_owner.id(),
-                    FileKey {
-                        mount_id: file.mount_id,
-                        inode: file.inode_num,
-                    },
-                    entry.status_flags() & crate::ipc::fd::status_flags::O_ACCMODE,
-                    file.position,
-                    file.open.node.clone(),
-                )
-            }
+            FdKind::RegularFile(file) => (
+                process.lock_owner.id(),
+                FileKey {
+                    mount_id: file.mount_id,
+                    inode: file.inode_num,
+                },
+                entry.status_flags() & crate::ipc::fd::status_flags::O_ACCMODE,
+                file.clone(),
+            ),
             // A descriptor for anything but a regular file does not support locking.
             _ => return SyscallResult::Err(EINVAL as u64),
         }
@@ -3050,16 +3044,23 @@ fn fcntl_record_lock(thread_id: u64, fd: i32, cmd: i32, flock_ptr: u64) -> Sysca
 
     let base = match flock.l_whence as i32 {
         SEEK_SET => 0,
-        SEEK_CUR => match i64::try_from(position) {
-            Ok(position) => position,
-            Err(_) => return SyscallResult::Err(EOVERFLOW as u64),
-        },
-        SEEK_END => match handle.filesystem.getattr(handle.ino) {
+        SEEK_CUR => {
+            let position = match file.position.enter() {
+                Ok(position) => *position,
+                Err(error) => return SyscallResult::Err(error),
+            };
+            match i64::try_from(position) {
+                Ok(position) => position,
+                Err(_) => return SyscallResult::Err(EOVERFLOW as u64),
+            }
+        }
+        SEEK_END => match file.open.fs.getattr(file.inode_num) {
             Ok(attrs) => attrs.size as i64,
             Err(error) => return SyscallResult::Err(error.into()),
         },
         _ => return SyscallResult::Err(EINVAL as u64),
     };
+    drop(file);
     let range = match flock_range(base, flock.l_start, flock.l_len) {
         Ok(range) => range,
         Err(e) => return SyscallResult::Err(e as u64),
@@ -3901,8 +3902,7 @@ pub fn sys_pread64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRes
                             FdKind::RegularFile(_) if !fd_entry.readable() => {
                                 return Err(super::errno::EBADF as u64);
                             }
-                            FdKind::RegularFile(file_ref) => {
-                                let file = file_ref.lock();
+                            FdKind::RegularFile(file) => {
                                 return Ok((file.open.fs.clone(), file.open.node.clone()));
                             }
                             FdKind::PipeRead(_) | FdKind::PipeWrite(_) => {
@@ -3997,8 +3997,7 @@ pub fn sys_pwrite64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRe
                             FdKind::RegularFile(_) if !fd_entry.writable() => {
                                 return Err(super::errno::EBADF as u64);
                             }
-                            FdKind::RegularFile(file_ref) => {
-                                let file = file_ref.lock();
+                            FdKind::RegularFile(file) => {
                                 return Ok((
                                     file.open.fs.clone(),
                                     file.open.node.clone(),

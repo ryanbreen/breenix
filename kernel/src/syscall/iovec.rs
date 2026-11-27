@@ -137,10 +137,7 @@ fn transfer_at(fd: i32, ptr: u64, count: i32, offset: i64, write: bool) -> Resul
     let offset = positioned_offset(offset, count)?;
     let entry = super::metadata::descriptor_entry(fd)?;
     let open = match &entry.kind {
-        FdKind::RegularFile(file) => {
-            let file = file.lock();
-            Some((file.open.fs.clone(), file.open.node.clone()))
-        }
+        FdKind::RegularFile(file) => Some((file.open.fs.clone(), file.open.node.clone())),
         _ => None,
     };
     let userspace = match &entry.kind {
