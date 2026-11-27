@@ -103,6 +103,23 @@ def fit(value, limit):
     return text
 
 
+def sidecar_reference(sidecar_name):
+    return f"Full provenance: {sidecar_name}."
+
+
+def series_id_problems(series_id):
+    """Why the writer would refuse a series named `series_id` whatever its rows: the ID
+    itself, or the note's reference to its sidecar, which names it. Empty when neither."""
+    found = []
+    if not (1 <= len(series_id) <= 120 and vigil_rules.SERIES_ID.fullmatch(series_id)):
+        found.append(f"{series_id!r} is not a Vigil series ID (1-120 of A-Z a-z 0-9 . _ -)")
+    problem = vigil_rules.text_problem(sidecar_reference(f"{series_id}.provenance.json"),
+                                       vigil_rules.LIMITS["note"])
+    if problem:
+        found.append(f"the note's sidecar reference to {series_id!r} {problem}")
+    return found
+
+
 def fit_series(series, sidecar_name, has_provenance):
     """Fit every text field in place. Returns the original of each changed field."""
     shortened = {}
@@ -126,7 +143,7 @@ def fit_series(series, sidecar_name, has_provenance):
     note = series.get("note")
     limit = vigil_rules.LIMITS["note"]
     if has_provenance or shortened or (note is not None and fit(note, limit) != note):
-        suffix = f"Full provenance: {sidecar_name}."
+        suffix = sidecar_reference(sidecar_name)
         body = fit(note, limit - len(suffix) - 1) if note else None
         if note is not None and body != note:
             shortened["note"] = note

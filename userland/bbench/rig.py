@@ -33,8 +33,9 @@ import time
 import tomllib
 import urllib.request
 
-from series import write_series
+from series import series_id_problems, write_series
 from tables import collect_receipts
+import vigil_rules
 
 ROOT = Path(__file__).resolve().parents[2]
 BENCH = Path(__file__).resolve().parent
@@ -1078,6 +1079,16 @@ def check_breenix_inputs():
     return verify_build_stamp(BUILD_STAMP, git("rev-parse", "HEAD"), BREENIX_ARTIFACTS)
 
 
+def run_id_problems(run):
+    """Why the run's series could not be written, decided before anything boots: each
+    system's series ID and sidecar reference, and the run ID as the session field."""
+    found = [problem for system in SYSTEMS for problem in series_id_problems(f"{run}-{system}")]
+    session = vigil_rules.text_problem(run, vigil_rules.LIMITS["session"])
+    if session:
+        found.append(f"the session field {session}")
+    return found
+
+
 def cli(argv):
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1109,6 +1120,9 @@ def cli(argv):
         return 0
     if not args.run.replace("-", "").isalnum():
         parser.error("--run must contain only letters, digits or hyphens")
+    problems = run_id_problems(args.run)
+    if problems:
+        parser.error(f"--run {args.run!r} cannot be published: {'; '.join(problems)}")
     if git("status", "--porcelain", "--untracked-files=no"):
         parser.error("commit the tree first: the series record its commit")
     commit = check_breenix_inputs()
