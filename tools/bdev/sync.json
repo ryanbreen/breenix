@@ -1,0 +1,19 @@
+{
+  "roots": [
+    "toolchain",
+    "userland",
+    "libs/libbreenix",
+    "libs/input-abi",
+    "libs/breengel-abi",
+    "libs/gpu-abi"
+  ],
+  "excludes": [
+    ".git",
+    "target",
+    "*.elf",
+    "*.img",
+    "**/.cargo/config.toml",
+    ".btest-tree.json",
+    ".bsync-*"
+  ]
+}
