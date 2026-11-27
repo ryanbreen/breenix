@@ -72,13 +72,14 @@ Copy bandwidth was 1.29 GiB/s on the R240 and 13.76 GiB/s on the Mac.
 The anonymous workload took 1.39 µs per native page on the R240 and
 0.74 µs on the Mac, including map and teardown.
 
-Sequential I/O, directory walks and the standalone fsync workload are
-deferred to [#3226](https://github.com/ryanbreen/breenix/issues/3226).
-The earlier session reset during the fifth 1 GiB sequential write and
-panicked during the second 10,000-file walk. The fsync series was still
-pending when the session ended. DEV-23 and DEV-25 keep the affected
-storage workloads out of the R240 baseline while the watchdog stall
-and allocation failure remain under investigation.
+Sequential I/O, small-file churn, directory walks and standalone fsync
+are deferred on the R240 to [#3226](https://github.com/ryanbreen/breenix/issues/3226).
+The create, stat and unlink rows above retain the measurements from
+before `small-files` was deferred. In the earlier session, the box reset
+during the fifth 1 GiB sequential write and later panicked during the
+second 10,000-file walk. Five `small-files` samples ran before that walk
+and together created and unlinked 50,000 files on `/home`. The source
+of the allocation that failed in that boot remains under investigation.
 
 ## What the runs measure
 
@@ -99,7 +100,7 @@ and allocation failure remain under investigation.
   per 4 KiB on both machines. Map plus touch sums those phases within
   each sample. The copy workload times eight copies of 128 MiB after
   buffer setup.
-- The metadata test creates, stats and unlinks 10,000 known 128-byte
+- The metadata workload creates, stats and unlinks 10,000 known 128-byte
   file paths across 100 freshly created directories. The test stats
   paths directly. The Mac-only disk references use a generated
   10,000-file tree for the walk, a 1 GiB write followed by fsync and an
@@ -217,9 +218,10 @@ for exe in bbench bbench-exit; do
 done
 ```
 
-Run the default R240 series from the Mac with Python 3.11 or later
-and a fresh receipt directory. Its remote defaults exclude sequential, walk and standalone fsync.
-Keep those cases off the R240 while #3226 is open.
+Run the default R240 series from the Mac with Python 3.11 or later and
+a fresh receipt directory. The remote defaults exclude `sequential`,
+`small-files`, `walk` and `fsync`. Keep those cases off the R240 while
+#3226 is open.
 
 ```sh
 python3 userland/bbench/run.py --run "$RUN_ID" --out "$BOX_RECEIPTS" \

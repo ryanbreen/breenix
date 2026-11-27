@@ -11,7 +11,7 @@ import subprocess
 import time
 
 RUNS = 5
-DEFERRED_DISK = ("sequential", "walk", "fsync")
+DEFERRED_DISK = ("sequential", "small-files", "walk", "fsync")
 MIB = 1024 * 1024
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -307,7 +307,9 @@ if __name__ == "__main__":
     parser.add_argument("--run", required=True, help="unique run prefix, letters/digits/hyphens")
     parser.add_argument("--out", required=True, type=Path, help="local receipt and log directory")
     parser.add_argument("--probe", required=True, help="absolute path to bbench")
-    parser.add_argument("--cases", help="comma-separated case names (remote defaults omit sequential, walk and fsync)")
+    parser.add_argument(
+        "--cases", help=f"comma-separated case names (remote defaults omit {', '.join(DEFERRED_DISK)})"
+    )
     parser.add_argument("--count", type=int, choices=range(1, RUNS + 1), default=RUNS,
                         help="samples per selected case, useful for failed-run follow-up")
     parser.add_argument("--host", help="Breenix SSH login or alias")
