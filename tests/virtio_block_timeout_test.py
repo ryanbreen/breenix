@@ -12,14 +12,16 @@ ROOT = Path(__file__).resolve().parents[1]
 HARNESS = """
 #![allow(dead_code)]
 use std::cell::Cell;
-use std::sync::atomic::{AtomicU64, Ordering};
 
-thread_local! { static NOW: Cell<u64> = const { Cell::new(0) }; }
+thread_local! {
+    static NOW: Cell<u64> = const { Cell::new(0) };
+    static SLEEPS: Cell<bool> = const { Cell::new(false) };
+}
 fn monotonic_now_ns() -> u64 { NOW.get() }
 
 mod task {
     pub mod completion {
-        pub fn wait_sleeps() -> bool { true }
+        pub fn wait_sleeps() -> bool { crate::SLEEPS.get() }
     }
 }
 
@@ -41,7 +43,7 @@ struct Waiter { completion: Completion, device: Transport }
 
 
 class VirtioBlockTimeout(unittest.TestCase):
-    def test_runtime_request_deadline(self):
+    def test_late_completion_only_times_out_when_wait_cannot_sleep(self):
         for driver in ("block", "block_mmio"):
             with self.subTest(driver=driver), tempfile.TemporaryDirectory() as directory:
                 source = (ROOT / f"kernel/src/drivers/virtio/{driver}.rs").read_text()
@@ -56,8 +58,14 @@ impl Waiter {{ {wait} }}
 
 fn main() {{
     let waiter = Waiter {{ completion: Completion, device: Transport }};
-    assert!(waiter.wait_for_completion({args}).is_err());
+    assert!(waiter.wait_for_completion({args}).unwrap_err().contains("before the kernel could sleep"));
     assert_eq!(monotonic_now_ns(), 30_000_000_000);
+
+    NOW.set(0);
+    SLEEPS.set(true);
+    assert_eq!(waiter.wait_for_completion({args}), Ok(()),
+        "a healthy device can complete after the bootstrap deadline when the caller can sleep");
+    assert_eq!(monotonic_now_ns(), 31_000_000_000);
 }}
 """
                 path = Path(directory)
