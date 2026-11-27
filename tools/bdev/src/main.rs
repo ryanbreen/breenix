@@ -242,13 +242,14 @@ impl BoxPaths<'_> {
     }
 
     fn ssh(&self, words: &[&str]) -> Command {
-        // OpenSSH sends one exec string rather than an argv array. Quote
-        // each argument without relying on pipelines, expansion or redirects.
-        let request = words
-            .iter()
-            .map(|word| format!("'{}'", word.replace('\'', "'\\''")))
-            .collect::<Vec<_>>()
-            .join(" ");
+        // Bsh recognizes a direct command by its bare program name.
+        // OpenSSH sends one exec string, so quote each following argument.
+        let (program, arguments) = words.split_first().expect("SSH command has a program");
+        let mut request = (*program).to_owned();
+        for argument in arguments {
+            request.push(' ');
+            request.push_str(&format!("'{}'", argument.replace('\'', "'\\''")));
+        }
         let mut command = Command::new("/usr/bin/ssh");
         command.args(["-T", "-o", "BatchMode=yes", "--", self.host, &request]);
         command.stdin(Stdio::null());
