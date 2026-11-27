@@ -34,9 +34,13 @@ Pass `RUST_TARGET_PATH=<version>/targets` to rustc.
 Once the candidate passes, generate the one-line activation payload with
 `scripts/devbox/toolchain.py current --out "$out" "$id"`. Publish it atomically
 with `sudo -n bput` to `/opt/breenix/rust/CURRENT`, supplying its length,
-SHA-256 and mode `0644`. Use the operator's login entry in `/etc/bshrc` to
-read `CURRENT` and add the selected version's `bin/` to `PATH`. The login
-entry also sets `RUST_TARGET_PATH` to the version's `targets/`.
+SHA-256 and mode `0644`.
+
+Until the login PATH entry lands, read the version ID from
+`/opt/breenix/rust/CURRENT` and invoke the tools by their full paths, such as
+`/opt/breenix/rust/<id>/bin/rustc` and `/opt/breenix/rust/<id>/bin/cargo`.
+When needed, set `RUST_TARGET_PATH` to `/opt/breenix/rust/<id>/targets` in
+the build environment. The login PATH entry is tracked in #3204.
 
 Run the Mac checks with
 `python3 -W error -m unittest tests.devbox_toolchain_test`.
