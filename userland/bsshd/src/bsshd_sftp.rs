@@ -1,8 +1,7 @@
 //! File operations for the SSH "sftp" subsystem.
 //!
-//! The caller enters the authenticated account before reading any SFTP data.
-//! The current directory is that account's home, and every filesystem call
-//! uses the process's ordinary credentials.
+//! The caller enters the authenticated account before reading SFTP data.
+//! File operations run under the worker's process credentials.
 
 #[path = "bsshd_sftp/codec.rs"]
 mod codec;
