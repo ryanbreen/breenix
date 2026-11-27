@@ -1890,6 +1890,7 @@ class Driver:
                 and self.kernel_started and 'manager-slot' in self.seen and self.fatal_at is None):
             self.event('requested-reboot-ready', observed_at=observed_at, commit=self.args.commit)
             self.requested_reset_at = None
+            self.seen.discard('live-flash-reset')
         self.on_watchdog_line(line, observed_at)
         self.on_migration_line(line, observed_at)
         self.on_persist_line(line, observed_at)
@@ -2314,11 +2315,20 @@ class Driver:
                 run = m.read_json(self.dir / 'run.json', {})
                 run.update(entry='trial', bootedCommit=commit, liveFlash=token)
                 m.write_json(self.dir / 'run.json', run)
-                self.seen.add('manager-slot')
+                self.seen.update(('manager-slot', 'live-flash-trial'))
                 self.event('live-flash-trial', observed_at=observed_at, token=token, commit=commit)
+        if (persistent(self.args) and session(self.args) and self.kernel_started is None
+                and 'live-flash-trial' in self.seen
+                and re.fullmatch(r'breenix-manager: live flash: candidate returned \(0x[0-9a-f]+\); restarting', line)):
+            self.seen.discard('manager-slot')
+            self.seen.discard('live-flash-trial')
+            self.seen.add('live-flash-reset')
+            self.requested_reset_at = observed_at
+            self.event('live-flash-reset-requested', observed_at=observed_at)
         self.on_slot_line(line, observed_at)
         self.on_slot_boot(line, observed_at)
         if MANAGER_STARTED in line:
+            self.seen.discard('live-flash-trial')
             self.manager_started = self.manager_started or observed_at
             self.event('manager-started', observed_at=observed_at, seconds=seconds)
             self.phase('Boot manager started')
@@ -2607,6 +2617,11 @@ class Driver:
             if reading.get('power') == 'On':
                 self.power_seen_on = True
             if reading.get('power') == 'Off' and (self.power_seen_on or self.kernel_started is not None):
+                # Firmware cold reset can drop power before POST. Its serial
+                # receipt arms the bounded reboot deadline on this lease.
+                if ('live-flash-reset' in self.seen and self.requested_reset_at is not None
+                        and observed_at >= self.requested_reset_at):
+                    continue
                 self.event('power-off-observed', observed_at=observed_at, seconds=elapsed)
                 raise Finish(m.EXIT_DONE if session(self.args) else m.EXIT_SHORT,
                              'the machine powered off during the boot')

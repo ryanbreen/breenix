@@ -244,6 +244,8 @@ def run(runner, args):
                 if reboot.returncode not in (0, 124, 255):
                     raise ValueError('guest refused the requested reboot')
                 while time.monotonic() - from_reboot < DEADLINE:
+                    if service('test', '-e', directory + '/ended').returncode == 0:
+                        raise ValueError('the persistent lease ended before SSH confirmation')
                     serial = service('tail', '-c', '+' + str(offset + 1), directory + '/serial.txt',
                                      capture_output=True, text=True, errors='replace', check=True).stdout
                     observed = monitor(serial, token, boot_id)
