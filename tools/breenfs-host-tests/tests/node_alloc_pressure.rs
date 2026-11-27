@@ -2,7 +2,8 @@ use breenfs_host_tests::{
     block::{BlockDevice, BlockError},
     btree::{self, Error, NodeStore, ReadCause, ReadFailure},
     commit::DeviceStore,
-    format::{Key, BLOCK_SIZE, NODE_SIZE},
+    format::{BlockPtr, Key, BLOCK_SIZE, NODE_SIZE},
+    scrub::Scrub,
 };
 use std::{
     alloc::{GlobalAlloc, Layout, System},
@@ -80,6 +81,20 @@ fn uncached_node_read_reports_allocation_failure_before_submitting_io() {
     assert_eq!(device.0.load(Ordering::Relaxed), 0);
     assert_eq!(store.get(24).unwrap(), vec![42; NODE_SIZE]);
     assert_eq!(device.0.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn scrub_does_not_record_an_allocation_failure_as_corruption() {
+    let device = ReadDevice::default();
+    let root = BlockPtr { addr: 24, generation: 1, level: 0, csum: 0 };
+    let mut scrub = Scrub::new();
+    REFUSE_NODE_BUFFER.set(true);
+    assert_eq!(
+        scrub.step(&DeviceStore(&device), root, 1, NODE_SIZE),
+        Err(Error::Read(ReadFailure { cause: ReadCause::Allocation, addr: 24 }))
+    );
+    assert_eq!(scrub.errors(), 0);
+    assert!(scrub.completion().is_none());
 }
 
 #[derive(Default)]
