@@ -11,7 +11,8 @@
 //! - A caller other than root types its own password unless the rule says
 //!   `nopass`. A success is remembered for 5 minutes for that session and
 //!   terminal in `/run/sudo/<uid>/<session>`. `-n` does not ask: it fails when a
-//!   password would be needed.
+//!   password would be needed. The caller must pass account checks even under
+//!   `nopass` or when using a cached password authentication.
 //! - The command gets a reset environment (PATH as above, the target's HOME,
 //!   USER and LOGNAME, TERM kept, SUDO_USER and SUDO_COMMAND), umask 022, and
 //!   the target's groups and IDs. `-i` starts in the target's home with SHELL
@@ -122,6 +123,15 @@ fn remember(uid: u32, sid: i32, tty: &str) -> Result<(), String> {
     fs::rename(&scratch, &path).map_err(|e| format!("{path}: {e}"))
 }
 
+fn caller_password_entry(
+    root: &Path,
+    caller: &str,
+    authentication: policy::Authentication,
+) -> Result<Option<session::Entry>, String> {
+    let entry = session::validate(root, caller)?;
+    Ok(authentication.requires_password().then_some(entry))
+}
+
 fn refuse(caller: &str, target: &str, tty: &str, cmd: &str, why: &str, message: &str) -> ! {
     let record = session::Record { program: "sudo", user: caller, target, tty, refused: Some(why), cmd };
     let _ = accounts::log(Path::new("/"), &record);
@@ -178,15 +188,15 @@ fn run() -> Result<std::convert::Infallible, String> {
         if denied && request.no_prompt {
             refuse_policy();
         }
-        if authentication.requires_password() {
+        let own = caller_password_entry(root, &caller_name, authentication).unwrap_or_else(|_| {
+            refuse(&caller_name, &target.name, &tty, &cmd, "caller", "your account cannot authenticate")
+        });
+        if let Some(own) = own {
             let sid = libbreenix::process::getsid(0).map(|p| p.raw() as i32).unwrap_or(-1);
             if denied || tty == "-" || !cached(caller_uid, sid, &tty) {
                 if request.no_prompt {
                     refuse(&caller_name, &target.name, &tty, &cmd, "password-required", "a password is required");
                 }
-                let own = session::validate(root, &caller_name).unwrap_or_else(|_| {
-                    refuse(&caller_name, &target.name, &tty, &cmd, "caller", "your account cannot authenticate")
-                });
                 let terminal = libbreenix::fs::open("/dev/tty", libbreenix::fs::O_RDWR).unwrap_or_else(|e| {
                     refuse(&caller_name, &target.name, &tty, &cmd, "terminal", &format!("no terminal for the password: {e}"))
                 });
@@ -252,5 +262,43 @@ fn main() {
             eprintln!("sudo: {e}");
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn passwordless_sudo_checks_caller_expiry_and_shell() {
+        struct Fixture(std::path::PathBuf);
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+
+        let path = std::env::temp_dir().join(format!("breenix-sudo-test-{}", std::process::id()));
+        fs::DirBuilder::new().mode(0o700).create(&path).unwrap();
+        let root = Fixture(path);
+        let etc = root.0.join("etc");
+        fs::DirBuilder::new().mode(0o755).create(&etc).unwrap();
+        for (name, mode, contents) in [
+            ("passwd", 0o644, "member:x:1000:10::/home/member:/bin/sh\n"),
+            ("group", 0o644, "wheel:x:10:member\n"),
+            ("shadow", 0o600, "member:!:::::::\n"),
+            ("shells", 0o644, "/bin/sh\n"),
+        ] {
+            fs::write(etc.join(name), contents).unwrap();
+            fs::set_permissions(etc.join(name), fs::Permissions::from_mode(mode)).unwrap();
+        }
+        let check = || caller_password_entry(&root.0, "member", policy::Authentication::Passwordless);
+        assert!(check().is_ok_and(|entry| entry.is_none()));
+        fs::write(etc.join("shadow"), "member:!::::::1:\n").unwrap();
+        assert_eq!(check().err().as_deref(), Some("account expired"));
+        fs::write(etc.join("shadow"), "member:!:::::::\n").unwrap();
+        fs::write(etc.join("shells"), "/bin/bsh\n").unwrap();
+        assert_eq!(check().err().as_deref(), Some("login shell not listed in /etc/shells"));
     }
 }

@@ -164,8 +164,9 @@ no sudoers compatibility.
   cannot be used, it grants no authorization.
 - **Grammar** `permit (user|%group) [as user] [cmd /abs/path] [nopass]`, first match wins. The shipped
   policy is `permit %wheel as root nopass`. A valid policy authorizes only matching rules.
-- **Authentication:** the caller's own password, cached 5 minutes in `/run/sudo/<uid>/<session>` for that session
-  and terminal. `-n` does not prompt.
+- **Authentication:** sudo validates the non-root caller's account even with `nopass` or a cached password
+  authentication. When required, the caller's own password authentication is cached for 5 minutes in
+  `/run/sudo/<uid>/<session>` for that session and terminal. `-n` does not prompt.
 - **Execution:** the command resolves to an absolute path before the policy check and runs as that path with its
   arguments as an argument vector, not through a shell. The environment is reset:
   PATH=/usr/sbin:/usr/bin:/sbin:/bin, the target's HOME and USER, TERM kept, SUDO_USER and SUDO_COMMAND set.
