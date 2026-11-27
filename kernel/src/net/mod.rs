@@ -51,15 +51,16 @@ const E1000_CARRIER_POLL_MS: u32 = 50;
 
 /// Per-context exclusion for the network tables.
 ///
-/// This guard protects `TCP_CONNECTIONS`, `TCP_LISTENERS`,
-/// `DEFERRED_TX_QUEUE`, `ARP_CACHE`, `NET_CONFIG`, `LOOPBACK_QUEUE`,
-/// `ARP_PENDING_QUEUE`, and `CURRENT_PACKET_SRC_MAC` from same-CPU re-entry. On
+/// This guard protects `TCP_CONNECTIONS`, `TCP_LISTENERS`, `ARP_CACHE`,
+/// `NET_CONFIG`, `LOOPBACK_QUEUE`, `ARP_PENDING_QUEUE`, and
+/// `CURRENT_PACKET_SRC_MAC` from same-CPU re-entry. On
 /// x86_64 it disables bottom halves rather than clearing IF: the hardirq handlers
 /// do not touch these tables, while e1000 hardirq handling only raises NetRx and
 /// the NetRx softirq is the sole interrupt-context table user. Drop performs the
 /// `local_bh_enable` equivalent, dispatching pending softirqs only when the
 /// complete per-CPU preempt count reaches 0, exactly as `irq_exit` already
 /// does. On aarch64 it preserves the existing DAIF IRQ-mask semantics.
+/// claim-lint:ok: the protected statics are enumerated from source by tests/net_lock_structure.rs
 #[must_use = "bind the guard as `let _guard = net_lock_guard();` so it remains active"]
 pub(crate) struct NetLockGuard {
     #[cfg(target_arch = "x86_64")]

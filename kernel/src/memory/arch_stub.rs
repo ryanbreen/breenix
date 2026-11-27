@@ -59,6 +59,11 @@ const DESC_ADDR_MASK: u64 = 0x0000_FFFF_FFFF_F000;
 const DESC_VALID: u64 = 1 << 0; // Valid bit
 const DESC_TABLE: u64 = 1 << 1; // Table descriptor (vs block)
 const DESC_AF: u64 = 1 << 10; // Access Flag
+/// nG: the translation is tagged with the ASID it was walked under, and only
+/// that ASID matches it. `to_arm64_descriptor` makes a leaf non-global unless
+/// its flags ask for GLOBAL, because process address spaces each run under
+/// their own ASID.
+const DESC_NG: u64 = 1 << 11;
 const DESC_SH_INNER: u64 = 0b11 << 8; // Inner Shareable
 const DESC_AP_RW_EL1: u64 = 0b00 << 6; // AP[2:1] = RW at EL1, no access at EL0
 const DESC_AP_RW_ALL: u64 = 0b01 << 6; // AP[2:1] = RW at EL1/EL0
@@ -430,7 +435,8 @@ impl PageTableFlags {
     /// Huge page (2MB at L2, 1GB at L1)
     pub const HUGE_PAGE: Self = Self(1 << 7);
 
-    /// Global page (not flushed on ASID change)
+    /// Global page: matched under any ASID (nG clear). Without it a leaf is
+    /// non-global and belongs to the ASID it is walked under.
     pub const GLOBAL: Self = Self(1 << 8);
 
     /// OS-available bit 9 (used for COW marker)
@@ -513,6 +519,11 @@ impl PageTableFlags {
         // COW marker in software-available bit
         if self.contains(Self::BIT_9) {
             desc |= DESC_SW_BIT_55;
+        }
+
+        // Per-address-space unless asked to be global.
+        if !self.contains(Self::GLOBAL) {
+            desc |= DESC_NG;
         }
 
         desc
@@ -615,6 +626,13 @@ impl PageTableEntry {
         // COW marker
         if self.entry & DESC_SW_BIT_55 != 0 {
             flags.insert(PageTableFlags::BIT_9);
+        }
+
+        // A global leaf. Table descriptors written by `set_table` carry no AF
+        // and are not leaves; their nG position is ignored by hardware.
+        let leaf = DESC_VALID | DESC_AF;
+        if self.entry & leaf == leaf && self.entry & DESC_NG == 0 {
+            flags.insert(PageTableFlags::GLOBAL);
         }
 
         flags
@@ -925,6 +943,24 @@ pub mod tlb {
             core::arch::asm!("dsb ishst", options(nostack));
             for &page in pages {
                 core::arch::asm!("tlbi vaae1is, {0}", in(reg) (page >> 12), options(nostack));
+            }
+            core::arch::asm!("dsb ish", "isb", options(nostack));
+        }
+    }
+
+    /// Broadcast a set of virtual addresses for one ASID (TLBI VAE1IS: the
+    /// operand carries the ASID in bits [63:48] and VA[55:12] in [43:0]).
+    #[cfg(target_arch = "aarch64")]
+    pub fn flush_asid_pages(asid: u16, pages: &[u64]) {
+        if pages.is_empty() {
+            return;
+        }
+        let tag = (asid as u64) << 48;
+        unsafe {
+            core::arch::asm!("dsb ishst", options(nostack));
+            for &page in pages {
+                let operand = tag | ((page >> 12) & ((1 << 44) - 1));
+                core::arch::asm!("tlbi vae1is, {0}", in(reg) operand, options(nostack));
             }
             core::arch::asm!("dsb ish", "isb", options(nostack));
         }

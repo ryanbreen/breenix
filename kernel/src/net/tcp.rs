@@ -48,27 +48,6 @@ use crate::syscall::errno::{
     EPIPE, ETIMEDOUT,
 };
 
-// ============================================================================
-// Deferred TX queue: packets queued during RX processing for later sending.
-// Parallels' VirtIO silently drops TX packets submitted while the RX ring
-// is being consumed. We queue them and drain after process_rx() completes.
-// ============================================================================
-
-struct DeferredTx {
-    src_ip: [u8; 4],
-    dst_ip: [u8; 4],
-    dst_mac: Option<[u8; 6]>,
-    ttl: u8,
-    tcp_segment: Vec<u8>,
-}
-
-impl Drop for DeferredTx {
-    fn drop(&mut self) {
-        super::loopback_work_done();
-    }
-}
-
-static DEFERRED_TX_QUEUE: Mutex<Vec<DeferredTx>> = Mutex::new(Vec::new());
 static TCP_WAKE_REJECTED: AtomicU64 = AtomicU64::new(0);
 static RX_CHECKSUM_REJECTED: AtomicU64 = AtomicU64::new(0);
 static RX_OUTSIDE_WINDOW: AtomicU64 = AtomicU64::new(0);
@@ -96,101 +75,42 @@ pub fn receive_counters() -> ReceiveCounters {
 
 /// Set when some connection holds output it could not send: data or a FIN that IP
 /// output refused, or data a newly opened peer window lets out. `drain_deferred_tx`
-/// takes it and runs every connection's output again.
+/// takes it and runs each such connection's output again.
 static TX_RETRY: AtomicBool = AtomicBool::new(false);
 
 pub fn tcp_wake_rejected() -> u64 {
     TCP_WAKE_REJECTED.load(Ordering::Relaxed)
 }
 
-/// Thread-context and NetRx TCP paths both enqueue, so exclude softirq re-entry.
-/// A segment there is no memory to queue is dropped: it is a SYN+ACK, which the
-/// peer's SYN retransmission or the child's own timer sends again.
-fn queue_deferred_tx_with_mac(
+/// Send a segment TCP builds while handling a received one: a SYN+ACK. A
+/// loopback destination goes through IP output, which queues it for loopback
+/// delivery. Otherwise it goes straight to the MAC the segment it answers came
+/// from, which needs no ARP lookup from inside RX processing. A device that
+/// cannot take a transmission during RX processing holds it in its driver
+/// (`drivers/virtio/tx_hold.rs`). A failed send is not retried here: the
+/// SYN+ACK's own retransmission timer, or the peer's SYN, sends it again.
+fn send_reply_segment(
     src_ip: [u8; 4],
     dst_ip: [u8; 4],
-    dst_mac: Option<[u8; 6]>,
+    dst_mac: [u8; 6],
     ttl: u8,
-    tcp_segment: Vec<u8>,
+    tcp_segment: &[u8],
 ) {
-    let _guard = super::net_lock_guard();
-    let mut queue = DEFERRED_TX_QUEUE.lock();
-    if queue.try_reserve(1).is_ok() {
-        super::loopback_work_queued();
-        queue.push(DeferredTx {
-            src_ip,
-            dst_ip,
-            dst_mac,
-            ttl,
-            tcp_segment,
-        });
-    }
-    drop(queue);
-}
-
-/// Thread context and the NetRx softirq inspect this queue, so exclude re-entry.
-pub fn deferred_tx_queue_len() -> usize {
-    let _guard = super::net_lock_guard();
-    let queue = DEFERRED_TX_QUEUE.lock();
-    let len = queue.len();
-    drop(queue);
-    len
-}
-
-/// Drain the deferred TX queue, sending all queued packets, then run the output of
-/// every connection that holds unsent data or an unsent FIN.
-/// Called after process_rx() completes and after each round of loopback delivery.
-/// The queue is filled from thread context and NetRx, so guard only the queue take.
-/// Preemption stays off from the take until the last segment is sent: taken
-/// segments are counted as loopback work in flight, and a syscall drain waits
-/// for that count, so their holder must not be switched out.
-pub fn drain_deferred_tx() {
-    crate::per_cpu::preempt_disable();
-    let packets: Vec<DeferredTx> = {
-        let _guard = super::net_lock_guard();
-        let mut queue = DEFERRED_TX_QUEUE.lock();
-        let packets = core::mem::take(&mut *queue);
-        drop(queue);
-        packets
+    let config = super::config();
+    let is_loopback = dst_ip == config.ip_addr || dst_ip[0] == 127;
+    let _ = if is_loopback {
+        super::send_ipv4_from(src_ip, dst_ip, PROTOCOL_TCP, ttl, tcp_segment)
+    } else {
+        let ip_packet =
+            super::ipv4::Ipv4Packet::try_build(src_ip, dst_ip, PROTOCOL_TCP, ttl, tcp_segment)
+                .unwrap_or_default();
+        super::send_ethernet(&dst_mac, super::ethernet::ETHERTYPE_IPV4, &ip_packet)
     };
+}
 
-    for pkt in packets {
-        let config = super::config();
-        let is_loopback = pkt.dst_ip == config.ip_addr || pkt.dst_ip[0] == 127;
-        // A segment that fails here was a SYN+ACK; the child's retransmission
-        // timer sends it again.
-        let _ = if is_loopback {
-            super::send_ipv4_from(
-                pkt.src_ip,
-                pkt.dst_ip,
-                PROTOCOL_TCP,
-                pkt.ttl,
-                &pkt.tcp_segment,
-            )
-        } else if let Some(mac) = pkt.dst_mac {
-            // Send directly to the known MAC (bypasses ARP, which can't work
-            // during process_rx since the re-entrancy guard is held).
-            let ip_packet = super::ipv4::Ipv4Packet::try_build(
-                pkt.src_ip,
-                pkt.dst_ip,
-                PROTOCOL_TCP,
-                pkt.ttl,
-                &pkt.tcp_segment,
-            )
-            .unwrap_or_default();
-            super::send_ethernet(&mac, super::ethernet::ETHERTYPE_IPV4, &ip_packet)
-        } else {
-            super::send_ipv4_from(
-                pkt.src_ip,
-                pkt.dst_ip,
-                PROTOCOL_TCP,
-                pkt.ttl,
-                &pkt.tcp_segment,
-            )
-        };
-    }
-    crate::per_cpu::preempt_enable();
-
+/// Run the output of each connection that holds unsent data or an unsent FIN.
+/// Called after process_rx() completes and after each round of loopback delivery.
+pub fn drain_deferred_tx() {
     if TX_RETRY.swap(false, Ordering::AcqRel) {
         let stalled = with_tcp_connections(|connections| {
             let mut stalled = false;
@@ -2762,12 +2682,8 @@ fn handle_syn_for_listener(
     child.arm_retransmit();
     tables.conns.push_reserved(child);
 
-    // Queue the SYN+ACK for deferred sending AFTER RX processing completes.
-    // Sending TX packets during RX processing on Parallels' VirtIO causes the
-    // TX packet to be silently dropped (the device doesn't process the TX ring
-    // while the RX ring is being consumed).
     let src_mac = super::current_packet_src_mac();
-    queue_deferred_tx_with_mac(local_ip, src_ip, Some(src_mac), seg.ttl, syn_ack);
+    send_reply_segment(local_ip, src_ip, src_mac, seg.ttl, &syn_ack);
 }
 
 /// Answer a segment no connection or listener takes with a reset
