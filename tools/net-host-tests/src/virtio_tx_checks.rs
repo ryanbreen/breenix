@@ -105,17 +105,38 @@ impl TxRing for TestRing {
 }
 
 /// Replay the stores in the order the device can observe them and return the
-/// descriptors it was offered, or the first store that breaks section 2.7.13.
+/// descriptors it was offered, or the first store that breaks section 2.7.13:
+/// the descriptor and its ring entry are written before the barrier that
+/// precedes the index covering them (steps 1-3), the index moves by one per
+/// buffer (step 4), and each index store is followed by the barrier that
+/// orders it before the notification (step 5) before anything else is stored.
 fn device_view(stores: &[Store], size: u16) -> Result<Vec<u16>, String> {
+    #[derive(Clone, Copy)]
+    struct Entry {
+        pos: u16,
+        slot: u16,
+        fenced: bool,
+        desc_fenced: bool,
+    }
     let mut idx = 0u16;
-    let mut entry: Option<(u16, u16, bool)> = None;
+    let mut entry: Option<Entry> = None;
+    // Descriptors written since they were last offered.
+    let mut written = std::collections::BTreeSet::new();
+    let mut owes_notify_barrier = false;
     let mut offered = Vec::new();
     for &store in stores {
+        if owes_notify_barrier && store != Store::NotifyBarrier {
+            return Err(format!("avail.idx {idx} is followed by {store:?}, not its notify barrier"));
+        }
         match store {
-            Store::Entry { pos, slot } => entry = Some((pos, slot, false)),
+            Store::Desc(slot) => {
+                written.insert(slot);
+            }
+            Store::Entry { pos, slot } => entry = Some(Entry { pos, slot, fenced: false, desc_fenced: false }),
             Store::Barrier => {
                 if let Some(e) = entry.as_mut() {
-                    e.2 = true;
+                    e.fenced = true;
+                    e.desc_fenced = written.contains(&e.slot);
                 }
             }
             Store::Idx(new) => {
@@ -123,17 +144,27 @@ fn device_view(stores: &[Store], size: u16) -> Result<Vec<u16>, String> {
                     return Err(format!("avail.idx moved from {idx} to {new}"));
                 }
                 match entry.take() {
-                    Some((pos, slot, true)) if pos == idx % size => offered.push(slot),
-                    Some((pos, _, true)) => {
-                        return Err(format!("avail.idx {new} covers position {}, but entry {pos} was written", idx % size))
-                    }
-                    Some((_, _, false)) => return Err(format!("avail.idx {new} stored with no barrier after its entry")),
                     None => return Err(format!("avail.idx {new} stored with no entry written")),
+                    Some(e) if !e.fenced => return Err(format!("avail.idx {new} stored with no barrier after its entry")),
+                    Some(e) if e.pos != idx % size => {
+                        return Err(format!("avail.idx {new} covers position {}, but entry {} was written", idx % size, e.pos))
+                    }
+                    Some(e) if !e.desc_fenced => {
+                        return Err(format!("avail.idx {new} offers descriptor {} before the barrier orders its write", e.slot))
+                    }
+                    Some(e) => {
+                        written.remove(&e.slot);
+                        offered.push(e.slot);
+                    }
                 }
                 idx = new;
+                owes_notify_barrier = true;
             }
-            Store::Desc(_) | Store::NotifyBarrier => {}
+            Store::NotifyBarrier => owes_notify_barrier = false,
         }
+    }
+    if owes_notify_barrier {
+        return Err(format!("avail.idx {idx} has no notify barrier after it"));
     }
     Ok(offered)
 }
@@ -196,6 +227,33 @@ fn the_check_catches_the_unserialized_reservation_it_replaced() {
     transmit(0, &|| transmit(1, &|| {}));
     let stores = dev.borrow().stores.clone();
     assert_eq!(device_view(&stores, RING), Err("avail.idx moved from 0 to 2".to_string()));
+}
+
+#[test]
+fn the_replay_requires_the_descriptor_before_the_barrier_and_a_notify_barrier_after_the_index() {
+    use Store::*;
+    let ok = [Desc(0), Entry { pos: 0, slot: 0 }, Barrier, Idx(1), NotifyBarrier];
+    assert_eq!(device_view(&ok, RING), Ok(vec![0]));
+    // The descriptor is stored after the barrier: the device may read it unwritten.
+    let late_desc = [Entry { pos: 0, slot: 0 }, Barrier, Desc(0), Idx(1), NotifyBarrier];
+    assert_eq!(
+        device_view(&late_desc, RING),
+        Err("avail.idx 1 offers descriptor 0 before the barrier orders its write".to_string())
+    );
+    // A descriptor written for an earlier offer does not cover the next one.
+    let reused = [ok.as_slice(), &[Entry { pos: 1, slot: 0 }, Barrier, Idx(2), NotifyBarrier]].concat();
+    assert_eq!(
+        device_view(&reused, RING),
+        Err("avail.idx 2 offers descriptor 0 before the barrier orders its write".to_string())
+    );
+    // The index store is not ordered before the notification.
+    let no_notify = [Desc(0), Entry { pos: 0, slot: 0 }, Barrier, Idx(1)];
+    assert_eq!(device_view(&no_notify, RING), Err("avail.idx 1 has no notify barrier after it".to_string()));
+    let next_first = [&no_notify[..], &[Desc(1)]].concat();
+    assert_eq!(
+        device_view(&next_first, RING),
+        Err("avail.idx 1 is followed by Desc(1), not its notify barrier".to_string())
+    );
 }
 
 #[test]
