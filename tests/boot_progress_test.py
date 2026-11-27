@@ -63,6 +63,34 @@ class ProgressTest(unittest.TestCase):
             self.assertFalse(self.progress.stalled(now=at + 119))
         self.assertTrue(self.progress.stalled(now=at + 120))
 
+    def test_active_self_host_cargo_progress_keeps_boot_alive(self):
+        heartbeat = 'SELF_HOST Cargo elapsed_ms=75013\r\n'
+        text = 'SUITE processes START cases=154\n'
+        self.feed(text + heartbeat, 0)
+        self.assertEqual(self.progress.last_line, text.strip())
+        text += heartbeat
+
+        text += ('SUITE self-host START cases=10\n'
+                 'SUITE self-host CASE self-host/build-bmake PASS ms=36468\n')
+        self.feed(text, 1)
+        text += '[TTBR0_ASID_CENSUS:untagged=0:tagged=886058]\n' + heartbeat
+        self.feed(text, 76)
+        self.assertFalse(self.progress.stalled(now=121))
+        self.assertEqual(self.progress.last_line, heartbeat.strip())
+
+        text += heartbeat + 'SELF_HOST Cargo elapsed_ms=75012\n'
+        self.feed(text, 150)
+        self.assertTrue(self.progress.stalled(now=196))
+        text += 'SELF_HOST Cargo elapsed_ms=150026\n'
+        self.feed(text, 151)
+        self.assertFalse(self.progress.stalled(now=270))
+
+        text += 'SUITE self-host DONE passed=10 failed=0 skipped=0 total=10\n'
+        self.feed(text, 200)
+        text += 'SELF_HOST Cargo elapsed_ms=225039\n'
+        self.feed(text, 275)
+        self.assertTrue(self.progress.stalled(now=320))
+
     def test_partial_bytes_never_reset_progress(self):
         self.feed('SIGKILL_TEARDOWN_TEST: FAIL\n', 1)
         for at in range(2, 122):
