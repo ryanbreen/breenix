@@ -46,8 +46,8 @@ cargo build --release --target aarch64-breenix-kernel.json -Z build-std=core,all
 ```
 
 `run` refuses to start unless that stamp names HEAD and each artifact still has
-its stamped digest, so a series never names a commit its Breenix binaries were
-not built from. Running the builds by hand leaves no stamp. Linux builds bbench
+its stamped digest; the series' kernel and userland commit is the stamped one
+(`test_rig.BuildIdentity`). Running the builds by hand leaves no stamp. Linux builds bbench
 from the same commit (`git archive` of the stamped commit).
 
 The key directory keeps the image's test-only SSH key, so the rig can log in as
