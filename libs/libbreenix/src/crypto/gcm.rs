@@ -12,10 +12,10 @@ enum BlockCipher {
 }
 
 impl BlockCipher {
-    fn encrypt_block(&self, block: &mut [u8; 16]) {
+    fn encrypt_blocks(&self, blocks: &mut [[u8; 16]]) {
         match self {
-            Self::Aes128(cipher) => cipher.encrypt_block(block),
-            Self::Aes256(cipher) => cipher.encrypt_block(block),
+            Self::Aes128(cipher) => cipher.encrypt_blocks(blocks),
+            Self::Aes256(cipher) => cipher.encrypt_blocks(blocks),
         }
     }
 }
@@ -134,6 +134,59 @@ impl AesGcm {
         Self { cipher: BlockCipher::Aes256(Aes256::new(key)) }
     }
 
+    /// H = AES_K(0^128), J0 = IV || 0x00000001, and AES_K(J0) for the tag.
+    fn setup(&self, iv: &[u8; 12]) -> ([u8; 16], [u8; 16], [u8; 16]) {
+        let mut j0 = [0u8; 16];
+        j0[..12].copy_from_slice(iv);
+        j0[15] = 1;
+        let mut blocks = [[0u8; 16], j0];
+        self.cipher.encrypt_blocks(&mut blocks);
+        (blocks[0], j0, blocks[1])
+    }
+
+    /// CTR keystream from inc32(J0), four counter blocks per AES pass.
+    fn apply_ctr(&self, j0: &[u8; 16], data: &mut [u8]) {
+        let mut counter = *j0;
+        let mut keystream = [[0u8; 16]; 4];
+        for chunk in data.chunks_mut(64) {
+            let blocks = chunk.len().div_ceil(16);
+            for block in &mut keystream[..blocks] {
+                increment_counter(&mut counter);
+                *block = counter;
+            }
+            self.cipher.encrypt_blocks(&mut keystream[..blocks]);
+            for (index, byte) in chunk.iter_mut().enumerate() {
+                *byte ^= keystream[index / 16][index % 16];
+            }
+        }
+    }
+
+    /// Encrypt `data` in place and return the authentication tag.
+    pub fn encrypt_in_place(&self, iv: &[u8; 12], aad: &[u8], data: &mut [u8]) -> [u8; 16] {
+        let (h, j0, encrypted_j0) = self.setup(iv);
+        self.apply_ctr(&j0, data);
+        let mut tag = ghash(&h, aad, data);
+        for (byte, mask) in tag.iter_mut().zip(encrypted_j0) {
+            *byte ^= mask;
+        }
+        tag
+    }
+
+    /// Verify the tag, then decrypt `data` in place. On a mismatch the
+    /// ciphertext is left untouched and `false` is returned.
+    pub fn decrypt_in_place(&self, iv: &[u8; 12], aad: &[u8], data: &mut [u8], tag: &[u8; 16]) -> bool {
+        let (h, j0, encrypted_j0) = self.setup(iv);
+        let mut expected = ghash(&h, aad, data);
+        for (byte, mask) in expected.iter_mut().zip(encrypted_j0) {
+            *byte ^= mask;
+        }
+        if !ct_eq(&expected, tag) {
+            return false;
+        }
+        self.apply_ctr(&j0, data);
+        true
+    }
+
     /// Encrypt plaintext with associated data, producing ciphertext and an authentication tag.
     ///
     /// - `iv`: 12-byte initialization vector (nonce). Must be unique per encryption.
@@ -153,44 +206,9 @@ impl AesGcm {
             ciphertext.len() >= plaintext.len(),
             "ciphertext buffer too small"
         );
-
-        // Compute H = AES_K(0^128)
-        let mut h = [0u8; 16];
-        self.cipher.encrypt_block(&mut h);
-
-        // Construct J0 = IV || 0x00000001
-        let mut j0 = [0u8; 16];
-        j0[..12].copy_from_slice(iv);
-        j0[12] = 0x00;
-        j0[13] = 0x00;
-        j0[14] = 0x00;
-        j0[15] = 0x01;
-
-        // CTR encryption: counter starts at J0 + 1
-        let mut counter = j0;
-        let mut offset = 0;
-        while offset < plaintext.len() {
-            increment_counter(&mut counter);
-            let mut keystream = counter;
-            self.cipher.encrypt_block(&mut keystream);
-
-            let remaining = plaintext.len() - offset;
-            let block_len = if remaining >= 16 { 16 } else { remaining };
-            for i in 0..block_len {
-                ciphertext[offset + i] = plaintext[offset + i] ^ keystream[i];
-            }
-            offset += block_len;
-        }
-
-        // Compute GHASH over AAD and ciphertext
-        let ghash_val = ghash(&h, aad, &ciphertext[..plaintext.len()]);
-
-        // Tag = AES_K(J0) XOR GHASH
-        let mut encrypted_j0 = j0;
-        self.cipher.encrypt_block(&mut encrypted_j0);
-        for i in 0..16 {
-            tag[i] = encrypted_j0[i] ^ ghash_val[i];
-        }
+        let output = &mut ciphertext[..plaintext.len()];
+        output.copy_from_slice(plaintext);
+        *tag = self.encrypt_in_place(iv, aad, output);
     }
 
     /// Decrypt ciphertext with associated data, verifying the authentication tag.
@@ -215,55 +233,13 @@ impl AesGcm {
             plaintext.len() >= ciphertext.len(),
             "plaintext buffer too small"
         );
-
-        // Compute H = AES_K(0^128)
-        let mut h = [0u8; 16];
-        self.cipher.encrypt_block(&mut h);
-
-        // Construct J0 = IV || 0x00000001
-        let mut j0 = [0u8; 16];
-        j0[..12].copy_from_slice(iv);
-        j0[12] = 0x00;
-        j0[13] = 0x00;
-        j0[14] = 0x00;
-        j0[15] = 0x01;
-
-        // Compute GHASH over AAD and ciphertext
-        let ghash_val = ghash(&h, aad, ciphertext);
-
-        // Compute expected tag = AES_K(J0) XOR GHASH
-        let mut encrypted_j0 = j0;
-        self.cipher.encrypt_block(&mut encrypted_j0);
-        let mut expected_tag = [0u8; 16];
-        for i in 0..16 {
-            expected_tag[i] = encrypted_j0[i] ^ ghash_val[i];
+        let output = &mut plaintext[..ciphertext.len()];
+        output.copy_from_slice(ciphertext);
+        if self.decrypt_in_place(iv, aad, output, tag) {
+            return true;
         }
-
-        if !ct_eq(&expected_tag, tag) {
-            // Tag mismatch: zero the plaintext buffer and return false
-            for byte in plaintext[..ciphertext.len()].iter_mut() {
-                *byte = 0;
-            }
-            return false;
-        }
-
-        // CTR decryption (identical to encryption)
-        let mut counter = j0;
-        let mut offset = 0;
-        while offset < ciphertext.len() {
-            increment_counter(&mut counter);
-            let mut keystream = counter;
-            self.cipher.encrypt_block(&mut keystream);
-
-            let remaining = ciphertext.len() - offset;
-            let block_len = if remaining >= 16 { 16 } else { remaining };
-            for i in 0..block_len {
-                plaintext[offset + i] = ciphertext[offset + i] ^ keystream[i];
-            }
-            offset += block_len;
-        }
-
-        true
+        output.fill(0);
+        false
     }
 }
 

@@ -2029,8 +2029,19 @@ fn overlaps(a: [u8; 4], b: [u8; 4]) -> bool {
 /// Every TCP table, under one lock.
 static TCP_CONNECTIONS: Mutex<TcpTables> = Mutex::new(TcpTables::new());
 
-/// Sequence number generator (simple counter, should be more random in production)
-static SEQ_COUNTER: Mutex<u32> = Mutex::new(0x12345678);
+/// The RFC 6528 key for initial sequence numbers (`tcp_ident::IsnKey`).
+static ISN_KEY: super::tcp_ident::IsnKey = super::tcp_ident::IsnKey::new();
+
+/// The kernel's random pool, as `tcp_ident` draws from it.
+struct KernelPool;
+
+impl super::tcp_ident::Pool for KernelPool {
+    fn fill(&self, out: &mut [u8]) -> bool {
+        let ready = crate::random::is_ready();
+        crate::random::fill(out);
+        ready
+    }
+}
 
 fn with_tcp<R>(f: impl FnOnce(&mut TcpTables) -> R) -> R {
     let _guard = super::net_lock_guard();
@@ -2103,13 +2114,6 @@ pub fn proc_net_tcp() -> Result<alloc::string::String, i32> {
     })
 }
 
-/// The first port an unbound socket is given: the bottom of Linux's default
-/// `ip_local_port_range`, 32768-60999.
-const EPHEMERAL_FIRST: u16 = 32768;
-const EPHEMERAL_LAST: u16 = 60999;
-static NEXT_EPHEMERAL: core::sync::atomic::AtomicU16 =
-    core::sync::atomic::AtomicU16::new(EPHEMERAL_FIRST);
-
 /// Take `addr`:`port` for a socket that binds it: EADDRINUSE when another
 /// socket holds it (`TcpTables::bind_conflict`), ENOMEM when there is no
 /// memory to record it.
@@ -2132,24 +2136,19 @@ pub fn tcp_unbind_port(addr: [u8; 4], port: u16) {
 }
 
 /// Bind an unbound socket at `addr` to a free port from the ephemeral range,
-/// as connect and listen do for a socket that was never bound. EADDRINUSE
-/// when every port in the range is taken; connect reports that as Linux does,
+/// as connect and listen do for a socket that has not been bound. The search
+/// starts at a random port (RFC 6056 Algorithm 1, `tcp_ident`). EADDRINUSE
+/// when the search finds the range's 28,232 ports taken; connect reports that as Linux does,
 /// with EADDRNOTAVAIL.
 pub fn tcp_bind_ephemeral(addr: [u8; 4]) -> Result<u16, i32> {
-    let span = (EPHEMERAL_LAST - EPHEMERAL_FIRST) as u32 + 1;
-    for _ in 0..span {
-        let candidate = NEXT_EPHEMERAL
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |port| {
-                Some(if port >= EPHEMERAL_LAST { EPHEMERAL_FIRST } else { port + 1 })
-            })
-            .unwrap_or(EPHEMERAL_FIRST);
+    let bound = super::tcp_ident::bind_ephemeral(&KernelPool, |candidate| {
         match tcp_bind_port(addr, candidate, false) {
-            Ok(()) => return Ok(candidate),
-            Err(EADDRINUSE) => {}
-            Err(error) => return Err(error),
+            Ok(()) => Ok(true),
+            Err(EADDRINUSE) => Ok(false),
+            Err(error) => Err(error),
         }
-    }
-    Err(EADDRINUSE)
+    })?;
+    bound.ok_or(EADDRINUSE)
 }
 
 /// What a socket's options mean for its connection.
@@ -2259,14 +2258,12 @@ pub fn tcp_port_in_use(port: u16, reuse: bool) -> bool {
     })
 }
 
-/// Generate a new initial sequence number
-pub fn generate_isn() -> u32 {
-    let _guard = super::net_lock_guard();
-    let mut counter = SEQ_COUNTER.lock();
-    let isn = *counter;
-    *counter = counter.wrapping_add(64000); // Increment by a large amount
-    drop(counter);
-    isn
+/// The initial sequence number for a connection on `id` (RFC 6528): the keyed
+/// hash of its 4-tuple plus the 4-microsecond clock (`tcp_ident::IsnKey`).
+pub fn generate_isn(id: &ConnectionId) -> u32 {
+    let (secs, nanos) = crate::time::get_monotonic_time_ns();
+    let now_us = secs.saturating_mul(1_000_000).saturating_add(nanos / 1_000);
+    ISN_KEY.isn(&KernelPool, id.local_ip, id.local_port, id.remote_ip, id.remote_port, now_us)
 }
 
 /// A socket to wake once the TCP tables are released. A reset's errno is
@@ -2721,7 +2718,7 @@ fn handle_syn_for_listener(
         remote_ip: src_ip,
         remote_port: header.src_port,
     };
-    let isn = generate_isn();
+    let isn = generate_isn(&conn_id);
     let mut child = TcpConnection::new(conn_id, TcpState::SynReceived, isn, listener.owner_pid);
     child.rcv_cap = listener.rcv_cap;
     child.recv_shift = header.window_shift.map(|_| window_shift(child.rcv_cap));
@@ -2837,7 +2834,7 @@ pub fn tcp_connect(
         remote_port,
     };
 
-    let isn = generate_isn();
+    let isn = generate_isn(&conn_id);
     let mut conn = TcpConnection::new(conn_id, TcpState::SynSent, isn, owner_pid);
     conn.mss = local_mss(remote_ip);
     conn.ttl = ttl;

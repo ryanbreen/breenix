@@ -20,13 +20,19 @@ in the SSH login directory. The immediate parent of `DEST` must exist.
 source's ordinary Unix permission bits on files and directories. Paths must
 be UTF-8 and contain no control characters.
 
-Each run inventories the destination in one SSH exec using Breenix's
+Each run opens one SSH connection (an OpenSSH ControlMaster in a private
+directory under `/tmp`) and runs its listing and each plan step as a channel
+on it. It inventories the destination in one SSH exec using Breenix's
 `sha256sum`, then prints the full plan before making changes. An unchanged
 file is skipped. A mode-only file change sends no file bytes over SSH.
-Ordinary uploads stage bytes through the SFTP v3 worker in `bsshd` and
-publish with `bput`. With `--sudo`, `sudo -n` runs the guarded remote
-commands and `bput` receives the upload on stdin. In either case `bput`
-verifies the length and SHA-256 before publishing the file by rename.
+Ordinary uploads stage bytes through the SFTP v3 worker in `bsshd`, with up
+to 16 writes of 32 KiB in flight, and `bput --adopt` publishes the staged
+file itself, so its bytes are written once. bput holds the staging directory
+open from verification to rename and refuses one that anyone but the user
+could write in, so the file it publishes is the one it verified. With `--sudo`, `sudo -n` runs
+the guarded remote commands and `bput` receives the upload on stdin. In
+either case `bput` verifies the length and SHA-256 before publishing the
+file by rename. Uploads need a `bput` that accepts `--adopt`.
 
 Repeat `--exclude` to skip multiple patterns. A pattern without a slash
 matches names at any depth. A pattern with a slash matches a path relative
