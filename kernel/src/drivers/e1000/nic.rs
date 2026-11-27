@@ -7,14 +7,16 @@
 //! "DS" the 82574 datasheet. The bring-up is the order DS 4.6 gives, which the
 //! SDM's section 14 matches for the 82540EM:
 //!
-//! 1. mask every interrupt (DS 4.6.1), stop receive and transmit, and on the
-//!    82574 drain outstanding bus-master requests (DS 3.1.3.10);
+//! 1. mask every interrupt (DS 4.6.1); stop receive and transmit, on the
+//!    82574 by draining bus-master requests (DS 10.2.2.1, 3.1.3.10);
 //! 2. global reset through CTRL.RST, waiting before the next access (SDM
-//!    13.4.1; DS 10.2.2.1), then mask interrupts again (DS 4.6.1);
+//!    13.4.1; DS 10.2.2.1), then mask interrupts again (DS 4.6.1) and, on the
+//!    82574, wait for the NVM auto-read (DS 10.2.2.3);
 //! 3. general configuration: set link up and let the MAC follow the speed and
-//!    duplex the PHY resolves, no flow control (SDM 14.3; DS 4.6.2, 4.6.3.2);
-//! 4. the station address in RAL0/RAH0, the other receive addresses and the
-//!    multicast table cleared (SDM 14.4; DS 4.6.5);
+//!    duplex the PHY resolves, no flow control (SDM 14.3; DS 4.6.2, 4.6.3.2),
+//!    and the 82574's GCR and GCR2 bits (DS 4.6.2, 10.2.3.12);
+//! 4. the station address in RAL0/RAH0, the other receive addresses the
+//!    driver owns and the multicast table cleared (SDM 14.4; DS 4.6.5);
 //! 5. the receive ring, then RCTL with the receiver enabled last (SDM 14.4;
 //!    DS 4.6.5.1);
 //! 6. the transmit ring, TIPG, and TCTL enabled last (SDM 14.5; DS 4.6.6).
@@ -90,18 +92,32 @@ impl Model {
         (ct << TCTL_CT_SHIFT) | (cold << TCTL_COLD_SHIFT)
     }
 
-    /// The interrupt causes worth a wakeup: the receive causes SDM 14.4 and
-    /// DS 4.6.5 suggest, and link status change. RXSEQ is reserved on the
-    /// 82574 (DS 10.2.4.1). Only x86-64 takes interrupts; ARM64 polls.
-    #[cfg(any(target_arch = "x86_64", test))]
-    pub fn interrupt_mask(self) -> u32 {
-        let common = INT_RXT0 | INT_RXO | INT_RXDMT0 | INT_LSC;
+    /// The IMC value that masks every cause (regs.rs: SDM 13.4.21; DS
+    /// 10.2.4.6).
+    fn all_causes(self) -> u32 {
         match self {
-            Self::Pci8254x => common | INT_RXSEQ,
-            Self::Pcie82574 => common,
+            Self::Pci8254x => INT_ALL_8254X,
+            Self::Pcie82574 => INT_ALL_82574,
+        }
+    }
+
+    /// Receive-address entries the driver owns: all 16 on the 8254x (SDM
+    /// 13.5.2); 0-14 on the 82574, whose entry 15 belongs to manageability
+    /// firmware (DS 10.2.5.23).
+    fn receive_addresses(self) -> u32 {
+        match self {
+            Self::Pci8254x => 16,
+            Self::Pcie82574 => 15,
         }
     }
 }
+
+/// The interrupt causes worth a wakeup: the receive causes SDM 14.4 and DS
+/// 4.6.5 suggest, without RXSEQ, which both parts reserve (SDM Table 13-63;
+/// DS 10.2.4.1), and link status change. Only x86-64 takes interrupts; ARM64
+/// polls.
+#[cfg(any(target_arch = "x86_64", test))]
+pub const INTERRUPT_MASK: u32 = INT_RXT0 | INT_RXO | INT_RXDMT0 | INT_LSC;
 
 /// Register access and a delay, all the reset, configuration and interrupt
 /// paths need.
@@ -205,6 +221,7 @@ impl TxDescriptor {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InitError {
     ResetTimeout,
+    NvmOwnershipTimeout,
     NvmReadTimeout,
     NoStationAddress,
 }
@@ -213,6 +230,7 @@ impl InitError {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::ResetTimeout => "e1000: CTRL.RST did not clear",
+            Self::NvmOwnershipTimeout => "e1000: the NVM semaphore was not granted",
             Self::NvmReadTimeout => "e1000: EERD read did not complete",
             Self::NoStationAddress => "e1000: no valid station address",
         }
@@ -267,16 +285,16 @@ pub fn acknowledge_interrupt(regs: &mut impl Registers, model: Model) -> u32 {
     causes
 }
 
-/// Unmask the causes in [`Model::interrupt_mask`] (SDM 13.4.20; DS 4.6.1).
+/// Unmask the causes in [`INTERRUPT_MASK`] (SDM 13.4.20; DS 4.6.1).
 #[cfg(any(target_arch = "x86_64", test))]
-pub fn enable_interrupts(regs: &mut impl Registers, model: Model) {
-    regs.write(IMS, model.interrupt_mask());
+pub fn enable_interrupts(regs: &mut impl Registers) {
+    regs.write(IMS, INTERRUPT_MASK);
 }
 
 /// Whether the causes call for the receive bottom half.
 #[cfg(any(target_arch = "x86_64", test))]
-pub fn needs_receive_work(causes: u32, model: Model) -> bool {
-    causes & model.interrupt_mask() != 0
+pub fn needs_receive_work(causes: u32) -> bool {
+    causes & INTERRUPT_MASK != 0
 }
 
 /// The software side of both rings once the device is running.
@@ -299,7 +317,7 @@ impl Nic {
         reset(hw, model)?;
         configure_general(hw, model);
         let mac = station_address(hw, model)?;
-        program_receive_addresses(hw, mac);
+        program_receive_addresses(hw, model, mac);
         initialize_receive(hw);
         initialize_transmit(hw, model);
         Ok(Self {
@@ -318,6 +336,17 @@ impl Nic {
     /// Whether the next receive descriptor holds a completed buffer.
     pub fn can_receive(&self, hw: &mut impl Rings) -> bool {
         RxDescriptor::from_words(hw.rx_descriptor(self.rx_next)).status & RXD_STATUS_DD != 0
+    }
+
+    /// Call once the interrupt route (MSI, or the INTx line) is live and
+    /// unmasked. A cause raised before then sent no message, and an MSI is
+    /// sent only as an unmasked cause first appears, so the pending causes are
+    /// acknowledged here. Returns whether the receive bottom half has frames
+    /// to drain: the causes asked for it, or the ring already holds one.
+    #[cfg(any(target_arch = "x86_64", test))]
+    pub fn interrupts_routed(&self, hw: &mut impl Rings, model: Model) -> bool {
+        let causes = acknowledge_interrupt(hw, model);
+        needs_receive_work(causes) || self.can_receive(hw)
     }
 
     /// Copy the next good frame into `out` and return its length. Frames the
@@ -416,29 +445,45 @@ fn poll<R: Registers>(regs: &mut R, polls: u32, mut done: impl FnMut(&mut R) -> 
 }
 
 /// Steps 1 and 2 of the bring-up.
+///
+/// Stopping receive and transmit before the reset: on the 8254x by clearing
+/// RCTL.EN and TCTL.EN. On the 82574 by the master-disable handshake, the
+/// procedure DS 10.2.2.1 names for this; TCTL is not touched, because firmware
+/// may leave its queue with TDH != TDT and DS 10.2.6.1 (MULR) forbids
+/// modifying TCTL then. DS 3.1.3.10 lets the drain time out. The reset still
+/// follows a timeout: it is the only means left to stop the DMA engine, and
+/// it clears the master-disable bit.
 fn reset<R: Registers>(regs: &mut R, model: Model) -> Result<(), InitError> {
-    regs.write(IMC, INT_ALL);
-    let rctl = regs.read(RCTL);
-    regs.write(RCTL, rctl & !RCTL_EN);
-    let tctl = regs.read(TCTL);
-    regs.write(TCTL, tctl & !TCTL_EN);
-    if model == Model::Pcie82574 {
-        // DS 3.1.3.10: block new master requests, then wait for the pending
-        // ones. A timeout is allowed; the reset that follows clears the
-        // disable bit either way.
-        let ctrl = regs.read(CTRL);
-        regs.write(CTRL, ctrl | CTRL_GIO_MASTER_DISABLE);
-        poll(regs, MASTER_DISABLE_POLLS, |regs| {
-            regs.read(STATUS) & STATUS_GIO_MASTER_ENABLE == 0
-        });
+    regs.write(IMC, model.all_causes());
+    match model {
+        Model::Pci8254x => {
+            let rctl = regs.read(RCTL);
+            regs.write(RCTL, rctl & !RCTL_EN);
+            let tctl = regs.read(TCTL);
+            regs.write(TCTL, tctl & !TCTL_EN);
+        }
+        Model::Pcie82574 => {
+            let ctrl = regs.read(CTRL);
+            regs.write(CTRL, ctrl | CTRL_GIO_MASTER_DISABLE);
+            poll(regs, MASTER_DISABLE_POLLS, |regs| {
+                regs.read(STATUS) & STATUS_GIO_MASTER_ENABLE == 0
+            });
+        }
     }
     let ctrl = regs.read(CTRL);
     regs.write(CTRL, ctrl | CTRL_RST);
     if !poll(regs, RESET_POLLS, |regs| regs.read(CTRL) & CTRL_RST == 0) {
         return Err(InitError::ResetTimeout);
     }
-    regs.write(IMC, INT_ALL);
+    regs.write(IMC, model.all_causes());
     acknowledge_interrupt(regs, model);
+    if model == Model::Pcie82574 {
+        // The reset reloads RAL0/RAH0 and other fields from the NVM (DS
+        // 6.1.1.1); EEC.Auto_RD reports the load done, and is set also with
+        // no valid NVM (DS 10.2.2.3). If it never sets, RAH0 is not trusted
+        // to be loaded and the station address comes through EERD.
+        poll(regs, NVM_POLLS, |regs| regs.read(EEC) & EEC_AUTO_RD != 0);
+    }
     Ok(())
 }
 
@@ -470,13 +515,18 @@ fn configure_general(regs: &mut impl Registers, model: Model) {
     if model == Model::Pcie82574 {
         let gcr = regs.read(GCR);
         regs.write(GCR, gcr | GCR_BIT22);
+        let gcr2 = regs.read(GCR2);
+        regs.write(GCR2, gcr2 | GCR2_BIT0);
     }
 }
 
-/// The station address: RAL0/RAH0 when the NVM load left it valid (SDM 5.6.1;
-/// DS 6.1.1.1), otherwise NVM words 0-2 through EERD.
+/// The station address: RAL0/RAH0 when an NVM load left it valid (SDM 5.6.1;
+/// DS 6.1.1.1), otherwise NVM words 0-2 through EERD. On the 82574 RAH0 is
+/// read only once EEC.Auto_RD reports the load done. On the 8254x a global
+/// reset clears RAH0's valid bit (SDM 14.7), so EERD is the usual path there.
 fn station_address<R: Registers>(regs: &mut R, model: Model) -> Result<[u8; 6], InitError> {
-    let high = regs.read(RAH0);
+    let loaded = model == Model::Pci8254x || regs.read(EEC) & EEC_AUTO_RD != 0;
+    let high = if loaded { regs.read(RAH0) } else { 0 };
     if high & RAH_AV != 0 {
         let mac = address_from_registers(regs.read(RAL0), high);
         if is_station_address(mac) {
@@ -497,20 +547,23 @@ fn station_address<R: Registers>(regs: &mut R, model: Model) -> Result<[u8; 6], 
 
 /// NVM words 0-2. Each holds two address bytes, the first byte in the low half
 /// (SDM 5.6.1: 12-34-56-78-90-AB is stored as 3412, 7856, AB90). On the 82574
-/// software requests the NVM semaphore around EERD (DS 4.5.2). The semaphore
-/// does not block software access and software may ignore it, so a grant that
-/// never comes delays the read rather than failing it.
+/// software holds the NVM semaphore around EERD (DS 4.5.2): a request
+/// registers only when written while no other agent holds it, so it is
+/// written again until it reads back granted. Without the grant the read is
+/// not attempted; with it, it is released afterwards.
 fn read_nvm_words<R: Registers>(regs: &mut R, model: Model) -> Result<[u16; 3], InitError> {
     let (done, shift) = match model {
         Model::Pci8254x => (EERD_8254X_DONE, EERD_8254X_ADDR_SHIFT),
         Model::Pcie82574 => (EERD_82574_DONE, EERD_82574_ADDR_SHIFT),
     };
-    if model == Model::Pcie82574 {
-        let extcnf = regs.read(EXTCNF_CTRL);
-        regs.write(EXTCNF_CTRL, extcnf | EXTCNF_CTRL_SW_OWNERSHIP);
-        poll(regs, NVM_POLLS, |regs| {
+    if model == Model::Pcie82574
+        && !poll(regs, NVM_POLLS, |regs| {
+            let extcnf = regs.read(EXTCNF_CTRL);
+            regs.write(EXTCNF_CTRL, extcnf | EXTCNF_CTRL_SW_OWNERSHIP);
             regs.read(EXTCNF_CTRL) & EXTCNF_CTRL_SW_OWNERSHIP != 0
-        });
+        })
+    {
+        return Err(InitError::NvmOwnershipTimeout);
     }
     let mut words = [0u16; 3];
     let mut result = Ok(());
@@ -546,14 +599,15 @@ fn is_station_address(mac: [u8; 6]) -> bool {
     mac != [0; 6] && mac[0] & 1 == 0
 }
 
-/// Step 4. RAL0 then RAH0 with AV; the other entries cleared high before low;
-/// the multicast table zeroed (SDM 13.5.3 note, 14.4; DS 4.6.5).
-fn program_receive_addresses(regs: &mut impl Registers, mac: [u8; 6]) {
+/// Step 4. RAL0 then RAH0 with AV; the other entries the driver owns cleared
+/// high before low; the multicast table zeroed (SDM 13.5.3 note, 14.4; DS
+/// 4.6.5, 10.2.5.23).
+fn program_receive_addresses(regs: &mut impl Registers, model: Model, mac: [u8; 6]) {
     let low = u32::from_le_bytes([mac[0], mac[1], mac[2], mac[3]]);
     let high = u32::from(u16::from_le_bytes([mac[4], mac[5]]));
     regs.write(RAL0, low);
     regs.write(RAH0, high | RAH_AV);
-    for entry in 1..RECEIVE_ADDRESSES {
+    for entry in 1..model.receive_addresses() {
         regs.write(RAH0 + 8 * entry, 0);
         regs.write(RAL0 + 8 * entry, 0);
     }

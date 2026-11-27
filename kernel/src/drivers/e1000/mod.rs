@@ -2,8 +2,9 @@
 //!
 //! Clean room: written only from Intel's "PCI/PCI-X Family of Gigabit Ethernet
 //! Controllers Software Developer's Manual" (317453006, revision 4.0), the
-//! "Intel 82574 GbE Controller Family Datasheet" (317694, revision 3.3) and
-//! the PCI Local Bus 3.0 specification. No other driver's source was read.
+//! "Intel 82574 GbE Controller Family Datasheet" (317694, revision 3.3), the
+//! PCI Local Bus 3.0 specification and the Arm Architecture Reference Manual
+//! (cache maintenance and barriers). No other driver's source was read.
 //! `nic.rs` holds the MAC programming with its section references; this file
 //! attaches it to the kernel: PCI discovery, the register window, DMA memory,
 //! locking and the interrupt entry.
@@ -13,16 +14,24 @@
 //! guests as `e1000e`.
 //!
 //! Interrupts: on x86-64 the function interrupts by MSI where it can, or on
-//! IRQ 10/11 (`drivers::init`). `handle_interrupt` acknowledges ICR through the
-//! register window, without a lock, and raises NetRx. On ARM64 every cause
-//! stays masked and `net::rx_poll` polls `can_receive` once per tick.
+//! IRQ 10/11 (`drivers::init`). Its causes stay masked until the driver state
+//! is published. `handle_interrupt` acknowledges ICR through the register
+//! window, without a lock, and raises NetRx. On ARM64 every cause stays masked
+//! and `net::rx_poll` polls `can_receive` once per tick.
 //!
-//! Memory: one page holds both descriptor rings and every further page holds
-//! two 2048-byte buffers. All come from the frame allocator, are reached
-//! through the direct map and stay with the device for the kernel's lifetime;
-//! none is on the kernel heap. On ARM64 the data cache is cleaned after the
-//! CPU writes a descriptor or buffer and invalidated before it reads one; x86
-//! DMA is cache-coherent.
+//! Memory, none of it on the kernel heap:
+//! - The descriptor rings share one page. The device writes descriptors back
+//!   next to ones the CPU writes, four to a 64-byte line, so on ARM64 they
+//!   live in the kernel's non-cacheable `.dma` section (the linker script and
+//!   the loader map it Normal Non-Cacheable), where no CPU cache line can
+//!   overwrite a write-back; barriers order them against the tail writes. On
+//!   x86-64, whose DMA is cache-coherent, the page is a frame from the frame
+//!   allocator.
+//! - Buffers: each further frame holds two 2048-byte buffers. A buffer is a
+//!   whole number of cache lines and belongs to one descriptor, so on ARM64
+//!   the CPU cleans one after writing it and invalidates one before reading
+//!   it (DC CIVAC by the CTR_EL0 line size).
+//! All of it stays with the device for the kernel's lifetime.
 
 mod nic;
 mod regs;
@@ -30,6 +39,10 @@ mod regs;
 use core::sync::atomic::{compiler_fence, AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use spin::Mutex;
 
+#[cfg(target_arch = "aarch64")]
+use crate::arch_impl::aarch64::timer as counter;
+#[cfg(target_arch = "x86_64")]
+use crate::arch_impl::x86_64::timer as counter;
 use crate::drivers::pci::{self, Device, INTEL_VENDOR_ID};
 use nic::{Model, Nic, Registers, Rings};
 
@@ -46,9 +59,10 @@ const TX_PAGES: usize = nic::TX_RING / BUFFERS_PER_PAGE;
 const TX_RING_OFFSET: usize = nic::RX_RING * nic::DESCRIPTOR_BYTES;
 const _: () = assert!(TX_RING_OFFSET + nic::TX_RING * nic::DESCRIPTOR_BYTES <= PAGE);
 
-/// Upper bound on the spins of one `delay_us` microsecond, so a delay ends
-/// even before the monotonic clock advances.
-const SPINS_PER_US: u64 = 100;
+/// Counter rate assumed while x86's TSC rate is not yet known: above any TSC,
+/// so a delay is never shorter than asked.
+#[cfg(target_arch = "x86_64")]
+const UNCALIBRATED_COUNTER_HZ: u64 = 10_000_000_000;
 
 static DRIVER: Mutex<Option<Driver>> = Mutex::new(None);
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
@@ -82,30 +96,32 @@ impl Registers for Window {
 
     fn write(&mut self, offset: u32, value: u32) {
         // Descriptor and buffer stores before a tail write must not move
-        // after it; on ARM64 the cache maintenance already ended in `dsb sy`.
+        // after it. On ARM64 those stores already ended in `dsb sy`.
         compiler_fence(Ordering::SeqCst);
         // SAFETY: as for `read`.
         unsafe { core::ptr::write_volatile((self.base + offset as usize) as *mut u32, value) }
     }
 
     fn delay_us(&mut self, us: u32) {
-        let start = now_ns();
-        let end = start.saturating_add(u64::from(us) * 1000);
-        for _ in 0..u64::from(us).saturating_mul(SPINS_PER_US) {
-            if now_ns() >= end {
-                break;
-            }
-            core::hint::spin_loop();
-        }
+        delay_us(us)
     }
 }
 
-fn now_ns() -> u64 {
-    let (seconds, nanos) = crate::time::get_monotonic_time_ns();
-    seconds.saturating_mul(1_000_000_000).saturating_add(nanos)
+/// Spin for at least `us` microseconds of the architecture's counter: the
+/// TSC on x86-64, CNTVCT_EL0 at CNTFRQ_EL0 on ARM64.
+fn delay_us(us: u32) {
+    let hz = counter::frequency_hz();
+    #[cfg(target_arch = "x86_64")]
+    let hz = if hz == 0 { UNCALIBRATED_COUNTER_HZ } else { hz };
+    let ticks = (u128::from(hz) * u128::from(us)).div_ceil(1_000_000) as u64;
+    let begin = counter::rdtsc();
+    while counter::rdtsc().wrapping_sub(begin) < ticks {
+        core::hint::spin_loop();
+    }
 }
 
-/// One frame: its device address and its direct-map address.
+/// One frame from the frame allocator: its device address and its direct-map
+/// address.
 #[derive(Clone, Copy)]
 struct Page {
     phys: u64,
@@ -139,7 +155,38 @@ impl Page {
     }
 }
 
-/// The register window and the DMA pages the rings use.
+/// The ring page in ARM64's non-cacheable `.dma` section.
+#[cfg(target_arch = "aarch64")]
+#[repr(C, align(4096))]
+struct RingPage(core::cell::UnsafeCell<[u8; PAGE]>);
+
+// SAFETY: only the one attached driver uses the page: `init`, before the
+// driver is published, then holders of `DRIVER`.
+#[cfg(target_arch = "aarch64")]
+unsafe impl Sync for RingPage {}
+
+#[cfg(target_arch = "aarch64")]
+#[link_section = ".dma"]
+static RING_PAGE: RingPage = RingPage(core::cell::UnsafeCell::new([0; PAGE]));
+
+/// The page holding both descriptor rings.
+#[cfg(target_arch = "aarch64")]
+fn ring_page() -> Result<Page, &'static str> {
+    let virt = RING_PAGE.0.get() as usize;
+    // SAFETY: the page is the driver's alone (see `RingPage`); kernel start-up
+    // zeroed the section, and the device has not been given its address yet.
+    unsafe { core::ptr::write_bytes(virt as *mut u8, 0, PAGE) };
+    dma_barrier();
+    let phys = crate::platform_config::kernel_va_to_ipa(virt as u64);
+    Ok(Page { phys, virt })
+}
+
+#[cfg(target_arch = "x86_64")]
+fn ring_page() -> Result<Page, &'static str> {
+    Page::allocate()
+}
+
+/// The register window and the DMA memory the rings use.
 struct Hardware {
     window: Window,
     rings: Page,
@@ -151,12 +198,11 @@ impl Hardware {
     fn new(base: usize) -> Result<Self, &'static str> {
         let mut hw = Self {
             window: Window { base },
-            rings: Page::NONE,
+            rings: ring_page()?,
             rx: [Page::NONE; RX_PAGES],
             tx: [Page::NONE; TX_PAGES],
         };
         let allocated = (|| -> Result<(), &'static str> {
-            hw.rings = Page::allocate()?;
             for page in hw.rx.iter_mut().chain(hw.tx.iter_mut()) {
                 *page = Page::allocate()?;
             }
@@ -171,9 +217,12 @@ impl Hardware {
         }
     }
 
-    /// Return the pages. Only before the device has been given their addresses.
+    /// Return the frames. Only before the device has been given their
+    /// addresses. ARM64's ring page is a static and stays.
     fn release(&self) {
-        for page in core::iter::once(&self.rings).chain(&self.rx).chain(&self.tx) {
+        #[cfg(target_arch = "x86_64")]
+        self.rings.release();
+        for page in self.rx.iter().chain(&self.tx) {
             page.release();
         }
     }
@@ -193,13 +242,18 @@ impl Hardware {
     }
 }
 
+/// Read a descriptor the device may have written back, before reading the
+/// buffer it describes.
 fn read_descriptor(at: usize) -> [u64; 2] {
-    invalidate(at, nic::DESCRIPTOR_BYTES);
     let words = at as *const u64;
     // SAFETY: `at` is a 16-byte-aligned descriptor inside the ring page.
-    unsafe { [core::ptr::read_volatile(words), core::ptr::read_volatile(words.add(1))] }
+    let value = unsafe { [core::ptr::read_volatile(words), core::ptr::read_volatile(words.add(1))] };
+    dma_barrier();
+    value
 }
 
+/// Write a descriptor software owns, visible to the device before the next
+/// register write.
 fn write_descriptor(at: usize, value: [u64; 2]) {
     let words = at as *mut u64;
     // SAFETY: as for `read_descriptor`; software owns this descriptor.
@@ -207,7 +261,7 @@ fn write_descriptor(at: usize, value: [u64; 2]) {
         core::ptr::write_volatile(words, value[0]);
         core::ptr::write_volatile(words.add(1), value[1]);
     }
-    clean(at, nic::DESCRIPTOR_BYTES);
+    dma_barrier();
 }
 
 impl Registers for Hardware {
@@ -220,7 +274,7 @@ impl Registers for Hardware {
     }
 
     fn delay_us(&mut self, us: u32) {
-        self.window.delay_us(us)
+        delay_us(us)
     }
 }
 
@@ -275,27 +329,45 @@ impl Rings for Hardware {
     }
 }
 
-/// Clean and invalidate by VA to the point of coherency, so the device reads
-/// what the CPU wrote (Arm ARM, DC CIVAC), then order it before what follows.
+/// Complete prior memory accesses before later ones and before the next
+/// device register access (Arm ARM, DSB).
 #[cfg(target_arch = "aarch64")]
-fn clean(start: usize, length: usize) {
-    const LINE: usize = 64;
-    let mut line = start & !(LINE - 1);
-    while line < start + length {
-        // SAFETY: cache maintenance on mapped kernel memory.
-        unsafe { core::arch::asm!("dc civac, {}", in(reg) line, options(nostack)) };
-        line += LINE;
-    }
+fn dma_barrier() {
     // SAFETY: a barrier.
     unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)) };
 }
 
-/// The same operation discards stale lines before the CPU reads what the
-/// device wrote.
+/// The smallest data cache line, from CTR_EL0.DminLine (log2 of its words).
+#[cfg(target_arch = "aarch64")]
+fn cache_line() -> usize {
+    let ctr: u64;
+    // SAFETY: CTR_EL0 is readable at EL1.
+    unsafe { core::arch::asm!("mrs {}, ctr_el0", out(reg) ctr, options(nomem, nostack)) };
+    4 << ((ctr >> 16) & 0xF)
+}
+
+/// Clean and invalidate by VA to the point of coherency (Arm ARM, DC CIVAC):
+/// after the CPU writes a buffer, so the device reads it; before the CPU reads
+/// one the device wrote, so no stale line is used.
+#[cfg(target_arch = "aarch64")]
+fn clean(start: usize, length: usize) {
+    let line = cache_line();
+    let mut at = start & !(line - 1);
+    while at < start + length {
+        // SAFETY: cache maintenance on mapped kernel memory.
+        unsafe { core::arch::asm!("dc civac, {}", in(reg) at, options(nostack)) };
+        at += line;
+    }
+    dma_barrier();
+}
+
 #[cfg(target_arch = "aarch64")]
 fn invalidate(start: usize, length: usize) {
     clean(start, length)
 }
+
+#[cfg(target_arch = "x86_64")]
+fn dma_barrier() {}
 
 #[cfg(target_arch = "x86_64")]
 fn clean(_start: usize, _length: usize) {}
@@ -337,7 +409,8 @@ fn window() -> Option<Window> {
 }
 
 /// Find, reset and start the first supported function. On x86-64 its
-/// interrupt causes are unmasked; the caller connects MSI or INTx.
+/// interrupt causes are unmasked once the driver is published; the caller
+/// then connects MSI or INTx.
 pub fn init() -> Result<(), &'static str> {
     if INITIALIZED.load(Ordering::Acquire) {
         return Ok(());
@@ -356,12 +429,6 @@ pub fn init() -> Result<(), &'static str> {
         }
     };
     let mac = nic.mac();
-    let mut address = [0u8; 8];
-    address[..6].copy_from_slice(&mac);
-    STATION_ADDRESS.store(u64::from_le_bytes(address), Ordering::Release);
-    #[cfg(target_arch = "x86_64")]
-    IS_82574.store(model == Model::Pcie82574, Ordering::Release);
-    REGISTER_BASE.store(base, Ordering::Release);
     crate::serial_println!(
         "[e1000] {:?} {:02x}:{:02x}.{} mac {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} link {}",
         model,
@@ -376,8 +443,11 @@ pub fn init() -> Result<(), &'static str> {
         mac[5],
         if nic::link_up(&mut hw) { "up" } else { "down" }
     );
+    let mut address = [0u8; 8];
+    address[..6].copy_from_slice(&mac);
+    STATION_ADDRESS.store(u64::from_le_bytes(address), Ordering::Release);
     #[cfg(target_arch = "x86_64")]
-    nic::enable_interrupts(&mut hw, model);
+    IS_82574.store(model == Model::Pcie82574, Ordering::Release);
     {
         let _guard = crate::net::net_lock_guard();
         let mut slot = DRIVER.lock();
@@ -388,13 +458,19 @@ pub fn init() -> Result<(), &'static str> {
             device,
         });
     }
+    REGISTER_BASE.store(base, Ordering::Release);
     INITIALIZED.store(true, Ordering::Release);
+    // Only now can a cause reach a consumer: an interrupt before this point
+    // would be acknowledged by `handle_interrupt` with nothing to drain it.
+    #[cfg(target_arch = "x86_64")]
+    nic::enable_interrupts(&mut Window { base });
     Ok(())
 }
 
 /// Deliver the function's interrupts by MSI (PCI Local Bus 3.0, 6.8.1) and
-/// return the vector. Causes raised before the message was enabled sent none,
-/// so they are acknowledged here; the next cause sends a message.
+/// return the vector. A cause pending when the message was enabled sent no
+/// message, and holds off the next one, so the hand-off acknowledges it and
+/// raises NetRx for any frame already waiting.
 #[cfg(target_arch = "x86_64")]
 pub fn interrupt_by_msi() -> Result<u8, &'static str> {
     let device = {
@@ -404,8 +480,17 @@ pub fn interrupt_by_msi() -> Result<u8, &'static str> {
     };
     let device = device.ok_or("e1000 not initialized")?;
     let vector = crate::arch_impl::x86_64::msi::enable(&device, handle_interrupt)?;
-    if let Some(mut window) = window() {
-        nic::acknowledge_interrupt(&mut window, model());
+    let owed = {
+        let _guard = crate::net::net_lock_guard();
+        let mut slot = DRIVER.lock();
+        let owed = match slot.as_mut() {
+            Some(driver) => driver.nic.interrupts_routed(&mut driver.hw, model()),
+            None => false,
+        };
+        owed
+    };
+    if owed {
+        crate::task::softirqd::raise_softirq(crate::task::softirqd::SoftirqType::NetRx);
     }
     Ok(vector)
 }
@@ -468,9 +553,8 @@ pub fn handle_interrupt() {
     let Some(mut window) = window() else {
         return;
     };
-    let model = model();
-    let causes = nic::acknowledge_interrupt(&mut window, model);
-    if nic::needs_receive_work(causes, model) {
+    let causes = nic::acknowledge_interrupt(&mut window, model());
+    if nic::needs_receive_work(causes) {
         crate::task::softirqd::raise_softirq(crate::task::softirqd::SoftirqType::NetRx);
     }
 }

@@ -9,6 +9,8 @@
 // General registers (SDM 13.4.1-13.4.10; DS 10.2.2).
 pub const CTRL: u32 = 0x0000;
 pub const STATUS: u32 = 0x0008;
+/// 82574: EEPROM/Flash Control (DS 10.2.2.3).
+pub const EEC: u32 = 0x0010;
 pub const EERD: u32 = 0x0014;
 pub const FCAL: u32 = 0x0028;
 pub const FCAH: u32 = 0x002C;
@@ -34,7 +36,6 @@ pub const MTA: u32 = 0x5200;
 pub const MTA_ENTRIES: u32 = 128;
 pub const RAL0: u32 = 0x5400;
 pub const RAH0: u32 = 0x5404;
-pub const RECEIVE_ADDRESSES: u32 = 16;
 
 // Transmit registers (SDM 13.4.33-13.4.43; DS 10.2.6).
 pub const TCTL: u32 = 0x0400;
@@ -46,8 +47,9 @@ pub const TDH: u32 = 0x3810;
 pub const TDT: u32 = 0x3818;
 pub const TXDCTL: u32 = 0x3828;
 
-/// 82574 only: 3GIO Control (DS 10.2.3.1).
+/// 82574 only: 3GIO Control (DS 10.2.3.1) and 3GIO Control 2 (DS 10.2.3.12).
 pub const GCR: u32 = 0x5B00;
+pub const GCR2: u32 = 0x5B64;
 
 // CTRL (SDM 13.4.1; DS 10.2.2.1).
 /// 82574: PCIe master disable (DS 10.2.2.1, 3.1.3.10).
@@ -80,27 +82,34 @@ pub const EERD_82574_DONE: u32 = 1 << 1;
 pub const EERD_82574_ADDR_SHIFT: u32 = 2;
 pub const EERD_DATA_SHIFT: u32 = 16;
 
+/// 82574: NVM auto-read done (DS 10.2.2.3).
+pub const EEC_AUTO_RD: u32 = 1 << 9;
+
 /// 82574: software request for MDIO/NVM ownership (DS 10.2.2.15, 4.5.2).
 pub const EXTCNF_CTRL_SW_OWNERSHIP: u32 = 1 << 5;
 
 /// 82574: GCR bit 22, set by software during initialization (DS 4.6.2).
 pub const GCR_BIT22: u32 = 1 << 22;
+/// 82574: GCR2 bit 0, "must be set to 1b by software during initialization"
+/// (DS 10.2.3.12).
+pub const GCR2_BIT0: u32 = 1 << 0;
 
 // Interrupt causes, shared by ICR, IMS and IMC (SDM 13.4.17; DS 10.2.4.1).
-// Only x86-64 unmasks them; ARM64 polls the receive ring.
+// Only x86-64 unmasks them; ARM64 polls the receive ring. RXSEQ (bit 3) is
+// reserved on the 82540EM (SDM Table 13-63) and on the 82574.
 #[cfg(any(target_arch = "x86_64", test))]
 pub const INT_LSC: u32 = 1 << 2;
-/// 8254x only; reserved on the 82574.
-#[cfg(any(target_arch = "x86_64", test))]
-pub const INT_RXSEQ: u32 = 1 << 3;
 #[cfg(any(target_arch = "x86_64", test))]
 pub const INT_RXDMT0: u32 = 1 << 4;
 #[cfg(any(target_arch = "x86_64", test))]
 pub const INT_RXO: u32 = 1 << 6;
 #[cfg(any(target_arch = "x86_64", test))]
 pub const INT_RXT0: u32 = 1 << 7;
-/// Every cause bit, for masking all of them through IMC.
-pub const INT_ALL: u32 = 0xFFFF_FFFF;
+/// Every cause, for masking them through IMC: all 32 bits on the 8254x (SDM
+/// 13.4.21); bits 24:0 on the 82574, whose bits 31:25 are written as 0b (DS
+/// 10.2.4.6).
+pub const INT_ALL_8254X: u32 = 0xFFFF_FFFF;
+pub const INT_ALL_82574: u32 = 0x01FF_FFFF;
 
 // RCTL (SDM 13.4.22; DS 10.2.5.1).
 pub const RCTL_EN: u32 = 1 << 1;
