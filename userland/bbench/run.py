@@ -163,7 +163,7 @@ def run_workloads(args, source, data, remote, requested, bsync_host, metadata):
         "fork-exec": lambda _: ["fork-exec", Path(args.probe).with_name("bbench-exit"), 100],
         "anonymous": lambda _: ["anonymous"],
         "file-map": lambda _: ["file-map", driver],
-        "copy": lambda _: ["copy"],
+        "copy-bytes": lambda _: ["copy-bytes"],
         "sequential": lambda _: ["sequential", 1024 * MIB],
         "small-files": lambda _: ["small-files", 10_000],
         "walk": lambda _: ["walk", 10_000],

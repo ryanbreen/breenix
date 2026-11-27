@@ -155,6 +155,8 @@ pub enum ProcEntryType {
     NetPnp,
     /// /proc/net/tcp - TCP listeners and connections, the first columns of Linux's format
     NetTcp,
+    /// /proc/net/tcp_stats - TCP transmit counters (retransmission timeouts)
+    NetTcpStats,
     /// /proc/console - screen console directory
     #[cfg(target_arch="x86_64")]
     Gt710Pixels,
@@ -262,6 +264,7 @@ impl ProcEntryType {
             ProcEntryType::NetDir => "net",
             ProcEntryType::NetPnp => "pnp",
             ProcEntryType::NetTcp => "tcp",
+            ProcEntryType::NetTcpStats => "tcp_stats",
             #[cfg(target_arch="x86_64")]
             ProcEntryType::Gt710Pixels => "gt710-pixels",
             #[cfg(target_arch="x86_64")]
@@ -353,6 +356,7 @@ impl ProcEntryType {
             ProcEntryType::NetDir => "/proc/net",
             ProcEntryType::NetPnp => "/proc/net/pnp",
             ProcEntryType::NetTcp => "/proc/net/tcp",
+            ProcEntryType::NetTcpStats => "/proc/net/tcp_stats",
             #[cfg(target_arch="x86_64")]
             ProcEntryType::Gt710Pixels => "/proc/gt710-pixels",
             #[cfg(target_arch="x86_64")]
@@ -445,6 +449,7 @@ impl ProcEntryType {
             ProcEntryType::NetDir => 400,
             ProcEntryType::NetPnp => 401,
             ProcEntryType::NetTcp => 402,
+            ProcEntryType::NetTcpStats => 403,
             ProcEntryType::FbconDir => 500,
             ProcEntryType::FbconCheck => 501,
             #[cfg(target_arch="x86_64")]
@@ -625,6 +630,7 @@ pub fn init() {
     procfs.entries.push(ProcEntry::new(ProcEntryType::NetDir));
     procfs.entries.push(ProcEntry::new(ProcEntryType::NetPnp));
     procfs.entries.push(ProcEntry::new(ProcEntryType::NetTcp));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::NetTcpStats));
     #[cfg(target_arch="x86_64")]
     procfs.entries.push(ProcEntry::new(ProcEntryType::Gt710Pixels));
     #[cfg(target_arch="x86_64")]
@@ -779,6 +785,7 @@ pub fn list_entries() -> Result<Vec<String>, i32> {
                     | ProcEntryType::BlockCache
                     | ProcEntryType::NetPnp
                     | ProcEntryType::NetTcp
+                    | ProcEntryType::NetTcpStats
             ) && !is_console_file(&e.entry_type)
         }) {
             let name = e.entry_type.name();
@@ -1079,12 +1086,13 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         ProcEntryType::BlockCache => text(crate::block::cache_report::render(&crate::block::cache_kernel::system_cache().counters())),
         ProcEntryType::NetDir => {
             let mut listing = Vec::new();
-            listing.try_reserve_exact(8).map_err(|_| -12)?;
-            listing.extend_from_slice(b"pnp\ntcp\n");
+            listing.try_reserve_exact(18).map_err(|_| -12)?;
+            listing.extend_from_slice(b"pnp\ntcp\ntcp_stats\n");
             Ok(listing)
         }
         ProcEntryType::NetPnp => net::generate_pnp().map(String::into_bytes),
         ProcEntryType::NetTcp => crate::net::tcp::proc_net_tcp().map(String::into_bytes),
+        ProcEntryType::NetTcpStats => crate::net::tcp::proc_net_tcp_stats().map(String::into_bytes),
         #[cfg(target_arch="x86_64")]
         ProcEntryType::Gt710Pixels => require(Operation::Trace).map(|()|crate::gk208::proc_pixels()),
         #[cfg(target_arch="x86_64")]
