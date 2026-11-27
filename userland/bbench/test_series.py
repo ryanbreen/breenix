@@ -60,7 +60,7 @@ class AttributionRows(unittest.TestCase):
         self.assertEqual((rows["compile.rustc-vv"]["state"], rows["compile.rustc-vv"]["reason"]),
                          ("deferred", reason))
         self.assertEqual(rows["process.rustc-first-output"]["reason"], reason)
-        self.assertEqual(rows["memory.anonymous"]["reason"], "No timed receipts")
+        self.assertEqual(rows["memory.anonymous-touch"]["reason"], "No timed receipts")
 
 
 class CopyRows(unittest.TestCase):
