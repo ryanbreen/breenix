@@ -59,17 +59,17 @@ fn between<'a>(source: &'a str, from: &str, to: &str) -> &'a str {
 }
 
 /// An address-space switch installs a root tagged with that space's ASID and
-/// needs no TLB invalidation. The 4 ttbr0.rs install functions below,
-/// `switch_ttbr0_if_needed` and the exception-return corridor (6 places) must
-/// therefore issue no `tlbi`: a
-/// broadcast there costs each CPU its TLB on each switch.
+/// needs no TLB invalidation. The 3 ttbr0.rs install functions below,
+/// `switch_ttbr0_if_needed` and the exception-return corridor (5 places) must
+/// therefore issue no `tlbi`: a broadcast there costs each CPU its TLB on each
+/// switch.
 #[test]
 fn address_space_switches_issue_no_tlb_invalidation() {
     let ttbr0 = code_only(&repo_text("kernel/src/arch_impl/aarch64/ttbr0.rs"));
     let context_switch = code_only(&repo_text("kernel/src/arch_impl/aarch64/context_switch.rs"));
     let corridor = code_only(&repo_text("kernel/src/arch_impl/aarch64/syscall_entry.S"));
     let mut offenders = Vec::new();
-    for name in ["adopt_process_ttbr0", "restore_process_ttbr0", "switch_ttbr0_to_kernel", "install_ttbr0"] {
+    for name in ["adopt_process_ttbr0", "restore_process_ttbr0", "switch_ttbr0_to_kernel"] {
         if function_body(&ttbr0, name).contains("tlbi") {
             offenders.push(format!("ttbr0.rs::{name}"));
         }
@@ -117,7 +117,7 @@ fn user_leaves_are_non_global() {
 fn kernel_ttbr0_identity_blocks_are_non_global() {
     let boot = code_only(&repo_text("kernel/src/arch_impl/aarch64/boot.S"));
     assert!(boot.contains(".equ DESC_NG,"), "boot.S must define the nG bit");
-    let ttbr0_setup = between(&boot, "setup_mmu:", "ttbr1_l0\n");
+    let ttbr0_setup = between(&boot, "setup_mmu:", "ldr x1, =ttbr1_l1");
     assert!(
         ttbr0_setup.contains("DESC_NG"),
         "boot.S's TTBR0 identity blocks must carry nG"

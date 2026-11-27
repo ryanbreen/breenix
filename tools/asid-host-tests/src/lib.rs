@@ -393,6 +393,8 @@ fn switches_flush_nothing_until_a_rollover_and_then_once_per_cpu() {
         }
     }
     assert_eq!(asids.rollovers(), 1);
+    assert_eq!(asids.generation(), 2);
+    assert_eq!(asids.registered(), 260);
     // The CPU that rolled over flushes on that bind; the others on their next.
     assert_eq!(flushes.iter().sum::<u32>(), 4, "one local flush per CPU per rollover");
     // A space not bound since the rollover has no current ASID until it is.

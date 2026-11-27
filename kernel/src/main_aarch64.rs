@@ -902,6 +902,9 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     );
     kernel::memory::frame_allocator::init_aarch64(frame_pool.ranges.as_slice());
     kernel::memory::init_aarch64_heap();
+    // Per-address-space ASIDs: chooses 8 or 16 bits and sets TCR_EL1 before
+    // any process exists and before secondaries copy CPU 0's TCR_EL1.
+    kernel::arch_impl::aarch64::ttbr0::init_asids();
     kernel::memory::frame_allocator::init_frame_ledger();
     kernel::memory::kernel_stack::init();
     serial_println!("[boot] Memory management ready");
@@ -1945,6 +1948,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     kernel::tracing::providers::teardown::emit_root_custody_summary();
     kernel::tracing::providers::teardown::emit_tombstone_census();
     kernel::arch_impl::aarch64::ttbr0::emit_asid_census();
+    kernel::arch_impl::aarch64::ttbr0::emit_asid_state();
     // The pinned-placement census both aarch64 boot gates fail on. Emitted here
     // because this point is reached in every profile: the production profile
     // has no boot-test sampling kthread, so without this line the production
