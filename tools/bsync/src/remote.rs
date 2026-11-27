@@ -325,9 +325,10 @@ impl Destination {
     }
 
     /// Open one SSH connection (an OpenSSH ControlMaster) that the listing
-    /// and every action of this sync then share as channels, instead of a
+    /// and each action of this sync then share as channels, instead of a
     /// connection and key exchange per command. A caller whose SSH options
-    /// already name a control socket keeps its own, and gets None.
+    /// already name a control socket keeps its own and gets no
+    /// SharedConnection back.
     pub fn share_connection(&mut self) -> Result<Option<SharedConnection>> {
         if self
             .ssh_args

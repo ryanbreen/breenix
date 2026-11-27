@@ -138,7 +138,7 @@ fn packet_ready_reports_only_complete_buffered_packets() {
         feed(&mut receiver, &stream[..first - 1]);
         assert!(!receiver.packet_ready(), "{kind:?}");
         assert_eq!(receiver.open().unwrap(), None);
-        // The rest of the first packet and all of the second arrive together.
+        // The rest of the first packet and the whole second one arrive together.
         feed(&mut receiver, &stream[first - 1..]);
         assert!(receiver.packet_ready(), "{kind:?}");
         assert_eq!(receiver.open().unwrap().as_deref(), Some(&b"first"[..]));

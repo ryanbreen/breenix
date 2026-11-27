@@ -145,7 +145,7 @@ impl<'a> ServerSession<'a> {
 
         self.io.set_cipher_recv(cipher_c2s); // client→server = our recv
         self.io.set_cipher_send(cipher_s2c); // server→client = our send
-        // Both NEWKEYS have passed and nothing was sent or received since.
+        // Both NEWKEYS have passed; the next packet each way is the first encrypted one.
         if kex::strict_kex(&self.kex.peer_kexinit, &self.kex.my_kexinit) {
             self.io.reset_sequence_numbers();
         }

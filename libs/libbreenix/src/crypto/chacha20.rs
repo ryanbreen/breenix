@@ -7,7 +7,7 @@
 //! a 96-bit nonce. The original layout, used by SSH's
 //! chacha20-poly1305@openssh.com, has a 64-bit counter and a 64-bit nonce.
 //! While the counter stays below 2^32 the two agree when the 96-bit nonce is
-//! four zero bytes followed by the 64-bit nonce, which is how
+//! four 0x00 bytes followed by the 64-bit nonce, which is how
 //! [`ssh_nonce`] builds it.
 
 const CONSTANTS: [u32; 4] = [0x6170_7865, 0x3320_646e, 0x7962_2d32, 0x6b20_6574];

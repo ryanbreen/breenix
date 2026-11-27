@@ -428,8 +428,8 @@ pub fn negotiate_ciphers(client: &[u8], server: &[u8]) -> Result<(CipherKind, Ci
 
 /// Strict KEX applies when the client's and the server's initial KEXINIT
 /// offer the same name of it: kex-strict-c with kex-strict-s, or the
-/// pre-standard -v00@openssh.com pair. Never a standard name with a
-/// pre-standard one.
+/// pre-standard -v00@openssh.com pair. A standard name paired with a
+/// pre-standard one does not count.
 pub fn strict_kex(client: &[u8], server: &[u8]) -> bool {
     let (Ok(c), Ok(s)) = (name_lists(client), name_lists(server)) else { return false };
     let offers = |list: &str, name: &str| list.split(',').any(|offered| offered == name);

@@ -1,7 +1,7 @@
 //! A single-threaded SFTP server model for `send`. Replies become readable
 //! as soon as their request is written, and the model counts how many
 //! requests the client has outstanding: written, with the reply not yet
-//! read. A client that waits for a reply it never requested gets an error
+//! read. A client that waits for a reply it did not request gets an error
 //! instead of a hang.
 
 use super::{send, WINDOW};
@@ -114,7 +114,7 @@ impl Read for Output {
         let mut model = self.0.borrow_mut();
         let offset = model.reply_offset;
         let Some(front) = model.replies.front() else {
-            return Err(io::Error::other("client waited for a reply it never requested"));
+            return Err(io::Error::other("client waited for a reply it did not request"));
         };
         let n = out.len().min(front.len() - offset);
         out[..n].copy_from_slice(&front[offset..offset + n]);

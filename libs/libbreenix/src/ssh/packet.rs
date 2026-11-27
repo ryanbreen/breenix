@@ -67,7 +67,7 @@ impl Framer {
         self.cipher_recv = Some(cipher);
     }
 
-    /// Strict KEX: both sequence numbers restart at zero once NEWKEYS has
+    /// Strict KEX: both sequence numbers restart at 0 once NEWKEYS has
     /// been sent and received.
     pub fn reset_sequence_numbers(&mut self) {
         self.seq_send = 0;
@@ -127,7 +127,8 @@ impl Framer {
         &mut self.rx[self.rx_end..]
     }
 
-    /// Record that `n` bytes were written at the start of `receive_buffer`.
+    /// Record `n` received bytes, stored at the start of the slice that
+    /// receive_buffer returned.
     pub fn received(&mut self, n: usize) {
         self.rx_end += n;
         assert!(self.rx_end <= self.rx.len());
@@ -200,7 +201,7 @@ impl Framer {
 pub struct PacketIo {
     fd: Fd,
     framer: Framer,
-    /// Reused for every sealed packet, so a send allocates nothing new.
+    /// Reused for each sealed packet, so sends stop allocating once it has grown.
     send_buffer: Vec<u8>,
     relay_flags: Option<i32>,
     outgoing: VecDeque<u8>,
@@ -346,8 +347,9 @@ impl PacketIo {
         Ok(())
     }
 
-    /// The next buffered packet, receiving more bytes while none is complete.
-    /// Returns None when a nonblocking receive finds no more bytes yet.
+    /// The next buffered packet, receiving more bytes until one is complete.
+    /// On a nonblocking socket it returns early, without a packet, when the
+    /// receive would block.
     fn read_packet(&mut self) -> Result<Option<Vec<u8>>, Error> {
         loop {
             if let Some(packet) = self.framer.open()? {
@@ -364,7 +366,7 @@ impl PacketIo {
     }
 
     /// Read a line terminated by \r\n (for version string exchange).
-    /// Bytes are read one at a time so none of the first packet is consumed.
+    /// Bytes are read one at a time so the first packet's bytes stay in the socket.
     pub fn read_line(&self) -> Result<String, Error> {
         let mut line = Vec::new();
         let mut byte = [0u8; 1];

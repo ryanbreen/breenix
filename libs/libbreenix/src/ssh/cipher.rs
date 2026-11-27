@@ -3,7 +3,7 @@
 //! - aes256-gcm@openssh.com (RFC 5647 as profiled by OpenSSH),
 //! - aes128-ctr with hmac-sha2-256 (RFC 4344, RFC 6668).
 //!
-//! Every operation works on the packet buffer in place: `seal` turns
+//! Each operation works on the packet buffer in place: `seal` turns
 //! `length || padding_length || payload || padding` into wire bytes and
 //! writes the tag into the space after it, and `open` reverses that after
 //! checking the tag.

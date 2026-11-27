@@ -1,6 +1,6 @@
 //! Poly1305 one-time authenticator (RFC 8439 section 2.5).
 //!
-//! The accumulator is kept in five 26-bit limbs so every product fits in a
+//! The accumulator is kept in five 26-bit limbs so each product fits in a
 //! u64. Blocks are processed with the same operations whatever their
 //! contents, and the final reduction selects between h and h - p with a
 //! mask rather than a branch, so timing depends only on the message length.
@@ -69,7 +69,7 @@ pub fn poly1305(key: &[u8; 32], message: &[u8]) -> [u8; 16] {
         h[1] += carry;
     }
 
-    // Fully propagate the carries, so every limb is below 2^26.
+    // Propagate the carries through the limbs, leaving each below 2^26.
     let mut carry = h[1] >> 26;
     h[1] &= MASK26;
     for i in 2..5 {

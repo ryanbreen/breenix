@@ -1,10 +1,10 @@
 //! AES-128/256 block encryption (FIPS 197), bitsliced and constant-time.
 //!
 //! A byte-oriented AES looks up its S-box by state and key bytes, so which
-//! cache lines it touches depends on secrets. This implementation never
-//! indexes memory by data. Four blocks are processed together as eight
-//! 64-bit bit-planes: plane `i` holds bit `i` of all 64 bytes, and byte `k`
-//! of the four blocks is bit `k` of every plane. SubBytes is then a Boolean
+//! cache lines it touches depends on secrets. Here memory is indexed only
+//! by loop positions, not by data. Four blocks are processed together as eight
+//! 64-bit bit-planes: plane `i` holds bit `i` of the 64 bytes, and byte `k`
+//! of the four blocks is bit `k` of each plane. SubBytes is then a Boolean
 //! circuit evaluated on whole planes (the 113-gate circuit of Boyar and
 //! Peralta, "A depth-16 circuit for the AES S-box", 2012), and ShiftRows
 //! and MixColumns are fixed masks and shifts.
@@ -79,7 +79,7 @@ fn unpack(planes: &Planes) -> [u8; 64] {
     bytes
 }
 
-/// SubBytes on every byte of the planes. U0 and S0 are the most
+/// SubBytes on each byte of the planes. U0 and S0 are the most
 /// significant bits, as in the circuit's description.
 fn sub_bytes(planes: &mut Planes) {
     let [u7, u6, u5, u4, u3, u2, u1, u0] = *planes;
@@ -312,7 +312,7 @@ pub fn aes256_expand_key(key: &[u8; 32]) -> [[u8; 16]; 15] {
     expand_key::<8, 15>(key)
 }
 
-/// Each round key repeated in all four block positions.
+/// Each round key repeated in the four block positions.
 fn round_key_planes<const KEYS: usize>(round_keys: &[[u8; 16]; KEYS]) -> [Planes; KEYS] {
     let mut planes = [[0u64; 8]; KEYS];
     for (planes, round_key) in planes.iter_mut().zip(round_keys) {
