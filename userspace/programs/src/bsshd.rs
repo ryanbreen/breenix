@@ -1,8 +1,7 @@
 //! BSSHD — Breenix SSH server daemon
 //!
 //! Listens for SSH connections on port 22 and runs each authenticated
-//! session, a shell (with a PTY when one is requested) or an exec request, as
-//! the account that logged in.
+//! shell, exec request or SFTP subsystem as the account that logged in.
 //!
 //! - The host key is `/etc/ssh/ssh_host_ed25519_key`, generated from the
 //!   kernel's random pool on the first start that finds no key; its SHA-256
@@ -36,6 +35,7 @@ use libbreenix::pty;
 use libbreenix::socket::{self, SockAddrIn, AF_INET, SOCK_STREAM};
 use libbreenix::accounts::{self, session};
 use libbreenix::ssh::account::{self, Account};
+use libbreenix::ssh::channel::SessionCommand;
 use libbreenix::ssh::host_keys;
 use libbreenix::ssh::machine_state;
 use libbreenix::ssh::keys::{fingerprint_text, HostKey};
@@ -46,9 +46,11 @@ use libbreenix::types::Fd;
 const DEFAULT_PORT: u16 = 22;
 
 mod bsshd_peer;
+mod bsshd_sftp;
 
 extern "C" {
     fn setsockopt(fd: i32, level: i32, name: i32, value: *const u8, length: u32) -> i32;
+    fn geteuid() -> u32;
 }
 
 struct Lease {
@@ -165,6 +167,11 @@ fn enter_account(account: &Account, term: Option<&str>) -> Result<Vec<CString>, 
 }
 
 fn main() {
+    match std::env::args().nth(1).as_deref() {
+        Some("--sftp-server") => process::exit(run_sftp_worker(false)),
+        Some("--sftp-server-openssh") => process::exit(run_sftp_worker(true)),
+        _ => {}
+    }
     let (port, mut lease) = options().unwrap_or_else(|error| {
         eprintln!("bsshd: {error}");
         std::process::exit(2);
@@ -313,26 +320,36 @@ fn handle_connection(fd: Fd, host_key: &HostKey) {
         eprintln!("bsshd: auth log: {}", why);
     }
 
-    // Wait for channel open + shell request
-    let pty_requested = match session.wait_for_channel() {
-        Ok(pty) => pty,
+    let command = match session.wait_for_channel() {
+        Ok(command) => command,
         Err(e) => {
             eprintln!("bsshd: channel setup failed: {:?}", e);
             return;
         }
     };
-
-    let exec_command = session.take_exec_command();
+    let exec_command = match command {
+        SessionCommand::Shell => None,
+        SessionCommand::Exec(command) => Some(command),
+        SessionCommand::Sftp => {
+            let target_first = session.client_version().starts_with("SSH-2.0-OpenSSH_");
+            if let Err(e) = run_piped_program(&mut session, &account, PipedProgram::Sftp { target_first })
+                .and_then(|status| session.finish(status))
+            {
+                eprintln!("bsshd: SFTP close failed: {:?}", e);
+            }
+            return;
+        }
+    };
+    let term = session.pty_term();
+    let pty_requested = term.is_some();
     if let Some(command) = exec_command.as_ref().filter(|_| !pty_requested) {
-        if let Err(e) = run_exec_command(&mut session, &account, command)
+        if let Err(e) = run_piped_program(&mut session, &account, PipedProgram::Exec(command))
             .and_then(|status| session.finish(status))
         {
             eprintln!("bsshd: exec close failed: {:?}", e);
         }
         return;
     }
-
-    let term = session.pty_term();
 
     // Shell input and output are separate pipes without a requested PTY.
     let mut child_pipe_fds = None;
@@ -500,14 +517,72 @@ fn handle_connection(fd: Fd, host_key: &HostKey) {
     session.close();
 }
 
-fn run_exec_command(session: &mut ServerSession, account: &Account, command: &str) -> Result<i32, SshError> {
-    println!("bsshd: exec request");
+/// Re-executing bsshd clears the address space before SFTP handles any
+/// requests. The transport and host key stay in the SSH connection process.
+fn run_sftp_worker(target_first: bool) -> i32 {
+    // SAFETY: geteuid has no arguments and only reads the current identity.
+    if unsafe { geteuid() } == 0 || session::real_uid() == 0 {
+        return 1;
+    }
+    let mut stream = SftpStdio {
+        input: std::io::stdin().lock(),
+        output: std::io::stdout().lock(),
+    };
+    match bsshd_sftp::serve(&mut stream, target_first) {
+        Ok(()) => 0,
+        Err(_) => 1,
+    }
+}
+
+struct SftpStdio<'a> {
+    input: std::io::StdinLock<'a>,
+    output: std::io::StdoutLock<'a>,
+}
+
+impl std::io::Read for SftpStdio<'_> {
+    fn read(&mut self, data: &mut [u8]) -> std::io::Result<usize> {
+        self.input.read(data)
+    }
+}
+
+impl std::io::Write for SftpStdio<'_> {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        self.output.write(data)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.output.flush()
+    }
+}
+
+enum PipedProgram<'a> {
+    Exec(&'a str),
+    Sftp { target_first: bool },
+}
+
+fn run_piped_program(
+    session: &mut ServerSession,
+    account: &Account,
+    program: PipedProgram<'_>,
+) -> Result<i32, SshError> {
+    let sftp = matches!(program, PipedProgram::Sftp { .. });
+    let (path, arguments) = match program {
+        PipedProgram::Exec(command) => {
+            println!("bsshd: exec request");
+            let shell_name = account.shell.rsplit('/').next().unwrap_or(&account.shell);
+            (account.shell.as_str(), vec![c_string(shell_name), c_string("-c"), c_string(command)])
+        }
+        PipedProgram::Sftp { target_first } => {
+            let flag = if target_first { "--sftp-server-openssh" } else { "--sftp-server" };
+            ("/usr/sbin/bsshd", vec![c_string("bsshd"), c_string(flag)])
+        }
+    };
 
     let (read_fd, write_fd) = match io::pipe() {
         Ok(pipe) => pipe,
         Err(e) => {
             let msg = format!("bsshd: pipe failed: {:?}\n", e);
-            let _ = session.send_data(msg.as_bytes());
+            let _ = if sftp { session.send_stderr(msg.as_bytes()) } else { session.send_data(msg.as_bytes()) };
             return Ok(1);
         }
     };
@@ -539,13 +614,13 @@ fn run_exec_command(session: &mut ServerSession, account: &Account, command: &st
             let _ = io::close(read_fd);
             let _ = io::close(error_read);
             let _ = io::close(input_write);
-            let _ = io::dup2(input_read, Fd::from_raw(0));
-            if input_read.raw() > 2 { let _ = io::close(input_read); }
-            let _ = io::dup2(write_fd, Fd::from_raw(1));
-            let _ = io::dup2(error_write, Fd::from_raw(2));
-            if error_write.raw() > 2 { let _ = io::close(error_write); }
-            if write_fd.raw() > 2 {
-                let _ = io::close(write_fd);
+            for (fd, stdio) in [(input_read, 0), (write_fd, 1), (error_write, 2)] {
+                if io::dup2(fd, Fd::from_raw(stdio)).is_err() {
+                    process::exit(1);
+                }
+                if fd.raw() > 2 {
+                    let _ = io::close(fd);
+                }
             }
 
             let environment = match enter_account(account, None) {
@@ -557,10 +632,8 @@ fn run_exec_command(session: &mut ServerSession, account: &Account, command: &st
             };
             let mut envp: Vec<*const u8> = environment.iter().map(|entry| entry.as_ptr().cast()).collect();
             envp.push(core::ptr::null());
-            let path_c = c_string(&account.shell);
-            let shell_name = account.shell.rsplit('/').next().unwrap_or(&account.shell);
-            let arg_storage = [c_string(shell_name), c_string("-c"), c_string(command)];
-            let mut argv: Vec<*const u8> = arg_storage.iter().map(|arg| arg.as_ptr()).collect();
+            let path_c = c_string(path);
+            let mut argv: Vec<*const u8> = arguments.iter().map(|arg| arg.as_ptr()).collect();
             argv.push(core::ptr::null());
             let _ = process::execve(&path_c, argv.as_ptr(), envp.as_ptr());
             process::exit(127);
@@ -570,7 +643,7 @@ fn run_exec_command(session: &mut ServerSession, account: &Account, command: &st
             let _ = io::close(error_write);
             let _ = io::close(input_read);
             exec_shuttle(session, [read_fd, error_read], input_write).map_err(|why| {
-                eprintln!("bsshd: exec relay failed: {}", why);
+                eprintln!("bsshd: piped program relay failed: {}", why);
                 SshError::Io
             })?;
             wait_for_shell(session, child_pid.raw() as i32)
@@ -583,7 +656,7 @@ fn run_exec_command(session: &mut ServerSession, account: &Account, command: &st
             let _ = io::close(read_fd);
             let _ = io::close(write_fd);
             let msg = format!("bsshd: fork failed: {:?}\n", e);
-            let _ = session.send_data(msg.as_bytes());
+            let _ = if sftp { session.send_stderr(msg.as_bytes()) } else { session.send_data(msg.as_bytes()) };
             Ok(1)
         }
     }

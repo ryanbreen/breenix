@@ -984,6 +984,11 @@ const PWRITEV_SYSCALL_NUMBER: u64 = 296;
 #[cfg(target_arch = "aarch64")]
 const PWRITEV_SYSCALL_NUMBER: u64 = 70;
 
+#[cfg(target_arch = "x86_64")]
+const RENAMEAT2_SYSCALL_NUMBER: u64 = 316;
+#[cfg(target_arch = "aarch64")]
+const RENAMEAT2_SYSCALL_NUMBER: u64 = 276;
+
 pub fn dispatch_numbered(number: u64, a: [u64; 6]) -> Option<SyscallResult> {
     if let Some(r) = ipc::dispatch(number, a) {
         return Some(r);
@@ -997,6 +1002,7 @@ pub fn dispatch_numbered(number: u64, a: [u64; 6]) -> Option<SyscallResult> {
         // The older faccessat numbers have no flags argument. Hosted libc's
         // faccessat uses this entry so AT_EACCESS reaches the credential check.
         439 => fs::sys_faccessat(a[0] as i32, a[1], a[2] as u32, a[3] as u32),
+        RENAMEAT2_SYSCALL_NUMBER => fs::sys_renameat2(a[0] as i32, a[1], a[2] as i32, a[3], a[4] as u32),
         FADVISE_SYSCALL_NUMBER => fs::sys_fadvise(a[0] as i32, a[1] as i64, a[2] as i64, a[3] as i32),
         FALLOCATE_SYSCALL_NUMBER => fs::sys_fallocate(a[0] as i32, a[1] as u32, a[2] as i64, a[3] as i64),
         PREADV_SYSCALL_NUMBER => iovec::sys_preadv(a[0] as i32, a[1], a[2] as i32, a[3] as i64),
