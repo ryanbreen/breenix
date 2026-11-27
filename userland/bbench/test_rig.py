@@ -211,6 +211,23 @@ class GuestThatStaysDown(unittest.TestCase):
                              ["breenix VM could not be restarted"], case)
 
 
+class LaunchProfile(unittest.TestCase):
+    """The series name the accelerator and CPU the launcher resolved, not the one the
+    rig expects: BREENIX_ARM64_QEMU_ACCEL=tcg gives TCG with -cpu max."""
+
+    def test_a_tcg_launch_is_recorded_as_tcg(self):
+        argv = [str(word) for word in rig.Guest("linux", Path("/rig"), Path("/disk"),
+                                                headed=False).argv()]
+        with mock.patch.dict(rig.os.environ, {"BREENIX_ARM64_QEMU_ACCEL": "tcg"}):
+            profile = rig.launch_profile(argv)
+        self.assertEqual(profile, "tcg-max")
+        with mock.patch.object(rig, "qemu_version", lambda: "11.0.3"), \
+                mock.patch.object(rig, "host_description", lambda: "Mac"):
+            for text in (rig.hardware(profile), rig.vm_shape(profile)):
+                self.assertIn("TCG -cpu max", text)
+                self.assertNotIn("HVF", text)
+
+
 class RestartableGuest:
     """A guest that boots when started; its QEMU stays up until it is stopped."""
 
