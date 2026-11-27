@@ -140,7 +140,7 @@ fn workload(dir: &Path, args: &[String], metrics: &mut Metrics) -> io::Result<()
             ]);
             Ok(())
         }
-        ["copy"] => {
+        ["copy-bytes"] => {
             let mut source = vec![0x55u8; 128 * MIB];
             let mut target = vec![0xaau8; source.len()];
             black_box(&mut source);

@@ -29,9 +29,9 @@ with tempfile.TemporaryDirectory() as temp:
     assert report["metrics"]["read_ns"] > 0, report
     assert not any(data.iterdir())
 
-    # "Copy 1 GiB total": two 128 MiB byte buffers copied eight times. The child's
+    # "Copy 1 GiB of bytes": two 128 MiB byte buffers copied eight times. The child's
     # peak resident size must fit those buffers (ru_maxrss is bytes on macOS).
-    child = subprocess.Popen([binary, data, reports, "copy", "copy"], stdout=subprocess.PIPE)
+    child = subprocess.Popen([binary, data, reports, "copy-bytes", "copy-bytes"], stdout=subprocess.PIPE)
     stdout = child.stdout.read()
     _, status, usage = os.wait4(child.pid, 0)
     report = json.loads(stdout)

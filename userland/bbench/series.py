@@ -5,7 +5,7 @@ from pathlib import Path
 from statistics import median
 from tempfile import NamedTemporaryFile
 
-from tables import DEFERRED_DISK, ROWS, better, unit, values
+from tables import DEFERRED_DISK, RETIRED, ROWS, better, unit, values
 
 
 def series_rows(groups, system, target, deferred=None):
@@ -31,6 +31,8 @@ def series_rows(groups, system, target, deferred=None):
                 reason = deferred[row.case]
             elif system == "breenix" and target == "x86-metal" and row.case in DEFERRED_DISK:
                 reason = "#3226"
+            elif row.case in RETIRED:
+                reason = RETIRED[row.case]
             else:
                 reason = "No timed receipts"
         yield {

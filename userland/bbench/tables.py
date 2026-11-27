@@ -15,6 +15,10 @@ COLD_TARGET = "Cold target, natural file cache"
 COLD_BUILD = "Cold target, uncontrolled file cache / cold target, warm toolchain"
 DEFERRED = "Deferred to #3226"
 DEFERRED_DISK = ("sequential", "small-files", "walk", "fsync")
+# Cases whose work changed: their rows keep the historical receipts, and a new
+# series records them as deferred with the row that replaced them.
+RETIRED = {"copy": "Retired: it copied 4 GiB of i32 values; the 1 GiB byte copy is "
+                   "memory.copy-bytes"}
 
 
 class Row(NamedTuple):
@@ -58,7 +62,10 @@ ROWS = (
         "No eviction before map, touch follows map", "Resident after map / first and warm touches"),
     Row("memory.driver-map-touch", "file-map", "Driver map + touch", ("map_ns", "touch_ns"), SECOND,
         "No eviction before map, touch follows map", "Device reads on map / first and warm touches"),
-    Row("memory.copy", "copy", "Copy 1 GiB total", ("copy_ns",), SECOND,
+    # Retired: the probe's buffers held i32 values, so this row copied 4 GiB (RETIRED).
+    Row("memory.copy", "copy", "Copy 4 GiB total (i32 buffers)", ("copy_ns",), SECOND,
+        "Resident buffers", "Resident buffers on both"),
+    Row("memory.copy-bytes", "copy-bytes", "Copy 1 GiB of bytes", ("copy_ns",), SECOND,
         "Resident buffers", "Resident buffers on both"),
     Row("disk.sequential-write", "sequential", "Write 1 GiB and fsync", ("write_ns",), SECOND,
         "New file, buffered write followed by fsync",

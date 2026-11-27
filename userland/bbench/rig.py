@@ -80,7 +80,7 @@ COMPILE = ("rustc-version", "hello-object", "cargo-noop", "yes-dev-box", "yes-re
 SELFHOST = ("bobj", "bld", "bmake", "bcc")
 # Riskiest last: a guest that falls over in the disk rows has run everything else.
 CASES = (*COMPILE, "fork-exec", "getpid", "malloc-1t", "malloc-4t", "anonymous", "file-map",
-         "copy", "aes-gcm-oz", "aes-gcm-o3", "hmac-sha256-oz", "hmac-sha256-o3", "network",
+         "copy-bytes", "aes-gcm-oz", "aes-gcm-o3", "hmac-sha256-oz", "hmac-sha256-o3", "network",
          "tcp-send", "tcp-recv", "fsync", "small-files", "walk", "sequential")
 NO_BREENIX_RUSTC = ("No aarch64 Breenix-hosted rustc or Cargo in the standard image; "
                     "the hosted ARM toolchain is staged only by the rustc and cargo suite boots")
@@ -561,7 +561,7 @@ class Rig:
             "malloc-4t": lambda: ["malloc", 4, 1_000_000],
             "anonymous": lambda: ["anonymous"],
             "file-map": lambda: ["file-map", f"{home}/bbench/fixture.bin"],
-            "copy": lambda: ["copy"],
+            "copy-bytes": lambda: ["copy-bytes"],
             "aes-gcm-oz": lambda: ["aes-gcm", CRYPTO_BYTES],
             "aes-gcm-o3": lambda: ["aes-gcm", CRYPTO_BYTES],
             "hmac-sha256-oz": lambda: ["hmac-sha256", CRYPTO_BYTES],
