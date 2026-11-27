@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 import rig
 
@@ -43,6 +44,93 @@ class MemoryShape(unittest.TestCase):
             argv = [str(word) for word in rig.Guest(system, Path("/rig"), Path("/disk"),
                                                     headed=False).argv()]
             self.assertEqual(argv[argv.index("-m") + 1], rig.MEMORY, system)
+
+
+class RecordingGuest:
+    """A guest that answers every bbench run with a receipt and keeps the argv."""
+
+    def __init__(self, home):
+        self.home = home
+        self.boots = 1
+        self.argvs = []
+
+    def alive(self):
+        return True
+
+    def ssh(self, words, **kwargs):
+        words = list(map(str, words))
+        self.argvs.append(words)
+        sample = next(word for word in words if word.startswith("qemu-vol-"))
+        receipt = {"sample": sample, "argv": [], "wall_ns": 1, "metrics": {}, "error": None}
+        return rig.subprocess.CompletedProcess(words, 0, json.dumps(receipt).encode(), b"")
+
+
+class BenchVolume(unittest.TestCase):
+    """The disk rows run on the filesystems the R240 and the program target: BreenFS on
+    Breenix and ext4 on Linux, each on a second virtio disk of the same shape."""
+    MOUNTS = {"breenix": "/home/bench", "linux": "/mnt/bench"}
+
+    def data_dir(self, system, case):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        bench = rig.Rig.__new__(rig.Rig)
+        bench.args = type("Args", (), {"run": "qemu-vol"})()
+        bench.out = {system: Path(temp.name)}
+        guest = RecordingGuest(rig.LINUX_HOME if system == "linux" else "/etc/breenix/test-ssh/home")
+        bench.guests = {system: guest}
+        bench.endpoint = type("Endpoint", (), {"server_address": ("127.0.0.1", 9)})()
+        bench.sample(case, 1, system)
+        [argv] = [argv for argv in guest.argvs if "qemu-vol-" + case + "-1" in argv]
+        return argv[argv.index("qemu-vol-" + case + "-1") - 2]
+
+    def test_disk_rows_use_the_bench_volume_and_other_rows_do_not(self):
+        for system, mount in self.MOUNTS.items():
+            for case in ("sequential", "small-files", "walk", "fsync"):
+                self.assertTrue(self.data_dir(system, case).startswith(mount + "/"), (system, case))
+            self.assertFalse(self.data_dir(system, "getpid").startswith(mount), system)
+
+    def test_both_guests_attach_the_bench_disk_in_the_same_shape(self):
+        def drives(system):
+            argv = [str(word) for word in rig.Guest(system, Path("/rig"), Path("/root.raw"),
+                                                    headed=False, bench=Path("/bench.raw")).argv()]
+            options = [argv[i + 1] for i, word in enumerate(argv) if word == "-drive"]
+            devices = [argv[i + 1] for i, word in enumerate(argv) if word == "-device"
+                       and argv[i + 1].startswith("virtio-blk-device")]
+            shape = [sorted(option for option in drive.split(",")
+                            if not option.startswith(("file=", "id=", "serial=")))
+                     for drive in options]
+            return shape, devices, options
+
+        linux, breenix = drives("linux"), drives("breenix")
+        self.assertEqual(len(linux[0]), 2)
+        self.assertEqual(linux[0], breenix[0])
+        self.assertEqual(linux[0][0], linux[0][1])
+        # QEMU's virt machine numbers virtio-mmio devices in reverse command-line order,
+        # and Breenix mounts its second block device at /home: the bench disk comes first.
+        self.assertIn("file=/bench.raw", breenix[2][0])
+        self.assertIn("drive=bench", breenix[1][0])
+
+    def test_each_disk_row_records_its_filesystem(self):
+        names = {"breenix": "BreenFS", "linux": "ext4"}
+        for system, name in names.items():
+            temp = tempfile.TemporaryDirectory()
+            self.addCleanup(temp.cleanup)
+            series_dir = Path(temp.name) / "series"
+            bench = rig.Rig.__new__(rig.Rig)
+            bench.args = type("Args", (), {"run": "qemu-vol", "pr": None})()
+            bench.out = {system: Path(temp.name)}
+            bench.notes = {system: []}
+            bench.started = rig.datetime(2026, 11, 27, tzinfo=rig.timezone.utc)
+            with mock.patch.object(rig, "SERIES_DIR", series_dir), \
+                    mock.patch.object(rig, "qemu_version", lambda: "11.0.3"), \
+                    mock.patch.object(rig, "host_description", lambda: "Mac"):
+                path = bench.write(system, "0" * 40, {}, {}, {"kernel": "Linux 6.8.0"})
+            rows = json.loads(Path(path).read_text())["rows"]
+            for row in rows:
+                if row["area"] == "disk":
+                    self.assertIn(name, row["cache"], (system, row["id"]))
+                else:
+                    self.assertNotIn(name, row["cache"], (system, row["id"]))
 
 
 class Ratios(unittest.TestCase):
