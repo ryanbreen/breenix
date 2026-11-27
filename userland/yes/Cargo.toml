@@ -1,0 +1,15 @@
+[package]
+name = "yes"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "yes"
+path = "src/main.rs"
+
+[dependencies]
+bu-sys = { path = "../crates/bu-sys" }
+
+[lints]
+workspace = true

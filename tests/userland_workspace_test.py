@@ -5,6 +5,10 @@ from pathlib import Path
 import subprocess
 import sys
 import tomllib
+import unittest
+
+
+WORKSPACE = Path(__file__).resolve().parents[1] / "userland"
 
 
 def check_workspace(root):
@@ -39,10 +43,14 @@ def check_workspace(root):
     return problems
 
 
+class UserlandWorkspaceTest(unittest.TestCase):
+    def test_workspace_builds_without_host_packages(self):
+        problems = check_workspace(WORKSPACE)
+        self.assertFalse(problems, "\n".join(problems))
+
+
 if __name__ == "__main__":
-    root = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else (
-        Path(__file__).resolve().parents[1] / "userland"
-    )
+    root = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else WORKSPACE
     try:
         problems = check_workspace(root)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:

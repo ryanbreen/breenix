@@ -1,0 +1,28 @@
+[workspace]
+resolver = "2"
+members = ["crates/bu-sys", "yes"]
+
+[workspace.package]
+edition = "2021"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[profile.dev]
+panic = "abort"
+overflow-checks = true
+incremental = false
+
+[profile.release]
+panic = "abort"
+opt-level = "z"
+lto = "thin"
+overflow-checks = true
+incremental = false
+
+[profile.dev-box]
+inherits = "release"
+opt-level = 1
+lto = false
+codegen-units = 16
