@@ -94,6 +94,27 @@ mod hw {
     pub const RXD_EOP: u8 = 1 << 1;
     pub const TXD_DD: u8 = 1 << 0;
     pub const TXD_CMD_EOP_IFCS_RS: u8 = 0b1011;
+
+    /// MDI Control (SDM 13.4.7 Table 13-14; DS 10.2.2.7).
+    pub const MDIC: u32 = 0x0020;
+    pub const MDIC_REG_SHIFT: u32 = 16;
+    pub const MDIC_PHY_SHIFT: u32 = 21;
+    pub const MDIC_OP_WRITE: u32 = 0b01 << 26;
+    pub const MDIC_OP_READ: u32 = 0b10 << 26;
+    pub const MDIC_READY: u32 = 1 << 28;
+    pub const MDIC_ERROR: u32 = 1 << 30;
+    /// The internal PHY's MDI address (SDM 13.4.7; DS 10.2.2.7).
+    pub const PHY_ADDRESS: u32 = 1;
+    /// PHY register 0 (SDM 13.4.7.1.1 Table 13-16; DS 10.2.11.1).
+    pub const PHY_RESET: u16 = 1 << 15;
+    pub const PHY_LOOPBACK: u16 = 1 << 14;
+    pub const PHY_AN_ENABLE: u16 = 1 << 12;
+    pub const PHY_POWER_DOWN: u16 = 1 << 11;
+    pub const PHY_ISOLATE: u16 = 1 << 10;
+    pub const PHY_RESTART_AN: u16 = 1 << 9;
+    /// The hardware-reset value: auto-negotiation enabled, full duplex, speed
+    /// bits 10b (SDM Table 13-16; DS 10.2.11.1).
+    pub const PHY_CONTROL_DEFAULT: u16 = PHY_AN_ENABLE | (1 << 8) | (1 << 6);
 }
 
 use hw::*;
@@ -109,6 +130,9 @@ const NVM_MAC: [u8; 6] = [0x12, 0x34, 0x56, 0x78, 0x90, 0xAB];
 const FIRMWARE_ENTRY: (u32, u32) = (0x0102_0304, 0x0506 | RAH_AV);
 /// How long the 82574's NVM auto-read takes after a reset, in the model.
 const AUTO_READ_NS: u64 = 50_000;
+/// One MDI cycle, and one auto-negotiation, in the model.
+const MDI_CYCLE_NS: u64 = 30_000;
+const NEGOTIATION_NS: u64 = 2_000_000_000;
 
 fn rx_words(words: [u64; 2]) -> (u64, u16, u8, u8) {
     let high = words[1];
@@ -149,6 +173,18 @@ struct Device {
     sent: Vec<(Vec<u8>, u8)>,
     transmit_paused: bool,
     missed: usize,
+    /// The PHY's control register. CTRL.RST does not reach the PHY (SDM 14.7:
+    /// "PHY: No effect"; DS 4.2 Table 29), so it keeps what firmware left.
+    phy_control: u16,
+    /// When the PHY's negotiation with the link partner completes; `None`
+    /// while it is not negotiating. The partner only auto-negotiates.
+    negotiated_at: Option<u64>,
+    /// When the MDI cycle in flight completes, with the data a read returns.
+    mdi_done_at: Option<(u64, u16)>,
+    /// A PHY that never completes an MDI cycle.
+    mdi_stuck: bool,
+    /// Each PHY control value written through MDIC.
+    phy_control_writes: Vec<u16>,
     violations: Vec<String>,
 }
 
@@ -174,6 +210,11 @@ impl Device {
             sent: Vec::new(),
             transmit_paused: false,
             missed: 0,
+            phy_control: PHY_CONTROL_DEFAULT,
+            negotiated_at: Some(0),
+            mdi_done_at: None,
+            mdi_stuck: false,
+            phy_control_writes: Vec::new(),
             violations: Vec::new(),
         };
         device.power_on();
@@ -212,17 +253,22 @@ impl Device {
             .map(|offset| (offset, self.reg(offset)))
             .collect();
         self.registers.clear();
+        // STATUS.LU follows the PHY (`settle`).
         let (ctrl, tctl, status) = match self.model {
-            Model::Pci8254x => (CTRL_BIT3 | (0b10 << 8) | CTRL_FRCSPD, 0, STATUS_LU),
+            Model::Pci8254x => (CTRL_BIT3 | (0b10 << 8) | CTRL_FRCSPD, 0, 0),
             Model::Pcie82574 => (
                 1 | CTRL_BIT3 | (0b10 << 8) | (1 << 20),
                 TCTL_PSP | TCTL_MULR | TCTL_RRTHRESH_01,
-                STATUS_LU | STATUS_GIO_MASTER_ENABLE,
+                STATUS_GIO_MASTER_ENABLE,
             ),
         };
         self.set(CTRL, ctrl);
         self.set(TCTL, tctl);
         self.set(STATUS, status);
+        // MDIC.R: 1b on the 82574, 0b on the 8254x after reset.
+        if self.model == Model::Pcie82574 {
+            self.set(MDIC, MDIC_READY);
+        }
         if self.model == Model::Pcie82574 {
             self.set(EXTCNF_CTRL, 1 << 3);
         }
@@ -282,6 +328,86 @@ impl Device {
             let hardware = if self.now_ns < self.hardware_owns_nvm_until { EXTCNF_HW } else { 0 };
             self.set(EXTCNF_CTRL, (extcnf & !EXTCNF_HW) | hardware);
         }
+        if let Some((at, data)) = self.mdi_done_at {
+            if self.now_ns >= at {
+                self.mdi_done_at = None;
+                let mdic = (self.reg(MDIC) & !0xFFFF) | u32::from(data) | MDIC_READY;
+                self.set(MDIC, mdic);
+            }
+        }
+        // The MAC sees link once the PHY has negotiated (SDM 13.4.2; DS
+        // 4.6.3.2: with CTRL.SLU set, which `link_up` callers rely on).
+        let linked = self.negotiated_at.is_some_and(|at| self.now_ns >= at);
+        let status = (self.reg(STATUS) & !STATUS_LU) | if linked { STATUS_LU } else { 0 };
+        self.set(STATUS, status);
+    }
+
+    /// A PHY control write. Auto-negotiation enable, like the speed and
+    /// duplex bits, takes effect only with a PHY reset, a restart of
+    /// auto-negotiation or a return from power down (SDM 11.1.3; DS
+    /// 10.2.11.1). Negotiation runs while enabled, powered, not isolated and
+    /// not looped back.
+    fn write_phy_control(&mut self, value: u16) {
+        self.phy_control_writes.push(value);
+        let previous = self.phy_control;
+        let applies = value & (PHY_RESET | PHY_RESTART_AN) != 0
+            || (previous & PHY_POWER_DOWN != 0 && value & PHY_POWER_DOWN == 0);
+        let mut next = value & !(PHY_RESET | PHY_RESTART_AN);
+        if !applies {
+            next = (next & !PHY_AN_ENABLE) | (previous & PHY_AN_ENABLE);
+        }
+        self.phy_control = next;
+        let blocked = PHY_POWER_DOWN | PHY_ISOLATE | PHY_LOOPBACK;
+        if next & PHY_AN_ENABLE == 0 || next & blocked != 0 {
+            self.negotiated_at = None;
+        } else if applies {
+            self.negotiated_at = Some(self.now_ns + NEGOTIATION_NS);
+        }
+    }
+
+    /// An MDIC command (SDM 13.4.7; DS 10.2.2.7). Only PHY address 1 answers,
+    /// and only register 0 is modelled; another register reads as 0.
+    fn mdi_command(&mut self, value: u32) {
+        if value & (1 << 31) != 0 {
+            self.violation("MDIC reserved bit 31 written as 1b");
+        }
+        if self.mdi_done_at.is_some() {
+            self.violation("MDIC command written before the last one was Ready");
+        }
+        if self.model == Model::Pcie82574 && self.reg(EXTCNF_CTRL) & EXTCNF_HW != 0 {
+            self.violation("MDIC command while hardware owns MDIO (DS 4.5.2)");
+        }
+        if value & MDIC_READY != 0 {
+            self.violation("MDIC command written with Ready set");
+        }
+        self.set(MDIC, value & !(MDIC_READY | MDIC_ERROR));
+        if self.mdi_stuck {
+            return;
+        }
+        let phy = (value >> MDIC_PHY_SHIFT) & 0x1F;
+        let register = (value >> MDIC_REG_SHIFT) & 0x1F;
+        let op = value & (0b11 << 26);
+        if phy != PHY_ADDRESS {
+            let mdic = self.reg(MDIC) | MDIC_ERROR;
+            self.set(MDIC, mdic);
+            self.mdi_done_at = Some((self.now_ns + MDI_CYCLE_NS, 0));
+            return;
+        }
+        let data = match op {
+            MDIC_OP_READ if register == 0 => self.phy_control,
+            MDIC_OP_READ => 0,
+            MDIC_OP_WRITE => {
+                if register == 0 {
+                    self.write_phy_control(value as u16);
+                }
+                value as u16
+            }
+            _ => {
+                self.violation("MDIC reserved op-code");
+                0
+            }
+        };
+        self.mdi_done_at = Some((self.now_ns + MDI_CYCLE_NS, data));
     }
 
     fn raise(&mut self, causes: u32) {
@@ -507,6 +633,7 @@ impl Registers for Device {
                 self.set(TDT, value);
                 self.run_transmit();
             }
+            MDIC => self.mdi_command(value),
             _ => {
                 if is_82574 && (offset == RAL + 8 * 15 || offset == RAH + 8 * 15) {
                     self.violation("82574 receive address 15 written; it is manageability's (DS 10.2.5.23)");
@@ -659,6 +786,55 @@ fn bring_up_follows_the_manuals_reset_and_ring_setup() {
         assert!(device.last_write(TCTL) > device.last_write(TIPG), "transmitter enabled last");
         assert_eq!(device.reg(IMS), 0, "{model:?}: interrupts stay masked until enabled");
         assert!(nic::link_up(&mut Device::new(model, true)));
+    }
+}
+
+/// Run the model's clock forward, as a caller waiting for carrier does.
+fn wait_ms(device: &mut Device, ms: u32) {
+    device.delay_us(ms * 1000);
+}
+
+#[test]
+fn bring_up_restores_auto_negotiation_firmware_left_off() {
+    for model in MODELS {
+        // A negotiating PHY with link is read, not rewritten: a restart would
+        // drop the link for a new negotiation.
+        let (mut device, _) = started(model);
+        assert!(device.phy_control_writes.is_empty(), "{model:?}: {:?}", device.phy_control_writes);
+        assert!(nic::link_up(&mut device), "{model:?}: link kept");
+
+        // Firmware forced 10 Mb/s with auto-negotiation off, or powered the
+        // PHY down, or looped it back; the partner only negotiates, so there
+        // is no carrier until the driver turns negotiation back on.
+        let left = [
+            1 << 8,
+            PHY_CONTROL_DEFAULT | PHY_POWER_DOWN,
+            PHY_CONTROL_DEFAULT | PHY_LOOPBACK,
+        ];
+        for control in left {
+            let mut device = Device::new(model, true);
+            device.phy_control = control;
+            device.negotiated_at = None;
+            // The 82574's hardware holds MDIO for a while after the reset.
+            device.hardware_owns_nvm_until = 400_000;
+            let (mut device, _) = started_with(device, model);
+            wait_ms(&mut device, 3000);
+            assert!(nic::link_up(&mut device), "{model:?}: {control:#06x}: carrier after bring-up");
+            let written = *device.phy_control_writes.last().expect("PHY control written");
+            assert_ne!(written & PHY_AN_ENABLE, 0, "{model:?}: auto-negotiation enabled");
+            assert_ne!(written & PHY_RESTART_AN, 0, "{model:?}: and restarted (SDM 11.1.3)");
+            assert_eq!(written & (PHY_POWER_DOWN | PHY_LOOPBACK | PHY_ISOLATE), 0);
+            if model == Model::Pcie82574 {
+                assert_eq!(device.reg(EXTCNF_CTRL) & EXTCNF_SW, 0, "MDIO released");
+            }
+        }
+
+        // A PHY that never answers MDIC is reported, not taken as configured.
+        let mut silent = Device::new(model, true);
+        silent.mdi_stuck = true;
+        let refused = Nic::bring_up(&mut silent, model);
+        assert!(refused.is_err(), "{model:?}: bring-up with an unreachable PHY");
+        assert!(silent.violations.is_empty(), "{model:?}: {:?}", silent.violations);
     }
 }
 
