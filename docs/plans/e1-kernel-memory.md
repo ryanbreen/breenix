@@ -287,7 +287,14 @@ Zone, order and per-CPU cache counts go in a new `/proc/breenix/kmem`.
 - Before the buddy is seeded, ARM64 builds direct-map entries for each usable range above the boot
   window, at `HHDM_BASE + pa`.
   - It uses 1 GiB block descriptors where a range covers an aligned GiB, 2 MiB blocks elsewhere, and 4 KiB
-    pages only at unaligned edges. Table pages come from the boot carve.
+    pages only at unaligned edges. Table pages come from the boot carve with `below` set to the end of
+    the boot window (`DIRECT_MAP_RAM_END`), because the kernel writes them through the existing direct
+    map before the new entries exist. The carve's default, the highest fitting run, would otherwise pick
+    pages in the RAM those tables are about to map: on E1-2's 6 GiB fixture that is near 7 GiB, above the
+    window. If the boot window cannot spare the table pages, the extension stops with that shortfall named
+    and the range set keeps only the RAM below the window, as today.
+  - The carve's users are ordered by what they can reach: E1-2's table pages from the boot window first,
+    then the metadata of 4.2 from anywhere the extended direct map covers.
   - The attributes are those of the existing normal-memory entries.
   - Entries are written only where the descriptor was invalid, so no break-before-make sequence is needed
     (Arm ARM, translation table updates). Then `dsb ishst; isb`.
@@ -797,7 +804,8 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
 - Change:
   - a pure planner turns ranges above the boot window into a minimal list of 1 GiB, 2 MiB and 4 KiB
     descriptors;
-  - kernel glue writes them into the live TTBR1 tables, using table pages from the carve;
+  - kernel glue writes them into the live TTBR1 tables, using table pages carved below the boot window's
+    end, which the existing direct map already covers (4.4);
   - `direct_map_ram_window`'s clip goes;
   - TCR_EL1.IPS comes from ID_AA64MMFR0_EL1.PARange instead of the fixed 40-bit constant, in `boot.S` and
     in `parallels-loader`'s `page_tables.rs`. RAM above the reported width is left out of the range set and
@@ -811,6 +819,10 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
     6 GiB, less the fixed ranges and reservations.
   - Planner: each page of each range is covered exactly once; no descriptor covers a non-RAM address;
     blocks are used wherever alignment allows; the number of table pages is minimal for the input.
+  - Table placement: on the 6 GiB fixture, the planner's table pages are carved with an unbounded carve
+    (the highest fitting run) and land above 4 GiB, outside the mapped window, which is red. With `below`
+    set to the window's end, each table page lies inside the window. With the window's spare RAM made
+    smaller than the tables need, the extension returns the shortfall and the pool stays at the window.
   - Address width: the IPS encoding is a pure function of PARange. For each PARange value the Arm ARM
     defines, the planner accepts ranges that end at or below 2^width and leaves out those above it, and
     the excluded bytes are counted. Check first: today's choice, extracted as a function that ignores
