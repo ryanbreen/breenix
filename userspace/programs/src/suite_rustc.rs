@@ -21,7 +21,14 @@ static SUITE: Suite = suite("rustc", "Rust compiler", &[category("rustc", "Rust 
 
 const FIXTURE: &str = "/usr/libexec/breenix/rustc";
 // The twin rlibs carry the custom target identity from this JSON file.
+#[cfg(target_arch = "x86_64")]
 const TARGET: &str = "../targets/x86_64-breenix.json";
+#[cfg(target_arch = "aarch64")]
+const TARGET: &str = "../targets/aarch64-breenix.json";
+#[cfg(target_arch = "x86_64")]
+const HOST: &str = "x86_64-breenix-hosted";
+#[cfg(target_arch = "aarch64")]
+const HOST: &str = "aarch64-breenix-hosted";
 #[repr(C)]
 struct FileActions { head: *mut c_void, tail: *mut c_void }
 extern "C" {
@@ -127,7 +134,7 @@ fn identity_and_sysroot() -> CaseResult {
     let text = std::str::from_utf8(&output).map_err(fail)?;
     if status != 0 { return Err(fail(format!("rustc -vV: exit {status}"))); }
     let host = expected["hosted_host"].as_str().ok_or_else(|| fail("missing hosted host"))?;
-    if host != "x86_64-breenix-hosted" { return Err(fail("unexpected hosted target in expectations")); }
+    if host != HOST { return Err(fail("unexpected hosted target in expectations")); }
     let host_line = format!("host: {host}");
     let identity = expected["rustc_vv"].as_array().ok_or_else(|| fail("missing identity"))?;
     for key in ["release: ", "commit-hash: ", "commit-date: ", "LLVM version: "] {

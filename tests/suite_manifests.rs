@@ -168,6 +168,17 @@ fn read_manifest(path: &Path, errors: &mut Vec<String>) -> Option<Manifest> {
         return None;
     };
     let mut expected = vec!["id", "title", "area", "summary", "binary", "categories"];
+    if let Some(memory) = object.get("minimumGuestMemory") {
+        expected.push("minimumGuestMemory");
+        if !memory.as_object().is_some_and(|fields| {
+            fields.len() == 2
+                && fields.get("mib").and_then(Value::as_u64).is_some_and(|mib| mib > 0)
+                && fields.get("derivation").and_then(Value::as_str)
+                    .is_some_and(|text| !text.trim().is_empty())
+        }) {
+            errors.push(format!("{at}: minimumGuestMemory needs positive integer mib and a derivation"));
+        }
+    }
     // A suite whose cases measure time waits for a quiet host before it boots.
     if let Some(sensitive) = object.get("timingSensitive") {
         expected.push("timingSensitive");
@@ -910,7 +921,7 @@ impl SuiteBuilds {
             .collect::<Vec<_>>().join(" ");
         let hosted = staged.iter().filter(|entry| {
             if entry.as_str() == "suite-dynamic" {
-                let call = r#""$SCRIPT_DIR/build.sh" --arch x86_64 --hosted-bin suite-dynamic --features dynamic"#;
+                let call = r#""$SCRIPT_DIR/build.sh" --arch "$ARCH" --hosted-bin suite-dynamic --features dynamic"#;
                 return build.lines().any(|line| line.trim() == call);
             }
             let shell_call = format!("--hosted-bin {entry} --features ");
@@ -2393,6 +2404,36 @@ fn llvm_manifest_matches_table() {
     assert_eq!(manifest.categories[0].cases.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
         expected.iter().map(String::as_str).collect::<Vec<_>>());
     assert_eq!(guest, manifest.categories);
+}
+
+#[test]
+fn aarch64_dynamic_manifest_matches_guest_table() {
+    let root = repo_root();
+    let mut errors = Vec::new();
+    let manifest = read_manifest(&root.join("docs/suites/dynamic.json"), &mut errors)
+        .expect("dynamic manifest");
+    assert!(errors.is_empty(), "{}", errors.join("\n"));
+    let (_, files) = suite_files(&root, "dynamic").expect("dynamic suite source");
+    let (suite, guest) = source_suite_files(&files).expect("dynamic guest table");
+    assert_eq!(suite.id, manifest.id);
+    assert_eq!(suite.title, manifest.title);
+    assert_eq!(guest, manifest.categories);
+    assert_eq!(manifest.categories.len(), 1);
+    let cases = &manifest.categories[0].cases;
+    assert_eq!(
+        cases.iter().map(|case| case.id.as_str()).collect::<Vec<_>>(),
+        ["interp-runs-program", "missing-interp-fails", "dso-relocs-and-tls", "panic-across-dso"],
+    );
+    assert!(cases.iter().all(|case| {
+        case.targets.is_empty() || case.targets.iter().any(|target| target == "aarch64")
+    }));
+    for (_, source) in files {
+        let file = syn::parse_file(&source).expect("dynamic suite parses");
+        assert!(
+            file.attrs.iter().all(|attribute| !attribute.path().is_ident("cfg")),
+            "the shared guest runner must be compiled on AArch64",
+        );
+    }
 }
 
 #[test]

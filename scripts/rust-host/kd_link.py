@@ -9,10 +9,10 @@ import sys
 import tempfile
 
 
-def prepare_bunwind(inputs, lld, *, rlib=None):
+def prepare_bunwind(inputs, lld, *, archive=None, rlib=None):
     root = Path(__file__).resolve().parents[2]
-    source = rlib or (root / 'userspace/programs/target/hosted/bunwind'
-                      / 'x86_64-breenix-hosted/release/libbunwind.a')
+    source = rlib or archive or (root / 'userspace/programs/target/hosted/bunwind'
+                                 / 'x86_64-breenix-hosted/release/libbunwind.a')
     tools = Path(lld).parent.parent
     ar, nm, objcopy = (tools / name for name in ('llvm-ar', 'llvm-nm', 'llvm-objcopy'))
     members = subprocess.check_output([ar, 't', source], text=True).splitlines()
@@ -37,7 +37,7 @@ def prepare_bunwind(inputs, lld, *, rlib=None):
     return output
 
 
-def prepare_getrandom(link, inputs):
+def prepare_getrandom(link, inputs, *, arch='x86_64'):
     # Ruling 105's custom getrandom provider needs the exact rlib rustc chose.
     provider = next(Path(arg) for arg in link if Path(arg).name.startswith('libgetrandom-')
                     and Path(arg).with_name(Path(arg).stem[3:] + '.d').is_file()
@@ -46,10 +46,11 @@ def prepare_getrandom(link, inputs):
     rustc = os.environ['X2_RUSTC']
     target = Path(os.environ['RUST_TARGET_PATH'])
     output = inputs / 'getrandom.o'
+    sysroot = ['--sysroot', os.environ['RUSTC_SYSROOT']] if arch == 'aarch64' else []
     subprocess.run([
         rustc, '--edition=2021', '--crate-type=lib', '--emit=obj', '-Dwarnings',
-        '-Copt-level=2', '-Crelocation-model=pic', '--target', target / 'x86_64-breenix-hosted.json',
-        '-L', f"all={os.environ['X2_SYSROOT_DEPS']}", '-L', f'dependency={provider.parent}',
+        '-Copt-level=2', '-Crelocation-model=pic', '--target', target / f'{arch}-breenix-hosted.json',
+        *sysroot, '-L', f"all={os.environ['X2_SYSROOT_DEPS']}", '-L', f'dependency={provider.parent}',
         '--extern', f'getrandom={provider}',
         Path(__file__).resolve().parents[2] / 'toolchain/rust-host/k5/getrandom.rs',
         '-o', output,
@@ -57,15 +58,44 @@ def prepare_getrandom(link, inputs):
     return output
 
 
+def without_runpath(link):
+    flags = iter(link)
+    for flag in flags:
+        if flag in ('-rpath', '--rpath'):
+            next(flags)
+        elif not flag.startswith(('-rpath=', '--rpath=')):
+            yield flag
+
+
+def require_bunwind_only(link, lld, label):
+    ar = Path(lld).parent.parent / 'llvm-ar'
+    for arg in link:
+        name = Path(arg).name
+        if re.fullmatch(r'libunwind-[0-9a-f]+\.rlib', name):
+            # Rust's unwind crate carries the bunwind selection metadata.
+            members = subprocess.check_output([ar, 't', arg], text=True).splitlines()
+            if any(member != 'lib.rmeta' and
+                   not re.fullmatch(r'unwind-.*\.rcgu\.o', member) for member in members):
+                sys.exit(f'{label} unwind rlib contains a native library member')
+        elif arg in ('-lunwind', '--library=unwind') or re.match(
+                r'(?:(?:-l|--library=):)?libunwind(?:[.-]|$)', name):
+            sys.exit(f'{label} requires bunwind')
+    if any(option in ('-l', '--library') and name == 'unwind'
+           for option, name in zip(link, link[1:])):
+        sys.exit(f'{label} requires bunwind')
+
+
 def main(args):
     fallback = os.environ['BREENIX_X2_FALLBACK_LINKER']
+    arch = os.environ.get('BREENIX_X2_ARCH', 'x86_64')
     if args[:2] == ['-flavor', 'gnu']:
         args = args[2:]
     link = []
     for arg in args:
         link.extend(arg[4:].split(',') if arg.startswith('-Wl,') else [arg])
+    fallback_args = link if arch == 'aarch64' else args
     if '-o' not in link:
-        os.execv(fallback, [fallback, *args])
+        os.execv(fallback, [fallback, *fallback_args])
     output = Path(link[link.index('-o') + 1])
     shared = any(arg in ('-shared', '--shared') for arg in link)
     driver = shared and re.fullmatch(r'librustc_driver-[0-9a-f]+\.so', output.name)
@@ -74,7 +104,7 @@ def main(args):
     )
     cargo = not shared and re.fullmatch(r'cargo(?:-[0-9a-f]+)?', output.name)
     if not (driver or executable or cargo):
-        os.execv(fallback, [fallback, *args])
+        os.execv(fallback, [fallback, *fallback_args])
 
     inputs = Path(os.environ['BREENIX_KD_BUILD_DIR'])
     lld = os.environ['BREENIX_X2_LLD']
@@ -82,33 +112,29 @@ def main(args):
     maps.mkdir(parents=True, exist_ok=True)
     link = [arg for arg in link
             if arg not in ('-lc', '-lc++', '-lbunwind') and Path(arg).name != 'libc.a']
+    runpath = '$ORIGIN/../lib:/lib'
+    if arch == 'aarch64':
+        if cargo:
+            sys.exit('ARM X2 only links rustc and its driver')
+        require_bunwind_only(link, lld, 'ARM hosted rustc')
+        link = list(without_runpath(link))
+        runpath = '$ORIGIN/../lib'
+        link.extend(('--fatal-warnings', '-z', 'max-page-size=4096'))
     link.extend(('--no-dependent-libraries', '--hash-style=sysv', '-z', 'now',
-                 '-z', 'relro', '-rpath', '$ORIGIN/../lib:/lib'))
+                 '-z', 'relro', '-rpath', runpath))
 
     if driver:
         runtime = Path(os.environ['BREENIX_X2_RUNTIME'])
         link.extend(('-T', Path(__file__).with_name('kd-bases.ld'),
-                     inputs / 'hosted_dso_handle.o', prepare_getrandom(link, inputs),
-                     runtime / 'dynamic-libs/libblake3_sse2_sse41_avx2_assembly.a',
-                     runtime / 'cxx-pic/lib/libc++.a', runtime / 'cxx-pic/lib/libc++abi.a',
-                     prepare_bunwind(inputs, lld)))
+                     inputs / 'hosted_dso_handle.o', prepare_getrandom(link, inputs, arch=arch)))
+        if arch == 'x86_64':
+            link.append(runtime / 'dynamic-libs/libblake3_sse2_sse41_avx2_assembly.a')
+        bunwind = Path(os.environ['BREENIX_X2_BUNWIND']) if arch == 'aarch64' else None
+        link.extend((runtime / 'cxx-pic/lib/libc++.a', runtime / 'cxx-pic/lib/libc++abi.a',
+                     prepare_bunwind(inputs, lld, archive=bunwind)))
         map_name = output.name
     elif cargo:
-        ar = Path(lld).parent.parent / 'llvm-ar'
-        for arg in link:
-            name = Path(arg).name
-            if re.fullmatch(r'libunwind-[0-9a-f]+\.rlib', name):
-                # Rust's unwind crate carries the bunwind selection metadata.
-                members = subprocess.check_output([ar, 't', arg], text=True).splitlines()
-                if any(member != 'lib.rmeta' and
-                       not re.fullmatch(r'unwind-.*\.rcgu\.o', member) for member in members):
-                    sys.exit('hosted Cargo unwind rlib contains a native library member')
-            elif arg in ('-lunwind', '--library=unwind') or re.match(
-                    r'(?:(?:-l|--library=):)?libunwind(?:[.-]|$)', name):
-                sys.exit('hosted Cargo requires bunwind')
-        if any(option in ('-l', '--library') and name == 'unwind'
-               for option, name in zip(link, link[1:])):
-            sys.exit('hosted Cargo requires bunwind')
+        require_bunwind_only(link, lld, 'hosted Cargo')
         cargo_runtime = inputs / 'cargo'
         cargo_runtime.mkdir(exist_ok=True)
         link.extend(('-T', Path(__file__).with_name('kd-bases.ld'),
@@ -120,6 +146,8 @@ def main(args):
                                      rlib=Path(os.environ['BREENIX_K7_BUNWIND']))))
         map_name = 'cargo'
     else:
+        if arch == 'aarch64':
+            link.append('--no-pie')
         link.extend((inputs / 'breenix-crt.o', '--allow-shlib-undefined',
                      '--image-base=0x40000000',
                      '--dynamic-linker=/lib/ld-breenix.so'))

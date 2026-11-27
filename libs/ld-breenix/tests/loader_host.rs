@@ -127,35 +127,41 @@ impl Fixture {
 
 fn fixtures() -> &'static [Fixture; 4] {
     static FIXTURES: OnceLock<[Fixture; 4]> = OnceLock::new();
-    FIXTURES.get_or_init(|| {
-        let script =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/dynamic/build.sh");
-        let temp = Command::new("mktemp").arg("-d").output().unwrap();
-        assert!(temp.status.success(), "{temp:?}");
-        struct Scratch(PathBuf);
-        impl Drop for Scratch {
-            fn drop(&mut self) {
-                fs::remove_dir_all(&self.0).expect("remove the fixture directory");
-            }
+    FIXTURES.get_or_init(|| build_fixtures("x86_64", [FILES[0], FILES[1], FILES[2], "libtls.so"]))
+}
+
+fn build_fixtures<const N: usize>(arch: &str, names: [&str; N]) -> [Fixture; N] {
+    let script =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/dynamic/build.sh");
+    let temp = Command::new("mktemp").arg("-d").output().unwrap();
+    assert!(temp.status.success(), "{temp:?}");
+    struct Scratch(PathBuf);
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            fs::remove_dir_all(&self.0).expect("remove the fixture directory");
         }
-        let temp = Scratch(PathBuf::from(
-            std::str::from_utf8(&temp.stdout).unwrap().trim(),
-        ));
-        let result = Command::new(script).arg(&temp.0).output().unwrap();
-        assert!(result.status.success(), "{result:?}");
-        [FILES[0], FILES[1], FILES[2], "libtls.so"].map(|name| Fixture {
-            file: fs::read(temp.0.join(name)).unwrap(),
-            readelf: fs::read_to_string(temp.0.join(format!("{name}.readelf"))).unwrap(),
-            symbols: fs::read_to_string(temp.0.join(format!("{name}.nm")))
-                .unwrap()
-                .lines()
-                .map(|line| {
-                    let mut fields = line.split_whitespace();
-                    let symbol = fields.next().unwrap().to_owned();
-                    (symbol, hex(fields.nth(1).unwrap()))
-                })
-                .collect(),
-        })
+    }
+    let temp = Scratch(PathBuf::from(
+        std::str::from_utf8(&temp.stdout).unwrap().trim(),
+    ));
+    let result = Command::new(script)
+        .arg(&temp.0)
+        .arg(arch)
+        .output()
+        .unwrap();
+    assert!(result.status.success(), "{result:?}");
+    names.map(|name| Fixture {
+        file: fs::read(temp.0.join(name)).unwrap(),
+        readelf: fs::read_to_string(temp.0.join(format!("{name}.readelf"))).unwrap(),
+        symbols: fs::read_to_string(temp.0.join(format!("{name}.nm")))
+            .unwrap()
+            .lines()
+            .map(|line| {
+                let mut fields = line.split_whitespace();
+                let symbol = fields.next().unwrap().to_owned();
+                (symbol, hex(fields.nth(1).unwrap()))
+            })
+            .collect(),
     })
 }
 
@@ -442,5 +448,276 @@ mod libc_host {
         assert_eq!(lookup(&[1, 2], b"choice"), Some(at(1, "choice")));
         assert_eq!(lookup(&[2, 1], b"dso_choice"), Some(at(2, "dso_choice")));
         assert_eq!(lookup(&[1, 2], b"missing_weak"), None);
+    }
+}
+
+mod aarch64 {
+    use super::*;
+
+    // AAELF64 2025Q1 §5.7.15 and the non-TLS set in x2-aarch64.json.
+    const KINDS: [(u32, &str); 4] = [
+        (257, "R_AARCH64_ABS64"),
+        (1025, "R_AARCH64_GLOB_DAT"),
+        (1026, "R_AARCH64_JUMP_SLOT"),
+        (1027, "R_AARCH64_RELATIVE"),
+    ];
+
+    fn fixtures() -> &'static [Fixture; 3] {
+        static FIXTURES: OnceLock<[Fixture; 3]> = OnceLock::new();
+        FIXTURES.get_or_init(|| build_fixtures("aarch64", FILES))
+    }
+
+    #[test]
+    fn tls_kinds_resolve_aarch64() {
+        let [fixture] = build_fixtures("aarch64", ["libtls.so"]);
+        let first = Object::parse(b"/first.so", &fixture.file, BIASES[0]).unwrap();
+        let second = Object::parse(b"/second.so", &fixture.file, BIASES[1]).unwrap();
+        let template = second.tls_module().unwrap();
+        assert_eq!((template.align, template.file_size, template.mem_size), (32, 8, 48));
+        let mut patches = BTreeMap::new();
+        second.relocate(&[first, second], |Patch { address, value }| {
+            assert!(patches.insert(address, value).is_none());
+        }).unwrap();
+
+        // AAELF64 §5.7.11: two words per descriptor. Variant I puts the first
+        // aligned template at TP+32 and the second at TP+96. The named
+        // definition binds to the first object, and the null symbol names
+        // the second object's template plus the signed relocation addend.
+        let descriptors: Vec<_> = fixture.readelf.lines().filter_map(|line| {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            if fields.get(2) != Some(&"R_AARCH64_TLSDESC") {
+                return None;
+            }
+            let slot = BIASES[1] + hex(fields[0]);
+            let pair = [patches[&slot], patches[&(slot + 8)]];
+            let expected = if hex(fields[1]) >> 32 == 0 {
+                assert_eq!(hex(fields[3]), 8);
+                104
+            } else {
+                assert_eq!(&fields[4..], ["initial", "+", "0"]);
+                32
+            };
+            assert_eq!(pair[1], expected);
+            (pair[0] != 0).then_some((pair, expected as usize))
+        }).collect();
+        assert_eq!(descriptors.len(), 2);
+        assert_eq!(patches.len(), 4);
+
+        let offset = |pair: &[u64; 2]| {
+            // SAFETY: the first word holds the loader's resolver. Pair is the
+            // two-word descriptor it expects in x0 (the first argument).
+            let resolver: unsafe extern "C" fn(*const u64) -> usize =
+                unsafe { std::mem::transmute(pair[0] as usize) };
+            // SAFETY: the resolver reads only the two live descriptor words.
+            unsafe { resolver(pair.as_ptr()) }
+        };
+        let new_thread_block = || {
+            let mut block = [0u64; 18];
+            block[4] = 73;
+            block[12] = 73;
+            block
+        };
+        let mut main = new_thread_block();
+        for (pair, expected) in &descriptors {
+            assert_eq!(offset(pair), *expected);
+            assert_eq!(main[expected / 8], if *expected == 32 { 73 } else { 0 });
+            main[expected / 8] = 91;
+        }
+        let main_address = main.as_ptr() as usize;
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let mut child = new_thread_block();
+                assert_ne!(child.as_ptr() as usize, main_address);
+                for (pair, expected) in &descriptors {
+                    let slot = offset(pair) / 8;
+                    assert_eq!(child[slot], if *expected == 32 { 73 } else { 0 });
+                    child[slot] = 19;
+                    assert_eq!(child[offset(pair) / 8], 19);
+                }
+            }).join().unwrap();
+        });
+        for (pair, _) in &descriptors {
+            assert_eq!(main[offset(pair) / 8], 91);
+        }
+    }
+
+    #[test]
+    fn two_dso_fixture_resolves_every_value_aarch64() {
+        let files = fixtures();
+        let objects: [Object<'_>; 3] =
+            std::array::from_fn(|i| Object::parse(NAMES[i], &files[i].file, BIASES[i]).unwrap());
+        let mut queue = [objects[0]; 3];
+        let mut edges = [Dependency::default(); 3];
+        let scope = Scope::load(objects[0], &mut queue, &mut edges, &mut [0; 128], |path| {
+            Ok(objects[1..]
+                .iter()
+                .copied()
+                .find(|object| object.name() == path))
+        })
+        .unwrap();
+        assert_eq!(
+            scope
+                .objects()
+                .iter()
+                .map(|obj| obj.name())
+                .collect::<Vec<_>>(),
+            NAMES
+        );
+
+        let mut seen = BTreeSet::new();
+        for (i, object) in scope.objects().iter().enumerate() {
+            let mut expected = BTreeMap::new();
+            for line in files[i].readelf.lines() {
+                let fields: Vec<_> = line.split_whitespace().collect();
+                let Some(kind) = fields.get(2).filter(|kind| kind.starts_with("R_AARCH64_")) else {
+                    continue;
+                };
+                seen.insert(*kind);
+                let address = BIASES[i] + hex(fields[0]);
+                let value = if *kind == "R_AARCH64_RELATIVE" {
+                    assert_eq!(hex(fields[1]) >> 32, 0);
+                    BIASES[i] + hex(fields[3])
+                } else {
+                    let symbol = fields[4];
+                    let definition = files
+                        .iter()
+                        .zip(BIASES)
+                        .find_map(|(file, bias)| file.symbols.get(symbol).map(|value| bias + value))
+                        .unwrap_or_else(|| {
+                            assert_eq!(symbol, "missing_weak");
+                            0
+                        });
+                    assert_eq!(fields[5], "+");
+                    definition + hex(fields[6])
+                };
+                assert!(expected.insert(address, value).is_none());
+            }
+
+            assert!(!expected.is_empty(), "{}", FILES[i]);
+            let mut actual = BTreeMap::new();
+            object
+                .relocate(scope.objects(), |Patch { address, value }| {
+                    assert!(actual.insert(address, value).is_none());
+                })
+                .unwrap();
+            assert_eq!(actual, expected, "{}", FILES[i]);
+        }
+        assert_eq!(seen, KINDS.map(|(_, name)| name).into_iter().collect());
+    }
+
+    #[test]
+    fn relocate_is_error_not_panic() {
+        let fixture = &fixtures()[0];
+        let offset = fixture.first_rela();
+        let slot = u64::from_le_bytes(fixture.file[offset..offset + 8].try_into().unwrap());
+        let truncated = &fixture.file[..fixture.file_offset("DYNAMIC ") + 7];
+        assert_eq!(
+            Object::parse(NAMES[0], truncated, BIASES[0])
+                .unwrap_err()
+                .kind,
+            ErrorKind::Bounds
+        );
+        let error = |slot: u64, kind: u32, symbol: u32| {
+            let mut corrupt = fixture.file.clone();
+            corrupt[offset..offset + 8].copy_from_slice(&slot.to_le_bytes());
+            corrupt[offset + 8..offset + 12].copy_from_slice(&kind.to_le_bytes());
+            corrupt[offset + 12..offset + 16].copy_from_slice(&symbol.to_le_bytes());
+            let obj = Object::parse(NAMES[0], &corrupt, BIASES[0]).unwrap();
+            let result = obj
+                .relocate(&[obj], |_| panic!("invalid first write"))
+                .unwrap_err();
+            assert_eq!(result.object, NAMES[0]);
+            assert_eq!(result.offset, offset as u64);
+            result.kind
+        };
+        for (kind, name) in KINDS {
+            assert_eq!(error(u64::MAX, kind, 0), ErrorKind::Bounds, "{name}");
+            assert_eq!(
+                error(slot + 1, kind, 0),
+                ErrorKind::InvalidRelocation,
+                "{name}"
+            );
+            assert_eq!(
+                error(slot, kind, u32::MAX),
+                ErrorKind::InvalidRelocation,
+                "{name}"
+            );
+        }
+        assert_eq!(error(slot, 1031, 0), ErrorKind::InvalidRelocation);
+        for kind in [8, u32::MAX] {
+            assert_eq!(error(slot, kind, 0), ErrorKind::UnsupportedRelocation(kind));
+        }
+    }
+
+    #[test]
+    fn ld_breenix_is_self_contained_dyn() {
+        let path = std::env::var_os("BREENIX_LD_BREENIX_AARCH64")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../userspace/programs/target/kd/aarch64/ld-breenix.so")
+            });
+        assert!(
+            path.is_file(),
+            "build the AArch64 interpreter with --arch aarch64 --kd-loader: {}",
+            path.display()
+        );
+        let inspect = |setting, fallback: &str, args: &[&str]| {
+            let tool = std::env::var_os(setting).unwrap_or_else(|| fallback.into());
+            let result = Command::new(tool).args(args).arg(&path).output().unwrap();
+            assert!(result.status.success(), "{result:?}");
+            String::from_utf8(result.stdout).unwrap()
+        };
+        let elf = inspect(
+            "BREENIX_TOOLCHAIN_READELF",
+            "llvm-readelf",
+            &["-W", "-h", "-l", "-d", "--dyn-relocations"],
+        );
+        let field = |tag| {
+            elf.lines()
+                .find_map(|line| line.trim().strip_prefix(tag))
+                .unwrap()
+                .trim()
+        };
+        assert_eq!(field("Type:").split_whitespace().next(), Some("DYN"));
+        assert_eq!(field("Machine:"), "AArch64");
+        let entry = hex(field("Entry point address:"));
+        assert!(elf.lines().any(|line| {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            fields.first() == Some(&"LOAD")
+                && fields[6..fields.len() - 1].contains(&"E")
+                && (hex(fields[2])..hex(fields[2]) + hex(fields[4])).contains(&entry)
+        }));
+        assert!(!elf
+            .lines()
+            .any(|line| line.trim_start().starts_with("INTERP ")));
+        for kind in ["NEEDED", "REL", "RELR", "JMPREL", "TEXTREL"] {
+            assert!(
+                !elf.contains(&format!("({kind})")),
+                "{kind} in the interpreter"
+            );
+        }
+        let symbols = inspect("BREENIX_TOOLCHAIN_NM", "llvm-nm", &["-P", "--defined-only"]);
+        let start = symbols
+            .lines()
+            .find_map(|line| line.strip_prefix("_start "))
+            .unwrap();
+        assert_eq!(entry, hex(start.split_whitespace().nth(1).unwrap()));
+        let undefined = inspect("BREENIX_TOOLCHAIN_NM", "llvm-nm", &["--undefined-only"]);
+        assert!(undefined.trim().is_empty(), "{undefined}");
+
+        let mut count = 0;
+        for line in elf.lines() {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            if let Some(kind) = fields.get(2).filter(|kind| kind.starts_with("R_")) {
+                assert_eq!(*kind, "R_AARCH64_RELATIVE");
+                assert_eq!(hex(fields[1]), 1027, "bootstrap requires a null symbol");
+                count += 1;
+            }
+        }
+        assert!(
+            count > 0,
+            "the interpreter must have self-relocations to inspect"
+        );
     }
 }

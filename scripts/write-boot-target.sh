@@ -2,7 +2,7 @@
 # Write the boot-target file onto an ext2 disk image, so a production kernel booted
 # from it selects a suite or probe as PID 1 (docs/boot-path.md, "Boot modes"):
 #
-#   scripts/write-boot-target.sh IMAGE SUITE_ID|--probe|--default|--shell|--console|--desktop [PID1_ELF] [SEQUENCE] [CATEGORY/CASE] [PACE_MS] [ROOT_FS] [CXX_RUNTIME_ELF]
+#   scripts/write-boot-target.sh IMAGE SUITE_ID|--probe|--default|--shell|--console|--desktop [PID1_ELF] [SEQUENCE] [CATEGORY/CASE] [PACE_MS] [ROOT_FS] [HOSTED_SUITE_ELF]
 #   scripts/write-boot-target.sh IMAGE --program GUEST_PATH [WORD]
 #
 # IMAGE gets /etc/breenix/boot-target containing "suite SUITE_ID", "probe" or
@@ -13,9 +13,9 @@
 # SEQUENCE (suite ids joined by commas, SUITE_ID first) also writes /etc/breenix/suite-sequence,
 # so the boot runs each suite in turn (docs/suites/README.md, "Several suites in one boot").
 # Sequence ELFs default to files beside PID1_ELF.
-# CXX_RUNTIME_ELF is the path to an ELF file inside the hosted release directory.
-# When supplied, cxx-runtime and llvm use suite-cxx-runtime and suite-llvm from that
-# directory for both PID 1 and sequence readback checks.
+# HOSTED_SUITE_ELF is the path to an ELF file inside the hosted release directory.
+# When supplied, cxx-runtime, llvm, dynamic and rustc use their ELFs from that directory
+# for both PID 1 and sequence readback checks.
 # ROOT_FS writes the host's root-fs ext2|breenfs declaration beside the suite list.
 #
 # Uses debugfs (e2fsprogs) when it is on PATH or in Homebrew's keg-only e2fsprogs,
@@ -35,14 +35,14 @@ SEQUENCE="${4:-}"
 ONLY="${5:-}"
 PACE="${6:-}"
 ROOT_FS="${7:-}"
-CXX_RUNTIME_ELF="${8:-}"
+HOSTED_SUITE_ELF="${8:-}"
 case "$ROOT_FS" in ''|ext2|breenfs) ;; *) echo "write-boot-target: unknown root filesystem: $ROOT_FS" >&2; exit 2 ;; esac
 suite_elf_path() {
     local id="$1" fallback="$2"
     case "$id" in
-        cxx-runtime|llvm)
-            if [ -n "$CXX_RUNTIME_ELF" ]; then
-                printf '%s/suite-%s' "$(dirname "$CXX_RUNTIME_ELF")" "$id"
+        cxx-runtime|llvm|dynamic|rustc)
+            if [ -n "$HOSTED_SUITE_ELF" ]; then
+                printf '%s/suite-%s' "$(dirname "$HOSTED_SUITE_ELF")" "$id"
                 return
             fi ;;
     esac

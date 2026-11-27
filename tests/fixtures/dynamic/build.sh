@@ -2,10 +2,15 @@
 set -eu
 export LC_ALL=C
 
-if [ "$#" -ne 1 ]; then
-    echo "usage: $0 OUTPUT_DIRECTORY" >&2
+if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+    echo "usage: $0 OUTPUT_DIRECTORY [x86_64|aarch64]" >&2
     exit 2
 fi
+arch=${2:-x86_64}
+case "$arch" in
+    x86_64|aarch64) ;;
+    *) exit 2 ;;
+esac
 
 src=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 mkdir -p "$1/lib/private"
@@ -17,7 +22,7 @@ lld=${BREENIX_TOOLCHAIN_LLD:-ld.lld}
 readelf=${BREENIX_TOOLCHAIN_READELF:-llvm-readelf}
 nm=${BREENIX_TOOLCHAIN_NM:-llvm-nm}
 for name in main outer inner; do
-    "$clang" --target=x86_64-unknown-none-elf -std=c17 -ffreestanding \
+    "$clang" --target="$arch-unknown-none-elf" -std=c17 -ffreestanding \
         -nostdinc -fno-stack-protector -fPIC -Wall -Wextra -Werror \
         -c "$src/$name.c" -o "$name.o"
 done
@@ -31,12 +36,18 @@ done
     --dynamic-linker=/lib/ld-breenix.so --enable-new-dtags \
     -rpath '$ORIGIN/missing:$ORIGIN/lib' -o fixture main.o lib/libouter.so
 
-"$clang" --target=x86_64-unknown-none-elf -std=c17 -ffreestanding \
-    -nostdinc -fno-stack-protector -fPIC -ftls-model=local-dynamic \
-    -Wall -Wextra -Werror -c "$src/tls.c" -o tls.o
+set -- fixture lib/libouter.so lib/private/libinner.so
+case "$arch" in
+    x86_64) model=local-dynamic; tls_source=tls ;;
+    aarch64) model=global-dynamic; tls_source=tls-aarch64 ;;
+esac
+"$clang" --target="$arch-unknown-none-elf" -std=c17 -ffreestanding \
+    -nostdinc -fno-stack-protector -fPIC -ftls-model="$model" \
+    -Wall -Wextra -Werror -c "$src/$tls_source.c" -o tls.o
 "$lld" -shared --hash-style=sysv -z relro -z now -o libtls.so tls.o
+set -- "$@" libtls.so
 
-for file in fixture lib/libouter.so lib/private/libinner.so libtls.so; do
+for file do
     "$readelf" -W -r -d -l "$file" > "$file.readelf"
     "$nm" -P --defined-only "$file" > "$file.nm"
 done

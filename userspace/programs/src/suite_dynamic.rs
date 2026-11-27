@@ -1,5 +1,4 @@
-//! Exercise x86-64 hosted dynamic executables through the kernel's execve path.
-#![cfg(target_arch = "x86_64")]
+//! Exercise hosted dynamic executables through the kernel's execve path.
 
 use breenix_suite::suite::{case, category, check, fail, suite, CaseError, CaseResult, Suite};
 use libbreenix::{errno::Errno, error::Error, process};

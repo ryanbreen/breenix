@@ -28,7 +28,6 @@ SCRATCH_HEADROOM = 192 * 1024 * 1024
 HOSTED_HEADROOM = 64 * 1024 * 1024
 HOSTED_TOOLCHAIN = '/usr/libexec/breenix/rustc'
 CARGO_CORPUS = '/usr/libexec/breenix/cargo'
-RUST_TARGETS = ('x86_64-breenix', 'x86_64-breenix-hosted')
 
 
 def sha256(path):
@@ -141,11 +140,9 @@ def stage_llvm(image, selection, arch, suite, artifacts, corpus, linker):
     return stage_files(image, [prefix, f'{prefix}/bin', f'{prefix}/lib', f'{prefix}/corpus'], entries)
 
 
-def stage_dynamic(image, selection, arch, artifacts):
+def stage_dynamic(image, selection, artifacts):
     if 'dynamic' not in selection.split(','):
         return {}
-    if arch != 'x86_64':
-        raise ValueError('the dynamic interpreter is only built for x86-64')
     prefix = '/usr/libexec/breenix/dynamic'
     entries = [('/sbin/suite-dynamic', artifacts / 'suite-dynamic', '0755')]
     entries.extend((f'/lib/{name}', artifacts / name, '0755') for name in ('ld-breenix.so', 'libc.so'))
@@ -155,14 +152,15 @@ def stage_dynamic(image, selection, arch, artifacts):
     return stage_files(image, ['/lib', prefix], entries)
 
 
-def rustc_fixture_entries(artifacts, sysroot, targets, k5):
+def rustc_fixture_entries(artifacts, sysroot, targets, k5, *, arch='x86_64'):
     driver = k5['hosted_link']['driver']
     yield 'bin/rustc', artifacts / 'rustc', '0755', k5['hosted_rustc_sha256']
     yield f'lib/{driver}', artifacts / driver, '0755', k5['hosted_driver_sha256']
     files = k5['sysroot']['files_sha256']
     # The suites compile for the tool target. Resolving rustc's own hosted
     # target needs its JSON, so stage both specs with the tool target rlibs.
-    relative = 'lib/rustlib/x86_64-breenix/lib'
+    tool_target = f'{arch}-breenix'
+    relative = f'lib/rustlib/{tool_target}/lib'
     archives = sorted((sysroot / relative).glob('*.rlib'))
     if not archives or {str(p.relative_to(sysroot)) for p in archives} != {
             name for name in files if name.startswith(relative + '/') }:
@@ -170,32 +168,42 @@ def rustc_fixture_entries(artifacts, sysroot, targets, k5):
     for source in archives:
         name = str(source.relative_to(sysroot))
         yield f'sysroot/{name}', source, '0444', files[name]
-    for target in RUST_TARGETS:
+    for target in (tool_target, f'{tool_target}-hosted'):
         name = f'{target}.json'
         yield f'targets/{name}', targets / name, '0444', None
 
 
-def verify_hosted_libc(kd, records, k5, rustc, cargo):
+def verify_hosted_libc(kd, records, k5, rustc, cargo, *, arch='x86_64'):
     libc = kd / 'libc.so'
-    pin = json.loads((records / 'hosted-libc-x86_64.json').read_text())
-    runtime = json.loads((kd / 'build.json').read_text())
-    if runtime['libc.so'] != pin['sha256'] or sha256(libc) != pin['sha256']:
+    pin = json.loads((records / f'hosted-libc-{arch}.json').read_text())['sha256']
+    if arch == 'aarch64':
+        pin = pin['libc.so']
+        if pin != k5['hosted_link']['libc_sha256']:
+            raise ValueError('ARM hosted libc and K5 build records disagree')
+        # QEMU builds its interpreter locally. It is separate from the pinned
+        # libc and K5 links; carry its digest into the image readback check.
+        runtime = {'ld-breenix.so': sha256(kd / 'ld-breenix.so'), 'libc.so': pin}
+    else:
+        runtime = json.loads((kd / 'build.json').read_text())
+    if runtime['libc.so'] != pin or sha256(libc) != pin:
         raise ValueError(f'{libc}: SHA-256 differs from the hosted libc pin')
-    verify_hosted_elf(libc, rustc / 'rustc', rustc / k5['hosted_link']['driver'], cargo)
+    verify_hosted_elf(libc, rustc / 'rustc', rustc / k5['hosted_link']['driver'], cargo,
+                      arch=arch, interpreter=kd / 'ld-breenix.so' if arch == 'aarch64' else None)
     return runtime
 
 
-def verify_hosted_elf(libc, compiler, driver, cargo):
+def verify_hosted_elf(libc, compiler, driver, cargo, *, arch='x86_64', interpreter=None):
     libdir = subprocess.check_output(['rustc', '--print', 'target-libdir'], cwd=ROOT,
                                      text=True, timeout=10).strip()
     readobj = Path(libdir).parent / 'bin/llvm-readobj'
+    elf_format = {'x86_64': 'elf64-x86-64', 'aarch64': 'elf64-littleaarch64'}[arch]
 
     def symbols(path, needed, soname=None):
         elf, = json.loads(subprocess.check_output(
             [readobj, '--elf-output-style=JSON', '--dyn-symbols', '--needed-libs', path],
             timeout=15))
         summary = elf['FileSummary']
-        if (summary['Format'] != 'elf64-x86-64' or sorted(elf['NeededLibraries']) != sorted(needed)
+        if (summary['Format'] != elf_format or sorted(elf['NeededLibraries']) != sorted(needed)
                 or (soname is not None and summary['LoadName'] != soname)):
             raise ValueError(f'{path.name}: unexpected hosted ELF dependencies')
         imports, exports = set(), set()
@@ -207,6 +215,8 @@ def verify_hosted_elf(libc, compiler, driver, cargo):
             if not name:
                 continue
             if symbol['Section']['Value'] == 0:
+                if arch == 'aarch64' and symbol['Binding']['Value'] == 2 and symbol['Value'] == 0:
+                    continue
                 imports.add(name)
             elif symbol['Binding']['Value'] in (1, 2) and (symbol['Other']['Value'] & 3) in (0, 3):
                 exports.add(name)
@@ -226,6 +236,9 @@ def verify_hosted_elf(libc, compiler, driver, cargo):
     if cargo is not None:
         cargo_imports, _ = symbols(cargo, [libc.name])
         verify(cargo, cargo_imports, libc_exports)
+    if interpreter is not None:
+        interpreter_imports, _ = symbols(interpreter, [], interpreter.name)
+        verify(interpreter, interpreter_imports, set())
 
 
 def hosted_runtime_entries(kd, runtime, already_staged):
@@ -399,9 +412,9 @@ def stage_rust_link(image, arch, artifacts, fixture, records):
 
 
 def stage_hosted_toolchain(image, suites, release, artifacts, rust_link, sysroot, fixture, kd,
-                           cargo, records, k5, kd_record, already_staged):
+                           cargo, records, k5, kd_record, already_staged, *, arch='x86_64'):
     entries, expected = hosted_runtime_entries(kd, kd_record, already_staged)
-    files = list(rustc_fixture_entries(artifacts, sysroot, ROOT, k5))
+    files = list(rustc_fixture_entries(artifacts, sysroot, ROOT, k5, arch=arch))
     self_host = 'self-host' in suites
     if cargo is not None:
         k6 = json.loads((records / 'k6/x86_64.json').read_text())
@@ -443,7 +456,9 @@ def stage_hosted_toolchain(image, suites, release, artifacts, rust_link, sysroot
 
     if 'rustc' in suites:
         corpus = records / 'k5/corpus'
-        for name in ('expect.json', 'hello.rs', 'type-error.rs', 'uses-std.rs'):
+        expectations = 'expect-aarch64.json' if arch == 'aarch64' else 'expect.json'
+        files.append(('corpus/expect.json', corpus / expectations, '0444', None))
+        for name in ('hello.rs', 'type-error.rs', 'uses-std.rs'):
             files.append((f'corpus/{name}', corpus / name, '0444', None))
     for name, source, mode, digest in files:
         path = f'{HOSTED_TOOLCHAIN}/{name}'
@@ -476,7 +491,10 @@ def main():
     args = parser.parse_args()
     suites = args.suite.split(',')
     release = PROGRAMS / f'target/hosted/{args.arch}-breenix-hosted/release'
-    kd = Path(os.environ.get('BREENIX_KD_BUILD_DIR', PROGRAMS / 'target/kd'))
+    kd_default = PROGRAMS / 'target/kd'
+    if args.arch == 'aarch64':
+        kd_default /= 'aarch64'
+    kd = Path(os.environ.get('BREENIX_KD_BUILD_DIR', kd_default))
     cache = Path(os.environ.get('BREENIX_RUSTC_PORT_BUILDS', ROOT / 'build/rustc-port'))
     records = ROOT / 'toolchain/rust-host'
     rustc = PROGRAMS / 'target/rustc' / args.arch
@@ -486,25 +504,26 @@ def main():
     cargo_needed = bool({'cargo', 'd1', 'self-host'}.intersection(suites))
     hosted_toolchain = 'rustc' in suites or cargo_needed
     if hosted_toolchain:
-        if args.arch != 'x86_64':
-            parser.error('hosted rustc and Cargo staging requires x86-64')
+        if cargo_needed and args.arch != 'x86_64':
+            parser.error('hosted Cargo staging requires x86-64')
         sysroot = Path(os.environ.get('BREENIX_K5_SYSROOT', cache / 'sysroot'))
         k7_stage = Path(os.environ.get('BREENIX_K7_STAGE', cache / 'k7/stage1'))
-        k5 = json.loads((records / 'k5/x86_64.json').read_text())
+        k5 = json.loads((records / f'k5/{args.arch}.json').read_text())
         cargo = k7_stage / 'bin/cargo' if cargo_needed else None
-        kd_record = verify_hosted_libc(kd, records, k5, rustc, cargo)
+        kd_record = verify_hosted_libc(kd, records, k5, rustc, cargo, arch=args.arch)
 
     staged = stage_cxx_runtime(args.image, args.suite, release / 'suite-cxx-runtime',
                                [PROGRAMS / 'target/cxx-runtime' / args.arch / name for name in CXX_PROBES])
     staged.update(stage_llvm(args.image, args.suite, args.arch, release / 'suite-llvm',
                              PROGRAMS / 'target/llvm' / args.arch,
                              ROOT / 'toolchain/rust-host/k4/corpus', PROGRAMS / 'linker.ld'))
-    staged.update(stage_dynamic(args.image, args.suite, args.arch, kd))
+    staged.update(stage_dynamic(args.image, args.suite, kd))
     if 'rust-link' in suites:
         staged.update(stage_rust_link(args.image, args.arch, rust_link, fixture, records))
     if hosted_toolchain:
         staged.update(stage_hosted_toolchain(args.image, suites, release, rustc, rust_link,
-                                              sysroot, fixture, kd, cargo, records, k5, kd_record, staged))
+                                              sysroot, fixture, kd, cargo, records, k5, kd_record,
+                                              staged, arch=args.arch))
     stage(args.image, args.suite, release / 'suite-rust-host',
           release / 'rust-host-startup-probe', release / 'rust-host-process-probe',
           release / 'rust-host-unwind-probe')

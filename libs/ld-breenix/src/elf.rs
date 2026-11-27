@@ -10,6 +10,22 @@ pub(crate) const PT_GNU_RELRO: u32 = 0x6474_e552;
 pub(crate) const PF_W: u32 = 2;
 pub(crate) const PF_R: u32 = 4;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Machine {
+    Amd64,
+    Aarch64,
+}
+
+impl Machine {
+    // A mapped image has no ELF header in its input contract. The kernel
+    // already checked its machine. The host model of that handoff is AMD64.
+    const PROCESS: Self = if cfg!(all(target_os = "breenix", target_arch = "aarch64")) {
+        Self::Aarch64
+    } else {
+        Self::Amd64
+    };
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Bytes<'a> {
     pub name: &'a [u8],
@@ -74,6 +90,7 @@ pub(crate) struct Image<'a> {
     mapped: Option<Mapped>,
     pub bias: u64,
     pub shared: bool,
+    pub machine: Machine,
 }
 
 pub(crate) type Snapshot = fn(&[u8]) -> Option<&'static [u8]>;
@@ -109,9 +126,19 @@ impl<'a> Image<'a> {
     pub fn parse(file: Bytes<'a>, bias: u64) -> Result<Self, Error<'a>> {
         let header = file.slice(0, ELF_HEADER_SIZE)?;
         let kind = header.u16(16)?;
+        let machine = match header.u16(18)? {
+            62 => Machine::Amd64,
+            183 => Machine::Aarch64,
+            _ => return Err(header.error(ErrorKind::UnsupportedElf)),
+        };
+        // The host core inspects either format. An interpreter can only map
+        // dependencies built for its own process ABI.
+        #[cfg(all(feature = "interpreter", target_os = "breenix"))]
+        if machine != Machine::PROCESS {
+            return Err(header.error(ErrorKind::UnsupportedElf));
+        }
         if !header.data.starts_with(b"\x7fELF\x02\x01\x01")
             || !matches!(kind, 2 | 3)
-            || header.u16(18)? != 62
             || header.u32(20)? != 1
             || u64::from(header.u16(52)?) != ELF_HEADER_SIZE
             || (kind == 2 && bias != 0)
@@ -133,6 +160,7 @@ impl<'a> Image<'a> {
             mapped: None,
             bias,
             shared: kind == 3,
+            machine,
         };
         image.validate_loads()?;
         Ok(image)
@@ -160,6 +188,7 @@ impl<'a> Image<'a> {
             }),
             bias,
             shared: false,
+            machine: Machine::PROCESS,
         };
         image.validate_loads()?;
         let link_entry = entry.checked_sub(bias)

@@ -35,7 +35,6 @@ pub fn load_image(
     )?;
     // Resolve the interpreter after the first lease is released. In
     // particular, a pathname can resolve back to the same inode.
-    #[cfg(target_arch = "x86_64")]
     let image = match (image, interpreter) {
         (Image::Elf(elf), Some(program)) => {
             Image::Elf(elf.with_interpreter(&program, |interp, consume| {
@@ -50,8 +49,6 @@ pub fn load_image(
         }
         (image, _) => image,
     };
-    #[cfg(target_arch = "aarch64")]
-    debug_assert!(interpreter.is_none());
     Ok((image, identity, path))
 }
 

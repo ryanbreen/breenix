@@ -91,6 +91,17 @@ static int zeroed(const unsigned long *words) {
     return 1;
 }
 
+#if defined(__aarch64__)
+static int tls_matches_tp(const unsigned long *words) {
+    const unsigned long *descriptor = kd_tls_descriptor();
+    uintptr_t tp;
+    __asm__("mrs %0, tpidr_el0" : "=r"(tp));
+    /* A sole 8-byte aligned template follows the two Variant I TCB words. */
+    return descriptor[0] != 0 && descriptor[1] == 16 &&
+           (uintptr_t)words == tp + descriptor[1];
+}
+#endif
+
 struct thread_check {
     unsigned long *main_words;
     int status;
@@ -99,6 +110,12 @@ struct thread_check {
 static void *check_thread(void *argument) {
     struct thread_check *check = argument;
     unsigned long *words = kd_tls_address();
+#if defined(__aarch64__)
+    if (!tls_matches_tp(words)) {
+        check->status = 30;
+        return NULL;
+    }
+#endif
     if (words == check->main_words || !zeroed(words)) {
         check->status = 33;
         return NULL;
@@ -110,11 +127,17 @@ static void *check_thread(void *argument) {
 }
 
 static int check_tls(void) {
+#if defined(__x86_64__)
     /* Loaded in dependency order, this is the fixture's sole PT_TLS module. */
     const unsigned long *descriptor = kd_tls_descriptor();
     if (descriptor[0] != 1 || descriptor[1] != 0)
         return 30;
+#endif
     unsigned long *words = kd_tls_address();
+#if defined(__aarch64__)
+    if (!tls_matches_tp(words))
+        return 30;
+#endif
     if ((uintptr_t)words % 8 != 0 || !zeroed(words))
         return 31;
     words[TLS_WORDS - 1] = main_value;

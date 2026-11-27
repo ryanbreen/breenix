@@ -1,4 +1,5 @@
 import datetime
+from fnmatch import fnmatchcase
 import hashlib
 import json
 import mmap
@@ -35,6 +36,110 @@ def git(*args, tree=TREE):
 
 
 class RustcPort(unittest.TestCase):
+    def test_aarch64_libc_so_one_process_state(self):
+        stage = Path(os.environ.get('BREENIX_KD_BUILD_DIR',
+                                    ROOT / 'userspace/programs/target/kd/aarch64'))
+        llvm = Path(os.environ.get('BREENIX_X2_LLVM', '/opt/homebrew/opt/llvm@20/bin'))
+        libc = stage / 'libc.so'
+        crt = stage / 'breenix-crt.o'
+        dso_handle = stage / 'hosted_dso_handle.o'
+        for path in (libc, crt, dso_handle):
+            self.assertTrue(path.is_file(), f'{path.name} is missing from --arch aarch64 --kd-libc')
+
+        def readelf(path, *args):
+            return subprocess.check_output([llvm / 'llvm-readelf', '-W', *args, path],
+                                           text=True, timeout=10)
+
+        header = readelf(libc, '--file-header', '--dynamic-table')
+        self.assertRegex(header, r'Type:\s+DYN\b')
+        self.assertRegex(header, r'Machine:\s+AArch64\b')
+        self.assertEqual(re.findall(r'\(SONAME\).*\[(.+)\]', header), ['libc.so'])
+        self.assertNotIn('(NEEDED)', header)
+        for path in (crt, dso_handle):
+            header = readelf(path, '--file-header')
+            self.assertRegex(header, r'Type:\s+REL\b')
+            self.assertRegex(header, r'Machine:\s+AArch64\b')
+
+        def definitions(path):
+            return subprocess.check_output(
+                [llvm / 'llvm-nm', '--defined-only', '--format=posix', path],
+                text=True, timeout=10,
+            ).splitlines()
+
+        names = {path: [line.split()[0] for line in definitions(path)]
+                 for path in (libc, crt, dso_handle)}
+
+        def owners(pattern):
+            return [path.name for path, symbols in names.items() for name in symbols
+                    if re.fullmatch(pattern, name)]
+
+        self.assertEqual(owners('_start'), ['breenix-crt.o'])
+        for name in ('environ', 'stdin', 'stdout', 'stderr', 'optarg', 'optind',
+                     'opterr', 'optopt', 'atexit', '__cxa_atexit', 'getauxval',
+                     '__errno_location', '__breenix_libc_init'):
+            self.assertEqual(owners(name), ['libc.so'], name)
+        for name in ('AUXV', 'PROCESS', 'RUNTIME_READY', 'EARLY_ERRNO', 'TLS_IMAGE',
+                     'STACK_CACHE', 'INPUT', 'OUTPUT', 'ERROR', 'AT_EXIT', 'AT_QUICK_EXIT'):
+            self.assertEqual(owners(r'_ZN1c.*' + str(len(name)) + name +
+                                    r'17h[0-9a-f]+E(?:\..*)?'), ['libc.so'], name)
+        self.assertRegex(readelf(dso_handle, '--symbols'),
+                         r'OBJECT\s+GLOBAL\s+HIDDEN\s+\d+\s+__dso_handle\b')
+
+        # Apply the version script to externally visible ELF definitions in
+        # the whole-archive link input (ELF gABI, Symbol Binding and Visibility).
+        script = ROOT / 'libs/libbreenix-libc/hosted-libc.exports'
+        rules = re.fullmatch(r'\s*\{\s*global:(.*?)local:(.*?)\};\s*',
+                             script.read_text(), re.S)
+        self.assertIsNotNone(rules, script)
+        include, exclude = [[pattern.strip() for pattern in rule.split(';') if pattern.strip()]
+                            for rule in rules.groups()]
+
+        def visible_definitions(path, option):
+            rows = re.findall(r'^\s*\d+:\s+[0-9a-f]+\s+\S+\s+\S+\s+'
+                              r'(?:GLOBAL|WEAK)\s+(?:DEFAULT|PROTECTED)\s+(\S+)\s+(\S+)',
+                              readelf(path, option), re.M)
+            return {name for section, name in rows if section != 'UND'}
+
+        expected = {name for name in visible_definitions(stage / 'libc-pic.a', '--symbols')
+                    if any(fnmatchcase(name, pattern) for pattern in include)
+                    and not any(fnmatchcase(name, pattern) for pattern in exclude)}
+        self.assertEqual(visible_definitions(libc, '--dyn-syms'), expected)
+
+        pin = json.loads((RECORDS.parent / 'hosted-libc-aarch64.json').read_text())
+        self.assertEqual(pin['sha256'], {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                                        for path in (libc, crt, dso_handle)})
+
+    def test_arm_k5_pinned_inputs(self):
+        fork = ROOT / 'rust-fork'
+        pin = tomllib.loads((ROOT / 'rust-fork.toml').read_text())['commit']
+        self.assertEqual(git('rev-parse', 'HEAD', tree=fork), pin)
+        self.assertTrue((fork / 'compiler/rustc/Cargo.toml').is_file(), 'fork compiler checkout missing')
+        llvm = fork / 'src/llvm-project'
+        self.assertTrue((llvm / 'llvm/CMakeLists.txt').is_file(), 'LLVM checkout missing')
+        gitlink = git('ls-tree', pin, 'src/llvm-project', tree=fork).split()[2]
+        self.assertEqual(gitlink, 'ed6566573eb21b00a3f87815e14ff766fd56ef42')
+        self.assertEqual(git('rev-parse', 'HEAD', tree=llvm), gitlink)
+        self.assertEqual(git('status', '--porcelain', '--ignore-submodules=none',
+                             '--', 'compiler', 'src/llvm-project', tree=fork), '')
+        self.assertEqual(git('status', '--porcelain', '--untracked-files=all', tree=llvm), '')
+
+        k4 = json.loads((RECORDS.parent / 'k4/aarch64.json').read_text())
+        k3 = json.loads((RECORDS.parent / 'k3/aarch64.json').read_text())
+        llvm_build = Path(os.environ.get('BREENIX_LLVM_PORT_BUILDS', ROOT / 'build/llvm-port'))
+        cxx_build = Path(os.environ.get('BREENIX_CXX_RUNTIME_BUILDS', ROOT / 'build/cxx-runtime'))
+        self.assertTrue(k4['archives'])
+        for name, digest in k4['archives'].items():
+            path = llvm_build / 'aarch64/build' / name
+            self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), digest, str(path))
+        self.assertTrue(k3['archives'])
+        for name, entry in k3['archives'].items():
+            path = cxx_build / 'aarch64/build/lib' / name
+            self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), entry['sha256'], str(path))
+        llc = Path(os.environ.get('BREENIX_MAC_LLC', Path.home() /
+                   'Library/Caches/breenix-e25/k4/x86_64/native-llc/bin/llc'))
+        manifest = json.loads((RECORDS.parent / 'k4/corpus/expect-aarch64.json').read_text())
+        self.assertEqual(hashlib.sha256(llc.read_bytes()).hexdigest(), manifest['producer']['sha256'])
+
     def test_twin_spawn_environment_is_guest_set(self):
         with mock.patch.dict(os.environ, {"RUSTFLAGS": "ambient", "CARGO_HOME": "ambient"}):
             self.assertEqual(guest_environment(Path("/fixture/targets")),
@@ -151,7 +256,8 @@ class RustcPort(unittest.TestCase):
         cache = Path.home() / 'Library/Caches/breenix-e25/k5/twin'
         mac_rustc = Path(os.environ.get('BREENIX_K5_MAC_RUSTC', cache / 'mac/bin/rustc'))
         sysroot = Path(os.environ.get('BREENIX_K5_SYSROOT', cache / 'sysroot'))
-        verbose = subprocess.check_output([mac_rustc, '-vV'], text=True, timeout=5)
+        verbose = subprocess.check_output([mac_rustc, '-vV'], text=True, timeout=5,
+                                          env=guest_environment(ROOT))
         banner, *fields = verbose.splitlines()
         version = dict(line.split(': ', 1) for line in fields)
         targets = ('x86_64-breenix', 'x86_64-breenix-hosted')
@@ -164,7 +270,8 @@ class RustcPort(unittest.TestCase):
                                  1, target)
             for archive in archives:
                 result = subprocess.run([mac_rustc, '-Zls=root', archive],
-                                        capture_output=True, text=True, timeout=5, check=True)
+                                        capture_output=True, text=True, timeout=5, check=True,
+                                        env=guest_environment(ROOT))
                 if result.stderr or f'triple {target}' not in result.stdout.splitlines():
                     failures.append(f'{target}/{archive.name}: {result.stderr or result.stdout}'.strip())
                 with archive.open('rb') as artifact:
@@ -193,6 +300,134 @@ class RustcPort(unittest.TestCase):
                 self.assertNotEqual(data.find(value.encode()), -1, f'hosted rustc identity field: {value}')
 
         record = json.loads((RECORDS.parent / 'k5/x86_64.json').read_text())
+        pin = tomllib.loads((ROOT / 'rust-fork.toml').read_text())['hosted']['commit']
+        self.assertEqual(commit, pin)
+        self.assertEqual(record['sysroot'], {
+            'rustc_version': banner, 'commit_hash': commit, 'files_sha256': digests,
+        })
+
+    def test_aarch64_rustc_is_dynamic_breenix_elf(self):
+        stage = ROOT / 'userspace/programs/target/rustc/aarch64'
+        record = json.loads((RECORDS.parent / 'k5/aarch64.json').read_text())
+        llvm = Path(os.environ.get('BREENIX_X2_LLVM', '/opt/homebrew/opt/llvm@20/bin'))
+        rustc = stage / 'rustc'
+        self.assertTrue(rustc.is_file(), 'build the hosted twin with build.sh --rustc')
+        drivers = list(stage.glob('librustc_driver-*.so'))
+        self.assertEqual(len(drivers), 1, drivers)
+        driver, = drivers
+        libc = Path(os.environ.get('BREENIX_KD_BUILD_DIR',
+                                   ROOT / 'userspace/programs/target/kd/aarch64')) / 'libc.so'
+
+        def readelf(elf, *args):
+            return subprocess.check_output([llvm / 'llvm-readelf', *args, elf],
+                                           text=True, timeout=10)
+
+        definitions = set()
+        strong = {}
+        weak = {}
+        for elf, kind, needed in ((rustc, 'EXEC', [driver.name, libc.name]),
+                                  (driver, 'DYN', [libc.name]),
+                                  (libc, 'DYN', [])):
+            headers = readelf(elf, '-W', '-h', '-l', '-d')
+            self.assertRegex(headers, r'Class:\s+ELF64')
+            self.assertRegex(headers, r'Data:.*little endian')
+            self.assertRegex(headers, r'Machine:\s+AArch64')
+            self.assertRegex(headers, rf'Type:\s+{kind}\b')
+            self.assertEqual(re.findall(r'\(NEEDED\).*\[(.+)\]', headers), needed, elf)
+            interp = re.findall(r'Requesting program interpreter: (.+)\]', headers)
+            self.assertEqual(interp, ['/lib/ld-breenix.so'] if elf == rustc else [], elf)
+            if elf == rustc:
+                self.assertEqual(re.findall(r'\(RUNPATH\).*\[(.+)\]', headers),
+                                 ['$ORIGIN/../lib'])
+                self.assertNotIn('(RPATH)', headers)
+            else:
+                self.assertEqual(re.findall(r'\(SONAME\).*\[(.+)\]', headers), [elf.name])
+
+            strong[elf] = set()
+            weak[elf] = set()
+            for line in readelf(elf, '-W', '--dyn-syms').splitlines():
+                fields = line.split()
+                if len(fields) < 8 or not fields[0].removesuffix(':').isdigit():
+                    continue
+                _, value, _, _, binding, visibility, index, name, *_ = fields
+                if index == 'UND':
+                    if binding == 'WEAK':
+                        self.assertEqual(int(value, 16), 0, name)
+                        weak[elf].add(name)
+                    else:
+                        strong[elf].add(name)
+                elif binding in ('GLOBAL', 'WEAK') and visibility in ('DEFAULT', 'PROTECTED'):
+                    definitions.add(name)
+        self.assertEqual({elf.name: sorted(names - definitions) for elf, names in strong.items()
+                          if names - definitions}, {})
+        self.assertEqual({elf.name: sorted(names & definitions) for elf, names in weak.items()
+                          if names & definitions}, {})
+
+        with libc.open('rb') as artifact:
+            self.assertEqual(hashlib.file_digest(artifact, 'sha256').hexdigest(),
+                             record['hosted_link']['libc_sha256'])
+        for elf, key in ((rustc, 'hosted_rustc_sha256'), (driver, 'hosted_driver_sha256')):
+            with elf.open('rb') as artifact:
+                self.assertEqual(hashlib.file_digest(artifact, 'sha256').hexdigest(), record[key])
+            link_map = stage / f'{elf.name}.map'
+            self.assertTrue(link_map.is_file(), link_map)
+            with link_map.open('rb') as artifact:
+                self.assertEqual(hashlib.file_digest(artifact, 'sha256').hexdigest(),
+                                 record['hosted_link']['maps_sha256'][link_map.name])
+            with link_map.open('rb') as stream, mmap.mmap(stream.fileno(), 0,
+                                                         access=mmap.ACCESS_READ) as contents:
+                self.assertNotRegex(contents, rb'(?:^|[/\s])lib(?:c|unwind)\.a[( :]')
+                self.assertEqual(contents.find(b'breenix-crt.o') >= 0, elf == rustc)
+                self.assertEqual(contents.find(b'libbunwind.a(') >= 0, elf == driver)
+
+    def test_aarch64_twin_rlibs_match_twin_compiler(self):
+        cache = Path.home() / 'Library/Caches/breenix-e25/ak5'
+        mac_rustc = Path(os.environ.get('BREENIX_K5_MAC_RUSTC', cache / 'build/aarch64-apple-darwin/stage1/bin/rustc'))
+        sysroot = Path(os.environ.get('BREENIX_K5_SYSROOT', cache / 'sysroot'))
+        verbose = subprocess.check_output([mac_rustc, '-vV'], text=True, timeout=5,
+                                          env=guest_environment(ROOT))
+        banner, *fields = verbose.splitlines()
+        version = dict(line.split(': ', 1) for line in fields)
+        targets = ('aarch64-breenix', 'aarch64-breenix-hosted')
+        digests = {}
+        failures = []
+        for target in targets:
+            archives = sorted((sysroot / 'lib/rustlib' / target / 'lib').glob('*.rlib'))
+            for crate in ('core', 'alloc', 'std'):
+                self.assertEqual(sum(path.name.startswith(f'lib{crate}-') for path in archives),
+                                 1, target)
+            for archive in archives:
+                result = subprocess.run([mac_rustc, '-Zls=root', archive],
+                                        capture_output=True, text=True, timeout=5, check=True,
+                                        env=guest_environment(ROOT))
+                if result.stderr or f'triple {target}' not in result.stdout.splitlines():
+                    failures.append(f'{target}/{archive.name}: {result.stderr or result.stdout}'.strip())
+                with archive.open('rb') as artifact:
+                    digests[archive.relative_to(sysroot).as_posix()] = hashlib.file_digest(
+                        artifact, 'sha256').hexdigest()
+        self.assertFalse(failures, '\n'.join(failures))
+
+        commit = version['commit-hash']
+        self.assertRegex(commit, r'^[0-9a-f]{40}$')
+        match = re.fullmatch(rf"rustc {re.escape(version['release'])} "
+                             rf"\(([0-9a-f]{{7,40}}) {re.escape(version['commit-date'])}\)", banner)
+        self.assertIsNotNone(match, banner)
+        self.assertTrue(commit.startswith(match[1]))
+        hosted = Path(os.environ.get('BREENIX_K5_HOSTED', cache / 'hosted'))
+        driver, = (hosted / 'lib').glob('librustc_driver-*.so')
+        llvm = Path(os.environ.get('BREENIX_X2_LLVM', '/opt/homebrew/opt/llvm@20/bin'))
+        headers = subprocess.check_output(
+            [llvm / 'llvm-readelf', '--file-header', '--dynamic-table', hosted / 'bin/rustc'],
+            text=True, timeout=5)
+        self.assertRegex(headers, r'Machine:\s+AArch64')
+        self.assertIn(driver.name, re.findall(r'\(NEEDED\).*\[(.+)\]', headers))
+        # The hosted ELF cannot run on the Mac. Check the linked driver's
+        # embedded identity here and reserve its live -vV for the guest case.
+        with driver.open('rb') as binary, mmap.mmap(binary.fileno(), 0, access=mmap.ACCESS_READ) as data:
+            for value in (version['release'], commit, version['commit-date'], targets[1]):
+                self.assertNotEqual(data.find(value.encode()), -1, f'hosted rustc identity field: {value}')
+
+        record = json.loads((RECORDS.parent / 'k5/aarch64.json').read_text())
         pin = tomllib.loads((ROOT / 'rust-fork.toml').read_text())['hosted']['commit']
         self.assertEqual(commit, pin)
         self.assertEqual(record['sysroot'], {
@@ -356,15 +591,32 @@ class RustcPort(unittest.TestCase):
             self.assertLessEqual(citation['line'], len(lines))
             self.assertEqual(lines[citation['line'] - 1], citation['quote'])
 
+    def x2_record_and_stage(self, arch):
+        suffix = '' if arch == 'x86_64' else f'-{arch}'
+        path = RECORDS.parent / f'x2{suffix}.json'
+        self.assertTrue(path.is_file(), f'X2 {arch} rustc driver link result has not been recorded')
+        cache = Path.home() / 'Library/Caches/breenix-e25'
+        if arch == 'x86_64':
+            stage = Path(os.environ.get('BREENIX_X2_STAGE', cache / 'kd/x2/stage1'))
+        else:
+            stage = Path(os.environ.get('BREENIX_X2_AARCH64_STAGE', cache / 'ak5/hosted'))
+        return json.loads(path.read_text()), stage
+
     def test_x2_one_process_state(self):
-        stage = Path(os.environ.get('BREENIX_X2_STAGE', Path.home() /
-                                    'Library/Caches/breenix-e25/kd/x2/stage1'))
+        for arch in ('x86_64', 'aarch64'):
+            with self.subTest(arch=arch):
+                record, stage = self.x2_record_and_stage(arch)
+                self.check_x2_one_process_state(stage, record, arch)
+
+    def check_x2_one_process_state(self, stage, record, arch):
         llvm = Path(os.environ.get('BREENIX_X2_LLVM', '/opt/homebrew/opt/llvm@20/bin'))
         drivers = sorted((stage / 'lib').glob('librustc_driver-*.so'))
         self.assertEqual(len(drivers), 1, drivers)
         executable = stage / 'bin/rustc'
         driver, = drivers
         libc = stage / 'lib/libc.so'
+        if arch == 'aarch64':
+            self.assertEqual(driver.name, record['artifacts']['librustc_driver']['name'])
 
         def inspect(tool, path, *args):
             return subprocess.check_output([llvm / tool, *args, path], text=True, timeout=30)
@@ -406,8 +658,12 @@ class RustcPort(unittest.TestCase):
             self.assertNotRegex(link_map, r'\blibc\.a\(')
             self.assertNotRegex(link_map, r'\blibc\.a:')
             self.assertFalse([name for name, _ in symbols[path] if name.startswith('_ZN1c')])
+            if arch == 'aarch64':
+                self.assertNotRegex(link_map, r'\blibunwind\.a[(:]')
             if path == driver:
                 self.assertNotRegex(link_map, r'\bbreenix-crt\.o\b')
+                if arch == 'aarch64':
+                    self.assertRegex(link_map, r'\blibbunwind\.a\(')
 
         runtime_data = {}
         for path in paths:
@@ -423,9 +679,15 @@ class RustcPort(unittest.TestCase):
         self.assertEqual(duplicates, {})
 
     def test_x2_driver_linked_inventory(self):
-        path = RECORDS.parent / 'x2.json'
-        self.assertTrue(path.is_file(), 'X2 rustc driver link result has not been recorded')
-        record = json.loads(path.read_text())
+        for arch in ('x86_64', 'aarch64'):
+            with self.subTest(arch=arch):
+                record, stage = self.x2_record_and_stage(arch)
+                if arch == 'x86_64':
+                    self.check_x86_x2_inventory(record)
+                else:
+                    self.check_aarch64_x2_inventory(record, stage)
+
+    def check_x86_x2_inventory(self, record):
         errno_port = record['ruling_108']['patch']
         self.assertEqual(errno_port['sha256'], hashlib.sha256(ERRNO_PATCH.read_bytes()).hexdigest())
         self.assertEqual(errno_port['text'], ERRNO_PATCH.read_text())
@@ -488,6 +750,89 @@ class RustcPort(unittest.TestCase):
             self.assertEqual(len(executable['inventory']['pt_interp']), 1)
             self.assertTrue(executable['inventory']['pt_interp'][0].startswith('/'))
             self.assertTrue(inventory['dynamic_relocations'])
+
+    def check_aarch64_x2_inventory(self, record, stage):
+        llvm = Path(os.environ.get('BREENIX_X2_LLVM', '/opt/homebrew/opt/llvm@20/bin'))
+        fork = ROOT / 'rust-fork'
+        pin = tomllib.loads((ROOT / 'rust-fork.toml').read_text())['hosted']['commit']
+        self.assertEqual(record['rust_commit'], pin)
+        self.assertEqual(record['compiler_tree'], git('rev-parse', f'{pin}:compiler', tree=fork))
+        self.assertEqual(record['llvm_commit'],
+                         git('ls-tree', pin, 'src/llvm-project', tree=fork).split()[2])
+        for field in ('pinned_status_before', 'pinned_status_after'):
+            self.assertEqual(record[field], {'compiler': '', 'llvm_project': ''})
+        self.assertEqual(record['hosts'], ['aarch64-apple-darwin', 'aarch64-breenix-hosted'])
+        self.assertEqual(record['targets'], ['aarch64-breenix', 'aarch64-breenix-hosted'])
+        self.assertEqual(record['exit_status'], 0)
+        self.assertRegex(record['log_sha256'], r'^[0-9a-f]{64}$')
+
+        artifacts = record['artifacts']
+        self.assertEqual(set(artifacts), {'rustc', 'librustc_driver', 'libc'})
+        driver = artifacts['librustc_driver']['name']
+        self.assertRegex(driver, r'^librustc_driver-[0-9a-f]+\.so$')
+        frames = 0
+        for key, path, elf_type, needed, interp, runpath in (
+            ('rustc', stage / 'bin/rustc', 'EXEC', [driver, 'libc.so'],
+             ['/lib/ld-breenix.so'], ['$ORIGIN/../lib']),
+            ('librustc_driver', stage / 'lib' / driver, 'DYN', ['libc.so'],
+             [], ['$ORIGIN/../lib']),
+            ('libc', stage / 'lib/libc.so', 'DYN', [], [], []),
+        ):
+            with self.subTest(elf=path.name):
+                elf = subprocess.check_output(
+                    [llvm / 'llvm-readelf', '-W', '-h', '-l', '-d', '-r', '--dyn-syms', path],
+                    text=True, timeout=20,
+                )
+                self.assertRegex(elf, r'Machine:\s+AArch64\b')
+                self.assertRegex(elf, rf'Type:\s+{elf_type}\b')
+                self.assertNotIn('(RPATH)', elf)
+                self.assertNotIn('(TEXTREL)', elf)
+                relocations = re.findall(
+                    r'^\s*[0-9a-f]+\s+([0-9a-f]+)\s+(R_AARCH64_\w+)', elf, re.M)
+                # AAELF64, Dynamic relocations and TLS descriptors. A DTPMOD
+                # relocation with symbol index 0 describes its own module.
+                tls_models = set()
+                for info, kind in relocations:
+                    if kind.startswith('R_AARCH64_TLS_DTPMOD'):
+                        tls_models.add('general-dynamic' if int(info, 16) >> 32 else 'local-dynamic')
+                    elif kind.startswith('R_AARCH64_TLS_TPREL'):
+                        tls_models.add('initial-exec')
+                    elif kind == 'R_AARCH64_TLSDESC':
+                        tls_models.add('tlsdesc')
+                inventory = {
+                    'dynamic_relocations': sorted({kind for _, kind in relocations}),
+                    'tls_models': sorted(tls_models),
+                    'undefined_symbols': sorted(set(re.findall(
+                        r'^\s*\d+:\s+[0-9a-f]+\s+\d+\s+\S+\s+GLOBAL\s+\S+\s+UND\s+(\S+)',
+                        elf, re.M))),
+                    'dt_needed': sorted(re.findall(r'\(NEEDED\).*\[(.+)\]', elf)),
+                    'pt_interp': re.findall(r'\[Requesting program interpreter: (.+)\]', elf),
+                    'dt_runpath': re.findall(r'\(RUNPATH\).*\[(.+)\]', elf),
+                }
+                self.assertEqual(inventory['dt_needed'], sorted(needed))
+                self.assertEqual(inventory['pt_interp'], interp)
+                self.assertEqual(inventory['dt_runpath'], runpath)
+                if key == 'librustc_driver':
+                    self.assertNotIn('errno_location', inventory['undefined_symbols'])
+                    self.assertIn('__errno_location', inventory['undefined_symbols'])
+                    self.assertTrue(inventory['dynamic_relocations'])
+                if key == 'libc':
+                    self.assertEqual(re.findall(r'\(SONAME\).*\[(.+)\]', elf), ['libc.so'])
+                else:
+                    # The ARM64 exec mapper charges each PT_LOAD in 4 KiB frames.
+                    for address, memsz in re.findall(
+                        r'^\s*LOAD\s+0x\w+\s+(0x\w+)\s+0x\w+\s+0x\w+\s+(0x\w+)', elf, re.M
+                    ):
+                        start, size = int(address, 16), int(memsz, 16)
+                        frames += (start % 4096 + size + 4095) // 4096 if size else 0
+                with path.open('rb') as stream:
+                    digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+                self.assertEqual(artifacts[key], {
+                    'name': path.name, 'sha256': digest, 'inventory': inventory,
+                })
+        self.assertEqual(record['pt_load_frames'], frames)
+        self.assertGreater(frames, 0)
+        self.assertLessEqual(frames, 88532)
 
     def test_libcxx_runtime_inventory_recorded(self):
         record = self.x0_record(5)

@@ -96,22 +96,24 @@ def hosted_artifacts(cache):
     return (compiler, driver, *(hosted / 'maps' / f'{elf.name}.map' for elf in (compiler, driver)))
 
 
-def record_hosted_link(cache):
+def record_hosted_link(cache, arch):
     compiler, driver, *maps = hosted_artifacts(cache)
-    path = K5 / 'x86_64.json'
+    path = K5 / f'{arch}.json'
     record = json.loads(path.read_text())
     record['hosted_rustc_sha256'] = sha256(compiler)
     record['hosted_driver_sha256'] = sha256(driver)
     record['hosted_link'] = {
         'driver': driver.name,
-        'libc_sha256': sha256(cache / 'hosted/lib/libc.so'),
+        'libc_sha256': sha256(cache / 'hosted/lib/libc.so' if arch == 'x86_64' else
+                              Path(os.environ.get('BREENIX_KD_BUILD_DIR',
+                                   ROOT / 'userspace/programs/target/kd/aarch64')) / 'libc.so'),
         'maps_sha256': {item.name: sha256(item) for item in maps},
     }
     write_json(path, record)
 
 
-def stage_hosted(cache, stage):
-    record = json.loads((K5 / 'x86_64.json').read_text())
+def stage_hosted(cache, stage, arch):
+    record = json.loads((K5 / f'{arch}.json').read_text())
     hosted = record['hosted_link']
     compiler, driver, *maps = hosted_artifacts(cache)
     if driver.name != hosted['driver']:
@@ -140,8 +142,8 @@ def stage_hosted(cache, stage):
     print(f'Staged the K5 compiler, driver and link maps in {stage}')
 
 
-def stage_sysroot(source, sysroot, rustc):
-    for target in TARGETS:
+def stage_sysroot(source, sysroot, rustc, targets=TARGETS):
+    for target in targets:
         relative = Path('lib/rustlib') / target / 'lib'
         archives = sorted((source / relative).glob('*.rlib'))
         for crate in ('core', 'alloc', 'std'):
@@ -154,23 +156,26 @@ def stage_sysroot(source, sysroot, rustc):
             shutil.copyfile(archive, artifact)
             # rustc's metadata dump rejects an archive from a different compiler.
             # A mismatch can report success, so also require the decoded target.
-            metadata = output(rustc, '-Zls=root', artifact)
+            metadata = subprocess.check_output([rustc, '-Zls=root', artifact], text=True, timeout=30,
+                                               env=guest_environment(ROOT)).strip()
             if f'triple {target}' not in metadata.splitlines():
                 raise ValueError(f'{artifact.name}: {metadata}')
 
 
-def compile_corpus(rustc, sysroot, scratch):
+def compile_corpus(rustc, sysroot, scratch, targets=TARGETS):
+    tool, _ = targets
     common = [rustc, '--edition=2021', '--sysroot', sysroot, '-Dwarnings', '--emit=obj']
-    for target in TARGETS:
+    for target in targets:
         command = [*common, '--target', ROOT / f'{target}.json']
         subprocess.run([*command, '--crate-type=lib', 'hello.rs', '-o', scratch / f'{target}.o'],
-                       cwd=CORPUS, check=True, timeout=15)
+                       cwd=CORPUS, check=True, timeout=15, env=guest_environment(ROOT))
         subprocess.run([*command, 'uses-std.rs', '-o', scratch / 'uses-std.o'],
-                       cwd=CORPUS, check=True, timeout=15)
-    failed = subprocess.run([*common, '--target', ROOT / f'{TOOL}.json',
+                       cwd=CORPUS, check=True, timeout=15, env=guest_environment(ROOT))
+    failed = subprocess.run([*common, '--target', ROOT / f'{tool}.json',
                              '--error-format=json', 'type-error.rs',
                              '-o', scratch / 'type-error.o'],
-                            cwd=CORPUS, capture_output=True, text=True, timeout=15)
+                            cwd=CORPUS, capture_output=True, text=True, timeout=15,
+                            env=guest_environment(ROOT))
     if failed.returncode != 1 or (scratch / 'type-error.o').exists():
         raise ValueError('type-error.rs did not fail with exit 1 and no object')
     diagnostics = [json.loads(line) for line in failed.stderr.splitlines()]
@@ -180,12 +185,15 @@ def compile_corpus(rustc, sysroot, scratch):
     if primary['file_name'] != 'type-error.rs':
         raise ValueError('type error was reported outside type-error.rs')
     return {
-        'hello_o_sha256': sha256(scratch / f'{TOOL}.o'),
+        'hello_o_sha256': sha256(scratch / f'{tool}.o'),
         'type_error': f"type-error.rs:{primary['line_start']}:{primary['column_start']}",
     }
 
 
-def record_twin(fork, cache):
+def record_twin(fork, cache, arch):
+    tool = f"{arch}-breenix"
+    hosted_target = f"{tool}-hosted"
+    target_names = (tool, hosted_target)
     before = (cache / 'o5-before').read_text().strip()
     after = fork_status(fork)
     (cache / 'o5-after').write_text(after + '\n' if after else '')
@@ -194,11 +202,11 @@ def record_twin(fork, cache):
     pin = tomllib.loads((ROOT / 'rust-fork.toml').read_text())['hosted']['commit']
     if output('git', '-C', fork, 'rev-parse', 'HEAD') != pin:
         raise ValueError('K5 requires the pinned hosted Rust fork')
-    stage = json.loads((cache / 'bootstrap.json').read_text())
+    stage = json.loads((cache / ('bootstrap.json' if arch == 'x86_64' else 'bootstrap-final.json')).read_text())
     if stage['exit_status'] != 0 or stage.get('timed_out'):
         raise ValueError('twin bootstrap did not complete successfully')
     attempts = {}
-    for name in ('bootstrap-first', 'bootstrap'):
+    for name in (('bootstrap-first', 'bootstrap') if arch == 'x86_64' else ('bootstrap-final',)):
         receipt = cache / f'{name}.json'
         if receipt.is_file():
             attempts[name] = {
@@ -209,14 +217,15 @@ def record_twin(fork, cache):
     bootstrap = config['build']
     hosts = [Path(host).stem for host in bootstrap['host']]
     targets = [Path(target).stem for target in bootstrap['target']]
-    if hosts != [MAC, HOSTED] or targets != list(TARGETS) or not 1 <= bootstrap['jobs'] <= 4:
+    if hosts != [MAC, hosted_target] or targets != list(target_names) or not 1 <= bootstrap['jobs'] <= 4:
         raise ValueError('bootstrap must build both twin hosts and both targets with at most four jobs')
 
     build = Path(bootstrap['build-dir'])
     mac = build / MAC / 'stage1'
-    hosted = build / HOSTED / 'stage1'
+    hosted = build / hosted_target / 'stage1'
     rustc = mac / 'bin/rustc'
-    verbose = output(rustc, '-vV').splitlines()
+    verbose = subprocess.check_output([rustc, '-vV'], text=True, timeout=30,
+                                      env=guest_environment(ROOT)).strip().splitlines()
     identity = dict(line.split(': ', 1) for line in verbose[1:])
     if identity['host'] != MAC or identity['commit-hash'] != pin:
         raise ValueError('Mac twin did not report the pinned compiler identity')
@@ -240,20 +249,21 @@ def record_twin(fork, cache):
     with tempfile.TemporaryDirectory(dir=cache) as directory:
         scratch = Path(directory)
         pending = scratch / 'sysroot'
-        stage_sysroot(mac, pending, rustc)
-        expectations = compile_corpus(rustc, pending, scratch)
+        stage_sysroot(mac, pending, rustc, target_names)
+        expectations = compile_corpus(rustc, pending, scratch, target_names)
         files = {str(path.relative_to(pending)): sha256(path)
                  for path in sorted(pending.rglob('*.rlib'))}
-        shutil.copyfile(scratch / f'{TOOL}.o', cache / 'hello.o')
+        shutil.copyfile(scratch / f'{tool}.o', cache / 'hello.o')
         pending.rename(sysroot)
 
     # Keep both compilers accessible beside their shared target sysroot.
-    (cache / 'mac').symlink_to(mac, target_is_directory=True)
-    for name in ('bin', 'lib'):
-        (cache / 'hosted' / name).symlink_to(hosted / name, target_is_directory=True)
+    if arch == 'x86_64':
+        (cache / 'mac').symlink_to(mac, target_is_directory=True)
+        for name in ('bin', 'lib'):
+            (cache / 'hosted' / name).symlink_to(hosted / name, target_is_directory=True)
     expected = {
         'rustc_vv': [f'{key}: {identity[key]}' for key in VERSION_KEYS],
-        'hosted_host': HOSTED,
+        'hosted_host': hosted_target,
         **expectations,
     }
     record = {
@@ -281,8 +291,8 @@ def record_twin(fork, cache):
             'files_sha256': files,
         },
     }
-    write_json(K5 / 'x86_64.json', record)
-    write_json(CORPUS / 'expect.json', expected)
+    write_json(K5 / f'{arch}.json', record)
+    write_json(CORPUS / ('expect.json' if arch == 'x86_64' else f'expect-{arch}.json'), expected)
 
 
 def main():
@@ -297,14 +307,15 @@ def main():
     mode.add_argument('--stage-hosted', type=Path,
                       help='stage the verified hosted compiler and maps in this directory')
     parser.add_argument('--cache', type=Path, default=CACHE)
+    parser.add_argument('--arch', choices=('x86_64', 'aarch64'), default='x86_64')
     args = parser.parse_args()
     try:
         if args.fork:
-            record_twin(args.fork.resolve(), args.cache.resolve())
+            record_twin(args.fork.resolve(), args.cache.resolve(), args.arch)
         elif args.record_hosted_link:
-            record_hosted_link(args.cache)
+            record_hosted_link(args.cache, args.arch)
         else:
-            stage_hosted(args.cache, args.stage_hosted)
+            stage_hosted(args.cache, args.stage_hosted, args.arch)
     except (KeyError, OSError, ValueError, subprocess.SubprocessError) as error:
         parser.exit(1, f'{error}\n')
 

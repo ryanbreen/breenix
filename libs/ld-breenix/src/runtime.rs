@@ -1,4 +1,4 @@
-//! Map the AMD64 initial load set using the Breenix syscall ABI and ELF gABI §§7–8.
+//! Map the initial load set using the Breenix syscall ABI and ELF gABI §§7–8.
 
 mod dl;
 
@@ -151,9 +151,24 @@ impl OpenFile {
         }
         let mut c_path = [0u8; PATH_MAX];
         c_path[..path.len()].copy_from_slice(path);
+        #[cfg(target_arch = "x86_64")]
         // SAFETY: c_path is a readable NUL-terminated string during open.
         let result =
             unsafe { raw::syscall3(nr::OPEN, c_path.as_ptr() as u64, fs::O_NONBLOCK as u64, 0) };
+        #[cfg(target_arch = "aarch64")]
+        let result = {
+            const AT_FDCWD: u64 = (-100i64) as u64;
+            // SAFETY: c_path is a readable NUL-terminated string during openat.
+            unsafe {
+                raw::syscall4(
+                    nr::OPENAT,
+                    AT_FDCWD,
+                    c_path.as_ptr() as u64,
+                    fs::O_NONBLOCK as u64,
+                    0,
+                )
+            }
+        };
         SysError::from_syscall(result as i64).map(|fd| Self(Fd::from_raw(fd)))
     }
 
@@ -473,7 +488,7 @@ fn run_initializers(range: core::ops::Range<u64>) {
     for slot in range.step_by(8) {
         // SAFETY: this slot lies in an INIT_ARRAY validated and relocated by the loader.
         let address = unsafe { (slot as *const usize).read_unaligned() };
-        // SAFETY: the gABI INIT_ARRAY holds AMD64 ABI function pointers.
+        // SAFETY: the gABI INIT_ARRAY holds function pointers in the process ABI.
         let initialize: unsafe extern "C" fn() = unsafe { core::mem::transmute(address) };
         // SAFETY: the object's relocations have completed before initialization.
         unsafe { initialize() };
@@ -493,10 +508,12 @@ fn initialize_libc(
     }
     let libc = objects
         .iter()
-        .find(|object| object.name().ends_with(b"/libc.so"));
+        .find(|object| object.matches_name(b"libc.so"));
     let lookup =
         |name| libc.and_then(|object| object.lookup(name).unwrap_or_else(|error| fail(error)));
     if count != 0 {
+        // On AArch64 this installs the same initial layout used to relocate
+        // TLSDESC, before libc allocates the main thread or runs constructors.
         let address = lookup(b"__breenix_libc_register_tls")
             .unwrap_or_else(|| fail("no Breenix libc TLS registration export"));
         // SAFETY: the shared libc export uses the TlsModule startup ABI.
@@ -587,11 +604,12 @@ fn describe_interpreter(auxv: &Auxv, name: &core::ffi::CStr) -> ObjectInfo {
 /// Enter the interpreter after its own bootstrap relocations.
 ///
 /// # Safety
-/// The argument is the kernel's original AMD64 process stack, including auxv.
+/// The argument is the kernel's original process stack, including auxv.
 pub unsafe extern "C" fn start(stack: *const usize) -> ! {
     // SAFETY: the naked entry forwards the unchanged initial stack.
     let auxv = unsafe { Auxv::read(stack) }.unwrap_or_else(|error| fail(error));
     relocate_and_initialize(stack, &auxv);
+    #[cfg(target_arch = "x86_64")]
     // SAFETY: AT_ENTRY names the loaded executable's entry. Restore its initial
     // stack and clear the psABI's optional termination callback register.
     unsafe {
@@ -600,6 +618,17 @@ pub unsafe extern "C" fn start(stack: *const usize) -> ! {
             "xor edx, edx",
             "jmp rsi",
             in("rdi") stack, in("rsi") auxv.entry, options(noreturn),
+        )
+    }
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: AT_ENTRY names the loaded AArch64 entry. Restore the aligned
+    // initial stack consumed by Breenix's AArch64 CRT.
+    unsafe {
+        core::arch::asm!(
+            "mov sp, x0",
+            "mov x0, xzr",
+            "br x1",
+            in("x0") stack, in("x1") auxv.entry, options(noreturn),
         )
     }
 }
