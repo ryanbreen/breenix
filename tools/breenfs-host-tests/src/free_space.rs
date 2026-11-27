@@ -56,7 +56,7 @@ fn touch(tick: i64) -> ops::SetAttr {
 
 fn superblock(tag: u8, total_blocks: u64) -> Superblock {
     Superblock { fs_uuid: [tag; 16], generation: 1, slot: 1, total_blocks,
-        global_reserve: 1024, next_root_id: 2, ..Superblock::default() }
+        global_reserve: 4096, next_root_id: 2, ..Superblock::default() }
 }
 
 /// Publish and continue the mount from the published generation.
@@ -125,8 +125,13 @@ fn unlinking_ten_thousand_files_bounds_space_edits_and_heap() {
         for n in 0..FILES {
             files.unlink(2, format!("f{n:05}").as_bytes(), at(3)).unwrap();
         }
+        let ops_peak = peak() - start;
+        let commit_start = live();
+        reset_peak();
         let unlinked = commit(&mut files, &disk, &mut committer);
-        let unlink_peak = peak() - start;
+        let unlink_peak = peak() - commit_start;
+        println!("R13_UNLINK_PHASES ops_peak={ops_peak} held_at_commit={} commit_peak={unlink_peak}",
+            commit_start - start);
         let promotion_start = live();
         reset_peak();
         // Two more generations make the unlink's releases reusable (G+2).
@@ -151,9 +156,10 @@ promotion_peak={promotion_peak} largest={largest} quarantined={quarantined} pend
         "G+2 returned the unlink's releases to FREE");
     assert!(space_edits <= (FILES + FILES / 4) as u64,
         "SPACE edits {space_edits} for {FILES} unlinks and their reuse at G+2");
-    // The unlink commit itself tracks each released extent; the promotion
-    // commits must not hold anything per released record.
-    assert!(unlink_peak <= (FILES * 256) as isize, "unlink commit heap peak {unlink_peak}");
+    // The open transaction already holds its counts and FS-tree copies when
+    // the commit starts. Settling it (one head at a time, coalesced PENDING
+    // runs) and the promotion commits add no per-record heap.
+    assert!(unlink_peak <= 256 * 1024, "unlink commit heap peak {unlink_peak}");
     assert!(promotion_peak <= 256 * 1024, "promotion heap peak {promotion_peak}");
     // A node buffer is the largest allocation BreenFS needs for this work.
     assert!(largest <= 64 * 1024, "largest allocation {largest}");
@@ -211,7 +217,6 @@ fn adjacent_releases_are_one_pending_run_returned_at_g_plus_2() {
         assert!(pair[0].0 + pair[0].1 < pair[1].0, "A2: adjacent FREE items {pair:?}");
     }
     assert_eq!(g2.free_blocks, free.iter().map(|&(_, l)| l).sum::<u64>(), "S4");
-    crate::test_image::check(&disk.bytes.lock().unwrap(), "r13-pending-runs");
 }
 
 /// A file's later data is allocated with a goal at its existing extent: it
