@@ -175,32 +175,37 @@ class CargoPort(unittest.TestCase):
 
     def test_openssl_breenix_archives(self):
         run = Path((CACHE / 'g2.path').read_text().strip())
-        messages = Path(os.environ.get(
-            'BREENIX_X1_CARGO_MESSAGES', run / 'bootstrap-x86-inventory.cargo.jsonl'))
-        outputs = []
-        for line in messages.read_text().splitlines():
-            if not line.startswith('{'):
-                continue
-            message = json.loads(line)
-            if message['reason'] == 'build-script-executed' and re.search(
-                    r'[#/]openssl-sys(?:@|#)', message['package_id']):
-                output = Path(message['out_dir'])
-                if 'x86_64-breenix-hosted' in output.parts:
-                    outputs.append(output)
-        self.assertEqual(len(outputs), 1, 'missing successful hosted openssl-sys build')
-
         readelf = os.environ.get('LLVM_READELF', 'llvm-readelf')
-        for name in ('libssl.a', 'libcrypto.a'):
-            with self.subTest(archive=name):
-                archive = outputs[0] / 'openssl-build/install/lib' / name
-                headers = subprocess.check_output([readelf, '-h', str(archive)], text=True)
-                machines = re.findall(r'^\s*Machine:\s*(.+)$', headers, re.MULTILINE)
-                classes = re.findall(r'^\s*Class:\s*(.+)$', headers, re.MULTILINE)
-                types = re.findall(r'^\s*Type:\s*(\S+)', headers, re.MULTILINE)
-                self.assertTrue(machines, 'archive must contain ELF object members')
-                self.assertEqual(set(machines), {'Advanced Micro Devices X86-64'})
-                self.assertEqual(classes, ['ELF64'] * len(machines))
-                self.assertEqual(types, ['REL'] * len(machines))
+        for arch, machine in (('x86_64', 'Advanced Micro Devices X86-64'),
+                              ('aarch64', 'AArch64')):
+            with self.subTest(arch=arch):
+                messages = Path(os.environ.get(
+                    f'BREENIX_X1_CARGO_MESSAGES_{arch.upper()}',
+                    os.environ.get('BREENIX_X1_CARGO_MESSAGES',
+                                   run / 'bootstrap-x86-inventory.cargo.jsonl')))
+                outputs = []
+                for line in messages.read_text().splitlines():
+                    if not line.startswith('{'):
+                        continue
+                    message = json.loads(line)
+                    if message['reason'] == 'build-script-executed' and re.search(
+                            r'[#/]openssl-sys(?:@|#)', message['package_id']):
+                        output = Path(message['out_dir'])
+                        if f'{arch}-breenix-hosted' in output.parts:
+                            outputs.append(output)
+                self.assertEqual(len(outputs), 1, 'missing successful hosted openssl-sys build')
+
+                for name in ('libssl.a', 'libcrypto.a'):
+                    with self.subTest(archive=name):
+                        archive = outputs[0] / 'openssl-build/install/lib' / name
+                        headers = subprocess.check_output([readelf, '-h', str(archive)], text=True)
+                        machines = re.findall(r'^\s*Machine:\s*(.+)$', headers, re.MULTILINE)
+                        classes = re.findall(r'^\s*Class:\s*(.+)$', headers, re.MULTILINE)
+                        types = re.findall(r'^\s*Type:\s*(\S+)', headers, re.MULTILINE)
+                        self.assertTrue(machines, 'archive must contain ELF object members')
+                        self.assertEqual(set(machines), {machine})
+                        self.assertEqual(classes, ['ELF64'] * len(machines))
+                        self.assertEqual(types, ['REL'] * len(machines))
 
     def test_x1_c_dependency_inventory(self):
         directory = ROOT / 'toolchain/rust-host'
