@@ -329,13 +329,12 @@ fn finish(device: &RecordingDevice, mut sb: Superblock, shared: (u64, u64)) -> S
         verify(device, &sb, shared);
         assert_eq!(txn.dead_count(), dead(device, &sb).len() as u64);
         commits += 1;
-        let state = txn.dead_nodes().clone();
-        txn = Transaction::new_owned_with_dead(
+        let state = txn.space_state().unwrap();
+        txn = Transaction::new_owned_continuing(
             DeviceStore(device),
             sb.space_root,
             sb.generation + 1,
             state,
-            txn.space_node_count(),
         )
         .unwrap();
     }
@@ -346,13 +345,12 @@ fn finish(device: &RecordingDevice, mut sb: Superblock, shared: (u64, u64)) -> S
         txn.promote_pending().unwrap();
         sb = mount.commit(device, &mut txn, &BTreeMap::new()).unwrap();
         verify(device, &sb, shared);
-        let state = txn.dead_nodes().clone();
-        txn = Transaction::new_owned_with_dead(
+        let state = txn.space_state().unwrap();
+        txn = Transaction::new_owned_continuing(
             DeviceStore(device),
             sb.space_root,
             sb.generation + 1,
             state,
-            txn.space_node_count(),
         )
         .unwrap();
     }

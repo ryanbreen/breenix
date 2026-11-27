@@ -234,6 +234,18 @@ PENDING with `released_generation = G`, and transaction *T* may allocate PENDING
 `released_generation ≤ T−2` (converting them to FREE). So the last two durable commits stay intact while a commit is
 written.
 
+**Free space in memory** (audit R13; no format change). A mount keeps an index of the FREE items by start and by
+length, read once when it opens and carried from each settled transaction to the next, so no allocation walks FREE on
+disk. An allocation takes a range from the index and settlement removes exactly that range from its FREE item. File
+data aims at the block that continues the file's preceding extent, else the end of the mount's last data
+allocation: the range at the goal, then the nearest fitting range after it, then before it, each within 16 ranges;
+otherwise, and for nodes, the smallest range that fits. FREE is used before PENDING; only when nothing fits does the
+transaction's eligible PENDING become allocatable. Each count change to one REF in a transaction folds into one
+delayed reference head that settles as a single REF edit, and matching increments and releases edit nothing. A
+generation's releases are written as coalesced PENDING runs, one item per run of adjacent blocks. The mount remembers
+the runs it wrote per generation and promotes them at *G+2* by key; PENDING found on disk at mount is promoted by a
+scan of at most 64 records per batch, so the memory held for PENDING is those runs and one batch. <!-- claim-lint:ok: normative R13 design; tools/breenfs-host-tests/src/free_space.rs checks the edit and heap bounds, and txn.rs check_space_state compares the index with FREE after each host settlement. -->
+
 **Frozen-generation commit** (E24 coordinator ruling lines 597 and 601; no format change). One generation is in
 flight at a time, and the next publication waits for its install. The mount exclusion is held in exactly two short
 sections per publication, each a constant number of pointer, map and queue moves:

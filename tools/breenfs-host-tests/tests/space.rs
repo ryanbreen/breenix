@@ -1,9 +1,16 @@
 use breenfs_host_tests::{
     btree::{self, NodeStore},
-    format::{self, BlockPtr, Key, Ref},
-    space::{self, Error, Kind},
+    format::{self, BlockPtr, InternalEntry, Key, NodeHeader, Pending, Ref},
+    space::{self, Error},
+    txn::{self, Transaction},
 };
-use std::{cell::Cell, collections::BTreeMap};
+use std::{
+    cell::Cell,
+    collections::{BTreeMap, BTreeSet},
+};
+
+const FREE: u64 = 0xffff_ffff_ffff_ff20;
+const PENDING: u64 = 0xffff_ffff_ffff_ff30;
 
 #[derive(Default)]
 struct Memory {
@@ -21,26 +28,63 @@ impl NodeStore for Memory {
         Ok(())
     }
     fn alloc(&mut self) -> Result<u64, btree::Error> {
-        self.next = self.next.max(20) + 4;
+        self.next = self.next.max(1_000_000) + 4;
         Ok(self.next)
     }
 }
 fn tree() -> (Memory, BlockPtr) {
     let mut store = Memory::default();
-    let root = btree::create(&mut store, 2, [7; 16], 20).unwrap();
+    let root = btree::create(&mut store, 2, [7; 16], 1).unwrap();
     (store, root)
 }
-fn item(store: &Memory, root: BlockPtr, object: u64, ty: u8, offset: u64) -> Option<Vec<u8>> {
-    btree::search(
-        store,
-        root,
-        Key {
-            object,
-            item_type: ty,
-            offset,
-        },
-    )
-    .unwrap()
+fn item(store: &impl NodeStore, root: BlockPtr, object: u64, ty: u8, offset: u64) -> Option<Vec<u8>> {
+    btree::search(store, root, Key { object, item_type: ty, offset }).unwrap()
+}
+fn put(store: &mut Memory, root: &mut BlockPtr, object: u64, ty: u8, offset: u64, value: &[u8]) {
+    btree::insert(store, root, Key { object, item_type: ty, offset }, value).unwrap();
+}
+fn node_ref(count: u32) -> Vec<u8> {
+    Ref { refcount: count, kind: 1, alloc_generation: 1, crcs: vec![] }.encode()
+}
+fn node_addrs(store: &Memory, ptr: BlockPtr, out: &mut BTreeSet<u64>) {
+    out.insert(ptr.addr);
+    let bytes = store.get(ptr.addr).unwrap();
+    let h = NodeHeader::decode(&bytes).unwrap();
+    for i in 0..usize::from(h.nitems) {
+        if h.level == 0 {
+            break;
+        }
+        let e = InternalEntry::decode(&bytes[48 + i * 37..48 + (i + 1) * 37]).unwrap();
+        let child = BlockPtr { addr: e.child_addr, generation: e.child_generation, csum: e.child_csum, level: h.level - 1 };
+        node_addrs(store, child, out);
+    }
+}
+/// A SPACE tree for transactions: `items` plus room for node copies at 5000,
+/// and a REF for each SPACE node (invariant A3) so a transaction can copy it.
+fn txn_tree(items: &[(u64, u8, u64, Vec<u8>)]) -> (Memory, BlockPtr) {
+    let (mut store, mut root) = tree();
+    put(&mut store, &mut root, FREE, format::FREE, 5_000, &format::Free { length: 100 }.encode());
+    for (object, ty, offset, value) in items {
+        put(&mut store, &mut root, *object, *ty, *offset, value);
+    }
+    seal(&mut store, &mut root);
+    (store, root)
+}
+fn seal(store: &mut Memory, root: &mut BlockPtr) {
+    loop {
+        let mut nodes = BTreeSet::new();
+        node_addrs(store, *root, &mut nodes);
+        let missing: Vec<_> = nodes.into_iter()
+            .filter(|&a| space::reference(store, *root, a, 4).unwrap().is_none())
+            .collect();
+        if missing.is_empty() {
+            return;
+        }
+        for addr in missing {
+            let r = Ref { refcount: 1, kind: 2, alloc_generation: 1, crcs: vec![] }.encode();
+            put(store, root, addr, format::REF, 4, &r);
+        }
+    }
 }
 
 #[test]
@@ -48,28 +92,54 @@ fn promote_between_free_neighbors_without_scanning_the_free_tree() {
     let (mut store, mut root) = tree();
     // Multiple FREE leaves, with a gap that closes between two existing runs.
     // Seed the ranges directly so setup is independent of the coalescer.
-    const FREE: u64 = 0xffff_ffff_ffff_ff20;
     for i in 0..1500 {
-        btree::insert(&mut store, &mut root, Key {
-            object: FREE, item_type: format::FREE, offset: 20_000 + 12 * i,
-        }, &format::Free { length: 4 }.encode()).unwrap();
+        put(&mut store, &mut root, FREE, format::FREE, 20_000 + 12 * i, &format::Free { length: 4 }.encode());
     }
     assert_eq!(root.level, 1);
     let start = 20_000 + 12 * 750;
     store.reads.set(0);
     space::add_free(&mut store, &mut root, start + 4, 8).unwrap();
     let coalesce = store.reads.replace(0);
-    assert_eq!(
-        space::allocate(&mut store, &mut root, 4, Kind::SpaceNode, &[], 5),
-        Ok(20_000)
-    );
-    let allocate = store.reads.replace(0);
+    space::claim(&mut store, &mut root, 20_000, 4).unwrap();
+    let claim = store.reads.replace(0);
+    assert!(item(&store, root, FREE, format::FREE, 20_000).is_none());
     assert_eq!(item(&store, root, FREE, format::FREE, start).unwrap(), format::Free { length: 16 }.encode());
     assert!(item(&store, root, FREE, format::FREE, start + 12).is_none());
-    // Three B-tree edits and two range endpoints, or three edits and the
-    // first eligible FREE record. A height-one edit loads at most ten nodes.
-    println!("FREE_READS coalesce={coalesce} allocate={allocate}");
-    assert!(coalesce <= 38 && allocate <= 34, "FREE reads: {coalesce}/{allocate}");
+    // Three B-tree edits and two range endpoints, or one edit and the FREE
+    // record containing the claim. A height-one edit loads at most ten nodes.
+    println!("FREE_READS coalesce={coalesce} claim={claim}");
+    assert!(coalesce <= 38 && claim <= 34, "FREE reads: {coalesce}/{claim}");
+}
+
+#[test]
+fn free_index_mirrors_items_and_prefers_goal_then_best_fit() {
+    let (mut store, mut root) = tree();
+    for (start, length) in [(100, 4), (200, 64), (300, 8), (400, 1000)] {
+        space::add_free(&mut store, &mut root, start, length).unwrap();
+    }
+    let (mut free, _) = space::open(&store, root).unwrap();
+    assert_eq!(free.ranges().collect::<Vec<_>>(), vec![(100, 4), (200, 64), (300, 8), (400, 1000)]);
+    // Best fit by length, lowest address first.
+    assert_eq!(free.choose(4, None, false), Some((100, 4)));
+    assert_eq!(free.choose(5, None, false), Some((300, 5)));
+    // A goal inside a range with room starts there; otherwise the next range
+    // after it that fits, else the nearest before it.
+    assert_eq!(free.choose(8, Some(210), false), Some((210, 8)));
+    assert_eq!(free.choose(8, Some(260), false), Some((300, 8)));
+    assert_eq!(free.choose(16, Some(1500), false), Some((1384, 16)));
+    // A short data run falls back to the largest range.
+    assert_eq!(free.choose(2000, None, true), Some((400, 1000)));
+    assert_eq!(free.choose(2000, None, false), None);
+    // Removal splits as claim does; insertion coalesces as add_free does.
+    free.remove(210, 8).unwrap();
+    space::claim(&mut store, &mut root, 210, 8).unwrap();
+    free.insert(104, 96).unwrap();
+    space::add_free(&mut store, &mut root, 104, 96).unwrap();
+    assert_eq!(free.remove(205, 10), Err(Error::Invalid));
+    assert_eq!(free.insert(150, 4), Err(Error::Invalid));
+    let (stored, _) = space::open(&store, root).unwrap();
+    assert_eq!(free.ranges().collect::<Vec<_>>(), stored.ranges().collect::<Vec<_>>());
+    assert_eq!(free.ranges().collect::<Vec<_>>(), vec![(100, 110), (218, 46), (300, 8), (400, 1000)]);
 }
 
 #[test]
@@ -77,153 +147,92 @@ fn oversized_free_record_is_rejected_before_allocation() {
     let (mut store, mut root) = tree();
     let mut payload = format::Free { length: 4 }.encode().to_vec();
     payload.push(0);
-    btree::insert(&mut store, &mut root, Key {
-        object: 0xffff_ffff_ffff_ff20, item_type: format::FREE, offset: 100,
-    }, &payload).unwrap();
+    put(&mut store, &mut root, FREE, format::FREE, 100, &payload);
     let before = store.nodes.clone();
-    assert_eq!(space::allocate(&mut store, &mut root, 4, Kind::FsNode, &[], 5), Err(Error::Invalid));
+    assert!(matches!(space::open(&store, root), Err(Error::Invalid)));
+    assert_eq!(space::claim(&mut store, &mut root, 100, 4), Err(Error::Invalid));
     assert_eq!(store.nodes, before);
 }
 
 #[test]
 fn pending_waits_two_generations() {
     let (mut store, mut root) = tree();
-    space::add_free(&mut store, &mut root, 100, 3).unwrap();
-    let crcs = [0x12345678, 0x87654321, 0xe3069283];
-    assert_eq!(
-        space::allocate(&mut store, &mut root, 3, Kind::Data, &crcs, 5),
-        Ok(100)
-    );
-    let reference = space::reference(&store, root, 100, 3).unwrap().unwrap();
-    assert_eq!(reference.crcs, crcs);
-    assert_eq!(reference.alloc_generation, 5);
-    space::release(&mut store, &mut root, 100, 3, 7, false).unwrap();
-    assert!(space::reference(&store, root, 100, 3).unwrap().is_none());
-    let pending = item(&store, root, 0xffff_ffff_ffff_ff30, format::PENDING, 100).unwrap();
-    assert_eq!(
-        format::Pending::decode(&pending).unwrap(),
-        format::Pending {
-            length: 3,
-            released_generation: 7
-        }
-    );
-    let before = store.nodes.clone();
+    let pending = Pending { length: 3, released_generation: 7 }.encode();
+    put(&mut store, &mut root, PENDING, format::PENDING, 100, &pending);
     for generation in [1, 7, 8] {
-        assert_eq!(
-            space::allocate(&mut store, &mut root, 1, Kind::Data, &[42], generation),
-            Err(Error::ENOSPC)
-        );
-        assert_eq!(store.nodes, before);
+        let (mut free, mut quarantine) = space::open(&store, root).unwrap();
+        let promotion = quarantine.promote(&store, root, generation, &mut free).unwrap();
+        assert!(promotion.is_empty(), "generation {generation}");
+        assert_eq!(free.ranges().count(), 0);
+        assert_eq!(quarantine.summary().census(), Some((3, 7)));
     }
-    assert_eq!(
-        space::allocate(&mut store, &mut root, 1, Kind::Data, &[42], 9),
-        Ok(100)
-    );
-    assert!(item(&store, root, 0xffff_ffff_ffff_ff30, format::PENDING, 100).is_none());
-    let free = item(&store, root, 0xffff_ffff_ffff_ff20, format::FREE, 101).unwrap();
-    assert_eq!(format::Free::decode(&free).unwrap().length, 2);
+    let (mut free, mut quarantine) = space::open(&store, root).unwrap();
+    let promotion = quarantine.promote(&store, root, 9, &mut free).unwrap();
+    assert_eq!(free.ranges().collect::<Vec<_>>(), vec![(100, 3)]);
+    promotion.apply(&mut store, &mut root).unwrap();
+    assert!(item(&store, root, PENDING, format::PENDING, 100).is_none());
+    assert_eq!(item(&store, root, FREE, format::FREE, 100).unwrap(), format::Free { length: 3 }.encode());
 }
 
+/// Design 2.5: a transaction allocates FREE before it converts eligible
+/// PENDING, rejects shapes no REF may have, and the count changes it makes to
+/// one allocation settle as one REF edit.
 #[test]
-fn free_before_pending() {
-    let (mut store, mut root) = tree();
-    space::add_free(&mut store, &mut root, 100, 4).unwrap();
-    space::allocate(&mut store, &mut root, 4, Kind::FsNode, &[], 2).unwrap();
-    space::release(&mut store, &mut root, 100, 4, 3, false).unwrap();
-    space::add_free(&mut store, &mut root, 200, 2).unwrap();
-    space::add_free(&mut store, &mut root, 202, 2).unwrap();
-    assert!(item(&store, root, 0xffff_ffff_ffff_ff20, format::FREE, 202).is_none());
-    assert_eq!(
-        space::allocate(&mut store, &mut root, 4, Kind::SpaceNode, &[], 5),
-        Ok(200)
-    );
-    assert!(item(&store, root, 0xffff_ffff_ffff_ff30, format::PENDING, 100).is_some());
-    let before = store.nodes.clone();
-    assert_eq!(
-        space::allocate(&mut store, &mut root, 3, Kind::FsNode, &[], 5),
-        Err(Error::Invalid)
-    );
-    assert_eq!(
-        space::allocate(&mut store, &mut root, 257, Kind::Data, &[0; 257], 5),
-        Err(Error::Invalid)
-    );
-    assert_eq!(
-        space::allocate(&mut store, &mut root, 2, Kind::Data, &[0], 5),
-        Err(Error::Invalid)
-    );
-    assert_eq!(store.nodes, before);
-    assert_eq!(
-        space::allocate(&mut store, &mut root, 4, Kind::FsNode, &[], 5),
-        Ok(100)
-    );
+fn free_before_pending_and_one_ref_edit_per_allocation() {
+    let (store, root) = txn_tree(&[
+        (PENDING, format::PENDING, 100, Pending { length: 256, released_generation: 3 }.encode().to_vec()),
+        (FREE, format::FREE, 200, format::Free { length: 4 }.encode().to_vec()),
+    ]);
+    let mut t = Transaction::new(&store, root, 5).unwrap();
+    assert_eq!(t.allocate_data(&[0; 257]), Err(txn::Error::Space(Error::Invalid)));
+    let mut t = Transaction::new(&store, root, 5).unwrap();
+    // FREE first, although G-2's PENDING at 100 is eligible.
+    assert_eq!(t.allocate_data(&[1, 2, 3, 4]), Ok(200));
+    // An increment and a release of the new extent cancel.
+    t.increment(200, 4).unwrap();
+    t.release(200, 4, false).unwrap();
+    // No FREE range holds 256 blocks: the eligible PENDING becomes FREE.
+    assert_eq!(t.allocate_data(&[6; 256]), Ok(100));
+    let space = t.settle().unwrap();
+    let view = t.view();
+    assert!(item(&view, space, PENDING, format::PENDING, 100).is_none());
+    assert!(item(&view, space, FREE, format::FREE, 100).is_none());
+    assert!(item(&view, space, FREE, format::FREE, 200).is_none());
+    let r = space::reference(&view, space, 200, 4).unwrap().unwrap();
+    assert_eq!((r.refcount, r.kind, r.alloc_generation, r.crcs), (1, 3, 5, vec![1, 2, 3, 4]));
+    assert_eq!(space::reference(&view, space, 100, 256).unwrap().unwrap().refcount, 1);
 }
 
 #[test]
 fn refcount_overflow_is_emlink() {
-    let (mut store, mut root) = tree();
-    let key = Key {
-        object: 100,
-        item_type: format::REF,
-        offset: 4,
-    };
-    btree::insert(
-        &mut store,
-        &mut root,
-        key,
-        &Ref {
-            refcount: u32::MAX - 1,
-            kind: 1,
-            alloc_generation: 1,
-            crcs: vec![],
-        }
-        .encode(),
-    )
-    .unwrap();
-    space::increment(&mut store, &mut root, 100, 4).unwrap();
-    let before = store.nodes.clone();
-    assert_eq!(
-        space::increment(&mut store, &mut root, 100, 4),
-        Err(Error::EMLINK)
-    );
-    assert_eq!(store.nodes, before);
-    assert_eq!(
-        space::reference(&store, root, 100, 4)
-            .unwrap()
-            .unwrap()
-            .refcount,
-        u32::MAX
-    );
+    let r = Ref { refcount: u32::MAX - 1, kind: 1, alloc_generation: 1, crcs: vec![] };
+    let (store, root) = txn_tree(&[(100, format::REF, 4, r.encode())]);
+    let mut t = Transaction::new(&store, root, 2).unwrap();
+    t.increment(100, 4).unwrap();
+    assert_eq!(t.increment(100, 4), Err(txn::Error::Space(Error::EMLINK)));
+    let mut t = Transaction::new(&store, root, 2).unwrap();
+    t.increment(100, 4).unwrap();
+    let space = t.settle().unwrap();
+    assert_eq!(space::reference(&t.view(), space, 100, 4).unwrap().unwrap().refcount, u32::MAX);
 }
 
 #[test]
 fn zero_ref_node_with_children_is_dead() {
-    let (mut store, mut root) = tree();
-    space::add_free(&mut store, &mut root, 100, 8).unwrap();
-    space::allocate(&mut store, &mut root, 4, Kind::FsNode, &[], 2).unwrap();
-    space::allocate(&mut store, &mut root, 4, Kind::FsNode, &[], 2).unwrap();
-    space::increment(&mut store, &mut root, 100, 4).unwrap();
-    space::release(&mut store, &mut root, 100, 4, 3, true).unwrap();
-    assert_eq!(
-        space::reference(&store, root, 100, 4)
-            .unwrap()
-            .unwrap()
-            .refcount,
-        1
-    );
-    space::release(&mut store, &mut root, 100, 4, 3, true).unwrap();
-    assert!(space::reference(&store, root, 100, 4).unwrap().is_none());
-    assert_eq!(item(&store, root, 100, format::DEAD, 4), Some(vec![]));
-    assert!(item(&store, root, 0xffff_ffff_ffff_ff30, format::PENDING, 100).is_none());
-    assert_eq!(
-        space::reference(&store, root, 104, 4)
-            .unwrap()
-            .unwrap()
-            .refcount,
-        1
-    );
-    // Reaping owns the child decrements; making DEAD must leave the child alone.
-    assert_eq!(
-        space::allocate(&mut store, &mut root, 4, Kind::FsNode, &[], 10),
-        Err(Error::ENOSPC)
-    );
+    let (store, root) = txn_tree(&[(100, format::REF, 4, node_ref(1)), (104, format::REF, 4, node_ref(1))]);
+    let mut t = Transaction::new(&store, root, 3).unwrap();
+    t.increment(100, 4).unwrap();
+    t.release(100, 4, true).unwrap();
+    t.release(100, 4, true).unwrap();
+    let space = t.settle().unwrap();
+    let view = t.view();
+    assert!(space::reference(&view, space, 100, 4).unwrap().is_none());
+    assert_eq!(item(&view, space, 100, format::DEAD, 4), Some(vec![]));
+    assert!(item(&view, space, PENDING, format::PENDING, 100).is_none());
+    assert_eq!(space::reference(&view, space, 104, 4).unwrap().unwrap().refcount, 1);
+    // Reaping owns the child decrements; making DEAD must leave the child
+    // alone, and neither node's blocks become allocatable.
+    assert_eq!(t.dead_count(), 1);
+    let state = t.space_state().unwrap();
+    assert!(state.free().ranges().all(|(s, l)| s + l <= 100 || s >= 108));
+    assert_eq!(state.quarantine().runs().count(), 0);
 }
