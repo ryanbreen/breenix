@@ -858,6 +858,14 @@ name = "chvt"
 path = "src/chvt.rs"
 
 [[bin]]
+name = "clear"
+path = "src/clear.rs"
+
+[[bin]]
+name = "reset"
+path = "src/reset.rs"
+
+[[bin]]
 name = "login"
 path = "src/login.rs"
 
