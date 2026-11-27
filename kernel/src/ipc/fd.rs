@@ -63,15 +63,14 @@ pub mod fcntl_cmd {
     pub const F_DUPFD_CLOEXEC: i32 = 1030;
 }
 
-/// Regular file descriptor
-///
-/// The access mode and status flags (O_APPEND) of the open file description
-/// live on the `FileDescriptor`'s shared open file description.
+/// Regular-file state shared by dup, fork and descriptor passing.
+/// The open node and mount metadata are immutable. The cursor serializes
+/// implicit transfers and seeks independently of descriptor-table access.
 pub struct RegularFile {
     pub open: crate::fs::vfs::file::OpenFile,
     pub inode_num: u64,
     pub mount_id: usize,
-    pub position: u64,
+    pub(crate) position: crate::ipc::sleep_mutex::SleepMutex<u64>,
 }
 
 /// Directory file descriptor (for getdents)
@@ -107,8 +106,7 @@ pub enum FdKind {
     /// protocol releases the socket when the last reference goes.
     Socket(Arc<crate::socket::object::Socket>),
     /// Regular file descriptor
-    #[allow(dead_code)] // Will be constructed when open() is fully implemented
-    RegularFile(Arc<Mutex<RegularFile>>),
+    RegularFile(Arc<RegularFile>),
     /// Directory file descriptor (for getdents)
     Directory(Arc<Mutex<DirectoryFile>>),
     /// Device file (/dev/null, /dev/zero, /dev/console, /dev/tty)
@@ -196,6 +194,10 @@ impl OpenFileDescription {
             status: AtomicU32::new(status),
             flock: spin::Once::new(),
         }
+    }
+
+    pub(crate) fn status_flags(&self) -> u32 {
+        self.status.load(Ordering::Acquire)
     }
 }
 
@@ -358,7 +360,7 @@ impl FileDescriptor {
     /// The open file description's flags word (F_GETFL): access mode and
     /// status flags.
     pub fn status_flags(&self) -> u32 {
-        self.description.status.load(Ordering::Acquire)
+        self.description.status_flags()
     }
 
     /// Whether the open file description was opened for reading.

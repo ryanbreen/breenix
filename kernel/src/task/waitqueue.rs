@@ -4,7 +4,7 @@
 //! current thread, mark it blocked in the scheduler, re-check their condition,
 //! then schedule if the condition is still false. Task-context wakers remove
 //! queued TIDs and wake them inline; interrupt-context wakers use F16's
-//! lock-free `isr_unblock_for_io` path.
+//! lock-free task inbox via `isr_unblock_for_io`.
 
 use alloc::collections::VecDeque;
 
@@ -174,32 +174,21 @@ impl WaitQueueHead {
     /// Wake all waiters.
     pub fn wake_up(&self) {
         self.with_waiters(|waiters| {
-            while let Some(waiter) = waiters.pop_front() {
+            while let Some(&waiter) = waiters.front() {
                 wake_waiter(waiter);
+                waiters.pop_front();
             }
         });
     }
 
-    /// Drain the waitqueue for a context that must not acquire the
-    /// scheduler lock inline (P-2/#919). Unlike `wake_up()`, this skips the
-    /// `in_interrupt_context()` branch and the `wake_waitqueue_thread()` arm:
-    /// each popped waiter goes straight to
-    /// `scheduler::isr_unblock_for_io()`, lock-free in the common case (a
-    /// per-CPU atomic-CAS buffer drained by the next `schedule()`) --
-    /// mutation-tested by `deferred_delivery_never_touches_the_scheduler_lock`
-    /// in `tests/pipe_fifo_blocking_structure.rs`. See the "Lock Ordering
-    /// Discipline" note atop `scheduler.rs`: SCHEDULER (Level 1) is not to be
-    /// acquired while the caller holds PROCESS_MANAGER (Level 2), which is
-    /// the situation `Process::close_all_fds()`'s callers are in
-    /// (`Process::terminate()`'s 4 identified callers each hold PM there --
-    /// see `Process::close_all_fds()`'s own comment). The buffer's own
-    /// full-buffer fallback can still take the scheduler lock; this is the
-    /// same degraded path `isr_unblock_for_io()`'s other callers already
-    /// accept.
+    /// Wake waiters without taking the scheduler lock inline, including
+    /// callers that hold PROCESS_MANAGER. Release each waiter entry only after
+    /// its task-owned node has taken responsibility for the wake.
     pub fn wake_up_deferred(&self) {
         self.with_waiters(|waiters| {
-            while let Some(waiter) = waiters.pop_front() {
+            while let Some(waiter) = waiters.front() {
                 crate::task::scheduler::isr_unblock_for_io(waiter.tid());
+                waiters.pop_front();
             }
         });
     }
@@ -207,8 +196,9 @@ impl WaitQueueHead {
     /// Wake the first waiter, if any.
     pub fn wake_up_one(&self) {
         self.with_waiters(|waiters| {
-            if let Some(waiter) = waiters.pop_front() {
+            if let Some(&waiter) = waiters.front() {
                 wake_waiter(waiter);
+                waiters.pop_front();
             }
         });
     }
@@ -218,10 +208,11 @@ impl WaitQueueHead {
         let mut woken = 0;
         self.with_waiters(|waiters| {
             while woken < max {
-                let Some(waiter) = waiters.pop_front() else {
+                let Some(&waiter) = waiters.front() else {
                     break;
                 };
                 wake_waiter(waiter);
+                waiters.pop_front();
                 woken += 1;
             }
         });
@@ -236,10 +227,11 @@ impl WaitQueueHead {
         };
         let mut woken = 0;
         while woken < max {
-            let Some(waiter) = waiters.pop_front() else {
+            let Some(waiter) = waiters.front() else {
                 break;
             };
             crate::task::scheduler::isr_unblock_for_io(waiter.tid());
+            waiters.pop_front();
             woken += 1;
         }
         woken
