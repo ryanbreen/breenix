@@ -50,7 +50,8 @@ GIB = 1024 * MIB
 
 # The repository's standard ARM64 Breenix QEMU shape (run.sh and the production-
 # profile boot test): virt with GICv3, scripts/qemu-arm64.py's accelerator (HVF
-# with -cpu host on Apple Silicon), four CPUs, raw virtio-blk-device disks at
+# with -cpu host on Apple Silicon by default; the series record what it resolved,
+# launch_profile), four CPUs, raw virtio-blk-device disks at
 # QEMU's default cache mode (writeback), virtio-net-device on user networking,
 # virtio-rng and the virtio input and GPU devices the kernel enumerates.
 CPUS = 4
@@ -234,17 +235,34 @@ def host_description():
     return f"{chip.strip()} ({model.strip()}), macOS {platform.mac_ver()[0]}"
 
 
-def vm_shape():
+def launch_profile(argv):
+    """The accelerator and CPU scripts/qemu-arm64.py resolves for a guest's `argv` in
+    this environment, as the launcher names them ('hvf-host', 'tcg-max')."""
+    result = subprocess.run([argv[0], argv[1], "--print-profile", *argv[2:]],
+                            capture_output=True, text=True)
+    if result.returncode != 0 or not result.stdout.strip():
+        raise RuntimeError(f"the QEMU launcher resolved no profile: {result.stderr.strip()}")
+    return result.stdout.strip()
+
+
+def profile_text(profile):
+    """'hvf-host' -> 'HVF -cpu host'."""
+    accelerator, _, cpu = profile.partition("-")
+    return f"{accelerator.upper()} -cpu {cpu}"
+
+
+def vm_shape(profile):
     """The full VM shape, for the provenance sidecar."""
-    return (f"QEMU {qemu_version()} virt,gic-version=3, HVF -cpu host, {CPUS} vCPUs, "
+    return (f"QEMU {qemu_version()} virt,gic-version=3, {profile_text(profile)}, {CPUS} vCPUs, "
             f"{MEMORY[:-1]} MiB, one {DISK_BYTES // MIB} MiB raw virtio-blk-device root disk at "
             f"cache=writeback, QEMU's default ({ROOT_CACHE['breenix']}; {ROOT_CACHE['linux']}), "
             f"virtio-net-device on user networking; host {host_description()}")
 
 
-def hardware():
+def hardware(profile):
     """The series' one-line hardware field (Vigil allows 200 characters)."""
-    return (f"QEMU {qemu_version()} virt GICv3, HVF, {CPUS} vCPUs, {MEMORY[:-1]} MiB, "
+    return (f"QEMU {qemu_version()} virt GICv3, {profile_text(profile)}, {CPUS} vCPUs, "
+            f"{MEMORY[:-1]} MiB, "
             f"{DISK_BYTES // GIB} GiB raw virtio-blk (writeback), virtio-net user; "
             f"{host_description()}")
 
@@ -293,6 +311,8 @@ class Guest:
         self.port = None
         self.process = None
         self.boots = 0
+        # The launch profile of each boot, as the launcher resolved it (launch_profile).
+        self.profiles = []
         self.key = LINUX_KEY if system == "linux" else BREENIX_KEY
         self.user = "bench" if system == "linux" else "sshtest"
         self.home = LINUX_HOME if system == "linux" else "/etc/breenix/test-ssh/home"
@@ -319,6 +339,8 @@ class Guest:
         log = (self.run_dir / f"qemu-{self.system}-{self.boots}.log").open("wb")
         argv = [str(word) for word in self.argv()]
         (self.run_dir / f"qemu-{self.system}-{self.boots}.argv").write_text(shlex.join(argv) + "\n")
+        # The launcher's choice in this same environment, just before it makes it.
+        self.profiles.append(launch_profile(argv))
         self.process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=log)
         (self.run_dir / f"qemu-{self.system}-{self.boots}.pid").write_text(f"{self.process.pid}\n")
         print(f"{self.system}: QEMU pid {self.process.pid}, SSH port {self.port}", flush=True)
@@ -570,6 +592,9 @@ class Rig:
         for system in SYSTEMS:
             self.guests[system].start()
             self.setup(system)
+        profiles = {system: self.guests[system].profiles[-1] for system in SYSTEMS}
+        if len(set(profiles.values())) != 1:
+            raise RuntimeError(f"the guests launched with different profiles: {profiles}")
         return commit
 
     def check_root(self, system):
@@ -926,8 +951,12 @@ class Rig:
         note += f" Samples alternate Linux then Breenix. {tcp_summary(system, before, after)}."
         if self.notes[system]:
             note += f" {len(self.notes[system])} VM restart(s)."
+        # Each boot's launch profile; boot() refuses guests launched with different ones,
+        # and every boot of a run inherits the same environment.
+        profiles = self.guests[system].profiles
         provenance = {
-            "system": system, "commit": commit, "vmShape": vm_shape(),
+            "system": system, "commit": commit, "vmShape": vm_shape(profiles[0]),
+            "launchProfiles": profiles,
             "samples": "Linux then Breenix per sample of each case; both VMs stay up and one "
                        "runs a sample at a time",
             "fixture": f"{FIXTURE_BYTES // MIB} MiB file written in the guest for the "
@@ -946,7 +975,7 @@ class Rig:
                                        "stamp": json.loads(BUILD_STAMP.read_text())
                                        if BUILD_STAMP.exists() else None}
         metadata = {
-            "system": system, "target": "arm64-qemu", "hardware": hardware(),
+            "system": system, "target": "arm64-qemu", "hardware": hardware(profiles[0]),
             "kernelCommit": kernel, "userlandCommit": short, "toolchain": toolchain,
             "session": self.args.run, "pr": self.args.pr, "note": note,
         }

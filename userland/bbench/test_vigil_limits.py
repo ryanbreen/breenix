@@ -44,6 +44,7 @@ class LongProvenanceRun(unittest.TestCase):
         out = self.dir / system
         out.mkdir()
         bench.out = {system: out}
+        bench.guests = {system: mock.Mock(profiles=["hvf-host"])}
         bench.notes = {system: [f"VM restarted after boot {n}" for n in (1, 2)]}
         bench.started = rig.datetime(2026, 11, 27, 22, 0, tzinfo=rig.timezone.utc)
         samples = (("getpid", 1, None), ("getpid", 2, GETPID_ERROR),

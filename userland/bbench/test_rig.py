@@ -162,6 +162,7 @@ class RootFilesystem(unittest.TestCase):
             bench = rig.Rig.__new__(rig.Rig)
             bench.args = type("Args", (), {"run": "qemu-vol", "pr": None})()
             bench.out = {system: Path(temp.name)}
+            bench.guests = {system: mock.Mock(profiles=["hvf-host"])}
             bench.notes = {system: []}
             bench.started = rig.datetime(2026, 11, 27, tzinfo=rig.timezone.utc)
             with mock.patch.object(rig, "SERIES_DIR", series_dir), \
