@@ -62,6 +62,26 @@ class GuestThatStaysDown(unittest.TestCase):
                              ["breenix VM could not be restarted"], case)
 
 
+class CryptoOptLevels(unittest.TestCase):
+    """The release profiles build libbreenix (the crypto) at opt-level 3, so the
+    opt-level z rows need a build that keeps libbreenix at z."""
+
+    def test_each_crypto_row_runs_the_build_its_title_names(self):
+        self.assertEqual(rig.probe_binary("aes-gcm-oz"), "bbench-oz")
+        self.assertEqual(rig.probe_binary("hmac-sha256-oz"), "bbench-oz")
+        self.assertEqual(rig.probe_binary("aes-gcm-o3"), "bbench-o3")
+        self.assertEqual(rig.probe_binary("getpid"), "bbench")
+
+    def test_both_workspaces_build_libbreenix_at_z_for_the_oz_rows(self):
+        import tomllib
+        for manifest in ("userland/Cargo.toml", "userspace/programs/Cargo.toml"):
+            profiles = tomllib.loads((rig.ROOT / manifest).read_text())["profile"]
+            self.assertEqual(profiles["bench-oz"]["inherits"], "release", manifest)
+            self.assertEqual(profiles["bench-oz"]["package"]["libbreenix"]["opt-level"], "z",
+                             manifest)
+        self.assertIn(rig.BREENIX_OZ / "bbench", rig.BREENIX_ARTIFACTS)
+
+
 class BuildIdentity(unittest.TestCase):
     """A series names the commit its Breenix binaries were built from, never just HEAD."""
 
