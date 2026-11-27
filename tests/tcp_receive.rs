@@ -466,7 +466,7 @@ fn retransmission_timeouts_count_each_resend_and_nothing_else() {
     assert!(resent.iter().any(|packet| TcpHeader::parse(packet).unwrap().1 == [7; 100]));
     assert_eq!(retransmit_timeouts(), before + 2);
 
-    // Once everything is acknowledged a later timer pass resends nothing and counts nothing.
+    // With the data acknowledged, a later timer pass leaves the count at two.
     receive(id, 7000, ack.wrapping_add(100), TcpFlags::ack(), &[], &[]);
     take_output();
     CLOCK.set(CLOCK.get() + 200_000);

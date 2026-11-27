@@ -59,7 +59,7 @@ pub fn malloc(threads: usize, loops: usize, metrics: &mut Metrics) -> io::Result
 /// Raw TCP to the rig's host endpoint. The guest opens the connection and
 /// sends a 9-byte request: `S` (guest sends) or `R` (guest receives), then the
 /// byte count as a big-endian u64. For `S` the host answers with the count it
-/// received once it has all of it, so the time covers delivery.
+/// received once that count has arrived, so the time covers delivery.
 pub fn tcp(direction: &str, address: &str, bytes: usize, metrics: &mut Metrics) -> io::Result<()> {
     let tag = match direction {
         "send" => b'S',
