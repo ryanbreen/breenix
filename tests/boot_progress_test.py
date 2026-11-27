@@ -258,7 +258,7 @@ class ProgressTest(unittest.TestCase):
         self.assertEqual(len(named), len(entries))
         self.assertLessEqual(named.keys(), cases)
         # CASE durations from R240 boot 20261124T103128Z-metal, in milliseconds.
-        measured_ms = {
+        x86_ms = {
             'libc-surface/startup-order': 34,
             'libc-surface/memory-limits': 5,
             'libc-surface/file-mmap': 27_279,
@@ -268,8 +268,21 @@ class ProgressTest(unittest.TestCase):
             'unwind/unwind-through-c-frame': 1,
             'unwind/float-ffi-psabi': 1,
         }
+        # CASE durations from ARM64 QEMU boot 20261127T010334Z-qemu-77493.
+        arm_ms = {
+            'libc-surface/startup-order': 4,
+            'libc-surface/memory-limits': 6,
+            'libc-surface/file-mmap': 4_113,
+            'libc-surface/process-pipes-locks': 18,
+            'unwind/catch-unwind-nested': 5,
+            'unwind/unwind-through-c-frame': 2,
+            'unwind/float-ffi-psabi': 2,
+        }
+        self.assertEqual(cases, x86_ms.keys())
+        self.assertEqual(cases, arm_ms.keys())
+        longest_ms = {case: max(x86_ms[case], arm_ms[case]) for case in cases}
         expected = {case: min(60_000, ((2 * ms + 9_999) // 10_000) * 10_000)
-                    for case, ms in measured_ms.items()}
+                    for case, ms in longest_ms.items()}
         self.assertEqual({case: named.get(case, default) for case in cases}, expected)
         # The R240 suite-mode DONE deadline covers the seven allowances plus 25%.
         driver = (ROOT / 'scripts/metal/metal-boot').read_text()
