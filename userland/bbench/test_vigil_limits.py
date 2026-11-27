@@ -6,6 +6,7 @@ import unittest
 from unittest import mock
 
 import rig
+import series
 import vigil_rules
 
 LONG_UNAME = ("Linux 6.8.0-147-generic #147-Ubuntu SMP PREEMPT_DYNAMIC Thu Sep 24 11:39:52 UTC "
@@ -79,6 +80,44 @@ class LongProvenanceRun(unittest.TestCase):
         self.assertEqual(rows["memory.malloc-1t"]["state"], "failed")
         # The row's reason is shortened to fit; the sidecar keeps both errors in full.
         self.assertIn(SSH_ERROR.replace("50123", "50124"), json.dumps(sidecar))
+
+
+class CredentialRedaction(unittest.TestCase):
+    """Text that looks like a credential is removed whole, never just its first
+    character or opening marker, from the series and from its sidecar."""
+
+    # Dummy values: none of these is a real credential.
+    TOKEN = "dummyTOKENvalue0123456789abcdef"
+    WORDS = "two dummy words"
+    KEY_BODY = ("b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAAB",
+                "AAAAMwAAAAtzc2gtZWQyNTUxOQAAACDummyKeyBodyLineTwo")
+
+    def test_no_part_of_a_credential_reaches_either_file(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        directory = Path(temp.name)
+        key = ("-----BEGIN OPENSSH PRIVATE KEY-----\n" + "\n".join(self.KEY_BODY)
+               + "\n-----END OPENSSH PRIVATE KEY-----")
+        note = (f"operator note: token={self.TOKEN} and password: \"{self.WORDS}\" "
+                f"then {key} done")
+        error = f"setup failed with api_key={self.TOKEN}"
+        sample = "cred-getpid-1"
+        groups = {"getpid": [{"sample": sample, "argv": ["getpid"], "wall_ns": 0, "metrics": {},
+                              "error": error, "before": {}, "after": {}}]}
+        metadata = {"system": "breenix", "target": "arm64-qemu", "hardware": "QEMU",
+                    "kernelCommit": "0" * 8, "userlandCommit": "0" * 8, "toolchain": "rustc",
+                    "session": "cred", "pr": None, "note": note}
+        path = series.write_series(directory, "cred-breenix", "2026-11-27T22:00:00Z", metadata,
+                                   groups, provenance={"note": note})
+        written = json.loads(path.read_text())
+        self.assertEqual(vigil_rules.problems(written), [])
+        for name in (path.name, "cred-breenix.provenance.json"):
+            text = (directory / name).read_text()
+            for secret in (self.TOKEN, self.TOKEN[1:], self.WORDS, *self.KEY_BODY):
+                self.assertNotIn(secret, text, name)
+        # The text around the credentials survives.
+        self.assertIn("operator note", written["note"])
+        self.assertIn("done", written["note"])
 
 
 if __name__ == "__main__":
