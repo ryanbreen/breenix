@@ -5,81 +5,113 @@ from collections import defaultdict
 import json
 from pathlib import Path
 from statistics import median
+from typing import NamedTuple
 
 SECOND = 10**9
 MILLISECOND = 10**6
+COLD_TARGET = "Cold target, natural file cache"
 COLD_BUILD = "Cold target, uncontrolled file cache / cold target, warm toolchain"
 DEFERRED = "Deferred to #3226"
+DEFERRED_DISK = ("sequential", "small-files", "walk", "fsync")
+
+
+class Row(NamedTuple):
+    id: str
+    case: str
+    title: str
+    fields: tuple[str, ...]
+    scale: int
+    cache: str
+    report_cache: str
+
 
 # Fields within a row are summed per receipt before computing the median.
 ROWS = (
-    ("rustc-version", "rustc -vV", ("wall_ns",), SECOND,
-     "Mixed driver residency / warm compiler"),
-    ("hello-object", "K5 hello object", ("wall_ns",), SECOND,
-     "Fresh object, mixed driver residency / fresh object, first and warm compiler runs"),
-    ("cargo-noop", "Cargo no-op, userland yes", ("wall_ns",), SECOND,
-     "Warm target, device reads during check / warm target and toolchain"),
-    ("yes-dev-box", "Cold yes, dev-box", ("wall_ns",), SECOND, COLD_BUILD),
-    ("yes-release", "Cold yes, release", ("wall_ns",), SECOND, COLD_BUILD),
-    ("bobj", "Cold bobj, selfhost", ("wall_ns",), SECOND, COLD_BUILD),
-    ("bld", "Cold bld, selfhost", ("wall_ns",), SECOND, COLD_BUILD),
-    ("bmake", "Cold bmake, selfhost", ("wall_ns",), SECOND, COLD_BUILD),
-    ("bcc", "Cold bcc, selfhost", ("wall_ns",), SECOND, COLD_BUILD),
-    ("fork-exec", "Fork/exec/wait, per child (ms)", ("wall_ns",), MILLISECOND * 100,
-     "Repeated child, uncontrolled executable cache / repeated child, warm executable"),
-    ("rustc-version", "rustc exec to first output", ("first_output_ns",), SECOND,
-     "Mixed driver residency / warm compiler"),
-    ("anonymous", "Touch 256 MiB anonymous", ("wall_ns",), SECOND,
-     "Fresh zero pages on both"),
-    ("file-map", "Driver mmap", ("map_ns",), SECOND,
-     "Device reads on eager map / lazy map, no eviction"),
-    ("file-map", "Driver first touch", ("touch_ns",), SECOND,
-     "Resident after map / first and warm touches"),
-    ("file-map", "Driver map + touch", ("map_ns", "touch_ns"), SECOND,
-     "Device reads on map / first and warm touches"),
-    ("copy", "Copy 1 GiB total", ("copy_ns",), SECOND,
-     "Resident buffers on both"),
-    ("sequential", "Write 1 GiB and fsync", ("write_ns",), SECOND,
-     "Deferred / new file, buffered write followed by fsync"),
-    ("sequential", "Read 1 GiB immediately after fsync", ("read_ns",), SECOND,
-     "Deferred / warm from preceding write"),
-    ("small-files", "Create 10,000 files", ("create_ns",), SECOND,
-     "Fresh files in newly made directories on both"),
-    ("small-files", "Stat 10,000 files", ("stat_ns",), SECOND,
-     "Warm from create on both"),
-    ("small-files", "Unlink 10,000 files", ("unlink_ns",), SECOND,
-     "Warm from stat on both"),
-    ("walk", "Walk target tree", ("walk_ns",), SECOND,
-     "Deferred / warm from fixture creation"),
-    ("fsync", "Fsync 4 KiB append, per call (ms)", ("fsync_ns",), MILLISECOND,
-     "Deferred / recently dirtied file"),
-    ("bsync-upload", "8 MB upload, bsync", ("wall_ns",), SECOND,
-     "Warm source, empty destination / —"),
-    ("scp-upload", "100 MB upload, loopback SCP", ("wall_ns",), SECOND,
-     "— / warm source, empty destination"),
-    ("download", "SCP download (R240 8 MB, Mac 100 MB)", ("wall_ns",), SECOND,
-     "Recently uploaded and checked, file cache uncontrolled / warm loopback cache"),
-    ("ssh", "SSH round trip", ("wall_ns",), SECOND,
-     "Fresh SSH connection on both"),
+    Row("compile.rustc-vv", "rustc-version", "rustc -vV", ("wall_ns",), SECOND,
+        "Natural compiler and driver cache", "Mixed driver residency / warm compiler"),
+    Row("compile.hello-object", "hello-object", "K5 hello object", ("wall_ns",), SECOND,
+        "Fresh object, natural compiler cache",
+        "Fresh object, mixed driver residency / fresh object, first and warm compiler runs"),
+    Row("compile.cargo-noop", "cargo-noop", "Cargo no-op, userland yes", ("wall_ns",), SECOND,
+        "Warm target, natural file cache",
+        "Warm target, device reads during check / warm target and toolchain"),
+    Row("compile.yes-dev-box", "yes-dev-box", "Cold yes, dev-box",
+        ("wall_ns",), SECOND, COLD_TARGET, COLD_BUILD),
+    Row("compile.yes-release", "yes-release", "Cold yes, release",
+        ("wall_ns",), SECOND, COLD_TARGET, COLD_BUILD),
+    Row("compile.bobj", "bobj", "Cold bobj, selfhost", ("wall_ns",), SECOND, COLD_TARGET, COLD_BUILD),
+    Row("compile.bld", "bld", "Cold bld, selfhost", ("wall_ns",), SECOND, COLD_TARGET, COLD_BUILD),
+    Row("compile.bmake", "bmake", "Cold bmake, selfhost", ("wall_ns",), SECOND, COLD_TARGET, COLD_BUILD),
+    Row("compile.bcc", "bcc", "Cold bcc, selfhost", ("wall_ns",), SECOND, COLD_TARGET, COLD_BUILD),
+    Row("process.fork-exec", "fork-exec", "Fork/exec/wait, per child (ms)", ("wall_ns",), MILLISECOND * 100,
+        "Repeated child, natural executable cache",
+        "Repeated child, uncontrolled executable cache / repeated child, warm executable"),
+    Row("process.rustc-first-output", "rustc-version", "rustc exec to first output", ("first_output_ns",), SECOND,
+        "Natural compiler and driver cache", "Mixed driver residency / warm compiler"),
+    Row("memory.anonymous-touch", "anonymous", "Touch 256 MiB anonymous", ("wall_ns",), SECOND,
+        "Fresh zero pages", "Fresh zero pages on both"),
+    Row("memory.driver-mmap", "file-map", "Driver mmap", ("map_ns",), SECOND,
+        "No eviction before map, touch follows map", "Device reads on eager map / lazy map, no eviction"),
+    Row("memory.driver-touch", "file-map", "Driver first touch", ("touch_ns",), SECOND,
+        "No eviction before map, touch follows map", "Resident after map / first and warm touches"),
+    Row("memory.driver-map-touch", "file-map", "Driver map + touch", ("map_ns", "touch_ns"), SECOND,
+        "No eviction before map, touch follows map", "Device reads on map / first and warm touches"),
+    Row("memory.copy", "copy", "Copy 1 GiB total", ("copy_ns",), SECOND,
+        "Resident buffers", "Resident buffers on both"),
+    Row("disk.sequential-write", "sequential", "Write 1 GiB and fsync", ("write_ns",), SECOND,
+        "New file, buffered write followed by fsync",
+        "Deferred / new file, buffered write followed by fsync"),
+    Row("disk.sequential-read", "sequential", "Read 1 GiB immediately after fsync", ("read_ns",), SECOND,
+        "Warm from preceding write", "Deferred / warm from preceding write"),
+    Row("disk.create", "small-files", "Create 10,000 files", ("create_ns",), SECOND,
+        "Fresh files in newly made directories", "Fresh files in newly made directories on both"),
+    Row("disk.stat", "small-files", "Stat 10,000 files", ("stat_ns",), SECOND,
+        "Warm from create", "Warm from create on both"),
+    Row("disk.unlink", "small-files", "Unlink 10,000 files", ("unlink_ns",), SECOND,
+        "Warm from stat", "Warm from stat on both"),
+    Row("disk.walk", "walk", "Walk target tree", ("walk_ns",), SECOND,
+        "Warm from fixture creation", "Deferred / warm from fixture creation"),
+    Row("disk.fsync", "fsync", "Fsync 4 KiB append, per call (ms)", ("fsync_ns",), MILLISECOND,
+        "Recently dirtied file", "Deferred / recently dirtied file"),
+    Row("network.bsync-upload", "bsync-upload", "8 MB upload, bsync", ("wall_ns",), SECOND,
+        "Warm source, empty destination", "Warm source, empty destination / —"),
+    Row("network.scp-upload", "scp-upload", "100 MB upload, loopback SCP", ("wall_ns",), SECOND,
+        "Warm source, empty destination", "— / warm source, empty destination"),
+    Row("network.scp-download", "download", "SCP download (R240 8 MB, Mac 100 MB)", ("wall_ns",), SECOND,
+        "After upload and verification",
+        "Recently uploaded and checked, file cache uncontrolled / warm loopback cache"),
+    Row("ssh.round-trip", "ssh", "SSH round trip", ("wall_ns",), SECOND,
+        "Fresh SSH connection", "Fresh SSH connection on both"),
 )
 
 
-def collect(prefix, directory, upload_case):
+def collect_receipts(directory, prefixes, upload_case):
     groups = defaultdict(list)
     directory = Path(directory)
     if not directory.is_dir():
         raise ValueError(f"receipt directory does not exist: {directory}")
-    for path in sorted(directory.glob(f"{prefix}-*.json")):
-        label = path.stem.removeprefix(prefix + "-")
-        case, _, index = label.rpartition("-")
-        if not index.isdecimal():
-            continue  # Cargo no-op seed is setup, not a timed no-op sample.
-        sample = json.loads(path.read_bytes())
-        if sample["sample"] != path.stem:
-            raise ValueError(f"sample ID does not match {path}")
-        if case == "upload":  # Older receipts predate the bsync/SCP distinction.
-            case = upload_case
-        groups[case].append(sample)
+    cases = {row.case for row in ROWS}
+    for prefix in dict.fromkeys(prefixes):
+        for path in sorted(directory.glob(f"{prefix}-*.json")):
+            label = path.stem.removeprefix(prefix + "-")
+            if label == "noop-seed":
+                case = label
+            else:
+                case, _, index = label.rpartition("-")
+                if case == "upload":  # Older receipts used this name for both upload methods.
+                    case = upload_case
+                if not index.isdecimal() or case not in cases:
+                    continue
+            sample = json.loads(path.read_bytes())
+            if sample["sample"] != path.stem:
+                raise ValueError(f"sample ID does not match {path}")
+            groups[case].append(sample)
+    return groups
+
+
+def collect(prefix, directory, upload_case):
+    groups = collect_receipts(directory, [prefix], upload_case)
+    groups.pop("noop-seed", None)
     if not groups:
         raise ValueError(f"no timed receipts for {prefix} in {directory}")
     return groups
@@ -109,13 +141,16 @@ def render(box, mac):
         "| Workload | R240 | Mac | R240 completed / receipts | Cache state or preparation |",
         "| --- | ---: | ---: | ---: | --- |",
     ]
-    for case, label, fields, scale, cache in ROWS:
-        box_receipts = box.get(case, [])
-        left = values(box_receipts, fields, scale)
-        right = values(mac.get(case, []), fields, scale)
-        box_result = DEFERRED if case in ("sequential", "walk", "fsync") else summary(left)
+    for row in ROWS:
+        box_receipts = box.get(row.case, [])
+        left = values(box_receipts, row.fields, row.scale)
+        right = values(mac.get(row.case, []), row.fields, row.scale)
+        deferred = row.case in ("sequential", "walk", "fsync")
+        box_result = DEFERRED if deferred else summary(left)
         count = f"{len(left)}/{len(box_receipts)}" if box_receipts else "—"
-        lines.append(f"| {label} | {box_result} | {summary(right)} | {count} | {cache} |")
+        lines.append(
+            f"| {row.title} | {box_result} | {summary(right)} | {count} | {row.report_cache} |"
+        )
     return "\n".join(lines)
 
 
