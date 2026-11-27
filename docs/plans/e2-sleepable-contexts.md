@@ -229,10 +229,31 @@ park::wait(queue, cond, deadline, mode) -> WaitEnd
   state other than the ones above for their `seq`. They sit at the scheduler boundary, in the run-queue
   code, not in the callers.
 
-- **Wakers.** A waker makes the condition true with a release store, then takes the queue lock. From task
-  context it hands each chosen node to the scheduler, which moves `Parking` or `Parked` to `Runnable`. It
-  unlinks the node only after the scheduler has accepted the wake (B1 requirement 7). From hard IRQ it
-  uses try-lock and the durable `isr_unblock_for_io` (B1 requirement 4).
+- **Wakers.** A waker makes the condition true with a release store, then takes the queue lock. There
+  are three kinds, and each keeps its own lock order (B1 requirement 5):
+  - *Task context.* It hands each chosen node to the scheduler, which makes the transition to
+    `Runnable`. It unlinks the node only after the scheduler has accepted the wake (B1 requirement 7).
+  - *Deferred.* For callers that hold the process manager or otherwise may not enter the scheduler lock,
+    such as BreenFS's commit signal (`kernel/src/fs/breenfs/commit_signal.rs:33-36`) and the 19
+    `wake_up_deferred` sites B1 counts. It takes the queue lock, selects the nodes, and hands each one's
+    TID to the durable per-task inbox (R17), the same transport `isr_unblock_for_io` uses. It never takes
+    the scheduler lock. The owner CPU's inbox drain makes the transition. It is not routed through the
+    task-context waker. <!-- claim-lint:ok: normative requirement of docs/plans/e2-sleepable-contexts.md under ruling DEV-37(2), not a measured result. -->
+  - *Hard IRQ.* It try-locks the queue. On success it selects the nodes and hands their TIDs to
+    `isr_unblock_for_io` (B1 requirement 4). On failure it has selected nobody, so it has no TID to hand
+    over. Instead it adds its count to the queue's `irq_wakes_owed` counter, then tries the lock once
+    more. Every queue unlock reads `irq_wakes_owed` after releasing the lock and, if the count is non-zero,
+    takes it and performs those wakes as a task-context waker. The counter's store and the unlocker's load
+    are the §3.4 store-buffering shape, so both sides use `park::announce` and `park::should_wake`. The
+    task that holds the lock when the try-lock fails therefore owns the retry. The obligation lives in the
+    queue, not in a per-driver fallback. B1's try-lock contract, "wake up to `max` or leave the queue
+    unchanged", still holds: the queue's links are unchanged, and only the counter moves. <!-- claim-lint:ok: normative requirement of docs/plans/e2-sleepable-contexts.md under ruling DEV-37(2), not a measured result. -->
+
+  The GPU interrupt's second wake path, a direct wake of its reaper thread after the try-lock
+  (`kernel/src/gpu/mod.rs:2731-2735`), exists because a failed try-lock wakes no waiter today. E2.1 keeps it
+  until its own tests show the owed-wake counter covers that case, then removes it in a separate commit.
+  The run-queue lock in step 3 is the owner-local run-queue lock on x86 and, until E9, the global
+  `SCHEDULER` lock on ARM64 (audit R18).
 - **Waiting on several queues.** `park::wait_any` takes one `seq` for the whole wait. It registers a node
   tagged `seq` on each of its queues, checking that queue's condition under that queue's lock, and
   publishes `Parking(seq)` once. It then runs the same step 3 once and the same step 4, which unlinks
@@ -622,7 +643,11 @@ should own each, not several agents on one PR (DEV-30(3)).
   - the same enumeration for timeout against wake, signal against wake, wake-one with two waiters, and a
     waker in interrupt context;
   - out of memory at reservation;
-  - the IRQ try-lock under a held lock;
+  - the IRQ try-lock under a held lock: the queue's links are unchanged, and the waiter is woken when
+    the holder unlocks. The second half is red on today's queue, whose try-lock returns 0 and leaves
+    no record of the wake;
+  - a deferred wake from a context that holds a lock the scheduler path also takes: it completes
+    without entering the scheduler lock, and the waiter is woken by its CPU's inbox drain;
   - requirement 6 after each way a wait can end;
   - the existing queue unit tests, reworded to the new names;
   - the structure tests B1 lists, unchanged.
