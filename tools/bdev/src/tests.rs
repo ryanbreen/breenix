@@ -420,6 +420,22 @@ fn successful_sync_publishes_the_stamp_after_transfer() {
 }
 
 #[test]
+fn test_checks_the_configured_btest_path_before_connecting() {
+    let files = tempfile::tempdir().unwrap();
+    let config = files.path().join("bdev.json");
+    fs::write(
+        &config,
+        r#"{"host":"devbox","source":"/work/src/breenix","btest_path":"bin/btest"}"#,
+    )
+    .unwrap();
+    let error = crate::testing::test(Some(&config), &["yes".into()]).unwrap_err();
+    assert!(
+        error.to_string().starts_with("btest_path: box paths must be absolute"),
+        "{error}"
+    );
+}
+
+#[test]
 fn test_keeps_the_summary_and_returns_the_runner_status() {
     let files = tempfile::tempdir().unwrap();
     let script = files.path().join("ssh");
