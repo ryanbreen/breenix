@@ -125,12 +125,20 @@ impl Mapped {
 // items of recently read inodes, sorted by file offset, and the REF
 // checksums of the extents they name. EXTENT inserts and deletes for an
 // inode go through Files::insert and Files::delete, which drop that inode's
-// map, so a map does not outlive the items it decodes. Maps and checksums share
-// one byte budget, a sixty-fourth of the smallest kernel heap; a file whose
-// items alone exceed it is read through a B-tree seek on each call instead.
-// claim-lint:ok: in ops.rs the only FS-tree edits are Files::insert, Files::delete and create_empty_root's INODE insert.
+// map, so a map does not outlive the items it decodes. The table of maps, the
+// maps and their checksum lists share one byte budget, a sixty-fourth of the
+// smallest kernel heap, and the budget counts a map before it is allocated:
+// a miss counts the inode's items, evicts least recently used maps until a
+// map of that size fits, then allocates it once at that size. A file whose
+// items alone exceed the budget is read through a B-tree seek on each call
+// instead. Every cache allocation is fallible; a refused one reads the file
+// without the cache, as the kernel heap's failure path panics.
+// claim-lint:ok: in ops.rs the only FS-tree edits are Files::insert, Files::delete and create_empty_root's INODE insert; the cache's allocations are the three try_reserve_exact calls below, checked by extent_runs.rs a_cold_read_survives_each_refused_cache_allocation.
 const EXTENT_MAP_BYTES: usize = 1 << 20;
 const EXTENT_MAPS: usize = 64;
+const TABLE_BYTES: usize = EXTENT_MAPS * core::mem::size_of::<ExtentMap>();
+const _: () = assert!(TABLE_BYTES < EXTENT_MAP_BYTES);
+const CRC_ENTRY: usize = core::mem::size_of::<(u64, Vec<u32>)>();
 
 // Host tests refuse the extent-map cache's own allocations one at a time
 // (tools/breenfs-host-tests/src/extent_runs.rs); a scope marks them.
@@ -155,22 +163,23 @@ pub mod cache_allocations {
         DEPTH.try_with(|depth| depth.get() > 0).unwrap_or(false)
     }
 }
-const MAP_OVERHEAD: usize = 128;
-const CRCS_OVERHEAD: usize = 64;
-
 #[derive(Default)]
 struct ExtentMaps {
     // Projected roots (with_read_root) are not cached.
     disabled: bool,
-    maps: BTreeMap<u64, ExtentMap>,
+    // At most EXTENT_MAPS, reserved once; the budget counts the whole table.
+    maps: Vec<ExtentMap>,
+    // Bytes held by the maps, apart from the table.
     bytes: usize,
     clock: u64,
 }
 struct ExtentMap {
+    ino: u64,
     // Sorted by offset and non-overlapping; empty when `oversized`.
     extents: Vec<Mapped>,
     oversized: bool,
-    crcs: BTreeMap<u64, Vec<u32>>,
+    // REF checksums by extent start, sorted by start.
+    crcs: Vec<(u64, Vec<u32>)>,
     bytes: usize,
     used: u64,
 }
@@ -179,20 +188,57 @@ impl ExtentMaps {
         Self { disabled: true, ..Self::default() }
     }
     fn invalidate(&mut self, ino: u64) {
-        if let Some(map) = self.maps.remove(&ino) {
-            self.bytes -= map.bytes;
+        if let Some(at) = self.maps.iter().position(|map| map.ino == ino) {
+            self.bytes -= self.maps.swap_remove(at).bytes;
         }
     }
-    /// Evict least recently used maps until a new map of `bytes` fits.
+    /// Evict least recently used maps until a new map holding `bytes` fits,
+    /// both in the budget and in the table, and reserve the table.
     fn make_room(&mut self, bytes: usize) -> bool {
-        while self.bytes + bytes > EXTENT_MAP_BYTES || self.maps.len() >= EXTENT_MAPS {
-            let Some(victim) = self.maps.iter().min_by_key(|(_, map)| map.used).map(|(ino, _)| *ino)
-            else {
+        if TABLE_BYTES + bytes > EXTENT_MAP_BYTES {
+            return false;
+        }
+        while TABLE_BYTES + self.bytes + bytes > EXTENT_MAP_BYTES || self.maps.len() >= EXTENT_MAPS {
+            let Some(victim) = self.maps.iter().min_by_key(|map| map.used).map(|map| map.ino) else {
                 return false;
             };
             self.invalidate(victim);
         }
-        true
+        #[cfg(test)]
+        let cache = cache_allocations::scope();
+        let reserved = self.maps.capacity() != 0 || self.maps.try_reserve_exact(EXTENT_MAPS).is_ok();
+        #[cfg(test)]
+        drop(cache);
+        reserved
+    }
+}
+impl ExtentMap {
+    /// Keep the REF checksums of the extent at `phys`, which belong at `at`
+    /// in the sorted list, when they and any growth of the list fit the
+    /// budget with `used` bytes held; otherwise hand them back.
+    fn keep_crcs(&mut self, used: &mut usize, at: usize, phys: u64, crcs: Vec<u32>) -> Result<(), Vec<u32>> {
+        let held = crcs.capacity() * core::mem::size_of::<u32>();
+        let capacity = self.crcs.capacity();
+        let grow = if self.crcs.len() < capacity { 0 } else { capacity.max(4) };
+        // Growing the list copies it: the old and the new list are both held
+        // until the copy ends.
+        let peak = held + if grow == 0 { 0 } else { (capacity + grow) * CRC_ENTRY };
+        if TABLE_BYTES + *used + peak > EXTENT_MAP_BYTES {
+            return Err(crcs);
+        }
+        #[cfg(test)]
+        let cache = cache_allocations::scope();
+        let refused = grow != 0 && self.crcs.try_reserve_exact(grow).is_err();
+        #[cfg(test)]
+        drop(cache);
+        if refused {
+            return Err(crcs);
+        }
+        let kept = held + (self.crcs.capacity() - capacity) * CRC_ENTRY;
+        self.crcs.insert(at, (phys, crcs));
+        *used += kept;
+        self.bytes += kept;
+        Ok(())
     }
 }
 
@@ -1359,11 +1405,24 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         }
         Ok(r.crcs)
     }
-    /// Decode the inode's EXTENT items in file order, at most `limit` of
-    /// them. Gives up, returning no vector, when there are more or the heap refuses it.
-    fn decode_extents(&self, ino: u64, limit: usize) -> Result<Option<Vec<Mapped>>, ReadError> {
-        let mut extents: Vec<Mapped> = Vec::new();
-        let mut complete = true;
+    /// The number of the inode's EXTENT items, counting at most to `stop`.
+    fn count_extents(&self, ino: u64, stop: usize) -> Result<usize, ReadError> {
+        let mut count = 0;
+        btree::visit_range(
+            &self.txn.view(), self.tree(ino).root,
+            self.inode_key(ino, format::EXTENT, 0),
+            self.inode_key(ino, format::EXTENT, u64::MAX),
+            &mut |_, _| {
+                preemption_point();
+                count += 1;
+                Ok::<_, ReadError>(count < stop)
+            },
+        )?;
+        Ok(count)
+    }
+    /// Decode the inode's EXTENT items in file order into `extents`, whose
+    /// spare capacity was reserved for exactly that many.
+    fn decode_extents(&self, ino: u64, extents: &mut Vec<Mapped>) -> Result<(), ReadError> {
         let mut last = 0;
         btree::visit_range(
             &self.txn.view(), self.tree(ino).root,
@@ -1372,27 +1431,14 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             &mut |key, bytes| {
                 preemption_point();
                 let m = Mapped::new(key, Extent::decode(bytes).map_err(Error::from)?)?;
-                if m.offset < last {
+                if m.offset < last || extents.len() == extents.capacity() {
                     return Err(ReadError::Metadata(Error::EIO));
                 }
                 last = m.end;
-                // Grow geometrically, capped at `limit` items.
-                let grow = extents.len().clamp(16, limit).min(limit - extents.len());
-                #[cfg(test)]
-                let cache = cache_allocations::scope();
-                let refused = extents.len() == limit
-                    || (extents.len() == extents.capacity() && extents.try_reserve_exact(grow).is_err());
-                #[cfg(test)]
-                drop(cache);
-                if refused {
-                    complete = false;
-                    return Ok(false);
-                }
                 extents.push(m);
                 Ok(true)
             },
-        )?;
-        Ok(complete.then_some(extents))
+        )
     }
     /// Whether `maps` holds a usable map for `ino`, building it on a miss.
     fn load_extent_map(&self, maps: &mut ExtentMaps, ino: u64) -> Result<bool, ReadError> {
@@ -1400,26 +1446,38 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             return Ok(false);
         }
         maps.clock += 1;
-        if let Some(map) = maps.maps.get_mut(&ino) {
+        if let Some(map) = maps.maps.iter_mut().find(|map| map.ino == ino) {
             map.used = maps.clock;
             return Ok(!map.oversized);
         }
-        let limit = (EXTENT_MAP_BYTES - MAP_OVERHEAD) / core::mem::size_of::<Mapped>();
-        let (extents, oversized) = match self.decode_extents(ino, limit)? {
-            Some(extents) => (extents, false),
-            None => (Vec::new(), true),
-        };
-        let bytes = extents.capacity() * core::mem::size_of::<Mapped>() + MAP_OVERHEAD;
-        if !maps.make_room(bytes) {
+        // Count first, so the map is allocated once, at its size, after
+        // eviction has made room for it.
+        let item = core::mem::size_of::<Mapped>();
+        let limit = (EXTENT_MAP_BYTES - TABLE_BYTES) / item;
+        let count = self.count_extents(ino, limit + 1)?;
+        let oversized = count > limit;
+        let wanted = if oversized { 0 } else { count };
+        if !maps.make_room(wanted * item) {
             return Ok(false);
         }
+        let mut extents = Vec::new();
         #[cfg(test)]
         let cache = cache_allocations::scope();
-        maps.maps.insert(ino, ExtentMap {
-            extents, oversized, crcs: BTreeMap::new(), bytes, used: maps.clock,
-        });
+        let refused = extents.try_reserve_exact(wanted).is_err();
         #[cfg(test)]
         drop(cache);
+        if refused {
+            return Ok(false);
+        }
+        self.decode_extents(ino, &mut extents)?;
+        if extents.len() != wanted {
+            return Err(ReadError::Metadata(Error::EIO));
+        }
+        let bytes = extents.capacity() * item;
+        // make_room reserved the table and left a free slot: no allocation.
+        maps.maps.push(ExtentMap {
+            ino, extents, oversized, crcs: Vec::new(), bytes, used: maps.clock,
+        });
         maps.bytes += bytes;
         Ok(!oversized)
     }
@@ -1427,7 +1485,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
     /// intersecting item, and REF checksums are kept while the budget allows.
     fn read_mapped(&self, maps: &mut ExtentMaps, ino: u64, runs: &mut Runs<'_>) -> Result<(), ReadError> {
         let ExtentMaps { maps: table, bytes: used, .. } = maps;
-        let Some(map) = table.get_mut(&ino) else { return Ok(()) };
+        let Some(map) = table.iter_mut().find(|map| map.ino == ino) else { return Ok(()) };
         let end = runs.end();
         let mut i = map.extents.partition_point(|m| m.end <= runs.base);
         while let Some(&m) = map.extents.get(i) {
@@ -1438,22 +1496,13 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             let phys = m.extent.phys_start;
             if let Some(bytes) = self.data.get(&phys) {
                 runs.private(m, bytes)?;
-            } else if let Some(crcs) = map.crcs.get(&phys) {
-                runs.push(m, crcs)?;
             } else {
-                let crcs = self.data_crcs(m.extent)?;
-                let cost = crcs.len() * 4 + CRCS_OVERHEAD;
-                if *used + cost <= EXTENT_MAP_BYTES {
-                    *used += cost;
-                    map.bytes += cost;
-                    #[cfg(test)]
-                    let cache = cache_allocations::scope();
-                    let kept = map.crcs.entry(phys).or_insert(crcs);
-                    #[cfg(test)]
-                    drop(cache);
-                    runs.push(m, kept)?;
-                } else {
-                    runs.push(m, &crcs)?;
+                match map.crcs.binary_search_by_key(&phys, |(start, _)| *start) {
+                    Ok(at) => runs.push(m, &map.crcs[at].1)?,
+                    Err(at) => match map.keep_crcs(used, at, phys, self.data_crcs(m.extent)?) {
+                        Ok(()) => runs.push(m, &map.crcs[at].1)?,
+                        Err(crcs) => runs.push(m, &crcs)?,
+                    },
                 }
             }
             i += 1;
