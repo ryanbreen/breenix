@@ -142,6 +142,8 @@ def main(args):
         "anonymous": lambda _: ["anonymous"],
         "file-map": lambda _: ["file-map", driver],
         "copy": lambda _: ["copy"],
+        "malloc-1t": lambda _: ["malloc-free", 1],
+        "malloc-4t": lambda _: ["malloc-free", 4],
         "sequential": lambda _: ["sequential", 1024 * MIB],
         "small-files": lambda _: ["small-files", 10_000],
         "walk": lambda _: ["walk", 10_000],

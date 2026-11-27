@@ -39,6 +39,10 @@ ROWS = (
      "Device reads on map / first and warm touches"),
     ("copy", "Copy 1 GiB total", ("copy_ns",), SECOND,
      "Resident buffers on both"),
+    ("malloc-1t", "malloc/free ×1M, 1 thread", ("malloc_free_ns",), SECOND,
+     "Warm, 64-byte blocks"),
+    ("malloc-4t", "malloc/free ×1M, 4 threads", ("malloc_free_ns",), SECOND,
+     "Warm, 64-byte blocks, 250,000 pairs per thread"),
     ("sequential", "Write 1 GiB and fsync", ("write_ns",), SECOND,
      "Deferred / new file, buffered write followed by fsync"),
     ("sequential", "Read 1 GiB immediately after fsync", ("read_ns",), SECOND,
@@ -110,6 +114,8 @@ def render(box, mac):
         "| --- | ---: | ---: | ---: | --- |",
     ]
     for case, label, fields, scale, cache in ROWS:
+        if case in ("malloc-1t", "malloc-4t") and case not in box and case not in mac:
+            continue  # Keep receipts from before these rows reproducible.
         box_receipts = box.get(case, [])
         left = values(box_receipts, fields, scale)
         right = values(mac.get(case, []), fields, scale)

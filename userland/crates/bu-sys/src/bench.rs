@@ -16,6 +16,8 @@ extern "C" {
     fn mmap(addr: *mut c_void, len: usize, prot: i32, flags: i32, fd: i32, off: i64)
         -> *mut c_void;
     fn munmap(addr: *mut c_void, len: usize) -> i32;
+    fn malloc(size: usize) -> *mut u8;
+    fn free(p: *mut u8);
 }
 
 pub fn fork_exec_wait(path: &Path, count: usize) -> io::Result<()> {
@@ -49,6 +51,25 @@ pub fn fork_exec_wait(path: &Path, count: usize) -> io::Result<()> {
             return Err(io::Error::other(format!(
                 "tiny child wait status {status:#x}"
             )));
+        }
+    }
+    Ok(())
+}
+
+/// Run C allocator pairs and touch each block once.
+pub fn malloc_free_pairs(pairs: usize, size: usize) -> io::Result<()> {
+    let allocate = std::hint::black_box(malloc as unsafe extern "C" fn(usize) -> *mut u8);
+    let release = std::hint::black_box(free as unsafe extern "C" fn(*mut u8));
+    for _ in 0..pairs {
+        // SAFETY: A positive request gives a writable first byte, and the
+        // allocation is released once to the same C allocator.
+        unsafe {
+            let block = allocate(size.max(1));
+            if block.is_null() {
+                return Err(io::Error::last_os_error());
+            }
+            block.write_volatile(0xa5);
+            release(block);
         }
     }
     Ok(())
