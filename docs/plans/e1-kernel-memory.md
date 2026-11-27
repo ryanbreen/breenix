@@ -839,9 +839,16 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
 - x86-64: kernel-half table pages for the windows are allocated on first use.
 - ARM64: a new TTBR1 mapper.
 - Tests (host):
-  - A pure window model, with a fake TLB that records flushes per CPU. A frame of an unmapped range is
-    not returned before a flush that covers it (check first: the model's naive "free on unmap" variant
-    fails this).
+  - Check first, flush before free: a fake per-CPU TLB that follows SDM vol. 3A §4.10.4.1. A CR3 load
+    drops non-global entries only, `invlpg` drops the page's entry, global or not, and a CR4.PGE toggle drops
+    global and non-global entries alike. The test drives Breenix's own boundary, not a model of it:
+    - `unmap_kernel_page`'s contract, which leaves the flush to the caller (`kernel_page_table.rs:282-295`);
+    - then the existing flush, with the shootdown's request-to-instruction choice (`tlb.rs` `service`,
+      `KIND_ALL` -> `tlb::flush_all`) extracted unchanged into a pure function.
+    The test maps a window page global on 4 CPUs, unmaps it, flushes, and checks whether any CPU's TLB
+    still holds the translation when the frame is offered back. On the old choice all 4 CPUs keep it,
+    which is red. With the new request kind 0 of 4 do.
+  - The pending list returns a frame only after a flush that covers it on each CPU that may hold it.
   - A mapping that runs out of table pages part way unwinds, leaving no partial mapping.
   - Check first, address space: the existing x86 index selection (`map_kernel_page`'s PML4/PDPT choice,
     lines 165-191) is extracted unchanged into a pure function and given two addresses that differ only in
