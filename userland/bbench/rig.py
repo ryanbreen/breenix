@@ -69,20 +69,16 @@ MEMORY = f"{standard_memory_mib()}M"
 # Linux's root holds the distribution, gcc and the toolchain (2.8 GB on a 4 GiB disk),
 # and the sequential row writes 1 GiB, so both guests get 8 GiB.
 DISK_BYTES = 8192 * MIB
-# The disk rows run on a second disk of the same size and drive options, formatted with
-# the filesystem each system targets: BreenFS (the R240's / and /home, and the program's
-# target) and Linux's default ext4. Breenix mounts its second block device at /home.
+# The disk rows run on the filesystem each system targets, as its root: BreenFS (the
+# R240's / and /home, and the program's target) and Linux's default ext4. A root it is,
+# because BreenFS does not take Breenix's boot-time /home slot (fs/breenfs/boot.rs) and
+# explicit mounts beside an ext2 root would leave that root read-only (fs/vfs/boot.rs).
 DISK_CASES = ("sequential", "small-files", "walk", "fsync")
-BENCH_MOUNT = {"breenix": "/home/bench", "linux": "/mnt/bench"}
-BENCH_FS = {"breenix": "breenfs", "linux": "ext4"}
-BENCH_CACHE = {
-    "breenix": f"BreenFS on a second {DISK_BYTES // GIB} GiB raw virtio-blk disk (writeback) at /home",
-    "linux": f"ext4 on a second {DISK_BYTES // GIB} GiB raw virtio-blk disk (writeback) at /mnt/bench",
+ROOT_FS = {"breenix": "breenfs", "linux": "ext4"}
+ROOT_CACHE = {
+    "breenix": f"BreenFS root on the {DISK_BYTES // GIB} GiB raw virtio-blk disk (writeback)",
+    "linux": f"ext4 root on the {DISK_BYTES // GIB} GiB raw virtio-blk disk (writeback)",
 }
-LINUX_BENCH_DEVICE = "/dev/disk/by-id/virtio-bench"
-# sshtest in the Breenix image's /etc/passwd (scripts/create_ext2_disk.sh).
-SSHTEST_OWNER = "2000:2000"
-BREENFS_TOOLS = ROOT / "tools/breenfs/target/release"
 SHAPE_ARGS = [
     "-M", "virt,gic-version=3", "-cpu", "max", "-smp", str(CPUS), "-m", MEMORY,
     "-device", "virtio-gpu-device", "-device", "virtio-keyboard-device",
@@ -115,8 +111,7 @@ BREENIX_KEY = CACHE / "breenix-arm64/test-ssh/id_ed25519"
 BREENIX_OZ = ROOT / "userspace/programs/target/aarch64-breenix/bench-oz"
 BREENIX_ARTIFACTS = (BREENIX_KERNEL, BREENIX_IMAGE, BREENIX_RELEASE / "bbench",
                      BREENIX_RELEASE / "bbench-exit", BREENIX_OZ / "bbench",
-                     BREENIX_O3 / "bbench", BREENFS_TOOLS / "breenfs-mkfs",
-                     BREENFS_TOOLS / "breenfs-check")
+                     BREENIX_O3 / "bbench")
 # build-breenix records the commit and each artifact's SHA-256; run refuses anything else.
 BUILD_STAMP = CACHE / "breenix-arm64/build.json"
 # The rustc,cargo suite boot's builds (scripts/boot-interactive.sh) before the image.
@@ -133,8 +128,6 @@ BREENIX_BUILD = (
     ["cargo", "build", "--release", "--target", "aarch64-breenix-kernel.json",
      "-Z", "build-std=core,alloc", "-Z", "build-std-features=compiler-builtins-mem",
      "-p", "kernel", "--bin", "kernel-aarch64"],
-    ["cargo", "build", "--release", "--locked", "--manifest-path", "tools/breenfs/Cargo.toml",
-     "--bin", "breenfs-mkfs", "--bin", "breenfs-check"],
 )
 LINUX_KEY = CACHE / "rig-ssh/id_ed25519"
 
@@ -243,17 +236,29 @@ def host_description():
 def vm_shape():
     """The full VM shape, for the provenance sidecar."""
     return (f"QEMU {qemu_version()} virt,gic-version=3, HVF -cpu host, {CPUS} vCPUs, "
-            f"{MEMORY[:-1]} MiB, two {DISK_BYTES // MIB} MiB raw virtio-blk-device disks (root, "
-            f"and the disk rows' volume: {BENCH_CACHE['breenix']}; {BENCH_CACHE['linux']}) at "
-            f"cache=writeback, QEMU's default, virtio-net-device on user networking; host "
-            f"{host_description()}")
+            f"{MEMORY[:-1]} MiB, one {DISK_BYTES // MIB} MiB raw virtio-blk-device root disk at "
+            f"cache=writeback, QEMU's default ({ROOT_CACHE['breenix']}; {ROOT_CACHE['linux']}), "
+            f"virtio-net-device on user networking; host {host_description()}")
 
 
 def hardware():
     """The series' one-line hardware field (Vigil allows 200 characters)."""
     return (f"QEMU {qemu_version()} virt GICv3, HVF, {CPUS} vCPUs, {MEMORY[:-1]} MiB, "
-            f"2x {DISK_BYTES // GIB} GiB raw virtio-blk (writeback), virtio-net user; "
+            f"{DISK_BYTES // GIB} GiB raw virtio-blk (writeback), virtio-net user; "
             f"{host_description()}")
+
+
+def root_problem(system, mounts):
+    """Why the guest's root (from /proc/mounts) is not the filesystem the disk rows name,
+    read-write; None when it is. The last mount of / is the one in effect."""
+    lines = [line.split() for line in mounts.splitlines() if line.split()[1:2] == ["/"]]
+    if not lines:
+        return f"{system}: no root mount in /proc/mounts"
+    fields = lines[-1]
+    kind, options = (fields[2:4] + ["", ""])[:2]
+    if kind != ROOT_FS[system] or "rw" not in options.split(","):
+        return (f"{system}: the root is {' '.join(fields)}, not {ROOT_FS[system]} read-write")
+    return None
 
 
 def kernel_release(uname):
@@ -278,12 +283,10 @@ def tcp_summary(system, before, after):
 class Guest:
     """One VM in the rig's shape, reached over SSH on a forwarded loopback port."""
 
-    def __init__(self, system, run_dir, disk, headed, extra=(), bench=None):
+    def __init__(self, system, run_dir, disk, headed, extra=()):
         self.system = system
         self.run_dir = run_dir
         self.disk = disk
-        # The disk rows' volume (BENCH_MOUNT); the provisioning boot passes no volume.
-        self.bench = bench
         self.headed = headed
         self.extra = list(extra)
         self.port = None
@@ -296,13 +299,8 @@ class Guest:
 
     def argv(self):
         boot = (["-bios", EDK2] if self.system == "linux" else ["-kernel", BREENIX_KERNEL])
-        disks = []
-        # QEMU's virt machine numbers virtio-mmio devices in reverse command-line order,
-        # so the bench disk, listed first, is Breenix's block device 1 (/home).
-        for name, path in (("bench", self.bench), ("disk0", self.disk)):
-            if path is not None:
-                disks += ["-device", f"virtio-blk-device,drive={name},serial={name}",
-                          "-drive", f"if=none,id={name},format=raw,cache=writeback,file={path}"]
+        disks = ["-device", "virtio-blk-device,drive=disk0",
+                 "-drive", f"if=none,id=disk0,format=raw,cache=writeback,file={self.disk}"]
         return [
             sys.executable, ROOT / "scripts/qemu-arm64.py", "qemu-system-aarch64", *SHAPE_ARGS,
             *boot, "-display", "cocoa" if self.headed else "none",
@@ -528,20 +526,6 @@ class TcpHandler(socketserver.BaseRequestHandler):
         return data
 
 
-def breenfs_volume(run_dir):
-    """A fresh BreenFS image for Breenix's disk rows, made by our own breenfs-mkfs with a
-    `bench` directory owned by sshtest, and checked before use."""
-    tree = run_dir / "bench-tree"
-    (tree / "bench").mkdir(parents=True)
-    owners = run_dir / "bench-owners"
-    owners.write_text(f"{SSHTEST_OWNER}:755\t{tree / 'bench'}\n")
-    volume = run_dir / "breenix-bench.raw"
-    run_command([BREENFS_TOOLS / "breenfs-mkfs", "--populate", tree, "--owners", owners,
-                 "--size", DISK_BYTES, volume], capture_output=True)
-    run_command([BREENFS_TOOLS / "breenfs-check", "--full", volume], capture_output=True)
-    return volume
-
-
 def failure_receipt(sample, words, error):
     return {"sample": sample, "argv": list(map(str, words)), "wall_ns": 0, "metrics": {},
             "error": error, "before": {}, "after": {}}
@@ -561,8 +545,8 @@ class Rig:
         threading.Thread(target=self.endpoint.serve_forever, daemon=True).start()
         self.guests = {}
         self.notes = {system: [] for system in SYSTEMS}
-        # Each guest's bench-volume mount line, as the guest reports it.
-        self.volumes = {}
+        # Each guest's root mount line, as the guest reports it.
+        self.roots = {}
         self.started = datetime.now(timezone.utc).replace(microsecond=0)
 
     def bin(self, system, name):
@@ -572,62 +556,35 @@ class Rig:
         home = self.guests[system].home
         return f"{home}/bbench/data/{self.args.run}", f"{home}/bbench/reports"
 
-    def data_dir(self, system, case):
-        """Where a case's sample directory goes: the bench volume for the disk rows."""
-        if case in DISK_CASES:
-            return f"{BENCH_MOUNT[system]}/data/{self.args.run}"
-        return self.dirs(system)[0]
-
     def boot(self):
         commit = self.commit
         disk = self.run_dir / "breenix-disk.raw"
         run_command(["cp", "-c", BREENIX_IMAGE, disk])
-        self.guests["breenix"] = Guest("breenix", self.run_dir, disk, self.args.headed,
-                                       bench=breenfs_volume(self.run_dir))
+        self.guests["breenix"] = Guest("breenix", self.run_dir, disk, self.args.headed)
         linux_disk = self.run_dir / "linux-disk.raw"
         run_command(["cp", "-c", LINUX_CACHE / f"provisioned-{PIN['sha256'][:12]}-{DISK_BYTES // MIB}.raw",
                      linux_disk])
-        linux_bench = self.run_dir / "linux-bench.raw"
-        with open(linux_bench, "xb") as volume:
-            volume.truncate(DISK_BYTES)  # ext4 is made in the guest by its own mkfs.ext4.
-        self.guests["linux"] = Guest("linux", self.run_dir, linux_disk, self.args.headed,
-                                     bench=linux_bench)
+        self.guests["linux"] = Guest("linux", self.run_dir, linux_disk, self.args.headed)
         for system in SYSTEMS:
             self.guests[system].start()
             self.setup(system)
         return commit
 
-    def mount_bench(self, system):
-        """Mount (Linux) or find (Breenix) the bench volume, and refuse the run unless it
-        is the filesystem the disk rows name, mounted read-write."""
-        guest = self.guests[system]
-        mount = BENCH_MOUNT[system]
-        if system == "linux":
-            device = LINUX_BENCH_DEVICE
-            guest.ssh(f"sudo sh -c 'test \"$(blkid -s TYPE -o value {device})\" = ext4 || "
-                      f"mkfs.ext4 -q -F {device}; mkdir -p {mount} && "
-                      f"(mountpoint -q {mount} || mount {device} {mount}) && "
-                      f"chown bench:bench {mount}'", timeout=300)
-            line = guest.ssh(["findmnt", "-no", "TARGET,FSTYPE,OPTIONS", mount]).stdout.decode()
-            target, kind, options = (line.split() + ["", "", ""])[:3]
-        else:
-            # The kernel mounts block device 1 at /home itself (fs/vfs/boot.rs mount_home).
-            mounts = guest.ssh(["/bin/cat", "/proc/mounts"]).stdout.decode().splitlines()
-            fields = next((line.split() for line in mounts if line.split()[1:2] == ["/home"]), [])
-            target, kind, options = (fields[1:4] + ["", "", ""])[:3]
-            line = " ".join(fields)
-        if kind != BENCH_FS[system] or "rw" not in options.split(","):
-            raise RuntimeError(f"{system}: the bench volume is {line.strip() or 'not mounted'}, "
-                               f"not {BENCH_FS[system]} read-write")
-        self.volumes[system] = line.strip()
+    def check_root(self, system):
+        """Refuse the run unless the guest's root is the filesystem the disk rows name."""
+        mounts = self.guests[system].ssh(["/bin/cat", "/proc/mounts"]).stdout.decode()
+        problem = root_problem(system, mounts)
+        if problem:
+            raise RuntimeError(problem)
+        self.roots[system] = next(line for line in reversed(mounts.splitlines())
+                                  if line.split()[1:2] == ["/"])
 
     def setup(self, system):
         guest = self.guests[system]
         data, reports = self.dirs(system)
         home = guest.home
-        self.mount_bench(system)
-        guest.ssh(["/bin/mkdir", "-p", f"{home}/bbench/bin", data, reports, f"{home}/bbench/net",
-                   f"{BENCH_MOUNT[system]}/data/{self.args.run}"])
+        self.check_root(system)
+        guest.ssh(["/bin/mkdir", "-p", f"{home}/bbench/bin", data, reports, f"{home}/bbench/net"])
         if system == "breenix":
             for source, name in ((BREENIX_RELEASE / "bbench", "bbench"),
                                  (BREENIX_RELEASE / "bbench-exit", "bbench-exit"),
@@ -699,10 +656,9 @@ class Rig:
                 f"CARGO_HOME={self.guests[system].home}/bbench/cargo-home", "CARGO_TERM_COLOR=never",
                 f"CARGO_BUILD_JOBS={CPUS}", f"CARGO_ENCODED_RUSTFLAGS={flags}"]
 
-    def bbench(self, system, sample, words, binary="bbench", timeout=900, data=None, case=None):
+    def bbench(self, system, sample, words, binary="bbench", timeout=900, case=None):
         guest = self.guests[system]
-        default, reports = self.dirs(system)
-        data = data or default
+        data, reports = self.dirs(system)
         argv = [*self.compile_env(system, case),
                 self.bin(system, binary), data, reports, sample, *words]
         result = guest.ssh(argv, timeout=timeout, check=False)
@@ -802,8 +758,7 @@ class Rig:
             self.save(system, seed, self.bbench(system, seed, self.workload(system, case, seed),
                                                 case=case))
         receipt = self.bbench(system, name, self.workload(system, case, name),
-                              binary=probe_binary(case), data=self.data_dir(system, case),
-                              case=case)
+                              binary=probe_binary(case), case=case)
         self.save(system, name, receipt)
         if receipt["error"]:
             print(f"{system} {name} failed: {receipt['error']}", flush=True)
@@ -941,8 +896,8 @@ class Rig:
         else:
             kernel = short
             toolchain = self.breenix_toolchain(facts)
-            note = (f"Production kernel and system image at {short}; bbench run as sshtest. "
-                    f"Compile rows: the staged hosted fork {FORK[:9]} ({FORK_AHEAD} commits "
+            note = (f"Production kernel and system image at {short} on a BreenFS root; bbench "
+                    f"run as sshtest. Compile rows: the staged hosted fork {FORK[:9]} ({FORK_AHEAD} commits "
                     f"ahead of Linux's {FORK_BASE['channel']}).")
         note += f" Samples alternate Linux then Breenix. {tcp_summary(system, before, after)}."
         if self.notes[system]:
@@ -955,8 +910,8 @@ class Rig:
                        "driver-map rows",
             "tcpCounters": {"atBoot": before, "afterNetworkRows": after},
             "notes": self.notes[system], "facts": facts,
-            "benchVolume": {"filesystem": BENCH_CACHE[system],
-                            "mount": getattr(self, "volumes", {}).get(system)},
+            "rootFilesystem": {"filesystem": ROOT_CACHE[system],
+                               "mount": getattr(self, "roots", {}).get(system)},
         }
         if system == "linux":
             provenance["image"] = PIN
@@ -974,7 +929,7 @@ class Rig:
         path = write_series(SERIES_DIR, f"{self.args.run}-{system}",
                             self.started.isoformat().replace("+00:00", "Z"), metadata, groups,
                             deferred=DEFERRED[system], provenance=provenance,
-                            cache={case: BENCH_CACHE[system] for case in DISK_CASES})
+                            cache={case: ROOT_CACHE[system] for case in DISK_CASES})
         print(f"Series: {path}", flush=True)
         return path
 
@@ -1088,23 +1043,26 @@ def toolchain_build_env():
 
 def stage_image(env):
     """Copy the standard image, stage the hosted toolchain into it with the suite boots'
-    staging (scripts/rust_host_stage.py --suite rustc,cargo), then grow it to the rig's
-    disk size so both guests' roots are the same size."""
-    sys.path.insert(0, str(ROOT / "scripts/metal"))
-    from metal_root import require_e2fsprogs
-    resize2fs, = require_e2fsprogs("resize2fs")
+    staging (scripts/rust_host_stage.py --suite rustc,cargo), then convert it to a BreenFS
+    root of the rig's disk size with their converter (scripts/create-breenfs-root.sh,
+    as scripts/lib/root-fs.sh does for --root-fs breenfs)."""
     BREENIX_IMAGE.parent.mkdir(parents=True, exist_ok=True)
+    staged = BREENIX_IMAGE.with_name("root-ext2.raw")
     partial = BREENIX_IMAGE.with_name(BREENIX_IMAGE.name + ".partial")
-    partial.unlink(missing_ok=True)
-    shutil.copyfile(STANDARD_IMAGE, partial)
+    for path in (staged, partial):
+        path.unlink(missing_ok=True)
+    shutil.copyfile(STANDARD_IMAGE, staged)
     run_command([sys.executable, ROOT / "scripts/rust_host_stage.py", "--arch", "aarch64",
-                 "--image", partial, "--suite", "rustc,cargo"], cwd=ROOT, env=env)
-    if partial.stat().st_size > DISK_BYTES:
-        raise ValueError(f"the staged image is {partial.stat().st_size} bytes, more than the "
+                 "--image", staged, "--suite", "rustc,cargo"], cwd=ROOT, env=env)
+    if staged.stat().st_size > DISK_BYTES:
+        raise ValueError(f"the staged image is {staged.stat().st_size} bytes, more than the "
                          f"rig's {DISK_BYTES}-byte disk")
-    with open(partial, "r+b") as disk:
+    # The converter sizes the BreenFS image to its input.
+    with open(staged, "r+b") as disk:
         disk.truncate(DISK_BYTES)
-    run_command([resize2fs, partial], capture_output=True)
+    run_command(["bash", ROOT / "scripts/create-breenfs-root.sh", staged, partial], cwd=ROOT,
+                env=env)
+    staged.unlink()
     partial.rename(BREENIX_IMAGE)
 
 

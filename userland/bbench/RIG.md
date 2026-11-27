@@ -17,8 +17,8 @@ production-profile boot test), at the memory the compile rows' suites declare:
   `minimumGuestMemory` of 1024 MiB for rustc and cargo and 2048 MiB for the
   toolchain effort's self-host acceptance. The rig takes the largest of the
   three, so neither system's page cache is held below that standard;
-- two 8192 MiB raw disks on `virtio-blk-device`, both `format=raw,cache=writeback`
-  (QEMU's default): the root disk, and the disk rows' volume, listed first;
+- one 8192 MiB raw root disk on `virtio-blk-device` with `format=raw,cache=writeback`
+  (QEMU's default): BreenFS on Breenix, ext4 on Linux;
 - `virtio-net-device` on user networking, with SSH forwarded from a loopback
   port;
 - `virtio-rng-device` and the virtio GPU, keyboard and tablet devices.
@@ -55,18 +55,18 @@ userspace/programs/build.sh --arch aarch64 --kd-loader
 scripts/create_ext2_disk.sh --arch aarch64
 cargo build --release --target aarch64-breenix-kernel.json -Z build-std=core,alloc \
     -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64
-cargo build --release --locked --manifest-path tools/breenfs/Cargo.toml \
-    --bin breenfs-mkfs --bin breenfs-check
 ```
 
-It then copies `target/ext2-aarch64.img` to
-`~/Library/Caches/breenix-bench/breenix-arm64/root.raw`, stages the hosted
-toolchain into that copy with `scripts/rust_host_stage.py --suite rustc,cargo`
-(the suites' own staging, which checks each file against the K5 and K7 build
-records), and grows it to 8192 MiB. It writes
+It then copies `target/ext2-aarch64.img`, stages the hosted toolchain into that
+copy with `scripts/rust_host_stage.py --suite rustc,cargo` (the suites' own
+staging, which checks each file against the K5 and K7 build records), extends it
+to 8192 MiB, and converts it to a BreenFS root with `scripts/create-breenfs-root.sh`
+(the converter `scripts/lib/root-fs.sh` runs for `--root-fs breenfs`; it uses
+Docker on macOS). The result is
+`~/Library/Caches/breenix-bench/breenix-arm64/root.raw`. It writes
 `~/Library/Caches/breenix-bench/breenix-arm64/build.json` with the commit and the
-SHA-256 of the kernel, the staged image, the four bbench binaries and the two
-BreenFS tools. `run` refuses to start unless that stamp names HEAD and each
+SHA-256 of the kernel, the BreenFS image and the four bbench binaries. `run`
+refuses to start unless that stamp names HEAD and each
 artifact still has its stamped digest; the series' kernel and userland commit is
 the stamped one (`test_rig.BuildIdentity`). Linux builds bbench from the same
 commit (`git archive` of the stamped commit).
@@ -117,16 +117,17 @@ runs the fork, 16 commits ahead of Linux's nightly. The rig does not yet build t
 toolchain workspace, so the four self-host rows are deferred on both systems.
 
 The disk rows (sequential, small-files, walk and fsync) run on the filesystem
-each system targets, on the second disk:
+each system targets, which is each guest's root: BreenFS on Breenix (as on the
+R240, where `/` and `/home` are BreenFS) and the distribution's ext4 on Linux.
+A second disk is not used because BreenFS does not take Breenix's boot-time
+`/home` slot (`kernel/src/fs/breenfs/boot.rs`), and the boot intent's explicit
+mounts allow only read-only non-BreenFS volumes (`prepare_mounts` in
+`kernel/src/fs/vfs/boot.rs`), which would leave an ext2 root read-only beside a
+BreenFS volume.
 
-- Breenix: BreenFS, made on the host by our `breenfs-mkfs` with a `bench`
-  directory owned by `sshtest`, checked with `breenfs-check --full`, and mounted
-  by the kernel at `/home` (ARM64 mounts block device 1 there);
-- Linux: ext4, made in the guest by its own `mkfs.ext4` with default options and
-  mounted at `/mnt/bench`.
-
-Setup refuses the run unless the guest reports the volume as `breenfs` or `ext4`,
-read-write. Each disk row's `cache` field names its filesystem. The driver-map
+Setup refuses the run unless the guest's `/proc/mounts` shows `/` as `breenfs` or
+`ext4`, read-write. Each disk row's `cache` field names its filesystem. The
+other rows, the compile rows included, run on that root too. The driver-map
 rows map a 64 MiB file that bbench writes in each guest on the root disk, so both
 systems map the same number of bytes. The SCP rows move 8 MB.
 
@@ -147,7 +148,7 @@ toolchain 200, session 120, note 400, a row's title 200, cache 300 and reason
 text. `vigil_rules.py` ports those checks and `series.write_series` fits the 9
 text fields to them, replacing addresses and hosts and shortening with an ellipsis.
 The full provenance goes to `<id>.provenance.json` beside each series: the image
-URL and SHA-256, the full `uname`, the full VM shape, the bench volume's mount
+URL and SHA-256, the full `uname`, the full VM shape, the root's mount
 line, the TCP retransmission counters at boot and after the network rows, the
 restart notes, and the original of any shortened field. The note names that file.
 `test_vigil_limits` writes both series from a run with long provenance and
