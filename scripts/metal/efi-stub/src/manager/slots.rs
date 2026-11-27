@@ -229,8 +229,13 @@ pub unsafe fn boot(boot: &BootServices, image: Handle, root: &Root, entry: Entry
         }
     };
     say!("read the {} slot: {} bytes", slot_name(entry), size);
+    boot_image(boot, image, base, size)
+}
+
+/// The verified image must remain readable for UEFI's disk protocols.
+pub unsafe fn boot_image(boot: &BootServices, image: Handle, base: *mut u8, size: usize) -> Status {
     if !bootdisk::looks_like_disk(base, size) {
-        say!("the {} slot is not a boot disk", slot_name(entry));
+        say!("the slot is not a boot disk");
         return LOAD_ERROR;
     }
     let disk = match bootdisk::attach(boot, base, size, "kernel slot") {
