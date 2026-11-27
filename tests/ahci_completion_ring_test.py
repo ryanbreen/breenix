@@ -140,7 +140,10 @@ fn record_wrap_dump() {
             self.assertNotRegex(observation, r"\.(?:store|swap|fetch_\w+|compare_exchange\w*|lock|try_lock)\(")
             self.assertNotRegex(observation, r"\b(?:return|loop|while|for)\b|serial_print|log::")
         # E24 ruling 771 pins 496(a)'s behavior comparison to its diagnostic
-        # commit. The other production bodies still use the worktree source.
+        # commit. The poller digest likewise compares the implementation
+        # before DEV-29 changed its completion behavior. Current retirement
+        # runs against register doubles in ahci_completion_timeout_test.py
+        # and ahci_poller_race_test.py.
         path = AHCI.relative_to(ROOT).as_posix()
         before, diagnostic = (
             subprocess.check_output(["git", "show", f"{commit}:{path}"], cwd=ROOT, text=True)
@@ -154,7 +157,13 @@ fn record_wrap_dump() {
             "detect_completed_slots": "eecf1f43e3970e8809bed432911fcb814aab9b8e9b47a838fc732600aacaa5d8",
         }
         for name, digest in baseline.items():
-            checked_source = diagnostic if name in historical else source
+            if name in historical:
+                checked_source = diagnostic
+            elif name == "poll_ports":
+                checked_source = subprocess.check_output(
+                    ["git", "show", f"eaf3932c:{path}"], cwd=ROOT, text=True)
+            else:
+                checked_source = source
             actual = normalized(without_observations(body(checked_source, name)))
             actual = actual.replace(
                 ".wait_timeout_uninterruptible_observed(cmd_num,TIMEOUT_NS,|stage|trace_wait_event(port,cmd_num,stage))",

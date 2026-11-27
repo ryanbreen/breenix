@@ -12,6 +12,7 @@ pub(crate) mod fd_flags;
 pub mod fifo;
 pub mod pipe;
 pub mod poll;
+pub(crate) mod sleep_mutex;
 pub mod stdin;
 
 // Re-export public API - some of these are not used yet but are part of the public API
