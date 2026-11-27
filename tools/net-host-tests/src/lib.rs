@@ -1,6 +1,7 @@
 //! Host checks for network code, compiled from the kernel's own files: the
 //! virtio-net transmit queue's publication order (virtio 1.2 section 2.7.13),
-//! and TCP's initial sequence numbers (RFC 6528) and ephemeral ports (RFC 6056).
+//! and TCP's initial sequence numbers (RFC 6528) and ephemeral ports (RFC 6056),
+//! with the key setup and port draw connection setup runs.
 #![cfg(test)]
 
 #[path = "../../../kernel/src/drivers/virtio/net_tx_queue.rs"]
@@ -10,4 +11,5 @@ mod tcp_ident;
 mod random;
 
 mod tcp_ident_checks;
+mod tcp_setup_checks;
 mod virtio_tx_checks;
