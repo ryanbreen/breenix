@@ -16,6 +16,10 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
+The on-box development loop adds a dedicated `userland/` workspace with
+`yes` as its first command. PR 3 records [R240 and Mac build and run evidence](../../userland/BUILD-TIMES.md).
+The per-program `btest` runner is the next step in the plan.
+
 E24 checksum and scrub acceptance is recorded in
 [PR #3050](https://github.com/ryanbreen/breenix/pull/3050): verified data reads,
 metadata-fault read-only latching, paced scrub and durable reports on ARM64 QEMU.
