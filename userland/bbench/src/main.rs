@@ -1,5 +1,6 @@
 mod io_work;
-mod unix;
+
+use bu_sys::bench;
 
 use std::collections::BTreeMap;
 use std::fs::{self, File};
@@ -103,14 +104,14 @@ fn workload(dir: &Path, args: &[String], metrics: &mut Metrics) -> io::Result<()
             if !Path::new(binary).is_absolute() {
                 return Err(invalid("fork-exec expects an absolute executable path"));
             }
-            unix::fork_exec_wait(Path::new(binary), loops)?;
+            bench::fork_exec_wait(Path::new(binary), loops)?;
             metrics.insert("children", loops as u64);
             Ok(())
         }
         ["anonymous"] => {
             let size = 256 * MIB;
-            let page = unix::page_size();
-            unix::touch_anonymous(size, page)?;
+            let page = bench::page_size();
+            bench::touch_anonymous(size, page)?;
             metrics.extend([
                 ("bytes", size as u64),
                 ("pages_touched", (size / page) as u64),
@@ -122,7 +123,7 @@ fn workload(dir: &Path, args: &[String], metrics: &mut Metrics) -> io::Result<()
             let file = File::open(path)?;
             let len = file.metadata()?.len() as usize;
             let start = Instant::now();
-            let mapping = unix::Mapping::new(len, Some(&file))?;
+            let mapping = bench::Mapping::new(len, Some(&file))?;
             metrics.insert("map_ns", ns(start));
             let start = Instant::now();
             let stride = 4096;
@@ -131,7 +132,7 @@ fn workload(dir: &Path, args: &[String], metrics: &mut Metrics) -> io::Result<()
             metrics.extend([
                 ("bytes", len as u64),
                 ("stride_bytes", stride as u64),
-                ("page_bytes", unix::page_size() as u64),
+                ("page_bytes", bench::page_size() as u64),
             ]);
             Ok(())
         }

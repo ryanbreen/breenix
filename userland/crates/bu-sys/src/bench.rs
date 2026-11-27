@@ -1,4 +1,4 @@
-//! POSIX operations shared by the guest and the native reference probe.
+//! Process and memory operations for the benchmark probe.
 use std::ffi::{c_char, c_void, CString};
 use std::fs::File;
 use std::io;

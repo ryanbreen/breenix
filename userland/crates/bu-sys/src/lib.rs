@@ -158,3 +158,5 @@ pub fn cap_child_resources(command: &mut std::process::Command, caps: &'static [
         });
     }
 }
+
+pub mod bench;

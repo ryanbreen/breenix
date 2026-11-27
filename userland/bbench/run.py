@@ -11,6 +11,7 @@ import subprocess
 import time
 
 RUNS = 5
+DEFERRED_DISK = ("sequential", "walk", "fsync")
 MIB = 1024 * 1024
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -146,7 +147,7 @@ def main(args):
         "walk": lambda _: ["walk", 10_000],
         "fsync": lambda _: ["fsync", 32],
     }
-    defaults = [case for case in cases if not remote or case not in ("sequential", "walk")]
+    defaults = [case for case in cases if not remote or case not in DEFERRED_DISK]
     if args.host or args.mac_ssh:
         defaults.append("network")
     selected = requested if requested is not None else defaults
@@ -221,10 +222,13 @@ def network_series(args, data, run, bsync_host):
     local = args.out / "network"
     local.mkdir(exist_ok=True)
     payload = local / "payload"
+    chunks = 8 if args.host else 100
     if not payload.exists():
         with payload.open("xb") as file:
-            for _ in range(100):
+            for _ in range(chunks):
                 file.write(os.urandom(1_000_000))
+    if payload.stat().st_size != chunks * 1_000_000:
+        raise ValueError(f"unexpected network payload size in {payload}; use a fresh output directory")
     digest = sha256(payload)
     run(["/bin/mkdir", "-p", data / "network"])
     host = args.host or args.mac_ssh
@@ -235,14 +239,10 @@ def network_series(args, data, run, bsync_host):
         if not args.host:
             return {}
         values = {}
-        for path in ("/proc/stat", "/proc/block/cache", "/proc/uptime"):
+        for path in ("/proc/stat", "/proc/block/cache", "/proc/uptime", "/proc/trace/rx_counters"):
             result = run(["/bin/cat", path], check=False, log=subprocess.DEVNULL)
             if result.returncode == 0:
                 values[path] = result.stdout.decode()
-        trace = run(["/usr/bin/sudo", "-n", "/bin/cat", "/proc/trace/counters"],
-                    check=False, log=subprocess.DEVNULL)
-        if trace.returncode == 0:
-            values["/proc/trace/counters"] = trace.stdout.decode()
         return values
 
     upload_name = "bsync-upload" if args.host else "scp-upload"
@@ -307,7 +307,7 @@ if __name__ == "__main__":
     parser.add_argument("--run", required=True, help="unique run prefix, letters/digits/hyphens")
     parser.add_argument("--out", required=True, type=Path, help="local receipt and log directory")
     parser.add_argument("--probe", required=True, help="absolute path to bbench")
-    parser.add_argument("--cases", help="comma-separated case names (remote defaults omit sequential and walk)")
+    parser.add_argument("--cases", help="comma-separated case names (remote defaults omit sequential, walk and fsync)")
     parser.add_argument("--count", type=int, choices=range(1, RUNS + 1), default=RUNS,
                         help="samples per selected case, useful for failed-run follow-up")
     parser.add_argument("--host", help="Breenix SSH login or alias")
