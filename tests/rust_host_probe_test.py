@@ -44,23 +44,22 @@ class StartupProbeTest(unittest.TestCase):
                 self.assertIn(0x6474E550, arm_headers)  # PT_GNU_EH_FRAME
                 self.assertIn(0x6474E551, arm_headers)  # PT_GNU_STACK
 
-                # Ruling 145(1): only the startup probe requires native TLS.
-                # Its startup-order guest case checks that the TLS works.
+                # Ruling 146(2), ELF gABI §7.1: p_align=0 denotes no alignment requirement.
                 arm_tls = arm_headers.get(7)  # PT_TLS
                 x86_tls = x86_headers.get(7)
-                if x86_tls and x86_tls['MemSize'] > 0:
-                    self.assertGreater((arm_tls or {}).get('MemSize', 0), 0,
-                                       'ARM twin lacks the x86 TLS template')
+                self.assertEqual((arm_tls or {}).get('MemSize', 0) > 0,
+                                 (x86_tls or {}).get('MemSize', 0) > 0,
+                                 'ARM and x86 must agree on whether the TLS template is non-empty')
                 for elf, tls in ((arm_elf, arm_tls), (x86_elf, x86_tls)):
                     with self.subTest(elf=elf):
                         if name == 'rust-host-startup-probe':
                             self.assertIsNotNone(tls)
                             self.assertGreater(tls['MemSize'], 0)
-                        elif tls is not None:
+                        if tls is not None:
                             self.assertGreaterEqual(tls['MemSize'], tls['FileSize'])
                             align = tls['Alignment']
-                            self.assertTrue(align > 0 and (align & (align - 1)) == 0,
-                                            f'PT_TLS p_align={align} must be a power of two')
+                            self.assertTrue(align == 0 or (align > 0 and (align & (align - 1)) == 0),
+                                            f'PT_TLS p_align={align} must be zero or a power of two')
                             self.assertLessEqual(tls['Offset'] + tls['FileSize'], elf.stat().st_size)
 
     def elf_headers(self, elf):
