@@ -390,12 +390,22 @@ Invoke this skill when:
 - `breenix-interrupt-trace`: For QEMU-based interrupt tracing
 - `breenix-gdb-attach`: For breakpoint-based debugging
 
-## REFERENCES
+## CLEAN-ROOM REFERENCES
 
-- Intel Software Developer Manual Vol 3, Chapter 6: Interrupt and Exception Handling
-- AMD64 Architecture Manual Vol 2, Chapter 8: Exceptions and Interrupts
-- Linux kernel: arch/x86/entry/entry_64.S - pristine syscall entry path
-- FreeBSD: sys/amd64/amd64/exception.S - interrupt handling
+Follow the [OS research rule](../../../.claude/skills/os-research/SKILL.md)
+for permitted references and the project's permissive-source allowances.
+Never read, fetch, quote, copy, or adapt another OS's implementation,
+copyleft emulator source, or another C library's implementation.
+
+- Use Intel's Software Developer's Manual, the AMD64 Architecture
+  Programmer's Manual, and the Arm Architecture Reference Manual for
+  instruction, exception, and interrupt behaviour.
+- Use published ABI specifications, POSIX, and man pages for calling
+  conventions and syscall semantics. Linux syscall numbers and structure
+  layouts may come from published ABI headers or kernel documentation as
+  interface facts.
+- Use published papers to compare designs and black-box observations to
+  check public behaviour on other systems.
 
 ## VERSION HISTORY
 
