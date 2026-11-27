@@ -13,7 +13,7 @@ production-profile boot test):
 
 - `qemu-system-aarch64 -M virt,gic-version=3`, accelerated by HVF with
   `-cpu host` through `scripts/qemu-arm64.py`, with 4 vCPUs and 512 MiB;
-- one 4096 MiB raw disk on `virtio-blk-device` at QEMU's default cache mode
+- one 8192 MiB raw disk on `virtio-blk-device` at QEMU's default cache mode
   (writeback);
 - `virtio-net-device` on user networking, with SSH forwarded from a loopback
   port;
@@ -31,7 +31,7 @@ Breenix comes from this checkout at the commit being measured. Build it first:
 userspace/programs/build.sh --arch aarch64
 userspace/programs/build.sh --arch aarch64 --bbench
 BREENIX_TEST_SSH_KEY_DIR=$HOME/Library/Caches/breenix-bench/breenix-arm64/test-ssh \
-    scripts/create_ext2_disk.sh --arch aarch64 --size 4096
+    scripts/create_ext2_disk.sh --arch aarch64 --size 8192
 cargo build --release --target aarch64-breenix-kernel.json -Z build-std=core,alloc \
     -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64
 ```

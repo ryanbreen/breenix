@@ -52,7 +52,9 @@ MIB = 1024 * 1024
 # virtio-rng and the virtio input and GPU devices the kernel enumerates.
 CPUS = 4
 MEMORY = "512M"
-DISK_BYTES = 4096 * MIB
+# Linux's root holds the distribution, gcc and the toolchain (2.8 GB on a 4 GiB disk),
+# and the sequential row writes 1 GiB, so both guests get 8 GiB.
+DISK_BYTES = 8192 * MIB
 SHAPE_ARGS = [
     "-M", "virt,gic-version=3", "-cpu", "max", "-smp", str(CPUS), "-m", MEMORY,
     "-device", "virtio-gpu-device", "-device", "virtio-keyboard-device",
@@ -284,7 +286,7 @@ class Guest:
 
 def fetch_linux():
     image = fetch_image(PIN, LINUX_CACHE)
-    base = LINUX_CACHE / f"base-{PIN['sha256'][:12]}.raw"
+    base = LINUX_CACHE / f"base-{PIN['sha256'][:12]}-{DISK_BYTES // MIB}.raw"
     if not base.exists():
         partial = base.with_name(base.name + ".partial")
         partial.unlink(missing_ok=True)
@@ -310,7 +312,7 @@ def user_data(public_key):
 
 def provision_linux():
     base = fetch_linux()
-    provisioned = LINUX_CACHE / f"provisioned-{PIN['sha256'][:12]}.raw"
+    provisioned = LINUX_CACHE / f"provisioned-{PIN['sha256'][:12]}-{DISK_BYTES // MIB}.raw"
     record = provisioned.with_suffix(".json")
     if provisioned.exists() and record.exists():
         print(f"Linux already provisioned: {provisioned}")
@@ -453,7 +455,7 @@ class Rig:
         run_command(["cp", "-c", BREENIX_IMAGE, disk])
         self.guests["breenix"] = Guest("breenix", self.run_dir, disk, self.args.headed)
         linux_disk = self.run_dir / "linux-disk.raw"
-        run_command(["cp", "-c", LINUX_CACHE / f"provisioned-{PIN['sha256'][:12]}.raw",
+        run_command(["cp", "-c", LINUX_CACHE / f"provisioned-{PIN['sha256'][:12]}-{DISK_BYTES // MIB}.raw",
                      linux_disk])
         self.guests["linux"] = Guest("linux", self.run_dir, linux_disk, self.args.headed)
         for system in SYSTEMS:
