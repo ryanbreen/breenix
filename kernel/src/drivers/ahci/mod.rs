@@ -319,6 +319,7 @@ const PORT_READY: u8 = 0;
 const PORT_STOPPING: u8 = 1;
 const PORT_RESET_REQUIRED: u8 = 2;
 const PORT_OFFLINE: u8 = 3;
+const PORT_RECOVERY_QUEUED: u8 = 4;
 static PORT_RECOVERY: [AtomicU8; MAX_PORTS] =
     [const { AtomicU8::new(PORT_READY) }; MAX_PORTS];
 
@@ -1033,18 +1034,21 @@ fn wait_for_recovery(ticks: u64, ready: impl Fn() -> bool) -> bool {
     }
 }
 
-/// AHCI 1.3.1 sections 6.2.2.1 and 10.4.2. Called with logical port ownership
-/// and no locks. In masked contexts only an immediate restart is permitted.
-/// If a wait or COMRESET is needed, the next unmasked owner can finish it.
+/// Called before DMA setup while the caller owns the port.
 #[cold]
 fn ensure_port_ready(abar: u64, port: usize) -> Result<(), &'static str> {
-    let state = PORT_RECOVERY[port].load(Ordering::Acquire);
-    if state == PORT_READY {
-        return Ok(());
+    match PORT_RECOVERY[port].load(Ordering::Acquire) {
+        PORT_READY => Ok(()),
+        PORT_OFFLINE => Err("AHCI: port offline after failed recovery"),
+        PORT_RECOVERY_QUEUED => Err("AHCI: port recovery pending"),
+        state => recover_stopped_port(abar, port, state),
     }
-    if state == PORT_OFFLINE {
-        return Err("AHCI: port offline after failed recovery");
-    }
+}
+
+/// AHCI 1.3.1 sections 6.2.2.1 and 10.4.2. Keep the port unavailable
+/// throughout the stop and optional reset, with no lock held across a wait.
+#[cold]
+fn recover_stopped_port(abar: u64, port: usize, state: u8) -> Result<(), &'static str> {
     let ready = || port_quiescent(abar, port) && link_ready(abar, port);
     let needs_reset = state == PORT_RESET_REQUIRED;
     if !crate::arch_interrupts_enabled() {
@@ -1086,27 +1090,48 @@ fn ensure_port_ready(abar: u64, port: usize) -> Result<(), &'static str> {
     ack_port_interrupt(abar, port, port_read(abar, port, PORT_IS));
     let cmd = port_read(abar, port, PORT_CMD);
     port_write(abar, port, PORT_CMD, cmd | PORT_CMD_ST);
-    PORT_RECOVERY[port].store(PORT_READY, Ordering::Release);
     drop(_status_guard);
     port_write(abar, port, PORT_IE, PORT_IRQ_ENABLE);
+    PORT_RECOVERY[port].store(PORT_READY, Ordering::Release);
     Ok(())
 }
 
 #[cold]
 fn recover_failed_command(abar: u64, port: usize, force_reset: bool) {
+    let state = if force_reset { PORT_RESET_REQUIRED } else { PORT_STOPPING };
     {
         let _status_guard = PORT_POLL[port].lock();
-        PORT_RECOVERY[port].store(
-            if force_reset { PORT_RESET_REQUIRED } else { PORT_STOPPING },
-            Ordering::Release,
-        );
+        PORT_RECOVERY[port].store(state, Ordering::Release);
         PORT_ACTIVE_MASK[port].store(0, Ordering::Release);
         PORT_ACTIVE_CMD_NUM[port].store(0, Ordering::Release);
         port_write(abar, port, PORT_IE, 0);
         let cmd = port_read(abar, port, PORT_CMD);
         port_write(abar, port, PORT_CMD, cmd & !PORT_CMD_ST);
     }
-    let _ = ensure_port_ready(abar, port);
+    if recover_stopped_port(abar, port, state).is_err()
+        && PORT_RECOVERY[port].load(Ordering::Acquire) == state
+    {
+        defer_port_recovery(abar, port, state);
+    }
+}
+
+/// A masked caller can stop the engine but can't wait for hardware. Hand
+/// recovery to an IRQ-enabled worker if the scheduler is ready. Early boot
+/// leaves the port quarantined for the next unmasked owner.
+#[cold]
+fn defer_port_recovery(abar: u64, port: usize, state: u8) {
+    use crate::task::workqueue::{schedule_work, Work};
+
+    if !can_park_for_port_io() {
+        return;
+    }
+    PORT_RECOVERY[port].store(PORT_RECOVERY_QUEUED, Ordering::Release);
+    let work = Work::new(move || {
+        let _ = recover_stopped_port(abar, port, state);
+    }, "ahci-port-recovery");
+    if !schedule_work(work) {
+        PORT_RECOVERY[port].store(state, Ordering::Release);
+    }
 }
 
 // =============================================================================

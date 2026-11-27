@@ -22,13 +22,13 @@ class AhciCompletion(unittest.TestCase):
         source = SOURCE.read_text()
         registers = re.findall(
             r"(?m)^const (?:HBA_IS|PORT_(?:IS|IE|CI|TFD|CMD|SERR|SSTS|SCTL|SACT)|S[CS]TS_[A-Z0-9_]+|SCTL_[A-Z0-9_]+|PORT_(?:IRQ|TFD|CMD)_[A-Z0-9_]+|"
-            r"AHCI_(?:CI_COMPLETION_LOOP_LIMIT|TRACKED_SLOT_MASK|TIMEOUT_SECS)|PORT_(?:READY|STOPPING|RESET_REQUIRED|OFFLINE)): [^=]+=[^;]+;",
+            r"AHCI_(?:CI_COMPLETION_LOOP_LIMIT|TRACKED_SLOT_MASK|TIMEOUT_SECS)|PORT_(?:READY|STOPPING|RESET_REQUIRED|OFFLINE|RECOVERY_QUEUED)): [^=]+=[^;]+;",
             source,
         )
         names = ["ack_port_interrupt", "detect_completed_slots", "handle_interrupt", "wait_cmd_slot0",
                  "wait_cmd_slot0_inner", "slot0_can_retire", "save_command_errors",
                  "command_receipt", "port_quiescent", "link_ready", "wait_for_recovery",
-                 "ensure_port_ready", "recover_failed_command"]
+                 "ensure_port_ready", "recover_stopped_port", "recover_failed_command"]
         receipt = re.search(r"struct CommandReceipt \{[^}]+\}", source)[0]
         registers.append(receipt + "\nimpl CommandReceipt { " + function(source, "validate") + " }")
         # The baseline has an inline timeout error. The new helper, when present,

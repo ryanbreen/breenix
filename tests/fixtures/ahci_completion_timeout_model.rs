@@ -189,6 +189,9 @@ fn read_cntpct() -> u64 {
     })
 }
 fn read_cntpct_and_freq() -> (u64, u64) { (read_cntpct(), 1000) }
+// Model early boot, where there is no workqueue and the next unmasked
+// request drives recovery.
+fn defer_port_recovery(_: u64, _: usize, _: u8) {}
 fn arch_interrupts_enabled() -> bool { MODEL.with_borrow(|device| device.interrupts_enabled) }
 fn read_prdbc(_: usize) -> Result<u32, &'static str> {
     Ok(MODEL.with_borrow(|device| device.prdbc))
