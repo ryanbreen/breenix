@@ -1,0 +1,5 @@
+Usage: yes [STRING]...
+Repeat the STRINGs as one line. With no STRING, repeat y.
+  --help     Show this help and exit
+  --version  Show the version and exit
+  --         End option processing

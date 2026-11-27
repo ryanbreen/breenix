@@ -3,6 +3,18 @@
 version = 4
 
 [[package]]
+name = "btest"
+version = "0.1.0"
+dependencies = [
+ "bu-case",
+ "bu-sys",
+]
+
+[[package]]
+name = "bu-case"
+version = "0.1.0"
+
+[[package]]
 name = "bu-sys"
 version = "0.1.0"
 

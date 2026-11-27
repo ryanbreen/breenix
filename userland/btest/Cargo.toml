@@ -1,0 +1,12 @@
+[package]
+name = "btest"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+bu-case = { path = "../crates/bu-case" }
+bu-sys = { path = "../crates/bu-sys" }
+
+[lints]
+workspace = true
