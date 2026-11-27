@@ -116,7 +116,7 @@ pub fn sys_ioctl(fd: u64, request: u64, arg: u64) -> SyscallResult {
         }
     }
     let node = match &kind {
-        FdKind::RegularFile(file) => Some(file.lock().open.node.clone()),
+        FdKind::RegularFile(file) => Some(file.open.node.clone()),
         FdKind::Directory(file) => Some(file.lock().open.node.clone()),
         _ => None,
     };

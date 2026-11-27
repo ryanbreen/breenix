@@ -37,7 +37,7 @@ impl FileKey {
             return Ok(Some(Self::inode(node)));
         }
         Ok(Some(match &entry.kind {
-            FdKind::RegularFile(file) => Self::inode(&file.lock().open.node),
+            FdKind::RegularFile(file) => Self::inode(&file.open.node),
             FdKind::Directory(dir) => Self::inode(&dir.lock().open.node),
             FdKind::PipeRead(pipe) | FdKind::PipeWrite(pipe) => Self::Pipe(pipe.lock().inode()),
             FdKind::FifoRead(_, pipe, _) | FdKind::FifoWrite(_, pipe, _)
