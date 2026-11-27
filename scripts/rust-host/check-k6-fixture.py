@@ -27,7 +27,8 @@ def verify(fixture, arch="x86_64"):
 
     k5 = read_json(K5 / f'{arch}.json')
     k6 = read_json(K6 / f'{arch}.json')
-    control = read_json(K6 / 'expect.json')['control'] if arch == 'x86_64' else None
+    expectations = 'expect.json' if arch == 'x86_64' else f'expect-{arch}.json'
+    control = read_json(K6 / expectations)['control']
     links = k6['links']
     if links.keys() != set(LINKS):
         raise ValueError('K6 build record must pin the six tool links and both probe links')
@@ -37,11 +38,11 @@ def verify(fixture, arch="x86_64"):
         *((f'sysroot/{name}', digest) for name, digest in k5['sysroot']['files_sha256'].items()),
         *((name, entry['sha256']) for name, entry in k6['inputs'].items()),
         *((f'links/{name}/reference.elf', link['reference_sha256']) for name, link in links.items()),
-        *([(control['archive'], control['sha256'])] if control else []),
+        (control['archive'], control['sha256']),
     ]:
         if pins.setdefault(name, digest) != digest:
             raise ValueError(f'{name}: conflicting SHA-256 pins in the build records')
-    if arch == 'x86_64' and len(pins) != 89:
+    if len(pins) != 89:
         raise ValueError(f'expected 89 distinct pinned files, found {len(pins)}')
 
     for name, expected in pins.items():
