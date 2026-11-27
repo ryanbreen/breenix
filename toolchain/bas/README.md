@@ -7,8 +7,9 @@ ELF64 relocatable object. The default target is `x86_64` on either host.
 ## Input syntax
 
 Use lower-case instructions and registers. The x86-64 backend uses Intel
-syntax. A semicolon outside a string starts a comment, and AArch64 also
-accepts `//`. The initial section is `.text`, where instructions go.
+syntax, where a semicolon outside a string starts a comment. AArch64 uses
+semicolons to separate statements and accepts `//` comments.
+The initial section is `.text`, where instructions go.
 `section NAME` selects `.text`, `.data`, `.rodata`, `.bss`, `.tdata`, `.tbss` or an executable `.text.*` subsection.
 
 - `NAME:` defines a label at the current section offset. Labels are local

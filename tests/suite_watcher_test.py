@@ -76,7 +76,7 @@ class SuiteWatcherTest(unittest.TestCase):
         sequence_deadlines = runpy.run_path(str(helper_path))["suite_deadlines"]
         deadlines = sequence_deadlines(suites, "aarch64")
         for arch, by_suite, expected in (
-            ("aarch64", deadlines, [1757, 3250, 2425]),
+            ("aarch64", deadlines, [1794, 3250, 2425]),
             ("x86_64", sequence_deadlines(suites, "x86_64"), [1769, 3250, 2425]),
         ):
             with self.subTest(arch=arch):
@@ -87,7 +87,7 @@ class SuiteWatcherTest(unittest.TestCase):
                              for case in category["cases"] if "targets" not in case or arch in case["targets"]]
                     total = sum(allowances.get((suite, case), default) for case in cases)
                     if arch == "aarch64" and suite == "toolchain":
-                        self.assertEqual(total, 1_405_000)
+                        self.assertEqual(total, 1_435_000)
                     self.assertGreaterEqual(by_suite[suite], (total * 5 + 3999) // 4000, suite)
                 self.assertEqual([by_suite[suite] for suite in suites], expected)
         self.assertEqual(old_deadline, 1800)  # Previous per-suite gate.
@@ -130,6 +130,31 @@ class SuiteWatcherTest(unittest.TestCase):
                 self.assertEqual(json.loads(lines[1]), deadlines)
             else:
                 self.assertNotIn("--suite-deadlines", lines)
+
+    def test_arm_kernel_assembly_uses_suite_deadlines(self):
+        launcher = (ROOT / "scripts/boot-interactive.sh").read_text()
+        selection = launcher.split("WATCH_READY_ARGS=()", 1)[1].split('[ "$UNTIL_DESKTOP_READY"', 1)[0]
+        for explicit in ("0", "1"):
+            result = subprocess.run(["bash", "-c", 'ROOT="$1"; MILESTONE=toolchain/kernel-assembly; '
+                                     'GATE_TIMEOUT_EXPLICIT="$2"; SUITE="toolchain,processes"; '
+                                     'WATCH_READY_ARGS=(); ' + selection +
+                                     'printf "%s\n" "${WATCH_READY_ARGS[@]}"',
+                                     "test", str(ROOT), explicit], capture_output=True, text=True, check=True)
+            lines = result.stdout.splitlines()
+            if explicit == "0":
+                self.assertEqual(lines[0], "--suite-deadlines")
+                deadlines = runpy.run_path(str(ROOT / "scripts/suite-deadlines.py"))["suite_deadlines"]
+                self.assertEqual(json.loads(lines[1]), deadlines(["toolchain", "processes"], "aarch64"))
+            else:
+                self.assertNotIn("--suite-deadlines", lines)
+
+    def test_arm_kernel_assembly_uses_busybox_scratch(self):
+        script = ROOT / "scripts/lib/root-fs.sh"
+        result = subprocess.run(["bash", "-c", 'source "$1"; MODE=suite; SUITE=toolchain; '
+                                 'MILESTONE=toolchain/kernel-assembly; WRITABLE=/tmp/run/root.img; '
+                                 'root_fs_scratch; printf "%s\n" "${BREENFS_SCRATCH_ARGS[@]}"',
+                                 "test", str(script)], capture_output=True, text=True, check=True)
+        self.assertIn("file=/tmp/run/toolchain-scratch.img", result.stdout)
 
     def test_stalled_suite_does_not_shift_the_next_suite_deadline(self):
         with tempfile.TemporaryDirectory() as tmp:

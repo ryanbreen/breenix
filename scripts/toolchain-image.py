@@ -33,6 +33,16 @@ KERNEL_ASM_SOURCES = (
     "src/arch_impl/x86_64/ap_trampoline.asm",
 )
 KERNEL_ASM_OBJECTS = ("syscall_entry.o", "timer_entry.o", "breakpoint_entry.o", "ap_trampoline.o")
+KERNEL_ASM_FILES = {
+    "x86_64": (KERNEL_ASM_SOURCES, (), KERNEL_ASM_OBJECTS, KERNEL_ASM_CORPUS),
+    "aarch64": (
+        ("src/arch_impl/aarch64/resume_pc_guard.inc", "src/arch_impl/aarch64/boot.S",
+         "src/arch_impl/aarch64/syscall_entry.S"),
+        ("boot.s", "syscall_entry.s"),
+        ("boot.o", "syscall_entry.o"),
+        ("privileged-a64.s", "privileged-a64.hex"),
+    ),
+}
 # 25.11d2-driver measured 39,576 KiB. E24's 64 MiB scratch geometry
 # leaves 25,960 KiB for filesystem overhead and guest allocation differences.
 BUSYBOX_SCRATCH_BYTES = 64 << 20
@@ -189,19 +199,25 @@ def busybox_scratch_record(path):
     return {"size": BUSYBOX_SCRATCH_BYTES, "sha256": digest(path)}
 
 
-def read_kernel_assembly_record(path):
+def read_kernel_assembly_record(path, arch="x86_64"):
     fields = {}
     for line in path.read_text().splitlines():
         name, separator, value = line.partition("=")
         if not separator or name in fields or not value:
             raise ValueError("invalid kernel assembly record field")
         fields[name] = value
-    digests = (*KERNEL_ASM_SOURCES, *KERNEL_ASM_OBJECTS, "bas_sha256", "kernel_elf_sha256")
+    sources, units, objects, _ = KERNEL_ASM_FILES[arch]
+    digests = (*sources, *units, *objects, "bas_sha256", "kernel_elf_sha256")
     if (fields.keys() != {*digests, "cargo_package", "build_host", "rustc"}
             or fields["cargo_package"] != "bas"
             or any(not SHA256.fullmatch(fields[name]) for name in digests)):
         raise ValueError("invalid kernel assembly record")
     return fields
+
+
+def verify_kernel_elf(record, elf, arch):
+    if read_kernel_assembly_record(record, arch)["kernel_elf_sha256"] != digest(elf):
+        raise ValueError("kernel ELF digest differs from kernel assembly record")
 
 
 def kernel_assembly_record(tree, files, arch, milestone):
@@ -210,17 +226,16 @@ def kernel_assembly_record(tree, files, arch, milestone):
         if staged:
             raise ValueError(f"kernel assembly fixture requires {KERNEL_ASSEMBLY_MILESTONE}")
         return None
-    if arch != "x86_64":
-        raise ValueError(f"{KERNEL_ASSEMBLY_MILESTONE} requires x86_64")
-    inputs = (*KERNEL_ASM_SOURCES, *KERNEL_ASM_OBJECTS)
-    if staged != {KERNEL_ASSEMBLY / name for name in (*inputs, KERNEL_ASSEMBLY_RECORD, *KERNEL_ASM_CORPUS)}:
+    sources, units, objects, corpus = KERNEL_ASM_FILES[arch]
+    inputs = (*sources, *units, *objects)
+    if staged != {KERNEL_ASSEMBLY / name for name in (*inputs, KERNEL_ASSEMBLY_RECORD, *corpus)}:
         raise ValueError("kernel assembly fixture differs from the required file set")
     directory = tree / KERNEL_ASSEMBLY
-    fields = read_kernel_assembly_record(directory / KERNEL_ASSEMBLY_RECORD)
+    fields = read_kernel_assembly_record(directory / KERNEL_ASSEMBLY_RECORD, arch)
     for name in inputs:
         if digest(directory / name) != fields[name]:
             raise ValueError(f"staged kernel assembly bytes differ from the record for {name}")
-    for name in KERNEL_ASM_CORPUS:
+    for name in corpus:
         if digest(directory / name) != digest(ROOT / "toolchain/corpus/kernel-asm" / name):
             raise ValueError(f"staged kernel assembly corpus differs for {name}")
     return fields

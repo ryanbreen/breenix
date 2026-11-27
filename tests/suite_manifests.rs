@@ -333,7 +333,10 @@ fn read_manifest(path: &Path, errors: &mut Vec<String>) -> Option<Manifest> {
                                         Some(list) if !list.is_empty() && list.iter().enumerate().all(|(index, target)|
                                             matches!(target.as_str(), Some("aarch64" | "x86_64"))
                                                 && !list[..index].contains(target)) => {
-                                            case.targets = list.iter().map(|target| target.as_str().unwrap().to_string()).collect();
+                                            // Both supported targets are equivalent to an unscoped guest case.
+                                            if list.len() == 1 {
+                                                case.targets = list.iter().map(|target| target.as_str().unwrap().to_string()).collect();
+                                            }
                                         }
                                         _ => errors.push(format!("{case_at}: targets must list unique supported architectures")),
                                     }
@@ -2295,8 +2298,8 @@ fn toolchain_registry_matches_accepted_cases_per_target() {
     let manifest = read_manifest(&root.join("docs/suites/toolchain.json"), &mut errors).unwrap();
     assert!(errors.is_empty(), "{}", errors.join("\n"));
 
-    // Case order from the accepted ARM64 head 5b5f8a35.
-    let accepted_arm: Vec<_> = [
+    // Case order from the accepted ARM64 head 5b5f8a35, followed by A6.
+    let expected: Vec<_> = [
         "inputs sysroot-manifest reference-corpus-runs",
         "assembler encodings-match object-runs bad-input-located",
         "linker links-reference-objects got-and-archives tls-template archive-tools undefined-located duplicate-located",
@@ -2311,18 +2314,12 @@ fn toolchain_registry_matches_accepted_cases_per_target() {
         "libc-suite dirent-glob getopt-env locale-wchar math pthread stdio string-stdlib",
         "busybox unpack patch generators configure inventory build-libbb-1 build-libbb-2 build-libbb-3 build-libbb-4 build-applets-1 build-applets-2 build-applets-3 build-applets-4 link-and-list required-usage",
         "gnu-workloads gnu-c-extensions gnu-make-features kbuild-host-programs",
+        "kernel-asm four-objects-match-record breakpoint-roundtrip privileged-encodings",
     ].iter().flat_map(|row| {
         let (category, cases) = row.split_once(' ').unwrap();
         cases.split_whitespace().map(move |case| format!("{category}/{case}"))
     }).collect();
-    let mut accepted_x86 = accepted_arm.clone();
-    accepted_x86.extend([
-        "kernel-asm/four-objects-match-record",
-        "kernel-asm/breakpoint-roundtrip",
-        "kernel-asm/privileged-encodings",
-    ].map(String::from));
-
-    for (arch, expected) in [("aarch64", accepted_arm), ("x86_64", accepted_x86)] {
+    for arch in ["aarch64", "x86_64"] {
         for (name, categories) in [("guest", &guest), ("manifest", &manifest.categories)] {
             let cases: Vec<_> = categories.iter().flat_map(|category| {
                 category.cases.iter()

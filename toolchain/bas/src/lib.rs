@@ -54,18 +54,15 @@ pub fn assemble(source: &[u8]) -> Result<Vec<u8>> {
 /// Assemble for the selected target or return the first diagnostic.
 pub fn assemble_for(target: Target, source: &[u8]) -> Result<Vec<u8>> {
     let mut object = object::Object::new(target);
+    if target == Target::Aarch64 {
+        parser::assemble_aarch64(source, &mut object)?;
+        return object.finish();
+    }
     let lines = || source.split(|&byte| byte == b'\n');
-    let mut nasm = (target == Target::X86_64 && lines().any(nasm::is_marker))
-        .then(nasm::Preprocessor::new);
+    let mut nasm = lines().any(nasm::is_marker).then(nasm::Preprocessor::new);
     for (index, line) in lines().enumerate() {
         let line_number = index + 1;
-        if let Some(index) = line.iter().position(|&byte| byte == 0) {
-            return Err(Location {
-                line: line_number,
-                column: index + 1,
-            }
-            .error("NUL in source"));
-        }
+        check_source_line(line, line_number)?;
         if let Some(preprocessor) = &mut nasm {
             preprocessor.line(line, line_number, &mut object)?;
         } else {
@@ -76,4 +73,15 @@ pub fn assemble_for(target: Target, source: &[u8]) -> Result<Vec<u8>> {
         preprocessor.finish()?;
     }
     object.finish()
+}
+
+fn check_source_line(line: &[u8], line_number: usize) -> Result<()> {
+    if let Some(index) = line.iter().position(|&byte| byte == 0) {
+        return Err(Location {
+            line: line_number,
+            column: index + 1,
+        }
+        .error("NUL in source"));
+    }
+    Ok(())
 }

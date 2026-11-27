@@ -173,20 +173,21 @@ def stage_kernel_assembly(image, arch, corpus, milestone, record):
         if record is not None:
             raise ValueError(f"--kernel-assembly-record requires {image.KERNEL_ASSEMBLY_MILESTONE}")
         return
-    if arch != "x86_64" or record is None:
-        raise ValueError(f"{image.KERNEL_ASSEMBLY_MILESTONE} requires x86_64 and --kernel-assembly-record")
-    fields = image.read_kernel_assembly_record(record)
+    if record is None:
+        raise ValueError(f"{image.KERNEL_ASSEMBLY_MILESTONE} requires --kernel-assembly-record")
+    fields = image.read_kernel_assembly_record(record, arch)
     if fields["bas_sha256"] != digest(record.parent / "bas"):
         raise ValueError("kernel assembly record differs from the build host's bas")
     destination = corpus / image.KERNEL_ASSEMBLY.name
-    for names, directory in ((image.KERNEL_ASM_SOURCES, ROOT / "kernel"),
-                             (image.KERNEL_ASM_OBJECTS, record.parent)):
+    sources, units, objects, asm_corpus = image.KERNEL_ASM_FILES[arch]
+    for names, directory in ((sources, ROOT / "kernel"),
+                             ((*units, *objects), record.parent)):
         for name in names:
             staged = destination / name
             staged.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(directory / name, staged)
     shutil.copyfile(record, destination / image.KERNEL_ASSEMBLY_RECORD)
-    for name in image.KERNEL_ASM_CORPUS:
+    for name in asm_corpus:
         shutil.copyfile(WORKSPACE / "corpus/kernel-asm" / name, destination / name)
 
 

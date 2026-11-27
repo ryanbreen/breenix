@@ -292,11 +292,18 @@ fn logical(p: &mut Parser<'_, '_>, opc: u32, invert: bool, op: &str) -> Result<u
     }
     let rn = rn.map_or(31, |reg| reg.number);
     let bits = first.sf() | (opc << 29) | (rn << 5) | rd.map_or(31, |reg| reg.number);
-    if !invert && p.peek() == b'#' {
+    if p.peek() == b'#' && (!invert || op == "bic") {
         if let Some(rd) = rd {
             rd.check_31(p, if opc == 3 { Zero } else { Stack })?;
         }
         let (value, column) = literal(p, first.bits())?;
+        // The immediate BIC spelling clears bits using AND (immediate),
+        // C6.2.14, with the mask complemented at the operand width.
+        let value = if invert {
+            !value & (u64::MAX >> (64 - first.bits()))
+        } else {
+            value
+        };
         let mask = logical_mask(value, first.bits())
             .ok_or_else(|| p.error(column, "unencodable logical immediate"))?;
         return Ok(bits | 0x1200_0000 | mask);

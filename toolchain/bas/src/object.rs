@@ -2,13 +2,14 @@
 //! System V AMD64 psABI Table 4.9 and AAELF64 §§5.6.5, 5.7.6.
 //! bobj writes and lays out the ELF records.
 
-use std::collections::BTreeMap;
+use std::collections::{btree_map::Entry, BTreeMap};
 
 use bobj::elf::aarch64::EM_AARCH64;
 use bobj::elf::amd64::{R_64, R_GOTPCREL, R_PC32, R_PLT32, R_TPOFF32};
 use bobj::elf::{
     write_rel, RelSection, RelSymbol, Rela, EM_X86_64, SHF_ALLOC, SHF_EXECINSTR, SHF_TLS,
-    SHF_WRITE, SHN_UNDEF, SHT_NOBITS, SHT_PROGBITS, STB_LOCAL, STB_WEAK, STT_NOTYPE, STT_TLS,
+    SHF_WRITE, SHN_UNDEF, SHT_NOBITS, SHT_PROGBITS, STB_GLOBAL, STB_LOCAL, STB_WEAK,
+    STT_NOTYPE, STT_TLS,
 };
 
 use crate::aarch64::Relocation;
@@ -31,6 +32,7 @@ struct Section {
     size: u64,
     bytes: Vec<u8>,
     relocations: Vec<Rela>,
+    literal_loads: Vec<LiteralLoad>,
 }
 
 impl Section {
@@ -43,6 +45,7 @@ impl Section {
             size: 0,
             bytes: Vec::new(),
             relocations: Vec::new(),
+            literal_loads: Vec::new(),
         }
     }
 }
@@ -66,6 +69,18 @@ struct Reference {
     field: usize,
     kind: ReferenceKind,
     addend: i64,
+    at: Location,
+}
+
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) enum LiteralValue {
+    Constant(u64),
+    Symbol { symbol: usize, addend: i64 },
+}
+
+struct LiteralLoad {
+    instruction: usize,
+    value: LiteralValue,
     at: Location,
 }
 
@@ -112,7 +127,7 @@ pub(crate) struct Object {
     symbol_ids: BTreeMap<String, usize>,
     pub(crate) symbols: Vec<Symbol>,
     references: Vec<Reference>,
-    text_mappings: Vec<(usize, u64, &'static [u8])>,
+    mappings: Vec<(usize, u64, &'static [u8])>,
     sizes: Vec<SizeExpression>,
     constants: Vec<ConstantField>,
     last_output_at: Location,
@@ -120,14 +135,20 @@ pub(crate) struct Object {
 
 impl Object {
     pub(crate) fn new(target: Target) -> Self {
+        let mut text = Section::new(SECTIONS[0]);
+        if target == Target::Aarch64 {
+            // An A64 instruction is four bytes, even in a default .text
+            // section where this translation unit emits no instructions.
+            text.alignment = 4;
+        }
         Self {
             target,
-            sections: vec![Section::new(SECTIONS[0])],
+            sections: vec![text],
             current: 0,
             symbol_ids: BTreeMap::new(),
             symbols: Vec::new(),
             references: Vec::new(),
-            text_mappings: Vec::new(),
+            mappings: Vec::new(),
             sizes: Vec::new(),
             constants: Vec::new(),
             last_output_at: Location { line: 1, column: 1 },
@@ -154,6 +175,10 @@ impl Object {
                     (name.starts_with(".text.")
                         && name.len() > ".text.".len())
                     .then_some((name, SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR))
+                })
+                .or_else(|| {
+                    (self.target == Target::Aarch64 && name.starts_with(".bss."))
+                        .then_some((name, SHT_NOBITS, SHF_ALLOC | SHF_WRITE))
                 })
                 .ok_or_else(|| at.error("unsupported section"))?;
             let index = self.sections.len();
@@ -249,7 +274,7 @@ impl Object {
 
     pub(crate) fn fill(&mut self, at: Location, count: u64, byte: u8) -> Result<()> {
         if count != 0 {
-            self.map_text(b"$d");
+            self.map_aarch64(b"$d");
         }
         let section = &mut self.sections[self.current];
         let end = section
@@ -279,7 +304,7 @@ impl Object {
 
     pub(crate) fn emit_bytes(&mut self, at: Location, bytes: &[u8]) -> Result<()> {
         if !bytes.is_empty() {
-            self.map_text(b"$d");
+            self.map_aarch64(b"$d");
         }
         self.append_bytes(at, bytes)
     }
@@ -308,17 +333,16 @@ impl Object {
         }
     }
 
-    fn map_text(&mut self, name: &'static [u8]) {
+    fn map_aarch64(&mut self, name: &'static [u8]) {
         if self.target == Target::Aarch64
-            && self.sections[self.current].flags & SHF_EXECINSTR != 0
             && self
-                .text_mappings
+                .mappings
                 .iter()
                 .rev()
                 .find(|&&(section, _, _)| section == self.current)
                 .is_none_or(|&(_, _, previous)| previous != name)
         {
-            self.text_mappings
+            self.mappings
                 .push((self.current, self.sections[self.current].size, name));
         }
     }
@@ -332,8 +356,62 @@ impl Object {
             return Err(at.error("instruction must be four-byte aligned"));
         }
         text.alignment = text.alignment.max(4);
-        self.map_text(b"$x");
+        self.map_aarch64(b"$x");
         self.append_bytes(at, &word.to_le_bytes())
+    }
+
+    pub(crate) fn aarch64_literal_load(
+        &mut self,
+        word: u32,
+        value: LiteralValue,
+        at: Location,
+    ) -> Result<()> {
+        let instruction = self.sections[self.current].bytes.len();
+        self.emit_aarch64(at, word)?;
+        self.sections[self.current].literal_loads.push(LiteralLoad {
+            instruction,
+            value,
+            at,
+        });
+        Ok(())
+    }
+
+    fn finish_literal_pools(&mut self) -> Result<()> {
+        for section in 0..self.sections.len() {
+            let loads = std::mem::take(&mut self.sections[section].literal_loads);
+            let Some(first) = loads.first() else {
+                continue;
+            };
+            self.current = section;
+            self.align(first.at, 8, 0)?;
+            // Reuse slots by value and assign offsets in first-use order.
+            let mut slots = BTreeMap::new();
+            for load in loads {
+                let slot = match slots.entry(load.value) {
+                    Entry::Occupied(entry) => *entry.get(),
+                    Entry::Vacant(entry) => {
+                        let offset = self.sections[section].bytes.len();
+                        entry.insert(offset);
+                        match load.value {
+                            LiteralValue::Constant(value) => {
+                                self.emit_bytes(load.at, &value.to_le_bytes())?;
+                            }
+                            LiteralValue::Symbol { symbol, addend } => {
+                                self.aarch64_reference(
+                                    symbol, Relocation::Abs64, addend, None, load.at,
+                                )?;
+                            }
+                        }
+                        offset
+                    }
+                };
+                let displacement = slot as i128 - load.instruction as i128;
+                let contents = &mut self.sections[section].bytes;
+                let instruction = &mut contents[load.instruction..load.instruction + 4];
+                Relocation::Literal.patch_local(instruction, displacement, load.at)?;
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn aarch64_reference(
@@ -371,6 +449,52 @@ impl Object {
         let padding = section.size.wrapping_neg() & (alignment - 1);
         self.last_output_at = at;
         self.fill(at, padding, fill)
+    }
+
+    pub(crate) fn align_aarch64(
+        &mut self,
+        at: Location,
+        alignment: u64,
+        fill: Option<u8>,
+        maximum: Option<u64>,
+    ) -> Result<()> {
+        let section = &mut self.sections[self.current];
+        section.alignment = section.alignment.max(alignment);
+        let padding = section.size.wrapping_neg() & (alignment - 1);
+        if maximum.is_some_and(|maximum| padding > maximum) {
+            return Ok(());
+        }
+        if let Some(fill) = fill {
+            return self.fill(at, padding, fill);
+        }
+        if !self.in_text() || !self.in_progbits() {
+            return self.fill(at, padding, 0);
+        }
+        // Pad to an instruction boundary with 0x00, then emit A64 NOPs
+        // (Arm ARM DDI 0487, NOP) under the instruction mapping symbol.
+        let prefix = padding % 4;
+        self.fill(at, prefix, 0)?;
+        if padding > prefix {
+            self.map_aarch64(b"$x");
+            let section = &mut self.sections[self.current];
+            let bytes = &mut section.bytes;
+            let start = bytes.len();
+            let count = usize::try_from(padding - prefix)
+                .map_err(|_| at.error("section size out of range"))?;
+            let end = start
+                .checked_add(count)
+                .ok_or_else(|| at.error("section size out of range"))?;
+            bytes
+                .try_reserve(count)
+                .map_err(|_| at.error("cannot allocate section contents"))?;
+            bytes.resize(end, 0);
+            for word in bytes[start..end].chunks_exact_mut(4) {
+                word.copy_from_slice(&0xd503_201fu32.to_le_bytes());
+            }
+            section.size = end as u64;
+            self.last_output_at = at;
+        }
+        Ok(())
     }
 
     pub(crate) fn reference(
@@ -478,19 +602,23 @@ impl Object {
                 addend,
                 at,
             } = *reference;
-            let target = &self.symbols[symbol];
+            let target = &mut self.symbols[symbol];
             if target.section == SHN_UNDEF && target.binding == STB_LOCAL {
-                return Err(at.error("undefined label in symbol expression"));
+                // ELF gABI §5.2: a reference to a definition in another
+                // object is global. GNU A64 reserves .L names for locals.
+                if self.target != Target::Aarch64 || target.name.starts_with(".L") {
+                    return Err(at.error("undefined label in symbol expression"));
+                }
+                target.binding = STB_GLOBAL;
             }
-            let same_section = target.binding != STB_WEAK
-                && usize::from(target.section) == section + 1;
+            let same_section = usize::from(target.section) == section + 1;
             let contents = &mut self.sections[section];
             let (kind, addend) = match kind {
                 ReferenceKind::X86 { kind, next_ip } => {
                     if (kind == R_TPOFF32) != (target.kind == STT_TLS) {
                         return Err(at.error("TPOFF32 requires a TLS symbol and vice versa"));
                     }
-                    if kind == R_PC32 && same_section {
+                    if kind == R_PC32 && same_section && target.binding != STB_WEAK {
                         let displacement =
                             i64::try_from(i128::from(target.value) - next_ip as i128)
                                 .ok()
@@ -519,7 +647,10 @@ impl Object {
                             at.error("AArch64 TLS relocation requires a TLS symbol and vice versa")
                         );
                     }
+                    // A nonlocal A64 target needs linker symbol resolution
+                    // even when the assembler has a same-section definition.
                     if same_section
+                        && target.binding == STB_LOCAL
                         && kind.patch_local(
                             &mut contents.bytes[field..field + 4],
                             i128::from(target.value) + i128::from(addend) - field as i128,
@@ -535,7 +666,7 @@ impl Object {
                 offset: field as u64,
                 // object_symbols prepends the AArch64 mapping symbols before
                 // bobj assigns the final ELF symbol indices.
-                symbol: u32::try_from(self.text_mappings.len() + symbol)
+                symbol: u32::try_from(self.mappings.len() + symbol)
                     .map_err(|_| at.error("too many symbols"))?,
                 kind,
                 addend,
@@ -572,10 +703,10 @@ impl Object {
     }
 
     fn object_symbols(&self) -> Result<Vec<RelSymbol<'_>>> {
-        let mut out = Vec::with_capacity(self.symbols.len() + self.text_mappings.len());
+        let mut out = Vec::with_capacity(self.symbols.len() + self.mappings.len());
         // AAELF64 §5.6.5: local STT_NOTYPE symbols delimit code and data.
         out.extend(
-            self.text_mappings
+            self.mappings
                 .iter()
                 .map(|&(section, value, name)| RelSymbol {
                     name,
@@ -621,6 +752,7 @@ impl Object {
     }
 
     pub(crate) fn finish(mut self) -> Result<Vec<u8>> {
+        self.finish_literal_pools()?;
         self.resolve_sizes()?;
         self.resolve_aliases()?;
         self.resolve_constants()?;

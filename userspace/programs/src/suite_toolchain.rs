@@ -326,20 +326,18 @@ static SUITE: Suite = suite(
                 case("kbuild-host-programs", "Run the newly built Kbuild host generators", kbuild_host_programs),
             ],
         ),
-        // A6 supplies the ARM64 kernel assembly cases.
-        #[cfg(target_arch = "x86_64")]
         category(
             "kernel-asm",
             "The kernel's assembly dialect through our assembler",
             &[
                 case(
                     "four-objects-match-record",
-                    "Native bas reproduces the four recorded kernel assembly objects",
+                    "Native bas reproduces the recorded kernel assembly objects",
                     four_objects_match_record,
                 ),
                 case(
                     "breakpoint-roundtrip",
-                    "A user breakpoint delivers SIGTRAP and resumes after INT3",
+                    "A user breakpoint delivers SIGTRAP and resumes after the breakpoint instruction",
                     breakpoint_roundtrip,
                 ),
                 case(
@@ -2174,4 +2172,163 @@ mod breakpoint {
 #[cfg(target_arch = "x86_64")]
 fn breakpoint_roundtrip() -> CaseResult {
     breakpoint::roundtrip()
+}
+
+#[cfg(target_arch = "aarch64")]
+fn four_objects_match_record() -> CaseResult {
+    const GUARD: &str = "src/arch_impl/aarch64/resume_pc_guard.inc";
+    const UNITS: [(&str, &str, &str); 2] = [
+        ("src/arch_impl/aarch64/boot.S", "boot.s", "boot.o"),
+        ("src/arch_impl/aarch64/syscall_entry.S", "syscall_entry.s", "syscall_entry.o"),
+    ];
+
+    let case = AssemblyCase::start_at("kernel-asm")?;
+    let path = case.corpus.join("kernel-assembly.record");
+    let record = io_at(&path, fs::read_to_string(&path))?;
+    let mut fields = BTreeMap::new();
+    for row in record.lines() {
+        let (name, value) = row.split_once('=').ok_or("malformed kernel assembly record")?;
+        if name.is_empty() || value.is_empty() || fields.insert(name, value).is_some() {
+            return Err(format!("invalid kernel assembly record field {name:?}").into());
+        }
+    }
+    let check_digest = |name: &str, bytes: &[u8]| -> CaseResult {
+        if fields.get(name).copied() != Some(hex(&sha256(bytes)).as_str()) {
+            return Err(format!("{name} does not match the kernel assembly record").into());
+        }
+        Ok(())
+    };
+
+    let guard_path = case.corpus.join(GUARD);
+    let guard = io_at(&guard_path, fs::read(&guard_path))?;
+    check_digest(GUARD, &guard)?;
+    for (source, unit, object) in UNITS {
+        let source_path = case.corpus.join(source);
+        let source_bytes = io_at(&source_path, fs::read(&source_path))?;
+        check_digest(source, &source_bytes)?;
+        // Match kernel/build.rs: prepend the shared guard before each source.
+        let unit_bytes = [guard.as_slice(), &source_bytes].concat();
+        check_digest(unit, &unit_bytes)?;
+
+        let staged = case.corpus.join(object);
+        let expected = io_at(&staged, fs::read(&staged))?;
+        check_digest(object, &expected)?;
+
+        let input = case.scratch.join(unit);
+        io_at(&input, fs::write(&input, &unit_bytes))?;
+        let fresh = case.scratch.join(object);
+        require_success(unit, case.run(&input, &fresh)?)?;
+        if io_at(&fresh, fs::read(&fresh))? != expected {
+            return Err(format!("fresh {object} differs from the recorded object").into());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_arch = "aarch64")]
+fn privileged_encodings() -> CaseResult {
+    let case = AssemblyCase::start_at("kernel-asm")?;
+    let object = case.assemble("privileged-a64")?;
+    let bytes = io_at(&object, fs::read(&object))?;
+    let actual = object_text(&bytes).ok_or("privileged A64 object has no valid .text section")?;
+    let path = case.corpus.join("privileged-a64.hex");
+    let table = io_at(&path, fs::read_to_string(&path))?;
+    let mut expected = Vec::new();
+    for (index, row) in table.lines().enumerate() {
+        let row = row.split_once('#').map_or(row, |(bytes, _)| bytes);
+        for byte in row.split_ascii_whitespace() {
+            if !lower_hex(byte, 2) {
+                return Err(format!("{}:{}: invalid byte {byte:?}", path.display(), index + 1).into());
+            }
+            expected.push(u8::from_str_radix(byte, 16).map_err(|error| error.to_string())?);
+        }
+    }
+    if expected.is_empty() || actual != expected {
+        return Err(format!(
+            "privileged A64 .text differs from the Arm ARM table (expected {}, got {})",
+            hex(&expected), hex(actual),
+        ).into());
+    }
+    Ok(())
+}
+
+#[cfg(target_arch = "aarch64")]
+mod arm_breakpoint {
+    use super::{signal, CaseResult};
+    use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
+
+    const TRAP_BRKPT: i32 = 1;
+    // Breenix's UContext::uc_mcontext starts at 176, and SigContext::pc
+    // follows fault_address, the 31 general-purpose registers and sp.
+    const SAVED_PC_OFFSET: usize = 176 + 33 * 8;
+    static DELIVERIES: AtomicUsize = AtomicUsize::new(0);
+    static CODE: AtomicI32 = AtomicI32::new(0);
+    static ADDRESS: AtomicUsize = AtomicUsize::new(0);
+
+    #[repr(C)]
+    struct FaultInfo {
+        signo: i32,
+        errno: i32,
+        code: i32,
+        addr: usize,
+    }
+
+    extern "C" fn handler(sig: i32, info: *const FaultInfo, context: *mut u8) {
+        if sig != signal::SIGTRAP || context.is_null() {
+            return;
+        }
+        // SAFETY: Breenix passes a writable UContext to the SA_SIGINFO handler.
+        // The saved PC still points to the BRK, so skip its four-byte instruction.
+        unsafe {
+            let pc = context.add(SAVED_PC_OFFSET).cast::<u64>();
+            pc.write_volatile(pc.read_volatile() + 4);
+        }
+        // SAFETY: SA_SIGINFO gives the handler a readable siginfo_t on its stack.
+        if let Some(info) = unsafe { info.as_ref() } {
+            if info.signo == sig {
+                CODE.store(info.code, Ordering::Relaxed);
+                ADDRESS.store(info.addr, Ordering::Relaxed);
+                DELIVERIES.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    pub(super) fn roundtrip() -> CaseResult {
+        let action = signal::Sigaction {
+            handler: handler as *const () as u64,
+            flags: signal::SA_SIGINFO | signal::SA_RESTORER,
+            restorer: signal::__restore_rt as *const () as u64,
+            mask: 0,
+        };
+        signal::sigaction(signal::SIGTRAP, Some(&action), None)?;
+        let address: usize;
+        let resumed: usize;
+        // SAFETY: The installed handler resumes this block at the marker increment.
+        unsafe {
+            core::arch::asm!(
+                "adr {address}, 2f",
+                "mov {resumed}, #0",
+                "2: brk #0",
+                "add {resumed}, {resumed}, #1",
+                address = out(reg) address,
+                resumed = out(reg) resumed,
+                options(nostack),
+            );
+        }
+        let deliveries = DELIVERIES.load(Ordering::Relaxed);
+        let code = CODE.load(Ordering::Relaxed);
+        let reported_address = ADDRESS.load(Ordering::Relaxed);
+        if resumed != 1 || deliveries != 1 || code != TRAP_BRKPT || reported_address != address {
+            return Err(format!(
+                "BRK expected one SIGTRAP (TRAP_BRKPT) at {address:#x} and one resume, got \
+                 {deliveries} deliveries, si_code {code}, si_addr {reported_address:#x}, resume marker {resumed}",
+            ).into());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn breakpoint_roundtrip() -> CaseResult {
+    arm_breakpoint::roundtrip()
 }

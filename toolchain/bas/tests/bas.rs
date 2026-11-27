@@ -37,7 +37,7 @@ fn aarch64_reads_tpidr_el0() {
             .map(u32::to_le_bytes)
             .concat()
     );
-    for invalid in ["mrs w0, tpidr_el0", "mrs sp, tpidr_el0", "mrs x0, tpidr_el1"] {
+    for invalid in ["mrs w0, tpidr_el0", "mrs sp, tpidr_el0"] {
         assert!(assemble_for(Target::Aarch64, invalid.as_bytes()).is_err(), "{invalid}");
     }
 }
