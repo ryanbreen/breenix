@@ -329,6 +329,44 @@ fn healthy_cache_returns_to_baseline_after_unmap_and_close() {
     fs.shutdown("healthy-cache-cleanup", u64::MAX).unwrap();
 }
 
+// #3208: mmap populates the cache, then publishes its binding under the mount
+// guard. A worker eviction pass in that gap, requested when an earlier mapping
+// of the same file was unmapped, must not retire the populated pages: a fault
+// on a bound page that is not cached maps a zero page, so the loader read an
+// all-zero ELF header from librustc_driver.
+#[test]
+fn populated_pages_survive_eviction_until_the_binding_is_published() {
+    use crate::memory::file_map::{bind_host, bind_populated, populate};
+    let (fs, _disk, node) = fixture();
+    let bytes = expected(0x7f);
+    let length = bytes.len() as u64;
+    let req = WriteReq { at: WriteAt::Offset(0), limit: u64::MAX, clear_setid: false };
+    assert_eq!(fs.write(&node, req, &bytes).unwrap().bytes, bytes.len());
+    fs.fsync(&node, false).unwrap();
+    // An earlier process mapped the file and exited: its unmap leaves the
+    // cached pages unbound and asks the worker to retire them.
+    drop(bind_host(node.clone(), length, false, false, true));
+    assert!(node.map.eviction_pending());
+    let Ok(population) = populate(&node, 0, length / 4096) else {
+        panic!("population failed");
+    };
+    // The worker's pass runs before the new binding is published.
+    fs.commit_due(0).unwrap();
+    let binding = bind_populated(node.clone(), &*population, length);
+    let seen: Vec<u8> = (0..length).map(|offset| binding.load(offset).unwrap()).collect();
+    let zero_pages = seen.chunks(4096).zip(bytes.chunks(4096))
+        .filter(|(seen, want)| seen != want && seen.iter().all(|byte| *byte == 0)).count();
+    assert!(seen == bytes, "the new mapping read {zero_pages} evicted pages as zeros");
+    // Once mapping and population are gone the pages are retired as before.
+    drop(binding);
+    drop(population);
+    for _ in 0..2 {
+        fs.commit_due(0).unwrap();
+    }
+    assert_eq!(node.map.cache_counts(), (0, 0, 0), "a finished population kept its pages");
+    fs.shutdown("population-eviction-cleanup", u64::MAX).unwrap();
+}
+
 fn mapped_batch_fixture() -> (Arc<BreenFs<NoWait>>, Arc<Disk>, Vec<Arc<VNode>>) {
     let disk = Arc::new(Disk::new());
     let sb = Superblock { fs_uuid: [0x84; 16], generation: 1, slot: 1,
