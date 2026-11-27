@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class WatchdogWorker(unittest.TestCase):
-    def test_kcs_feeder_survives_busy_root_only_in_production(self):
+    def test_kcs_feeder_distinguishes_busy_and_wedged_root(self):
         path = ROOT / 'kernel/src/drivers/watchdog.rs'
         source = path.read_text()
         imports = next(line for line in source.splitlines() if line.startswith('use policy'))
@@ -21,12 +21,14 @@ thread_local! {
     static NOW: Cell<u64> = const { Cell::new(0) };
     static LAST_FEED: Cell<Option<u64>> = const { Cell::new(None) };
     static EXPIRED: Cell<bool> = const { Cell::new(false) };
+    static ROOT_WEDGED: Cell<bool> = const { Cell::new(false) };
+    static COMPLETED: Cell<u64> = const { Cell::new(0) };
 }
 mod policy {
     pub use super::round::{feed, Transport};
-    #[allow(dead_code)]
     pub fn health() -> Result<(), &'static str> {
-        if super::NOW.with(|v| v.get()) == 0 { Ok(()) } else { Err("busy root") }
+        super::Root::check_durable_roots(&super::Root::new(), None)
+            .map_err(|_| "root metadata invalid")
     }
     pub fn wait(ms: u64) -> Result<(), &'static str> {
         let now = super::NOW.with(|v| { v.set(v.get() + ms); v.get() });
@@ -35,6 +37,39 @@ mod policy {
         }
         if now < 180_000 { Ok(()) } else { Err("end of simulation") }
     }
+}
+mod block {
+    pub enum HardwareDisk { Ahci(usize), Other }
+}
+mod drivers { pub mod ahci {
+    pub fn completed_io(port: usize) -> u64 {
+        assert_eq!(port, 0);
+        super::super::COMPLETED.with(std::cell::Cell::get)
+    }
+} }
+const ETIMEDOUT: i32 = 60;
+#[derive(Debug, PartialEq)]
+struct Errno(i32);
+struct Root { inner: Mount }
+struct Mount { state: MountState, device: Device }
+struct MountState { durable: () }
+struct Device;
+impl Device {
+    fn hardware_disk(&self) -> Option<block::HardwareDisk> {
+        Some(if NOW.with(Cell::get) == 0 { block::HardwareDisk::Other } else { block::HardwareDisk::Ahci(0) })
+    }
+}
+impl MountState {
+    fn lock_interruptible(&self) -> Result<&Self, Errno> { Ok(self) }
+}
+impl Root {
+    fn new() -> Self { Self { inner: Mount { state: MountState { durable: () }, device: Device } } }
+    fn probe_durable_roots(&self, _: &(), _: Option<u64>) -> Result<(), Errno> {
+        if NOW.with(Cell::get) == 0 { return Ok(()); }
+        if !ROOT_WEDGED.with(Cell::get) { COMPLETED.with(|v| v.set(v.get() + 1)); }
+        Err(Errno(ETIMEDOUT))
+    }
+    ROOT_CHECK
 }
 #[macro_export]
 macro_rules! serial_println {
@@ -67,18 +102,29 @@ impl policy::Transport for Kcs {
 }
 const PERIOD_MS: u64 = 20_000;
 #[test]
-fn scheduled_feeder_continues_through_storage_errors() {
+fn scheduled_feeder_continues_through_healthy_storage_contention() {
     assert_eq!(run(1), Err("end of simulation"));
-    let fault_build = cfg!(feature = "watchdog_fault_inject");
-    assert_eq!(EXPIRED.with(|v| v.get()), fault_build);
-    assert_eq!(LAST_FEED.with(|v| v.get()), Some(if fault_build { 0 } else { 160_000 }));
+    assert!(!EXPIRED.with(Cell::get));
+    assert_eq!(LAST_FEED.with(Cell::get), Some(160_000));
+}
+#[test]
+fn scheduled_feeder_lets_timer_expire_when_root_stops_progressing() {
+    ROOT_WEDGED.with(|v| v.set(true));
+    assert_eq!(run(1), Err("end of simulation"));
+    assert!(EXPIRED.with(Cell::get));
+    assert_eq!(LAST_FEED.with(Cell::get), Some(0));
 }
 '''
         round_path = path.with_name('watchdog_round.rs')
+        fs_source = (ROOT / 'kernel/src/fs/breenfs/vfs.rs').read_text()
+        root_check = fs_source[fs_source.index('    fn check_durable_roots('):
+                               fs_source.index('    fn probe_durable_roots(')]
+        root_check = root_check.replace('#[cfg(all(not(test), target_arch = "x86_64"))]', '')
         with tempfile.TemporaryDirectory() as scratch:
             test = Path(scratch) / 'kcs_worker.rs'
             binary = test.with_suffix('')
-            test.write_text(harness.replace('WATCHDOG_ROUND', str(round_path)) + imports + '\n' + worker)
+            test.write_text(harness.replace('WATCHDOG_ROUND', str(round_path))
+                            .replace('ROOT_CHECK', root_check) + imports + '\n' + worker)
             for cfg in ([], ['--cfg', 'feature="watchdog_fault_inject"']):
                 with self.subTest(cfg=cfg):
                     subprocess.run(['rustc', '--edition=2021', '--test', '-Dwarnings', *cfg,

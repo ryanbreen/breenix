@@ -1079,6 +1079,23 @@ fn scheduler_sleep_ready(has_irq: bool) -> bool {
 ///   This matches Linux's AHCI driver which masks device-level interrupts
 ///   during polling mode.
 fn wait_cmd_slot0(token: CmdToken) -> Result<(), &'static str> {
+    #[cfg(target_arch = "x86_64")]
+    let port = token.port;
+    wait_cmd_slot0_inner(token)?;
+    #[cfg(target_arch = "x86_64")]
+    PORT_IO_COMPLETED[port].fetch_add(1, Ordering::Relaxed);
+    Ok(())
+}
+
+#[cfg(target_arch = "x86_64")]
+static PORT_IO_COMPLETED: [AtomicU64; MAX_PORTS] = [const { AtomicU64::new(0) }; MAX_PORTS];
+
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn completed_io(port: usize) -> u64 {
+    PORT_IO_COMPLETED[port].load(Ordering::Relaxed)
+}
+
+fn wait_cmd_slot0_inner(token: CmdToken) -> Result<(), &'static str> {
     let abar = AHCI_ABAR.load(Ordering::Relaxed);
     let port = token.port;
     let cmd_num = token.cmd_num;

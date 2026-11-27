@@ -1,6 +1,5 @@
 //! IPMI 2.0 sections 9 and 27: polled KCS, SMS/OS watchdog, hard reset.
-//! Only this kthread owns the interface. Normal persistent boots feed from the
-//! scheduler heartbeat. Fault-test builds can gate feeding on uncached root I/O.
+//! Only this kthread owns the interface. Each feed requires root-storage health.
 //! The transport accepts only S19's four application commands.
 use core::sync::atomic::{AtomicU32, Ordering};
 use x86_64::instructions::port::Port;
@@ -109,12 +108,6 @@ impl policy::Transport for Kcs {
     fn reset(&mut self) -> Result<(), &'static str> { self.request(0x22, &[]).map(|_| ()) }
 }
 fn run(port: u32) -> Result<(), &'static str> {
-    #[cfg(feature = "watchdog_fault_inject")]
-    let (health, health_source) = (policy::health, "root-io,root-inode");
-    // Returning from the timed scheduler wait is the production heartbeat.
-    // Keep it independent of the mount writer and the AHCI port owner.
-    #[cfg(not(feature = "watchdog_fault_inject"))]
-    let (health, health_source) = (|| Ok(()), "scheduler");
     let mut kcs = Kcs::new(port);
     let mut identified = false;
     let mut announced = false;
@@ -128,7 +121,7 @@ fn run(port: u32) -> Result<(), &'static str> {
                 crate::serial_println!("[watchdog] previous-expired={}", u8::from(previous[3] & 0x10 != 0));
                 identified = true;
             }
-            policy::feed(&mut kcs, health)
+            policy::feed(&mut kcs, policy::health)
         })();
         match result {
             Ok(rearmed) => {
@@ -137,7 +130,7 @@ fn run(port: u32) -> Result<(), &'static str> {
                     if rounds % 3 == 0 { crate::serial_println!("[watchdog] healthy feeds={}", rounds); }
                 }
                 if rearmed || !announced {
-                    crate::serial_println!("[watchdog] armed seconds=120 action=hard-reset health={}", health_source);
+                    crate::serial_println!("[watchdog] armed seconds=120 action=hard-reset health=root-io,root-inode");
                     announced = true;
                 }
             }
