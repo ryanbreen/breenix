@@ -2,7 +2,7 @@
 #![allow(dead_code)]
 
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 const MAX_PORTS: usize = 2;
@@ -13,6 +13,14 @@ struct Device {
     port_is: [u32; MAX_PORTS],
     ci: [u32; MAX_PORTS],
     tfd: [u32; MAX_PORTS],
+    cmd: u32,
+    prdbc: u32,
+    stop_writes: usize,
+    force_timeout: bool,
+    interrupts_enabled: bool,
+    reset_started: Option<u64>,
+    reset_finished: bool,
+    counter: u64,
     hba_is: u32,
     irr: bool,
     isr: bool,
@@ -58,6 +66,9 @@ impl Device {
 thread_local! {
     static MODEL: RefCell<Device> = const { RefCell::new(Device {
         port_is: [0; MAX_PORTS], ci: [1, 0], tfd: [0x50; MAX_PORTS],
+        cmd: PORT_CMD_ST | PORT_CMD_CR, prdbc: 512, stop_writes: 0,
+        force_timeout: false, interrupts_enabled: false, reset_started: None,
+        reset_finished: false, counter: 0,
         hba_is: 0, irr: false, isr: false, step: 0, events: Vec::new(),
         receipts: Vec::new(), issued_after_receipt: false, timeouts: 0, recovered: 0,
         notices: Vec::new(),
@@ -82,9 +93,12 @@ static AHCI_POLLED_POST_REGISTRATION_COUNT: AtomicU32 = AtomicU32::new(0);
 static AHCI_POLLED_POST_REG_SCHEDULER_RUNNING: AtomicU32 = AtomicU32::new(0);
 static AHCI_POLLED_POST_REG_PRE_SCHEDULER: AtomicU32 = AtomicU32::new(0);
 static AHCI_POLLED_COMPLETION_COUNT: AtomicU32 = AtomicU32::new(0);
+static PORT_IO_COMPLETED: [AtomicU64; MAX_PORTS] = [const { AtomicU64::new(0) }; MAX_PORTS];
 static PORT_ACTIVE_MASK: [AtomicU32; MAX_PORTS] = atomics();
 static PORT_ACTIVE_CMD_NUM: [AtomicU32; MAX_PORTS] = atomics();
 static PORT_ACKED_ERRORS: [AtomicU32; MAX_PORTS] = atomics();
+static PORT_ACKED_TFD: [AtomicU32; MAX_PORTS] = atomics();
+static PORT_RECOVERY: [AtomicU8; MAX_PORTS] = [const { AtomicU8::new(PORT_READY) }; MAX_PORTS];
 static PORT_POLL: [Lock; MAX_PORTS] = [const { Lock(Mutex::new(())) }; MAX_PORTS];
 static PORT_IO_LOCK: [Lock; MAX_PORTS] = [const { Lock(Mutex::new(())) }; MAX_PORTS];
 static LOST_NOTIFICATIONS: [Notice; MAX_PORTS] = [const { Notice }; MAX_PORTS];
@@ -124,7 +138,7 @@ impl Completion {
     fn wait_timeout_uninterruptible_observed(
         &self, _: u32, _: u64, _: impl FnMut(WaitStage),
     ) -> Result<bool, ()> {
-        Ok(false)
+        Ok(self.done.load(Ordering::Acquire) != 0 && MODEL.with_borrow(|device| !device.force_timeout))
     }
 
     fn complete(&self, token: u32) {
@@ -149,6 +163,8 @@ impl Completion {
 struct CmdToken {
     port: usize,
     cmd_num: u32,
+    dma_index: usize,
+    expected_bytes: u32,
     has_irq: bool,
     scheduler_running: bool,
     polled: bool,
@@ -165,8 +181,21 @@ fn trace_retirement(_: usize, _: u32, _: u8, _: u32, _: u32, _: u32, _: bool) {}
 fn trace_wait_event(_: usize, _: u32, _: WaitStage) {}
 fn scheduler_sleep_ready(_: bool) -> bool { true }
 fn kick_poller() {}
-fn read_cntpct() -> u64 { 0 }
-fn read_cntpct_and_freq() -> (u64, u64) { (0, 1) }
+fn read_cntpct() -> u64 {
+    MODEL.with_borrow_mut(|device| {
+        assert!(device.interrupts_enabled, "recovery waited with interrupts masked");
+        device.counter += 1;
+        device.counter
+    })
+}
+fn read_cntpct_and_freq() -> (u64, u64) { (read_cntpct(), 1000) }
+// Model early boot, where there is no workqueue and the next unmasked
+// request drives recovery.
+fn defer_port_recovery(_: u64, _: usize, _: u8) {}
+fn arch_interrupts_enabled() -> bool { MODEL.with_borrow(|device| device.interrupts_enabled) }
+fn read_prdbc(_: usize) -> Result<u32, &'static str> {
+    Ok(MODEL.with_borrow(|device| device.prdbc))
+}
 fn hba_read(_: u64, register: usize) -> u32 {
     assert_eq!(register, HBA_IS);
     MODEL.with_borrow_mut(|device| {
@@ -195,17 +224,34 @@ fn port_read(_: u64, port: usize, register: usize) -> u32 {
             PORT_IS => device.port_is[port],
             PORT_CI => device.ci[port],
             PORT_TFD => device.tfd[port],
-            PORT_CMD => PORT_CMD_ST,
+            PORT_CMD => device.cmd,
+            PORT_SACT | PORT_SERR => 0,
+            PORT_SCTL => u32::from(device.reset_started.is_some() && !device.reset_finished),
+            PORT_SSTS => 3,
             _ => panic!("unexpected port register {register:#x}"),
         }
     })
 }
 
 fn port_write(_: u64, port: usize, register: usize, mask: u32) {
-    assert_eq!(register, PORT_IS);
     MODEL.with_borrow_mut(|device| {
         device.checkpoint();
-        device.port_is[port] &= !mask;
+        match register {
+            PORT_IS => device.port_is[port] &= !mask,
+            PORT_CMD => {
+                if device.cmd & PORT_CMD_ST != 0 && mask & PORT_CMD_ST == 0 {
+                    device.stop_writes += 1;
+                }
+                device.cmd = mask;
+            }
+            PORT_IE | PORT_SERR => (),
+            PORT_SCTL if mask & 0xf == 1 => device.reset_started = Some(device.counter),
+            PORT_SCTL => {
+                assert!(device.counter > device.reset_started.unwrap());
+                device.reset_finished = true;
+            }
+            _ => panic!("unexpected port register {register:#x}"),
+        }
     });
 }
 
@@ -220,7 +266,10 @@ fn reset() {
     MODEL.with_borrow_mut(|device| {
         *device = Device {
             port_is: [0; MAX_PORTS], ci: [1, 0], tfd: [0x50; MAX_PORTS],
-            hba_is: 0, irr: false, isr: false, step: 0, events: Vec::new(),
+            cmd: PORT_CMD_ST | PORT_CMD_CR, prdbc: 512, stop_writes: 0,
+        force_timeout: false, interrupts_enabled: false, reset_started: None,
+        reset_finished: false, counter: 0,
+        hba_is: 0, irr: false, isr: false, step: 0, events: Vec::new(),
             receipts: Vec::new(), issued_after_receipt: false, timeouts: 0, recovered: 0,
             notices: Vec::new(),
         };
@@ -229,6 +278,8 @@ fn reset() {
         PORT_ACTIVE_CMD_NUM[port].store(0, Ordering::Relaxed);
         PORT_ACTIVE_MASK[port].store(0, Ordering::Relaxed);
         PORT_ACKED_ERRORS[port].store(0, Ordering::Relaxed);
+        PORT_ACKED_TFD[port].store(0, Ordering::Relaxed);
+        PORT_RECOVERY[port].store(PORT_READY, Ordering::Relaxed);
         AHCI_COMPLETIONS[port][0].done.store(0, Ordering::Relaxed);
     }
     PORT_ACTIVE_CMD_NUM[0].store(FIRST, Ordering::Relaxed);
@@ -302,9 +353,10 @@ fn same_vector_can_be_pending_before_previous_eoi() {
     MODEL.with_borrow(|device| assert_eq!(device.receipts, [(0, FIRST), (0, FIRST + 1)]));
 }
 
-fn elapsed_wait() -> Result<(), &'static str> {
+fn wait_for_first() -> Result<(), &'static str> {
     wait_cmd_slot0(CmdToken {
-        port: 0, cmd_num: FIRST, has_irq: true, scheduler_running: true, polled: false,
+        port: 0, cmd_num: FIRST, dma_index: 0, expected_bytes: 512,
+        has_irq: true, scheduler_running: true, polled: false,
     })
 }
 
@@ -316,7 +368,7 @@ fn timeout_retires_the_completed_token_and_records_the_loss() {
         device.port_is[0] = PORT_IRQ_D2H_REG_FIS | PORT_IRQ_SG_DONE;
         device.hba_is = 1;
     });
-    assert_eq!(elapsed_wait(), Ok(()));
+    assert_eq!(wait_for_first(), Ok(()));
     MODEL.with_borrow(|device| {
         assert_eq!(device.receipts, [(0, FIRST)]);
         assert_eq!(device.recovered, 1);
@@ -345,11 +397,86 @@ fn timeout_rejects_active_ci_or_error_even_if_the_isr_already_acked_it() {
             device.tfd[0] = tfd;
             device.hba_is = 1;
             device.irr = ack;
+            device.force_timeout = true;
         });
         if ack {
             drain_vectors();
         }
-        assert!(elapsed_wait().is_err(), "CI={ci:#x} PxIS={status:#x} TFD={tfd:#x} ack={ack}");
+        assert!(wait_for_first().is_err(), "CI={ci:#x} PxIS={status:#x} TFD={tfd:#x} ack={ack}");
         MODEL.with_borrow(|device| assert_eq!(device.recovered, 0));
     }
+}
+
+#[test]
+fn interrupt_error_is_preserved_after_status_acknowledgement() {
+    for (status, task_file) in [
+        (PORT_IRQ_TF_ERR, 0x50),
+        (PORT_IRQ_HBUS_ERR, 0x50),
+        (PORT_IRQ_HBUS_DATA_ERR, 0x50),
+        (PORT_IRQ_IF_ERR, 0x50),
+        (PORT_IRQ_D2H_REG_FIS, 0x0451),
+    ] {
+        reset();
+        MODEL.with_borrow_mut(|device| {
+            device.ci[0] = 0;
+            device.port_is[0] = status;
+            device.tfd[0] = task_file;
+            device.set_global(1);
+        });
+        drain_vectors();
+        MODEL.with_borrow_mut(|device| {
+            assert_eq!(device.port_is[0], 0);
+            device.tfd[0] = 0x50;
+        });
+        assert!(wait_for_first().is_err(), "PxIS={status:#x} PxTFD={task_file:#x}");
+    }
+}
+
+#[test]
+fn short_transfer_fails_before_the_waiter_can_copy() {
+    reset();
+    MODEL.with_borrow_mut(|device| {
+        device.ci[0] = 0;
+        device.port_is[0] = PORT_IRQ_D2H_REG_FIS;
+        device.prdbc = 256;
+        device.set_global(1);
+    });
+    drain_vectors();
+    assert!(wait_for_first().is_err());
+}
+
+#[test]
+fn active_timeout_stops_the_engine_and_blocks_dma_reuse() {
+    reset();
+    assert!(wait_for_first().is_err());
+    MODEL.with_borrow(|device| assert_eq!(device.stop_writes, 1));
+    assert!(ensure_port_ready(1, 0).is_err(), "CI and CR still set");
+    // Even after COMRESET, clearing just one of CR and CI is insufficient.
+    for (ci, cr) in [(1, 0), (0, PORT_CMD_CR)] {
+        reset();
+        assert!(wait_for_first().is_err());
+        MODEL.with_borrow_mut(|device| {
+            device.ci[0] = ci;
+            device.cmd = cr;
+            device.interrupts_enabled = true;
+        });
+        assert!(ensure_port_ready(1, 0).is_err(), "CI={ci:#x} CR={cr:#x}");
+        MODEL.with_borrow(|device| {
+            assert!(device.reset_finished);
+            assert_eq!(device.cmd & PORT_CMD_ST, 0);
+        });
+    }
+
+    reset();
+    assert!(wait_for_first().is_err());
+    MODEL.with_borrow_mut(|device| {
+        device.ci[0] = 0;
+        device.cmd &= !PORT_CMD_CR;
+        device.interrupts_enabled = true;
+    });
+    assert_eq!(ensure_port_ready(1, 0), Ok(()));
+    MODEL.with_borrow(|device| {
+        assert!(device.reset_finished);
+        assert_ne!(device.cmd & PORT_CMD_ST, 0);
+    });
 }
