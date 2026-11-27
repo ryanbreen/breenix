@@ -1,5 +1,6 @@
 import argparse
 import contextlib
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -53,6 +54,40 @@ class RemoteSeries(unittest.TestCase):
             self.args.cases = "sequential,walk"
             self.assertEqual(runner.main(self.args), 0)
             self.assertEqual(self.workloads, ["sequential", "walk"])
+
+    def test_network_resolves_alias_before_running_workloads(self):
+        self.args.host = "bench-box"
+        self.args.cases = "fork-exec,network"
+        payload = b"benchmark payload\n"
+        digest = hashlib.sha256(payload).hexdigest()
+        (self.args.out / "network").mkdir()
+        (self.args.out / "network/payload").write_bytes(payload)
+        commands = []
+
+        def execute(command, **kwargs):
+            commands.append(command)
+            if "-G" in command:
+                self.assertEqual(command[-1], "bench-box")
+                return subprocess.CompletedProcess(
+                    command, 0, stdout="user developer\nhostname configured.example\nport 2222\n"
+                )
+            if command[0] == "bsync":
+                self.assertEqual(command[-1], "developer@bench-box:/home/developer/cache/review/network/1")
+                return subprocess.CompletedProcess(command, 0)
+            if command[0] == "/usr/bin/scp":
+                Path(command[-1]).write_bytes(payload)
+                return subprocess.CompletedProcess(command, 0)
+            if command[-1].startswith("/bin/sha256sum "):
+                return subprocess.CompletedProcess(command, 0, stdout=f"{digest}  payload\n".encode())
+            return self.ssh(command, **kwargs)
+
+        with patch.object(runner.subprocess, "run", side_effect=execute), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(runner.main(self.args), 0)
+
+        self.assertIn("-G", commands[0])
+        receipt = json.loads((self.args.out / "review-bsync-upload-1.json").read_bytes())
+        self.assertEqual(receipt["metrics"], {"bytes": len(payload), "sha256": digest})
 
 
 if __name__ == "__main__":
