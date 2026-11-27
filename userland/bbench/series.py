@@ -5,10 +5,12 @@ from pathlib import Path
 from statistics import median
 from tempfile import NamedTemporaryFile
 
-from tables import DEFERRED_DISK, ROWS, SECOND, values
+from tables import DEFERRED_DISK, RETIRED, ROWS, better, unit, values
 
 
-def series_rows(groups, system, target):
+def series_rows(groups, system, target, deferred=None):
+    """Yield the rows. `deferred` maps a case a system cannot run to the reason."""
+    deferred = deferred or {}
     seed_failure = next((sample["error"] for sample in groups.get("noop-seed", [])
                          if sample["error"]), None)
     for row in ROWS:
@@ -25,11 +27,17 @@ def series_rows(groups, system, target):
             reason = f"Cargo no-op setup: {seed_failure}"
         else:
             state = "deferred"
-            reason = ("#3226" if system == "breenix" and target == "x86-metal"
-                      and row.case in DEFERRED_DISK else "No timed receipts")
+            if row.case in deferred:
+                reason = deferred[row.case]
+            elif system == "breenix" and target == "x86-metal" and row.case in DEFERRED_DISK:
+                reason = "#3226"
+            elif row.case in RETIRED:
+                reason = RETIRED[row.case]
+            else:
+                reason = "No timed receipts"
         yield {
             "id": row.id, "title": row.title, "area": row.id.split(".", 1)[0],
-            "unit": "s" if row.scale == SECOND else "ms", "better": "lower",
+            "unit": unit(row), "better": better(row),
             "state": state, "median": median(times) if times else None,
             "min": min(times) if times else None, "max": max(times) if times else None,
             "completed": len(times), "attempts": len(samples), "cache": row.cache,
@@ -37,10 +45,10 @@ def series_rows(groups, system, target):
         }
 
 
-def write_series(directory, series_id, at, metadata, groups):
+def write_series(directory, series_id, at, metadata, groups, deferred=None):
     series = {
         "version": 1, "id": series_id, "at": at, **metadata,
-        "rows": list(series_rows(groups, metadata["system"], metadata["target"])),
+        "rows": list(series_rows(groups, metadata["system"], metadata["target"], deferred)),
     }
     encoded = json.dumps(series, indent=2, allow_nan=False) + "\n"
     directory.mkdir(parents=True, exist_ok=True)

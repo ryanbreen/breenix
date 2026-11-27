@@ -463,6 +463,47 @@ fn receive_path_retries_refused_immediate_ack_with_current_sack() {
     assert_eq!(&options[..10], &[5, 10, 0, 0, 1, 247, 0, 0, 1, 250]);
 }
 
+fn retransmit_timeouts() -> u64 {
+    let text = tcp::proc_net_tcp_stats().unwrap();
+    let value = text.strip_prefix("retransmit_timeouts: ").unwrap();
+    value.trim_end().parse().unwrap()
+}
+
+#[test]
+fn retransmission_timeouts_count_each_resend_and_nothing_else() {
+    let _serial = serial();
+    let before = retransmit_timeouts();
+    let id = tcp::tcp_connect(LOCAL, 40012, PEER, 44012, 1, 64, 212_992).unwrap();
+    let syn = take_output().remove(0);
+    let syn_seq = TcpHeader::parse(&syn).unwrap().0.seq_num;
+
+    // The SYN's timer runs out: it is sent again and counted.
+    CLOCK.set(CLOCK.get() + 1000);
+    step_timer();
+    assert!(take_output().contains(&syn));
+    assert_eq!(retransmit_timeouts(), before + 1);
+
+    let ack = syn_seq.wrapping_add(1);
+    receive(id, 7000 - 1, ack, TcpFlags::syn_ack(), &MSS, &[]);
+    take_output();
+    assert_eq!(tcp::tcp_sendmsg(&id, &[7; 100], false), Ok(100));
+    assert_eq!(take_output().len(), 1);
+
+    // Unacknowledged data: the timeout sends it again and counts once.
+    CLOCK.set(CLOCK.get() + 10_000);
+    step_timer();
+    let resent = take_output();
+    assert!(resent.iter().any(|packet| TcpHeader::parse(packet).unwrap().1 == [7; 100]));
+    assert_eq!(retransmit_timeouts(), before + 2);
+
+    // With the data acknowledged, a later timer pass leaves the count at two.
+    receive(id, 7000, ack.wrapping_add(100), TcpFlags::ack(), &[], &[]);
+    take_output();
+    CLOCK.set(CLOCK.get() + 200_000);
+    step_timer();
+    assert_eq!(retransmit_timeouts(), before + 2);
+}
+
 #[test]
 fn receive_path_uses_scaled_peer_window_only_after_active_handshake() {
     let _serial = serial();

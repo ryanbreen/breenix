@@ -26,6 +26,19 @@ incremental = false
 [profile.release.package.libbreenix]
 opt-level = 3
 
+# bbench built twice more for the crypto rows: everything at opt-level 3, and with
+# libbreenix (the crypto) at opt-level z, the level the release profile used before
+# libbreenix moved to 3.
+[profile.bench-o3]
+inherits = "release"
+opt-level = 3
+
+[profile.bench-oz]
+inherits = "release"
+
+[profile.bench-oz.package.libbreenix]
+opt-level = "z"
+
 [profile.dev-box]
 inherits = "release"
 opt-level = 1
