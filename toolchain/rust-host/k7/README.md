@@ -68,8 +68,7 @@ digests are in [`x86_64.json`](x86_64.json).
 
 The ARM64 hosted executable uses the same interpreter and shared libc
 contract and links bunwind. [`aarch64.json`](aarch64.json) records its
-twin, hosted sysroot, artifact digests and ELF inventory. ARM image staging
-and guest acceptance are pending.
+twin, hosted sysroot, artifact digests and ELF inventory.
 
 ## X1 archive probe
 
@@ -79,9 +78,11 @@ checkout and registry sources clean. Apply the K5 patches and the K7
 through the build-local `[patch.crates-io]` table and lockfile for the hosted
 leg. The Mac leg uses the native libc bindings.
 
-Set `OPENSSL_BREENIX_CONFIG` to the absolute path of
-`openssl/breenix.conf`. The OpenSSL adapter passes the file to Configure and
-selects `breenix-x86_64` or `breenix-aarch64` for the corresponding hosted target.
+Use the `openssl-src` patch named in the selected architecture's K7 build
+record. Set `OPENSSL_BREENIX_CONFIG` to the absolute path of
+`openssl/breenix.conf` for x86-64 or `openssl/breenix-aarch64.conf` for ARM64.
+The patched build script passes that file to Configure and selects
+`breenix-x86_64` or `breenix-aarch64` for the corresponding hosted target.
 Both targets use pthreads and disable the command-line
 apps, async contexts, assembler paths, engines and loadable modules. Their
 getrandom seed selection uses the hosted libc's `getentropy` export, backed by

@@ -1,19 +1,8 @@
 --- a/src/lib.rs
 +++ b/src/lib.rs
-@@ -394,4 +394,26 @@
+@@ -394,4 +394,15 @@
              "x86_64-unknown-haiku" => "haiku-x86_64",
              "x86_64-unknown-illumos" => "solaris64-x86_64-gcc",
-+            "aarch64-breenix-hosted" => {
-+                println!("cargo:rerun-if-env-changed=OPENSSL_BREENIX_CONFIG");
-+                let config = env::var("OPENSSL_BREENIX_CONFIG")
-+                    .map_err(|_| "set OPENSSL_BREENIX_CONFIG to the absolute Breenix target file")?;
-+                if !Path::new(&config).is_absolute() {
-+                    return Err("OPENSSL_BREENIX_CONFIG must be an absolute path".into());
-+                }
-+                println!("cargo:rerun-if-changed={config}");
-+                configure.arg(format!("--config={config}"));
-+                "breenix-aarch64"
-+            }
 +            "x86_64-breenix-hosted" => {
 +                println!("cargo:rerun-if-env-changed=OPENSSL_BREENIX_CONFIG");
 +                let config = env::var("OPENSSL_BREENIX_CONFIG")

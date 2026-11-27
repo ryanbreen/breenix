@@ -9,7 +9,7 @@
     "features": [
       "all-static"
     ],
-    "scope": "cargo tree -p cargo -e normal,build --target x86_64-breenix-hosted --locked --offline --features all-static",
+    "scope": "cargo tree -p cargo -e normal,build --target aarch64-breenix-hosted --locked --offline --features all-static",
     "classification": "E25 rulings 18, 120 and 121; permissive includes notices, opaque only prohibits reading, patching or replacing the component. LicenseRef identifiers describe licenses without a matching SPDX identifier.",
     "packages": [
       {
