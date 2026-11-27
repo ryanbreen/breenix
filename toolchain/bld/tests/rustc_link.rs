@@ -47,9 +47,18 @@ from pathlib import Path
 import shutil
 import sys
 
-record, source, twin = map(Path, sys.argv[1:])
+record, source, twin = map(Path, sys.argv[1:4])
 receipt = json.loads(record.read_text())
 names = {"bas", "bld", "bar", "bnm", "bcc", "bmake", "panic-abort"}
+target = "x86_64-breenix"
+if len(sys.argv) == 5:
+    target = "aarch64-breenix"
+    if sys.argv[4] == "hosted":
+        target += "-hosted"
+        names = {"catch-unwind"}
+        required = {"lib/hosted/libbunwind.a", "lib/hosted/libc.a", "lib/hosted/linker-hosted.ld"}
+        if not required <= set(receipt["links"]["catch-unwind"]["inputs"]):
+            sys.exit("catch-unwind receipt is missing hosted link inputs")
 links = {}
 copied = set()
 
@@ -60,7 +69,7 @@ def verify(path, expected):
         sys.exit(f"{path}: SHA-256 {actual}, expected {expected}")
 
 for name, line in receipt["links"].items():
-    if not any(path.startswith("sysroot/lib/rustlib/x86_64-breenix/lib/libstd-")
+    if not any(path.startswith(f"sysroot/lib/rustlib/{target}/lib/libstd-")
                for path in line["inputs"]):
         continue
     links[name] = line
@@ -176,6 +185,73 @@ fn rustc_link_line_recorded_on_mac_links() {
             names(actual.difference(&expected).collect()),
         );
     }
+}
+
+fn replay_aarch64(mode: &str) {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let fixture = PathBuf::from(
+        std::env::var_os("BREENIX_K6_AARCH64_FIXTURE")
+            .expect("set BREENIX_K6_AARCH64_FIXTURE to the recorded ARM K6 fixture"),
+    )
+    .canonicalize()
+    .unwrap();
+    let scratch = Scratch::new();
+    let twin = scratch.0.canonicalize().unwrap();
+    let lines = run(Command::new("python3")
+        .args(["-c", PREPARE_REPLAY])
+        .arg(repo.join("toolchain/rust-host/k6/aarch64.json"))
+        .arg(&fixture)
+        .arg(&twin)
+        .arg(mode));
+    for line in std::str::from_utf8(&lines).unwrap().lines() {
+        let fields: Vec<_> = line.split('\0').collect();
+        let [reference_path, args @ ..] = fields.as_slice() else {
+            panic!("malformed replay line {line:?}");
+        };
+        let bytes = replay(&fixture, &twin.join("first.elf"), args);
+        assert!(
+            bytes == replay(&twin, &twin.join("second.elf"), args),
+            "{reference_path}: link bytes depend on the fixture root"
+        );
+        let verdict =
+            elfcheck::check_machine(&bytes, elfcheck::Kind::Executable, elfcheck::Machine::Aarch64);
+        assert!(
+            verdict.error.is_none() && verdict.findings.is_empty(),
+            "{reference_path}: {verdict:?}"
+        );
+        let reference_bytes = fs::read(fixture.join(reference_path)).unwrap();
+        let reference = Elf::parse(&reference_bytes).unwrap();
+        let candidate = Elf::parse(&bytes).unwrap();
+        assert_eq!(
+            candidate.header().entry,
+            reference.header().entry,
+            "{reference_path}: entry address"
+        );
+        let expected = defined_globals(&reference);
+        let actual = defined_globals(&candidate);
+        let names = |names: Vec<&Vec<u8>>| -> Vec<String> {
+            names
+                .into_iter()
+                .map(|name| String::from_utf8_lossy(name).into_owned())
+                .collect()
+        };
+        assert!(
+            actual == expected,
+            "{reference_path}: missing {:?}, extra {:?}",
+            names(expected.difference(&actual).collect()),
+            names(actual.difference(&expected).collect()),
+        );
+    }
+}
+
+#[test]
+fn rustc_link_line_recorded_on_mac_links_aarch64() {
+    replay_aarch64("tools");
+}
+
+#[test]
+fn rustc_hosted_link_line_recorded_on_mac_links_aarch64() {
+    replay_aarch64("hosted");
 }
 
 #[test]

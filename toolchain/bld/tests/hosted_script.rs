@@ -357,3 +357,125 @@ fn rustc_hosted_link_line_recorded_on_mac_links() {
         names(actual.difference(&expected).collect()),
     );
 }
+
+const AARCH64_FIXTURE: &str = r#"
+.section .text._start,"ax",@progbits
+.globl _start
+.type _start,@function
+_start:
+.cfi_startproc
+    mrs x0, tpidr_el0
+    add x1, x0, :tprel_hi12:tls_init
+    add x1, x1, :tprel_lo12_nc:tls_init
+    add x2, x0, :tprel_hi12:tls_zero
+    add x2, x2, :tprel_lo12_nc:tls_zero
+    ret
+.cfi_endproc
+
+.section .text.calls,"ax",@progbits
+.globl init, fini
+init: ret
+fini: ret
+
+.section .init_array,"aw",@init_array
+.quad init
+.section .fini_array,"aw",@fini_array
+.quad fini
+
+.section .tdata,"awT",@progbits
+.balign 8
+tls_init: .quad 42
+.section .tbss,"awT",@nobits
+.balign 32
+tls_zero: .zero 8
+"#;
+
+#[test]
+fn links_hosted_script_layout_aarch64() {
+    use bobj::elf::PT_GNU_STACK;
+
+    const SHT_INIT_ARRAY: u32 = 14;
+    const SHT_FINI_ARRAY: u32 = 15;
+
+    let scratch = Scratch::new();
+    fs::write(scratch.0.join("fixture.s"), AARCH64_FIXTURE).unwrap();
+    run(
+        Command::new(std::env::var_os("CLANG").unwrap_or_else(|| "clang".into()))
+            .current_dir(&scratch.0)
+            .args([
+                "-target",
+                "aarch64-unknown-none",
+                "-c",
+                "fixture.s",
+                "-o",
+                "fixture.o",
+            ]),
+    );
+    run(Command::new(env!("CARGO_BIN_EXE_bld"))
+        .env_clear()
+        .current_dir(&scratch.0)
+        .args(["-flavor", "gnu", "--gc-sections", "--eh-frame-hdr", "-T"])
+        .arg(repo().join("userspace/programs/linker-hosted.ld"))
+        .args(["-o", "fixture.elf", "fixture.o"]));
+    let bytes = fs::read(scratch.0.join("fixture.elf")).unwrap();
+    let verdict =
+        elfcheck::check_machine(&bytes, elfcheck::Kind::Executable, elfcheck::Machine::Aarch64);
+    assert!(
+        verdict.error.is_none() && verdict.findings.is_empty(),
+        "{verdict:?}"
+    );
+    let elf = Elf::parse(&bytes).unwrap();
+    // Script lines 13–15, 39–47 and LSB Core 5.0 §10.6 and Table 11-1.
+    let unwind = program(&elf, PT_GNU_EH_FRAME, PF_R);
+    let (index, index_bytes) = section(&elf, b".eh_frame_hdr");
+    let ro = program(&elf, PT_LOAD, PF_R);
+    assert_eq!(index_bytes[0], 1);
+    assert_eq!(unwind.offset, index.offset);
+    assert_eq!(unwind.virtual_address, index.address);
+    assert_eq!(unwind.file_size, index.size);
+    assert_eq!(unwind.memory_size, index.size);
+    for header in [index, section(&elf, b".eh_frame").0] {
+        assert!(header.address >= ro.virtual_address);
+        assert!(header.address + header.size <= ro.virtual_address + ro.memory_size);
+    }
+    let stack = program(&elf, PT_GNU_STACK, PF_R | PF_W);
+    assert_eq!((stack.file_size, stack.memory_size), (0, 0));
+
+    // Script lines 73–89 retain both arrays through GC. Their entries are
+    // function addresses (gABI Table 3.8).
+    let symbols = elf.static_symbols().unwrap().unwrap();
+    for (name, kind, function) in [
+        (b".init_array".as_slice(), SHT_INIT_ARRAY, b"init"),
+        (b".fini_array".as_slice(), SHT_FINI_ARRAY, b"fini"),
+    ] {
+        let (header, data) = section(&elf, name);
+        let function = (1..symbols.len())
+            .map(|i| symbols.get(i).unwrap())
+            .find(|symbol| symbol.name == function)
+            .unwrap();
+        assert_eq!(header.kind, kind);
+        assert_eq!(header.entry_size, 8);
+        assert_eq!(data, function.value.to_le_bytes());
+    }
+
+    // Script lines 91–99 and gABI §7.7. The 8 initialized bytes are
+    // followed by alignment padding and the 8 zero-fill bytes in memory.
+    let tls = program(&elf, PT_TLS, PF_R);
+    let (init, data) = section(&elf, b".tdata");
+    assert_eq!(data, 42u64.to_le_bytes());
+    assert_eq!(tls.offset, init.offset);
+    assert_eq!(tls.virtual_address, init.address);
+    assert_eq!((tls.file_size, tls.memory_size, tls.alignment), (8, 40, 32));
+
+    // AAELF64 §5.7.11: variant I places the template after the two
+    // reserved TP words, aligned to 32. Decode the two local-exec ADD pairs.
+    let (text, instructions) = section(&elf, b".text");
+    let entry = (elf.header().entry - text.address) as usize;
+    let immediate = |offset| {
+        let start = entry + offset;
+        let word = u32::from_le_bytes(instructions[start..start + 4].try_into().unwrap());
+        (word >> 10) & 0xfff
+    };
+    assert_eq!((immediate(4) << 12) + immediate(8), 32);
+    assert_eq!((immediate(12) << 12) + immediate(16), 64);
+}
