@@ -18,6 +18,20 @@ def cargo_stage(arch):
 
 
 class CargoPort(unittest.TestCase):
+    def test_openssl_patches_match_build_receipts(self):
+        records = ROOT / 'toolchain/rust-host'
+        x1 = json.loads((records / 'x1.json').read_text())['openssl']
+        x86_patch = records / x1['patch']
+        x86 = json.loads((records / 'k7/x86_64.json').read_text())
+        self.assertEqual(x86['patches_sha256'][x86_patch.name], x1['patch_sha256'])
+        self.assertEqual(hashlib.sha256(x86_patch.read_bytes()).hexdigest(),
+                         x1['patch_sha256'])
+
+        arm = json.loads((records / 'k7/aarch64.json').read_text())
+        arm_patch = x86_patch.with_name(x86_patch.name.replace('-breenix', '-aarch64-breenix'))
+        self.assertEqual(hashlib.sha256(arm_patch.read_bytes()).hexdigest(),
+                         arm['patches_sha256'][arm_patch.name])
+
     def test_cargo_is_breenix_elf_with_empty_undefined_set(self):
         for arch in MACHINES:
             with self.subTest(arch=arch):
