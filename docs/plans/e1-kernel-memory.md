@@ -502,6 +502,17 @@ Bonwick and Adams 2001.
   - On x86, whose kernel pages are global (Intel SDM vol. 3A §4.10, global pages and TLB invalidation),
     the batch is flushed on each CPU through the existing shootdown transport (`memory/tlb.rs`). That happens when the pending list passes
     16 MiB, when VA allocation fails, or from the shrinker.
+  - That flush must remove global entries. The existing `tlb::flush_all` and its `KIND_ALL` request
+    (`tlb.rs:185`, `:578`) reload CR3, and CR4.PGE is set at boot (`memory/mod.rs:123`). A CR3 load
+    leaves global translations in place (SDM vol. 3A §4.10.4.1), so a CPU could acknowledge that flush and
+    still translate the window page to a frame the allocator has recycled. E1-5 adds a request kind that
+    does one of two things on each CPU, local and remote alike:
+    - `invlpg` for each page of the batch, which removes global entries for that page, when the batch is
+      at most 32 pages;
+    - otherwise it clears and restores CR4.PGE, which invalidates the TLB including global entries
+      (SDM vol. 3A §4.10.4.1). That is the
+      same sequence as `arch_impl/x86_64/pat.rs`'s `flush_tlb`.
+    `flush_all`'s existing callers are unchanged. Window frees use only the new kind.
   - Spans shrink with hysteresis and vmap frees are batched, so these flushes are rare. E9's IPI transport
     replaces the NMI underneath without changing this rule.
 
@@ -821,7 +832,8 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
 
 - Change: the span, vmap and stack windows (6.5), with a VA allocator per window.
   - x86-64 uses a window mapper over dedicated PML4 slots and PDPTs installed at boot (6.5), with
-    compare-exchange table installs, and a pending-unmap list flushed through `memory/tlb.rs`.
+    compare-exchange table installs, and a pending-unmap list flushed through `memory/tlb.rs` with a new
+    request kind that removes global entries (`invlpg` per page, or a CR4.PGE toggle; 6.5).
   - ARM64 gets a TTBR1 4 KiB and 2 MiB mapper with `tlbi vaae1is` on unmap.
   - Only this PR's own self-check at init uses the windows yet.
 - x86-64: kernel-half table pages for the windows are allocated on first use.
