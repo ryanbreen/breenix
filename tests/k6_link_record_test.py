@@ -3,7 +3,9 @@
 import json
 import os
 from pathlib import Path, PurePosixPath
+import subprocess
 import sys
+import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -17,6 +19,29 @@ class K6LinkRecord(unittest.TestCase):
 
     def test_k6_link_lines_recorded_aarch64(self):
         self.check_k6_link_lines("aarch64")
+
+    def test_aarch64_retained_fixture_checks_negative_archive(self):
+        key = "BREENIX_K6_AARCH64_FIXTURE"
+        default = Path.home() / "Library/Caches/breenix-e25/k6/aarch64"
+        fixture = Path(os.environ.get(key, default)).expanduser().resolve()
+        checker = [sys.executable, ROOT / "scripts/rust-host/check-k6-fixture.py", "--arch", "aarch64"]
+        with tempfile.TemporaryDirectory() as directory:
+            projected = Path(directory)
+            for source in fixture.iterdir():
+                if source.name != "control":
+                    (projected / source.name).symlink_to(source)
+            archive = projected / "control/non-elf.rlib"
+            archive.parent.mkdir()
+            archive.write_bytes(b"wrong archive")
+            env = dict(os.environ, **{key: str(projected)})
+            result = subprocess.run(checker, env=env, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertIn("control/non-elf.rlib: SHA-256 differs", result.stderr)
+
+            archive.unlink()
+            archive.symlink_to(fixture / archive.relative_to(projected))
+            result = subprocess.run(checker, env=env, capture_output=True, text=True, check=True)
+            self.assertIn("verified 89 SHA-256 digests and 8 argv records", result.stdout)
 
     def check_k6_link_lines(self, arch):
         record_path = ROOT / f"toolchain/rust-host/k6/{arch}.json"
