@@ -116,6 +116,7 @@ impl<'a> ServerSession<'a> {
     pub fn wait_for_channel(&mut self) -> Result<SessionCommand, SshError> {
         loop {
             let msg = self.io.recv_packet().map_err(ssh_io_error)?;
+            let Some(msg) = self.rekey_if_kexinit(msg)? else { continue };
             if msg.is_empty() {
                 return Err(SshError::Disconnected);
             }
@@ -221,6 +222,7 @@ impl<'a> ServerSession<'a> {
     /// (window adjust, etc.), or Err for disconnect/errors.
     pub fn recv_data(&mut self) -> Result<Option<Vec<u8>>, SshError> {
         let msg = self.io.recv_packet().map_err(|_| SshError::Io)?;
+        let Some(msg) = self.rekey_if_kexinit(msg)? else { return Ok(None) };
         self.handle_channel_packet(&msg, true)
     }
 
@@ -229,7 +231,32 @@ impl<'a> ServerSession<'a> {
     /// returns input credit with consume_input after delivering the data.
     pub fn try_recv_data_uncredited(&mut self) -> Result<Option<Vec<u8>>, SshError> {
         let Some(msg) = self.io.try_recv_packet().map_err(|_| SshError::Io)? else { return Ok(None) };
+        let Some(msg) = self.rekey_if_kexinit(msg)? else { return Ok(None) };
         self.handle_channel_packet(&msg, false)
+    }
+
+    /// A client KEXINIT after the handshake opens a key re-exchange, which
+    /// is answered before anything else is sent. Any other message is
+    /// handed back. The client waits for our KEXINIT behind whatever output
+    /// a relay has queued, so that is written out first.
+    fn rekey_if_kexinit(&mut self, msg: Vec<u8>) -> Result<Option<Vec<u8>>, SshError> {
+        if msg.first() != Some(&SSH_MSG_KEXINIT) {
+            return Ok(Some(msg));
+        }
+        let relaying = self.io.pause_relay().map_err(ssh_io_error)?;
+        kex::server_rekey(
+            &mut self.io,
+            &mut Csprng::new(),
+            self.host_key,
+            &mut self.kex,
+            &self.client_version,
+            BSSH_VERSION,
+            msg,
+        )?;
+        if relaying {
+            self.io.start_relay().map_err(ssh_io_error)?;
+        }
+        Ok(None)
     }
 
     fn handle_channel_packet(&mut self, msg: &[u8], replenish: bool) -> Result<Option<Vec<u8>>, SshError> {

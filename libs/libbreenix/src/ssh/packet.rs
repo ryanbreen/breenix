@@ -386,6 +386,29 @@ impl PacketIo {
         Ok(())
     }
 
+    /// Leave relay mode for an exchange that blocks on the peer, such as a
+    /// key re-exchange: write out every queued packet, waiting for the
+    /// socket as needed, then restore blocking writes. Returns whether a
+    /// relay was running, so the caller can start it again.
+    pub fn pause_relay(&mut self) -> Result<bool, Error> {
+        if self.relay_flags.is_none() {
+            return Ok(false);
+        }
+        loop {
+            self.flush_relay()?;
+            if !self.relay_output_pending() {
+                break;
+            }
+            let mut fds = [crate::io::PollFd::new(self.fd, crate::io::poll_events::POLLOUT)];
+            match crate::io::poll(&mut fds, -1) {
+                Ok(_) | Err(Error::Os(Errno::EINTR)) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        self.finish_relay()?;
+        Ok(true)
+    }
+
     pub fn finish_relay(&mut self) -> Result<(), Error> {
         if self.relay_output_pending() {
             return Err(Error::Os(Errno::EAGAIN));

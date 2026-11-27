@@ -13,7 +13,7 @@ use libbreenix::error::Error;
 use libbreenix::ssh::cipher::{CipherKind, SshCipher};
 use libbreenix::ssh::keys::Ed25519Key;
 use libbreenix::ssh::packet::{Framer, KexTransport};
-use libbreenix::ssh::{kex, SshBuf};
+use libbreenix::ssh::{kex, SshBuf, SshError};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::process::{Command, Stdio};
@@ -88,10 +88,10 @@ struct Transcript {
 
 /// Answer a client KEXINIT that opens a re-exchange.
 fn rekey(wire: &mut Wire, host_key: &Ed25519Key, state: &mut kex::KexState, client_version: &str, kexinit: Vec<u8>)
-    -> (CipherKind, CipherKind)
+    -> Result<(CipherKind, CipherKind), SshError>
 {
-    kex::server_rekey(wire, &mut rng(8), host_key, state, client_version, SERVER_VERSION, kexinit).unwrap();
-    kex::negotiate_ciphers_with(&state.peer_kexinit, &state.my_kexinit, state.strict).unwrap()
+    kex::server_rekey(wire, &mut rng(8), host_key, state, client_version, SERVER_VERSION, kexinit)?;
+    Ok(kex::negotiate_ciphers_with(&state.peer_kexinit, &state.my_kexinit, state.strict).unwrap())
 }
 
 fn serve(stream: TcpStream, host_key: &Ed25519Key) -> Transcript {
@@ -171,7 +171,7 @@ fn serve(stream: TcpStream, host_key: &Ed25519Key) -> Transcript {
                 input.extend_from_slice(string_at(&message, &mut pos));
             }
             96 => break,
-            20 => rekeys.push(rekey(&mut wire, host_key, &mut state, &client_version, message)),
+            20 => rekeys.push(rekey(&mut wire, host_key, &mut state, &client_version, message).unwrap()),
             2 | 4 | 93 => {}
             kind => panic!("unexpected message {kind}"),
         }
@@ -199,7 +199,13 @@ fn serve(stream: TcpStream, host_key: &Ed25519Key) -> Transcript {
         let message = wire.recv();
         match message[0] {
             97 => break,
-            20 => rekeys.push(rekey(&mut wire, host_key, &mut state, &client_version, message)),
+            // A client that has everything may start a re-exchange its
+            // byte count asked for, then disconnect instead of finishing it.
+            20 => match rekey(&mut wire, host_key, &mut state, &client_version, message) {
+                Ok(kinds) => rekeys.push(kinds),
+                Err(SshError::Disconnected) => break,
+                Err(error) => panic!("re-exchange failed: {error:?}"),
+            },
             _ => {}
         }
     }

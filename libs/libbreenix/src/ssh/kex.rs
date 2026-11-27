@@ -209,6 +209,44 @@ pub fn server_key_exchange(
     exchange_after_kexinit(io, rng, host_key, kex, client_version, server_version)
 }
 
+/// Answer a key re-exchange that the client opened with `peer_kexinit`
+/// after the initial exchange (RFC 4253 section 9): send our KEXINIT and
+/// run the exchange again, admitting only its messages. The session
+/// identifier stays the initial exchange hash, and strict KEX, settled by
+/// the initial KEXINITs, restarts the sequence numbers again.
+pub fn server_rekey(
+    io: &mut impl KexTransport,
+    rng: &mut Csprng,
+    host_key: &HostKey,
+    kex: &mut KexState,
+    client_version: &str,
+    server_version: &str,
+    peer_kexinit: Vec<u8>,
+) -> Result<(), SshError> {
+    if kex.session_id.is_none() {
+        return Err(SshError::Protocol("re-exchange before the initial exchange"));
+    }
+    if peer_kexinit.first() != Some(&SSH_MSG_KEXINIT) {
+        return Err(SshError::Protocol("expected KEXINIT"));
+    }
+    kex.my_kexinit = build_kexinit(rng);
+    io.send_packet(&kex.my_kexinit).map_err(|_| SshError::Io)?;
+    kex.peer_kexinit = peer_kexinit;
+    exchange_after_kexinit(io, rng, host_key, kex, client_version, server_version)
+}
+
+/// The next message of a key exchange, which must be `kind`. A DISCONNECT
+/// (allowed during an exchange, RFC 4253 section 7.1) ends the connection
+/// as a disconnect; anything else is a protocol error.
+fn exchange_message(io: &mut impl KexTransport, kind: u8, expected: &'static str) -> Result<Vec<u8>, SshError> {
+    let message = io.recv_packet().map_err(|_| SshError::Io)?;
+    match message.first() {
+        Some(&first) if first == kind => Ok(message),
+        Some(&SSH_MSG_DISCONNECT) => Err(SshError::Disconnected),
+        _ => Err(SshError::Protocol(expected)),
+    }
+}
+
 /// The rest of a server key exchange once both KEXINITs are in `kex`.
 fn exchange_after_kexinit(
     io: &mut impl KexTransport,
@@ -218,10 +256,7 @@ fn exchange_after_kexinit(
     client_version: &str,
     server_version: &str,
 ) -> Result<(), SshError> {
-    let kex_init = io.recv_packet().map_err(|_| SshError::Io)?;
-    if kex_init.first() != Some(&SSH_MSG_KEX_ECDH_INIT) {
-        return Err(SshError::Protocol("expected KEX_ECDH_INIT"));
-    }
+    let kex_init = exchange_message(io, SSH_MSG_KEX_ECDH_INIT, "expected KEX_ECDH_INIT")?;
 
     // Dispatch: hybrid C_INIT is 1216 bytes, X25519 Q_C is 32 bytes
     let hybrid = kex_init.len() > 5
@@ -234,10 +269,7 @@ fn exchange_after_kexinit(
         server_kex_ecdh(io, rng, host_key, kex, client_version, server_version, &kex_init)?
     };
 
-    let newkeys = io.recv_packet().map_err(|_| SshError::Io)?;
-    if newkeys.first() != Some(&SSH_MSG_NEWKEYS) {
-        return Err(SshError::Protocol("expected NEWKEYS"));
-    }
+    exchange_message(io, SSH_MSG_NEWKEYS, "expected NEWKEYS")?;
 
     let session_id = kex.session_id.as_ref().ok_or(SshError::KeyExchange)?;
     let (c2s, s2c) = negotiate_ciphers_with(&kex.peer_kexinit, &kex.my_kexinit, kex.strict)?;
