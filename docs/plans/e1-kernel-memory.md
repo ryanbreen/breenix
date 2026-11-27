@@ -484,10 +484,14 @@ Bonwick and Adams 2001.
   `map_kernel_page`'s aliasing stays for its existing callers, and E1-5 does not widen its use.
 - ARM64 has no TTBR1 page mapper today (`arch_impl/aarch64/mmu.rs` holds the boot-time block tables only).
   E1-5 adds one.
-  - It installs table pages from the page layer, then 4 KiB or 2 MiB descriptors into invalid entries, then
-    `dsb ishst; isb`.
-  - Unmapping writes an invalid descriptor, then `tlbi vaae1is` per page (any ASID, inner shareable), then
-    `dsb ish; isb` (Arm ARM, TLB maintenance).
+  - It installs table pages from the page layer, zeroed and made visible with `dsb ishst` before the table
+    descriptor that links them is written. Then it writes 4 KiB or 2 MiB descriptors into invalid entries,
+    then `dsb ishst; isb`.
+  - Unmapping writes an invalid descriptor, then `dsb ishst`, then `tlbi vaae1is` per page (any ASID, inner
+    shareable), then `dsb ish; isb` (Arm ARM, TLB maintenance). Without the `dsb ishst`, the TLBI can
+    complete before a peer's table walker sees the invalid descriptor, and the peer can refill the old
+    translation afterwards. The mapper calls the existing `arch_stub::tlb::flush_pages`
+    (`memory/arch_stub.rs:937-948`), which already issues that sequence, instead of writing its own.
   - Kernel mappings are global and need no ASID, so this is independent of Phase 1.6's user ASIDs.
 - vmap allocation:
   - VA comes from the vmap window's free-extent tree (ordered by start and by size). Its nodes come from a
@@ -498,7 +502,8 @@ Bonwick and Adams 2001.
     without copying the bytes.
 - Flush before free, for kernel mappings. Unmapped ranges go on a pending list, and their frames are not
   returned until one flush covers the batch.
-  - On ARM64 the `tlbi vaae1is` at unmap is that flush, since it is broadcast by hardware.
+  - On ARM64 the `flush_pages` sequence at unmap is that flush, since the TLBI is broadcast by hardware
+    and the closing `dsb ish` waits for it to complete on each PE in the inner shareable domain.
   - On x86, whose kernel pages are global (Intel SDM vol. 3A §4.10, global pages and TLB invalidation),
     the batch is flushed on each CPU through the existing shootdown transport (`memory/tlb.rs`). That happens when the pending list passes
     16 MiB, when VA allocation fails, or from the shrinker.
@@ -834,7 +839,8 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
   - x86-64 uses a window mapper over dedicated PML4 slots and PDPTs installed at boot (6.5), with
     compare-exchange table installs, and a pending-unmap list flushed through `memory/tlb.rs` with a new
     request kind that removes global entries (`invlpg` per page, or a CR4.PGE toggle; 6.5).
-  - ARM64 gets a TTBR1 4 KiB and 2 MiB mapper with `tlbi vaae1is` on unmap.
+  - ARM64 gets a TTBR1 4 KiB and 2 MiB mapper. Its unmap flushes through the existing
+    `arch_stub::tlb::flush_pages` (`dsb ishst`, `tlbi vaae1is` per page, `dsb ish; isb`).
   - Only this PR's own self-check at init uses the windows yet.
 - x86-64: kernel-half table pages for the windows are allocated on first use.
 - ARM64: a new TTBR1 mapper.
