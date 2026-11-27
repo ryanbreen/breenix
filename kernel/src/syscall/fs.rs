@@ -2032,7 +2032,15 @@ fn access_resolved(
                     SyscallResult::Err(EACCES as u64)
                 };
             }
-            return if crate::fs::procfs::lookup_by_path(resolved.virtual_path().unwrap_or("")).is_some() {
+            let path = resolved.virtual_path().unwrap_or("");
+            if let Some(attrs) = crate::fs::procfs::receive_counters_attrs(path) {
+                return if mode & 0o2 == 0 && cred.may(attrs, mode) {
+                    SyscallResult::Ok(0)
+                } else {
+                    SyscallResult::Err(EACCES as u64)
+                };
+            }
+            return if crate::fs::procfs::lookup_by_path(path).is_some() {
                 SyscallResult::Ok(0)
             } else {
                 SyscallResult::Err(ENOENT as u64)
@@ -2141,6 +2149,20 @@ fn handle_procfs_open(path: &str, flags: u32) -> SyscallResult {
         };
     }
 
+    let attrs = crate::fs::procfs::receive_counters_attrs(normalized);
+    if let Some(attrs) = attrs {
+        let cred = match current_file_credentials() {
+            Ok(cred) => cred,
+            Err(errno) => return SyscallResult::Err(errno),
+        };
+        if let Err(result) = check_open_access(attrs, flags, &cred) {
+            return result;
+        }
+        if flags & (0x3 | O_TRUNC) != O_RDONLY {
+            return SyscallResult::Err(super::errno::EROFS as u64);
+        }
+    }
+
     // Regular file open
     let content = match crate::fs::procfs::read_file(path) {
         Ok(c) => c,
@@ -2152,10 +2174,14 @@ fn handle_procfs_open(path: &str, flags: u32) -> SyscallResult {
     };
 
     let fd_kind = FdKind::ProcfsFile {
-        mode: if matches!(normalized, "/proc/console/check" | "/proc/fbcon/check" | "/proc/kmsg") { 0o400 } else { 0o444 },
+        mode: match attrs {
+            Some(attrs) => attrs.permissions(),
+            None if matches!(normalized, "/proc/console/check" | "/proc/fbcon/check" | "/proc/kmsg") => 0o400,
+            None => 0o444,
+        },
         content,
         position: 0,
-        owner: crate::fs::procfs::owner(path),
+        owner: attrs.map_or_else(|| crate::fs::procfs::owner(path), |attrs| (attrs.uid, attrs.gid)),
     };
     // C2 has one probe-only writable object, using the existing descriptor I/O
     // boundary. Production kernels retain the ordinary read-only procfs path.
@@ -3713,6 +3739,16 @@ pub fn sys_newfstatat(dirfd: i32, pathname: u64, statbuf: u64, flags: u32) -> Sy
                     Ok(()) => SyscallResult::Ok(0),
                     Err(errno) => SyscallResult::Err(errno),
                 };
+            }
+            if let Some(attrs) = crate::fs::procfs::receive_counters_attrs(full_path) {
+                let mut stat = Stat::zeroed();
+                stat.st_dev = 0xffff0004;
+                stat.st_mode = attrs.mode;
+                stat.st_uid = attrs.uid;
+                stat.st_gid = attrs.gid;
+                stat.st_nlink = 1;
+                stat.st_blksize = 4096;
+                return ufs_status(copy_to_user(statbuf as *mut Stat, &stat));
             }
             let fd = match sys_open_from(dirfd, pathname, O_RDONLY, 0) {
                 SyscallResult::Ok(fd) => fd as i32,

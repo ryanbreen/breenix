@@ -52,6 +52,8 @@ use spin::Mutex;
 mod trace;
 mod xhci;
 
+pub use net::receive_counters_attrs;
+
 /// Procfs entry types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcEntryType {
@@ -149,6 +151,8 @@ pub enum ProcEntryType {
     NetPnp,
     /// /proc/net/tcp - TCP listeners and connections, the first columns of Linux's format
     NetTcp,
+    /// /proc/net/rx_counters - TCP and NIC receive diagnostics, readable by wheel
+    NetReceiveCounters,
     /// /proc/console - screen console directory
     #[cfg(target_arch="x86_64")]
     Gt710Pixels,
@@ -255,6 +259,7 @@ impl ProcEntryType {
             ProcEntryType::NetDir => "net",
             ProcEntryType::NetPnp => "pnp",
             ProcEntryType::NetTcp => "tcp",
+            ProcEntryType::NetReceiveCounters => "rx_counters",
             #[cfg(target_arch="x86_64")]
             ProcEntryType::Gt710Pixels => "gt710-pixels",
             #[cfg(target_arch="x86_64")]
@@ -345,6 +350,7 @@ impl ProcEntryType {
             ProcEntryType::NetDir => "/proc/net",
             ProcEntryType::NetPnp => "/proc/net/pnp",
             ProcEntryType::NetTcp => "/proc/net/tcp",
+            ProcEntryType::NetReceiveCounters => net::RECEIVE_COUNTERS_PATH,
             #[cfg(target_arch="x86_64")]
             ProcEntryType::Gt710Pixels => "/proc/gt710-pixels",
             #[cfg(target_arch="x86_64")]
@@ -436,6 +442,7 @@ impl ProcEntryType {
             ProcEntryType::NetDir => 400,
             ProcEntryType::NetPnp => 401,
             ProcEntryType::NetTcp => 402,
+            ProcEntryType::NetReceiveCounters => 403,
             ProcEntryType::FbconDir => 500,
             ProcEntryType::FbconCheck => 501,
             #[cfg(target_arch="x86_64")]
@@ -616,6 +623,7 @@ pub fn init() {
     procfs.entries.push(ProcEntry::new(ProcEntryType::NetDir));
     procfs.entries.push(ProcEntry::new(ProcEntryType::NetPnp));
     procfs.entries.push(ProcEntry::new(ProcEntryType::NetTcp));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::NetReceiveCounters));
     #[cfg(target_arch="x86_64")]
     procfs.entries.push(ProcEntry::new(ProcEntryType::Gt710Pixels));
     #[cfg(target_arch="x86_64")]
@@ -765,6 +773,7 @@ pub fn list_entries() -> Result<Vec<String>, i32> {
                     | ProcEntryType::BlockCache
                     | ProcEntryType::NetPnp
                     | ProcEntryType::NetTcp
+                    | ProcEntryType::NetReceiveCounters
             ) && !is_console_file(&e.entry_type)
         }) {
             let name = e.entry_type.name();
@@ -1069,6 +1078,7 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         }
         ProcEntryType::NetPnp => net::generate_pnp().map(String::into_bytes),
         ProcEntryType::NetTcp => crate::net::tcp::proc_net_tcp().map(String::into_bytes),
+        ProcEntryType::NetReceiveCounters => net::generate_receive_counters().map(String::into_bytes),
         #[cfg(target_arch="x86_64")]
         ProcEntryType::Gt710Pixels => require(Operation::Trace).map(|()|crate::gk208::proc_pixels()),
         #[cfg(target_arch="x86_64")]
