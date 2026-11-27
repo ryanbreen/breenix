@@ -282,6 +282,7 @@ fn quote(word: &str) -> String {
 pub struct Destination {
     peer: String,
     path: String,
+    ssh_args: Vec<String>,
 }
 
 impl Destination {
@@ -314,12 +315,19 @@ impl Destination {
         Ok(Self {
             peer: format!("{user}@{host}"),
             path: path.into(),
+            ssh_args: Vec::new(),
         })
+    }
+
+    pub fn with_ssh_args(mut self, args: &[String]) -> Self {
+        self.ssh_args = args.to_vec();
+        self
     }
 
     fn command(&self, script: &str, sudo: bool) -> Command {
         let prefix = if sudo { "/usr/bin/sudo -n " } else { "" };
         let mut command = Command::new("/usr/bin/ssh");
+        command.args(&self.ssh_args);
         command.args([
             "-T",
             "--",

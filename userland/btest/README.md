@@ -13,6 +13,9 @@ or report publication failed. Goldens are compared in stdout, stderr, status
 order. The result includes the first differing stream as a unified diff for
 text, or an offset and hex bytes for binary data. The advisory run lock lives
 under `/var/lib/btest` so the initial provision also covers subsequent boots.
+Pass `--json` after the package names to stream a JSON line for each completed
+case before the summary. Case lines carry `kind: "case"` and the package
+name. The report file contains the summary with its full case results.
 
 ## Provision the box once
 
