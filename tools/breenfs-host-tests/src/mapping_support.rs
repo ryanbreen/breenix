@@ -33,6 +33,8 @@ struct MapInner {
     bindings: Vec<BindingRec>,
     populating: Vec<Claim>,
     writable_shared: usize,
+    exec_loads: usize,
+    write_opens: usize,
     writeback_cursor: u64,
     writeback_epoch: u64,
 }
@@ -43,6 +45,10 @@ struct BindingRec {
     pages: u64,
     shared: bool,
     writable: bool,
+    /// Shared write authority: mapped from a descriptor open for writing.
+    may_write: bool,
+    /// One of a running image's PT_LOADs (E3-3).
+    exec: bool,
     parked: Vec<(u64, CachePage)>,
     leaves: Vec<(u64, PhysFrame)>,
 }
@@ -62,8 +68,11 @@ impl MapInner {
     // Host frames are data only; there is no guest instruction cache to sync.
     fn sync_if_executable(&self, _: u64) {}
 }
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct PhysFrame(usize);
+// Host frames are data only; there is no guest instruction cache to sync.
+fn sync_executable(_: PhysFrame) {}
+/// A host page's address stands for its frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PhysFrame(pub usize);
 impl PhysFrame {
     fn start_address(self) -> Self {
         self
@@ -78,6 +87,7 @@ struct CachePage {
     dirty: bool,
     gen: u64,
     written: Option<WritebackReceipt>,
+    icache_clean: bool,
 }
 std::thread_local! {
     static ALLOCATION_HOOK: core::cell::RefCell<(usize, Option<Box<dyn FnMut(usize)>>)> =
@@ -108,7 +118,7 @@ impl CachePage {
         }
         let storage = Box::new([0; 4096]);
         Ok(Self { frame: PhysFrame(storage.as_ptr() as usize), _storage: storage,
-            dirty: false, gen: 0, written: None })
+            dirty: false, gen: 0, written: None, icache_clean: false })
     }
     fn ptr(&self) -> *mut u8 { self.frame.0 as *mut u8 }
     fn zero_from(&self, offset: u64) {
@@ -134,6 +144,8 @@ impl MapState {
                     bindings: Vec::new(),
                     populating: Vec::new(),
                     writable_shared: 0,
+                    exec_loads: 0,
+                    write_opens: 0,
                     writeback_cursor: 0,
                     writeback_epoch: 0,
                 }),
@@ -171,6 +183,7 @@ impl MapState {
                     dirty: true,
                     gen: 1,
                     written: None,
+                    icache_clean: false,
                 },
             ));
         }
@@ -182,6 +195,8 @@ impl MapState {
                 pages: bytes.len().div_ceil(4096) as u64,
                 shared: true,
                 writable: true,
+                may_write: true,
+                exec: false,
                 parked: Vec::new(),
                 leaves: Vec::new(),
             }]
@@ -258,7 +273,31 @@ pub fn bind_unpopulated(node: Arc<VNode>, length: u64) -> HostBinding {
     let mut inner = node.map.state.inner.lock();
     let id = inner.bindings.iter().map(|r| r.id).max().unwrap_or(0) + 1;
     inner.bindings.push(BindingRec { id, pgoff: 0, pages: pages(length), shared: false,
-        writable: false, parked: Vec::new(), leaves: Vec::new() });
+        writable: false, may_write: false, exec: false, parked: Vec::new(), leaves: Vec::new() });
+    drop(inner);
+    HostBinding(Arc::new(HostBindingOwner { node, id }))
+}
+/// A shared read-only binding of the first `length` bytes mapped from a
+/// descriptor open for writing: it keeps write authority, so mprotect can
+/// make it writable after the descriptor closes (E3-3, design 10.3).
+pub fn bind_shared_authority(node: Arc<VNode>, length: u64) -> HostBinding {
+    // mmap populates the range before it binds (production `populate`).
+    let _population = populate(&node, 0, pages(length)).unwrap_or_else(|_| panic!("population failed"));
+    let mut inner = node.map.state.inner.lock();
+    let id = inner.bindings.iter().map(|r| r.id).max().unwrap_or(0) + 1;
+    inner.bindings.push(BindingRec { id, pgoff: 0, pages: pages(length), shared: true,
+        writable: false, may_write: true, exec: false, parked: Vec::new(), leaves: Vec::new() });
+    drop(inner);
+    HostBinding(Arc::new(HostBindingOwner { node, id }))
+}
+/// The exec binding of `pages` file pages from `pgoff` that exec registers
+/// for a cached PT_LOAD (kernel `bind` with `exec`); its entries are the
+/// caller's model.
+pub fn bind_exec(node: Arc<VNode>, pgoff: u64, pages: u64) -> HostBinding {
+    let mut inner = node.map.state.inner.lock();
+    let id = inner.bindings.iter().map(|r| r.id).max().unwrap_or(0) + 1;
+    inner.bindings.push(BindingRec { id, pgoff, pages, shared: false, writable: false,
+        may_write: false, exec: true, parked: Vec::new(), leaves: Vec::new() });
     drop(inner);
     HostBinding(Arc::new(HostBindingOwner { node, id }))
 }
@@ -271,7 +310,7 @@ fn publish_host(node: &VNode, io: &dyn MappingIo, length: u64, shared: bool, wri
         }
         id = inner.bindings.iter().map(|r| r.id).max().unwrap_or(0) + 1;
         inner.bindings.push(BindingRec { id, pgoff: 0, pages: pages(length), shared, writable,
-            parked: Vec::new(), leaves: Vec::new() });
+            may_write: writable, exec: false, parked: Vec::new(), leaves: Vec::new() });
         Ok(())
     })?;
     Ok(id)

@@ -549,7 +549,7 @@ fn map_file(
     let _binding = handle.map.allow_mapping_binding().map_err(|errno| abandon(errno as u64))?;
     let mut vma = Some(vma);
     let mut result = Err(ErrorCode::IoError as u64);
-    _population
+    let published = _population
         .publish(&mut |append_only| {
             result = (|| {
                 let mut vma = vma.take().ok_or(ErrorCode::IoError as u64)?;
@@ -575,6 +575,8 @@ fn map_file(
                 let (start, end) = (vma.start.as_u64(), vma.end.as_u64());
                 let bind_errno = |error: &'static str| if error == file_map::ROOT_FROZEN {
                     crate::syscall::errno::EBUSY as u64
+                } else if error == file_map::TEXT_BUSY {
+                    crate::syscall::errno::ETXTBSY as u64
                 } else {
                     ErrorCode::OutOfMemory as u64
                 };
@@ -602,6 +604,7 @@ fn map_file(
                     pgoff,
                     may_write && !append_only,
                     claim,
+                    false,
                 ) {
                     Ok(binding) => vma.backing = Some(binding),
                     Err(error) => return Err(abandon(bind_errno(error))),
@@ -618,7 +621,11 @@ fn map_file(
                 .map(|_| ())
                 .map_err(|errno| Errno(*errno as i32))
         })
-        .map_err(|errno| abandon(errno.into()))?;
+        .map_err(|errno| abandon(errno.into()));
+    if result == Err(crate::syscall::errno::ETXTBSY as u64) {
+        log::warn!("ETXTBSY: shared write mapping of a running image refused (ino {})", object.ino);
+    }
+    published?;
     result
 }
 

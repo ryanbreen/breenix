@@ -52,7 +52,73 @@ impl ProgramHeader {
 }
 
 type ReadAt<'a> = dyn FnMut(u64, &mut [u8]) -> Result<(), Errno> + 'a;
-pub(crate) type ReadInterpreter<'a> = dyn FnMut(u64, &mut ReadAt<'_>) -> Result<ExecPlan, Errno> + 'a;
+/// Read an interpreter: its size, its bytes, and the cache exec may map it
+/// from (`Source`, absent for an image that is not a cached file).
+pub(crate) type ReadInterpreter<'a> =
+    dyn for<'s> FnMut(u64, &mut ReadAt<'_>, Option<Source<'s>>) -> Result<ExecPlan, Errno> + 'a;
+
+/// What the filesystem lends exec for one image: its VNode and the transfer
+/// exec holds while it loads it (docs/plans/e3-page-cache.md 10.1).
+#[cfg(not(test))]
+#[derive(Clone, Copy)]
+pub(crate) struct Source<'a> {
+    pub(crate) node: &'a alloc::sync::Arc<crate::fs::vfs::VNode>,
+    pub(crate) file: &'a dyn crate::fs::vfs::MappingIo,
+}
+#[cfg(test)]
+pub(crate) type Source<'a> = core::marker::PhantomData<&'a ()>;
+
+const PF_X: u32 = 1;
+const PF_W: u32 = 2;
+const PAGE_MASK: u64 = PAGE as u64 - 1;
+
+/// The mmap protection bits (PROT_READ 1, PROT_WRITE 2, PROT_EXEC 4) of ELF
+/// segment flags (PF_X 1, PF_W 2, PF_R 4): PF_R and PF_X occupy the opposite
+/// bits from PROT_READ and PROT_EXEC, and PF_W and PROT_WRITE both bit 1.
+pub(crate) fn prot_bits(flags: u32) -> u32 {
+    (flags & 4) >> 2 | (flags & PF_W) | (flags & PF_X) << 2
+}
+
+/// One page-aligned part of a PT_LOAD that exec maps through the image's
+/// file cache (docs/plans/e3-page-cache.md 10.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Piece {
+    /// The whole file pages `[start, end)`, from file page `pgoff` on: shared
+    /// cache frames, read-only, copy-on-write for a PF_W segment.
+    File { start: u64, end: u64, pgoff: u64, flags: u32 },
+    /// The page at `address` that holds the segment's last file bytes when
+    /// `p_memsz` goes past them: a private page with the first `keep` bytes
+    /// of file page `pgoff`, then zeros. The one page exec copies.
+    Tail { address: u64, pgoff: u64, keep: usize, flags: u32 },
+    /// The rest of `p_memsz`, `[start, end)`: anonymous memory, zero-filled
+    /// on demand. It covers the tail page, which exec fills itself.
+    Zero { start: u64, end: u64, flags: u32 },
+}
+
+/// Where exec puts an image's pages: the new address space, or a host model.
+pub(crate) trait ImageTarget {
+    /// A fresh zero-filled page at `address` that this image owns, mapped
+    /// with ELF `flags`, as exec's copies are.
+    fn private_page(&mut self, address: u64, flags: u32) -> Result<*mut u8, Errno>;
+    /// Make the bytes just written at ptr, through the kernel's alias,
+    /// coherent for instruction fetch.
+    fn sync(&mut self, ptr: *mut u8, len: usize);
+    /// Whether this image's pages may come from its file cache: the target
+    /// has the image's cache and the file had no writer (10.3).
+    fn cached(&self) -> bool;
+    /// Read file pages `[first, first + count)` into the cache, held until
+    /// the load ends.
+    fn populate(&mut self, first: u64, count: u64) -> Result<(), Errno>;
+    /// Map `[start, end)` from cached file page `pgoff` on with ELF `flags`.
+    fn map_file(&mut self, start: u64, end: u64, pgoff: u64, flags: u32) -> Result<(), Errno>;
+    /// Copy the first `len` bytes of cached file page `index` to `dst`.
+    fn copy_file(&mut self, index: u64, dst: *mut u8, len: usize) -> Result<(), Errno>;
+    /// Make `[start, end)` anonymous memory with ELF `flags`, its pages
+    /// cleared when first touched.
+    fn zero(&mut self, start: u64, end: u64, flags: u32) -> Result<(), Errno>;
+    /// The image's layout cannot be mapped from the cache: it is copied.
+    fn fall_back(&mut self);
+}
 
 /// A page-aligned part of an interpreted exec image and its mapped ELF flags.
 pub(crate) struct ImageRegion {
@@ -320,41 +386,38 @@ impl Headers {
 
     /// Put the named interpreter into the program's unpublished table. The
     /// table is dropped if opening, validating or reading the interpreter fails.
+    /// `load` places the interpreter's PT_LOADs at the bias exec_plan chose
+    /// and says whether its file cache served them. The regions returned are
+    /// the copied images' pages: the program's when `program_copied`, and the
+    /// interpreter's when `load` copied it.
     ///
     /// # Safety
-    /// `map_page` must return a writable page owned by `table`, as required
-    /// by `load_segments`. `open` must retain the interpreter's file lease
+    /// `load` must place pages only in `table`, as `load_segments` requires
+    /// of `map_page`. `open` must retain the interpreter's file lease
     /// across the callback.
     pub(crate) unsafe fn load_interpreter<T>(
         &self,
         mut table: T,
         region: Range<u64>,
+        program_copied: bool,
         open: impl FnOnce(&[u8], &mut ReadInterpreter<'_>) -> Result<ExecPlan, Errno>,
-        mut map_page: impl FnMut(&mut T, u64, u32) -> Result<*mut u8, Errno>,
+        mut load: impl FnMut(&mut T, &Self, u64, &mut ReadAt<'_>, Option<Source<'_>>) -> Result<bool, Errno>,
     ) -> Result<(T, ExecPlan, Vec<ImageRegion>), Errno> {
         let path = self.interpreter_path().ok_or(Errno(ENOEXEC))?;
         let mut regions = Vec::new();
-        let plan = open(path, &mut |size, read| {
+        let plan = open(path, &mut |size, read, source| {
             let mut header = [0; ELF_HEADER];
             let prefix = size.min(ELF_HEADER as u64) as usize;
             read(0, &mut header[..prefix])?;
             let interpreter = Self::read(&header[..prefix], size, self.machine, region.end, read)?;
             let plan = self.exec_plan(Some((&interpreter, region.clone())))?;
             let bias = plan.interpreter_bias().ok_or(Errno(ENOEXEC))?;
-            self.append_image_regions(self.program_bias.unwrap_or(0), &mut regions)?;
-            interpreter.append_image_regions(bias, &mut regions)?;
-            #[cfg(not(test))]
-            let sync = arch::sync_image_range;
-            #[cfg(test)]
-            let sync = |_, _| {};
-            // SAFETY: map_page supplies the pages owned by table. exec_plan
-            // bounds the biased loads and places them above the program.
-            unsafe {
-                interpreter.load_segments(
-                    read,
-                    |address, flags| map_page(&mut table, address + bias, flags),
-                    sync,
-                )?;
+            if program_copied {
+                self.append_image_regions(self.program_bias.unwrap_or(0), &mut regions)?;
+            }
+            // exec_plan bounds the biased loads and places them above the program.
+            if !load(&mut table, &interpreter, bias, read, source)? {
+                interpreter.append_image_regions(bias, &mut regions)?;
             }
             Ok(plan)
         })?;
@@ -422,6 +485,127 @@ impl Headers {
             }
         }
         Ok(())
+    }
+
+    /// The pieces of each PT_LOAD placed at `bias` (gABI ch. 5: file offset
+    /// and address congruent modulo the page size, memory past `p_filesz`
+    /// reading as 00). The image must be copied instead (no plan) when a segment breaks
+    /// congruence, or a virtual page two PT_LOADs share
+    /// (docs/plans/e3-page-cache.md 10.1).
+    pub(crate) fn cache_plan(&self, bias: u64) -> Result<Option<Vec<Piece>>, Errno> {
+        let page = PAGE as u64;
+        let count = self.table.len() / PHDR;
+        let mut pieces = Vec::new();
+        let mut spans: Vec<(u64, u64)> = Vec::new();
+        pieces.try_reserve(3 * count).map_err(|_| Errno(ENOMEM))?;
+        spans.try_reserve(count).map_err(|_| Errno(ENOMEM))?;
+        for ph in self.table.chunks_exact(PHDR).map(ProgramHeader::parse) {
+            if ph.kind != PT_LOAD || ph.memsz == 0 {
+                continue;
+            }
+            let begin = ph.address + bias;
+            let first = begin & !PAGE_MASK;
+            let file_end = begin + ph.filesz;
+            let memory_end = (begin + ph.memsz + PAGE_MASK) & !PAGE_MASK;
+            spans.push((first, memory_end));
+            let mut zero_from = first;
+            if ph.filesz != 0 {
+                if ph.offset % page != ph.address % page {
+                    return Ok(None);
+                }
+                let pgoff = (ph.offset - (begin - first)) / page;
+                // A segment whose file bytes fill its memory maps its last,
+                // partial page whole; one with BSS copies that page instead.
+                let whole_end = if ph.memsz > ph.filesz {
+                    file_end & !PAGE_MASK
+                } else {
+                    memory_end
+                };
+                if whole_end > first {
+                    pieces.push(Piece::File { start: first, end: whole_end, pgoff, flags: ph.flags });
+                }
+                zero_from = whole_end.max(first);
+                if whole_end < file_end {
+                    pieces.push(Piece::Tail {
+                        address: whole_end,
+                        pgoff: pgoff + (whole_end - first) / page,
+                        keep: (file_end - whole_end) as usize,
+                        flags: ph.flags,
+                    });
+                }
+            }
+            if memory_end > zero_from {
+                pieces.push(Piece::Zero { start: zero_from, end: memory_end, flags: ph.flags });
+            }
+        }
+        spans.sort_unstable();
+        if spans.windows(2).any(|pair| pair[1].0 < pair[0].1) {
+            return Ok(None);
+        }
+        Ok(Some(pieces))
+    }
+
+    /// Load the PT_LOADs, moved by `bias` beyond the program's own, into
+    /// `target`: through the image's file cache when the target has it and
+    /// the plan allows (E3-3), else by copying its pages (`load_segments`).
+    /// Returns whether the cache served the image.
+    ///
+    /// # Safety
+    /// `target.private_page` must return a writable page-sized range that
+    /// this image owns, as `load_segments` requires of `map_page`.
+    pub(crate) unsafe fn load_image(
+        &self,
+        read: &mut ReadAt<'_>,
+        target: &mut dyn ImageTarget,
+        bias: u64,
+    ) -> Result<bool, Errno> {
+        let plan = if target.cached() {
+            let plan = self.cache_plan(self.program_bias.unwrap_or(0) + bias)?;
+            if plan.is_none() {
+                target.fall_back();
+            }
+            plan
+        } else {
+            None
+        };
+        let Some(pieces) = plan else {
+            // Both callbacks use the target, one at a time.
+            let target = core::cell::RefCell::new(target);
+            // SAFETY: the caller's contract on private_page is load_segments'.
+            unsafe {
+                self.load_segments(
+                    read,
+                    |address, flags| target.borrow_mut().private_page(address + bias, flags),
+                    |ptr, len| target.borrow_mut().sync(ptr, len),
+                )?;
+            }
+            return Ok(false);
+        };
+        let page = PAGE as u64;
+        let (mut low, mut high) = (u64::MAX, 0);
+        for piece in &pieces {
+            let (from, to) = match *piece {
+                Piece::File { start, end, pgoff, .. } => (pgoff, pgoff + (end - start) / page),
+                Piece::Tail { pgoff, .. } => (pgoff, pgoff + 1),
+                Piece::Zero { .. } => continue,
+            };
+            (low, high) = (low.min(from), high.max(to));
+        }
+        if low < high {
+            target.populate(low, high - low)?;
+        }
+        for piece in pieces {
+            match piece {
+                Piece::File { start, end, pgoff, flags } => target.map_file(start, end, pgoff, flags)?,
+                Piece::Tail { address, pgoff, keep, flags } => {
+                    let ptr = target.private_page(address, flags)?;
+                    target.copy_file(pgoff, ptr, keep)?;
+                    target.sync(ptr, keep);
+                }
+                Piece::Zero { start, end, flags } => target.zero(start, end, flags)?,
+            }
+        }
+        Ok(true)
     }
 }
 
@@ -605,6 +789,73 @@ fn map_interpreted_arm_page(
     arch::map_image_page(table, address, flags)
 }
 
+/// The page table of an image being loaded, and the image's file cache when
+/// exec maps its pages from there (docs/plans/e3-page-cache.md 10.1): the
+/// VMAs of the cached pieces collect in `vmas`.
+#[cfg(not(test))]
+struct KernelImage<'a, 't> {
+    table: &'t mut ProcessPageTable,
+    map_page: fn(&mut ProcessPageTable, u64, u32) -> Result<*mut u8, i32>,
+    exec: Option<crate::memory::file_map::ExecImage<'a>>,
+    vmas: &'t mut Vec<crate::memory::vma::Vma>,
+}
+
+#[cfg(not(test))]
+fn protection(flags: u32) -> crate::memory::vma::Protection {
+    crate::memory::vma::Protection::from_bits_truncate(prot_bits(flags))
+}
+
+#[cfg(not(test))]
+impl ImageTarget for KernelImage<'_, '_> {
+    fn private_page(&mut self, address: u64, flags: u32) -> Result<*mut u8, Errno> {
+        (self.map_page)(self.table, address, flags).map_err(Errno)
+    }
+
+    fn sync(&mut self, ptr: *mut u8, len: usize) {
+        arch::sync_image_range(ptr, len);
+    }
+
+    fn cached(&self) -> bool {
+        self.exec.is_some()
+    }
+
+    fn populate(&mut self, first: u64, count: u64) -> Result<(), Errno> {
+        let exec = self.exec.as_mut().ok_or(Errno(ENOEXEC))?;
+        exec.populate(first, count).map_err(|error| Errno(error.errno()))
+    }
+
+    fn map_file(&mut self, start: u64, end: u64, pgoff: u64, flags: u32) -> Result<(), Errno> {
+        let exec = self.exec.as_ref().ok_or(Errno(ENOEXEC))?;
+        self.vmas.try_reserve(1).map_err(|_| Errno(ENOMEM))?;
+        let vma = exec
+            .map(self.table, start, end, pgoff, protection(flags))
+            .map_err(|_| Errno(ENOMEM))?;
+        self.vmas.push(vma);
+        Ok(())
+    }
+
+    fn copy_file(&mut self, index: u64, dst: *mut u8, len: usize) -> Result<(), Errno> {
+        let exec = self.exec.as_ref().ok_or(Errno(ENOEXEC))?;
+        // SAFETY: `dst` is the page private_page just gave this image.
+        unsafe { exec.copy(index, dst, len) }.map_err(|_| Errno(crate::syscall::errno::EIO))
+    }
+
+    fn zero(&mut self, start: u64, end: u64, flags: u32) -> Result<(), Errno> {
+        use crate::memory::vma::{MmapFlags, Vma};
+        self.vmas.try_reserve(1).map_err(|_| Errno(ENOMEM))?;
+        let anonymous =
+            MmapFlags::from_bits_truncate(MmapFlags::PRIVATE.bits() | MmapFlags::ANONYMOUS.bits());
+        self.vmas.push(Vma::new(VirtAddr::new(start), VirtAddr::new(end), protection(flags), anonymous));
+        Ok(())
+    }
+
+    fn fall_back(&mut self) {
+        crate::memory::file_map::note_exec_fallback();
+        // A copied image holds no claim on its file.
+        self.exec = None;
+    }
+}
+
 /// How the new image's page table starts out.
 #[cfg(not(test))]
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -623,23 +874,33 @@ pub struct MappedElf {
     table: UnpublishedPageTable,
     elf: arch::LoadedElf,
     interpreter_plan: Option<ExecPlan>,
+    /// The VMAs of the image's cached pieces, and of an interpreted exec's
+    /// copied images, in descending start order.
     exec_vmas: Vec<crate::memory::vma::Vma>,
+    /// The program's pages were copied, not mapped from its cache.
+    copied: bool,
     /// The file's length, reported as the process's code size.
     pub file_len: u64,
 }
 
 #[cfg(not(test))]
 impl MappedElf {
+    /// Read the program into a new table: from its file cache (`source`)
+    /// when the file has no writer and its layout allows, else by copying.
     pub(crate) fn load(
         header: &[u8],
         file_len: u64,
         read: &mut ReadAt<'_>,
         purpose: Purpose,
+        source: Option<Source<'_>>,
     ) -> Result<(Self, Option<Headers>), Errno> {
         #[cfg(target_arch = "x86_64")]
         let machine = arch::EM_X86_64;
         #[cfg(target_arch = "aarch64")]
         let machine = arch::EM_AARCH64;
+        // Admitted before the headers are read: from here no writer can
+        // change the file under this exec (docs/plans/e3-page-cache.md 10.3).
+        let exec = source.and_then(|source| crate::memory::file_map::ExecImage::new(source.node, source.file));
         let headers = Headers::read(header, file_len, machine,
             crate::memory::layout::USER_STACK_REGION_END, read)?;
         let needs_interpreter = purpose == Purpose::Exec && headers.interpreter_path().is_some();
@@ -672,15 +933,12 @@ impl MappedElf {
         };
         #[cfg(target_arch = "x86_64")]
         let map_page = arch::map_image_page;
+        let mut vmas = Vec::new();
+        let mut target = KernelImage { table: table.as_mut(), map_page, exec, vmas: &mut vmas };
         // SAFETY: arch::map_image_page yields direct-map pages owned by this
         // unpublished table, which lives until this function returns.
-        unsafe {
-            headers.load_segments(
-                read,
-                |address, flags| map_page(table.as_mut(), address, flags).map_err(Errno),
-                arch::sync_image_range,
-            )?;
-        }
+        let cached = unsafe { headers.load_image(read, &mut target, 0)? };
+        drop(target);
         arch::finish_image_load();
         let elf = arch::LoadedElf {
             #[cfg(target_arch = "x86_64")]
@@ -692,17 +950,20 @@ impl MappedElf {
             #[cfg(target_arch = "aarch64")]
             load_base: headers.load_base + headers.program_bias.unwrap_or(0),
             segments_end: headers.segments_end(),
-            image_size: headers.image_size,
-            data_size: headers.data_size,
+            // A cached image's VMAs account for its memory.
+            image_size: if cached { 0 } else { headers.image_size },
+            data_size: if cached { 0 } else { headers.data_size },
             phdr_vaddr: plan.phdr_vaddr,
             phnum: plan.phnum,
             phentsize: plan.phentsize,
         };
+        vmas.sort_unstable_by_key(|vma| core::cmp::Reverse(vma.start.as_u64()));
         let image = Self {
             table,
             elf,
             interpreter_plan: None,
-            exec_vmas: Vec::new(),
+            exec_vmas: vmas,
+            copied: !cached,
             file_len,
         };
         Ok((image, needs_interpreter.then_some(headers)))
@@ -719,32 +980,36 @@ impl MappedElf {
         let map_page = map_interpreted_arm_page;
         #[cfg(target_arch = "x86_64")]
         let map_page = arch::map_image_page;
+        let mut vmas = core::mem::take(&mut self.exec_vmas);
         // SAFETY: arch::map_image_page returns the table's own direct-map
         // pages, and the VFS opener pins the file through its reads.
         let (table, plan, regions) = unsafe {
             program.load_interpreter(
                 self.table,
                 MMAP_REGION_START..MMAP_REGION_END,
+                self.copied,
                 open,
-                |table, address, flags| map_page(table.as_mut(), address, flags).map_err(Errno),
+                |table, interpreter, bias, read, source| {
+                    let exec = source
+                        .and_then(|source| crate::memory::file_map::ExecImage::new(source.node, source.file));
+                    let mut target = KernelImage { table: table.as_mut(), map_page, exec, vmas: &mut vmas };
+                    interpreter.load_image(read, &mut target, bias)
+                },
             )?
         };
-        self.exec_vmas.try_reserve_exact(regions.len()).map_err(|_| Errno(ENOMEM))?;
+        vmas.try_reserve_exact(regions.len()).map_err(|_| Errno(ENOMEM))?;
         let flags = MmapFlags::from_bits_truncate(MmapFlags::PRIVATE.bits() | MmapFlags::ANONYMOUS.bits());
-        // The interpreter is above the program. Each contributes regions in
-        // ascending order, so reversing gives the live VMA order.
-        for region in regions.into_iter().rev() {
-            // ELF PF_R and PF_X occupy the opposite bits from PROT_READ
-            // and PROT_EXEC. PF_W and PROT_WRITE both occupy bit 1.
-            let elf = region.flags;
-            let prot = Protection::from_bits_truncate((elf & 4) >> 2 | (elf & 2) | (elf & 1) << 2);
-            self.exec_vmas.push(Vma::new(
+        // The copied images' pages, anonymous as before the cache.
+        for region in regions {
+            vmas.push(Vma::new(
                 VirtAddr::new(region.start),
                 VirtAddr::new(region.end),
-                prot,
+                Protection::from_bits_truncate(prot_bits(region.flags)),
                 flags,
             ));
         }
+        vmas.sort_unstable_by_key(|vma| core::cmp::Reverse(vma.start.as_u64()));
+        self.exec_vmas = vmas;
         arch::finish_image_load();
         self.table = table;
         #[cfg(target_arch = "x86_64")]
@@ -848,13 +1113,6 @@ pub enum ProcessImage<'a> {
 
 #[cfg(not(test))]
 impl<'a> ProcessImage<'a> {
-    pub(crate) fn take_exec_vmas(&mut self) -> Vec<crate::memory::vma::Vma> {
-        match self {
-            Self::Mapped(image) => core::mem::take(&mut image.exec_vmas),
-            Self::Bytes(_) | Self::Owned(_) => Vec::new(),
-        }
-    }
-
     pub(crate) fn interpreter_plan(&self) -> Option<ExecPlan> {
         match self {
             Self::Mapped(image) => image.interpreter_plan,
@@ -872,17 +1130,24 @@ impl<'a> ProcessImage<'a> {
         }
     }
 
-    /// A mapped image's own table (re-keyed to `pid`), loaded ELF and code
-    /// size, or the in-memory bytes the constructor loads into its own table.
+    /// A mapped image's own table (re-keyed to `pid`), loaded ELF, code size
+    /// and VMAs, whose exec bindings now belong to `pid`, or the in-memory
+    /// bytes the constructor loads into its own table.
     pub(crate) fn into_loaded(self, pid: u64) -> Loaded<'a> {
         match self {
             Self::Bytes(bytes) => Loaded::Bytes(alloc::borrow::Cow::Borrowed(bytes)),
             Self::Owned(bytes) => Loaded::Bytes(alloc::borrow::Cow::Owned(bytes)),
-            Self::Mapped(image) => Loaded::Mapped(
-                UnpublishedPageTable::from_box(image.table.publish(), pid),
-                image.elf,
-                image.file_len as usize,
-            ),
+            Self::Mapped(image) => {
+                for binding in image.exec_vmas.iter().filter_map(|vma| vma.backing.as_ref()) {
+                    binding.adopt_pid(crate::process::ProcessId::new(pid));
+                }
+                Loaded::Mapped(
+                    UnpublishedPageTable::from_box(image.table.publish(), pid),
+                    image.elf,
+                    image.file_len as usize,
+                    image.exec_vmas,
+                )
+            }
         }
     }
 }
@@ -890,7 +1155,7 @@ impl<'a> ProcessImage<'a> {
 /// What a process constructor starts from: see `ProcessImage::into_loaded`.
 #[cfg(not(test))]
 pub(crate) enum Loaded<'a> {
-    Mapped(UnpublishedPageTable, arch::LoadedElf, usize),
+    Mapped(UnpublishedPageTable, arch::LoadedElf, usize, Vec<crate::memory::vma::Vma>),
     Bytes(alloc::borrow::Cow<'a, [u8]>),
 }
 

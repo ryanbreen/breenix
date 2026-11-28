@@ -40,10 +40,20 @@ fn main() {
         "struct Claim",
         "pub(crate) enum MapError",
         "impl MapError",
+        "pub(crate) struct PageClaim",
+        "impl Drop for PageClaim",
         "pub(crate) struct Population",
         "impl core::ops::Deref for Population",
-        "impl Drop for Population",
         "pub(crate) fn populate(",
+        "pub(crate) fn populate_through(",
+        // Exec admission and the running-image write rule (E3-3) are production.
+        "impl Drop for WriteOpen",
+        "impl Drop for ExecLoad",
+        "pub(crate) struct ExecImage",
+        "impl<'a> ExecImage<'a>",
+        "pub(crate) fn exec_copy_fallbacks(",
+        "pub(crate) fn note_exec_fallback(",
+        "pub(crate) fn etxtbsy_refusals(",
     ] {
         out.push_str(&item(&source, marker));
         out.push('\n');
@@ -60,15 +70,17 @@ fn main() {
     out.push_str(&source[start..=end]);
     out.push('\n');
     // The fault's page choice and its absent-page count (E3-2) are production.
-    let marker = "static ABSENT_BOUND";
-    let start = source.find(marker).unwrap_or_else(|| panic!("missing {marker}"));
-    let end = start + source[start..].find(";\n").unwrap();
-    out.push_str(&source[start..=end]);
-    out.push('\n');
+    for marker in ["static ABSENT_BOUND", "static EXEC_COPY_FALLBACKS", "static ETXTBSY_REFUSALS",
+        "pub(crate) struct WriteOpen(", "struct ExecLoad("] {
+        let start = source.find(marker).unwrap_or_else(|| panic!("missing {marker}"));
+        let end = start + source[start..].find(";\n").unwrap();
+        out.push_str(&source[start..=end]);
+        out.push('\n');
+    }
     out.push_str(&item(&source, "pub(crate) fn absent_bound("));
     out.push('\n');
     out.push_str("impl MapInner {\n");
-    for marker in ["    fn bound(", "    fn gain_writable_shared(", "    fn mark_populating(", "    fn unbacked(", "    fn new_holes(", "    fn reserve_holes(", "    fn add_holes(", "    fn drop_holes(", "    fn reserve_poison(", "    fn poison(", "    fn fault_frame("] {
+    for marker in ["    fn bound(", "    fn deny_write(", "    fn writers(", "    fn make_executable(", "    fn gain_writable_shared(", "    fn mark_populating(", "    fn unbacked(", "    fn new_holes(", "    fn reserve_holes(", "    fn add_holes(", "    fn drop_holes(", "    fn reserve_poison(", "    fn poison(", "    fn fault_frame("] {
         out.push_str(&item(&source, marker));
         out.push('\n');
     }
@@ -98,6 +110,7 @@ fn main() {
         "    pub(crate) fn repair(",
         "    pub(crate) fn abandon_population(",
         "    pub(crate) fn writable_shared(",
+        "    pub(crate) fn open_writer(",
         "    pub(crate) fn has_dirty(",
         "    pub(crate) fn nonempty(",
         "    pub(crate) fn request_writeback(",
