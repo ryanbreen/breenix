@@ -4,9 +4,8 @@
 //! Two boot paths describe RAM: QEMU's direct ELF boot leaves a flattened
 //! device tree at the start of RAM, and the UEFI loader passes the
 //! conventional-memory regions of the UEFI memory map in `HardwareConfig`.
-//! Either description is first clipped to the window the boot page tables map
-//! as normal memory, then the reservations are subtracted from it. When a set
-//! runs out of slots it drops memory and keeps the reservations.
+//! The kernel builds its growable usable range set from these descriptions.
+//! The fixed-capacity range helpers below are used by host fixtures only.
 
 /// Select free pages from the final UEFI memory map. Descriptor tuples are
 /// (type, attributes, physical start, page count), from UEFI 2.10 section 7.2,
@@ -29,6 +28,24 @@ fn final_uefi_conventional_ranges(
 
 /// Granule of the frame allocator.
 pub const PAGE_SIZE: u64 = 4096;
+
+/// End of the RAM window already covered by both ARM64 boot paths.
+pub const DIRECT_MAP_RAM_END: u64 = 0x1_0000_0000;
+
+pub const fn direct_map_ram_window(ram_base_offset: u64) -> PhysRange {
+    PhysRange::new(crate::LINKED_RAM_START + ram_base_offset, DIRECT_MAP_RAM_END)
+}
+
+/// The boot translation's IPS encoding and corresponding exclusive PA limit.
+pub const fn boot_ips(parange: u64) -> u64 {
+    // With a 4 KiB granule and TCR.DS=0, the descriptor has 48 output bits.
+    // Keep this cap in sync with the QEMU entry in boot.S.
+    if parange > 5 { 5 } else { parange }
+}
+
+pub const fn boot_pa_limit(ips: u64) -> u64 {
+    1 << [32, 36, 40, 42, 44, 48][boot_ips(ips) as usize]
+}
 
 /// Ranges a [`RangeSet`] holds. The kernel's allocator accepts more, but a
 /// firmware map that needs more than this after merging is dropped from the

@@ -8,10 +8,10 @@ use std::sync::Mutex;
 
 use arm64_boot_contract::{
     hw_config::{HardwareConfig, RamRegion, UefiMapHandoff},
-    phys_memory::PhysRange,
+    phys_memory::{boot_ips, boot_pa_limit, PhysRange, DIRECT_MAP_RAM_END},
     uefi_map::{self, MetaError, BOOT_MAP_MEMORY_TYPE},
 };
-use boot_ranges::{BootMemory, MapError, ProbeError, RangeError, RangeStorage};
+use boot_ranges::{BootMemory, MapError, ProbeError, RamWindow, RangeError, RangeStorage};
 use uefi_raw::table::{
     boot::{BootServices, MemoryDescriptor, MemoryType},
     runtime::RuntimeServices,
@@ -19,6 +19,9 @@ use uefi_raw::table::{
     Header,
 };
 use uefi_raw::{Handle, Status};
+
+#[path = "../../../kernel/src/memory/arm64_direct_map.rs"]
+mod arm64_direct_map;
 
 #[path = "../../../kernel/src/memory/boot_ranges.rs"]
 mod boot_ranges;
@@ -54,6 +57,10 @@ static FIRMWARE: Mutex<Firmware> = Mutex::new(Firmware {
     layout: None,
     pool_type: 0,
 });
+
+fn test_window(start: u64, end: u64) -> RamWindow {
+    RamWindow::new(start - 0x4000_0000, end, 1 << 48)
+}
 
 fn expected() -> Vec<PhysRange> {
     (0..40)
@@ -257,7 +264,7 @@ fn final_map(stride: usize, refusal: Option<MetaError>) {
             &config.v7,
             Some(config.uefi_map),
             &Memory::default(),
-            PhysRange::new(BASE, 0x1_0000_0000),
+            test_window(BASE, DIRECT_MAP_RAM_END),
             &[],
         );
         assert_eq!(
@@ -281,7 +288,13 @@ fn final_map(stride: usize, refusal: Option<MetaError>) {
     let mut tables = Box::new(PageTableStorage::new());
     let shadow = 0x1_2000_0000;
     let map = PhysRange::from_base_size(shadow, config.uefi_map.map_size);
-    let (root, _) = build_page_tables(&mut tables, &pt_config(0, &[]), execution(), Some(map));
+    let (root, _) = build_page_tables(
+        &mut tables,
+        &pt_config(0, &[]),
+        execution(),
+        Some(map),
+        boot_ips(2),
+    );
     let memory = Memory {
         map_base: firmware.pool as u64,
         map_shadow: shadow,
@@ -292,7 +305,7 @@ fn final_map(stride: usize, refusal: Option<MetaError>) {
         &config.v7,
         Some(config.uefi_map),
         &memory,
-        PhysRange::new(BASE, 0x1_0000_0000),
+        test_window(BASE, DIRECT_MAP_RAM_END),
         &[],
     )
     .unwrap();
@@ -330,10 +343,17 @@ struct Memory {
     root: u64,
     owned_buffer: RefCell<Option<Box<Page>>>,
     failure: Option<ProbeError>,
+    storage_ceiling: Option<u64>,
 }
 
 unsafe impl RangeStorage for Memory {
     fn storage_page(&self, phys: u64) -> Option<NonNull<u8>> {
+        if let Some(limit) = self.storage_ceiling {
+            assert!(
+                phys < limit,
+                "write through an unmapped bootstrap page {phys:#x}"
+            );
+        }
         let mut pages = self.pages.borrow_mut();
         let page = pages
             .entry(phys)
@@ -435,9 +455,10 @@ fn buffer_mapping_preserves_neighbor_and_loader_permissions() {
         let mut after = Box::new(PageTableStorage::new());
         let segments = [segment];
         let config = pt_config(offset, &segments);
-        let (old0, old1) = build_page_tables(&mut before, &config, execution(), None);
+        let (old0, old1) = build_page_tables(&mut before, &config, execution(), None, boot_ips(2));
         let range = PhysRange::from_base_size(address + 8, 8192);
-        let (new0, new1) = build_page_tables(&mut after, &config, execution(), Some(range));
+        let (new0, new1) =
+            build_page_tables(&mut after, &config, execution(), Some(range), boot_ips(5));
         for page in [address, address + 4096, address + 8192] {
             let (physical, flags) = walk(new0, page)
                 .unwrap_or_else(|| panic!("map buffer page {page:#x} is unmapped in TTBR0"));
@@ -490,7 +511,7 @@ fn conventional_ram_excludes_nvs_overlap_and_specific_purpose_memory() {
         &HardwareConfig::new().v7,
         Some(wire),
         &memory,
-        PhysRange::new(BASE, owner),
+        test_window(BASE, owner),
         &[],
     )
     .unwrap();
@@ -535,7 +556,7 @@ fn buffer_release_excludes_fixed_runtime_overlapping_and_unrelated_pages() {
             &config.v7,
             Some(wire),
             &memory,
-            PhysRange::new(base, 0x1_0000_0000),
+            test_window(base, DIRECT_MAP_RAM_END),
             &fixed,
         )
         .unwrap();
@@ -569,7 +590,7 @@ fn buffer_release_excludes_fixed_runtime_overlapping_and_unrelated_pages() {
 fn validates_metadata_mapping_and_ownership_before_consuming_descriptors() {
     let phys = 0x6000_0000;
     let config = HardwareConfig::new();
-    let window = PhysRange::new(phys, 0x1_0000_0000);
+    let window = test_window(phys, DIRECT_MAP_RAM_END);
     let invalid = [
         (
             MetaError::Address,
@@ -685,7 +706,7 @@ fn legacy_prefix_only_and_unknown_versions() {
         };
     }
     let memory = Memory::default();
-    let window = PhysRange::new(BASE, 0x1_0000_0000);
+    let window = test_window(BASE, DIRECT_MAP_RAM_END);
     let (pool, _) = boot_ranges::from_hardware_config(&config, None, &memory, window, &[]).unwrap();
     let mut want = expected()[..32].to_vec();
     want[0].end -= 4096;
@@ -727,14 +748,12 @@ fn fragmented_x86_ranges_grow_and_carve_the_highest_aligned_fit() {
     assert_eq!(pool.total_bytes(), 200 * 0x8000 - 3 * 4096);
 }
 
-fn fragmented_fdt() -> Vec<u8> {
+fn memory_fdt(ranges: impl IntoIterator<Item = PhysRange>) -> Vec<u8> {
     let mut regs = Vec::new();
-    for range in expected() {
+    for range in ranges {
         regs.extend(range.start.to_be_bytes());
         regs.extend(range.len().to_be_bytes());
     }
-    regs.extend(0x2_0000_0000u64.to_be_bytes());
-    regs.extend(0x8000_0000u64.to_be_bytes());
 
     // A version-17 tree: root default cells are address=2, size=1, so
     // explicitly provide two size cells for the memory node's tuples.
@@ -785,14 +804,18 @@ fn fragmented_fdt() -> Vec<u8> {
 
 #[test]
 fn fdt_uses_all_memory_tuples_and_stays_inside_the_storage_window() {
-    let blob = fragmented_fdt();
+    let blob = memory_fdt(
+        expected()
+            .into_iter()
+            .chain([PhysRange::new(0x2_0000_0000, 0x2_8000_0000)]),
+    );
     let memory = Memory::default();
-    let ranges = boot_ranges::from_fdt(
+    let (ranges, _) = boot_ranges::from_fdt(
         &memory,
         &blob,
         0x4000_0000,
         &[],
-        PhysRange::new(BASE, 0x1_0000_0000),
+        test_window(BASE, DIRECT_MAP_RAM_END),
     )
     .unwrap();
     let mut expected = expected();
@@ -826,4 +849,291 @@ fn heap_and_stack_carves_remove_their_runs_from_the_pool() {
     assert!(pool
         .iter()
         .all(|range| range.end <= pools.stacks.start || range.start >= pools.heap.end));
+}
+
+#[test]
+fn e1_2_device_tree_extends_six_gib_and_counts_unaddressable_ram() {
+    let base = 0x4000_0000;
+    let end = 0x1_c000_0000;
+    let high = 2 << 40;
+    let outside = 1 << 48;
+    let fixed = [PhysRange::new(base, base + 0x400_0000)];
+    let blob = memory_fdt([
+        PhysRange::new(base, end),
+        PhysRange::new(high, high + 0x2000),
+        PhysRange::new(outside - 0x1000, outside + 0x3000),
+    ]);
+    let memory = Memory::default();
+    let (ranges, stats) = boot_ranges::from_fdt(
+        &memory,
+        &blob,
+        base,
+        &fixed,
+        test_window(base, boot_pa_limit(boot_ips(5))),
+    )
+    .unwrap();
+    assert_eq!(stats.excluded_pa_bytes, 0x3000);
+    assert_eq!(stats.excluded_va_bytes, 0);
+    assert_eq!(
+        ranges.iter().collect::<Vec<_>>(),
+        [
+            PhysRange::new(fixed[0].end, DIRECT_MAP_RAM_END - 0x1000),
+            PhysRange::new(DIRECT_MAP_RAM_END, end),
+            PhysRange::new(high, high + 0x2000),
+            PhysRange::new(outside - 0x1000, outside),
+        ],
+    );
+    for (parange, width) in [32, 36, 40, 42, 44, 48, 48, 48].into_iter().enumerate() {
+        let limit = 1 << width;
+        let edge = PhysRange::new(limit - 0x1000, limit + 0x3000);
+        let low = PhysRange::new(base + 0x400_0000, base + 0x800_0000);
+        let blob = memory_fdt([low, edge]);
+        let memory = Memory::default();
+        let (ranges, stats) = boot_ranges::from_fdt(
+            &memory,
+            &blob,
+            base,
+            &[],
+            test_window(base, boot_pa_limit(boot_ips(parange as u64))),
+        )
+        .unwrap();
+        assert_eq!(
+            ranges.iter().last(),
+            Some(PhysRange::new(edge.start, limit))
+        );
+        assert_eq!(stats.excluded_pa_bytes, 0x3000);
+    }
+}
+
+#[test]
+fn e1_2_uefi_keeps_high_ram_and_releases_high_buffer() {
+    let base = 0x4000_0000;
+    let end = 0x1_c000_0000;
+    let buffer = end - RANGE;
+    let mut descriptors = vec![(7, base, (DIRECT_MAP_RAM_END - base) / 4096, 0)];
+    let mut expected = vec![PhysRange::new(base, DIRECT_MAP_RAM_END - 4096)];
+
+    // The conventional regions span 6 GiB with a reserved page between
+    // each high range. The last range joins the released UEFI owner.
+    for index in 0..39 {
+        let start = (DIRECT_MAP_RAM_END + (buffer - DIRECT_MAP_RAM_END) * index / 39) & !4095;
+        let limit = (DIRECT_MAP_RAM_END + (buffer - DIRECT_MAP_RAM_END) * (index + 1) / 39) & !4095;
+        let usable_end = if index == 38 { limit } else { limit - 4096 };
+        descriptors.push((7, start, (usable_end - start) / 4096, 0));
+        if index != 38 {
+            descriptors.push((0, usable_end, 1, 0));
+        }
+        expected.push(PhysRange::new(
+            start,
+            if index == 38 { end } else { usable_end },
+        ));
+    }
+    descriptors.push((BOOT_MAP_MEMORY_TYPE, buffer, (end - buffer) / 4096, 0));
+    descriptors.reverse();
+    let (mut memory, wire) = fixture(&descriptors, buffer);
+    let mut tables = PageTableStorage::new();
+    (memory.root, _) = build_page_tables(
+        &mut tables,
+        &pt_config(0, &[]),
+        execution(),
+        Some(PhysRange::new(buffer, buffer + wire.map_size)),
+        boot_ips(5),
+    );
+    memory.map_base = buffer;
+    memory.map_shadow = buffer;
+    let (ranges, stats) = boot_ranges::from_hardware_config(
+        &HardwareConfig::new().v7,
+        Some(wire),
+        &memory,
+        test_window(base, boot_pa_limit(boot_ips(5))),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(ranges.iter().collect::<Vec<_>>(), expected);
+    assert_eq!(stats.released_bytes, end - buffer);
+}
+
+#[test]
+fn e1_2_loader_ttbr1_leaves_high_usable_ram_unmapped() {
+    let high = 0x1_5000_0000;
+    let execution = LoaderExecution {
+        here: high,
+        handoff: high + 0x1000,
+        vectors: high + 0x2000,
+        image: PhysRange::new(high, high + 0x20000),
+    };
+    let mut tables = PageTableStorage::new();
+    let (ttbr0, ttbr1) = build_page_tables(
+        &mut tables,
+        &pt_config(0, &[]),
+        execution,
+        None,
+        boot_ips(5),
+    );
+    assert_eq!(walk(ttbr0, high).unwrap().0, high);
+    assert_eq!(walk(ttbr1, high + 0x20_0000), None);
+    let storage = &tables as *const _ as u64;
+    assert_eq!(walk(ttbr1, storage).unwrap().0, storage);
+    assert_eq!(walk(ttbr1, storage - 4096), None);
+}
+
+#[test]
+fn e1_2_range_storage_grows_below_the_already_mapped_limit() {
+    let high = PhysRange::new(DIRECT_MAP_RAM_END, 0x1_c000_0000);
+    let low = (0..180).map(|i| {
+        let start = 0x6000_0000 + i * 0x8000;
+        PhysRange::new(start, start + 0x4000)
+    });
+    let blob = memory_fdt(low.chain([high]));
+    let memory = Memory {
+        storage_ceiling: Some(DIRECT_MAP_RAM_END),
+        ..Memory::default()
+    };
+    let (pool, _) = boot_ranges::from_fdt(
+        &memory,
+        &blob,
+        0x4000_0000,
+        &[],
+        test_window(0x4000_0000, boot_pa_limit(boot_ips(5))),
+    )
+    .unwrap();
+    assert_eq!(pool.iter().last(), Some(high));
+    let storage = memory.pages.borrow();
+    assert!(storage.len() >= 2);
+    assert!(storage.keys().all(|page| *page < DIRECT_MAP_RAM_END));
+}
+
+#[test]
+fn e1_2_parange_controls_the_loader_buffer_mapping() {
+    let address = 2 << 40;
+    let mut tables = PageTableStorage::new();
+    let range = PhysRange::new(address, address + 0x3000);
+    let (ttbr0, ttbr1) = build_page_tables(
+        &mut tables,
+        &pt_config(0, &[]),
+        execution(),
+        Some(range),
+        boot_ips(5),
+    );
+    assert_eq!(
+        walk(ttbr0, address + 0x2000).map(|x| x.0),
+        Some(address + 0x2000)
+    );
+    assert_eq!(walk(ttbr1, address), None);
+}
+
+impl arm64_direct_map::TableMemory for Memory {
+    fn read(&self, table: u64, index: usize) -> u64 {
+        let page = self.storage_page(table).unwrap();
+        unsafe { page.as_ptr().cast::<u64>().add(index).read() }
+    }
+
+    fn write(&self, table: u64, index: usize, value: u64) {
+        let page = self.storage_page(table).unwrap();
+        unsafe { page.as_ptr().cast::<u64>().add(index).write(value) }
+    }
+
+    fn clear(&self, table: u64) {
+        let page = self.storage_page(table).unwrap();
+        unsafe { page.as_ptr().write_bytes(0, 4096) }
+    }
+
+    fn publish(&self) {}
+}
+
+#[test]
+fn e1_2_tables_cover_only_ram_with_minimal_leaves_or_leave_the_low_pool() {
+    use arm64_direct_map::{ExtensionError, TableMemory, OUTPUT_ADDRESS};
+
+    const ROOT: u64 = 0x1000;
+    const LOW: u64 = 0x6000_0000;
+    const GIB: u64 = 1 << 30;
+    const MIB2: u64 = 1 << 21;
+    const PAGE: u64 = 4096;
+    let high = 4 * GIB;
+    let described = [
+        PhysRange::new(high, high + GIB),
+        PhysRange::new(high + GIB + PAGE, high + GIB + 3 * MIB2 + PAGE),
+        PhysRange::new(2 << 40, (2 << 40) + PAGE),
+    ];
+    // A loader already uses the middle range's L2 for an unrelated
+    // reserved page. The middle range needs two L3s. The 2 TiB sample
+    // needs its own L1 plus L2 and L3.
+    for low_pages in [4, 8] {
+        let memory = Memory {
+            storage_ceiling: Some(high),
+            ..Memory::default()
+        };
+        memory.write(ROOT, 0, 0x2000 | 3);
+        memory.write(0x2000, 5, 0x3000 | 3);
+        memory.write(0x3000, 511, 0x4000 | 3);
+        let loader_page = high + 2 * GIB - MIB2;
+        let loader_descriptor = loader_page | 0x707;
+        memory.write(0x4000, 0, loader_descriptor);
+        let ranges = [PhysRange::new(LOW, LOW + low_pages * PAGE)]
+            .into_iter()
+            .chain(described);
+        let blob = memory_fdt(ranges);
+        let (mut pool, _) = boot_ranges::from_fdt(
+            &memory,
+            &blob,
+            0x4000_0000,
+            &[],
+            test_window(0x4000_0000, 1 << 48),
+        )
+        .unwrap();
+        let low_before = pool.iter().next().unwrap();
+        let result = arm64_direct_map::extend(&mut pool, &memory, &memory, ROOT);
+        if low_pages == 4 {
+            assert!(matches!(
+                result,
+                Err(ExtensionError::TableShortfall {
+                    needed: 5,
+                    available: 3
+                })
+            ));
+            assert_eq!(pool.iter().collect::<Vec<_>>(), [low_before]);
+            assert_eq!(memory.read(0x2000, 4), 0);
+            assert_eq!(memory.read(ROOT, 4), 0);
+            continue;
+        }
+        let extension = result.unwrap();
+        assert_eq!(extension.table_pages, 5);
+        assert_eq!(
+            extension.high_bytes,
+            described.iter().map(|range| range.len()).sum::<u64>()
+        );
+        assert_eq!(pool.iter().next().unwrap().len(), 2 * PAGE);
+        assert!(memory.pages.borrow().keys().all(|page| *page < high));
+
+        let gb_leaf = memory.read(0x2000, 4);
+        assert_eq!(gb_leaf & 3, 1);
+        assert_eq!(gb_leaf & OUTPUT_ADDRESS, high);
+        let l2 = memory.read(0x2000, 5) & OUTPUT_ADDRESS;
+        for block in 1..3 {
+            let leaf = memory.read(l2, block);
+            assert_eq!(leaf & 3, 1);
+            assert_eq!(leaf & OUTPUT_ADDRESS, high + GIB + block as u64 * MIB2);
+        }
+        let first_l3 = memory.read(l2, 0) & OUTPUT_ADDRESS;
+        assert_eq!(memory.read(first_l3, 0), 0);
+        for page in 1..512 {
+            let leaf = memory.read(first_l3, page);
+            assert_eq!(leaf & 3, 3);
+            assert_eq!(leaf & OUTPUT_ADDRESS, high + GIB + page as u64 * PAGE);
+        }
+        let last_l3 = memory.read(l2, 3) & OUTPUT_ADDRESS;
+        assert_eq!(
+            memory.read(last_l3, 0) & OUTPUT_ADDRESS,
+            high + GIB + 3 * MIB2
+        );
+        assert_eq!(memory.read(last_l3, 1), 0);
+        assert_eq!(memory.read(l2, 4), 0);
+        assert_eq!(memory.read(0x4000, 0), loader_descriptor);
+        let high_l1 = memory.read(ROOT, 4) & OUTPUT_ADDRESS;
+        let high_l2 = memory.read(high_l1, 0) & OUTPUT_ADDRESS;
+        let high_l3 = memory.read(high_l2, 0) & OUTPUT_ADDRESS;
+        assert_eq!(memory.read(high_l3, 0) & OUTPUT_ADDRESS, 2 << 40);
+        assert_eq!(memory.read(high_l3, 1), 0);
+    }
 }

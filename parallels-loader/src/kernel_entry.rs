@@ -42,7 +42,16 @@ pub fn jump_to_kernel(
     let map = (hw_config.uefi_map.loader_check == 0)
         .then(|| arm64_boot_contract::uefi_map::check_address(hw_config.uefi_map).ok())
         .flatten();
-    let (ttbr0, ttbr1) = page_tables::build_page_tables(page_table_storage, pt_config, execution, map);
+    let parange: u64;
+    unsafe {
+        core::arch::asm!(
+            "mrs {}, id_aa64mmfr0_el1", out(reg) parange,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+    let ips = arm64_boot_contract::phys_memory::boot_ips(parange & 0xf);
+    let (ttbr0, ttbr1) =
+        page_tables::build_page_tables(page_table_storage, pt_config, execution, map, ips);
     let hw_config_ptr = hw_config as *const HardwareConfig as u64;
 
     log::info!(
@@ -58,7 +67,7 @@ pub fn jump_to_kernel(
     log::info!("Switching to kernel page tables and jumping to kernel...");
 
     unsafe {
-        switch_and_jump(ttbr0, ttbr1, kernel_entry, hw_config_ptr);
+        switch_and_jump(ttbr0, ttbr1, kernel_entry, hw_config_ptr, ips);
     }
 }
 
@@ -77,8 +86,9 @@ pub fn jump_to_kernel(
 ///   x1 = TTBR1 physical address (HHDM)
 ///   x2 = kernel entry point physical address
 ///   x3 = HardwareConfig pointer (physical, identity-mapped)
+///   x8 = TCR_EL1 value (including the selected IPS)
 #[inline(never)]
-pub(crate) unsafe fn switch_and_jump(ttbr0: u64, ttbr1: u64, entry: u64, hw_config_ptr: u64) -> ! {
+pub(crate) unsafe fn switch_and_jump(ttbr0: u64, ttbr1: u64, entry: u64, hw_config_ptr: u64, ips: u64) -> ! {
     // Get the address of our exception vector table (defined in global_asm! below).
     extern "C" {
         static loader_exception_vectors: u8;
@@ -112,9 +122,8 @@ pub(crate) unsafe fn switch_and_jump(ttbr0: u64, ttbr1: u64, entry: u64, hw_conf
         "isb",
 
         // Set TCR_EL1 (Translation Control Register)
-        // T0SZ=16, T1SZ=16, 4K granule, 40-bit PA, WB WA, Inner Shareable
-        "ldr x4, ={tcr}",
-        "msr tcr_el1, x4",
+        // T0SZ=16, T1SZ=16, 4K granule, WB WA, Inner Shareable
+        "msr tcr_el1, x8",
         "isb",
         "mov x6, #0x4D",           // 'M' = MAIR+TCR set
         "strb w6, [x7]",
@@ -184,12 +193,12 @@ pub(crate) unsafe fn switch_and_jump(ttbr0: u64, ttbr1: u64, entry: u64, hw_conf
 
         boot_stack_top = const arm64_boot_contract::LOADER_BOOT_STACK_TOP_PHYS,
         mair = const page_tables::MAIR_VALUE,
-        tcr = const page_tables::TCR_VALUE,
         in("x0") ttbr0,
         in("x1") ttbr1,
         in("x2") entry,
         in("x3") hw_config_ptr,
         in("x5") vbar_addr,
+        in("x8") page_tables::TCR_VALUE | (ips << 32),
         options(noreturn),
     );
 }

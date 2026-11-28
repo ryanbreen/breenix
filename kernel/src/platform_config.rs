@@ -8,11 +8,13 @@
 /// to override these with ACPI-discovered addresses.
 
 #[cfg(target_arch = "aarch64")]
-use arm64_boot_contract::phys_memory::{fdt, FdtError, KernelPools, PhysRange};
+use arm64_boot_contract::phys_memory::{boot_pa_limit, fdt, FdtError, KernelPools, PhysRange, DIRECT_MAP_RAM_END};
 #[cfg(target_arch = "aarch64")]
-use crate::memory::boot_ranges::{self, BootMemory, MapError, MapStats, ProbeError, RangeSet, RangeStorage};
+use crate::memory::boot_ranges::{self, BootMemory, MapError, MapStats, ProbeError, RamWindow, RangeSet, RangeStorage};
 #[cfg(target_arch = "aarch64")]
 use core::ptr::NonNull;
+#[cfg(target_arch = "aarch64")]
+use crate::memory::arm64_direct_map::{self, Extension, ExtensionError, TableMemory};
 #[cfg(target_arch = "aarch64")]
 use core::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 
@@ -138,11 +140,48 @@ fn with_kernel_pools(mut ranges: RangeSet, source: FramePoolSource, stats: MapSt
         &mut ranges, crate::memory::kernel_stack::ARM64_KERNEL_STACK_POOL_SIZE, DIRECT_MAP_RAM_END,
     ) {
         Ok(pools) => {
+            // Keep the existing low pools out of the table carve so a
+            // direct-map shortfall still leaves a bootable low-memory pool.
+            let direct_map = arm64_direct_map::extend(
+                &mut ranges, &LiveBootMemory, &LiveBootMemory, ttbr1_root(),
+            );
             KERNEL_POOLS.call_once(|| pools);
-            FramePool { ranges, source, stats }
+            FramePool { ranges, source, stats, direct_map }
         }
         Err(error) => unavailable_pool(MapError::Ranges(error)),
     }
+}
+
+#[cfg(target_arch = "aarch64")]
+const ECAM_VIRT: u64 = crate::arch_impl::aarch64::constants::MMIO_BASE - 0x1000_0000;
+
+#[cfg(target_arch = "aarch64")]
+fn boot_ram_window(ram_base_offset: u64) -> RamWindow {
+    // The installed IPS also bounds a handoff from an older loader.
+    // Keep the direct map clear of the pre-existing MMIO VA reservation.
+    RamWindow::new(
+        ram_base_offset,
+        active_boot_pa_limit(),
+        ECAM_VIRT - arm64_boot_contract::HHDM_BASE,
+    )
+}
+
+#[cfg(target_arch = "aarch64")]
+fn active_boot_pa_limit() -> u64 {
+    let tcr: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, tcr_el1", out(reg) tcr, options(nomem, nostack));
+    }
+    boot_pa_limit((tcr >> 32) & 7)
+}
+
+#[cfg(target_arch = "aarch64")]
+fn ttbr1_root() -> u64 {
+    let root: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, ttbr1_el1", out(reg) root, options(nomem, nostack));
+    }
+    root & arm64_direct_map::OUTPUT_ADDRESS
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -160,11 +199,6 @@ const _: () = {
     assert!(KERNEL_FIXED_RANGES[1].start == 0x4000_0000 + 128 * 0x20_0000);
     assert!(KERNEL_FIXED_RANGES[1].end - KERNEL_FIXED_RANGES[1].start == 0x20_0000);
 };
-
-/// Physical memory both boot paths map as normal memory in the high-half
-/// direct map ends here (L1 entries 0-3).
-#[cfg(target_arch = "aarch64")]
-const DIRECT_MAP_RAM_END: u64 = 0x1_0000_0000;
 
 /// QEMU's virt machine places the DTB of an ELF guest at the start of RAM when
 /// it fits below the kernel's load address (0x4020_0000; its DTB is 1 MiB) and
@@ -192,21 +226,11 @@ pub struct FramePool {
     pub ranges: RangeSet,
     pub source: FramePoolSource,
     pub stats: MapStats,
+    pub direct_map: Result<Extension, ExtensionError>,
 }
 
 #[cfg(target_arch = "aarch64")]
 static FRAME_POOL: spin::Once<FramePool> = spin::Once::new();
-
-/// The window of physical RAM the direct map covers as normal memory. On
-/// VMware the loader remaps the linked RAM alias, so the direct map is an
-/// identity map only from the relocated RAM base.
-#[cfg(target_arch = "aarch64")]
-fn direct_map_ram_window(ram_base_offset: u64) -> PhysRange {
-    PhysRange::new(
-        arm64_boot_contract::LINKED_RAM_START + ram_base_offset,
-        DIRECT_MAP_RAM_END,
-    )
-}
 
 #[cfg(target_arch = "aarch64")]
 fn unavailable_pool(reason: MapError) -> FramePool {
@@ -216,6 +240,7 @@ fn unavailable_pool(reason: MapError) -> FramePool {
         ranges: RangeSet::new(),
         source: FramePoolSource::Unavailable(reason),
         stats: MapStats::default(),
+        direct_map: Ok(Extension::default()),
     }
 }
 
@@ -269,6 +294,30 @@ unsafe impl RangeStorage for LiveBootMemory {
     }
 }
 
+// The boot CPU owns TTBR1 until after this extension. The QEMU root and
+// the UEFI loader's table storage already have writable direct-map aliases.
+#[cfg(target_arch = "aarch64")]
+impl TableMemory for LiveBootMemory {
+    fn read(&self, table: u64, index: usize) -> u64 {
+        let base = (arm64_boot_contract::HHDM_BASE + table) as *const u64;
+        unsafe { base.add(index).read_volatile() }
+    }
+
+    fn write(&self, table: u64, index: usize, value: u64) {
+        let base = (arm64_boot_contract::HHDM_BASE + table) as *mut u64;
+        unsafe { base.add(index).write_volatile(value) }
+    }
+
+    fn clear(&self, table: u64) {
+        let base = (arm64_boot_contract::HHDM_BASE + table) as *mut u8;
+        unsafe { base.write_bytes(0, 4096) }
+    }
+
+    fn publish(&self) {
+        unsafe { core::arch::asm!("dsb ishst", "isb", options(nostack, preserves_flags)) }
+    }
+}
+
 // The kernel is still alone on the boot CPU, with the loader's TTBR0 active.
 #[cfg(target_arch = "aarch64")]
 unsafe impl BootMemory for LiveBootMemory {
@@ -300,9 +349,9 @@ fn qemu_dtb() -> Result<&'static [u8], FdtError> {
 }
 
 #[cfg(target_arch = "aarch64")]
-fn frame_pool_from_qemu_dtb() -> Result<RangeSet, MapError> {
+fn frame_pool_from_qemu_dtb() -> Result<(RangeSet, MapStats), MapError> {
     let blob = qemu_dtb()?;
-    boot_ranges::from_fdt(&LiveBootMemory, blob, QEMU_DTB_PHYS, &KERNEL_FIXED_RANGES, direct_map_ram_window(0))
+    boot_ranges::from_fdt(&LiveBootMemory, blob, QEMU_DTB_PHYS, &KERNEL_FIXED_RANGES, boot_ram_window(0))
 }
 
 /// The frame allocator's free memory: the pages the firmware describes as
@@ -312,7 +361,7 @@ fn frame_pool_from_qemu_dtb() -> Result<RangeSet, MapError> {
 #[cfg(target_arch = "aarch64")]
 pub fn frame_pool() -> &'static FramePool {
     FRAME_POOL.call_once(|| match frame_pool_from_qemu_dtb() {
-        Ok(ranges) => with_kernel_pools(ranges, FramePoolSource::DeviceTree, MapStats::default()),
+        Ok((ranges, stats)) => with_kernel_pools(ranges, FramePoolSource::DeviceTree, stats),
         Err(error) => unavailable_pool(error),
     })
 }
@@ -568,11 +617,11 @@ pub fn init_qemu_pci() {
         Err(_) => return,
     };
     // ECAM covers at least the two buses scanned below. Bound the mapping to
-    // one ECAM segment and the 40-bit PA size configured in boot.S.
+    // one ECAM segment and the active output address width.
     // BAR accesses still use HHDM, whose QEMU Device block ends at 1 GiB.
     if ecam_base == 0 || ecam_base & 0xfff != 0 || ecam_size & 0xfff != 0
         || !(0x20_0000..=0x1000_0000).contains(&ecam_size)
-        || ecam_base.checked_add(ecam_size).is_none_or(|end| end > 1 << 40)
+        || ecam_base.checked_add(ecam_size).is_none_or(|end| end > active_boot_pa_limit())
         || mmio_base == 0 || mmio_size == 0
         || mmio_base.checked_add(mmio_size).is_none_or(|end| end > 0x4000_0000)
     {
@@ -610,25 +659,20 @@ fn map_qemu_ecam(base: u64, size: u64) -> Option<u64> {
     use crate::memory::arch_stub::{Mapper, OffsetPageTable, Page, PageTable,
                                   PageTableFlags, PhysAddr, PhysFrame, Size4KiB, VirtAddr};
     use crate::memory::frame_allocator::GlobalFrameAllocator;
-    const VIRT: u64 = crate::arch_impl::aarch64::constants::MMIO_BASE - 0x1000_0000;
-    let root: u64;
-    unsafe {
-        core::arch::asm!("mrs {}, ttbr1_el1", out(reg) root, options(nomem, nostack));
-    }
     let offset = VirtAddr::new(arm64_boot_contract::HHDM_BASE);
-    let table = (offset.as_u64() + (root & 0x0000_ffff_ffff_f000)) as *mut PageTable;
+    let table = (offset.as_u64() + ttbr1_root()) as *mut PageTable;
     let mut mapper = unsafe { OffsetPageTable::new(&mut *table, offset) };
     let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE
         | PageTableFlags::NO_CACHE | PageTableFlags::NO_EXECUTE;
     for displacement in (0..size).step_by(4096) {
-        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(VIRT + displacement));
+        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(ECAM_VIRT + displacement));
         let frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(base + displacement));
         let result = unsafe { mapper.map_to(page, frame, flags, &mut GlobalFrameAllocator) };
         match result {
             Ok(flush) => flush.flush(),
             Err(_) => {
                 for mapped in (0..displacement).step_by(4096) {
-                    let page = Page::<Size4KiB>::containing_address(VirtAddr::new(VIRT + mapped));
+                    let page = Page::<Size4KiB>::containing_address(VirtAddr::new(ECAM_VIRT + mapped));
                     if let Ok((_, flush)) = mapper.unmap(page) {
                         flush.flush();
                     }
@@ -637,7 +681,7 @@ fn map_qemu_ecam(base: u64, size: u64) -> Option<u64> {
             }
         }
     }
-    Some(VIRT)
+    Some(ECAM_VIRT)
 }
 
 /// PCI ECAM region size in bytes.
@@ -879,7 +923,7 @@ pub fn init_from_parallels(config: &HardwareConfigV7, map: Option<UefiMapHandoff
         let offset = config.ram_base_offset;
         let fixed = kernel_fixed_ranges(offset);
         match boot_ranges::from_hardware_config(config, map, &LiveBootMemory,
-            direct_map_ram_window(offset), &fixed) {
+            boot_ram_window(offset), &fixed) {
             Ok((ranges, stats)) => {
                 let source = if config.version == 7 {
                     FramePoolSource::UefiRegionListV7 {

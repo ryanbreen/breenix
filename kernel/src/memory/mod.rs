@@ -1,3 +1,5 @@
+#[cfg(target_arch = "aarch64")]
+pub(crate) mod arm64_direct_map;
 pub mod boot_ranges;
 #[cfg(not(target_arch = "x86_64"))]
 pub mod arch_stub;

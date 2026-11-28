@@ -145,8 +145,7 @@ mod hardware {
     /// Call after PCI enumeration and assign_bars, once for the feeding thread.
     /// Discovery leaves the timer disabled until the policy's first healthy round.
     pub fn discover() -> Result<Watchdog<MmioBus>, &'static str> {
-        let ecam = crate::platform_config::pci_ecam_base();
-        if !crate::platform_config::is_qemu() || ecam == 0 {
+        if !crate::platform_config::is_qemu() || crate::platform_config::pci_ecam_base() == 0 {
             return Err("i6300esb requires QEMU PCI");
         }
         let device = pci::find_device(0x8086, 0x25ab).ok_or("i6300esb absent")?;
@@ -155,10 +154,9 @@ mod hardware {
             return Err("i6300esb BAR0 not assigned");
         }
         device.enable_memory_space();
-        // ARM's PCI windows are Device memory in the HHDM, as for AHCI.
+        // BAR0 uses the low Device window in the HHDM.
         const HHDM: u64 = 0xffff_0000_0000_0000;
-        let config = HHDM
-            + ecam
+        let config = crate::platform_config::pci_ecam_virt_base()
             + ((u64::from(device.bus) << 20)
                 | (u64::from(device.device) << 15)
                 | (u64::from(device.function) << 12));

@@ -6,7 +6,7 @@
 ///
 /// Uses 1GB block mappings (L1) where possible, 2MB blocks (L2) for
 /// device regions and for VMware's split kernel/device address space.
-use arm64_boot_contract::phys_memory::{PhysRange, PAGE_SIZE};
+use arm64_boot_contract::phys_memory::{boot_pa_limit, PhysRange, DIRECT_MAP_RAM_END, PAGE_SIZE};
 use core::ptr;
 
 /// Physical extent and ELF permissions for one loaded kernel segment.
@@ -106,7 +106,7 @@ pub const MAIR_VALUE: u64 = 0x00_00_00_00_0044_FF00;
 /// SH1 = 0b11 (Inner Shareable for TTBR1)
 /// ORGN0/IRGN0 = 0b01 (Write-Back, Write-Allocate for TTBR0)
 /// ORGN1/IRGN1 = 0b01 (Write-Back, Write-Allocate for TTBR1)
-/// IPS = 0b010 (40-bit PA, 1TB - sufficient for Parallels)
+/// IPS comes from PARange at the handoff.
 #[cfg(target_os = "uefi")]
 pub const TCR_VALUE: u64 = (16 << 0)  // T0SZ
     | (0b01 << 8)   // IRGN0 = WB WA
@@ -117,8 +117,7 @@ pub const TCR_VALUE: u64 = (16 << 0)  // T0SZ
     | (0b01 << 24)  // IRGN1 = WB WA
     | (0b01 << 26)  // ORGN1 = WB WA
     | (0b11 << 28)  // SH1 = Inner Shareable
-    | (0b10 << 30)  // TG1 = 4KB
-    | (0b010 << 32); // IPS = 40-bit
+    | (0b10 << 30); // TG1 = 4KB
 
 /// AArch64 L2 block mapping granularity (2 MiB with a 4 KiB translation granule).
 const L2_BLOCK_SIZE: u64 = 0x20_0000;
@@ -368,6 +367,7 @@ pub fn build_page_tables(
     config: &PageTableConfig<'_>,
     execution: LoaderExecution,
     map: Option<PhysRange>,
+    ips: u64,
 ) -> (u64, u64) {
     let ram_base_offset = config.ram_base_offset;
     let relocated_nc_dma_base = NC_DMA_BASE + ram_base_offset;
@@ -576,53 +576,39 @@ pub fn build_page_tables(
     write_identity_block(ttbr0_l1, 3, 0xC000_0000 | attr::NORMAL_BLOCK);
     write_entry(ttbr1_l1, 3, 0xC000_0000 | attr::NORMAL_BLOCK);
 
-    // --- High-RAM identity map for loader code and page table storage ---
-    //
-    // With >4GB RAM (e.g. 8GB on Parallels), UEFI may load the loader PE image
-    // above 4GB — e.g. at 0x23c100000 (L1 index 8).  When we re-enable the MMU
-    // the very next instruction fetch comes from that physical address, which is
-    // only valid if L1[8] is mapped.  Similarly, the PageTableStorage lives in
-    // the loader's BSS and TTBR0/TTBR1 point to it physically; having it
-    // identity-mapped avoids any table-walker fault.
-    //
-    // We use `adr` to read the current PC.  While UEFI's own MMU is active the
-    // value is a virtual address, but under UEFI's identity map VA == PA, so the
-    // result is the physical address of this code.
-    let storage_phys = storage as *const _ as u64;
+    let pa_limit = boot_pa_limit(ips);
+    let high_image = PhysRange::new(execution.image.start.max(DIRECT_MAP_RAM_END), execution.image.end);
+    if !high_image.is_empty() {
+        let end = high_image.end.checked_next_multiple_of(PAGE_SIZE).unwrap();
+        assert!(end <= pa_limit, "loader image is outside translation width");
+        map_writable_range(
+            storage, config, ttbr0_l0,
+            PhysRange::new(high_image.start & !(PAGE_SIZE - 1), end), execution.image, true,
+        );
+    }
 
-    // Compute 1GB-block L1 indices (bits [39:30] of the physical address).
-    let loader_l1_idx = (loader_phys >> 30) as usize;
-    let storage_l1_idx = (storage_phys >> 30) as usize;
-
-    // Add identity-map 1GB block entries for any index > 3 that isn't already
-    // covered.  We only write into slots that are currently empty (== 0) so we
-    // never overwrite an intentional mapping set up above.
-    for &idx in &[loader_l1_idx, storage_l1_idx] {
-        if idx > 3 && idx < 512 {
-            let phys = (idx as u64) << 30;
-            // TTBR0 (identity map)
-            let ttbr0_l1_ptr = ttbr0_l1 as *const u64;
-            let existing = unsafe { core::ptr::read_volatile(ttbr0_l1_ptr.add(idx)) };
-            if existing == 0 {
-                write_identity_block(ttbr0_l1, idx, phys | attr::NORMAL_BLOCK);
-            }
-            // TTBR1 (HHDM) — keeps the HHDM contiguous into high RAM
-            let ttbr1_l1_ptr = ttbr1_l1 as *const u64;
-            let existing1 = unsafe { core::ptr::read_volatile(ttbr1_l1_ptr.add(idx)) };
-            if existing1 == 0 {
-                write_entry(ttbr1_l1, idx, phys | attr::NORMAL_BLOCK);
-            }
-        }
+    // Both boot roots and their children remain software-accessible through
+    // the direct map. Give high table storage exact page mappings, leaving
+    // adjacent RAM and holes for the kernel's sparse extension.
+    let storage_start = storage as *const _ as u64;
+    let storage_end = storage_start + MAX_PAGE_TABLES as u64 * PAGE_SIZE;
+    #[cfg(target_os = "uefi")]
+    assert!(storage_end <= pa_limit, "loader tables are outside translation width");
+    if storage_end > DIRECT_MAP_RAM_END && storage_end <= pa_limit {
+        map_writable_range(
+            storage, config, ttbr1_l0,
+            PhysRange::new(storage_start.max(DIRECT_MAP_RAM_END), storage_end),
+            PhysRange::default(), false,
+        );
     }
 
     if let Some(map) = map {
         let end = map.end.checked_next_multiple_of(PAGE_SIZE);
-        // E1-2 will derive IPS from PARange. A buffer outside today's
-        // translation width is left for the kernel's named rule-5 refusal.
-        if let Some(end) = end.filter(|end| *end <= 1 << 40) {
-            map_buffer(
+        // An out-of-width buffer is left for the kernel's rule-5 refusal.
+        if let Some(end) = end.filter(|end| *end <= pa_limit) {
+            map_writable_range(
                 storage, config, ttbr0_l0,
-                PhysRange::new(map.start & !(PAGE_SIZE - 1), end), execution.image,
+                PhysRange::new(map.start & !(PAGE_SIZE - 1), end), execution.image, true,
             );
         }
     }
@@ -668,28 +654,30 @@ fn overlaps(a: PhysRange, b: PhysRange) -> bool {
     a.start < b.end && b.start < a.end
 }
 
-fn existing_buffer_block(entry: u64, base: u64, len: u64, image: PhysRange) -> bool {
-    if entry == (base | attr::NG | attr::RAM_DATA_BLOCK) {
+fn existing_writable_block(entry: u64, base: u64, len: u64, image: PhysRange, ng: u64) -> bool {
+    if entry == (base | ng | attr::RAM_DATA_BLOCK) {
         return true;
     }
-    entry == (base | attr::NG | attr::NORMAL_BLOCK)
+    entry == (base | ng | attr::NORMAL_BLOCK)
         && overlaps(PhysRange::new(base, base + len), image)
 }
 
-fn map_buffer(
+fn map_writable_range(
     storage: &mut PageTableStorage,
     config: &PageTableConfig<'_>,
     root: u64,
     range: PhysRange,
     loader_image: PhysRange,
+    identity: bool,
 ) {
     const L1_SIZE: u64 = 1 << 30;
+    let ng = if identity { attr::NG } else { 0 };
     let mut address = range.start;
     while address < range.end {
         let l1 = child_table(storage, config, root, (address >> 39) as usize, 0);
         let i1 = ((address >> 30) & 511) as usize;
         let base1 = address & !(L1_SIZE - 1);
-        if existing_buffer_block(read_entry(l1, i1), base1, L1_SIZE, loader_image) {
+        if existing_writable_block(read_entry(l1, i1), base1, L1_SIZE, loader_image, ng) {
             address = base1 + L1_SIZE;
             continue;
         }
@@ -697,13 +685,13 @@ fn map_buffer(
         let i2 = ((address >> 21) & 511) as usize;
         let base2 = address & !(L2_BLOCK_SIZE - 1);
         let end2 = base2 + L2_BLOCK_SIZE;
-        if existing_buffer_block(read_entry(l2, i2), base2, L2_BLOCK_SIZE, loader_image) {
+        if existing_writable_block(read_entry(l2, i2), base2, L2_BLOCK_SIZE, loader_image, ng) {
             address = end2;
             continue;
         }
         if address == base2 && end2 <= range.end &&
             !overlaps(PhysRange::new(base2, end2), loader_image) {
-            write_identity_block(l2, i2, base2 | attr::RAM_DATA_BLOCK);
+            write_entry(l2, i2, base2 | attr::RAM_DATA_BLOCK | ng);
             address = end2;
             continue;
         }
@@ -714,7 +702,7 @@ fn map_buffer(
             } else {
                 attr::RAM_DATA_BLOCK
             };
-            write_identity_block(l3, ((address >> 12) & 511) as usize, address | flags | attr::TABLE);
+            write_entry(l3, ((address >> 12) & 511) as usize, address | flags | attr::TABLE | ng);
             address += PAGE_SIZE;
         }
     }

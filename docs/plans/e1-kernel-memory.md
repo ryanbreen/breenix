@@ -1524,6 +1524,17 @@ E1-1 review evidence (PR #3259):
     covers (14.8).
 - Rows: no row moves on the 512 MiB rig, which has no RAM above 4 GiB.
 
+E1-2 implementation decisions (DEV-39):
+
+- Both boot paths cap IPS at 48 bits with the current 4 KiB descriptors and `TCR_EL1.DS=0`, since wider output addresses need another descriptor format. The kernel uses the installed IPS so an older loader's tables retain their configured output width.
+- The kernel also excludes and counts RAM whose direct-map VA would overlap the existing ECAM and MMIO window, because the boot mapper must keep those virtual addresses available for devices.
+- The QEMU assembly leaves the old high ECAM slot empty because the existing device-tree path already installs ECAM at its dedicated virtual address, and the obsolete 1 GiB Device block could obstruct RAM.
+- The QEMU watchdog uses `pci_ecam_virt_base()` for its native-width configuration accesses because the removed boot alias no longer covers high ECAM.
+- The UEFI loader maps its high image in TTBR0 and only its exact page-table storage in TTBR1, so the kernel can reach both roots through their live aliases and install finer leaves in neighboring slots without replacing valid translations.
+- Older loaders' existing writable identity blocks are retained, because changing valid translations would require break-before-make and could remove the running roots' aliases.
+- The existing low heap and stack reservations precede the table carve, so a table shortfall can retain a bootable low-memory pool. Heap sizing still uses the RAM in its low placement window.
+- The host FDT fixture runs the production growable visitor and the UEFI fixture uses the production stride-aware encoder and table builder. These are the paths that make RAM allocatable after E1-1.
+
 ### E1-3: frame metadata sections replace the heap ledger
 
 - Change:

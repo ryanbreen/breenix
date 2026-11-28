@@ -1,7 +1,7 @@
 use super::{build, intersect, Emit, RangeError, RangeSet, RangeStorage};
 use arm64_boot_contract::{
     hw_config::{accepts_version, HardwareConfigV7, UefiMapHandoff},
-    phys_memory::{fdt, kernel_heap_size, KernelPools, PhysRange, KERNEL_POOL_ALIGN, PAGE_SIZE},
+    phys_memory::{direct_map_ram_window, fdt, kernel_heap_size, KernelPools, PhysRange, KERNEL_POOL_ALIGN, PAGE_SIZE},
     uefi_map::{self, Descriptor, MetaError, BOOT_MAP_MEMORY_TYPE, CONVENTIONAL},
 };
 use core::ptr::NonNull;
@@ -60,6 +60,34 @@ pub struct MapStats {
     pub buffer_window: u64,
     pub other_map_allocations: usize,
     pub released_bytes: u64,
+    pub excluded_pa_bytes: u64,
+    pub excluded_va_bytes: u64,
+}
+
+/// RAM eligible for the pool and its smaller, already writable storage window.
+#[derive(Clone, Copy)]
+pub struct RamWindow {
+    mapped: PhysRange,
+    pa_limit: u64,
+    va_limit: u64,
+}
+
+impl RamWindow {
+    pub fn new(ram_base_offset: u64, pa_limit: u64, va_limit: u64) -> Self {
+        let mut mapped = direct_map_ram_window(ram_base_offset);
+        mapped.end = mapped.end.min(pa_limit).min(va_limit);
+        Self { mapped, pa_limit, va_limit }
+    }
+
+    fn filter(self, range: PhysRange, stats: &mut MapStats) -> PhysRange {
+        let pa = intersect(range, PhysRange::new(self.mapped.start, self.pa_limit));
+        let va = intersect(pa, PhysRange::new(self.mapped.start, self.va_limit));
+        stats.excluded_pa_bytes = stats.excluded_pa_bytes.saturating_add(
+            range.end.saturating_sub(range.start.max(self.pa_limit)),
+        );
+        stats.excluded_va_bytes = stats.excluded_va_bytes.saturating_add(pa.len() - va.len());
+        va
+    }
 }
 
 fn fragments<E>(
@@ -96,17 +124,19 @@ pub fn from_fdt(
     blob: &[u8],
     blob_phys: u64,
     fixed: &[PhysRange],
-    window: PhysRange,
-) -> Result<RangeSet, MapError> {
+    window: RamWindow,
+) -> Result<(RangeSet, MapStats), MapError> {
     let blob_range = PhysRange::from_base_size(blob_phys, blob.len() as u64);
-    build(memory, window, |emit| {
-        let mut result = Ok(());
+    let mut stats = MapStats::default();
+    let set = build(memory, window.mapped, |emit| {
+        stats = MapStats::default();
+        let mut result: Result<(), MapError> = Ok(());
         fdt::walk(blob, |kind, range| {
             if kind != fdt::RegionKind::Memory || result.is_err() {
                 return;
             }
             result = fragments(
-                intersect(range, window),
+                super::align_in(range),
                 |remaining| {
                     let mut first =
                         first_hole(remaining, fixed.iter().copied().chain([blob_range]));
@@ -117,18 +147,23 @@ pub fn from_fdt(
                     })?;
                     Ok(first)
                 },
-                |range| Ok(emit(range, false)?),
+                |range| {
+                    let range = window.filter(super::align_in(range), &mut stats);
+                    Ok(emit(range, false)?)
+                },
             );
         })?;
         result
-    })
+    })?;
+    stats.usable_bytes = set.total_bytes();
+    Ok((set, stats))
 }
 
 pub fn from_hardware_config(
     config: &HardwareConfigV7,
     map: Option<UefiMapHandoff>,
     memory: &impl BootMemory,
-    window: PhysRange,
+    window: RamWindow,
     fixed: &[PhysRange],
 ) -> Result<(RangeSet, MapStats), MapError> {
     if !accepts_version(config.version) {
@@ -145,21 +180,19 @@ pub fn from_hardware_config(
                     .map(|r| PhysRange::from_base_size(r.base, r.pages.saturating_mul(PAGE_SIZE))),
             )
         };
-        let set = build(memory, window, |emit| {
+        let mut stats = MapStats::default();
+        let set = build(memory, window.mapped, |emit| {
+            stats = MapStats::default();
             for region in &config.ram_regions[..count] {
-                let range = intersect(PhysRange::from_base_size(region.base, region.size), window);
                 fragments(
-                    range,
+                    super::align_in(PhysRange::from_base_size(region.base, region.size)),
                     |remaining| Ok(first_hole(remaining, holes())),
-                    |range| emit(range, false),
+                    |range| emit(window.filter(super::align_in(range), &mut stats), false),
                 )?;
             }
             Ok::<(), RangeError>(())
         })?;
-        let stats = MapStats {
-            usable_bytes: set.total_bytes(),
-            ..MapStats::default()
-        };
+        stats.usable_bytes = set.total_bytes();
         return Ok((set, stats));
     }
     let wire = map.ok_or(MapError::Version(config.version))?;
@@ -210,7 +243,7 @@ pub fn from_hardware_config(
         stride,
         ..MapStats::default()
     };
-    let set = build(memory, window, |emit| {
+    let set = build(memory, window.mapped, |emit| {
         // Only the second pass's snapshot is retained.
         stats = MapStats {
             descriptors: bytes.len() / stride,
@@ -233,7 +266,7 @@ enum Use {
 fn sweep(
     records: impl Iterator<Item = Descriptor>,
     owner: usize,
-    window: PhysRange,
+    window: RamWindow,
     fixed: &[PhysRange],
     stats: &mut MapStats,
     emit: &mut Emit<'_>,
@@ -259,19 +292,21 @@ fn sweep(
         if unique.is_empty() || matches!(first.1, Use::Reserved | Use::BufferHeld) {
             return Ok(());
         }
-        let clipped = intersect(unique, window);
+        let mut available = 0;
         let mut kept = 0;
         fragments(
-            clipped,
+            unique,
             |r| Ok(first_hole(r, fixed.iter().copied())),
             |r| {
+                available += r.len();
+                let r = window.filter(r, stats);
                 kept += r.len();
                 emit(r, first.1 == Use::Buffer)
             },
         )?;
         if first.1 == Use::Buffer {
-            stats.buffer_window += unique.len() - clipped.len();
-            stats.buffer_fixed += clipped.len() - kept;
+            stats.buffer_fixed += unique.len() - available;
+            stats.buffer_window += available - kept;
             stats.released_bytes += kept;
         } else {
             stats.usable_bytes += kept;
@@ -327,7 +362,9 @@ pub fn place_kernel_pools(
     below: u64,
 ) -> Result<KernelPools, RangeError> {
     let heap = ranges.carve(
-        kernel_heap_size(ranges.total_bytes()),
+        kernel_heap_size(ranges.iter().map(|range| {
+            range.end.min(below).saturating_sub(range.start)
+        }).sum()),
         KERNEL_POOL_ALIGN,
         below,
     )?;
