@@ -746,6 +746,15 @@ because the ruling names only BreenFS. That matters for measurement: the QEMU ri
 Each E2 PR follows the same rules:
 
 - its check is its own first commit and is red on the code before it;
+- a model reaches production code. A standalone model of the intended design can show that the design
+  is consistent, but it cannot be red on the old tree, because it does not run the old code. So each check
+  that claims a red result drives the production function through a seam: the decision under test is
+  factored out of its caller into a function the production path calls, the check commit introduces
+  that seam with no behaviour change, and the check then fails against today's logic with an observed
+  wrong result. Where the effect lives in an exception return or a real switch, the check is a kernel
+  test in the testing feature driven by a fixed point instead. A model may still enumerate
+  interleavings on top of the seam. A check that cannot be red on the old tree, because it guards a
+  mechanism the PR adds, says so;
 - it runs its tests once, at its final head;
 - it gets the other model family's review, including a clean-room provenance check (DEV-34(5));
 - it runs claim-lint;
@@ -776,10 +785,16 @@ should own each, not several agents on one PR (DEV-30(3)).
 - **Scope.** Replace `WaitQueueHead` and its free functions, and the two scheduler hooks B1 names, with a
   new implementation written from B1 alone. Update callers in the same change. Semantics are unchanged: B1
   requirements 1-11, including today's preemption contract (requirement 9) and the x86 halting waiter
-  (requirement 11). Later PRs change the semantics.
+  (requirement 11). The one addition is the owed-wake counter for a failed IRQ try-lock (§3.3). Later
+  PRs change the rest.
 - **Who writes it.** A lane that reads B1, the specifications B1 names, the public signatures and the
   callers. It does not read the old bodies or the documents §0 excludes.
-- **Tests, check-first.** These are B1's list:
+- **Tests, check-first.** These are B1's list. The model drives a production queue, not a copy of the
+  design. Its first commit puts the caller-facing operations from B1's table behind one trait that both
+  today's `WaitQueueHead` and the new queue implement, with the scheduler hooks replaced by a recording
+  test scheduler under `cfg(test)`. The same cases then run against both. For the semantics E2.1
+  preserves, they are characterization checks: green on today's queue, which shows that the harness
+  reaches production code, and green on the new one. The owed-wake case is the red one:
   - a host model that enumerates the interleavings of the waiter's register, check, sleep and finish
     steps against the waker's set-condition and wake steps, asserting requirement 1;
   - the same enumeration for timeout against wake, signal against wake, wake-one with two waiters, and a
@@ -833,8 +848,17 @@ should own each, not several agents on one PR (DEV-30(3)).
   `park::wait` raises around publication in E2.2 (§3.2) goes in this PR, in the same commit as the
   requeue, so no tree has one without the other.
 - **Tests:**
-  - a host scheduler-state model: publish, then an involuntary switch at depth 0, leaves the thread
-    runnable; publish, wake, commit ends `Woken` with no sleep; publish, commit, wake ends `Woken` once;
+  - a host scheduler-state check through a seam: the first commit factors the interrupt-exit decision
+    on ARM64 (`arch_impl/aarch64/context_switch.rs:5405-5420`) and x86 (`can_schedule`,
+    `interrupts/context_switch.rs:243-281`) into one function of (thread state, depth, voluntary or not)
+    that both exits call, with no behaviour change. The check calls it. Publish, then an involuntary
+    switch at depth 0, leaves the thread runnable: red on today's ARM64 decision, which switches the
+    published thread out as blocked. Publish, wake, commit ends `Woken` with no sleep. Publish, commit,
+    wake ends `Woken` once;
+  - a kernel test in the testing feature, driven by a fixed point: a kthread at baseline 0 publishes
+    `Parking` at depth 0, through a test-only entry that skips E2.2's publication level, the test forces an interrupt exit with `need_resched` set at a named point before the
+    commit, and checks that the thread runs again without a wake. This is the real exception return,
+    which the seam cannot reach;
   - a structure test that no task-context wait halts as current outside idle, the early-boot path and the
     pinned-idle case.
 - **Risk retired.** The stranded lock holder of #1163 and #1155. x86 `can_schedule`'s BlockedOnIO gap
@@ -848,9 +872,23 @@ should own each, not several agents on one PR (DEV-30(3)).
 
 - **Scope.** §6.
 - **Tests:**
-  - a host model of port admission with the DEV-24 interleaving: a sleepable caller arrives while a commit
-    worker owns the port, and parks and gets the port after `end_port_io`. It is red on the old code, which
-    returns `CannotPark`;
+  - the DEV-24 regression, through a seam. An ordinary sleepable caller at depth 0 or 1 already parks
+    today (`can_park_for_port_io`, `ahci/mod.rs:427-436`), so a model of "a sleepable caller arrives
+    while the commit worker owns the port" would be green on the old code and could not show the fix. The
+    failing case was a specific context: PID 1's image load issued from the boot continuation at depth 2
+    while `breenfs-commit` owned port 0 (`tid=Some(1) preempt_count=2 port_owner=21` in DEV-24's
+    serial). The check's first commit factors admission's decision out of `begin_port_io` into a
+    function of (current thread, idle or not, depth, interrupt context, timer running, port owner) that
+    `begin_port_io` calls, with no behaviour change. The check then has three parts:
+    - it feeds that function the recorded DEV-24 context and an owned port, and gets the old answer,
+      `CannotPark` on x86 and the `yield` poll on ARM64. That shows the seam reaches the old path;
+    - it runs the boot handoff the same way: each init-image load that E2.4 moves (§6 boot order) is
+      issued from its new context, the `init-loader` kthread at baseline 0 and depth 0, against the same
+      owned port. It must park and get the port after `end_port_io`. On the pre-change tree the ARM64
+      post-SMP fallback reads still come from the boot continuation, CPU 0's idle context, where the
+      predicate answers no and ARM64 polls instead of parking. So this part is red there;
+    - the same function, given the DEV-24 context under the new rule, returns `NotSleepable` with a
+      receipt, not a poll or a silent retry;
   - an atomic caller gets `NotSleepable`, a receipt and no data;
   - the early-boot token is refused after revocation, and polled I/O with the token while the port has an
     owner is refused;
@@ -1002,8 +1040,13 @@ should own each, not several agents on one PR (DEV-30(3)).
 - **Scope.** §5.2, and the return-to-user continuation for signal frames (§5.1). The continuation lands
   in this PR, before or with the first fault that may park. The interrupt- and exception-return paths
   stop writing frames in the same commit.
-- **Tests,** as host fixed interleavings against the fault model, each red on the old code, which returns
-  `Resolved` without sleeping:
+- **Tests,** as host fixed interleavings, each red on the old code, which returns `Resolved` without
+  sleeping. They run against production code through a seam. E2.8 has already put the fault's lookup
+  behind the `AddressSpace` object. E2.9's first commit factors the resolution step into
+  `resolve_fault(as, addr, access, ctx) -> FaultOutcome`, which both architectures' fault handlers call,
+  with no behaviour change, and `tools/pagetable-host-tests` drives it with a test `AddressSpace`. On
+  the pre-change tree that function answers a contended or waiting case with today's `Resolved` and an
+  immediate refault, which each case below observes as its red result:
   - a fault sleeps behind a munmap holding the lock exclusive; after the wake the VMA is gone, the result
     is SIGSEGV, and no stale entry is installed;
   - a fault sleeps; mprotect changes the protection; the retried access gets the new protection;
@@ -1085,17 +1128,17 @@ should own each, not several agents on one PR (DEV-30(3)).
 
 | Check | Where | First red in |
 |---|---|---|
-| Event-queue interleaving model, out-of-memory, IRQ try-lock, wait ends | `#[cfg(test)]` module beside the new queue, as the existing queue tests are | E2.1 |
+| Event-queue interleaving model over the queue trait (old and new queue), out-of-memory, IRQ try-lock and owed wake, deferred wake, wait ends | `#[cfg(test)]` module beside the new queue, as the existing queue tests are | E2.1 |
 | `park::context` table and baseline model | `kernel/src/task/park` `#[cfg(test)]` | E2.2 |
 | No private sleep predicates | `tests/park_contract_structure.rs` | E2.2 |
-| Parking and parked scheduler model | host model in `kernel/src/task` `#[cfg(test)]` | E2.3 |
+| Parking and parked, through the interrupt-exit decision seam; fixed-point interrupt-exit kernel test | `kernel/src/task` `#[cfg(test)]`; testing-feature kernel test | E2.3 |
 | No halting as current outside idle and early boot | `tests/park_contract_structure.rs` | E2.3 |
-| Port admission with the DEV-24 interleaving; early-boot token | `kernel/src/drivers/ahci` `#[cfg(test)]` model; `tools/breenfs-host-tests`; `tools/vfs-host-tests` | E2.4 |
+| The DEV-24 context and the boot handoff through the admission seam; early-boot token and readiness | `kernel/src/drivers/ahci` `#[cfg(test)]`; `tools/breenfs-host-tests`; `tools/vfs-host-tests` | E2.4 |
 | I7 mount-lock guard; reader, commit and writer interleavings | `tools/breenfs-host-tests` | E2.5 |
 | Lock validator; raw-spin-lock ban; x86 ISR lock inventory | `kernel/src/sync` `#[cfg(test)]`; `tests/sync_lock_types_structure.rs` | E2.6, E2.7 |
 | Syscall entry order | `tests/syscall_entry_order_structure.rs` | E2.7 |
 | Address-space lifetime and fork copy; fault paths off PROCESS_MANAGER | host models; `tests/fault_lock_order_structure.rs`; `tools/pagetable-host-tests` | E2.8 |
-| Restartable-fault interleavings | host fault model | E2.9 |
+| Restartable-fault interleavings through `resolve_fault`; ARM64 exception-return and signal-continuation kernel tests | `tools/pagetable-host-tests`; testing-feature kernel tests | E2.9 |
 | Class table, `CpuPin` allowlist, fixed-point preemption kernel test | `tests/syscall_class_structure.rs`; testing-feature kernel test | E2.10 |
 
 The structure tests B1 names (`tests/pipe_fifo_blocking_structure.rs`, `tests/teardown_structure.rs`,
