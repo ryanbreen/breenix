@@ -1571,8 +1571,12 @@ fn completion_poller(cpu: usize) {
 /// that CPU comes online, before it dispatches. CPU 0's starts at the first
 /// dispatch, before the early-boot token is revoked, and arms the
 /// controller's completion source for the readiness check there; each
-/// secondary's starts in its bring-up, before it unmasks interrupts. A CPU
-/// without a poller is not ready: its sleeping requests are refused.
+/// secondary's starts in its bring-up, before it unmasks interrupts. A
+/// secondary that arrives ahead of a lower-numbered one is not yet counted
+/// online, and the scheduler treats it as offline (`cpu_accepts_wakeups`,
+/// `spawn_on_cpu`) until it is; the arrival whose count
+/// covers it starts its poller (`admission::pollers_to_start`). A CPU without
+/// a poller is not ready: its sleeping requests are refused.
 #[cfg(target_arch = "aarch64")]
 pub fn start_completion_poller(cpu: usize) {
     use crate::arch_impl::aarch64::smp;
@@ -1588,7 +1592,7 @@ pub fn start_completion_poller(cpu: usize) {
     let start = admission::pollers_to_start(cpu, counted, online, spawned);
     if start & (1 << cpu) == 0 && spawned & (1 << cpu) == 0 {
         // A CPU counted online out of order cannot take a CPU-affine thread
-        // yet.
+        // yet. The arrival whose count covers it starts its poller.
         crate::serial_println!("[ahci] no completion poller on CPU {} yet: not counted online", cpu);
     }
     for other in (0..POLLER_CPUS).filter(|other| start & (1 << other) != 0) {

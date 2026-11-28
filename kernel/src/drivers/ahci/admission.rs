@@ -41,10 +41,12 @@ pub const fn decide(context: ContextInputs, token_held: bool, owner: u64) -> Adm
 /// CPUs the scheduler counts online: a CPU at or past it cannot take a
 /// CPU-affine thread yet. `online` and `spawned` are the masks of the CPUs
 /// marked online and of those whose poller has started.
+///
+/// Secondaries may arrive out of order, so the arrival that brings the count
+/// past a CPU starts that CPU's poller too: each online CPU the count covers
+/// and that has none, `arriving` included.
 pub const fn pollers_to_start(arriving: usize, counted: usize, online: u64, spawned: u64) -> u64 {
-    let _ = online;
-    if arriving >= counted || arriving >= 64 || spawned & (1 << arriving) != 0 {
-        return 0;
-    }
-    1 << arriving
+    let covered = if counted >= 64 { u64::MAX } else { (1u64 << counted) - 1 };
+    let arrived = if arriving < 64 { 1u64 << arriving } else { 0 };
+    (online | arrived) & covered & !spawned
 }
