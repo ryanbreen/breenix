@@ -34,8 +34,19 @@ class VirtioReadContext(unittest.TestCase):
         scheduler = (ROOT / 'kernel/src/task/scheduler.rs').read_text()
         self.assertIn('if thread.must_not_sleep()', function(scheduler, 'block_current_for_io_publish'))
         harness = r'''
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+#[path = "@BLK_QUEUE@"] mod blk_queue;
+use blk_queue::{Admission, RangeTable};
+const MAX_ADMITTED: usize = 32;
 const BLOCK_MMIO_WEDGED_ERROR: &str = "Block MMIO device wedged after an abandoned request";
+mod spin {
+    pub struct Mutex<T>(std::sync::Mutex<T>);
+    impl<T> Mutex<T> {
+        pub const fn new(value: T) -> Self { Self(std::sync::Mutex::new(value)) }
+        pub fn lock(&self) -> std::sync::MutexGuard<'_, T> { self.0.lock().unwrap() }
+    }
+}
+fn arch_without_interrupts<R>(f: impl FnOnce() -> R) -> R { f() }
 static THREAD: Thread = Thread { kill_custody: AtomicU64::new(1) };
 struct Thread { kill_custody: AtomicU64 }
 impl Thread { @PREDICATE@ }
@@ -59,8 +70,8 @@ mod task {
     pub mod waitqueue {
         pub fn schedule_current_wait() {
             crate::PARKS.fetch_add(1, crate::Ordering::Relaxed);
-            // Completion of the other owner's single already-issued request.
-            crate::GATE.unlock();
+            // Completion of the other owner's already-issued overlapping write.
+            crate::GATE.release(crate::OWNER.load(crate::Ordering::Relaxed));
         }
     }
 }
@@ -75,13 +86,15 @@ impl WaitQueueHead {
     fn wake_up(&self) {}
 }
 static PARKS: AtomicU32 = AtomicU32::new(0);
+static OWNER: AtomicUsize = AtomicUsize::new(0);
 static GATE: BlockMmioRequestGate = BlockMmioRequestGate::new();
 fn main() {
     // A syscall has custody count 1. A concurrent SIGKILL marks it pending
-    // while another request still owns the device. No media failure occurs.
+    // while another request still owns the sectors this read covers. No
+    // media failure occurs.
     THREAD.kill_custody.store(KILL_PENDING | 1, Ordering::Release);
-    GATE.locked.store(true, Ordering::Release);
-    let result = GATE.lock();
+    OWNER.store(GATE.try_admit(0, 8, true).expect("the other owner's write"), Ordering::Relaxed);
+    let result = GATE.admit(4, 12, false);
     let guard = match result {
         Ok(guard) => guard,
         Err(reason) => panic!("context refusal would latch metadata device-read: {reason}"),
@@ -94,9 +107,10 @@ fn main() {
     drop(guard);
     assert!(THREAD.must_not_sleep(), "SIGKILL was cleared rather than deferred");
     assert_eq!(THREAD.kill_custody.load(Ordering::Acquire), KILL_PENDING | 1);
-    assert!(!GATE.locked.load(Ordering::Acquire));
+    assert!(!GATE.is_busy(), "the read's range was not released");
 }
 '''.replace('@PREDICATE@', predicate).replace('@CUSTODY_DROP@', custody_drop).replace('@CUSTODY@', custody)
+        harness = harness.replace('@BLK_QUEUE@', str(ROOT / 'kernel/src/drivers/virtio/blk_queue.rs'))
         # Unused production helpers and doubles are expected in this one-path model.
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)
