@@ -37,6 +37,28 @@ impl Pin {
         // SAFETY: as above.
         unsafe { wake.thread.load(Ordering::Acquire).as_ref() }
     }
+
+    pub(super) fn owner(&self, tid: u64) -> Option<usize> {
+        self.lookup(tid).map(|(_, cpu)| cpu)
+    }
+
+    /// Timer membership is atomic; the pin keeps the record and thread alive
+    /// even if an exit unlinks either while a group is being walked.
+    pub(super) fn group_members(&self, group: usize) -> impl Iterator<Item = &ThreadWake> {
+        HEADS.iter().flat_map(|head| {
+            let mut next = head.load(Ordering::SeqCst);
+            core::iter::from_fn(move || {
+                // SAFETY: each link is reached under this reader pin.
+                let wake = unsafe { next.as_ref() }?;
+                next = wake.index_next.load(Ordering::SeqCst);
+                Some(wake)
+            })
+        }).filter(move |wake| {
+            wake.timer_group.load(Ordering::Acquire) == group
+                && !wake.terminated.load(Ordering::Acquire)
+        })
+    }
+
 }
 
 impl Drop for Pin {
@@ -74,6 +96,8 @@ fn find(tid: u64) -> *mut ThreadWake {
 pub(super) fn insert(thread: &mut Thread) {
     let tid = thread.id();
     let wake = Arc::new(ThreadWake::new(tid, ptr::from_mut(thread)));
+    wake.timer_group.store(timer_group(thread), Ordering::Relaxed);
+    wake.terminated.store(thread.state == super::ThreadState::Terminated, Ordering::Relaxed);
     let head = head(tid);
     wake.index_next
         .store(head.load(Ordering::Relaxed), Ordering::Relaxed);
@@ -85,7 +109,7 @@ pub(super) fn insert(thread: &mut Thread) {
 /// successor link intact for readers already walking this chain.
 pub(super) fn remove(thread: &Thread) {
     let wake = thread.wake.as_ref().expect("admitted thread");
-    wake.node.close();
+    super::rq::release_held_place(wake.node.close());
     let mut link = head(thread.id());
     loop {
         let entry = link.load(Ordering::Relaxed);
@@ -113,4 +137,43 @@ pub(super) unsafe fn thread_mut<'a>(tid: u64) -> Option<&'a mut Thread> {
 pub(super) unsafe fn thread_ref<'a>(tid: u64) -> Option<&'a Thread> {
     let wake = unsafe { find(tid).as_ref() }?;
     unsafe { wake.thread.load(Ordering::Relaxed).as_ref() }
+}
+
+/// The caller holds the new and old owners' run-queue locks (or every lock).
+pub(super) fn set_owner(tid: u64, cpu: usize) {
+    // Unlinking an ARM64 thread takes every run-queue lock.
+    if let Some(wake) = unsafe { find(tid).as_ref() } {
+        wake.cpu.store(cpu, Ordering::Release);
+    }
+}
+
+/// The caller holds the CPU's run-queue lock and controls the result's aliasing.
+pub(super) unsafe fn owned_thread<'a>(tid: u64, cpu: usize) -> Option<&'a mut Thread> {
+    // Unlinking takes every run-queue lock and moving a thread takes its
+    // owner's lock. The owner must still match after acquiring the lock.
+    let wake = unsafe { find(tid).as_ref() }?;
+    if wake.cpu.load(Ordering::Acquire) != cpu {
+        return None;
+    }
+    unsafe { wake.thread.load(Ordering::Relaxed).as_mut() }
+}
+
+/// The caller holds the CPU's run-queue lock for the duration of the borrow.
+pub(super) unsafe fn owned_thread_ref<'a>(tid: u64, cpu: usize) -> Option<&'a Thread> {
+    let wake = unsafe { find(tid).as_ref() }?;
+    if wake.cpu.load(Ordering::Acquire) != cpu {
+        return None;
+    }
+    unsafe { wake.thread.load(Ordering::Relaxed).as_ref() }
+}
+
+
+pub(super) fn timer_group(thread: &Thread) -> usize {
+    thread.signal_timers.as_ref().map_or(0, |group| Arc::as_ptr(group) as usize)
+}
+
+pub(super) fn publish_group(thread: &Thread) {
+    if let Some(wake) = &thread.wake {
+        wake.timer_group.store(timer_group(thread), Ordering::Release);
+    }
 }

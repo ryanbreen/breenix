@@ -4,13 +4,10 @@
 //! exceptions or performing explicit thread switches. It integrates with the
 //! scheduler to perform preemptive multitasking.
 //!
-//! ## Single Lock Hold Architecture
-//!
-//! The entire context switch operation (scheduling decision, context save,
-//! cpu_state update, context restore) is performed under a SINGLE acquisition
-//! of the SCHEDULER lock. This eliminates TOCTOU races that caused DATA_ABORT
-//! and INSTRUCTION_ABORT crashes when 15-22 separate lock acquisitions created
-//! windows for other CPUs to corrupt scheduler state.
+//! Selection, context save and publication use this CPU's run-queue lock.
+//! An inline switch carries that lock's token to the scheduler stack. An
+//! exception return stages the incoming frame and releases the lock before its
+//! stack pivot; the outgoing TCB remains marked until the pivot completes.
 //!
 //! Key differences from x86_64:
 //! - Uses TTBR0_EL1 instead of CR3 for user page tables
@@ -20,13 +17,13 @@
 
 use core::mem::MaybeUninit;
 use core::ops::Deref;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use super::exception_frame::Aarch64ExceptionFrame;
 use super::percpu::{Aarch64PerCpu, CpuId, PivotHalf};
 use crate::arch_impl::aarch64::constants::{HARDIRQ_MASK, NMI_MASK, PREEMPT_MASK, SOFTIRQ_MASK};
 use crate::arch_impl::traits::PerCpuOps;
-use crate::task::scheduler::Scheduler;
+use crate::task::scheduler::{Dispatch, PivotToken};
 use crate::task::thread::{CpuContext, Thread, ThreadPrivilege, ThreadState};
 use crate::tracing::providers::sched::trace_ctx_switch;
 
@@ -92,7 +89,7 @@ crate::define_trace_counter!(
 );
 crate::define_trace_counter!(
     INLINE_SCHED_NULL_FALLBACK,
-    "inline_schedule_trampoline observed a null scheduler_ptr and took the force-unlock idle fallback (#596 open question B)"
+    "inline_schedule_trampoline observed a missing handoff and took the idle fallback (#596 open question B)"
 );
 
 static CTX596_ORACLE_EMISSIONS: AtomicU32 = AtomicU32::new(0);
@@ -1496,6 +1493,7 @@ aarch64_inline_schedule_switch:
     //   x0 = *mut CpuContext for the outgoing thread
     //   x1 = per-CPU scheduler stack top
     //   x2 = trampoline function entry
+    //   x3 = acquired run-queue lock token
     //
     // Save the callee-saved kernel context at the exact point of the call,
     // then move to a neutral per-CPU stack before entering Rust again.
@@ -1509,13 +1507,14 @@ aarch64_inline_schedule_switch:
     stp x25, x26, [x0, #200]
     stp x27, x28, [x0, #216]
     stp x29, x30, [x0, #232]
-    mov x3, sp
-    str x3, [x0, #248]
+    mov x4, sp
+    str x4, [x0, #248]
     // Both dispatch consumers must agree by construction: x30 is the only
     // architecturally valid resume PC for this callee-saved-only context.
     str x30, [x0, #264]
 
     mov sp, x1
+    mov x0, x3
     br x2
 
 // Linux-style ret-based kernel thread dispatch.
@@ -1772,7 +1771,8 @@ extern "C" {
     fn aarch64_inline_schedule_switch(
         old_context: *mut CpuContext,
         scheduler_stack_top: u64,
-        trampoline: extern "C" fn() -> !,
+        trampoline: extern "C" fn(PivotToken) -> !,
+        pivot_token: PivotToken,
     );
 
     fn aarch64_enter_exception_frame(frame: *const Aarch64ExceptionFrame) -> !;
@@ -2188,7 +2188,7 @@ static IDLE_REDIRECT_HISTORY_IDX: [AtomicU64;
 
 #[inline(never)]
 fn record_idle_redirect(
-    sched: &Scheduler,
+    sched: &Dispatch,
     cpu_id: usize,
     reason: IdleRedirectReason,
     current_before: u64,
@@ -2196,8 +2196,8 @@ fn record_idle_redirect(
     if cpu_id >= crate::arch_impl::aarch64::constants::MAX_CPUS {
         return;
     }
-    let idle_thread = sched.cpu_state[cpu_id].idle_thread;
-    let current_after = sched.cpu_state[cpu_id].current_thread.unwrap_or(0xDEAD);
+    let idle_thread = sched.state_ref().idle_thread;
+    let current_after = sched.state_ref().current_thread.unwrap_or(0xDEAD);
     let index = IDLE_REDIRECT_HISTORY_IDX[cpu_id].fetch_add(1, Ordering::Relaxed) as usize;
     let base = (index % IDLE_REDIRECT_HISTORY_SIZE) * IDLE_REDIRECT_FIELDS;
     IDLE_REDIRECT_HISTORY[cpu_id][base].store(reason as u64, Ordering::Relaxed);
@@ -2827,7 +2827,7 @@ pub fn dump_all_eret_frame_anomaly_snapshots() {
 }
 
 struct InlineScheduleState {
-    scheduler_ptr: AtomicUsize,
+    published: AtomicBool,
     old_thread_id: AtomicU64,
     new_thread_id: AtomicU64,
     should_requeue_old: AtomicBool,
@@ -2836,49 +2836,49 @@ struct InlineScheduleState {
 static INLINE_SCHEDULE_STATE: [InlineScheduleState;
     crate::arch_impl::aarch64::constants::MAX_CPUS] = [
     InlineScheduleState {
-        scheduler_ptr: AtomicUsize::new(0),
+        published: AtomicBool::new(false),
         old_thread_id: AtomicU64::new(0),
         new_thread_id: AtomicU64::new(0),
         should_requeue_old: AtomicBool::new(false),
     },
     InlineScheduleState {
-        scheduler_ptr: AtomicUsize::new(0),
+        published: AtomicBool::new(false),
         old_thread_id: AtomicU64::new(0),
         new_thread_id: AtomicU64::new(0),
         should_requeue_old: AtomicBool::new(false),
     },
     InlineScheduleState {
-        scheduler_ptr: AtomicUsize::new(0),
+        published: AtomicBool::new(false),
         old_thread_id: AtomicU64::new(0),
         new_thread_id: AtomicU64::new(0),
         should_requeue_old: AtomicBool::new(false),
     },
     InlineScheduleState {
-        scheduler_ptr: AtomicUsize::new(0),
+        published: AtomicBool::new(false),
         old_thread_id: AtomicU64::new(0),
         new_thread_id: AtomicU64::new(0),
         should_requeue_old: AtomicBool::new(false),
     },
     InlineScheduleState {
-        scheduler_ptr: AtomicUsize::new(0),
+        published: AtomicBool::new(false),
         old_thread_id: AtomicU64::new(0),
         new_thread_id: AtomicU64::new(0),
         should_requeue_old: AtomicBool::new(false),
     },
     InlineScheduleState {
-        scheduler_ptr: AtomicUsize::new(0),
+        published: AtomicBool::new(false),
         old_thread_id: AtomicU64::new(0),
         new_thread_id: AtomicU64::new(0),
         should_requeue_old: AtomicBool::new(false),
     },
     InlineScheduleState {
-        scheduler_ptr: AtomicUsize::new(0),
+        published: AtomicBool::new(false),
         old_thread_id: AtomicU64::new(0),
         new_thread_id: AtomicU64::new(0),
         should_requeue_old: AtomicBool::new(false),
     },
     InlineScheduleState {
-        scheduler_ptr: AtomicUsize::new(0),
+        published: AtomicBool::new(false),
         old_thread_id: AtomicU64::new(0),
         new_thread_id: AtomicU64::new(0),
         should_requeue_old: AtomicBool::new(false),
@@ -2926,14 +2926,12 @@ pub(crate) fn coreproof_reset_self_retracted_tags() {
 }
 
 struct ExitScheduleState {
-    scheduler_ptr: AtomicUsize,
     thread_id: AtomicU64,
 }
 
 static EXIT_SCHEDULE_STATE: [ExitScheduleState; crate::arch_impl::aarch64::constants::MAX_CPUS] =
     [const {
         ExitScheduleState {
-            scheduler_ptr: AtomicUsize::new(0),
             thread_id: AtomicU64::new(0),
         }
     }; crate::arch_impl::aarch64::constants::MAX_CPUS];
@@ -3701,7 +3699,7 @@ fn take_inline_ret_dispatch_info(
 #[inline(always)]
 #[cfg(feature = "force_eret_dispatch_596")]
 fn inline_ret_dispatch_info_if_ready(
-    _sched: &mut Scheduler,
+    _sched: &mut Dispatch,
     _thread_id: u64,
 ) -> Option<RetDispatchInfo>
 {
@@ -3714,7 +3712,7 @@ fn inline_ret_dispatch_info_if_ready(
 #[inline(always)]
 #[cfg(not(feature = "force_eret_dispatch_596"))]
 fn inline_ret_dispatch_info_if_ready(
-    sched: &mut Scheduler,
+    sched: &mut Dispatch,
     thread_id: u64,
 ) -> Option<RetDispatchInfo>
 {
@@ -4566,13 +4564,12 @@ fn setup_first_entry_inline(thread: &mut Thread, frame: &mut Aarch64ExceptionFra
 /// If frame SPSR says EL0 but cpu_state says idle, we have a mismatch.
 /// Fix cpu_state to reflect the actual running thread from the per-CPU pointer.
 #[inline(always)]
-fn fix_eret_cpu_state_locked(sched: &mut Scheduler, frame: &Aarch64ExceptionFrame) {
+fn fix_eret_cpu_state_locked(sched: &mut Dispatch, frame: &Aarch64ExceptionFrame) {
     let to_el0 = (frame.spsr & 0xF) == 0;
     if !to_el0 {
         return;
     }
-    let cpu = Aarch64PerCpu::cpu_id() as usize;
-    if let Some(tid) = sched.cpu_state[cpu].current_thread {
+    if let Some(tid) = sched.state().current_thread {
         if sched.is_idle_thread_inner(tid) {
             let real_thread_ptr = Aarch64PerCpu::current_thread_ptr();
             if !real_thread_ptr.is_null() {
@@ -4588,16 +4585,16 @@ fn fix_eret_cpu_state_locked(sched: &mut Scheduler, frame: &Aarch64ExceptionFram
 
 /// Set up exception frame to return to idle loop — called inside scheduler lock hold.
 fn setup_idle_return_locked(
-    sched: &mut Scheduler,
+    sched: &mut Dispatch,
     frame: &mut Aarch64ExceptionFrame,
     cpu_id: usize,
 ) -> u64 {
-    let current_before = sched.cpu_state[cpu_id].current_thread.unwrap_or(0xDEAD);
-    let idle_id = sched.cpu_state[cpu_id].idle_thread;
+    let current_before = sched.state().current_thread.unwrap_or(0xDEAD);
+    let idle_id = sched.state().idle_thread;
     if current_before != idle_id {
         crate::task::scheduler::record_cpu_state_change(cpu_id, 19, current_before, idle_id);
     }
-    sched.cpu_state[cpu_id].current_thread = Some(idle_id);
+    sched.state().current_thread = Some(idle_id);
 
     // Set frame ELR and SPSR to safe values FIRST
     let idle_addr = idle_loop_arm64 as *const () as u64;
@@ -4660,15 +4657,12 @@ fn setup_idle_return_locked(
 
 #[inline(always)]
 fn reset_idle_continuation_locked(
-    sched: &mut Scheduler,
+    sched: &mut Dispatch,
     cpu_id: usize,
     target_id: u64,
     idle_sp: u64,
 ) {
-    let Some(cpu_state) = sched.cpu_state.get(cpu_id) else {
-        debug_assert!(false, "idle continuation reset for invalid CPU {cpu_id}");
-        return;
-    };
+    let cpu_state = sched.state_ref();
     let owned_idle_id = cpu_state.idle_thread;
     let current_id = cpu_state.current_thread;
 
@@ -4731,7 +4725,7 @@ fn reset_idle_continuation_locked(
 /// thread is dispatched, boot is complete and there is no reason to resume
 /// the boot-time saved context.
 fn dispatch_idle_locked(
-    sched: &mut Scheduler,
+    sched: &mut Dispatch,
     _thread_id: u64,
     frame: &mut Aarch64ExceptionFrame,
     cpu_id: usize,
@@ -4746,7 +4740,7 @@ fn dispatch_idle_locked(
 /// and threads blocked in syscalls. Also handles TTBR0 setup for
 /// userspace threads and the fallback-to-idle path when PM lock is contended.
 fn dispatch_thread_locked(
-    sched: &mut Scheduler,
+    sched: &mut Dispatch,
     thread_id: u64,
     frame: &mut Aarch64ExceptionFrame,
     cpu_id: usize,
@@ -4936,7 +4930,7 @@ fn dispatch_thread_locked(
                     line.text("\n");
                     // Process no longer exists — terminate orphaned thread.
                     if let Some(thread) = sched.get_thread_mut(thread_id) {
-                        thread.state = ThreadState::Terminated;
+                        thread.set_terminated();
                     }
                     let current_before = setup_idle_return_locked(sched, frame, cpu_id);
                     record_idle_redirect(
@@ -4985,7 +4979,7 @@ fn dispatch_thread_locked(
             // into this thread's context slot, compounding the corruption.
             trace_dispatch_redirect(thread_id, TRACE_REDIRECT_RESTORE_FAILED);
             if let Some(thread) = sched.get_thread_mut(thread_id) {
-                thread.state = ThreadState::Terminated;
+                thread.set_terminated();
             }
             let current_before = setup_idle_return_locked(sched, frame, cpu_id);
             record_idle_redirect(
@@ -5060,7 +5054,7 @@ fn dispatch_thread_locked(
         if !restore_ok {
             let _ = crate::task::process_task::defer_fault_sigsegv_exit(thread_id);
             if let Some(thread) = sched.get_thread_mut(thread_id) {
-                thread.state = ThreadState::Terminated;
+                thread.set_terminated();
             }
             let current_before = setup_idle_return_locked(sched, frame, cpu_id);
             record_idle_redirect(
@@ -5106,7 +5100,7 @@ fn dispatch_thread_locked(
                 // would hit the same corrupt context. Termination lets the parent
                 // process (init) detect the exit and respawn if needed.
                 if let Some(thread) = sched.get_thread_mut(thread_id) {
-                    thread.state = ThreadState::Terminated;
+                    thread.set_terminated();
                 }
                 let current_before = setup_idle_return_locked(sched, frame, cpu_id);
                 record_idle_redirect(
@@ -5181,7 +5175,7 @@ fn dispatch_thread_locked(
                 line.text("\n");
                 // Process no longer exists — terminate orphaned thread.
                 if let Some(thread) = sched.get_thread_mut(thread_id) {
-                    thread.state = ThreadState::Terminated;
+                    thread.set_terminated();
                 }
                 let current_before = setup_idle_return_locked(sched, frame, cpu_id);
                 record_idle_redirect(
@@ -5318,9 +5312,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     // This is safe even when preempt_count > 0 because we only add the
     // thread to the ready queue — we don't context switch.
     let deferred_already_processed = if deferred_tid != 0 {
-        // Need the scheduler lock to process the requeue.
-        let mut guard = crate::task::scheduler::lock_for_context_switch();
-        if let Some(sched) = guard.as_mut() {
+        if let Some(mut sched) = Dispatch::try_local(cpu_id) {
             let deferred_thread = sched.get_thread(deferred_tid);
             trace_defer_requeue(
                 TRACE_DEFER_REQUEUE_EARLY_DRAIN,
@@ -5328,7 +5320,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
                 0,
                 deferred_thread,
             );
-            let previous_thread = sched.cpu_state[cpu_id].previous_thread.unwrap_or(0);
+            let previous_thread = sched.state_ref().previous_thread.unwrap_or(0);
             if let Some(thread) = deferred_thread {
                 trace_ctx_diag(
                     TRACE_CTX_DIAG_DEFER_EARLY_DRAIN,
@@ -5344,11 +5336,13 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
                     thread.saved_by_inline_schedule,
                 );
             }
-            sched.cpu_state[cpu_id].previous_thread = None;
+            sched.state().previous_thread = None;
             sched.requeue_thread_after_save(deferred_tid);
+            true
+        } else {
+            DEFERRED_REQUEUE[cpu_id].store(deferred_tid, Ordering::Release);
+            return 0;
         }
-        drop(guard);
-        true
     } else {
         false
     };
@@ -5450,10 +5444,10 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         }
     }
 
-    // ── Single lock acquisition ───────────────────────────────────
-    let mut guard = crate::task::scheduler::lock_for_context_switch();
-    let sched = match guard.as_mut() {
-        Some(s) => s,
+    crate::task::scheduler::expire_signal_timers_arm64();
+    // The switch transaction owns this CPU's queue alone.
+    let mut guard = match Dispatch::try_local(cpu_id) {
+        Some(held) => held,
         None => {
             #[cfg(all(
                 target_arch = "aarch64",
@@ -5474,6 +5468,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         }
     };
 
+    let sched = &mut guard;
     if exception_cleanup_context {
         sched.fix_exception_cleanup_cpu_state();
         unsafe {
@@ -5486,7 +5481,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     //    May have already been processed above (for the preempt_count > 0 path).
     //    Clear previous_thread unconditionally. If deferred_tid was already
     //    processed, requeue_thread_after_save is a no-op (thread already in queue).
-    sched.cpu_state[cpu_id].previous_thread = None;
+    sched.state().previous_thread = None;
     if deferred_tid != 0 {
         if !deferred_already_processed {
             let deferred_thread = sched.get_thread(deferred_tid);
@@ -5496,7 +5491,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
                 0,
                 deferred_thread,
             );
-            let previous_thread = sched.cpu_state[cpu_id].previous_thread.unwrap_or(0);
+            let previous_thread = sched.state_ref().previous_thread.unwrap_or(0);
             if let Some(thread) = deferred_thread {
                 trace_ctx_diag(
                     TRACE_CTX_DIAG_DEFER_MAIN_DRAIN,
@@ -5680,7 +5675,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
             }
         };
         if frame_is_idle_register_file(frame, current_is_idle) {
-            let cpu_state_tid = sched.cpu_state[cpu_id].current_thread.unwrap_or(0);
+            let cpu_state_tid = sched.state().current_thread.unwrap_or(0);
             record_save_skew(
                 cpu_id,
                 old_id,
@@ -5751,7 +5746,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         // this CPU still has stack frames on the same kernel stack, causing
         // register/stack corruption. Cleared by the next exception on this
         // CPU (step 1).
-        sched.cpu_state[cpu_id].previous_thread = Some(old_id);
+        sched.state().previous_thread = Some(old_id);
     }
 
     // 8. A switch that cannot stage its frame stores the deferred requeue for
@@ -5834,7 +5829,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         user,
     }) = ret_dispatch_info
     {
-        let previous_thread = sched.cpu_state[cpu_id].previous_thread.unwrap_or(0);
+        let previous_thread = sched.state_ref().previous_thread.unwrap_or(0);
         trace_ctx_diag(
             TRACE_CTX_DIAG_RET_DISPATCH_IRQ,
             new_id,
@@ -6120,24 +6115,19 @@ pub fn schedule_terminated_from_exit(thread_id: u64) -> ! {
     // the final stack pivot.
     Aarch64PerCpu::preempt_enable();
 
+    let mut guard = lock_dispatch_from_task().expect("scheduler unavailable during AArch64 exit");
     let cpu_id = Aarch64PerCpu::cpu_id() as usize;
-    let mut guard = crate::task::scheduler::lock_for_context_switch();
-    let sched = guard
-        .as_mut()
-        .expect("scheduler unavailable during AArch64 exit handoff");
+    let sched = &mut guard;
     let old_context_ptr = sched
         .get_thread_mut(thread_id)
         .map(|thread| &mut thread.context as *mut CpuContext)
         .expect("exiting AArch64 thread missing from scheduler");
 
     EXIT_SCHEDULE_STATE[cpu_id]
-        .scheduler_ptr
-        .store(sched as *mut Scheduler as usize, Ordering::Relaxed);
-    EXIT_SCHEDULE_STATE[cpu_id]
         .thread_id
         .store(thread_id, Ordering::Release);
 
-    guard.leak();
+    let pivot_token = guard.into_pivot();
     let pivot_cpu = CpuId::current_checked(cpu_id);
     let scheduler_top = pivot_destination(
         pivot_cpu,
@@ -6148,23 +6138,24 @@ pub fn schedule_terminated_from_exit(thread_id: u64) -> ! {
     );
 
     unsafe {
-        aarch64_inline_schedule_switch(old_context_ptr, scheduler_top, exit_schedule_trampoline);
+        aarch64_inline_schedule_switch(old_context_ptr, scheduler_top, exit_schedule_trampoline, pivot_token);
     }
 
     panic!("terminated AArch64 thread was dispatched after final exit handoff");
 }
 
-extern "C" fn exit_schedule_trampoline() -> ! {
+extern "C" fn exit_schedule_trampoline(pivot_token: PivotToken) -> ! {
     let cpu_id = Aarch64PerCpu::cpu_id() as usize;
     let state = &EXIT_SCHEDULE_STATE[cpu_id];
-    let sched_ptr = state.scheduler_ptr.swap(0, Ordering::Acquire) as *mut Scheduler;
-    let thread_id = state.thread_id.swap(0, Ordering::Relaxed);
-    assert!(!sched_ptr.is_null(), "missing AArch64 exit scheduler state");
+    let thread_id = state.thread_id.swap(0, Ordering::Acquire);
+    assert_eq!(pivot_token.cpu(), cpu_id, "AArch64 exit handoff changed CPU");
+    // SAFETY: this trampoline owns the token and runs on the neutral stack.
+    let mut guard = unsafe { Dispatch::from_pivot(pivot_token) };
+    let sched = &mut guard;
 
     // The assembly caller has already executed `mov sp, scheduler_stack_top`.
     // Publishing Terminated here makes "terminated while still on its own
     // kernel stack" unrepresentable on the syscall-exit path.
-    let sched = unsafe { &mut *sched_ptr };
     sched
         .get_thread_mut(thread_id)
         .expect("exiting AArch64 thread disappeared before stack pivot")
@@ -6184,9 +6175,7 @@ extern "C" fn exit_schedule_trampoline() -> ! {
     );
     debug_assert!(!should_requeue_old);
 
-    INLINE_SCHEDULE_STATE[cpu_id]
-        .scheduler_ptr
-        .store(sched_ptr as usize, Ordering::Relaxed);
+    INLINE_SCHEDULE_STATE[cpu_id].published.store(true, Ordering::Relaxed);
     INLINE_SCHEDULE_STATE[cpu_id]
         .old_thread_id
         .store(old_id, Ordering::Relaxed);
@@ -6198,10 +6187,10 @@ extern "C" fn exit_schedule_trampoline() -> ! {
         .store(false, Ordering::Relaxed);
     crate::task::scheduler::increment_context_switch_count();
 
-    inline_schedule_trampoline()
+    inline_schedule_trampoline(guard.into_pivot())
 }
 
-extern "C" fn inline_schedule_trampoline() -> ! {
+extern "C" fn inline_schedule_trampoline(pivot_token: PivotToken) -> ! {
     // Interrupts are masked from `schedule_from_kernel`'s mask through this
     // whole function, so this read is the identity of the CPU that will run
     // every decision below.
@@ -6210,14 +6199,18 @@ extern "C" fn inline_schedule_trampoline() -> ! {
     inline_schedule_breadcrumb(cpu_id, INLINE_BC_TRAMPOLINE_ENTRY, 0);
     cpu0_breadcrumb(cpu_id, 30); // trampoline entry
     let state = &INLINE_SCHEDULE_STATE[cpu_id];
-    let sched_ptr = state.scheduler_ptr.swap(0, Ordering::Relaxed) as *mut Scheduler;
+    // SAFETY: the pivot has completed, and the argument identifies the
+    // acquired lock even if the handoff slot was retracted.
+    let acquired_cpu = pivot_token.cpu();
+    let mut guard = unsafe { Dispatch::from_pivot(pivot_token) };
+    let published = state.published.swap(false, Ordering::Relaxed) && acquired_cpu == cpu_id;
     let old_id = state.old_thread_id.load(Ordering::Relaxed);
     let new_id = state.new_thread_id.load(Ordering::Relaxed);
     let should_requeue_old = state.should_requeue_old.swap(false, Ordering::Relaxed);
 
     #[cfg(feature = "coreproof")]
     {
-        if sched_ptr.is_null() {
+        if !published {
             if COREPROOF_INLINE_HANDOFF_SELF_RETRACTED[cpu_id].swap(false, Ordering::Relaxed) {
                 COREPROOF_INLINE_SLOT_ALREADY_CONSUMED_ATTRIBUTED.fetch_add(1, Ordering::Relaxed);
             } else {
@@ -6233,12 +6226,12 @@ extern "C" fn inline_schedule_trampoline() -> ! {
     // fallback's outgoing-thread transaction.
     #[cfg(feature = "boot_tests")]
     #[cfg(not(feature = "strand_inject_live_outgoing"))]
-    let injected_leg = if sched_ptr.is_null() {
+    let injected_leg = if !published {
         None
     } else {
         // This CPU owns the leaked scheduler guard on this path, so the
         // pointer is live and this is one load and one compare.
-        let idle_id = unsafe { (*sched_ptr).cpu_state[cpu_id].idle_thread };
+        let idle_id = guard.idle_thread();
         if idle_id == old_id {
             crate::task::strand_oracle::inject_if_armed(new_id)
         } else {
@@ -6247,13 +6240,13 @@ extern "C" fn inline_schedule_trampoline() -> ! {
     };
     #[cfg(feature = "boot_tests")]
     #[cfg(feature = "strand_inject_live_outgoing")]
-    let injected_leg = if sched_ptr.is_null() {
+    let injected_leg = if !published {
         None
     } else {
         // The feature deliberately widens the one-shot stimulus to a live
         // outgoing handoff so the null-pointer fallback must finish that
         // outgoing transaction as well as roll back the incoming selection.
-        let idle_id = unsafe { (*sched_ptr).cpu_state[cpu_id].idle_thread };
+        let idle_id = guard.idle_thread();
         let outgoing_is_live = idle_id != old_id;
         let injected_leg = if outgoing_is_live
             && crate::task::ret_zero_pc_oracle::is_strand_live_driver(old_id)
@@ -6271,18 +6264,12 @@ extern "C" fn inline_schedule_trampoline() -> ! {
             // Test-only: remove the exception-cleanup recovery owner while
             // this CPU still owns the scheduler lock. The fallback itself
             // must complete the saved affirmative outgoing requeue intent.
-            unsafe {
-                (*sched_ptr).cpu_state[cpu_id].previous_thread = None;
-            }
+            guard.state().previous_thread = None;
         }
         injected_leg
     };
     #[cfg(feature = "boot_tests")]
-    let sched_ptr = if injected_leg.is_some() {
-        core::ptr::null_mut()
-    } else {
-        sched_ptr
-    };
+    let published = published && injected_leg.is_none();
     #[cfg(feature = "boot_tests")]
     let inline_rollback_suppressed = matches!(
         injected_leg,
@@ -6292,7 +6279,7 @@ extern "C" fn inline_schedule_trampoline() -> ! {
     let inline_rollback_suppressed = false;
 
     let state_extra =
-        ((if sched_ptr.is_null() { 0u16 } else { 1u16 }) << 8)
+        ((published as u16) << 8)
             | should_requeue_old as u16
             | {
                 #[cfg(feature = "boot_tests")]
@@ -6312,16 +6299,18 @@ extern "C" fn inline_schedule_trampoline() -> ! {
     );
     cpu0_breadcrumb(cpu_id, 31); // after reading INLINE_SCHEDULE_STATE
 
-    if sched_ptr.is_null() {
+    if !published {
         crate::trace_count!(INLINE_SCHED_NULL_FALLBACK);
         inline_schedule_breadcrumb(cpu_id, INLINE_BC_NULL_FALLBACK, 0);
-        unsafe {
+        if acquired_cpu != cpu_id {
             inline_schedule_breadcrumb(cpu_id, INLINE_BC_FORCE_UNLOCK_RET, 1);
-            crate::task::scheduler::force_unlock_scheduler(None);
+            drop(guard);
+            guard = lock_dispatch_from_task().expect("scheduler unavailable after retracting pivot");
         }
 
-        let idle_sp = crate::task::scheduler::with_scheduler(|sched| {
-            let idle_id = sched.cpu_state[cpu_id].idle_thread;
+        let idle_sp = {
+            let sched = &mut guard;
+            let idle_id = sched.state().idle_thread;
             let candidate = sched
                 .get_thread(idle_id)
                 .and_then(|thread| thread.kernel_stack_top.map(|stack| stack.as_u64()))
@@ -6332,7 +6321,7 @@ extern "C" fn inline_schedule_trampoline() -> ! {
             // Use the current idle ID from this lock hold, never either stale
             // handoff ID.
             if !inline_rollback_suppressed {
-                sched.resolve_pending_next_locked(cpu_id);
+                sched.resolve_pending_next_locked();
             }
 
             if old_id != idle_id {
@@ -6369,19 +6358,16 @@ extern "C" fn inline_schedule_trampoline() -> ! {
                 if old_id != idle_id && (should_requeue_old || old_ready_after_save) {
                     sched.requeue_thread_after_save(old_id);
                 }
-                sched.cpu_state[cpu_id].previous_thread = None;
+                sched.state().previous_thread = None;
             }
             reset_idle_continuation_locked(sched, cpu_id, idle_id, idle_sp);
             idle_sp
-        })
-        // with_scheduler returns None only when the scheduler object itself is
-        // absent; in that case there is no persisted idle Thread to update.
-        .unwrap_or_else(|| super::constants::percpu_kernel_stack_top(cpu_id));
+        };
+        drop(guard);
 
         // ONE IDENTITY FOR THE PRODUCER AND THE SETTER.
         //
-        // `with_scheduler` above is a lock acquire and a closure call — a spill
-        // point. Round 2 unified the custody PREDICATE between the producer
+        // Round 2 unified the custody PREDICATE between the producer
         // (`idle_dispatch_stack`) and the setter (`install_idle_return_sp`) and
         // the two still disagreed in round 3, because what was not unified is
         // the CPU IDENTITY each side feeds it: the producer spent the index
@@ -6435,7 +6421,7 @@ extern "C" fn inline_schedule_trampoline() -> ! {
         }
     }
 
-    let sched = unsafe { &mut *sched_ptr };
+    let sched = &mut guard;
 
     if let Some(old_thread) = sched.get_thread_mut(old_id) {
         // Redundant with the assembly save above and retained deliberately as
@@ -6450,7 +6436,7 @@ extern "C" fn inline_schedule_trampoline() -> ! {
 
     sched.commit_cpu_state_after_save(new_id);
     cpu0_breadcrumb(cpu_id, 32); // after commit_cpu_state_after_save
-    sched.cpu_state[cpu_id].previous_thread = None;
+    sched.state().previous_thread = None;
     if should_requeue_old || old_ready_after_save {
         sched.requeue_thread_after_save(old_id);
     }
@@ -6482,7 +6468,7 @@ extern "C" fn inline_schedule_trampoline() -> ! {
         user,
     }) = ret_dispatch_info
     {
-        let previous_thread = sched.cpu_state[cpu_id].previous_thread.unwrap_or(0);
+        let previous_thread = sched.state_ref().previous_thread.unwrap_or(0);
         trace_ctx_diag(
             TRACE_CTX_DIAG_RET_DISPATCH_INLINE,
             new_id,
@@ -6536,10 +6522,8 @@ extern "C" fn inline_schedule_trampoline() -> ! {
             );
         }
 
-        unsafe {
-            inline_schedule_breadcrumb(cpu_id, INLINE_BC_FORCE_UNLOCK_RET, 0);
-            crate::task::scheduler::force_unlock_scheduler(Some(sched));
-        }
+        inline_schedule_breadcrumb(cpu_id, INLINE_BC_FORCE_UNLOCK_RET, 0);
+        drop(guard);
 
         crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
         crate::arch_impl::aarch64::timer_interrupt::rearm_timer();
@@ -6659,10 +6643,8 @@ extern "C" fn inline_schedule_trampoline() -> ! {
         0
     };
 
-    unsafe {
-        inline_schedule_breadcrumb(cpu_id, INLINE_BC_FORCE_UNLOCK_ERET, is_idle as u16);
-        crate::task::scheduler::force_unlock_scheduler(Some(sched));
-    }
+    inline_schedule_breadcrumb(cpu_id, INLINE_BC_FORCE_UNLOCK_ERET, is_idle as u16);
+    drop(guard);
 
     // Capture what CPU 0 is dispatching via ERET and where it's going
     if cpu_id == 0 {
@@ -6775,48 +6757,42 @@ pub fn run_deferred_reclamation() {
     crate::task::scheduler::reclaim_terminated_threads();
 }
 
+/// Task-context switches may have already committed a park or exit. Retry
+/// a busy local queue with IRQs enabled between attempts. Re-read identity
+/// after masking again because the thread can migrate in that window.
+fn lock_dispatch_from_task() -> Option<Dispatch> {
+    loop {
+        if let Some(guard) = Dispatch::try_local(CpuId::current().index()) {
+            return Some(guard);
+        }
+        if !Dispatch::available() {
+            return None;
+        }
+        unsafe {
+            core::arch::asm!(
+                "msr daifclr, #3", "isb", "yield", "msr daifset, #3", "isb",
+                options(nomem, nostack)
+            );
+        }
+    }
+}
+
 pub fn schedule_from_kernel() {
-    // CORE-PROOF MUTATION LEG `coreproof_mut_cpu_identity` (#645, fixed by PR
-    // #645's own campaign): the identity read moves back above the mask, into
-    // the preemptible window the comment below explains. Test profiles only —
-    // `coreproof_mut_*` implies `coreproof`, which implies `boot_tests`.
-    //
-    // ROUND 3: still not re-found. The detector is right here in this file —
-    // `CpuId::current_checked` at the pivot records the carried-versus-fresh
-    // disagreement — so the gap is production of the state, not detection of
-    // it: the window is a few instructions no seam may ever label, and the
-    // damage needs the preempted thread to come back on ANOTHER CPU.
+    // Test-profile mutation for the checked pivot: carry an identity from
+    // before IRQ masking, where preemption can migrate this task (#645).
     #[cfg(feature = "coreproof_mut_cpu_identity")]
     let premask_cpu = CpuId::current();
     let saved_daif = read_daif();
     unsafe {
         crate::arch_impl::aarch64::cpu::disable_interrupts();
     }
-    // THE IDENTITY IS READ HERE, NOT ABOVE.
-    //
-    // Every caller of this function runs with interrupts ENABLED — that is why
-    // the DAIF save and the mask above exist. An identity read before the mask
-    // is a value from a preemptible window: a timer IRQ in it requeues this
-    // thread, any CPU may resume it, and the index then names the CPU the thread
-    // USED to be on. Spent afterwards on `scheduler_stack_top`,
-    // `INLINE_SCHEDULE_STATE[]`, `cpu_state[]` and `DEFERRED_REQUEUE[]`, that
-    // stale index put CPU 3 on CPU 0's scheduler stack with CPU 0's published
-    // state — the round-3 `PERCPU_STACK_ALIEN` specimens
-    // (`docs/planning/t3g-prb/PRB-R4-RCA-IDENTITY.md`).
-    //
-    // Below the mask this thread cannot be preempted, so the identity cannot go
-    // stale before the pivot; the pivot re-checks it anyway.
-    #[cfg(not(feature = "coreproof_mut_cpu_identity"))]
-    let cpu = CpuId::current();
-    #[cfg(feature = "coreproof_mut_cpu_identity")]
-    let cpu = premask_cpu;
-    let cpu_id = cpu.index();
-    cpu0_breadcrumb(cpu_id, 1); // entry
-    cpu0_breadcrumb(cpu_id, 2); // after disable_interrupts
+    let entry_cpu = CpuId::current().index();
+    cpu0_breadcrumb(entry_cpu, 1); // entry
+    cpu0_breadcrumb(entry_cpu, 2); // after disable_interrupts
 
-    let mut guard = crate::task::scheduler::lock_for_context_switch();
-    let sched = match guard.as_mut() {
-        Some(s) => s,
+    crate::task::scheduler::expire_signal_timers_arm64();
+    let mut guard = match lock_dispatch_from_task() {
+        Some(held) => held,
         None => {
             super::irq_mask_account::closing();
             unsafe {
@@ -6825,6 +6801,13 @@ pub fn schedule_from_kernel() {
             return;
         }
     };
+    // A busy acquisition can enable IRQs and resume this task on another CPU.
+    // The guard names the queue acquired after the last such window.
+    #[cfg(not(feature = "coreproof_mut_cpu_identity"))]
+    let cpu_id = guard.cpu();
+    #[cfg(feature = "coreproof_mut_cpu_identity")]
+    let cpu_id = CpuId::current_checked(premask_cpu.index()).index();
+    let sched = &mut guard;
     cpu0_breadcrumb(cpu_id, 3); // after lock acquisition
 
     let deferred_tid = if cpu_id < DEFERRED_REQUEUE.len() {
@@ -6832,7 +6815,7 @@ pub fn schedule_from_kernel() {
     } else {
         0
     };
-    sched.cpu_state[cpu_id].previous_thread = None;
+    sched.state().previous_thread = None;
     if deferred_tid != 0 {
         let deferred_thread = sched.get_thread(deferred_tid);
         trace_defer_requeue(
@@ -6962,9 +6945,7 @@ pub fn schedule_from_kernel() {
         }
     };
 
-    INLINE_SCHEDULE_STATE[cpu_id]
-        .scheduler_ptr
-        .store(sched as *mut Scheduler as usize, Ordering::Relaxed);
+    INLINE_SCHEDULE_STATE[cpu_id].published.store(true, Ordering::Relaxed);
     INLINE_SCHEDULE_STATE[cpu_id]
         .old_thread_id
         .store(old_id, Ordering::Relaxed);
@@ -6975,7 +6956,7 @@ pub fn schedule_from_kernel() {
         .should_requeue_old
         .store(should_requeue_old, Ordering::Relaxed);
 
-    guard.leak();
+    let pivot_token = guard.into_pivot();
 
     // Re-read the identity at the point it is spent on a stack. Masked since
     // the mint above, so this can only disagree if something re-enabled
@@ -6988,9 +6969,7 @@ pub fn schedule_from_kernel() {
         // it rather than leave it for its owner to consume as its own: the
         // trampoline then finds its own slot empty and takes the null-scheduler
         // fallback, which is a designed recovery.
-        INLINE_SCHEDULE_STATE[cpu_id]
-            .scheduler_ptr
-            .store(0, Ordering::Relaxed);
+        INLINE_SCHEDULE_STATE[cpu_id].published.store(false, Ordering::Relaxed);
         // Tag the FRESH identity's slot, not the carried one (#735). Below this
         // point every remaining instruction in this masked transaction --
         // including `inline_schedule_trampoline`'s own `CpuId::current()` read
@@ -7019,6 +6998,7 @@ pub fn schedule_from_kernel() {
             old_context_ptr,
             scheduler_top,
             inline_schedule_trampoline,
+            pivot_token,
         );
     }
 
@@ -7292,7 +7272,7 @@ fn idle_gate_state() -> (bool, bool) {
         // a full inner-shareable DMB gives the same ordering before WFI.
         core::arch::asm!("dmb ish", options(nomem, nostack));
     }
-    (need_resched, idle_pending_isr_wakeups())
+    (need_resched || Dispatch::has_ready_work(), idle_pending_isr_wakeups())
 }
 
 #[inline(always)]
