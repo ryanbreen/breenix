@@ -395,10 +395,23 @@ pageblocks. That is what leaves contiguous runs available long after boot.
 
 ### 5.6 Contiguous runs after boot, and the DMA API
 
-- `allocate_contiguous_frames(count, out)` keeps its signature and its per-frame result.
-  - It allocates order ceil(log2(count)) from the zone the caller's address limit selects, `split_lease`s
-    it, and returns the excess frames to the buddy at once.
-  - Before failing it drains each CPU's page cache once and runs the reclaimable shrinkers (7.3).
+- `allocate_contiguous_frames(count, out)` keeps its per-frame result and gains an address limit:
+  `allocate_contiguous_frames(count, limit, out)`. Today it has no limit, and its 7 callers (AHCI,
+  RTL8139, xHCI, virtio `block_mmio` and `queue`, `gpu/dma.rs` and `memory/stack.rs`) take whatever run
+  comes back. Drivers then test the address themselves and give up when it is above 4 GiB (see the driver list below).
+  Each caller passes its limit, and drivers move to `dma::alloc`.
+- The run is exact, not rounded to a power of two. RTL8139's receive buffer is exactly 3 frames
+  (`RX_BUFFER_FRAMES`, `drivers/rtl8139.rs:68`). An allocator that only takes an order-2 block would refuse
+  a free 3-frame run that is not inside one aligned 4-frame block, and that disables the device. So:
+  1. it first takes a free block of order at least ceil(log2(count)) in the zone, `split_lease`s it, and
+     returns the excess frames to the buddy at once;
+  2. if the zone has no free block of that order or above, it looks for `count` frames made of adjacent free
+     blocks of lower orders. For each free head below that order, it follows the frames after the block
+     through `FrameMeta` while they are free heads, until `count` frames are covered, under the zone
+     lock. This is the slow path, bounded by the zone's free heads times `count`. It claims the run's
+     blocks in one zone-lock hold, or claims 0 of them;
+  3. before failing it drains each CPU's page cache once and runs the reclaimable shrinkers (7.3), then
+     repeats steps 1 and 2 once.
   - With no migration in E1, a request that still cannot be met fails, as today, but long after the
     frontier is gone.
 - A new `memory::dma` API replaces the drivers' private `virt_to_phys` helpers (AHCI and most virtio
@@ -409,8 +422,8 @@ pageblocks. That is what leaves contiguous runs available long after boot.
   - `dma::bus_address(virt, len) -> Result<u64, DmaError>` accepts only direct-map or static-image addresses
     whose whole range is physically contiguous. It refuses heap span or vmap addresses (6.5), which are not.
 - Today ARM64's heap is one physically contiguous direct-map block, so a heap buffer handed to a device
-  happens to work. After E1-7 it would not. The checked `bus_address` turns that into an error at the call,
-  and E1-7 converts each caller it finds (section 11).
+  happens to work. After E1-9 it would not. The checked `bus_address` turns that into an error at the call,
+  and E1-9 converts each caller it finds, using `dma::alloc`, which E1-8 has by then (section 11).
 
 ### 5.7 Room for E3 and for swap
 
@@ -512,7 +525,7 @@ Bonwick and Adams 2001.
 - Three windows in the kernel half, sized from RAM at boot:
   - span window: RAM size, rounded up to 1 GiB;
   - vmap window: 4 × RAM;
-  - stack window (E1-9): reserved for kernel stacks.
+  - stack window (E1-10): reserved for kernel stacks.
   VA is plentiful: the 48-bit kernel half is 128 TiB, and a window costs no memory until it is mapped.
   The direct map (RAM), span window (RAM) and vmap window (4 × RAM) together take about 6 × RAM of it,
   which is the bound section 9 names.
@@ -709,7 +722,7 @@ The fixed heap's tenants move in their own efforts. E1 provides the mechanisms:
 | Socket buffers (a fixed default, `BUF_DEFAULT` in `socket/opts.rs:49`, with no autotuning; on the heap) | E10 | Page-fragment-backed packet buffers, autotuned under a global TCP budget that is a fraction of RAM | A page-fragment allocator: sub-page pieces of order-0..3 frames with a reference count, per-CPU, interrupt safe. Named slab caches with constructors for descriptors. `kmem::stats()` and pressure flags for the budget. |
 | Device rings and receive buffers | E4 and E10 | The DMA API | `dma::alloc` with address limits, `dma::bus_address` (5.6); the emergency reserve for receive refill from interrupt context |
 
-E1 does not change these budgets. After E1-7 their comments' reason, "the smallest kernel heap", no longer
+E1 does not change these budgets. After E1-9 their comments' reason, "the smallest kernel heap", no longer
 holds. E3 and E10 re-derive them from RAM with these mechanisms. Raising them before E1 would only move the
 heap OOM (audit section 4).
 
@@ -723,7 +736,7 @@ heap OOM (audit section 4).
 | `MAX_TRACKED_FRAMES` = u32::MAX frames (16 TiB) through u32 ordinals | u64 pfns and a sparse two-level directory whose only address-sized part is 8 bytes per 64 GiB (4.2) |
 | Frame metadata inside the heap | Metadata from frames, 0.78% of RAM (4.2) |
 | Contiguous runs only at the frontier | Buddy runs up to 1 GiB at any time (5.1, 5.6) |
-| Kernel stacks: x86 fixed window (about 990), ARM64 32 MiB pool (about 480) | Stacks from the buddy in a stack window sized from RAM (E1-9) |
+| Kernel stacks: x86 fixed window (about 990), ARM64 32 MiB pool (about 480) | Stacks from the buddy in a stack window sized from RAM (E1-10) |
 | Two 64-slot fd and signal-table slabs | Ordinary slab caches |
 
 What remains is constant by design and is not a RAM limit:
@@ -780,11 +793,12 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
 | E1-4 | `AllocError`, allocation contexts, the reclaim registry and the first shrinkers; OOM record on both architectures | E1-3 | S |
 | E1-5 | Kernel VA windows: x86 window allocator and the ARM64 TTBR1 mapper, with batched flush before free | E1-3 | M |
 | E1-6 | Slab caches with per-CPU magazines for requests up to 4 KiB | E1-4 | M |
-| E1-7 | `heap_index` span arenas, vmap large allocations, in-place realloc, the DMA bus-address check; retire the fixed heap | E1-5, E1-6 | M |
-| E1-8 | Buddy allocator, zones, per-CPU page caches, mobility pageblocks, watermarks, `dma::alloc`; frontier and LIFO list deleted | E1-7 | M |
-| E1-9 | Kernel stacks from the buddy in a stack window | E1-5, E1-8 | S |
-| E1-10..E1-19 | OOM conversions, one subsystem per PR (list below) | E1-4 (E1-7 for vmap-backed staging) | S each |
-| E1-20 | Build `alloc` with `no_global_oom_handling`; replace infallible dependencies | E1-10..E1-19 | S |
+| E1-7 | `heap_index` span arenas, vmap large allocations, in-place realloc, the DMA bus-address check; built and self-checked, not yet routed | E1-5, E1-6 | M |
+| E1-8 | Buddy allocator, zones, per-CPU page caches, mobility pageblocks, watermarks, `dma::alloc` with address limits; each direct frame caller in drivers converted; frontier and LIFO list deleted | E1-7 | M |
+| E1-9 | Route the heap to span arenas and vmap; move heap buffers given to devices to `dma::alloc`; retire the fixed heap | E1-7, E1-8 | S |
+| E1-10 | Kernel stacks from the buddy in a stack window | E1-5, E1-8 | S |
+| E1-11..E1-20 | OOM conversions, one subsystem per PR (list below) | E1-4 (E1-9 for vmap-backed staging) | S each |
+| E1-21 | Build `alloc` with `no_global_oom_handling`; replace infallible dependencies | E1-11..E1-20 | S |
 
 ### E1-1: one usable-RAM range set and a boot carve
 
@@ -974,20 +988,18 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
   population path now reads into frames and one staging buffer, so the driver rows are not expected to move
   here).
 
-### E1-7: span arenas, vmap allocations, and retiring the fixed heap
+### E1-7: span arenas and vmap allocations
 
 - Change:
   - span arenas running `heap_index` (6.4), with `grow_in_place` and `shrink_in_place`;
   - vmap allocations (6.5);
   - the new `realloc`;
-  - `dma::bus_address` (5.6) replaces each driver's private `virt_to_phys`, and each caller that passes
-    heap memory to a device moves to a static, a frame allocation, or `dma::alloc`'s E1-7 interim, which
-    is the frontier's contiguous allocation;
-  - the fixed heap is retired on both architectures (6.6).
-- x86-64: the 64 MiB window at `0x4444_4444_0000` is no longer mapped at boot, and the heap grows on
-  demand.
-- ARM64: `place_kernel_pools` keeps only the stack pool. On the rig that returns about 64 MiB of a 512 MiB
-  VM to the frame pool, less what the heap actually uses.
+  - `dma::bus_address` (5.6), with its refusals.
+  `GlobalAlloc` does not route to them yet; only the init self-check uses them. The fixed heap still
+  serves requests above 4 KiB, so no device buffer changes here. Heap retirement waits for E1-9, after
+  E1-8 provides `dma::alloc` with a 32-bit limit. Retiring it here would leave heap buffers given to
+  devices with no low-address source: the frontier's contiguous runs have no address limit.
+- x86-64 and ARM64: new code with no caller outside its self-check.
 - Tests (host):
   - Check first: `heap_index` with a free block after an allocation. `realloc` to a larger size returns the
     same pointer, but the old `realloc` moves it, which is red.
@@ -1000,26 +1012,36 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
     copies).
   - `dma::bus_address` refuses a span or vmap address and a direct-map range that crosses a discontiguity,
     and accepts a contiguous direct-map or image range.
-- Boot: one ARM64 QEMU boot of the boot-path gate. Retiring the heap changes boot memory order, and the
-  driver conversions change what devices are given. Cases: the boot-path milestone stages, which bring up
-  the virtio block, net and input devices.
-- Rows: `memory.driver-mmap` and `memory.driver-map-touch`. Population reserves a vector entry per
-  wanted page and merges it into the sorted `PageVec` (`file_map.rs:1600-1601`, `merge_reserved` at
-  `:335`); for the 262 MB driver those are multi-megabyte contiguous reservations, which become vmap
-  allocations that grow in place instead of copying. `process.fork-exec` may move a little.
+- Boot: not needed. The window mapper's hardware effect was settled by E1-5's boot, routing is
+  unchanged, and the self-check next runs in E1-8's boot.
+- Rows: no row expected to move; 0 callers route here yet.
 
 ### E1-8: buddy allocator, zones and per-CPU page caches
 
 - Change:
   - pure `memory/buddy.rs` (5.1, 5.5), `memory/zone.rs` (5.2, 5.3) and `memory/page_cache_cpu.rs` (5.4);
   - glue;
-  - `allocate_frame`, `allocate_frame_for`, `allocate_frame_leased` and `allocate_contiguous_frames` keep
-    their signatures and move onto it;
-  - `dma::alloc`;
+  - `allocate_frame`, `allocate_frame_for` and `allocate_frame_leased` keep their signatures and move onto
+    it. `allocate_contiguous_frames` gains its address limit and its exact-run search (5.6);
+  - `dma::alloc(bytes, limit)`;
+  - each driver that takes frames for a device moves to `dma::alloc` with the limit its controller
+    reports, in the same PR, because ordinary allocations now prefer `NORMAL` and a driver left on
+    `allocate_frame` would get frames above 4 GiB while `DMA32` still has room. The drivers that call
+    the frame allocator directly at f52fd83c (`rg 'allocate_frame|allocate_contiguous_frames'
+    kernel/src/drivers` lists 11 files) and their limits:
+    - AHCI: `Dma32` unless CAP.S64A is set (bit 31; `ahci/mod.rs:1793`, which today allocates, tests and
+      gives up);
+    - xHCI: `Dma32` unless HCCPARAMS1.AC64 is set (`xhci/mod.rs:243-252`, the same pattern);
+    - RTL8139: `Dma32` (the driver already refuses a buffer above 4 GiB, `rtl8139.rs:173`). Its receive buffer is 3 frames, which must be one exact run
+      (`rtl8139.rs:68`, `:169-176`);
+    - e1000, NVMe, BCM5720 and virtio (`block`, `block_mmio`, `queue`, `net_legacy`, `sound`): the limit
+      each device's specification gives, recorded in the PR next to the call;
+    - `gpu/dma.rs` and `memory/stack.rs` call `allocate_contiguous_frames` too, and pass `Any`.
+  - A structural host test lists each `allocate_frame*` and `allocate_contiguous_frames` call under
+    `kernel/src/drivers` and fails on any that is not `dma::alloc`, so a new driver cannot skip its limit;
   - the frontier, `get_usable_frame`, the LIFO list and `contiguous.rs` go;
   - `/proc/meminfo` and `/proc/breenix/kmem` report per zone.
-- x86-64: two zones on the R240 (8 GiB). The heap init's "DMA will fail" warning goes, because heap memory
-  is no longer DMA memory, and DMA comes from `DMA32` by request.
+- x86-64: two zones on the R240 (8 GiB). DMA comes from `DMA32` by request.
 - ARM64: one zone on the rig; two wherever RAM extends above 4 GiB (with E1-2, any VM given more than
   3 GiB at QEMU's and Parallels' 1 GiB RAM base).
 - Tests (host):
@@ -1039,6 +1061,16 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
       this, as the check for 5.5.
   - Zones: a `NORMAL` request falls back to `DMA32` but does not take it below its reserve; a `DMA32` request
     does not get a `NORMAL` frame.
+  - Check first, device limits: a two-zone map with free frames in both zones. The AHCI port setup on
+    a controller without S64A is driven through today's path, `allocate_contiguous_frames` and then
+    its own address test, over the zoned allocator. The run comes from `NORMAL`, and the port is not
+    attached, which is red. Through `dma::alloc(bytes, Dma32)` the run is below 4 GiB and the port is
+    attached.
+  - Check first, exact runs: a zone whose free frames are an order-1 block at pfn 0x102 and an order-0
+    block at pfn 0x104, with pfn 0x101 and 0x105 allocated, and no free order-2 block. That is 3
+    contiguous free frames, not inside one aligned 4-frame block. A request for 3 frames rounded to
+    order 2 fails, which is red, and that is RTL8139's receive buffer. The exact-run search returns
+    pfn 0x102-0x104, and the rest of the zone is unchanged.
   - Per-CPU caches: refill and drain move `batch` frames per zone-lock hold; a remote drain under the
     per-CPU lock empties another CPU's cache; cached frames are not merged.
   - Watermarks: an ordinary allocation stops at `min` and enters the slow path; an `Atomic` one may use
@@ -1046,23 +1078,53 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
   - OOM: with each frame allocated, `alloc_pages` returns `AllocError` after draining and shrinking, and
     does not panic.
   - The lease suite from E1-3 runs again over buddy-backed frames.
-  - Block returns. A block return that checks only the head and the `TAIL` flags is red in each of these
-    cases, and the two-pass return refuses each one:
-    - an order-2 block whose third frame has `leaf_refs` = 1 is returned. The red result is that the
-      tail goes back to the buddy while it is mapped; the two-pass return refuses it with
+  - Block returns. Block leases are new in this PR, so there is no old code for these to be red against.
+    Each case is a return the two-pass rule (4.3) must refuse:
+    - an order-2 block whose third frame has `leaf_refs` = 1 is returned. It is refused with
       `RefusedLiveLeaf`, and 0 of its frames reach a free list;
     - an `acquire_leaf_mapping` on a tail is interleaved between the two passes, in the fixed order
       check (return), increment (acquire), transition (return), re-check (acquire). Exactly one side
-      wins: either the return is refused with the frame mapped, or the acquire backs out. In 0 runs is a mapped frame on a free list;
-    - after `split_lease`, the block is returned using the head generation a caller recorded before the
-      split. The red result is a double return; the new code refuses it as stale.
-- Boot: one ARM64 QEMU boot of the boot-path gate. This replaces the allocator the boot stages use.
-  Cases: the boot-path milestone stages and the census.
+      wins: either the return is refused with the frame mapped, or the acquire backs out. In 0 runs is
+      a mapped frame on a free list;
+    - after `split_lease`, a block lease rebuilt from the head generation recorded before the split is
+      refused as stale, so the block cannot be returned twice.
+- Boot: one ARM64 QEMU boot of the boot-path gate. This replaces the allocator the boot stages use, and
+  the driver conversions change what devices are given. Cases: the boot-path milestone stages, which bring
+  up the virtio block, net and input devices, the census, and E1-7's span and vmap self-check.
 - Rows: `memory.anonymous-touch`, since an allocation becomes a per-CPU pop; `process.fork-exec`, for
   page-table and copy-on-write frames; `memory.driver-touch`, `memory.driver-mmap` and
   `memory.driver-map-touch`, for frames per populated page.
 
-### E1-9: kernel stacks from the buddy
+### E1-9: route the heap and retire the fixed heap
+
+- Change:
+  - `GlobalAlloc` routes requests above 4 KiB to E1-7's span arenas and vmap allocations (6.1);
+  - each caller that passes heap memory to a device moves to a static or to `dma::alloc` with its limit,
+    which E1-8 serves from the zones. `dma::bus_address` finds them: it refuses span and vmap addresses
+    at the call;
+  - the fixed heap is retired on both architectures (6.6). The heap init's "DMA will fail" warning goes,
+    because heap memory is no longer DMA memory.
+- x86-64: the 64 MiB window at `0x4444_4444_0000` is no longer mapped at boot, and the heap grows on
+  demand.
+- ARM64: `place_kernel_pools` keeps only the stack pool. On the rig that returns about 64 MiB of a 512 MiB
+  VM to the frame pool, less what the heap actually uses.
+- Tests (host):
+  - Check first: an 8 KiB heap buffer under the routed heap is a span address backed by two
+    non-adjacent frames. The drivers' private translation, extracted unchanged (`ahci/mod.rs:118`,
+    `platform_config::kernel_va_to_ipa` on ARM64 and the physical-memory offset on x86; 8 more copies in
+    virtio list the same way), returns an address for it with no error. That address is not the first
+    frame's, and the second page is not at +4096, so a device given it would write to the wrong memory,
+    which is red. `dma::bus_address` refuses it, and the same buffer from `dma::alloc` is accepted.
+  - Routing: each `Layout` reaches exactly one layer (6.1).
+- Boot: one ARM64 QEMU boot of the boot-path gate. Retiring the heap changes boot memory order, and the
+  conversions change what devices are given. Cases: the boot-path milestone stages, which bring up the
+  virtio block, net and input devices.
+- Rows: `memory.driver-mmap` and `memory.driver-map-touch`. Population reserves a vector entry per
+  wanted page and merges it into the sorted `PageVec` (`file_map.rs:1600-1601`, `merge_reserved` at
+  `:335`); for the 262 MB driver those are multi-megabyte contiguous reservations, which become vmap
+  allocations that grow in place instead of copying. `process.fork-exec` may move a little.
+
+### E1-10: kernel stacks from the buddy
 
 - Change:
   - kernel stacks become buddy blocks mapped into the stack window, each with an unmapped guard page
@@ -1078,7 +1140,7 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
   guard-page placement is an MMU effect. Cases: the boot-path stages.
 - Rows: `process.fork-exec` (one stack per thread); recorded to show it does not regress.
 
-### E1-10 to E1-19: the OOM conversions
+### E1-11 to E1-20: the OOM conversions
 
 Each conversion PR follows the same check-first shape (7.4): its structural guard goes in red, and where
 the subsystem has a host-test crate, an allocation-failure sweep. Each converts its subsystem's runtime
@@ -1086,21 +1148,21 @@ paths and marks boot sites `boot:`. No row is expected to move; the rows are rec
 
 | PR | Subsystem | Error surfaced | Host sweep in |
 |---|---|---|---|
-| E1-10 | Syscall entry, user copies and staging buffers (`syscall/`) | `ENOMEM` | `regular-read-host-tests` |
-| E1-11 | Memory syscalls and VMAs (`syscall/mmap.rs`, `syscall/memory.rs`, `memory/vma.rs`) | `ENOMEM` | `pagetable-host-tests` |
-| E1-12 | Process and thread lifecycle: fork, clone, exec, spawn (`process/`, `task/`) | `EAGAIN` or `ENOMEM` per the call | structural guard only |
-| E1-13 | VFS and path walk (`fs/vfs`, `fs/namei.rs`, `ipc/fd.rs`) | `ENOMEM` | `vfs-host-tests`, `resolve-host-tests` |
-| E1-14 | BreenFS and ext2 runtime (`fs/breenfs`, `fs/ext2`) | `ENOMEM` before any disk change, by the reservation rule | `breenfs-host-tests`, `ext2-host-tests` |
-| E1-15 | Network and sockets (`net/`, `socket/`) | `ENOBUFS` on send; counted drop on receive | `net-host-tests`, `udp-host-tests`, `unix-host-tests` |
-| E1-16 | IPC: pipes, SysV and POSIX IPC, shared memory (`ipc/`) | `ENOMEM` or `ENOSPC` per the man page | `ipc-host-tests`, `shmsem-host-tests`, `shmem-api-host-tests` |
-| E1-17 | Block layer and storage drivers' runtime paths (`block/`, `drivers/ahci`, `drivers/nvme`, `drivers/virtio/block*`) | I/O error to the request; not a partial request | `block-host-tests` |
-| E1-18 | Other drivers, GPU and console runtime (`drivers/`, `gpu/`, `console/`) | Counted drop or the call's errno | `gpu-host-tests`, `console-host-tests` |
-| E1-19 | Diagnostics: `/proc`, census, tracing dumps (`fs/procfs`, `capture/`) | `ENOMEM` on read | structural guard only |
+| E1-11 | Syscall entry, user copies and staging buffers (`syscall/`) | `ENOMEM` | `regular-read-host-tests` |
+| E1-12 | Memory syscalls and VMAs (`syscall/mmap.rs`, `syscall/memory.rs`, `memory/vma.rs`) | `ENOMEM` | `pagetable-host-tests` |
+| E1-13 | Process and thread lifecycle: fork, clone, exec, spawn (`process/`, `task/`) | `EAGAIN` or `ENOMEM` per the call | structural guard only |
+| E1-14 | VFS and path walk (`fs/vfs`, `fs/namei.rs`, `ipc/fd.rs`) | `ENOMEM` | `vfs-host-tests`, `resolve-host-tests` |
+| E1-15 | BreenFS and ext2 runtime (`fs/breenfs`, `fs/ext2`) | `ENOMEM` before any disk change, by the reservation rule | `breenfs-host-tests`, `ext2-host-tests` |
+| E1-16 | Network and sockets (`net/`, `socket/`) | `ENOBUFS` on send; counted drop on receive | `net-host-tests`, `udp-host-tests`, `unix-host-tests` |
+| E1-17 | IPC: pipes, SysV and POSIX IPC, shared memory (`ipc/`) | `ENOMEM` or `ENOSPC` per the man page | `ipc-host-tests`, `shmsem-host-tests`, `shmem-api-host-tests` |
+| E1-18 | Block layer and storage drivers' runtime paths (`block/`, `drivers/ahci`, `drivers/nvme`, `drivers/virtio/block*`) | I/O error to the request; not a partial request | `block-host-tests` |
+| E1-19 | Other drivers, GPU and console runtime (`drivers/`, `gpu/`, `console/`) | Counted drop or the call's errno | `gpu-host-tests`, `console-host-tests` |
+| E1-20 | Diagnostics: `/proc`, census, tracing dumps (`fs/procfs`, `capture/`) | `ENOMEM` on read | structural guard only |
 
 - x86-64 and ARM64: the same on both.
 - Boot: not needed. A fallible API has the same success path, and the sweeps settle the failure paths.
 
-### E1-20: the compile-time end state
+### E1-21: the compile-time end state
 
 - Change:
   - replace or wrap `crossbeam-queue`, `futures-util` and `gpu-abi`'s infallible `alloc` uses;
@@ -1127,7 +1189,7 @@ paths and marks boot sites `boot:`. No row is expected to move; the rows are rec
 - Check first: each PR's first commit is its tests, failing on the old code as named in section 11. The
   change follows. Where the old code has no pure form to test against, the first commit also extracts it
   unchanged, so the red result is the old behaviour's and not a stub's.
-- Boots: E1-2, E1-3, E1-5, E1-7, E1-8 and E1-9 each need one ARM64 QEMU boot of the standard boot script,
+- Boots: E1-2, E1-3, E1-5, E1-8, E1-9 and E1-10 each need one ARM64 QEMU boot of the standard boot script,
   for the reason given in each PR, and only for the cases named. The other PRs need no boot. No PR runs an
   effort's suites (DEV-30).
 - Kernel `boot_tests` that assume the old allocator are rewritten in the PR that removes what they test:
@@ -1150,10 +1212,10 @@ The QEMU rig's last pair of series, 731f1d00, recorded 2026-11-27 22:49 UTC (5:4
 | Row | Breenix | Linux | Breenix/Linux | Expected to move in |
 |---|---|---|---|---|
 | `memory.anonymous-touch` | 0.0795 s | 0.0309 s | 2.57 | E1-3, E1-8 |
-| `memory.driver-mmap` | 0.171 s | 1.09 µs | about 158,000 | E1-3, E1-7, E1-8 (a small part; the rest is E2 and E3) |
+| `memory.driver-mmap` | 0.171 s | 1.09 µs | about 158,000 | E1-3, E1-8, E1-9 (a small part; the rest is E2 and E3) |
 | `memory.driver-touch` | 5.17 ms | 1.34 ms | 3.87 | E1-8 |
 | `memory.driver-map-touch` | 0.176 s | 1.34 ms | about 132 | as driver-mmap |
-| `process.fork-exec` | 2.53 ms | 0.218 ms | 11.6 | E1-3, E1-6, E1-7, E1-8, E1-9 |
+| `process.fork-exec` | 2.53 ms | 0.218 ms | 11.6 | E1-3, E1-6, E1-8, E1-9, E1-10 |
 | `memory.copy-bytes` | 18.8 ms | 18.3 ms | 1.03 | control |
 | `process.getpid` | 455 ms | 109 ms | 4.19 | control |
 
@@ -1168,25 +1230,26 @@ PR (DEV-31(3)), and the ratio is the judgement.
   finding: it means the allocator was not the cost this design assumes, and it is reported with the
   series, not explained away.
 
-On the R240, the batched flash after E1-8 is followed by one R240 series (DEV-31(2)). The 8 GiB box is
+On the R240, the batched flash after E1-9 is followed by one R240 series (DEV-31(2)). The 8 GiB box is
 where metadata leaving the heap matters most (section 1.1).
 
 ## 14. Risks and questions for the coordinator
 
-1. x86 early boot is checked only on the R240. E1-3, E1-7, E1-8 and E1-9 change x86 boot memory order, and
+1. x86 early boot is checked only on the R240. E1-3, E1-8, E1-9 and E1-10 change x86 boot memory order, and
    lanes have no x86 QEMU. Recommendation: batch those PRs' x86 check into one coordinator flash after
-   E1-8. That is DEV-31(2)'s rule. Once DEV-32 and DEV-33's one-reboot flash with try-once rollback is in
+   E1-9. That is DEV-31(2)'s rule. Once DEV-32 and DEV-33's one-reboot flash with try-once rollback is in
    service (#3247), a bad kernel falls back by itself.
 2. x86 kernel unmaps use the NMI shootdown until E9. Section 6.5 batches them, and spans shrink with
    hysteresis, so they are rare. A workload that frees large vmap buffers at a high rate pays an NMI round
-   per 16 MiB, which is the cost to watch in E1-7's series.
-3. Interim DMA in E1-7: drivers converted off heap memory before the buddy lands use the frontier's
-   contiguous allocation for one PR's span. E1-8 replaces it. The alternative, landing the buddy first, puts
-   the largest PR ahead of the heap work the audit says goes first.
+   per 16 MiB, which is the cost to watch in E1-9's series.
+3. No interim DMA source. Heap retirement (E1-9) waits for the buddy and `dma::alloc` with address limits
+   (E1-8), because the frontier's contiguous runs have no address limit. The cost is that the largest
+   PR, E1-8, lands before the fixed heap is retired. E1-6's slab caches still take most allocations by
+   count off the heap's global lock first.
 4. `BTreeMap` has no fallible insert in `alloc`. The 67 `BTreeMap::new` sites move to a slab-backed ordered
    map with `try_insert`. That map is new code, and gets its own host tests in the first conversion PR that
    needs it.
-5. The scale of E1-10..E1-19. The pattern counts in 7.4 include tests and boot code. The real runtime count
+5. The scale of E1-11..E1-20. The pattern counts in 7.4 include tests and boot code. The real runtime count
    is unknown until each subsystem's guard lists it. If one subsystem's PR would be too large to review, it
    splits by module with the same guard. The guard's file list says which part is done.
 6. The 32-byte `FrameMeta` costs 0.78% of RAM, against today's 12 bytes plus 8 bytes of free-list
