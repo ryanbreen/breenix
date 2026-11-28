@@ -15,6 +15,7 @@ pub mod kmem;
 #[cfg(target_arch = "x86_64")]
 pub mod kernel_page_table;
 pub mod kernel_walk;
+pub mod kva_map;
 pub mod kernel_stack;
 pub mod layout;
 pub mod paging;
@@ -26,6 +27,8 @@ pub mod stack;
 pub(crate) mod stack_growth;
 pub mod table_reclaim;
 pub mod tlb;
+#[cfg(target_arch = "x86_64")]
+pub mod tlb_request;
 pub mod vma;
 pub mod locked;
 

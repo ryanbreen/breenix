@@ -256,22 +256,10 @@ mod shootdown {
     use x86_64::structures::idt::InterruptStackFrame;
 
     use crate::arch_impl::x86_64::{apic, smp};
+    use crate::memory::tlb_request;
     use crate::task::scheduler::MAX_CPUS;
 
-    #[derive(Clone, Copy)]
-    pub(super) enum Request {
-        /// `invlpg` this address.
-        Page(u64),
-        /// Reload CR3: every non-global translation.
-        All,
-        /// Leave this page-table root if it is loaded and this CPU is not
-        /// returning to it.
-        ReleaseRoot(u64),
-    }
-
-    const KIND_PAGE: u8 = 1;
-    const KIND_ALL: u8 = 2;
-    const KIND_RELEASE_ROOT: u8 = 3;
+    pub(super) use tlb_request::Request;
 
     /// A CPU that has announced no root yet: it may hold any.
     const UNKNOWN_ROOT: u64 = u64::MAX;
@@ -439,11 +427,7 @@ mod shootdown {
         if smp::cpus_online() <= 1 {
             return;
         }
-        let (kind, arg) = match request {
-            Request::Page(addr) => (KIND_PAGE, addr),
-            Request::All => (KIND_ALL, 0),
-            Request::ReleaseRoot(root) => (KIND_RELEASE_ROOT, root),
-        };
+        let (kind, arg) = tlb_request::encode(request);
 
         // Preemption held off keeps this thread on this CPU, and so on its
         // slot, while it waits with interrupts enabled.
@@ -572,12 +556,10 @@ mod shootdown {
         let pending = PENDING[cpu].load(Ordering::SeqCst);
         for slot in (0..SLOTS).filter(|slot| pending & (1 << slot) != 0) {
             let arg = REQUEST_ARG[slot].load(Ordering::Relaxed);
-            match REQUEST_KIND[slot].load(Ordering::Relaxed) {
-                KIND_PAGE => x86_64::instructions::tlb::flush(x86_64::VirtAddr::new(arg)),
-                KIND_ALL => x86_64::instructions::tlb::flush_all(),
-                KIND_RELEASE_ROOT => release_root(cpu, arg),
-                _ => {}
-            }
+            let kind = REQUEST_KIND[slot].load(Ordering::Relaxed);
+            // SAFETY: the initiator encoded the slot and keeps what it names
+            // live until this CPU clears its PENDING bit below.
+            unsafe { tlb_request::execute(kind, arg, &mut ThisCpu(cpu)) };
         }
         PENDING[cpu].fetch_and(!pending, Ordering::Release);
         if pending & CPU_PROGRESS != 0 {
@@ -585,6 +567,39 @@ mod shootdown {
         }
         if pending & AHCI_LAPIC_SAMPLE != 0 {
             crate::drivers::ahci::record_lapic_sample(cpu, frame);
+        }
+    }
+
+    /// The executing CPU, which is the CPU numbered `.0`. No lock, no
+    /// allocation and no GS-relative access, so the NMI handler may use it.
+    struct ThisCpu(usize);
+
+    impl tlb_request::TlbOps for ThisCpu {
+        fn invlpg(&mut self, va: u64) {
+            x86_64::instructions::tlb::flush(x86_64::VirtAddr::new(va));
+        }
+        fn reload_cr3(&mut self) {
+            x86_64::instructions::tlb::flush_all();
+        }
+        fn toggle_global_pages(&mut self) {
+            // The same sequence as `arch_impl::x86_64::pat`'s TLB flush (SDM
+            // vol. 3A §4.10.4.1).
+            const PGE: u64 = 1 << 7;
+            let cr4: u64;
+            // SAFETY: CR4 is rewritten with PGE cleared and then its own
+            // value, which changes only which translations the TLB keeps.
+            unsafe {
+                core::arch::asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack, preserves_flags));
+                if cr4 & PGE != 0 {
+                    core::arch::asm!("mov cr4, {}", in(reg) cr4 & !PGE, options(nostack, preserves_flags));
+                    core::arch::asm!("mov cr4, {}", in(reg) cr4, options(nostack, preserves_flags));
+                } else {
+                    x86_64::instructions::tlb::flush_all();
+                }
+            }
+        }
+        fn release_root(&mut self, root: u64) {
+            release_root(self.0, root);
         }
     }
 
