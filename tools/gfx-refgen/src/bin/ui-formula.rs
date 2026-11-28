@@ -1,7 +1,7 @@
 //! Generate the suite's coordinate-pattern PNG with the guest's formula code.
 #[path = "../../../../libs/libuitest/src/formula.rs"]
 mod formula;
-#[path = "../../../../userspace/programs/src/uitest_suite/formula_pattern.rs"]
+#[path = "../../../../tests/ui_frames/formula_pattern.rs"]
 mod pattern;
 #[path = "../png.rs"]
 mod png;

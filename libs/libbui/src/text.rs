@@ -1,3 +1,5 @@
+// The host reference renderer also loads this module by path.
+#[path = "text/metrics.rs"]
 mod metrics;
 pub use metrics::ScaledText;
 
