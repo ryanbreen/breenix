@@ -1,9 +1,12 @@
 import argparse
+import contextlib
+import json
 from pathlib import Path
 import runpy
 import subprocess
 import sys
 import threading
+import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
@@ -80,7 +83,7 @@ class PairedFlashTest(unittest.TestCase):
 
         def paired(*words):
             calls.append(('paired', *words))
-            return {'protocol': 'BREENIX-PAIRED 1', 'have': '', 'apply': '{}',
+            return {'protocol': 'BREENIX-PAIRED 1', 'have': '', 'apply': '{"carried": [], "deletedOnBox": [], "onBox": []}',
                     'verify': 'paired verify ' + self.trial + ' rows=1 sha256=' + 'b' * 64}.get(words[0], '')
 
         roots = ['gen-' + self.current, 'gen-' + self.previous]
@@ -113,6 +116,218 @@ class PairedFlashTest(unittest.TestCase):
         self.assertIn('/run/breenix/boot-id', guard)
         self.assertIn('/var/lib/accounts/pending', guard)
         self.assertTrue(guard.endswith(' && '))
+
+    def test_prepare_seals_the_new_root_for_both_manager_versions(self):
+        globals_ = self.flash['prepare'].__globals__
+        import metal_image
+        import metal_persist
+
+        class Service:
+            def __init__(self, root):
+                self.STATE = root
+
+            def read_json(self, path):
+                return dict(profile='production', commit='2' * 40, writablePersistentRoot=True,
+                            breenfsIncompat=1) if path.name == 'build.json' else {}
+
+            def write_json(self, path, value):
+                path.write_text(json.dumps(value))
+
+            def boot_dir(self, id):
+                return self.STATE / 'boots' / id
+
+        current = dict(userland=self.current, commit='c' * 40, installedBy='0' * 32)
+        with tempfile.TemporaryDirectory() as root, contextlib.ExitStack() as mocks:
+            mocks.enter_context(patch.dict(globals_, {
+                'site': lambda m: dict(lease=self.current, current=current),
+                'prepare_inventory': Mock(),
+            }))
+            for module, bindings in [
+                (metal_image, {'extract_esp': Mock(return_value={})}),
+                (metal_persist, {'layout': Mock(return_value={}), 'slot_image': Mock(),
+                                 'store_definition': Mock(),
+                                 'file_facts': Mock(return_value={'size': 536870912, 'sha256': '3' * 64})})
+            ]:
+                for name, value in bindings.items():
+                    mocks.enter_context(patch.object(module, name, value))
+            build = self.flash['prepare'](Service(Path(root)), self.trial, self.token,
+                                          self.commit, self.current, False, '', paired=True)
+            self.assertEqual(metal_persist.slot_image.call_args.args[4], self.trial)
+            self.assertTrue(metal_persist.slot_image.call_args.kwargs['writable_root'])
+            self.assertEqual(build['previousRoot'], 'gen-' + self.current)
+            for version, rows in [(1, 6), (2, 7)]:
+                self.assertEqual(len(self.flash['manifest'](self.token, build, version).splitlines()), rows)
+
+    def test_atomic_host_publication_and_retention_across_cuts(self):
+        # Cuts before the bput rename preserve the prior committed bytes. A
+        # completed kernel write never constitutes an arm or acknowledgement.
+        fields = {'size': 99, 'sha256': 'a' * 64, 'baseNoteSha256': 'b' * 64,
+                  'commit': self.commit, 'userland': self.trial}
+        manifest = self.flash['manifest'](self.token, fields, 2)
+        for cut in range(7):
+            durable = {'committed': b'old-token\n'}
+            writes = 0
+            def guest(script, input, timeout):
+                nonlocal writes
+                self.assertIn('/bin/bput /root/.breenix-flash/', script)
+                path = script.split('/root/.breenix-flash/', 1)[1].split()[0]
+                if cut == writes:
+                    return subprocess.CompletedProcess([], 124, b'', b'cut before rename')
+                writes += 1
+                durable[path] = input
+                if cut == writes:
+                    return subprocess.CompletedProcess([], 124, b'', b'cut after rename')
+                writes += 1
+                return subprocess.CompletedProcess([], 0, b'published\n', b'')
+
+            for name, payload in [('kernel.img', b'trial image'), ('manifest', manifest),
+                                  ('committed', (self.token + '\n').encode())]:
+                try:
+                    self.flash['publish'](guest, name, payload)
+                except ValueError:
+                    break
+            self.assertEqual('kernel.img' in durable, cut >= 1)
+            self.assertEqual('manifest' in durable, cut >= 3)
+            if 'manifest' in durable:
+                self.assertEqual(durable['manifest'], manifest)
+            self.assertEqual(durable['committed'], (self.token + '\n').encode() if cut >= 5 else b'old-token\n')
+
+    def test_reset_request_is_bound_to_an_unacknowledged_persistent_lease(self):
+        class Service:
+            def __init__(self, root, lease):
+                self.STATE = root
+                self.lease = lease
+
+            def locked(self, name):
+                return contextlib.nullcontext()
+
+            def read_lease(self):
+                return self.lease
+
+            def read_json(self, path):
+                return json.loads(path.read_text()) if path.is_file() else None
+
+            def write_json(self, path, value):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(value))
+
+            def boot_dir(self, id):
+                return self.STATE / 'boots' / id
+
+            def now(self):
+                return 100
+
+        with tempfile.TemporaryDirectory() as root:
+            service = Service(Path(root), dict(id=self.current, state='powered', kind='persistent'))
+            record = self.flash['record_path'](service, self.token)
+            entry = dict(lease=self.current, paired=True, status='trial', armedAt=10)
+            service.write_json(record, entry)
+            request = self.flash['request_reset']
+            with self.assertRaises(ValueError):
+                request(service, self.previous, self.token)
+            request(service, self.current, self.token)
+            self.assertEqual(service.read_json(service.boot_dir(self.current) / 'paired-reset.json')['token'],
+                             self.token)
+            service.write_json(record, dict(entry, status='acknowledged'))
+            with self.assertRaises(ValueError):
+                request(service, self.current, self.token)
+
+    def test_failed_trials_do_not_acknowledge_and_return_only_after_rollback(self):
+        flash = self.flash['run_paired'].__globals__
+        current = 'gen-' + self.current
+        prior_commit = 'c' * 40
+        build = dict(size=16, sha256='a' * 64, baseNoteSha256='b' * 64, commit=self.commit,
+                     userland=self.trial, baseCommit=prior_commit, previousRoot=current, image='/file')
+        context = dict(lease=self.current, retainedRoots=[current], manifestVersion=2)
+        trial_serial = (f'breenix-manager: started: test\n'
+                        f'breenix-manager: live flash: trial {self.token} {self.commit}\n'
+                        '[init] log boot-id=4-5-6\n')
+        rollback_serial = (f'breenix-manager: started: test\n'
+                           f'breenix-manager: live flash: rollback {self.token}\n'
+                           f'breenix-manager: booting current {prior_commit}\n'
+                           '[init] log boot-id=7-8-9\n')
+        for ssh_available in [True, False]:
+            events = []
+            phase = 'current'
+            serial = ''
+            observed_ssh = False
+            def guest(script, **kwargs):
+                nonlocal phase, serial
+                if script.endswith('/sbin/reboot'):
+                    if phase == 'current':
+                        self.assertIn('/var/lib/accounts/pending', script)
+                        phase = 'trial'
+                        serial = trial_serial
+                        events.append('initial-reboot')
+                    else:
+                        self.assertIn('= 4-5-6', script)
+                        phase = 'rollback'
+                        serial += rollback_serial
+                        events.append('guarded-reboot')
+                return subprocess.CompletedProcess([], 0, b'', b'')
+
+            guest.install_uploader = lambda data: None
+
+            def facts(_):
+                nonlocal observed_ssh
+                if phase == 'rollback':
+                    observed_ssh = True
+                    return '7-8-9', current, 'rw'
+                if phase == 'trial':
+                    return ('4-5-6', 'gen-wrong', 'rw') if ssh_available else None
+                return '1-2-3', current, 'rw'
+
+            def service(_, *words, **kwargs):
+                nonlocal phase, serial
+                value = b''
+                status = 0
+                if words[0] == 'python3':
+                    command = words[2]
+                    if command in ('site', 'prepare', 'record'):
+                        value = json.dumps(context if command == 'site' else build).encode()
+                    elif command == 'installer':
+                        value = b'tool'
+                    elif command == 'paired-reset':
+                        events.append('lease-reset')
+                        phase = 'rollback'
+                        serial += rollback_serial
+                elif words[0] == 'stat':
+                    value = b'0'
+                elif words[0] == 'test':
+                    status = 1
+                elif words[0] == 'tail':
+                    value = serial
+                elif words[0] == 'cat':
+                    value = b'inventory'
+                elif words[0] == 'tee':
+                    self.assertTrue(observed_ssh)
+                    self.assertEqual(json.loads(kwargs['input'])['result'], 'rolled-back')
+                    events.append('receipt')
+                return subprocess.CompletedProcess([], status, value, b'')
+
+            runner = dict(host_env=lambda: {}, in_metal=service, STATE='/state', TOOLS='/tools',
+                          resolve=lambda env, branch: self.commit, build=Mock(return_value=0),
+                          paired_tools_commit=lambda: self.commit)
+            args = argparse.Namespace(branch=None, sha=None, inject=None)
+            with tempfile.TemporaryDirectory() as root, contextlib.ExitStack() as mocks:
+                writer = Mock()
+                mocks.enter_context(patch.dict(flash, {
+                    'guest_access': lambda _: contextlib.nullcontext(guest),
+                    'guest_facts': facts, 'publish': writer,
+                    'stage_pair': lambda *args: dict(carried=[], deletedOnBox=[], onBox=[]),
+                    'tempfile_image': lambda *args: contextlib.nullcontext(None),
+                    'DEADLINE': 20,
+                }))
+                for key, value in [('monotonic', Mock(side_effect=range(100))),
+                                   ('strftime', Mock(return_value=self.trial.removesuffix('-metal'))),
+                                   ('sleep', Mock())]:
+                    mocks.enter_context(patch('time.' + key, value))
+                mocks.enter_context(patch('secrets.token_hex', return_value=self.token))
+                mocks.enter_context(patch('pathlib.Path.home', return_value=Path(root)))
+                self.assertEqual(self.flash['run_paired'](runner, args), 1)
+                self.assertEqual(events, ['initial-reboot', 'guarded-reboot' if ssh_available else 'lease-reset',
+                                          'receipt'])
+                self.assertNotIn('committed', [call.args[1] for call in writer.call_args_list])
 
     def test_forced_rollback_waits_for_both_halves_of_the_old_pair(self):
         for trial_boot in (None, '4-5-6'):
