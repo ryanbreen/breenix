@@ -904,3 +904,67 @@ fn a_read_only_mount_reads_each_new_view_through_its_own_cache() {
             "round {round}: the observer's read of b: {:?}", read.err());
     }
 }
+
+/// A copy of `disk` as a crash leaves it: what is durable, with no shutdown.
+fn crashed(disk: &Arc<Disk>) -> Arc<Disk> {
+    let copy = Disk::new();
+    *copy.bytes.lock().unwrap() = disk.bytes.lock().unwrap().clone();
+    copy
+}
+
+/// Review M4 (#3310): a writable mount's recovery commits within the
+/// device's reuse bound. Four roots hold an orphan, so recovery publishes
+/// four generations; a read-only reader is pinned at the generation before.
+#[test]
+fn writable_recovery_keeps_a_read_only_readers_blocks() {
+    let (disk, inos) = image();
+    let image = {
+        let fs = Fs::mount_writable(disk.clone(), Arc::new(BufferCache::new(YieldWait)), 148, 1).unwrap();
+        let ino = fs.create(2, b"orphan", regular()).unwrap();
+        let node = fs.open(ino).unwrap();
+        fs.write(&node, at(0), &pattern(160, 2 * BLOCK_SIZE)).unwrap();
+        let parent = fs.getattr(2).unwrap().attrs;
+        fs.remove(2, b"orphan", Remove { directory: false, expected: ino, owner: 0, parent }).unwrap();
+        fs.sync().unwrap();
+        for name in [b"o1", b"o2", b"o3"] {
+            let mut request = SnapshotRequest { flags: 0, name_len: 2, name: [0; 256] };
+            request.name[..2].copy_from_slice(name);
+            fs.snapshot_request(&request, true).unwrap();
+        }
+        let image = crashed(&disk);
+        drop(node);
+        image
+    };
+    let reader = Fs::mount(image.clone(), Arc::new(BufferCache::new(YieldWait)), 149, 1).unwrap();
+    let node = reader.open(inos.f).unwrap();
+    let mut first = vec![0; BLOCK_SIZE];
+    assert_eq!(reader.read(&node, 0, &mut first), Ok(BLOCK_SIZE));
+    // Generation G's SPACE root; the pin keeps it from reuse.
+    let space = reader.inner.state.lock().durable.space_root.addr as usize * BLOCK_SIZE;
+    let before = image.bytes.lock().unwrap()[space..space + format::NODE_SIZE].to_vec();
+    image.stop("reader-a", true, false);
+    let a = {
+        let reader = reader.clone();
+        spawn("reader-a", move || {
+            let node = reader.open(inos.f).unwrap();
+            let mut bytes = vec![0; BLOCK_SIZE];
+            reader.read(&node, BLOCK_SIZE as u64, &mut bytes).map(|_| bytes)
+        })
+    };
+    image.entered(1, "reader A never reached the device");
+    let generation = {
+        let image = image.clone();
+        bounded("recovery", move || {
+            let fs = Fs::mount_writable(image, Arc::new(BufferCache::new(YieldWait)), 150, 1).unwrap();
+            let generation = fs.inner.state.lock().durable.generation;
+            generation
+        })
+    };
+    let pinned = reader.inner.state.lock().durable.generation;
+    assert!(generation >= pinned + 4, "recovery published {} generations, not four", generation - pinned);
+    let after = image.bytes.lock().unwrap()[space..space + format::NODE_SIZE].to_vec();
+    assert!(after == before, "recovery reused generation {pinned}'s SPACE root while it was pinned");
+    image.release();
+    let read = join(a, "reader A did not finish");
+    assert!(read.is_ok(), "reader A: {:?}", read.err());
+}
