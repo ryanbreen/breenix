@@ -1445,6 +1445,22 @@ E1-1 implementation decisions (DEV-39):
 - The early loader reports the descriptor count and lowest RAM base because relocation needs that
   base alone. No bounded early RAM array is used in production.
 
+E1-1 review evidence (PR #3259):
+
+- The follow-up checks in `62fb595e` were replayed against `079583f2` before the final-head run
+  because the original implementation commit `83345629` was already on the published branch.
+- The x86 test feeds the same 200 disjoint usable spans to the old allocator's extracted `init`
+  and to the current range builder because their entry points accept different types. The old
+  allocator retained 128. The same flattened device tree yielded 32 in-window spans and
+  `truncated=true` in the old `frame_pool_from_fdt`, against 40 expected spans.
+- The same 48-byte descriptors went through the old loader's `exit_and_encode` and the old kernel
+  decoder. They admitted the NVS-overlap page at `0x6000_8000` and the specific-purpose page at
+  `0x6020_0000`. The current check compares the exact surviving intervals.
+- The old TTBR0 builder was replayed with synthetic loader and table-storage IPAs and cache
+  maintenance omitted because host pointers are not guest physical addresses. It left the buffer
+  read-only at `0x4420_4000` and `0x8420_4000`, and unmapped at `0x1_2200_0000` and
+  `0x80_2000_0000`. The current check also walks neighboring mappings and TTBR1.
+
 ### E1-2: ARM64 direct map over the described RAM
 
 - Change:
