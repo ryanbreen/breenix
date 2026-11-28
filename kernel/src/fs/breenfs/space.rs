@@ -555,12 +555,14 @@ impl Quarantine {
         let Some(limit) = generation.checked_sub(2) else {
             return Ok(promotion);
         };
+        // The eligible generations' runs move to the promotion whole: a
+        // copy would be one buffer in proportion to the runs.
         let later = self.released.split_off(&limit.saturating_add(1));
-        for (_, released) in core::mem::replace(&mut self.released, later) {
-            for (start, length) in released.runs {
+        promotion.released = core::mem::replace(&mut self.released, later);
+        for released in promotion.released.values() {
+            for (&start, &length) in &released.runs {
                 preemption_point();
                 free.insert(start, length)?;
-                promotion.runs.push((start, length));
             }
         }
         if let Some(found) = self.found {
@@ -599,17 +601,17 @@ impl Quarantine {
 /// PENDING to FREE, and the bound up to which found records are promoted.
 #[derive(Default)]
 pub struct Promotion {
-    runs: Vec<(u64, u64)>,
+    released: BTreeMap<u64, Released>,
     found_limit: Option<u64>,
 }
 impl Promotion {
     pub fn is_empty(&self) -> bool {
-        self.runs.is_empty() && self.found_limit.is_none()
+        self.released.is_empty() && self.found_limit.is_none()
     }
     /// Apply to the transaction's space tree. Found records are visited in
     /// batches of PROMOTE_BATCH, so the heap holds a bounded number of them.
     pub fn apply<S: NodeStore>(self, store: &mut S, root: &mut BlockPtr) -> Result<(), Error> {
-        for (start, length) in self.runs {
+        for (start, length) in self.released.into_values().flat_map(|released| released.runs) {
             preemption_point();
             let old = btree::delete(store, root, pending_key(start))?.ok_or(Error::Invalid)?;
             if pending_record(pending_key(start), &old)?.1 != length {
