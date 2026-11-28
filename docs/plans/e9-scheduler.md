@@ -891,6 +891,25 @@ of their steps, keeping each CPU's program order. The steps are sequentially con
   - a field overflow is caught in testing builds;
   - on ARM64, a model of the update with a migration point between the address read and the store:
     the masked bracket keeps the word on one CPU.
+  - **NMI against the idle check.** A host model of the idle entry sequence places an NMI after each
+    step. No placement may halt the CPU with deferred work pending. On x86 an NMI is taken with
+    interrupts masked (SDM Vol. 3A, "Nonmaskable Interrupt (NMI)"). An NMI after the final masked
+    check therefore returns straight to the halt. Red on §5.3 as first written: there a raise is
+    allowed "any context", an NMI never runs the work, and nothing notifies the CPU afterwards.
+
+    ```pycon
+    >>> IDLE = ['mask', 'check_pending', 'halt']
+    >>> NMI_MAY_RAISE = True
+    >>> def halts_with_work(nmi_after):
+    ...     pending = False
+    ...     for i, step in enumerate(IDLE):
+    ...         if step == 'check_pending' and pending: return False
+    ...         if step == 'halt': return pending
+    ...         if i == nmi_after and NMI_MAY_RAISE: pending = True
+    >>> [halts_with_work(i) for i in range(len(IDLE))]
+    [False, False, False]
+
+    ```
 
   The guest-side cases in `kernel/src/task/softirq_tests.rs` are kept and reworded to the new names (B3).
   Red results:
