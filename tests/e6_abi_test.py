@@ -32,8 +32,8 @@ def function(disassembly, name):
 
 def execute(binary, arch):
     from unicorn import Uc, UC_ARCH_ARM64, UC_ARCH_X86, UC_MODE_ARM, UC_MODE_64
-    from unicorn.arm64_const import UC_ARM64_REG_LR, UC_ARM64_REG_SP, UC_ARM64_REG_W0
-    from unicorn.x86_const import UC_X86_REG_EAX, UC_X86_REG_RSP
+    from unicorn.arm64_const import UC_ARM64_REG_LR, UC_ARM64_REG_PC, UC_ARM64_REG_SP, UC_ARM64_REG_W0
+    from unicorn.x86_const import UC_X86_REG_EAX, UC_X86_REG_RIP, UC_X86_REG_RSP
 
     is_arm = arch == 'aarch64'
     cpu = Uc(UC_ARCH_ARM64, UC_MODE_ARM) if is_arm else Uc(UC_ARCH_X86, UC_MODE_64)
@@ -50,7 +50,9 @@ def execute(binary, arch):
         cpu.reg_write(UC_X86_REG_RSP, stack_end - 8)
         cpu.mem_write(stack_end - 8, end.to_bytes(8, 'little'))
     cpu.emu_start(start, end, count=10000)
-    assert cpu.reg_read(UC_ARM64_REG_W0 if is_arm else UC_X86_REG_EAX) == 0
+    assert cpu.reg_read(UC_ARM64_REG_PC if is_arm else UC_X86_REG_RIP) == end, 'probe did not return'
+    result = cpu.reg_read(UC_ARM64_REG_W0 if is_arm else UC_X86_REG_EAX)
+    assert result == 0, f'mixed-language probe returned {result}'
 
 
 def check_objects(root, spec, arch):
@@ -99,7 +101,7 @@ def check_manifest(root, arch):
         mixed = subprocess.run([sys.executable, guard, 'verify-inputs', root, target, legacy_archive],
                                capture_output=True, text=True)
         assert mixed.returncode and 'outside the E6 generation' in mixed.stderr, mixed
-    incomplete = subprocess.run([sys.executable, guard, 'verify-release', root, 'sdk'],
+    incomplete = subprocess.run([sys.executable, guard, 'verify-release', root, 'install/sdk.tar'],
                                 capture_output=True, text=True)
     assert incomplete.returncode and 'incomplete E6 generation' in incomplete.stderr, incomplete
 
@@ -109,6 +111,8 @@ def main():
     parser.add_argument('root', type=Path, nargs='?')
     parser.add_argument('--legacy', action='store_true', help='fail-first target-spec control')
     args = parser.parse_args()
+    if not args.legacy and args.root is None:
+        parser.error('the staged sysroot root is required')
     failures = 0
     for arch in ('x86_64', 'aarch64'):
         for suffix in ('', '-hosted'):

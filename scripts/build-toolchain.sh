@@ -31,6 +31,11 @@ esac
     echo "build-toolchain: --output must name a new directory" >&2
     exit 2
 }
+legacy_inputs=("$output" "$binaries")
+if [ -n "$archive" ]; then
+    legacy_inputs+=("$archive")
+fi
+python3 "$root/scripts/userspace_generation.py" legacy "${legacy_inputs[@]}"
 clang=${BREENIX_TOOLCHAIN_CLANG:?set the pinned absolute Clang path}
 lld=${BREENIX_TOOLCHAIN_LLD:?set the pinned absolute lld path}
 clang_pin=${BREENIX_TOOLCHAIN_CLANG_SHA256:?set the Clang executable SHA-256}

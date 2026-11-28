@@ -27,7 +27,11 @@ pub extern "C" fn rust_fp(a: f32, b: f64, mixed: Mixed) -> f64 {
 
 #[no_mangle]
 pub extern "C" fn rust_hfa(h: Hfa) -> Hfa {
-    Hfa { x: h.z, y: h.x, z: h.y }
+    Hfa {
+        x: h.z,
+        y: h.x,
+        z: h.y,
+    }
 }
 
 #[no_mangle]
@@ -42,15 +46,28 @@ pub unsafe extern "C" fn rust_var(tag: i32, mut args: ...) -> f64 {
 
 #[no_mangle]
 pub extern "C" fn rust_caller() -> f64 {
-    let h = unsafe { c_hfa(Hfa { x: 1.25, y: 2.5, z: 3.75 }) };
+    let h = unsafe {
+        c_hfa(Hfa {
+            x: 1.25,
+            y: 2.5,
+            z: 3.75,
+        })
+    };
     if (h.x, h.y, h.z) != (3.75, 1.25, 2.5) {
         return -1.0;
     }
     unsafe {
-        c_fp(1.5, 2.5, Mixed { fp: 4.25, integer: 8 })
-            + c_var(7, 1.0f64, 11i32, 2.0f64, 12i32, 3.0f64, 13i32, 4.0f64, 14i32,
-                    5.0f64, 15i32, 6.0f64, 16i32, 7.0f64, 17i32, 8.0f64, 18i32,
-                    9.0f64, 19i32, 10.0f64, 20i32)
+        c_fp(
+            1.5,
+            2.5,
+            Mixed {
+                fp: 4.25,
+                integer: 8,
+            },
+        ) + c_var(
+            7, 1.0f64, 11i32, 2.0f64, 12i32, 3.0f64, 13i32, 4.0f64, 14i32, 5.0f64, 15i32, 6.0f64,
+            16i32, 7.0f64, 17i32, 8.0f64, 18i32, 9.0f64, 19i32, 10.0f64, 20i32,
+        )
     }
 }
 

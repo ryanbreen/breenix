@@ -16,6 +16,7 @@ import tempfile
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from rust_host_stage import (ROOT, hosted_runtime_entries, rustc_fixture_entries,
                              sha256, tool_target_link_inputs, verify_hosted_elf)
+from userspace_generation import require_legacy
 
 ARCH = 'x86_64'
 TOOLCHAIN_ID = re.compile(r'x86_64-[0-9a-f]{8}-[0-9a-f]{8}')
@@ -69,6 +70,7 @@ def verify_retained_runtime(directory, files):
 
 
 def stage(out, records, *, artifacts, sysroot, targets, fixture, cargo, bld, kd):
+    require_legacy(out, records, artifacts, sysroot, targets, fixture, cargo, bld, kd)
     k5, k6, k7 = (read_json(records / name / f'{ARCH}.json')
                   for name in ('k5', 'k6', 'k7'))
     if (k7['fork_commit'] != k5['fork_commit']
@@ -89,6 +91,8 @@ def stage(out, records, *, artifacts, sysroot, targets, fixture, cargo, bld, kd)
         'libc.so': read_json(records / f'hosted-libc-{ARCH}.json')['sha256'],
     }
     runtime_entries, runtime_digests = hosted_runtime_entries(kd, runtime_pins, {})
+    require_legacy(*(source for _, source, _, _ in entries))
+    require_legacy(*(source for _, source, _ in runtime_entries))
 
     # Both trees stay private until every copied file matches its repository pin.
     out.mkdir(parents=True, exist_ok=True)
@@ -128,6 +132,7 @@ def current_line(out, toolchain_id, installed_digests):
     if not TOOLCHAIN_ID.fullmatch(toolchain_id):
         raise ValueError('invalid toolchain id')
     path = out / toolchain_id / 'MANIFEST.json'
+    require_legacy(path, runtime_path(out, toolchain_id))
     manifest = read_json(path)
     if manifest.pop('id') != toolchain_id or manifest_id(manifest) != toolchain_id:
         raise ValueError(f'manifest does not match {toolchain_id}')
