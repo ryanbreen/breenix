@@ -1,5 +1,5 @@
 //! A mutex under a fixed schedule. Another simulated CPU can hold it for a set
-//! number of polls; each poll or blocking acquire of a held lock is one wait.
+//! number of polls; each poll of a held lock by a blocking acquire is one wait.
 use std::cell::{Cell, RefCell, RefMut};
 
 /// Waits after which the holder is taken to be unable to release the lock
@@ -43,13 +43,6 @@ impl<T> SimLock<T> {
     pub fn try_lock(&self) -> Option<RefMut<'_, T>> {
         self.try_locks.set(self.try_locks.get() + 1);
         (!self.held.get()).then(|| self.value.borrow_mut())
-    }
-
-    pub fn is_locked(&self) -> bool {
-        if self.held.get() {
-            self.wait();
-        }
-        self.held.get()
     }
 
     pub fn lock(&self) -> RefMut<'_, T> {
