@@ -10,11 +10,13 @@ pub mod fork_copy;
 pub mod frame_allocator;
 pub mod frame_metadata;
 pub mod heap;
+#[cfg(target_arch = "x86_64")]
 pub mod kernel_page_table;
 pub mod kernel_walk;
 pub mod kernel_stack;
 pub mod layout;
 pub mod paging;
+#[cfg(target_arch = "x86_64")]
 pub mod per_cpu_stack;
 pub mod process_memory;
 pub mod slab;
@@ -85,10 +87,6 @@ pub fn init(physical_memory_offset: VirtAddr, memory_regions: &'static MemoryReg
     log::info!("Initializing frame allocator...");
     frame_allocator::init(memory_regions);
 
-    // Initialize paging
-    log::info!("Initializing paging...");
-    let _mapper = unsafe { paging::init(physical_memory_offset) };
-
     // Save the kernel page table for later switching
     process_memory::init_kernel_page_table();
 
@@ -119,17 +117,13 @@ pub fn init(physical_memory_offset: VirtAddr, memory_regions: &'static MemoryReg
         log::info!("ARM64: Page table setup handled by boot.S TTBR configuration");
     }
 
-    // Migrate any existing processes (though there shouldn't be any yet)
-    kernel_page_table::migrate_existing_processes();
-
     // PHASE 2: Enable global pages support (CR4.PGE)
     // This must be done after kernel page tables are set up but before userspace
     unsafe {
         paging::enable_global_pages();
     }
 
-    // CRITICAL: Recreate mapper after CR3 switch to master PML4
-    // The old mapper pointed to bootloader's PML4, which is now stale
+    // Initialize the mapper on the permanent master root.
     #[cfg(target_arch = "x86_64")]
     let mapper = unsafe { paging::init(physical_memory_offset) };
     #[cfg(not(target_arch = "x86_64"))]
