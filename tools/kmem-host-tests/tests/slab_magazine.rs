@@ -716,3 +716,44 @@ fn the_slab_shrinker_does_bounded_work_and_counts_the_pages_it_returns() {
     assert!(retired <= bound, "a target of 1 page retired {retired} rounds, past the bound of {bound}");
     assert!(reported >= 1);
 }
+
+thread_local! {
+    /// The page-sized buffers the stand-in block cache holds.
+    static BLOCKS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+}
+
+fn blocks_count() -> usize {
+    BLOCKS.with(|blocks| blocks.borrow().len())
+}
+
+/// The block cache's shrinker (7.3, third): it frees clean buffers through
+/// the allocator, on the reclaiming CPU, and counts each as a frame.
+fn blocks_scan(target: usize, _ctx: ReclaimCtx) -> usize {
+    let freed: Vec<usize> = BLOCKS.with(|blocks| {
+        let mut blocks = blocks.borrow_mut();
+        let keep = blocks.len().saturating_sub(target);
+        blocks.split_off(keep)
+    });
+    for &block in &freed {
+        world().free(NonNull::new(block as *mut u8).unwrap(), bytes(4096));
+    }
+    freed.len()
+}
+
+/// The page layer is full. A 64-byte request needs a page, and the block
+/// cache's shrinker frees page-sized buffers. They go to this CPU's
+/// magazines, not the page layer, so the slow path must return them to the
+/// page layer before its retry.
+#[test]
+fn buffers_a_shrinker_frees_reach_the_page_layer_before_the_retry() {
+    let world = World::registered(1);
+    world.shrinkers.register(Box::leak(Box::new(Shrinker::new("blocks", 30, blocks_count, blocks_scan))));
+    world.on(0);
+    // 1 object and a 15-round fill: the 16 leave CPU 0's magazine empty.
+    let blocks: Vec<usize> = (0..16).map(|_| world.alloc(bytes(4096)).as_ptr() as usize).collect();
+    BLOCKS.with(|held| *held.borrow_mut() = blocks);
+    world.kmem.backing().limit.set(world.pages_in_use());
+    let layout = bytes(64);
+    let object = world.try_alloc(layout).expect("the freed buffers' pages meet the request");
+    world.free(object, layout);
+}
