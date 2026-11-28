@@ -79,7 +79,7 @@ Before either guest boots, `run` takes the same lock, reads the stamp, checks th
 it names the measured HEAD, clones each artifact and checks the clones against
 the stamp. The verified image copy becomes `runs/<run>/breenix-disk.raw`, so no
 second image copy is needed in `inputs/`. The run releases the lock after the
-snapshot. The first boot and every restart use those private inputs, and the
+snapshot. Both the initial boot and any restart use those private inputs, and the
 sidecar records the verified stamp (`test_rig.BuildIdentity`).
 Linux builds bbench from the same commit (`git archive` of the stamped commit).
 
