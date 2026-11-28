@@ -6,7 +6,8 @@ use metal_efi::breenfs_files::{Reader, BLOCK, NODE};
 use metal_efi::files::{self, Root};
 use metal_efi::live_sequence::{self, Media, Outcome};
 use metal_efi::say;
-use metal_efi::slot_store::SlotStore;
+use metal_efi::slot_store::{Esp, ImagePages};
+use metal_efi::slot_transaction::Records;
 use metal_efi::uefi::*;
 
 use crate::slots;
@@ -47,21 +48,26 @@ unsafe fn system_disk(boot: &BootServices, root: &Root) -> Result<*mut BlockIo, 
     files::block_io(boot, found.ok_or(NOT_FOUND)?)
 }
 
-/// Keep reparable stage errors on the normal kernel path. A slot transaction
-/// whose journal has already been published must be recovered before booting.
-pub unsafe fn reconcile(boot: &BootServices, image: Handle, root: &Root) -> Result<(), Status> {
-    if let Err(status) = process(boot, image, root, false) {
+pub unsafe fn reconcile(boot: &BootServices, image: Handle, root: &Root, records: &mut Records) {
+    if let Err(status) = process(boot, image, root, records, false) {
         say!("live flash refused ({:#x})", status);
-        slots::recover(root)?;
     }
-    Ok(())
 }
 
-pub unsafe fn start(boot: &BootServices, runtime: &RuntimeServices, image: Handle, root: &Root) {
-    match process(boot, image, root, true) {
-        Ok(Some((base, size))) => {
+pub unsafe fn start(
+    boot: &BootServices,
+    runtime: &RuntimeServices,
+    image: Handle,
+    root: &Root,
+    records: &mut Records,
+) {
+    match process(boot, image, root, records, true) {
+        Ok(Some(mut trial)) => {
             (boot.set_watchdog_timer)(300, 0, 0, null());
-            let status = slots::boot_image(boot, image, base, size);
+            let status = trial.mount(boot).map_or_else(
+                |status| status,
+                |volume| metal_efi::bootdisk::start_bootloader(boot, image, volume, "kernel slot"),
+            );
             say!("live flash: candidate returned ({:#x}); restarting", status);
             (runtime.reset_system)(RESET_COLD, SUCCESS, 0, null());
         }
@@ -70,12 +76,13 @@ pub unsafe fn start(boot: &BootServices, runtime: &RuntimeServices, image: Handl
     }
 }
 
-unsafe fn process(
-    boot: &BootServices,
+unsafe fn process<'boot>(
+    boot: &'boot BootServices,
     image: Handle,
     root: &Root,
+    records: &mut Records,
     try_new: bool,
-) -> Result<Option<(*mut u8, usize)>, Status> {
+) -> Result<Option<TrialImage<'boot>>, Status> {
     let io = match system_disk(boot, root) {
         Ok(io) => io,
         Err(NOT_FOUND) => return Ok(None),
@@ -105,16 +112,14 @@ unsafe fn process(
         .map_err(|_| ())
     })
     .map_err(|_| VOLUME_CORRUPTED)?;
-    let mut media = FirmwareMedia {
-        boot,
-        image,
-        root,
-        fs,
-    };
-    match live_sequence::process(&SlotStore(root), &mut media, try_new)? {
+    let mut media = FirmwareMedia { boot, fs };
+    let esp = Esp::new(root, boot, files::own_device(boot, image)?);
+    let outcome = live_sequence::process(&esp, records, &mut media, try_new)?;
+    slots::collect(&esp, records);
+    match outcome {
         Outcome::Trial(m, pages) => {
             say!("live flash: trial {} {}", ascii(&m.token), ascii(&m.commit));
-            Ok(Some(pages.into_raw()))
+            Ok(Some(pages))
         }
         Outcome::Promoted(m) => {
             say!(
@@ -136,46 +141,37 @@ unsafe fn process(
     }
 }
 
-struct ImagePages<'a> {
-    boot: &'a BootServices,
-    base: *mut u8,
-    size: usize,
+struct TrialImage<'boot> {
+    pages: ImagePages<'boot>,
+    volume: Option<*const u8>,
 }
 
-impl ImagePages<'_> {
-    fn into_raw(self) -> (*mut u8, usize) {
-        let raw = (self.base, self.size);
-        // The boot disk keeps these pages through the bootloader handoff.
-        core::mem::forget(self);
-        raw
+impl TrialImage<'_> {
+    unsafe fn mount(&mut self, boot: &BootServices) -> Result<*const u8, Status> {
+        if let Some(volume) = self.volume {
+            return Ok(volume);
+        }
+        let volume = slots::mount(boot, &mut self.pages)?;
+        self.volume = Some(volume);
+        Ok(volume)
     }
 }
 
-impl AsRef<[u8]> for ImagePages<'_> {
+impl AsRef<[u8]> for TrialImage<'_> {
     fn as_ref(&self) -> &[u8] {
-        // SAFETY: these pages belong to this guard and the image was read in full.
-        unsafe { core::slice::from_raw_parts(self.base, self.size) }
-    }
-}
-
-impl Drop for ImagePages<'_> {
-    fn drop(&mut self) {
-        // SAFETY: this guard owns the firmware allocation.
-        unsafe { (self.boot.free_pages)(self.base as u64, self.size.div_ceil(BLOCK)) };
+        self.pages.as_ref()
     }
 }
 
 struct FirmwareMedia<'boot, 'fs, Read> {
     boot: &'boot BootServices,
-    image: Handle,
-    root: &'boot Root,
     fs: Reader<'fs, Read>,
 }
 
 impl<'boot, Read: FnMut(u64, &mut [u8]) -> Result<(), ()>> Media
     for FirmwareMedia<'boot, '_, Read>
 {
-    type Image = ImagePages<'boot>;
+    type Image = TrialImage<'boot>;
 
     fn read_record(&mut self, name: &[u8], bytes: &mut [u8]) -> Result<Option<usize>, Status> {
         let Ok(file) = self.fs.file(name) else {
@@ -198,53 +194,32 @@ impl<'boot, Read: FnMut(u64, &mut [u8]) -> Result<(), ()>> Media
         if file.size != size {
             return Err(VOLUME_CORRUPTED);
         }
-        let pages = size.div_ceil(BLOCK);
-        let mut address = 0;
-        // SAFETY: the firmware allocation is owned by the guard from here on;
-        // only the reader mutates its backing pages before the image is used.
+        let mut pages = ImagePages::allocate(self.boot, size)?;
+        self.fs
+            .read_file(file, pages.page_bytes())
+            .map_err(|_| VOLUME_CORRUPTED)?;
+        Ok(TrialImage {
+            pages,
+            volume: None,
+        })
+    }
+
+    fn root_flags(&mut self, name: &[u8]) -> Result<Option<u32>, Status> {
+        self.fs.root_flags(name).map_err(|_| VOLUME_CORRUPTED)
+    }
+
+    fn trial_intent(&mut self, image: &mut Self::Image, bytes: &mut [u8]) -> Result<usize, Status> {
+        // SAFETY: the image pages and the returned firmware path stay live.
         unsafe {
-            ok((self.boot.allocate_pages)(
-                ALLOCATE_ANY_PAGES,
-                LOADER_DATA,
-                pages,
-                &mut address,
+            let mut path = image.mount(self.boot)?;
+            let mut handle = null_mut();
+            ok((self.boot.locate_device_path)(
+                &SIMPLE_FILE_SYSTEM,
+                &mut path,
+                &mut handle,
             ))?;
-            let image = ImagePages {
-                boot: self.boot,
-                base: address as *mut u8,
-                size,
-            };
-            let bytes = core::slice::from_raw_parts_mut(image.base, pages * BLOCK);
-            self.fs
-                .read_file(file, bytes)
-                .map_err(|_| VOLUME_CORRUPTED)?;
-            Ok(image)
+            files::root_of(self.boot, handle)?.read_bounded(r"\ramdisk", bytes)
         }
-    }
-
-    fn retained_image(&self, next: bool, size: usize) -> Result<Self::Image, Status> {
-        let path = if next {
-            r"\EFI\BREENIX\NEXT.IMG"
-        } else {
-            r"\EFI\BREENIX\TRY.IMG"
-        };
-        // SAFETY: the adapter borrows an open ESP root and boot services.
-        unsafe {
-            if self.root.size(path)? != size as u64 {
-                return Err(VOLUME_CORRUPTED);
-            }
-            let (base, size) = self.root.read_pages(self.boot, path)?;
-            Ok(ImagePages {
-                boot: self.boot,
-                base,
-                size,
-            })
-        }
-    }
-
-    fn flush(&self) -> Result<(), Status> {
-        // SAFETY: the adapter holds this application's image and boot services.
-        unsafe { files::flush_volume(self.boot, files::own_device(self.boot, self.image)?) }
     }
 }
 

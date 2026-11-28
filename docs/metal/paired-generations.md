@@ -466,7 +466,7 @@ A missing root then costs one failed trial, ended by the 600 s deadline, instead
 The host publishes `kernel.img` with `bput`, then the manifest, which arms the attempt. Then it reboots once
 (#3247's sequence, metal_live_flash.py:236-243). The reboot command carries the pending-key check as its guard,
 beside the boot-ID guard (`test` that `/var/lib/accounts/pending/` is empty `&& sudo -n /sbin/reboot`), so a key
-staged after publish stops the reboot, and the host runs `paired abort`. The manager writes TRY.IMG, publishes LIVE.ID and boots the trial.
+staged after publish stops the reboot, and the host runs `paired abort`. The manager writes the immutable trial image, publishes the slot record (5.1), and boots the trial.
 The trial kernel mounts `gen-<id>` read-write with the default tree, the shared binds and `/home`, exactly as a
 persistent boot does today.
 
@@ -567,11 +567,11 @@ rename by deleting a name.
   old record valid, or the new one valid, or the new one torn and ignored. The attempt record (`LIVE.ID` today)
   is the record's attempt field, so it changes in the same write.
 - **Old images are deleted last.** After a record write is durable, the manager deletes each `K*.IMG` that neither
-  valid record names. A cut there leaves a stray image, which the next startup deletes.
+  valid record names. A cut during deletion leaves a stray image, which the next startup deletes. A file left
+  by an interrupted creation with a sequence above the newest record is kept until a record passes that sequence.
 - **Startup returns to firmware only after the named images fail.** The manager reads both records and uses the
-  newest valid one. It boots that record's CURRENT, and if CURRENT is missing, has the wrong size or its bootloader
-  returns, it checks the image's SHA-256 against PREVIOUS's entry and boots PREVIOUS, then the older record's two
-  images. It returns to firmware only when no named image verifies.
+  newest valid one. It checks that record's CURRENT against its recorded size and SHA-256. If verification fails
+  or the loader returns, it checks and tries PREVIOUS, then the older record's two images.
 - **Import from today's layout.** A manager that finds no valid record runs today's `slot_transaction::recover`.
   If that succeeds, it writes record A naming the existing `CURRENT.IMG` and `PREVIOUS.IMG` in place (the record
   holds names, so no file is renamed). If it fails, the manager does not return to firmware. It boots, with no ESP
@@ -825,6 +825,21 @@ Review of PR #3273 (the same rule):
 - **Attach reads the draft's root directory**, past `observed`, and refuses a damaged one with its error. A
   metadata `EIO` through `observed` latches the mount failed, and that mount is the booted writer.
 
+### 10.2 PR C detail deviations (DEV-39(2))
+
+- The manager checks the legacy journal replay before executing it so a detected torn rename takes the read-only
+  fallback before it can delete an ambiguous directory entry.
+- The replacement installer allocates A and B and the manager also provisions missing record files on first start
+  because an ESP may predate the allocation or have lost power during it.
+- The installer maps its existing NEXT payload pair to a staged record on a fresh install or a record-backed ESP,
+  because the host request and receipt still use the logical slot names CURRENT, PREVIOUS and NEXT.
+- A still-staged legacy NEXT remains eligible for manual commit after import because an older recovery installer
+  can supply that pair while the new manager owns the slots.
+- The manager retains a higher-sequence orphan until a later record has passed its sequence because deleting it
+  sooner would permit sequence reuse and writing a watermark record would overwrite the older fallback.
+- T-C3 extracts the v1 host formatter and gives it an optional root line so the host fixture uses the same
+  encoder while PR B retains custody of version selection and publication.
+
 ## 11. For the coordinator
 
 - PR B's step 0 needs the box's kernel to contain PR A. Either the batched flash carries it, or PR B's brief names
@@ -832,9 +847,5 @@ Review of PR #3273 (the same rule):
 - #3226 is open. The upload is bounded (4.2), and the host stops before uploading more than 1 GiB.
 - The manager's version-2 check reaches the box at the next manager replacement, which the coordinator schedules.
   Until then, a missing root costs one failed trial, ended by `force_rollback` (section 5) at the 600 s deadline.
-- **Decision needed: PR C changes the ESP's slot layout** (an on-disk format of the boot manager). It replaces
-  today's renamed `CURRENT/PREVIOUS/NEXT/TRY` files and `LIVE.ID` with write-once images and two in-place
-  records, and imports today's layout on first start. Today's manager, which the live kernel flash already uses,
-  returns to firmware after a torn rename. PR C reaches the box only through a manager replacement by the netbooted
-  installer, as DEV-33(3) authorized once before. The recommendation is to schedule that replacement before PR B's
-  live run, so the live run exercises PR C's records and the version-2 manifest.
+- **DEV-47 approves the ESP slot layout change.** The coordinator schedules the manager replacement after
+  PR B, PR C and the DEV-45 fix merge. The ordering in DEV-47(4) governs the live run.

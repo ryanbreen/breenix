@@ -2,6 +2,7 @@
 //! manifest and can acknowledge only the attempt identified by the manager.
 use crate::sha256::sha256;
 
+pub const MANIFEST_MAX: usize = 512;
 pub const MAX_IMAGE: usize = 512 << 20;
 pub type Token = [u8; 32];
 
@@ -12,6 +13,7 @@ pub struct Manifest {
     pub size: usize,
     pub digest: [u8; 32],
     base: [u8; 32],
+    root: Option<[u8; 26]>,
 }
 
 fn hex(byte: u8) -> Option<u8> {
@@ -38,8 +40,13 @@ pub fn token(text: &[u8]) -> Option<Token> {
 
 impl Manifest {
     pub fn parse(text: &[u8]) -> Option<Self> {
+        if text.len() > MANIFEST_MAX { return None; }
         let mut lines = text.strip_suffix(b"\n")?.split(|&b| b == b'\n');
-        if lines.next()? != b"BREENIX-FLASH 1" { return None; }
+        let paired = match lines.next()? {
+            b"BREENIX-FLASH 1" => false,
+            b"BREENIX-FLASH 2" => true,
+            _ => return None,
+        };
         let token = token(lines.next()?)?;
         let commit: [u8; 40] = lines.next()?.try_into().ok()?;
         decode_hex::<20>(&commit)?;
@@ -51,8 +58,23 @@ impl Manifest {
         if size > MAX_IMAGE { return None; }
         let digest = decode_hex(lines.next()?)?;
         let base = decode_hex(lines.next()?)?;
+        let root = if paired {
+            let name: [u8; 26] = lines.next()?.try_into().ok()?;
+            if &name[..4] != b"gen-" || name[12] != b'T' || &name[19..] != b"Z-metal"
+                || !name[4..12].iter().chain(&name[13..19]).all(u8::is_ascii_digit)
+            {
+                return None;
+            }
+            Some(name)
+        } else {
+            None
+        };
         if lines.next().is_some() { return None; }
-        Some(Self { token, commit, size, digest, base })
+        Some(Self { token, commit, size, digest, base, root })
+    }
+
+    pub fn root(&self) -> Option<&[u8]> {
+        self.root.as_ref().map(|name| name.as_slice())
     }
 
     pub fn matches_base(&self, note: &[u8]) -> bool {
