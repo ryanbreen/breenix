@@ -624,6 +624,15 @@ pub fn memory_stats() -> MemoryStats {
     }
 }
 
+/// The frontier's frame count and, if the free list's lock is free now, the
+/// list's length: `memory_stats` for the OOM record, which may run while this
+/// CPU or another holds that lock.
+pub fn frame_counts_without_waiting() -> (usize, Option<usize>) {
+    let frontier = NEXT_FREE_FRAME.load(Ordering::Relaxed);
+    let free = crate::arch_without_interrupts(|| FREE_FRAMES.try_lock().map(|list| list.len()));
+    (frontier, free)
+}
+
 /// What holds an allocated frame, for the census's `owner` rows: the owners a
 /// suite's memory record breaks its frames down by (docs/suites/README.md,
 /// "Memory record").
