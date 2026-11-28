@@ -251,6 +251,17 @@ pub fn bind_populated(node: Arc<VNode>, io: &dyn MappingIo, length: u64) -> Host
     let id = publish_host(&node, io, length, false, false).unwrap();
     HostBinding(Arc::new(HostBindingOwner { node, id }))
 }
+/// A read-only private binding of the first `length` bytes, registered in the
+/// map directly, for a filesystem whose host build has no mapping transfer
+/// (ext2). It covers no cached page; use it for pages past EOF.
+pub fn bind_unpopulated(node: Arc<VNode>, length: u64) -> HostBinding {
+    let mut inner = node.map.state.inner.lock();
+    let id = inner.bindings.iter().map(|r| r.id).max().unwrap_or(0) + 1;
+    inner.bindings.push(BindingRec { id, pgoff: 0, pages: pages(length), shared: false,
+        writable: false, parked: Vec::new(), leaves: Vec::new() });
+    drop(inner);
+    HostBinding(Arc::new(HostBindingOwner { node, id }))
+}
 fn publish_host(node: &VNode, io: &dyn MappingIo, length: u64, shared: bool, writable: bool) -> Result<u64, Errno> {
     let mut id = 0;
     io.publish(&mut |_| {

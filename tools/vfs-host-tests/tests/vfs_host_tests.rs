@@ -1302,3 +1302,30 @@ fn ext2_mapping_reads_a_population_run_on_a_volume_smaller_than_the_run() {
     assert_eq!(mapping.read_into(tail, &mut run), Ok(4096 + 10), "a run that crosses EOF");
     assert!(run.iter().all(|&byte| byte == 0), "holes and the bytes past EOF read as 00");
 }
+
+// E3-2 review: an ext2 fallocate that grows a file publishes the new size in
+// its last batch. The Hole room for a binding's pages past the old EOF is
+// reserved before a batch changes the disk, so a reservation that fails is
+// fallocate's ENOMEM with the size unchanged, not a success whose new pages
+// fault with SIGBUS.
+#[test]
+fn ext2_preallocate_reserves_the_hole_room_before_the_size_changes() {
+    use crate::memory::file_map::bind_unpopulated;
+    const PAGES: u64 = 150;
+    let disk = Fixture::new();
+    let fs = Ext2Adapter::new(disk.pin());
+    let ino = regular(&fs, fs.root().unwrap(), b"prealloc");
+    let node = fs.open(ino).unwrap();
+    let map = bind_unpopulated(node.clone(), PAGES * 4096);
+    // The growth's Holes are every bound page: one allocation of their room.
+    let room = PAGES as usize * core::mem::size_of::<(u64, ())>();
+    let result = crate::breenfs::vfs::measurement::fail_allocation(room, 1, || {
+        fs.preallocate(&node, 0, PAGES * 4096, false)
+    });
+    assert_eq!(result, Err(Errno(ENOMEM)), "fallocate succeeded without the Hole room");
+    assert_eq!(fs.getattr(ino).unwrap().size, 0);
+    fs.preallocate(&node, 0, PAGES * 4096, false).unwrap();
+    assert_eq!(fs.getattr(ino).unwrap().size, PAGES * 4096);
+    assert!((0..PAGES).all(|page| map.load(page * 4096 + 3) == Ok(0)),
+        "a page the fallocate made valid was absent");
+}
