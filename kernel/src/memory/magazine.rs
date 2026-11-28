@@ -653,4 +653,13 @@ impl<B: Backing> Kmem<B> {
         let magazines: u64 = self.magazines.iter().map(|cache| cache.lock_counts().0).sum();
         classes + depots + magazines + self.descriptors.lock_counts().0
     }
+
+    /// Acquisitions of those shared locks through `lock`, which waits for a
+    /// held lock; a context that may not wait (6.6) makes 0.
+    pub fn shared_waiting(&self) -> u64 {
+        let classes: u64 = self.classes.iter().map(SlabCache::waiting_acquisitions).sum();
+        let depots: u64 = self.depots.iter().map(|depot| depot.state.waiting_acquisitions()).sum();
+        let magazines: u64 = self.magazines.iter().map(SlabCache::waiting_acquisitions).sum();
+        classes + depots + magazines + self.descriptors.waiting_acquisitions()
+    }
 }

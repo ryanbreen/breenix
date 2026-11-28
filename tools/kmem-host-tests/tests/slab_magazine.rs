@@ -25,7 +25,7 @@ mod slab_cache;
 
 use heap_index::Heap;
 use kmem_core::{cpu_of_base, AllocError, Cpu, Ctx, Front, Miss, Pool, Reclaim, ReclaimCtx, Registry, Shrinker, Small, Stats};
-use magazine::{CpuCaches, Kmem};
+use magazine::{CpuCaches, Kmem, UPDATE_MS};
 use slab_cache::{class_of, Backing, Short, Slab, CLASSES, CLASS_COUNT, PAGE};
 
 const ARENA_BYTES: usize = 1 << 20;
@@ -73,6 +73,10 @@ struct SimPages {
     in_use: RefCell<HashSet<usize>>,
     slabs: RefCell<HashMap<usize, usize>>,
     now: Cell<u64>,
+    /// Another CPU holds the frame allocator's free-list lock.
+    frame_lock_held: Cell<bool>,
+    /// Page requests that waited for that held lock.
+    frame_waits: Cell<u64>,
 }
 
 fn page_layout() -> Layout {
@@ -81,6 +85,11 @@ fn page_layout() -> Layout {
 
 impl Backing for SimPages {
     fn take_page(&self) -> Option<NonNull<u8>> {
+        if self.frame_lock_held.get() {
+            // The kernel's page request waits for the free-list lock; the
+            // holder is modelled as releasing it.
+            self.frame_waits.set(self.frame_waits.get() + 1);
+        }
         if self.in_use.borrow().len() >= self.limit.get() {
             return None;
         }
@@ -171,11 +180,12 @@ impl Small for SimSmall<'_> {
 
 struct SimCpu {
     id: usize,
+    interrupt: bool,
 }
 
 impl Cpu for SimCpu {
     fn in_interrupt(&self) -> bool {
-        false
+        self.interrupt
     }
 
     fn id(&self) -> usize {
@@ -227,6 +237,8 @@ impl World {
                 in_use: RefCell::new(HashSet::new()),
                 slabs: RefCell::new(HashMap::new()),
                 now: Cell::new(0),
+                frame_lock_held: Cell::new(false),
+                frame_waits: Cell::new(0),
             }),
             shrinkers: Registry::new(),
             reclaim: Reclaim::new(),
@@ -259,6 +271,16 @@ impl World {
     }
 
     fn try_alloc(&self, layout: Layout) -> Result<NonNull<u8>, AllocError> {
+        self.try_alloc_on(layout, false)
+    }
+
+    /// A `Normal` request from an interrupt handler, which the front lowers
+    /// to `Atomic`.
+    fn try_alloc_in_interrupt(&self, layout: Layout) -> Result<NonNull<u8>, AllocError> {
+        self.try_alloc_on(layout, true)
+    }
+
+    fn try_alloc_on(&self, layout: Layout, interrupt: bool) -> Result<NonNull<u8>, AllocError> {
         let small = SimSmall { kmem: &self.kmem, cpu: self.cpu.get(), remote_drains: self.remote_drains.get() };
         let front = Front {
             main: &self.main,
@@ -268,7 +290,7 @@ impl World {
             reclaim: &self.reclaim,
             stats: &self.stats,
         };
-        front.allocate(layout, Ctx::Normal, &SimCpu { id: self.cpu.get().unwrap_or(0) })
+        front.allocate(layout, Ctx::Normal, &SimCpu { id: self.cpu.get().unwrap_or(0), interrupt })
     }
 
     fn alloc(&self, layout: Layout) -> NonNull<u8> {
@@ -617,4 +639,52 @@ fn a_cold_refill_with_two_pages_left_meets_the_request_before_building_a_magazin
     let layout = bytes(64);
     let object = world.try_alloc(layout).expect("2 pages meet a cold 64-byte request");
     world.free(object, layout);
+}
+
+/// 6.6: an interrupt-context miss reaches at most one `try_lock` per layer
+/// and then the emergency reserve. A cold CPU's request needs a page while
+/// another CPU holds the frame allocator's free-list lock, so the slab layer
+/// must report the lock busy, and the reserve meets the request.
+#[test]
+fn an_interrupt_request_does_not_wait_for_the_frame_lock() {
+    let world = World::registered(2);
+    world.on(0);
+    world.kmem.backing().frame_lock_held.set(true);
+    let before = world.kmem.shared_waiting();
+    let layout = bytes(64);
+    let object = world.try_alloc_in_interrupt(layout).expect("the emergency reserve meets it");
+    assert_eq!(world.kmem.backing().frame_waits.get(), 0, "the request waited for the frame lock");
+    assert_eq!(world.kmem.shared_waiting() - before, 0, "the request waited for a slab-layer lock");
+    assert!(world.reserve.contains(object), "the reserve did not meet the request");
+    world.free(object, layout);
+}
+
+/// The first refill after a 15-second interval detaches the depot's surplus
+/// magazines (6.3). Returning their rounds takes the class's slab lock and
+/// the magazine cache's lock, so a refill that may not wait must leave that
+/// to a context that may.
+#[test]
+fn an_interrupt_refill_at_the_interval_waits_for_no_slab_lock() {
+    let world = World::registered(3);
+    let layout = bytes(64);
+    world.on(1);
+    let objects: Vec<_> = (0..64).map(|_| world.alloc(layout)).collect();
+    for object in objects {
+        world.free(object, layout);
+    }
+    // CPU 1's frees left 4 full magazines in the depot. CPU 0's refill, the
+    // first exchange after 15 s, starts an interval and takes 1 of them.
+    assert_eq!(world.kmem.class_stats(class_of(64, 8).unwrap()).depot_rounds, 4 * 15);
+    world.kmem.backing().now.set(UPDATE_MS);
+    world.on(0);
+    let held = world.alloc(layout);
+    // 15 s more with no exchange: the depot's other 3 are surplus.
+    world.kmem.backing().now.set(2 * UPDATE_MS);
+    world.on(2);
+    let before = world.kmem.shared_waiting();
+    let object = world.try_alloc_in_interrupt(layout).expect("the slabs meet it");
+    assert_eq!(world.kmem.shared_waiting() - before, 0, "the refill waited for a lock to return the surplus");
+    world.free(object, layout);
+    world.on(0);
+    world.free(held, layout);
 }

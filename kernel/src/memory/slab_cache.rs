@@ -60,6 +60,8 @@ pub struct SpinLock<T> {
     held: AtomicBool,
     acquired: AtomicU64,
     contended: AtomicU64,
+    /// Acquisitions through `lock`, which waits if the lock is held.
+    waiting: AtomicU64,
     value: UnsafeCell<T>,
 }
 
@@ -79,6 +81,7 @@ impl<T> SpinLock<T> {
             held: AtomicBool::new(false),
             acquired: AtomicU64::new(0),
             contended: AtomicU64::new(0),
+            waiting: AtomicU64::new(0),
             value: UnsafeCell::new(value),
         }
     }
@@ -95,6 +98,13 @@ impl<T> SpinLock<T> {
 
     #[inline]
     pub fn lock(&self) -> Guard<'_, T> {
+        let guard = self.wait_for();
+        // The holder alone writes the count.
+        self.waiting.store(self.waiting.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
+        guard
+    }
+
+    fn wait_for(&self) -> Guard<'_, T> {
         if let Some(guard) = self.try_lock() {
             return guard;
         }
@@ -126,6 +136,12 @@ impl<T> SpinLock<T> {
     /// Acquisitions that found the lock held and waited for it.
     pub fn contentions(&self) -> u64 {
         self.contended.load(Ordering::Relaxed)
+    }
+
+    /// Acquisitions through `lock`: each would have waited had another CPU
+    /// held the lock. A context that may not wait (6.6) makes 0.
+    pub fn waiting_acquisitions(&self) -> u64 {
+        self.waiting.load(Ordering::Relaxed)
     }
 }
 
@@ -307,6 +323,11 @@ impl SlabCache {
     /// The cache's lock, for the host model's acquisition counts.
     pub fn lock_counts(&self) -> (u64, u64) {
         (self.lists.acquisitions(), self.lists.contentions())
+    }
+
+    /// The cache's lock's acquisitions through `lock`, for the host model.
+    pub fn waiting_acquisitions(&self) -> u64 {
+        self.lists.waiting_acquisitions()
     }
 
     /// Take up to `out.len()` objects into `out`, growing by a page at a time.
