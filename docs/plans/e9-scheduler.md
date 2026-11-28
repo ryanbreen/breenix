@@ -1420,6 +1420,8 @@ The E9.1 implementation records these details.
 - **The DEV-51 host check interleaves a local dispatch at successful peer lock acquisition** because
   a failed speculative try-lock cannot mark a dispatch owed, while a peer holding an empty queue can
   make the owner miss its own lock and trigger a retry SGI on release.
+- **ARM64 peer timer expiry uses a separate published heap minimum** because the tick's claim
+  advances its retry timestamp even when the underlying timer already needs service.
 
 The ready hint excludes the current and selected next threads. Affinity, liveness, and
 stack custody still govern candidate selection under the lock. A failed steal try-lock

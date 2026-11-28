@@ -499,10 +499,18 @@ fn try_steal_lock(cpu: usize) -> Option<Held> {
 
 // ------------------------------------------------------------- liveness
 
-/// Per CPU, the earliest deadline in its timer heap, as of its last release.
+/// Per CPU, when a tick can request a pass for this timer heap. A claim can
+/// move this later than the actual heap deadline.
 static NEXT_CHECK: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(u64::MAX) }; MAX_CPUS];
 
+/// The heap minimum published by the queue owner. A tick's claim cannot hide
+/// a due timer from a peer already running a dispatch pass.
+#[cfg(target_arch = "aarch64")]
+static NEXT_DEADLINE: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(u64::MAX) }; MAX_CPUS];
+
 fn publish_next_check(cpu: usize, deadline: u64) {
+    #[cfg(target_arch = "aarch64")]
+    NEXT_DEADLINE[cpu].store(deadline, Ordering::Release);
     NEXT_CHECK[cpu].store(deadline, Ordering::Release);
 }
 
@@ -1032,14 +1040,25 @@ fn expire_heap(local: &mut Held, mut source: Option<&mut Held>, now: u64) {
 /// Expire this CPU's due deadlines, and those of every other CPU whose lock
 /// is free now: a sleep is woken by the first pass on any CPU after its
 /// deadline, as with one heap, and a stopped vCPU's sleepers run on a CPU
-/// that is running. A deadline claimed by a tick (`claim_due`) reads a tick
-/// later, so any CPU with deadlines is looked at, not only one whose
-/// published deadline is due.
+/// that is running. On ARM64 the published heap minimum excludes peers
+/// with only future deadlines. Recheck under the lock because another pass
+/// can advance the heap between the summary read and lock acquisition.
 pub(super) fn expire_timers(local: &mut Held) {
     let now = now_ns();
     expire_heap(local, None, now);
     for cpu in 0..MAX_CPUS {
-        if cpu == local.cpu || NEXT_CHECK[cpu].load(Ordering::Acquire) == u64::MAX {
+        if cpu == local.cpu {
+            continue;
+        }
+        #[cfg(target_arch = "x86_64")]
+        let deadline = NEXT_CHECK[cpu].load(Ordering::Acquire);
+        #[cfg(target_arch = "aarch64")]
+        let deadline = NEXT_DEADLINE[cpu].load(Ordering::Acquire);
+        if deadline == u64::MAX {
+            continue;
+        }
+        #[cfg(target_arch = "aarch64")]
+        if deadline > now {
             continue;
         }
         if let Some(mut remote) = try_remote(cpu) {
