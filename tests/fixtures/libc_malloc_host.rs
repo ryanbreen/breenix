@@ -14,6 +14,8 @@ static CLEARS: AtomicUsize = AtomicUsize::new(0);
 static FUTEX_LOCK: Mutex<()> = Mutex::new(());
 static FUTEX_READY: Condvar = Condvar::new();
 static CONTENDED: Mutex<Option<std::sync::mpsc::SyncSender<bool>>> = Mutex::new(None);
+// Runs once in the next futex waiter to wake, before it returns to the lock.
+static AFTER_WAKE: Mutex<Option<Box<dyn FnOnce() + Send>>> = Mutex::new(None);
 
 fn report_contended(waited: bool) {
     if let Some(sender) = CONTENDED.lock().unwrap().take() {
@@ -34,6 +36,11 @@ pub mod raw {
                 report_contended(true);
                 while word.load(Relaxed) == val as u32 {
                     guard = FUTEX_READY.wait(guard).unwrap();
+                }
+                drop(guard);
+                let after = AFTER_WAKE.lock().unwrap().take();
+                if let Some(after) = after {
+                    after();
                 }
             }
             1 => FUTEX_READY.notify_all(),
@@ -76,11 +83,16 @@ fn getpid() -> i32 {
     SYSCALLS.fetch_add(1, Relaxed);
     OWN_PROCESS.with(|own| own.get()).unwrap_or(std::process::id() as i32)
 }
+thread_local! {
+    // A raw clone without CLONE_SETTLS reads its creator's descriptor, and so
+    // reports its creator's allocator ID.
+    static ALIAS: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+}
 #[allow(dead_code)] // Also drives the old allocator in the check-first run.
 fn malloc_thread_id() -> u32 {
     static NEXT: AtomicU32 = AtomicU32::new(1);
     thread_local! { static ID: u32 = NEXT.fetch_add(1, Relaxed); }
-    ID.with(|id| *id)
+    ALIAS.with(|alias| alias.get()).unwrap_or_else(|| ID.with(|id| *id))
 }
 // libc gives a fork child's survivor its new kernel thread ID. Host threads
 // keep their fixture ID across fork, so the survivor's ID is unchanged.

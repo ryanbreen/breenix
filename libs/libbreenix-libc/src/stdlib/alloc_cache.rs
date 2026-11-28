@@ -729,4 +729,55 @@ mod tests {
             assert_eq!(drain(unmap, no_discard), 1);
         }
     }
+
+    #[test]
+    fn a_woken_waiter_waits_for_a_clone_that_holds_its_id() {
+        let _test = TEST_LOCK.lock().unwrap();
+        // A raw clone without CLONE_SETTLS shares this thread's descriptor,
+        // and so takes the lock under this thread's ID.
+        let id = crate::malloc_thread_id();
+        let (notify, event) = std::sync::mpsc::sync_channel(0);
+        let held = class(2048).unwrap();
+        let (holder, entered) = hold_on_another_thread(held, move || event.recv().unwrap());
+        entered.recv().unwrap();
+        *crate::CONTENDED.lock().unwrap() = Some(notify);
+        // The holder's release wakes this thread. Before it looks at the lock
+        // again, the clone takes the lock on its fast path, with no waiter bit.
+        let (clone_sent, clone_handle) = std::sync::mpsc::channel();
+        *crate::AFTER_WAKE.lock().unwrap() = Some(Box::new(move || {
+            let (held, entered) = std::sync::mpsc::sync_channel(0);
+            let (notify, event) = std::sync::mpsc::sync_channel(0);
+            let clone = std::thread::spawn(move || unsafe {
+                crate::ALIAS.with(|alias| alias.set(Some(id)));
+                let (p, tag) = take(class(8192).unwrap(), |len| {
+                    held.send(()).unwrap();
+                    // Released by this thread's next futex wait, or when the
+                    // test stops waiting for one.
+                    let _ = event.recv();
+                    map(len)
+                })
+                .unwrap();
+                (p.addr(), tag)
+            });
+            entered.recv().unwrap();
+            *crate::CONTENDED.lock().unwrap() = Some(notify);
+            clone_sent.send(clone).unwrap();
+        }));
+        let taken = unsafe { take(held, no_mapping) };
+        crate::CONTENDED.lock().unwrap().take();
+        let (clone_block, clone_tag) = clone_handle.recv().unwrap().join().unwrap();
+        let (first, first_tag, _) = holder.join().unwrap();
+        unsafe {
+            put(clone_tag, ptr::with_exposed_provenance_mut(clone_block), unmap);
+            put(first_tag, ptr::with_exposed_provenance_mut(first), unmap);
+        }
+        // Bypassing here leaves the waiter bit unset under the clone's hold,
+        // so the clone's release would wake no other sleeper.
+        let (p, tag) = taken.expect("the woken waiter took the clone's hold for its own");
+        assert_eq!(tag, first_tag);
+        unsafe {
+            put(tag, p, unmap);
+            assert_eq!(drain(unmap, no_discard), 2);
+        }
+    }
 }
