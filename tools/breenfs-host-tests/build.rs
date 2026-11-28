@@ -35,6 +35,7 @@ fn main() {
         "struct PageVec<T>",
         "impl<T> PageVec<T>",
         "fn bound_runs(",
+        "fn held_runs(",
         // Population is production code; MappingIo is the host BreenFS transfer.
         "struct Claim",
         "pub(crate) enum MapError",

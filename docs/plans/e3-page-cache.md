@@ -2376,6 +2376,12 @@ boundary) are not recorded here: the builder stops and asks the coordinator.
 - **E3-2, where Holes are made.** `prepare_write` and `prepare_resize` reserve the Hole room, and the
   EOF transition inserts the Holes, because a page becomes valid only when the new size is published,
   and a write that fails leaves the size unchanged.
+- **E3-2 review, a population's claim.** The EOF transition's Holes and `prepare_write`'s frames cover
+  the pages a population claims as well as the bound ones (`held_runs`), as eviction already does,
+  because mmap publishes its binding after population returns and without the filesystem guard in
+  between, so a growth in that gap would otherwise leave the new binding's grown pages absent. A
+  population's merge drops its copy of a page that became resident while it read, and Holes only a
+  claim holds keep eviction pending, so a failed mmap leaves none behind.
 - **E3-2, an unprepared growth.** ext2's preallocation grows a file without `prepare_resize` and drops
   its guard between steps, so its transition tries to reserve the room itself, and a page left without
   room stays absent (the counted SIGBUS rather than 00 bytes), because Q3 rules out E3 work on ext2.
