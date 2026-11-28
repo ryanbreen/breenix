@@ -161,13 +161,13 @@ fn pending_waits_two_generations() {
     put(&mut store, &mut root, PENDING, format::PENDING, 100, &pending);
     for generation in [1, 7, 8] {
         let (mut free, mut quarantine) = space::open(&store, root).unwrap();
-        let promotion = quarantine.promote(&store, root, generation, &mut free).unwrap();
+        let promotion = quarantine.promote(&store, root, generation, &mut free, u64::MAX).unwrap();
         assert!(promotion.is_empty(), "generation {generation}");
         assert_eq!(free.ranges().count(), 0);
         assert_eq!(quarantine.summary().census(), Some((3, 7)));
     }
     let (mut free, mut quarantine) = space::open(&store, root).unwrap();
-    let promotion = quarantine.promote(&store, root, 9, &mut free).unwrap();
+    let promotion = quarantine.promote(&store, root, 9, &mut free, u64::MAX).unwrap();
     assert_eq!(free.ranges().collect::<Vec<_>>(), vec![(100, 3)]);
     promotion.apply(&mut store, &mut root).unwrap();
     assert!(item(&store, root, PENDING, format::PENDING, 100).is_none());

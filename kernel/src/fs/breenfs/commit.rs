@@ -179,7 +179,7 @@ impl Committer {
         files: &mut super::ops::Files<'_, S>,
     ) -> Result<Superblock, Error> {
         self.committing(|mount| {
-            files.prepare_commit().map_err(|_| Error::EIO)?;
+            files.prepare_commit(u64::MAX).map_err(|_| Error::EIO)?;
             let (txn, data) = files.commit_buffers();
             let prepared = mount.prepare(device, txn, data)?;
             prepared.write_direct(device, data)?;

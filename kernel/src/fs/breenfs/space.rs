@@ -545,15 +545,20 @@ impl Quarantine {
     /// add it to `free` now and return the SPACE edits for settlement.
     /// `base` is the transaction's starting space tree; found records are
     /// streamed from it, and the ones not yet eligible are summarized.
+    /// `bound` is the device's oldest pinned generation (design E2 7.1): a
+    /// block released by commit R is reachable from R-1 and older, so only
+    /// releases at or before the oldest pin are promoted. `u64::MAX` means no
+    /// reader holds a pin.
     pub fn promote<S: NodeStore>(
         &mut self,
         base: &S,
         root: BlockPtr,
         generation: u64,
         free: &mut FreeIndex,
+        bound: u64,
     ) -> Result<Promotion, Error> {
         let mut promotion = Promotion::default();
-        let Some(limit) = generation.checked_sub(2) else {
+        let Some(limit) = generation.checked_sub(2).map(|limit| limit.min(bound)) else {
             return Ok(promotion);
         };
         // The eligible generations' runs move to the promotion whole: a

@@ -498,7 +498,8 @@ fn reuse_past_the_horizon(read_only: bool) {
     });
     assert!(!durable_free(&disk, old), "block {old} was freed while generation P was pinned");
     disk.release();
-    assert!(join(a, "reader A did not finish").is_ok());
+    let read = join(a, "reader A did not finish");
+    assert!(read.is_ok(), "reader A: {:?}", read.err());
 }
 
 #[test]

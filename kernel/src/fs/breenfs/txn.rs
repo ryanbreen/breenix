@@ -95,6 +95,10 @@ pub struct SpaceState {
     free: space::FreeIndex,
     quarantine: space::Quarantine,
     data_goal: u64,
+    // The device's oldest pinned generation (E2 design 7.1), kept current by
+    // the mount's pin table: allocation-time promotion runs inside tree
+    // edits, which take no bound argument. Unset outside a mount.
+    reuse_bound: Option<alloc::sync::Arc<core::sync::atomic::AtomicU64>>,
 }
 impl SpaceState {
     pub fn free(&self) -> &space::FreeIndex {
@@ -360,6 +364,7 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
                     free,
                     quarantine,
                     data_goal: 0,
+                    reuse_bound: None,
                 }
             }
         };
@@ -548,7 +553,7 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
         } else {
             let mut choice = self.state.free.choose(length, goal, false);
             if choice.is_none() {
-                self.promote_eligible()?;
+                self.promote_eligible(u64::MAX)?;
                 choice = self.state.free.choose(length, goal, short_data);
             }
             let (start, chosen) = choice.ok_or(space::Error::ENOSPC)?;
@@ -571,15 +576,17 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
     }
     /// Make PENDING released at or before G-2 allocatable, once per
     /// transaction: the FREE index gains it now, SPACE at settlement.
-    fn promote_eligible(&mut self) -> Result<(), Error> {
+    fn promote_eligible(&mut self, bound: u64) -> Result<(), Error> {
         if self.promoted || self.scratch.is_some() {
             return Ok(());
         }
         self.promoted = true;
         let original = View { base: self.base.get(), nodes: &BTreeMap::new(),
             frozen: None, reads: &self.reads };
+        let shared = self.state.reuse_bound.as_ref()
+            .map_or(u64::MAX, |bound| bound.load(core::sync::atomic::Ordering::SeqCst));
         let promotion = self.state.quarantine.promote(&original, self.original_space,
-            self.generation, &mut self.state.free)?;
+            self.generation, &mut self.state.free, bound.min(shared))?;
         if !promotion.is_empty() {
             self.promotion = Some(promotion);
         }
@@ -855,11 +862,18 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
     pub fn next_root_id(&self) -> u64 {
         self.next_root_id
     }
+    /// Bound later promotions of this mount's transactions by the
+    /// device's oldest pinned generation (E2 design 7.1).
+    pub fn set_reuse_bound(&mut self, bound: alloc::sync::Arc<core::sync::atomic::AtomicU64>) {
+        self.state.reuse_bound = Some(bound);
+    }
     /// Make PENDING released at or before G-2 FREE in this transaction
     /// (design 2.5 reuse rule): the FREE index at once, SPACE at settlement.
-    pub fn promote_pending(&mut self) -> Result<(), Error> {
+    /// Releases after `bound`, the device's oldest pinned generation, stay
+    /// PENDING (E2 design 7.1); `u64::MAX` when no reader holds a pin.
+    pub fn promote_pending(&mut self, bound: u64) -> Result<(), Error> {
         self.publishable()?;
-        let result = self.promote_eligible();
+        let result = self.promote_eligible(bound);
         self.result(result)
     }
     /// Read after prepare_commit has staged PENDING promotion and settled

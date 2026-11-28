@@ -127,7 +127,7 @@ impl WriterAdapter {
                 .files
                 .as_mut()
                 .ok_or(Errno::EIO)?
-                .prepare_commit()
+                .prepare_commit(u64::MAX)
                 .map_err(error)?;
             txn.reap_step().map_err(|e| error(e.into()))?;
         }

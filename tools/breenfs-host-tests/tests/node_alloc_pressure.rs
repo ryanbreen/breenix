@@ -86,7 +86,7 @@ fn pending_promotion_streams_without_the_384_kib_range_growth() {
     let (mut free, mut quarantine) = space::open(&store, root).unwrap();
     assert_eq!(quarantine.summary().census(), Some((4_097, 1)));
     REFUSE_RANGE_GROWTH.set(true);
-    let promotion = quarantine.promote(&store, root, 3, &mut free).unwrap();
+    let promotion = quarantine.promote(&store, root, 3, &mut free, u64::MAX).unwrap();
     promotion.apply(&mut store, &mut root).unwrap();
     assert!(REFUSE_RANGE_GROWTH.replace(false), "promotion asked for the 384 KiB range");
     assert_eq!(free.ranges().collect::<Vec<_>>(), vec![(1_000, 4_097)]);

@@ -141,6 +141,10 @@ pub enum ReadCause {
     Driver(crate::block::read_failure::VirtioReadFailure),
     Verification,
     Allocation,
+    /// A no-wait pass found the node absent from memory and recorded it
+    /// for a read with the mount lock released (E2 design 7.2). It maps to
+    /// EAGAIN and is not recorded as a metadata failure.
+    Deferred,
 }
 impl From<crate::block::BlockError> for ReadCause {
     fn from(error: crate::block::BlockError) -> Self {
@@ -165,6 +169,7 @@ impl ReadCause {
             Self::Device | Self::Ahci(_) | Self::Driver(_) => "device-read",
             Self::Verification => "verification",
             Self::Allocation => "allocation",
+            Self::Deferred => "deferred",
         }
     }
 }

@@ -243,6 +243,35 @@ impl ExtentMap {
 }
 
 /// The destination of one clean read: `buf` holds file bytes from `base`.
+/// One clean run of a read that a no-wait pass (E2 design 7.2) could not
+/// take from the device: file bytes `[lo, hi)` of the blocks starting at file
+/// offset `first`, which are device blocks from `phys`, checked against `crcs`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeferredRun {
+    pub lo: u64,
+    pub hi: u64,
+    pub first: u64,
+    pub phys: u64,
+    pub crcs: Vec<u32>,
+}
+impl DeferredRun {
+    pub fn matches(&self, lo: u64, hi: u64, first: u64, phys: u64, crcs: &[u32]) -> bool {
+        self.lo == lo && self.hi == hi && self.first == first && self.phys == phys && self.crcs == crcs
+    }
+}
+
+/// How a no-wait pass reads clean runs: from memory only, recording the
+/// rest for a read with the mount lock released.
+pub(super) trait Deferral {
+    /// Put the run's wanted bytes in `out` (already there, or copied from a
+    /// staged read) if an earlier read with the lock released supplied them.
+    fn filled(&mut self, lo: u64, hi: u64, first: u64, phys: u64, crcs: &[u32], out: &mut [u8]) -> bool;
+    /// Copy `blocks` device blocks from `phys` into `bytes` when each is resident.
+    fn resident(&mut self, phys: u64, blocks: usize, bytes: &mut [u8]) -> bool;
+    /// Record a run to read with the lock released.
+    fn want(&mut self, run: DeferredRun) -> Result<(), ReadError>;
+}
+
 /// Bytes before `done` are final; a pending run of `blocks` device blocks
 /// from `phys` covers file bytes `[lo, hi)` of blocks starting at `first`.
 struct Runs<'r> {
@@ -260,6 +289,8 @@ struct Runs<'r> {
     staging: Vec<u8>,
     // Told each range of file offsets filled with 00 bytes as a hole.
     holes: &'r mut dyn FnMut(u64, u64),
+    // A no-wait pass's deferral; without one, runs read through `device`.
+    deferral: Option<&'r mut dyn Deferral>,
 }
 impl<'r> Runs<'r> {
     fn new(
@@ -270,7 +301,7 @@ impl<'r> Runs<'r> {
     ) -> Self {
         Self {
             device, base, buf, done: 0, first: 0, lo: 0, hi: 0, phys: 0, blocks: 0,
-            crcs: [0; RUN_BLOCKS], staging: Vec::new(), holes,
+            crcs: [0; RUN_BLOCKS], staging: Vec::new(), holes, deferral: None,
         }
     }
     /// Fill `buf[done..at]` with 00 bytes and report it as a hole.
@@ -360,11 +391,34 @@ impl<'r> Runs<'r> {
                 .map_err(|_| ReadError::Device(crate::block::BlockError::OutOfMemory))?;
             self.staging.resize(length, 0);
         }
+        if let Some(deferral) = self.deferral.as_deref_mut() {
+            let crcs = &self.crcs[..blocks];
+            if deferral.filled(self.lo, self.hi, self.first, self.phys, crcs, &mut self.buf[at..at + take]) {
+                self.done = at + take;
+                return Ok(());
+            }
+            let bytes = if direct { &mut self.buf[at..at + length] } else { &mut self.staging[..length] };
+            if !deferral.resident(self.phys, blocks, bytes) {
+                // The pass ends in NeedsIo; these bytes come from the read
+                // made with the lock released.
+                let mut owned = Vec::new();
+                owned.try_reserve_exact(crcs.len())
+                    .map_err(|_| ReadError::Device(crate::block::BlockError::OutOfMemory))?;
+                owned.extend_from_slice(crcs);
+                deferral.want(DeferredRun {
+                    lo: self.lo, hi: self.hi, first: self.first, phys: self.phys, crcs: owned,
+                })?;
+                self.done = at + take;
+                return Ok(());
+            }
+        } else {
+            let bytes = if direct { &mut self.buf[at..at + length] } else { &mut self.staging[..length] };
+            commit::read_into(self.device, self.phys, bytes).map_err(|error| match error {
+                commit::Error::BlockRead(error) => ReadError::Device(error),
+                _ => ReadError::Data,
+            })?;
+        }
         let bytes = if direct { &mut self.buf[at..at + length] } else { &mut self.staging[..length] };
-        commit::read_into(self.device, self.phys, bytes).map_err(|error| match error {
-            commit::Error::BlockRead(error) => ReadError::Device(error),
-            _ => ReadError::Data,
-        })?;
         let corrupt = bytes
             .chunks_exact(BLOCK_SIZE)
             .zip(&self.crcs[..blocks])
@@ -937,6 +991,10 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
                 && (root.source_root == id || !self.roots.contains_key(&root.source_root)))
     }
     pub fn root_pointer(&self) -> BlockPtr { self.root.root }
+    /// See `Transaction::set_reuse_bound` (E2 design 7.1).
+    pub fn set_reuse_bound(&mut self, bound: Arc<core::sync::atomic::AtomicU64>) {
+        self.txn.set_reuse_bound(bound);
+    }
     /// Project a pinned root through the same transaction's read paths. Open
     /// orphans in the writer's inode number space do not belong to this root.
     pub fn with_read_root<T>(
@@ -1712,9 +1770,25 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         buf: &mut [u8],
         holes: &mut dyn FnMut(u64, u64),
     ) -> Result<usize, ReadError> {
+        self.read_runs(device, ino, offset, buf, holes, None)
+    }
+    /// `read_verified_holes`, and for a no-wait pass (E2 design 7.2) with a
+    /// `deferral`: clean runs come from memory or the deferral, and the rest
+    /// are recorded with it. The caller's pass ends in NeedsIo when any run
+    /// was recorded.
+    pub(super) fn read_runs<'r>(
+        &self,
+        device: &'r dyn BlockDevice,
+        ino: u64,
+        offset: u64,
+        buf: &'r mut [u8],
+        holes: &'r mut dyn FnMut(u64, u64),
+        deferral: Option<&'r mut dyn Deferral>,
+    ) -> Result<usize, ReadError> {
         let inode = self.regular(ino)?;
         let n = inode.size.saturating_sub(offset).min(buf.len() as u64) as usize;
         let mut runs = Runs::new(device, offset, &mut buf[..n], holes);
+        runs.deferral = deferral;
         if n != 0 {
             // A read holds its view's maps for its duration; a nested borrow
             // would read through the seek instead.
@@ -2044,12 +2118,14 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
     pub(super) fn begin_preparation(&self) {
         self.txn.begin_preparation();
     }
-    pub fn prepare_commit(&mut self) -> Result<&mut Transaction<'a, S>, Error> {
+    /// `reuse_bound` is the device's oldest pinned generation, or `u64::MAX`
+    /// when no reader holds a pin (E2 design 7.1).
+    pub fn prepare_commit(&mut self, reuse_bound: u64) -> Result<&mut Transaction<'a, S>, Error> {
         preemption_point();
         self.require_writable()?;
         self.begin_preparation();
         self.reclaim_orphans()?;
-        self.txn.promote_pending()?;
+        self.txn.promote_pending(reuse_bound)?;
         self.txn.update_root(self.root_id, self.root.clone())?;
         self.changed_roots.insert(self.root_id);
         if let Some(default) = &self.default {

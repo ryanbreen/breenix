@@ -86,7 +86,7 @@ mod hold {
         let mut files = Files::new(DeviceStore(&device), &sb, 1, true).unwrap();
         files.create(2, b"new", 0o600, Time::default()).unwrap();
         let frozen = committer.freeze().unwrap();
-        files.prepare_commit().unwrap();
+        files.prepare_commit(u64::MAX).unwrap();
         let prepared = frozen.prepare_settled_files(&device, &mut files).unwrap();
 
         assert_eq!(prepared.write_cached(&cache, &device, &group), Ok(()));
@@ -129,7 +129,7 @@ mod hold {
             let receipt = committer.waiter();
             let before = dev.events().len();
             let frozen = committer.freeze().unwrap();
-            files.prepare_commit().unwrap();
+            files.prepare_commit(u64::MAX).unwrap();
             let prepared = frozen.prepare_settled_files(dev.as_ref(), &mut files).unwrap();
             assert_eq!(dev.events().len(), before, "preparation issued I/O");
             let asked = Arc::new(AtomicBool::new(false));
@@ -219,7 +219,7 @@ fn fsync_waits_for_the_generation_it_joined() {
     files.create(2, b"first", 0o600, Time::default()).unwrap();
     let first = committer.waiter();
     let frozen = committer.freeze().unwrap();
-    files.prepare_commit().unwrap();
+    files.prepare_commit(u64::MAX).unwrap();
     let prepared = frozen.prepare_settled_files(&dev, &mut files).unwrap();
     let second = committer.waiter();
     assert_eq!(first.generation(), 2);
@@ -236,7 +236,7 @@ fn fsync_waits_for_the_generation_it_joined() {
     let mut files = Files::new(DeviceStore(&dev), prepared.superblock(), 1, true).unwrap();
     files.create(2, b"second", 0o600, Time::default()).unwrap();
     let frozen = committer.freeze().unwrap();
-    files.prepare_commit().unwrap();
+    files.prepare_commit(u64::MAX).unwrap();
     let prepared = frozen.prepare_settled_files(&dev, &mut files).unwrap();
     let third = committer.waiter();
     dev.fail.store(true, Ordering::SeqCst);

@@ -365,6 +365,34 @@ impl<W: Wait> BufferCache<W> {
         })
     }
 
+    /// Copy `count` consecutive resident blocks into `bytes` without device
+    /// admission, which can queue behind another caller's in-flight request.
+    /// False, with `bytes` unspecified, when any block is not resident.
+    pub fn read_resident(&self, device: &dyn BlockDevice, start: u64, count: usize, bytes: &mut [u8]) -> bool {
+        let size = device.block_size();
+        if size == 0 || bytes.len() < count.saturating_mul(size) {
+            return false;
+        }
+        let identity = device.identity();
+        let found = self.with(|state| {
+            for i in 0..count {
+                let key = (identity, start + i as u64);
+                state.touch(key);
+                match state.buffers.get(&key).map(|entry| &entry.status) {
+                    Some(BufferState::Clean { buffer, .. } | BufferState::Dirty { buffer, .. }) => {
+                        bytes[i * size..][..size].copy_from_slice(buffer);
+                    }
+                    _ => return false,
+                }
+            }
+            true
+        });
+        if found {
+            self.count_by(count, |c| &mut c.hits);
+        }
+        found
+    }
+
     pub fn status(&self, device: &dyn BlockDevice, block: u64) -> Option<BufferStatus> {
         self.with(|state| {
             state

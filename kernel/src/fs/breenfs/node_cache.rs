@@ -70,10 +70,117 @@ impl Drop for CacheCharge {
     }
 }
 
+/// A token naming the running thread; 0 only on hosts with no VFS. A no-wait
+/// pass (E2 design 7.2) belongs to one thread: the commit worker reads the
+/// frozen generation through the same mount's stores, with no mount lock, while
+/// a foreground pass is running, and it must keep waiting on the device.
+pub(crate) fn thread_token() -> usize {
+    #[cfg(all(any(target_os = "none", target_os = "breenix"), not(test), target_arch = "x86_64"))]
+    {
+        crate::per_cpu::current_thread_id_lock_free()
+            .and_then(|id| usize::try_from(id).ok())
+            .map_or(usize::MAX, |id| id.wrapping_add(1).max(1))
+    }
+    #[cfg(all(any(target_os = "none", target_os = "breenix"), not(test), target_arch = "aarch64"))]
+    {
+        match crate::per_cpu_aarch64::current_thread_ptr() as usize {
+            0 => usize::MAX,
+            thread => thread,
+        }
+    }
+    #[cfg(test)]
+    {
+        static NEXT: AtomicUsize = AtomicUsize::new(1);
+        std::thread_local! {
+            static TOKEN: usize = NEXT.fetch_add(1, Ordering::Relaxed);
+        }
+        TOKEN.with(|token| *token)
+    }
+    // Host builds without the VFS adapter run no passes.
+    #[cfg(all(not(test), not(any(target_os = "none", target_os = "breenix"))))]
+    {
+        0
+    }
+}
+
+/// The running no-wait pass of one foreground operation (E2 design 7.2).
+/// While the thread that owns it holds its mount's state lock, the mount's
+/// stores do not wait on the device: a node that is not in memory is
+/// recorded and the read fails with `ReadCause::Deferred`. The operation then
+/// reads the recorded nodes with the lock released into its `Held` set, which
+/// it lends to each later pass, so that pass finds them even if the caches
+/// evicted them.
+#[derive(Default)]
+struct Pass {
+    owner: usize,
+    held: Held,
+    wanted: Vec<BlockPtr>,
+    wanted_raw: Vec<(u64, u64)>,
+}
+
+/// The nodes one operation read with its mount lock released. It belongs to
+/// the operation, not the mount: operations in flight at once each keep theirs.
+#[derive(Default)]
+pub struct Held {
+    nodes: Vec<((u64, u64), Arc<Node>)>,
+    raw: Vec<(u64, Vec<u8>)>,
+}
+impl Held {
+    /// Keep a node read with the lock released for the operation's later passes.
+    pub fn hold(&mut self, ptr: BlockPtr, node: Arc<Node>) -> Result<(), Error> {
+        let key = (ptr.addr, ptr.generation);
+        if let Err(index) = self.nodes.binary_search_by_key(&key, |(key, _)| *key) {
+            self.nodes.try_reserve(1).map_err(|_| allocation(ptr.addr))?;
+            self.nodes.insert(index, (key, node));
+        }
+        Ok(())
+    }
+    /// Keep raw node bytes read with the lock released (`NodeStore::get`).
+    pub fn hold_raw(&mut self, addr: u64, bytes: Vec<u8>) -> Result<(), Error> {
+        if !self.raw.iter().any(|(held, _)| *held == addr) {
+            self.raw.try_reserve(1).map_err(|_| allocation(addr))?;
+            self.raw.push((addr, bytes));
+        }
+        Ok(())
+    }
+    fn node(&self, ptr: BlockPtr) -> Option<Arc<Node>> {
+        let index = self.nodes.binary_search_by_key(&(ptr.addr, ptr.generation), |(key, _)| *key).ok()?;
+        Some(self.nodes[index].1.clone())
+    }
+    fn bytes(&self, addr: u64) -> Option<Vec<u8>> {
+        let (_, bytes) = self.raw.iter().find(|(held, _)| *held == addr)?;
+        let mut copy = Vec::new();
+        copy.try_reserve_exact(bytes.len()).ok()?;
+        copy.extend_from_slice(bytes);
+        Some(copy)
+    }
+}
+
+/// The reads one pass could not make without the device.
+#[derive(Default)]
+pub struct Wanted {
+    pub nodes: Vec<BlockPtr>,
+    /// Raw node reads (`NodeStore::get`): the address and the generation
+    /// ceiling of the store that asked.
+    pub raw: Vec<(u64, u64)>,
+}
+impl Wanted {
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty() && self.raw.is_empty()
+    }
+}
+
+fn allocation(addr: u64) -> Error {
+    Error::Read(ReadFailure { cause: ReadCause::Allocation, addr })
+}
+
 /// A cache of verified durable decodings scoped to one mount.
 pub struct DecodedNodes {
     limit: usize,
     state: Mutex<DecodedState>,
+    pass: Mutex<Pass>,
+    // The owner of the running pass, read on a node miss without `pass`.
+    owner: AtomicUsize,
 }
 
 #[derive(Default)]
@@ -116,6 +223,58 @@ impl DecodedNodes {
         Self {
             limit: (ram / 128).min(DECODED_HEAP_CAP),
             state: Mutex::default(),
+            pass: Mutex::default(),
+            owner: AtomicUsize::new(0),
+        }
+    }
+
+    /// Start a no-wait pass on the current thread, lending it the
+    /// operation's `held` nodes. The caller holds the mount's state lock
+    /// until `end_pass`, so passes of one mount do not overlap.
+    pub fn begin_pass(&self, held: Held) {
+        let token = thread_token();
+        let mut pass = self.pass.lock();
+        pass.owner = token;
+        pass.held = held;
+        self.owner.store(token, Ordering::Release);
+    }
+    /// End the current pass: return the operation's held nodes and what the
+    /// pass could not read from memory.
+    pub fn end_pass(&self) -> (Wanted, Held) {
+        self.owner.store(0, Ordering::Release);
+        let mut pass = self.pass.lock();
+        pass.owner = 0;
+        let wanted = Wanted {
+            nodes: core::mem::take(&mut pass.wanted),
+            raw: core::mem::take(&mut pass.wanted_raw),
+        };
+        (wanted, core::mem::take(&mut pass.held))
+    }
+    fn in_pass(&self) -> bool {
+        let owner = self.owner.load(Ordering::Acquire);
+        owner != 0 && owner == thread_token()
+    }
+    fn held(&self, ptr: BlockPtr) -> Option<Arc<Node>> {
+        self.pass.lock().held.node(ptr)
+    }
+    fn held_raw(&self, addr: u64) -> Option<Vec<u8>> {
+        self.pass.lock().held.bytes(addr)
+    }
+    /// Record a read the pass could not make from memory.
+    fn defer(&self, ptr: Option<BlockPtr>, addr: u64, ceiling: u64) -> Error {
+        let mut pass = self.pass.lock();
+        let recorded = match ptr {
+            Some(ptr) if !pass.wanted.contains(&ptr) => {
+                pass.wanted.try_reserve(1).map(|()| pass.wanted.push(ptr))
+            }
+            None if !pass.wanted_raw.contains(&(addr, ceiling)) => {
+                pass.wanted_raw.try_reserve(1).map(|()| pass.wanted_raw.push((addr, ceiling)))
+            }
+            _ => Ok(()),
+        };
+        match recorded {
+            Ok(()) => Error::Read(ReadFailure { cause: ReadCause::Deferred, addr }),
+            Err(_) => allocation(addr),
         }
     }
 
@@ -310,6 +469,21 @@ impl<W: Wait> NodeStore for CachedNodeStore<'_, W> {
         if let Some(node) = self.decoded.get(ptr) {
             return node;
         }
+        if self.decoded.in_pass() {
+            // No-wait pass (design 7.2): not BufferCache::read_verified,
+            // whose admission ticket queues even a hit behind another
+            // thread's in-flight request (ruling DEV-53(3)). A resident copy
+            // was verified when the cache accepted it.
+            if let Some(node) = self.decoded.held(ptr) {
+                return Ok(node);
+            }
+            let Some(buffer) = self.cache.pin(self.device.as_ref(), ptr.addr) else {
+                return Err(self.decoded.defer(Some(ptr), ptr.addr, ptr.generation));
+            };
+            let node = btree::decode_verified_node(&buffer, ptr).map_err(|error| error.at_node(ptr.addr))?;
+            self.decoded.insert(ptr, &node);
+            return Ok(node);
+        }
         // The view's buffer cache verifies UUID/address/generation and CRC.
         // Decode verifies the exact pointer and the complete node layout.
         let node = btree::decode_verified_node(&self.get(ptr.addr)?, ptr)
@@ -333,6 +507,16 @@ impl<W: Wait> NodeStore for CachedNodeStore<'_, W> {
                 bytes.copy_from_slice(node);
                 return Ok(bytes);
             }
+        }
+        if self.decoded.in_pass() {
+            if let Some(held) = self.decoded.held_raw(addr) {
+                return Ok(held);
+            }
+            let Some(buffer) = self.cache.pin(self.device.as_ref(), addr) else {
+                return Err(self.decoded.defer(None, addr, self.generation));
+            };
+            bytes.copy_from_slice(&buffer[..NODE_SIZE]);
+            return Ok(bytes);
         }
         let verification_failed = core::cell::Cell::new(false);
         self.cache
