@@ -26,9 +26,19 @@ class BootInitTest(unittest.TestCase):
         # worker owns slot 0 when the main thread reads, AHCI cannot admit it.
         self.assertNotIn("let mut image = read_x86_production_init()", boot,
                          "boot idle reads the image while the port can be owned")
-        handoff = re.search(r"task::kthread::kthread_run_on_cpu\(\s*"
-                            r"run_x86_production_init,\s*\"production_init\",\s*0,?\s*\)", boot)
-        self.assertIsNotNone(handoff, "submit the loader as a schedulable thread on the boot CPU")
+        # E2.4x (DEV-48): the loader is the boot_storage kernel thread, pinned to
+        # the boot CPU at the mounts; boot releases its program phase here.
+        spawn = re.search(r"task::kthread::kthread_run_on_cpu\(\s*"
+                          r"run_x86_boot_storage,\s*\"boot_storage\",\s*0,?\s*\)", source)
+        self.assertIsNotNone(spawn, "submit the loader as a schedulable thread on the boot CPU")
+        storage = source.split("fn run_x86_boot_storage() {", 1)[1].split("\n}", 1)[0]
+        # The program phase runs at the thread's park::Braked level, so its
+        # PID 1 read sleeps on the block wait (#3283 review).
+        self.assertIn("braked(run_x86_boot_programs);", storage)
+        programs = source.split("fn run_x86_boot_programs() {", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("run_x86_production_init();", programs)
+        handoff = re.search(r"release_x86_boot_storage\(\);", boot)
+        self.assertIsNotNone(handoff, "boot releases the loader's program phase")
         self.assertLess(handoff.end(), boot.index("CHECKPOINT B: scheduler has_runnable_threads"))
         self.assertEqual(boot[handoff.end():].count("kernel::per_cpu::preempt_enable();"), 2)
         loader = source.split("fn run_x86_production_init() {", 1)[1].split("\n}", 1)[0]
