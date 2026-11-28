@@ -17,8 +17,13 @@
 //! - seg_max (u32 at offset 12): Max number of segments
 //! - geometry (at offset 16): Disk geometry
 
+
+use super::blk_queue::{
+    request_type, Admission, BlkQueue, ChainStorage, Desc, DmaMemory, Drain, Limits, RangeTable,
+    RequestError, RingMemory, SubmitError, MAX_CHAINS, MAX_SEGMENTS,
+};
 use super::pci_transport::VirtioPciDevice;
-use super::queue::Virtqueue;
+use super::queue::{VirtqAvail, VirtqDesc, VirtqUsed, Virtqueue};
 use super::VirtioDevice;
 use crate::drivers::pci::Device as PciDevice;
 use crate::memory::frame_allocator;
@@ -35,52 +40,100 @@ const BLOCK_WAIT_SLICE_NS: u64 = 1_000_000_000;
 const BLOCK_SLOW_REPORT_INTERVAL_NS: u64 = 10_000_000_000;
 /// A wait that cannot sleep (before the scheduler, or on the boot thread
 /// before its timer runs) busy-polls the CPU, so it is bounded: past this the
-/// request is abandoned, the gate is wedged so its DMA buffers are never
+/// request is abandoned, the queue is stopped so its DMA buffers are not
 /// reused, and the boot carries on without the disk.
 const BLOCK_BOOTSTRAP_WAIT_LIMIT_NS: u64 = 30_000_000_000;
 /// When a slow request was last reported, so reports stay rate-limited.
 static LAST_SLOW_REPORT_NS: AtomicU64 = AtomicU64::new(0);
-const NO_COMPLETED_DESC: u32 = u32::MAX;
-const NO_COMPLETED_STATUS: u32 = u32::MAX;
+const WEDGED_ERROR: &str = "Block device wedged after an abandoned request";
+/// Callers admitted to one device at once.
+const MAX_ADMITTED: usize = 32;
+/// Data frames each chain slot owns: 64 KiB, the block cache's RUN_BYTES.
+const CHAIN_FRAMES: usize = MAX_SEGMENTS;
+/// Data frames one device may hold for its chains.
+const DATA_BUDGET_BYTES: usize = 512 * 1024;
 
+/// Admission to a device: a caller holds its sector range from before its
+/// first chain is built until its last result is taken. Overlapping ranges
+/// wait for each other when either writes; a flush holds the whole device.
 struct BlockRequestGate {
-    locked: AtomicBool,
     wedged: AtomicBool,
+    ranges: Mutex<RangeTable<MAX_ADMITTED>>,
+    /// Callers waiting for a range or for a chain slot.
     waiters: crate::task::waitqueue::WaitQueueHead,
 }
 
 struct BlockRequestGuard<'a> {
     gate: &'a BlockRequestGate,
+    entry: usize,
     release_on_drop: bool,
 }
 
 impl BlockRequestGate {
     const fn new() -> Self {
         Self {
-            locked: AtomicBool::new(false),
             wedged: AtomicBool::new(false),
+            ranges: Mutex::new(RangeTable::new()),
             waiters: crate::task::waitqueue::WaitQueueHead::new(),
         }
     }
 
-    fn lock(&self) -> Result<BlockRequestGuard<'_>, &'static str> {
-        if self.wedged.load(Ordering::Acquire) {
-            return Err("Block device wedged after an abandoned request");
-        }
+    /// Admit the sectors `[start, end)` now if they are free, behind any
+    /// flush that holds its turn.
+    fn try_admit(&self, start: u64, end: u64, write: bool) -> Option<usize> {
+        self.with_table(|table| table.try_admit(start, end, write))
+    }
 
+    /// One admission attempt. A flush (`flush` is its turn) that has to wait
+    /// holds its turn; a caller that cannot sleep tries once, ahead of
+    /// waiting flushes, because it cannot wait its turn.
+    fn attempt(&self, start: u64, end: u64, write: bool, flush: Option<&mut bool>, can_sleep: bool) -> Option<usize> {
+        match flush {
+            _ if !can_sleep => self.with_table(|table| table.try_admit_ahead(start, end, write)),
+            Some(queued) => self.with_table(|table| table.try_admit_flush(queued)),
+            None => self.try_admit(start, end, write),
+        }
+    }
+
+    fn with_table(&self, f: impl FnOnce(&mut RangeTable<MAX_ADMITTED>) -> Admission) -> Option<usize> {
+        x86_64::instructions::interrupts::without_interrupts(|| match f(&mut self.ranges.lock()) {
+            Admission::Admitted(entry) => Some(entry),
+            Admission::Wait => None,
+        })
+    }
+
+    /// Admit the sectors `[start, end)`, waiting for conflicting requests.
+    fn admit(&self, start: u64, end: u64, write: bool) -> Result<BlockRequestGuard<'_>, &'static str> {
+        self.admit_claim(start, end, write, false)
+    }
+
+    /// Admit a flush for the whole device, waiting its turn.
+    fn admit_flush(&self) -> Result<BlockRequestGuard<'_>, &'static str> {
+        self.admit_claim(0, u64::MAX, true, true)
+    }
+
+    fn admit_claim(&self, start: u64, end: u64, write: bool, flush: bool) -> Result<BlockRequestGuard<'_>, &'static str> {
+        if self.wedged.load(Ordering::Acquire) {
+            return Err(WEDGED_ERROR);
+        }
+        let mut queued = false;
+        let entry = self.wait_for_admission(start, end, write, flush.then_some(&mut queued));
+        if queued {
+            // A flush that gave up: requests waiting behind it go ahead.
+            x86_64::instructions::interrupts::without_interrupts(|| self.ranges.lock().cancel_flush(&mut queued));
+            self.waiters.wake_up();
+        }
+        entry.map(|entry| BlockRequestGuard { gate: self, entry, release_on_drop: true })
+    }
+
+    fn wait_for_admission(&self, start: u64, end: u64, write: bool, mut flush: Option<&mut bool>) -> Result<usize, &'static str> {
         loop {
-            if self
-                .locked
-                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-            {
-                return Ok(BlockRequestGuard {
-                    gate: self,
-                    release_on_drop: true,
-                });
+            let can_sleep = block_request_gate_can_sleep();
+            if let Some(entry) = self.attempt(start, end, write, flush.as_deref_mut(), can_sleep) {
+                return Ok(entry);
             }
 
-            if !block_request_gate_can_sleep() {
+            if !can_sleep {
                 return Err("Block request already in progress");
             }
 
@@ -94,27 +147,32 @@ impl BlockRequestGate {
 
             if self.wedged.load(Ordering::Acquire) {
                 self.waiters.finish_wait();
-                return Err("Block device wedged after an abandoned request");
+                return Err(WEDGED_ERROR);
             }
 
-            if self.locked.load(Ordering::Acquire) {
-                crate::task::waitqueue::schedule_current_wait();
+            // Published before this check, so a release after it wakes us.
+            if let Some(entry) = self.attempt(start, end, write, flush.as_deref_mut(), can_sleep) {
+                self.waiters.finish_wait();
+                return Ok(entry);
             }
+            crate::task::waitqueue::schedule_current_wait();
             self.waiters.finish_wait();
 
             if self.wedged.load(Ordering::Acquire) {
-                return Err("Block device wedged after an abandoned request");
+                return Err(WEDGED_ERROR);
             }
         }
     }
 
-    fn unlock(&self) {
-        self.locked.store(false, Ordering::Release);
-        self.waiters.wake_up_one();
+    fn release(&self, entry: usize) {
+        x86_64::instructions::interrupts::without_interrupts(|| self.ranges.lock().release(entry));
+        self.waiters.wake_up();
     }
 }
 
 impl BlockRequestGuard<'_> {
+    /// The device keeps a request it may still complete: its range stays
+    /// held and later callers are refused.
     fn wedge(mut self) {
         self.release_on_drop = false;
         self.gate.wedged.store(true, Ordering::Release);
@@ -125,7 +183,7 @@ impl BlockRequestGuard<'_> {
 impl Drop for BlockRequestGuard<'_> {
     fn drop(&mut self) {
         if self.release_on_drop {
-            self.gate.unlock();
+            self.gate.release(self.entry);
         }
     }
 }
@@ -146,19 +204,6 @@ fn block_request_gate_can_sleep() -> bool {
     }
 }
 
-/// VirtIO block request types
-mod request_type {
-    pub const IN: u32 = 0; // Read from device
-    #[allow(dead_code)] // Part of block device API, used by write_sector
-    pub const OUT: u32 = 1; // Write to device
-    pub const FLUSH: u32 = 4; // Persist cached writes
-}
-
-/// VirtIO block status codes
-mod status_code {
-    pub const OK: u8 = 0;
-}
-
 /// VirtIO block feature bits
 mod features {
     /// Maximum size of any single segment is in size_max
@@ -171,21 +216,8 @@ mod features {
     pub const FLUSH: u32 = 1 << 9;
 }
 
-/// VirtIO block request header
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct VirtioBlkReq {
-    /// Request type (IN, OUT, FLUSH, etc.)
-    type_: u32,
-    /// Reserved
-    reserved: u32,
-    /// Starting sector for the request
-    sector: u64,
-}
-
 /// Sector size in bytes
 pub const SECTOR_SIZE: usize = 512;
-const DMA_DATA_SIZE: usize = 4096;
 
 /// Sectors the sector cache holds: 512 KiB.
 const CACHE_SECTORS: usize = 1024;
@@ -262,17 +294,6 @@ impl SectorCache {
     }
 }
 
-/// Cached DMA buffers for I/O operations
-/// These are allocated once and reused to prevent frame exhaustion
-struct DmaBuffers {
-    /// Header buffer (physical, virtual)
-    header: (u64, u64),
-    /// Data buffer (physical, virtual)
-    data: (u64, u64),
-    /// Status buffer (physical, virtual)
-    status: (u64, u64),
-}
-
 /// Both PCI interfaces share the same split queue, DMA buffers and completions.
 enum BlockTransport {
     Legacy(VirtioDevice),
@@ -312,6 +333,7 @@ fn monotonic_now_ns() -> u64 {
     seconds.saturating_mul(1_000_000_000).saturating_add(nanos)
 }
 
+
 /// Report a request the device has not completed yet. One line at most per
 /// interval across all devices; it changes nothing about the request.
 fn report_slow_request(device: &VirtioBlockDevice, request: u32, waited_ns: u64) {
@@ -329,10 +351,11 @@ fn report_slow_request(device: &VirtioBlockDevice, request: u32, waited_ns: u64)
     {
         // Read used memory and controller state only. Reading the VirtIO ISR
         // here would clear the device's interrupt and steal its completion.
-        let (used, seen, pending, completed, apic_state) =
+        let (used, seen, outstanding, apic_state) =
             x86_64::instructions::interrupts::without_interrupts(|| {
-                let (used, seen) = device
-                    .with_queue(|queue| (queue.debug_used_idx(), queue.debug_last_used_idx()));
+                let (used, seen, outstanding) = device.with_engine(|engine| {
+                    (engine.device_used_idx(), engine.last_used(), engine.outstanding())
+                });
                 #[cfg(target_arch = "x86_64")]
                 let apic_state = if crate::arch_impl::x86_64::apic::active() {
                     crate::arch_impl::x86_64::ioapic::route_state(device.interrupt_line).map(
@@ -348,16 +371,10 @@ fn report_slow_request(device: &VirtioBlockDevice, request: u32, waited_ns: u64)
                 };
                 #[cfg(not(target_arch = "x86_64"))]
                 let apic_state: Option<(u32, u32, u8, bool, bool)> = None;
-                (
-                    used,
-                    seen,
-                    device.pending_token.load(Ordering::Acquire),
-                    device.completed_desc.load(Ordering::Acquire),
-                    apic_state,
-                )
+                (used, seen, outstanding, apic_state)
             });
-        log::warn!("VirtIO block: request type {} still waiting after {} ms; IRQ {} used={} last_seen={} pending_token={} completed_desc={}",
-            request, waited_ns / 1_000_000, device.interrupt_line, used, seen, pending, completed);
+        log::warn!("VirtIO block: request type {} still waiting after {} ms; IRQ {} used={} last_seen={} outstanding={}",
+            request, waited_ns / 1_000_000, device.interrupt_line, used, seen, outstanding);
         if let Some((low, high, vector, irr, isr)) = apic_state {
             log::warn!("VirtIO block: IRQ {} vector {} low={:#010x} high={:#010x} remote_irr={} delivery_pending={} masked={} LAPIC_IRR={} LAPIC_ISR={}",
                 device.interrupt_line, vector, low, high, low & (1 << 14) != 0,
@@ -366,35 +383,113 @@ fn report_slow_request(device: &VirtioBlockDevice, request: u32, waited_ns: u64)
     }
 }
 
+/// The device's split ring, in the queue memory `Virtqueue` allocated.
+struct PciRing {
+    desc: *mut VirtqDesc,
+    avail: *mut VirtqAvail,
+    used: *mut VirtqUsed,
+}
+
+// Reached only through the device's engine lock.
+unsafe impl Send for PciRing {}
+
+impl RingMemory for PciRing {
+    fn write_desc(&mut self, index: u16, desc: Desc) {
+        let desc = VirtqDesc { addr: desc.addr, len: desc.len, flags: desc.flags, next: desc.next };
+        unsafe { core::ptr::write_volatile(self.desc.add(index as usize), desc) }
+    }
+
+    fn write_avail_entry(&mut self, pos: u16, head: u16) {
+        unsafe { core::ptr::write_volatile(&raw mut (*self.avail).ring[pos as usize], head) }
+    }
+
+    fn barrier_before_avail_idx(&mut self) {
+        core::sync::atomic::fence(Ordering::SeqCst);
+    }
+
+    fn write_avail_idx(&mut self, idx: u16) {
+        unsafe { core::ptr::write_volatile(&raw mut (*self.avail).idx, idx) }
+    }
+
+    fn barrier_before_notify(&mut self) {
+        core::sync::atomic::fence(Ordering::SeqCst);
+    }
+
+    fn read_used_idx(&mut self) -> u16 {
+        let idx = unsafe { core::ptr::read_volatile(&raw const (*self.used).idx) };
+        core::sync::atomic::fence(Ordering::SeqCst);
+        idx
+    }
+
+    fn read_used_elem(&mut self, pos: u16) -> (u32, u32) {
+        unsafe {
+            let elem = &raw const (*self.used).ring[pos as usize];
+            (core::ptr::read_volatile(&raw const (*elem).id), core::ptr::read_volatile(&raw const (*elem).len))
+        }
+    }
+}
+
+/// The chains' buffers through the direct map.
+struct DirectMap;
+
+impl DmaMemory for DirectMap {
+    fn write_bytes(&mut self, addr: u64, bytes: &[u8]) {
+        let virt = addr + crate::memory::physical_memory_offset().as_u64();
+        unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), virt as *mut u8, bytes.len()) }
+    }
+
+    fn read_bytes(&mut self, addr: u64, out: &mut [u8]) {
+        let virt = addr + crate::memory::physical_memory_offset().as_u64();
+        unsafe { core::ptr::copy_nonoverlapping(virt as *const u8, out.as_mut_ptr(), out.len()) }
+    }
+}
+
+/// One chain slot's completion. Its token is the slot's engine tag: reset
+/// and tagged under the queue lock when the slot is reserved, so the token a
+/// drain completes is the current owner's (the host check
+/// a_slot_reports_the_tag_of_the_owner_whose_chain_completed).
+struct SlotCompletion {
+    completion: Completion,
+}
+
+impl SlotCompletion {
+    const fn new() -> Self {
+        Self { completion: Completion::new() }
+    }
+}
+
+/// The data a transfer moves: a read's destination or a write's source.
+enum Data<'a> {
+    Read(&'a mut [u8]),
+    Write(&'a [u8]),
+    Flush,
+}
+
 /// VirtIO block device driver
 pub struct VirtioBlockDevice {
     /// VirtIO device abstraction
     device: BlockTransport,
     interrupt_line: u8,
-    /// Request virtqueue
-    queue: Mutex<Virtqueue>,
-    /// Serializes the shared DMA buffers without involving the IRQ handler.
+    /// The queue memory; the engine below builds and drains its ring.
+    _queue: Virtqueue,
+    /// Request chains in flight on queue 0. The interrupt handler drains it,
+    /// so thread-side holders mask interrupts (`with_engine`).
+    engine: Mutex<BlkQueue<PciRing>>,
+    /// Admission by sector range, and the waiters for ranges and slots.
     request_gate: BlockRequestGate,
-    /// ISR-to-submitter completion for the single outstanding request.
-    completion: Completion,
-    /// Monotonic non-zero token expected by the current waiter.
+    /// ISR-to-submitter completion, one per chain slot.
+    completions: [SlotCompletion; MAX_CHAINS],
+    /// Monotonic nonzero token source for the completions.
     next_token: AtomicU32,
-    /// Token currently armed for IRQ completion; 0 means no armed request.
-    pending_token: AtomicU32,
-    /// Descriptor head drained by the interrupt handler.
-    completed_desc: AtomicU32,
-    /// Status byte read by the interrupt handler.
-    completed_status: AtomicU32,
     /// Disk capacity in sectors
     capacity: u64,
     flush_supported: bool,
     read_only: bool,
-    max_transfer_bytes: usize,
+    /// Data bytes one chain carries.
+    chain_bytes: usize,
     writes_pending: AtomicBool,
     /// Number of completed operations (for stats)
     ops_completed: AtomicU64,
-    /// Cached DMA buffers (protected by queue mutex)
-    dma_buffers: DmaBuffers,
     /// Recently transferred sectors, when the allocation succeeded.
     cache: Option<SectorCache>,
 }
@@ -485,14 +580,28 @@ impl VirtioBlockDevice {
                 )
             };
 
-        // SIZE_MAX bounds a single data descriptor when negotiated. The cached
-        // DMA buffer is one physically contiguous page on either transport.
-        let size_max = match &device {
-            BlockTransport::Legacy(d) => if d.read_device_features() & features::SIZE_MAX != 0 { d.read_config_u32(8) } else { 0 },
-            BlockTransport::Modern(d) => if d.device_features() & features::SIZE_MAX as u64 != 0 { d.read_config_u32(8) } else { 0 },
+        // SIZE_MAX bounds one data descriptor and SEG_MAX a request's data
+        // descriptors when negotiated; only the modern interface's used
+        // lengths are trusted (virtio 1.2 section 5.2.6.3).
+        let (offered, modern) = match &device {
+            BlockTransport::Legacy(d) => (u64::from(d.read_device_features()), false),
+            BlockTransport::Modern(d) => (d.device_features(), true),
         };
-        let max_transfer_bytes = if size_max == 0 { DMA_DATA_SIZE } else { DMA_DATA_SIZE.min(size_max as usize) } / SECTOR_SIZE * SECTOR_SIZE;
-        if max_transfer_bytes == 0 { return Err("VirtIO maximum segment smaller than a sector"); }
+        let config_u32 = |offset: u16| match &device {
+            BlockTransport::Legacy(d) => d.read_config_u32(offset),
+            BlockTransport::Modern(d) => d.read_config_u32(offset as usize),
+        };
+        let limits = Limits {
+            size_max: if offered & features::SIZE_MAX as u64 != 0 { config_u32(8) } else { 0 },
+            seg_max: if offered & features::SEG_MAX as u64 != 0 { config_u32(12) } else { 0 },
+            exact_used_len: modern,
+        };
+        if limits.size_max != 0 && (limits.size_max as usize) < SECTOR_SIZE {
+            return Err("VirtIO maximum segment smaller than a sector");
+        }
+        if offered & features::SEG_MAX as u64 != 0 && limits.seg_max == 0 {
+            return Err("VirtIO block device allows no data segments");
+        }
 
         log::info!(
             "VirtIO block: capacity {} sectors ({} MiB)",
@@ -500,41 +609,71 @@ impl VirtioBlockDevice {
             capacity / 2048
         );
 
-        // Pre-allocate DMA buffers for I/O operations
-        // These are reused for all read/write operations to prevent frame exhaustion
-        let header_buf = Self::alloc_dma_buffer(16)?;
-        let data_buf = Self::alloc_dma_buffer(DMA_DATA_SIZE)?;
-        let status_buf = Self::alloc_dma_buffer(1)?;
+        // Headers and status bytes share one page; data frames are taken one
+        // by one, within the budget and the ring.
+        let control = Self::alloc_dma_page()?;
+        let queue_size = queue.queue_size();
+        // A small ring gets a shorter chain rather than no device.
+        let (chains, frames) = limits
+            .chain_plan(queue_size, CHAIN_FRAMES, DATA_BUDGET_BYTES / 4096)
+            .ok_or("VirtIO block queue too small for one request")?;
+        let mut storage = [ChainStorage::EMPTY; MAX_CHAINS];
+        let mut made = 0;
+        'chains: for (index, chain) in storage.iter_mut().enumerate().take(chains) {
+            let mut taken = [None; CHAIN_FRAMES];
+            chain.header = control + 16 * index as u64;
+            chain.status = control + 2048 + 16 * index as u64;
+            for count in 0..frames {
+                match frame_allocator::allocate_frame() {
+                    Some(frame) => {
+                        chain.frames[count] = frame.start_address().as_u64();
+                        taken[count] = Some(frame);
+                    }
+                    None => {
+                        taken.iter().flatten().for_each(|frame| frame_allocator::deallocate_frame(*frame));
+                        break 'chains;
+                    }
+                }
+            }
+            chain.frame_count = frames;
+            made += 1;
+        }
+        if made == 0 {
+            // One chain over one page, as before.
+            let page = Self::alloc_dma_page()?;
+            storage[0].header = control;
+            storage[0].status = control + 2048;
+            storage[0].frames[0] = page;
+            storage[0].frame_count = 1;
+            made = 1;
+        }
+        let (desc, avail, used) = queue.raw_rings();
+        let engine = BlkQueue::new(PciRing { desc, avail, used }, queue_size, limits, &storage[..made])
+            .map_err(|_| "VirtIO block chain storage does not fit the queue")?;
+        let chain_bytes = engine.chain_bytes();
 
-        let dma_buffers = DmaBuffers {
-            header: header_buf,
-            data: data_buf,
-            status: status_buf,
-        };
+        log::info!(
+            "VirtIO block: Device initialization complete (queue {}, {} chains of {} KiB)",
+            queue_size,
+            made,
+            chain_bytes / 1024
+        );
 
-        log::info!("VirtIO block: Device initialization complete (with cached DMA buffers)");
-
-        let read_only = match &device {
-            BlockTransport::Legacy(d) => d.read_device_features() & features::RO != 0,
-            BlockTransport::Modern(d) => d.device_features() & features::RO as u64 != 0,
-        };
+        let read_only = offered & features::RO as u64 != 0;
         Ok(VirtioBlockDevice {
             device,
             interrupt_line: pci_dev.interrupt_line,
-            queue: Mutex::new(queue),
+            _queue: queue,
+            engine: Mutex::new(engine),
             request_gate: BlockRequestGate::new(),
-            completion: Completion::new(),
+            completions: [const { SlotCompletion::new() }; MAX_CHAINS],
             next_token: AtomicU32::new(0),
-            pending_token: AtomicU32::new(0),
-            completed_desc: AtomicU32::new(NO_COMPLETED_DESC),
-            completed_status: AtomicU32::new(NO_COMPLETED_STATUS),
             capacity,
             flush_supported,
             read_only,
-            max_transfer_bytes,
+            chain_bytes,
             writes_pending: AtomicBool::new(true),
             ops_completed: AtomicU64::new(0),
-            dma_buffers,
             cache: SectorCache::new(),
         })
     }
@@ -551,75 +690,40 @@ impl VirtioBlockDevice {
         )
     }
 
-    /// Allocate a DMA buffer of the given size
-    ///
-    /// Returns (physical_address, virtual_address)
-    fn alloc_dma_buffer(size: usize) -> Result<(u64, u64), &'static str> {
-        if size > 4096 {
-            return Err("Buffer too large for single page");
-        }
-
+    /// Allocate one zeroed DMA page, by physical address.
+    fn alloc_dma_page() -> Result<u64, &'static str> {
         let frame = frame_allocator::allocate_frame().ok_or("Failed to allocate DMA buffer")?;
-
         let phys = frame.start_address().as_u64();
-        let phys_offset = crate::memory::physical_memory_offset();
-        let virt = phys + phys_offset.as_u64();
-
-        // Zero the buffer
+        let virt = phys + crate::memory::physical_memory_offset().as_u64();
         unsafe {
             core::ptr::write_bytes(virt as *mut u8, 0, 4096);
         }
-
-        Ok((phys, virt))
+        Ok(phys)
     }
 
     fn next_completion_token(&self) -> u32 {
-        let mut token = self
-            .next_token
-            .fetch_add(1, Ordering::AcqRel)
-            .wrapping_add(1);
-        if token == 0 {
-            token = self
-                .next_token
-                .fetch_add(1, Ordering::AcqRel)
-                .wrapping_add(1);
+        loop {
+            let token = self.next_token.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
+            if token != 0 {
+                return token;
+            }
         }
-        token
-    }
-
-    fn prepare_completion_wait(&self) -> u32 {
-        let token = self.next_completion_token();
-        self.completion.reset();
-        self.completed_desc
-            .store(NO_COMPLETED_DESC, Ordering::Release);
-        self.completed_status
-            .store(NO_COMPLETED_STATUS, Ordering::Release);
-        self.pending_token.store(token, Ordering::Release);
-        token
-    }
-
-    fn clear_completion_state(&self) {
-        self.pending_token.store(0, Ordering::Release);
-        self.completed_desc
-            .store(NO_COMPLETED_DESC, Ordering::Release);
-        self.completed_status
-            .store(NO_COMPLETED_STATUS, Ordering::Release);
     }
 
     /// Wait for the device to complete the published request.
     ///
     /// The device owns the descriptors and DMA buffers until it completes the
-    /// request, and a slow device is not a failed one, so, as in Linux's
-    /// virtio-blk, there is no timeout: the wait ends when the device
-    /// completes the request. It sleeps in slices only to notice a device
-    /// that has failed, the one case where the request is abandoned. A wait
-    /// that cannot sleep spins instead, and is abandoned past the bootstrap
-    /// limit rather than spinning the boot CPU forever.
-    fn wait_for_completion(&self, token: u32, request: u32) -> Result<(), &'static str> {
+    /// request, and a slow device is not a failed one, so there is no
+    /// timeout: the wait ends when the device completes the request. It
+    /// sleeps in slices only to notice a device that has failed, the one case
+    /// where the request is abandoned. A wait that cannot sleep spins
+    /// instead, and is abandoned past the bootstrap limit rather than
+    /// spinning the boot CPU forever.
+    fn wait_for_completion(&self, slot: usize, token: u32, request: u32) -> Result<(), &'static str> {
         let started_ns = monotonic_now_ns();
         let sleeps = crate::task::completion::wait_sleeps();
         loop {
-            if let Ok(true) = self
+            if let Ok(true) = self.completions[slot]
                 .completion
                 .wait_timeout_uninterruptible(token, BLOCK_WAIT_SLICE_NS)
             {
@@ -647,248 +751,241 @@ impl VirtioBlockDevice {
         true
     }
 
-    /// Run `f` with the queue locked and interrupts masked. The interrupt
-    /// handler takes the same lock to drain a completion, so it must never
+    /// Run `f` with the engine locked and interrupts masked. The interrupt
+    /// handler takes the same lock to drain completions, so it must not
     /// find the lock held by the thread it interrupted.
-    fn with_queue<R>(&self, f: impl FnOnce(&mut Virtqueue) -> R) -> R {
-        x86_64::instructions::interrupts::without_interrupts(|| f(&mut self.queue.lock()))
+    fn with_engine<R>(&self, f: impl FnOnce(&mut BlkQueue<PciRing>) -> R) -> R {
+        x86_64::instructions::interrupts::without_interrupts(|| f(&mut self.engine.lock()))
     }
 
-    fn take_completed_request(&self) -> Result<(u16, u8), &'static str> {
-        let desc = self
-            .completed_desc
-            .swap(NO_COMPLETED_DESC, Ordering::AcqRel);
-        if desc == NO_COMPLETED_DESC {
-            return Err("Block request woke without completion");
+    /// The owner tags of the slots that have owners, for waking them after a stop.
+    fn owner_tags(engine: &BlkQueue<PciRing>, out: &mut [(usize, u32); MAX_CHAINS]) -> usize {
+        let mut count = 0;
+        for slot in 0..engine.chains() {
+            let tag = engine.tag(slot);
+            if tag != 0 {
+                out[count] = (slot, tag);
+                count += 1;
+            }
         }
-        let status = self.completed_status.load(Ordering::Acquire);
-        if status == NO_COMPLETED_STATUS {
-            return Err("Block request woke without status");
-        }
-        Ok((desc as u16, status as u8))
+        count
     }
 
-    /// Read consecutive sectors in page-sized DMA requests.
+    /// Stop the queue after an abandoned wait: no chain it holds is completed
+    /// or reused, each waiter is woken, and later callers are refused.
+    fn stop(&self, guard: BlockRequestGuard<'_>) {
+        let mut owners = [(0usize, 0u32); MAX_CHAINS];
+        let count = self.with_engine(|engine| {
+            engine.stop();
+            Self::owner_tags(engine, &mut owners)
+        });
+        for &(slot, tag) in &owners[..count] {
+            self.completions[slot].completion.complete(tag);
+        }
+        guard.wedge();
+    }
+
+    /// Read consecutive sectors in a window of chains.
     pub fn read_sectors(&self, start_sector: u64, buffer: &mut [u8]) -> Result<(), &'static str> {
-        self.validate_transfer(start_sector, buffer.len())?;
-        let mut sector = start_sector;
-        for chunk in buffer.chunks_mut(self.max_transfer_bytes) {
-            self.read_chunk(sector, chunk)?;
-            sector += (chunk.len() / SECTOR_SIZE) as u64;
-        }
-        Ok(())
-    }
-
-    /// Write consecutive sectors in page-sized DMA requests.
-    pub fn write_sectors(&self, start_sector: u64, buffer: &[u8]) -> Result<(), &'static str> {
-        self.validate_transfer(start_sector, buffer.len())?;
-        let mut sector = start_sector;
-        for chunk in buffer.chunks(self.max_transfer_bytes) {
-            self.write_chunk(sector, chunk)?;
-            sector += (chunk.len() / SECTOR_SIZE) as u64;
-        }
-        Ok(())
-    }
-
-    fn validate_transfer(&self, sector: u64, len: usize) -> Result<(), &'static str> {
-        if len == 0 || len % SECTOR_SIZE != 0 { return Err("Buffer size must be a nonzero multiple of 512"); }
-        if sector.checked_add((len / SECTOR_SIZE) as u64).is_none_or(|end| end > self.capacity) {
-            return Err("Sector out of range");
-        }
-        Ok(())
-    }
-
-    /// Submit a read request
-    ///
-    /// This is an asynchronous operation. The data will be available after
-    /// the device signals completion via interrupt.
-    pub fn read_sector(&self, sector: u64, buffer: &mut [u8]) -> Result<(), &'static str> {
-        if buffer.len() < SECTOR_SIZE { return Err("Buffer too small"); }
-        self.read_chunk(sector, &mut buffer[..SECTOR_SIZE])
-    }
-
-    fn read_chunk(&self, sector: u64, buffer: &mut [u8]) -> Result<(), &'static str> {
-        if buffer.len() < SECTOR_SIZE {
-            return Err("Buffer too small");
-        }
-        if sector >= self.capacity {
-            return Err("Sector out of range");
-        }
-        if self.cache.as_ref().is_some_and(|cache| cache.lookup(sector, buffer)) {
+        let end = self.validate_transfer(start_sector, buffer.len())?;
+        if self.cache.as_ref().is_some_and(|cache| cache.lookup(start_sector, buffer)) {
             return Ok(());
         }
         if !self.irq_completion_available() {
             return Err("Block IRQ completion unavailable before interrupts are enabled");
         }
-
-        // The DMA header/data/status buffers are shared across callers. Keep
-        // one request in flight, but do not make the IRQ handler take this gate.
-        let request_guard = self.request_gate.lock()?;
-        let completion_token = self.prepare_completion_wait();
-
-        // Use cached DMA buffers (protected by queue mutex)
-        let (header_phys, header_virt) = self.dma_buffers.header;
-        let (data_phys, data_virt) = self.dma_buffers.data;
-        let (status_phys, status_virt) = self.dma_buffers.status;
-
-        let added = self.with_queue(|queue| {
-            // Set up request header using volatile writes.
-            unsafe {
-                let header = header_virt as *mut VirtioBlkReq;
-                core::ptr::write_volatile(&mut (*header).type_, request_type::IN);
-                core::ptr::write_volatile(&mut (*header).reserved, 0);
-                core::ptr::write_volatile(&mut (*header).sector, sector);
-                core::ptr::write_volatile(status_virt as *mut u8, 0xff);
-            }
-            core::sync::atomic::fence(Ordering::SeqCst);
-
-            let buffers = [
-                (header_phys, 16, false),              // Header: device reads
-                (data_phys, buffer.len() as u32, true), // Data: device writes
-                (status_phys, 1, true),                // Status: device writes
-            ];
-
-            queue.add_chain(&buffers).is_some()
-        });
-        if !added {
-            self.clear_completion_state();
-            return Err("Queue full");
-        }
-
-        core::sync::atomic::fence(Ordering::SeqCst);
-        self.device.notify_queue(0);
-
-        if let Err(e) = self.wait_for_completion(completion_token, request_type::IN) {
-            request_guard.wedge();
-            return Err(e);
-        }
-
-        let (completed_desc, status) = match self.take_completed_request() {
-            Ok(completed) => completed,
-            Err(e) => {
-                self.clear_completion_state();
-                return Err(e);
-            }
-        };
-        let result = self.with_queue(|queue| {
-            // Check status
-            if status != status_code::OK {
-                queue.free_chain(completed_desc);
-                return Err("Device returned error status");
-            }
-
-            // Copy data to user buffer
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    data_virt as *const u8,
-                    buffer.as_mut_ptr(),
-                    buffer.len(),
-                );
-            }
-
-            // Free descriptor chain
-            queue.free_chain(completed_desc);
-            Ok(())
-        });
-
-        self.clear_completion_state();
-        result?;
-        if let Some(cache) = &self.cache {
-            cache.store(sector, buffer);
-        }
-        self.ops_completed.fetch_add(1, Ordering::Relaxed);
-        drop(request_guard);
-
-        Ok(())
+        let guard = self.request_gate.admit(start_sector, end, false)?;
+        self.transfer(guard, start_sector, Data::Read(buffer))
     }
 
-    /// Submit a write request
-    #[allow(dead_code)] // Part of public block device API
-    pub fn write_sector(&self, sector: u64, buffer: &[u8]) -> Result<(), &'static str> {
-        if buffer.len() < SECTOR_SIZE { return Err("Buffer too small"); }
-        self.write_chunk(sector, &buffer[..SECTOR_SIZE])
-    }
-
-    fn write_chunk(&self, sector: u64, buffer: &[u8]) -> Result<(), &'static str> {
-        if buffer.len() < SECTOR_SIZE {
-            return Err("Buffer too small");
-        }
+    /// Write consecutive sectors in a window of chains.
+    pub fn write_sectors(&self, start_sector: u64, buffer: &[u8]) -> Result<(), &'static str> {
+        let end = self.validate_transfer(start_sector, buffer.len())?;
         let disk = crate::block::HardwareDisk::Virtio(self as *const Self as usize);
-        if self.read_only || !crate::block::hardware_write_allowed(disk, sector, buffer.len() / SECTOR_SIZE) {
+        if self.read_only || !crate::block::hardware_write_allowed(disk, start_sector, buffer.len() / SECTOR_SIZE) {
             return Err("Read-only filesystem");
-        }
-        if sector >= self.capacity {
-            return Err("Sector out of range");
         }
         if !self.irq_completion_available() {
             return Err("Block IRQ completion unavailable before interrupts are enabled");
         }
+        let guard = self.request_gate.admit(start_sector, end, true)?;
+        self.transfer(guard, start_sector, Data::Write(buffer))
+    }
 
-        let request_guard = self.request_gate.lock()?;
-        let completion_token = self.prepare_completion_wait();
+    fn validate_transfer(&self, sector: u64, len: usize) -> Result<u64, &'static str> {
+        if len == 0 || len % SECTOR_SIZE != 0 { return Err("Buffer size must be a nonzero multiple of 512"); }
+        sector
+            .checked_add((len / SECTOR_SIZE) as u64)
+            .filter(|end| *end <= self.capacity)
+            .ok_or("Sector out of range")
+    }
 
-        // Use cached DMA buffers (protected by queue mutex)
-        let (header_phys, header_virt) = self.dma_buffers.header;
-        let (data_phys, data_virt) = self.dma_buffers.data;
-        let (status_phys, status_virt) = self.dma_buffers.status;
+    /// Read one sector into the start of `buffer`.
+    pub fn read_sector(&self, sector: u64, buffer: &mut [u8]) -> Result<(), &'static str> {
+        if buffer.len() < SECTOR_SIZE { return Err("Buffer too small"); }
+        self.read_sectors(sector, &mut buffer[..SECTOR_SIZE])
+    }
 
-        let added = self.with_queue(|queue| {
-            unsafe {
-                let header = header_virt as *mut VirtioBlkReq;
-                core::ptr::write_volatile(&mut (*header).type_, request_type::OUT);
-                core::ptr::write_volatile(&mut (*header).reserved, 0);
-                core::ptr::write_volatile(&mut (*header).sector, sector);
-                core::ptr::write_volatile(status_virt as *mut u8, 0xff);
-                core::ptr::copy_nonoverlapping(buffer.as_ptr(), data_virt as *mut u8, buffer.len());
-            }
+    /// Write one sector from the start of `buffer`.
+    #[allow(dead_code)] // Part of public block device API
+    pub fn write_sector(&self, sector: u64, buffer: &[u8]) -> Result<(), &'static str> {
+        if buffer.len() < SECTOR_SIZE { return Err("Buffer too small"); }
+        self.write_sectors(sector, &buffer[..SECTOR_SIZE])
+    }
 
-            let buffers = [
-                (header_phys, 16, false),               // Header: device reads
-                (data_phys, buffer.len() as u32, false), // Data: device reads
-                (status_phys, 1, true),                 // Status: device writes
-            ];
-
-            queue.add_chain(&buffers).is_some()
-        });
-        if !added {
-            self.clear_completion_state();
-            return Err("Queue full");
-        }
-
-        core::sync::atomic::fence(Ordering::SeqCst);
-        self.writes_pending.store(true, Ordering::Release);
-        self.device.notify_queue(0);
-
-        if let Err(e) = self.wait_for_completion(completion_token, request_type::OUT) {
-            self.invalidate_cached(sector, buffer.len());
-            request_guard.wedge();
-            return Err(e);
-        }
-
-        let (completed_desc, status) = match self.take_completed_request() {
-            Ok(completed) => completed,
-            Err(e) => {
-                self.clear_completion_state();
-                self.invalidate_cached(sector, buffer.len());
-                return Err(e);
-            }
+    /// One synchronous request of any length: whole chains, a bounded window
+    /// of them on the device at once, one notification per window. The
+    /// caller holds admission for the whole range, so the sector cache
+    /// changes in device order. Each chain issued is waited for, even after
+    /// another has failed; the first failure is returned. A wait that has to
+    /// be abandoned stops the device instead.
+    fn transfer(&self, guard: BlockRequestGuard<'_>, start_sector: u64, mut data: Data<'_>) -> Result<(), &'static str> {
+        let (kind, total) = match &data {
+            Data::Read(buffer) => (request_type::IN, buffer.len()),
+            Data::Write(buffer) => (request_type::OUT, buffer.len()),
+            Data::Flush => (request_type::FLUSH, 0),
         };
-        // Free descriptor chain
-        self.with_queue(|queue| queue.free_chain(completed_desc));
-        self.clear_completion_state();
-
-        // Check status
-        if status != status_code::OK {
-            self.invalidate_cached(sector, buffer.len());
-            return Err("Device returned error status");
+        let chunk = self.chain_bytes;
+        // The boot thread's bounded polling keeps one request on the device.
+        let window = if crate::task::completion::wait_sleeps() { MAX_CHAINS } else { 1 };
+        let chunks = if total == 0 { 1 } else { total.div_ceil(chunk) };
+        // (slot, token, chunk index), oldest first.
+        let mut in_flight = [(0usize, 0u32, 0usize); MAX_CHAINS];
+        let (mut head, mut count) = (0usize, 0usize);
+        let mut next = 0usize;
+        let mut failure: Option<&'static str> = None;
+        // Set before any chain is built: another caller's publish can make
+        // this write visible, so our own publish result does not tell whether
+        // the device has it. Admission keeps a flush out until we return.
+        if kind == request_type::OUT {
+            self.writes_pending.store(true, Ordering::Release);
         }
 
-        if let Some(cache) = &self.cache {
-            cache.store(sector, buffer);
-        }
-        self.ops_completed.fetch_add(1, Ordering::Relaxed);
-        drop(request_guard);
+        loop {
+            let mut published = false;
+            while failure.is_none() && next < chunks && count < window {
+                let offset = next * chunk;
+                let len = (total - offset).min(chunk);
+                let sector = start_sector + (offset / SECTOR_SIZE) as u64;
+                let token = self.next_completion_token();
+                let submitted = self.with_engine(|engine| {
+                    if engine.is_stopped() {
+                        return Err(Some(SubmitError::Stopped));
+                    }
+                    let slot = engine.reserve(token).ok_or(None)?;
+                    self.completions[slot].completion.reset();
+                    let write = match &data {
+                        Data::Write(buffer) => Some(&buffer[offset..offset + len]),
+                        _ => None,
+                    };
+                    match engine.submit(&mut DirectMap, slot, kind, sector, write, len) {
+                        Ok(_) => Ok(slot),
+                        Err(error) => {
+                            engine.unreserve(slot);
+                            Err(Some(error))
+                        }
+                    }
+                });
+                match submitted {
+                    Ok(slot) => {
+                        in_flight[(head + count) % MAX_CHAINS] = (slot, token, next);
+                        count += 1;
+                        next += 1;
+                        published = true;
+                    }
+                    Err(None) if count > 0 => break,
+                    Err(None) => {
+                        if let Err(reason) = self.wait_for_slot() {
+                            failure = Some(reason);
+                        }
+                    }
+                    Err(Some(SubmitError::Stopped)) => failure = Some(WEDGED_ERROR),
+                    Err(Some(_)) => failure = Some("Block request does not fit its chain"),
+                }
+            }
+            if published && self.with_engine(|engine| engine.publish()) {
+                self.device.notify_queue(0);
+            }
+            if count == 0 {
+                break;
+            }
 
+            let (slot, token, index) = in_flight[head];
+            let offset = index * chunk;
+            let len = (total - offset).min(chunk);
+            let sector = start_sector + (offset / SECTOR_SIZE) as u64;
+            if let Err(reason) = self.wait_for_completion(slot, token, kind) {
+                if kind == request_type::OUT {
+                    self.invalidate_cached(start_sector, total);
+                }
+                self.stop(guard);
+                return Err(reason);
+            }
+            head = (head + 1) % MAX_CHAINS;
+            count -= 1;
+            let result = self.with_engine(|engine| {
+                let out = match &mut data {
+                    Data::Read(buffer) => Some(&mut buffer[offset..offset + len]),
+                    _ => None,
+                };
+                engine.finish(&mut DirectMap, slot, out)
+            });
+            match result {
+                Ok(()) => {
+                    self.ops_completed.fetch_add(1, Ordering::Relaxed);
+                    if let Some(cache) = &self.cache {
+                        match &data {
+                            Data::Read(buffer) => cache.store(sector, &buffer[offset..offset + len]),
+                            Data::Write(buffer) => cache.store(sector, &buffer[offset..offset + len]),
+                            Data::Flush => {}
+                        }
+                    }
+                }
+                Err(RequestError::Lost) => {
+                    // Another caller stopped the queue; the chain stays owned.
+                    if kind == request_type::OUT {
+                        self.invalidate_cached(sector, len);
+                    }
+                    failure.get_or_insert(WEDGED_ERROR);
+                    continue;
+                }
+                Err(error) => {
+                    if kind == request_type::OUT {
+                        self.invalidate_cached(sector, len);
+                    }
+                    failure.get_or_insert(match error {
+                        RequestError::UsedLength(_) => "Device returned the wrong used length",
+                        _ if kind == request_type::FLUSH => "Device flush failed",
+                        _ => "Device returned error status",
+                    });
+                }
+            }
+            self.request_gate.waiters.wake_up();
+        }
+        if failure.is_none() && kind == request_type::FLUSH {
+            self.writes_pending.store(false, Ordering::Release);
+        }
+        drop(guard);
+        failure.map_or(Ok(()), Err)
+    }
+
+    /// Wait until a chain slot is free, as admission waits for a range.
+    fn wait_for_slot(&self) -> Result<(), &'static str> {
+        let gate = &self.request_gate;
+        let free = || self.with_engine(|engine| engine.free_slots() > 0 || engine.is_stopped());
+        if free() {
+            return Ok(());
+        }
+        if !block_request_gate_can_sleep() {
+            return Err("Block request already in progress");
+        }
+        if gate.waiters.prepare_to_wait(crate::task::thread::ThreadState::BlockedOnIO).is_none() {
+            return Err("Block request already in progress");
+        }
+        if !free() {
+            crate::task::waitqueue::schedule_current_wait();
+        }
+        gate.waiters.finish_wait();
         Ok(())
     }
 
@@ -899,7 +996,9 @@ impl VirtioBlockDevice {
     }
 
     /// Flush the device cache using a header/status-only request. A device
-    /// without FLUSH advertises writethrough operation by the VirtIO block ABI.
+    /// without FLUSH advertises writethrough operation by the VirtIO block
+    /// ABI. The flush holds the whole device, so it waits for the writes in
+    /// flight and later requests wait for it.
     pub fn flush(&self) -> Result<(), &'static str> {
         if crate::block::hardware_disk_read_only(crate::block::HardwareDisk::Virtio(self as *const Self as usize)) { return Ok(()); }
         if !self.flush_supported {
@@ -908,52 +1007,11 @@ impl VirtioBlockDevice {
         if !self.irq_completion_available() {
             return Err("Block IRQ completion unavailable before interrupts are enabled");
         }
-        let request_guard = self.request_gate.lock()?;
-        // This check uses the request gate shared by write and flush submission.
+        let guard = self.request_gate.admit_flush()?;
+        // A write sets this flag before it builds a chain; admission
+        // excludes writes while it is read.
         if !self.writes_pending.load(Ordering::Acquire) { return Ok(()); }
-        let token = self.prepare_completion_wait();
-        let (header_phys, header_virt) = self.dma_buffers.header;
-        let (status_phys, status_virt) = self.dma_buffers.status;
-        let added = self.with_queue(|queue| {
-            unsafe {
-                core::ptr::write_volatile(
-                    header_virt as *mut VirtioBlkReq,
-                    VirtioBlkReq {
-                        type_: request_type::FLUSH,
-                        reserved: 0,
-                        sector: 0,
-                    },
-                );
-                core::ptr::write_volatile(status_virt as *mut u8, 0xff);
-            }
-            let buffers = [(header_phys, 16, false), (status_phys, 1, true)];
-            queue.add_chain(&buffers).is_some()
-        });
-        if !added {
-            self.clear_completion_state();
-            return Err("Queue full");
-        }
-        core::sync::atomic::fence(Ordering::SeqCst);
-        self.device.notify_queue(0);
-        if let Err(error) = self.wait_for_completion(token, request_type::FLUSH) {
-            request_guard.wedge();
-            return Err(error);
-        }
-        let (desc, status) = match self.take_completed_request() {
-            Ok(completed) => completed,
-            Err(error) => {
-                self.clear_completion_state();
-                return Err(error);
-            }
-        };
-        self.with_queue(|queue| queue.free_chain(desc));
-        self.clear_completion_state();
-        if status != status_code::OK {
-            return Err("Device flush failed");
-        }
-        self.writes_pending.store(false, Ordering::Release);
-        self.ops_completed.fetch_add(1, Ordering::Relaxed);
-        Ok(())
+        self.transfer(guard, 0, Data::Flush)
     }
 
     /// A shared PCI handler polls only the devices routed to its own line.
@@ -975,25 +1033,32 @@ impl VirtioBlockDevice {
             return false;
         }
 
-        let token = self.pending_token.load(Ordering::Acquire);
-        if token == 0 {
-            return true;
-        }
-
         // Every thread-side holder masks interrupts, so on this CPU the lock
         // is free, and a holder on another CPU releases it within a few
         // descriptor updates. Skipping the drain would lose the completion:
         // the ISR read above has already acknowledged it.
-        let mut queue = self.queue.lock();
-
-        if let Some((completed_desc, _bytes)) = queue.get_used() {
-            let (_, status_virt) = self.dma_buffers.status;
-            let status = unsafe { core::ptr::read_volatile(status_virt as *const u8) };
-            self.completed_status
-                .store(status as u32, Ordering::Release);
-            self.completed_desc
-                .store(completed_desc as u32, Ordering::Release);
-            self.completion.complete(token);
+        let mut woken = [(0usize, 0u32); MAX_CHAINS];
+        let mut count = 0;
+        let broken = {
+            let mut engine = self.engine.lock();
+            let outcome = engine.drain(&mut DirectMap, |slot, tag| {
+                woken[count] = (slot, tag);
+                count += 1;
+            });
+            if outcome == Drain::Broken {
+                // The chains the device held are lost: wake their owners.
+                count = Self::owner_tags(&engine, &mut woken);
+            }
+            outcome == Drain::Broken
+        };
+        for &(slot, tag) in &woken[..count] {
+            if tag != 0 {
+                self.completions[slot].completion.complete(tag);
+            }
+        }
+        if broken {
+            self.request_gate.wedged.store(true, Ordering::Release);
+            self.request_gate.waiters.wake_up();
         }
 
         true

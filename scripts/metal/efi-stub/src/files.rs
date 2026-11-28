@@ -273,8 +273,20 @@ impl Root {
         let file = self.open(path, FILE_MODE_READ | FILE_MODE_WRITE | FILE_MODE_CREATE)?;
         file.write_all(data)?;
         drop(file);
+        if self.matches_file(path, data)? {
+            Ok(())
+        } else {
+            Err(VOLUME_CORRUPTED)
+        }
+    }
+
+    /// Compare the complete contents of a file with the supplied bytes.
+    ///
+    /// # Safety
+    /// The root's directory handle must still be open.
+    pub unsafe fn matches_file(&self, path: &str, data: &[u8]) -> Result<bool, Status> {
         if self.size(path)? != data.len() as u64 {
-            return Err(VOLUME_CORRUPTED);
+            return Ok(false);
         }
         let file = self.open(path, FILE_MODE_READ)?;
         let mut buffer = [0u8; 4096];
@@ -283,11 +295,11 @@ impl Root {
             let mut size = buffer.len().min(data.len() - at);
             ok(((*file.file).read)(file.file, &mut size, buffer.as_mut_ptr().cast()))?;
             if size == 0 || size > data.len() - at || buffer[..size] != data[at..at + size] {
-                return Err(VOLUME_CORRUPTED);
+                return Ok(false);
             }
             at += size;
         }
-        Ok(())
+        Ok(true)
     }
 
     /// # Safety
@@ -350,5 +362,62 @@ impl Root {
             at += size;
         }
         Ok((address as *mut u8, length))
+    }
+}
+
+/// Verify the delivered manager before publishing it or opening its target.
+pub fn verify_paired_manager(image: &[u8], expected: [u8; 32]) -> Result<(), Status> {
+    if image.is_empty() || crate::sha256::sha256(image) != expected {
+        return Err(VOLUME_CORRUPTED);
+    }
+    Ok(())
+}
+
+/// Publish a paired manager image, resuming an interrupted install when possible.
+pub fn publish_paired_manager(
+    referenced: bool,
+    matches: impl FnOnce() -> Result<bool, Status>,
+    write: impl FnOnce() -> Result<(), Status>,
+) -> Result<(), Status> {
+    match matches() {
+        Ok(true) => Ok(()),
+        Ok(false) | Err(NOT_FOUND) if !referenced => write(),
+        Ok(false) | Err(NOT_FOUND) => Err(VOLUME_CORRUPTED),
+        Err(status) => Err(status),
+    }
+}
+
+#[cfg(test)]
+mod paired_manager_tests {
+    use super::*;
+    use core::cell::Cell;
+
+    #[test]
+    fn paired_manager_requires_the_requested_digest() {
+        let expected = crate::live_flash::decode_hex(
+            b"a022640727af23fc3710016343690e82644da36a6b04972b1402a84fd0947d41",
+        ).unwrap();
+        assert_eq!(verify_paired_manager(b"paired manager", expected), Ok(()));
+        assert_eq!(verify_paired_manager(b"paired managEr", expected), Err(VOLUME_CORRUPTED));
+    }
+
+    #[test]
+    fn paired_manager_publication_resumes_without_replacing_a_referenced_image() {
+        for (referenced, readback, expected, rewritten) in [
+            (false, Err(NOT_FOUND), Ok(()), true),
+            (false, Ok(false), Ok(()), true),
+            (false, Ok(true), Ok(()), false),
+            (true, Ok(true), Ok(()), false),
+            (true, Ok(false), Err(VOLUME_CORRUPTED), false),
+            (true, Err(NOT_FOUND), Err(VOLUME_CORRUPTED), false),
+            (false, Err(DEVICE_ERROR), Err(DEVICE_ERROR), false),
+        ] {
+            let wrote = Cell::new(false);
+            let result = publish_paired_manager(referenced, || readback, || {
+                wrote.set(true);
+                Ok(())
+            });
+            assert_eq!((result, wrote.get()), (expected, rewritten), "{referenced:?}, {readback:?}");
+        }
     }
 }
