@@ -22,6 +22,10 @@ use x86_64::{
     PhysAddr, VirtAddr,
 };
 
+#[path = "x86_kernel_half.rs"]
+mod x86_kernel_half;
+use x86_kernel_half::migrate_kernel_half;
+
 /// The global kernel PDPT (L3 page table) frame
 static KERNEL_PDPT_FRAME: Mutex<Option<PhysFrame>> = Mutex::new(None);
 
@@ -66,55 +70,15 @@ pub fn init(phys_mem_offset: VirtAddr) {
 
     log::info!("Initializing global kernel page table system");
 
-    // Allocate a frame for the kernel PDPT (L3 table)
-    let kernel_pdpt_frame = allocate_frame().expect("Failed to allocate frame for kernel PDPT");
-
-    // Zero the PDPT
-    unsafe {
-        let pdpt_virt = phys_mem_offset + kernel_pdpt_frame.start_address().as_u64();
-        let pdpt = &mut *(pdpt_virt.as_mut_ptr() as *mut PageTable);
-        // Clear all entries properly (not using zero() which sets PRESENT | WRITABLE)
-        for i in 0..512 {
-            pdpt[i].set_unused();
-        }
-    }
-
-    log::info!("Allocated kernel PDPT at frame {:?}", kernel_pdpt_frame);
-
     // Get current PML4
     let (current_pml4_frame, _) = Cr3::read();
-
-    unsafe {
+    let kernel_pdpt_frame = unsafe {
         let pml4_virt = phys_mem_offset + current_pml4_frame.start_address().as_u64();
-        let pml4 = &mut *(pml4_virt.as_mut_ptr() as *mut PageTable);
-
-        // Copy existing kernel mappings (256-511) to the new kernel PDPT
-        for i in 256..512 {
-            if !pml4[i].is_unused() {
-                // This PML4 entry has kernel mappings
-                let old_pdpt_frame: PhysFrame<Size4KiB> = pml4[i].frame().unwrap();
-                let old_pdpt_virt = phys_mem_offset + old_pdpt_frame.start_address().as_u64();
-                let old_pdpt = &*(old_pdpt_virt.as_ptr() as *const PageTable);
-
-                let new_pdpt_virt = phys_mem_offset + kernel_pdpt_frame.start_address().as_u64();
-                let new_pdpt = &mut *(new_pdpt_virt.as_mut_ptr() as *mut PageTable);
-
-                // Copy PDPT entries
-                let _pdpt_index = ((i - 256) * 512) % 512; // Map PML4 index to PDPT range
-                for j in 0..512 {
-                    if !old_pdpt[j].is_unused() {
-                        new_pdpt[j] = old_pdpt[j].clone();
-                    }
-                }
-
-                log::debug!("Migrated kernel mappings from PML4 entry {}", i);
-            }
-
-            // Update PML4 entry to point to shared kernel PDPT
-            let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
-            pml4[i].set_frame(kernel_pdpt_frame, flags);
-        }
-    }
+        let pml4 = &mut *pml4_virt.as_mut_ptr::<PageTable>();
+        migrate_kernel_half(pml4, phys_mem_offset, || {
+            allocate_frame().expect("Failed to allocate frame for kernel PDPT")
+        })
+    };
 
     // Store the kernel PDPT frame for later use
     *KERNEL_PDPT_FRAME.lock() = Some(kernel_pdpt_frame);
