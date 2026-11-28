@@ -916,6 +916,67 @@ The builder resolved these details against the code. Each has one sentence of re
   decides.
 - **Boot.** One ARM64 QEMU boot: the interrupt-exit switch path is the hardware exception return.
 
+#### E2.3 as built: deviations (ruling DEV-39(2))
+
+The builder resolved these details against the code. Each has one sentence of reason.
+
+- **The seam's inputs.** `park_core::exit_switch` decides from the thread's state, its wait word's phase and
+  whether a reschedule is pending. Each exit calls it once its own depth gate has admitted a switch, and
+  those gates stay where they are, because ARM64's runs before the deferred-requeue drain and the scheduler
+  lock and x86's before its PREEMPT_ACTIVE check.
+- **"Voluntary" is the word's phase.** A thread on `park::wait` switches by its own choice only once it has
+  committed (`Parked`), so the phase carries what a voluntary flag would. A word that is `Idle` belongs to
+  a wait not on `park::wait` and keeps the rule from before E2.3, and so does an ended word, whose
+  scheduler wake follows its arrival.
+- **How the requeue works.** The exit's new `ExitSwitch::Requeue` returns the thread to running, as ending
+  a wait does (no live deadline, `blocked_in_syscall` clear), under the lock that owns it
+  (`park::apply_exit_switch`). It keeps the queue entry and the word, so a wake still ends the wait.
+  E2.2's commit is a compare-and-swap on the word, not the scheduler transaction §3.3 describes, so
+  the commit cannot see the requeue. Instead the commit's switch finds the thread running and returns at
+  once, and the wait publishes again and redoes its signal and deadline checks. A preempted wait pays one
+  extra pass.
+- **x86's `can_schedule` is unchanged.** It admits a thread published blocked on I/O only when a
+  reschedule is pending, which is the runnable rule for an uncommitted wait. The gap its comment records
+  (#666, #508) is closed by the mandatory check's decision and by the halt rule below. Admitting
+  `BlockedOnIO` there would also have changed the switch of the x86 waits not on `park::wait`, which no
+  ARM64 boot can show.
+- **Violations without an error channel.** `arch_halt_while_blocked` returns `()`, and its callers loop
+  on their own state. A caller that may not switch away gets a receipt (`park::halt_as_current`), naming
+  the levels it holds, and keeps its halt. This is the same treatment E2.2 gave its refusals in such
+  callers. E2.4 and E2.10 move those waits onto `park::wait`, where the refusal is an error.
+- **Which "yield before parking" steps went.** The park's own x86 switch (`halt_blocked_current`) no
+  longer sets a reschedule first. The 17 `yield_current(); arch_halt_while_blocked()` pairs in syscall and
+  driver waits not on `park::wait` stay. Those waits have no committed park yet, and their classes move
+  in E2.4 and E2.10.
+- **The HALT census keeps a shrinking list.** It found 8 kernel threads that publish a timer or plain
+  block and halt as the current thread themselves. E2.3 first converted the 8 to sleep through
+  `arch_halt_while_blocked`. That tree's ARM64 QEMU boot soft-locked at about 5 s, in `test_deferral`,
+  before any boot test, and a baseline boot of main with the same script and image did not. The
+  conversion was the suspect and was taken back out, but the next boot soft-locked the same way: the
+  cause was the pty hangup daemon's bare brake (next item), not the conversion. The conversion stays
+  out of E2.3 because no tree with both the conversion and that fix has been booted. The 8 are listed in
+  `tests/park_contract_structure.rs` (`HALT_CLASSIFIED`), the list may only shrink, and each moves in a
+  later PR with its own boot. In main's baseline boot its own `test_deferral` probe did not run on CPU 1
+  (verdict `starved` after 15 s), which that later PR has to account for. With the 8 listed, the census
+  is a ratchet against new sites and passes on main too; it is not a check of E2.3's code.
+- **A syscall's back-off releases its brake.** mlock's population retry, when another thread is
+  installing the page, set a reschedule and halted as the current thread at the syscall's braked level,
+  so the interrupt that ended the halt could not switch it away, and no receipt recorded it. It publishes
+  no blocked state, so the HALT census did not see it. It now backs off through `park::retry_pause`, which
+  releases that level for the halt. `retry_pause` records a receipt at its caller's site when the caller
+  holds more than that one level. A structure check finds a direct halt anywhere under
+  `kernel/src/syscall`.
+- **Three more `park::Braked` sites.** The pty hangup daemon, the x86 console input clock and xHCI's
+  `wait_console_ready` took a bare `preempt_disable()` so that `Completion` would sleep as in a syscall.
+  Since E2.2 that is `LocksHeld(1)`, and the wait spins its CPU for its timeout. On this PR's first two
+  ARM64 boots the hangup daemon held CPU 2 that way and the soft-lockup watchdog fired. They hold the
+  guard now, as E2.2's list of `Braked` sites does, and a BRAKE census in
+  `tests/park_contract_structure.rs` finds the shape.
+- **The kernel test's feature.** It is a `boot_tests` case, because the test registry is built under that
+  feature.
+- **E2.2's publication check.** Its host check that a baseline-0 publication reads depth 1 or more is
+  replaced by the I4 check, because this PR removes that level.
+
 ### E2.4: block I/O caller rule
 
 - **Scope.** §6.

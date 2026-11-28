@@ -2354,24 +2354,26 @@ fn whole_scheduler_housekeeping(_cpu: usize) {
     });
 }
 
-/// x86_64: whether this CPU's current thread is blocked or terminated, so the
-/// interrupt return must switch away from it.
+/// x86_64: the interrupt return's decision for this CPU's current thread
+/// (`task::park::apply_exit_switch`, the decision the ARM64 exit makes too),
+/// under the lock that owns it. `SwitchOut` means the return must switch
+/// away from it; a `Requeue` has already returned it to running, so the
+/// switch requeues it.
 #[cfg(target_arch = "x86_64")]
-pub fn current_thread_blocked_or_terminated() -> bool {
+pub fn current_thread_exit_switch(need_resched: bool) -> super::park::ExitSwitch {
+    let runnable = super::park::exit_switch(super::park::ExitThread::Runnable, need_resched);
     let local = without_interrupts(|| {
         let mut local = rq::local()?;
         let current = local.state().current_thread?;
-        local.thread(current).map(|thread| {
-            thread.state.is_blocked() || thread.state == ThreadState::Terminated
-        })
+        local.thread(current).map(|thread| super::park::apply_exit_switch(thread, need_resched))
     });
     local.unwrap_or_else(|| {
         with_scheduler(|sched| {
-            sched.current_thread_mut().is_some_and(|current| {
-                current.state.is_blocked() || current.state == ThreadState::Terminated
-            })
+            sched
+                .current_thread_mut()
+                .map_or(runnable, |current| super::park::apply_exit_switch(current, need_resched))
         })
-        .unwrap_or(false)
+        .unwrap_or(runnable)
     })
 }
 
