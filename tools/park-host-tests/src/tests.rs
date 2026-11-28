@@ -106,12 +106,11 @@ enum Setup {
     KernelThread,
     Arm64Syscall,
     X86Syscall,
-    Braked,
 }
 
 fn model_for(setup: Setup, queues: usize) -> Model {
     match setup {
-        Setup::KernelThread | Setup::Braked => Model::new(queues, 0),
+        Setup::KernelThread => Model::new(queues, 0),
         Setup::Arm64Syscall => Model::new(queues, 1),
         Setup::X86Syscall => Model::x86_syscall(queues),
     }
@@ -491,30 +490,40 @@ fn an_interrupt_exit_switches_out_what_may_not_run() {
 }
 
 /// I4 through production `wait`: an interrupt exit at each of the four
-/// points between publication and the commit, in each of the four caller
-/// shapes, does not switch the waiter out while its wait is uncommitted.
-/// (E2.2 publishes at depth 1, so those exits did not switch at all; E2.3
-/// publishes at the baseline.)
+/// points between publication and the commit, one point per wait, by a
+/// baseline-0 kernel thread: the exit reads depth 0, reaches the decision and
+/// requeues the waiter; no SwitchedOut event follows; the wait ends woken.
+/// Each exit must reach the decision: E2.2's publication level made these
+/// exits read depth 1 and skip it, and the old rule switched the waiter out.
+/// A braked caller (a syscall, or `Braked`) holds its baseline across the
+/// publication, so no exit preempts it at all (§3.2), and it is not modelled
+/// here.
 #[test]
 fn an_interrupt_exit_before_the_commit_does_not_switch_the_wait_out() {
-    for setup in [Setup::KernelThread, Setup::Arm64Syscall, Setup::X86Syscall, Setup::Braked] {
-        let model = model_for(setup, 1);
-        for point in [Point::Published, Point::SignalChecked, Point::DeadlineChecked, Point::Republished] {
-            model.at(At::Point(point), Action::InterruptExit);
-        }
+    for point in [Point::Published, Point::SignalChecked, Point::DeadlineChecked, Point::Republished] {
+        let model = model_for(Setup::KernelThread, 1);
+        model.at(At::Point(point), Action::InterruptExit);
         model.at(At::Asleep(1), Action::StaleInbox);
         model.at(At::Asleep(2), Action::Wake(0));
-        let _braked = matches!(setup, Setup::Braked).then(|| Braked::new(&model));
-        assert_eq!(run_wait(&model, WaitMode::Uninterruptible, || false), Ok(WaitEnd::Woken), "{setup:?}");
-        let switched: Vec<Phase> = model
-            .events()
-            .into_iter()
+        assert_eq!(run_wait(&model, WaitMode::Uninterruptible, || false), Ok(WaitEnd::Woken), "{point:?}");
+        let events = model.events();
+        let exits: Vec<u32> = events
+            .iter()
             .filter_map(|event| match event {
-                Event::SwitchedOut(phase) => Some(phase),
+                Event::InterruptExitDepth(depth) => Some(*depth),
                 _ => None,
             })
             .collect();
-        assert!(!switched.contains(&Phase::Parking), "{setup:?}: switched out before its commit: {switched:?}");
+        assert_eq!(exits, [0], "{point:?}: the one exit reads the published waiter at depth 0");
+        assert_eq!(
+            events.iter().filter(|event| **event == Event::Requeued).count(),
+            1,
+            "{point:?}: the exit reached the decision and requeued the uncommitted waiter: {events:?}"
+        );
+        assert!(
+            !events.iter().any(|event| matches!(event, Event::SwitchedOut(_))),
+            "{point:?}: switched out before its commit: {events:?}"
+        );
     }
 }
 
