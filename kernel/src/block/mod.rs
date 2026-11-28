@@ -485,6 +485,10 @@ pub trait BlockDevice: Send + Sync {
         Ok(())
     }
 
+    /// Largest whole-sector write that `write_blocks` issues in one command.
+    /// Return 0 to keep the caller on the sector path.
+    fn max_single_write_bytes(&self) -> usize { 0 }
+
     /// Get the block size in bytes
     ///
     /// This is the native block size for this device. For raw sector devices,

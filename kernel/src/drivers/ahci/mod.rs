@@ -3724,6 +3724,10 @@ impl BlockDevice for AhciBlockDevice {
         Ok(())
     }
 
+    fn max_single_write_bytes(&self) -> usize {
+        DMA_BUFFER_BYTES
+    }
+
     fn block_size(&self) -> usize {
         self.geometry.logical_bytes
     }
