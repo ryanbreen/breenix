@@ -1560,7 +1560,7 @@ pub fn can_schedule(saved_cs: u64) -> bool {
     // recognizing it here would not currently defeat that specific brake --
     // but other BlockedOnIO producers on x86 (the WaitQueueHead-based
     // `prepare_to_wait(BlockedOnIO)` call sites in
-    // drivers/virtio/{block,block_mmio,sound,sound_mmio,gpu_pci}.rs and
+    // drivers/virtio/{block,block_mmio,sound,sound_mmio}.rs and
     // syscall/graphics.rs) make no such promise, and nothing here proves
     // every future BlockedOnIO producer will. Recognizing it unconditionally
     // would trade a proof for an observation. Leaving it out does not reopen

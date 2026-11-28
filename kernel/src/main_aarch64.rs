@@ -1109,77 +1109,9 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     serial_println!("[boot] TTY subsystem initialized");
     splash::stage(Stage::Tty);
 
-    // Initialize graphics based on available hardware (capability-based detection)
-    //
-    // Graphics initialization priority:
-    //   1. VirtIO GPU PCI + GOP hybrid (Parallels): GPU set_scanout configures
-    //      the display's reading stride/resolution (e.g. 1280x800), while pixel
-    //      data is written to GOP memory (0x10000000). VirtIO transfer_to_host
-    //      does NOT update the display — only GOP memory is scanned out. The
-    //      kernel MUST write at the GPU-configured stride, not the GOP stride.
-    //   2. UEFI GOP framebuffer (fallback if GPU PCI not available)
-    //   3. VirtIO GPU MMIO (QEMU virt platform)
+    // Use the firmware framebuffer when available, then virtio-gpu MMIO on QEMU.
     serial_println!("[boot] Initializing graphics...");
-    // Graphics initialization:
-    //   - The 2D resource + SET_SCANOUT was already done in gpu_pci::init()
-    //     (matching Linux: console framebuffer is active before VirGL takes over)
-    //   - When VirGL is active, virgl_init() already switched SET_SCANOUT to the
-    //     3D resource. Do NOT initialize GOP framebuffer (arm64_fb) because its
-    //     flush calls would send RESOURCE_FLUSH on the 2D resource, overriding
-    //     the VirGL scanout. The kernel's boot and diagnostics screens instead
-    //     draw into the 3D resource's guest backing (gpu_pci::framebuffer) and
-    //     present it with TRANSFER_TO_HOST_3D, until userspace takes the display.
-    let has_display = if kernel::drivers::virtio::gpu_pci::is_initialized()
-        && kernel::drivers::virtio::gpu_pci::is_virgl_enabled()
-    {
-        serial_println!("[boot] VirGL active — skipping GOP framebuffer init (2D resource already set up in gpu_pci::init)");
-        // Populate the geometry cache for the pre-core console path.
-        // VirGL owns the display but userspace still needs dimensions for layout.
-        if let Some((w, h)) = kernel::drivers::virtio::gpu_pci::dimensions() {
-            let _ = arm64_fb::FB_INFO_CACHE.try_init_once(|| arm64_fb::FbInfoCache {
-                width: w as usize,
-                height: h as usize,
-                stride: w as usize,
-                bytes_per_pixel: 4,
-                is_bgr: true, // B8G8R8X8_UNORM
-            });
-            serial_println!(
-                "[boot] FB_INFO_CACHE populated for VirGL display ({}x{})",
-                w,
-                h
-            );
-        }
-        if let Err(e) = arm64_fb::init_shell_framebuffer() {
-            serial_println!("[boot] VirGL shell framebuffer failed: {}", e);
-        }
-        true
-    } else if kernel::drivers::virtio::gpu_pci::is_initialized()
-        && kernel::platform_config::has_framebuffer()
-    {
-        // 2D mode: VirtIO GPU PCI set_scanout changes the display's
-        // reading stride to the GPU-configured width. Pixels are read
-        // from GOP memory at this new stride.
-        match arm64_fb::init_gpu_pci_gop_framebuffer() {
-            Ok(()) => {
-                serial_println!("[boot] GPU PCI+GOP hybrid display initialized");
-                true
-            }
-            Err(e) => {
-                serial_println!("[boot] GPU PCI+GOP hybrid failed: {}, trying pure GOP", e);
-                match arm64_fb::init_gop_framebuffer() {
-                    Ok(()) => {
-                        serial_println!("[boot] GOP framebuffer initialized (fallback)");
-                        true
-                    }
-                    Err(e2) => {
-                        serial_println!("[boot] GOP framebuffer also failed: {}", e2);
-                        false
-                    }
-                }
-            }
-        }
-    } else if kernel::platform_config::has_framebuffer() {
-        // UEFI GOP framebuffer (fallback when GPU PCI not available)
+    let has_display = if kernel::platform_config::has_framebuffer() {
         match arm64_fb::init_gop_framebuffer() {
             Ok(()) => {
                 serial_println!("[boot] GOP framebuffer initialized");
@@ -1209,15 +1141,9 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         kernel::console::init_gop_early();
     }
 
-    // Track whether VirGL owns the display (Phase 1: textured quad test only)
-    let virgl_display = kernel::drivers::virtio::gpu_pci::is_initialized()
-        && kernel::drivers::virtio::gpu_pci::is_virgl_enabled();
-
     // Upgrade framebuffer to double buffering now that heap is available.
     // This allocates a shadow buffer in cached RAM so pixel writes are fast
     // (~1ns vs ~100ns for direct GOP BAR0 writes on Parallels).
-    // With VirGL the shell framebuffer is the 3D scanout's backing; the boot
-    // screen presents it synchronously and stops once userspace takes the display.
     if has_display && arm64_fb::SHELL_FRAMEBUFFER.get().is_some() {
         kernel::graphics::arm64_fb::upgrade_to_double_buffer();
         splash::set_last_stage_label(if cfg!(feature = "testing") {
@@ -1322,24 +1248,13 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // - The boot screen and the test progress panel draw into SHELL_FRAMEBUFFER
     //   until then; render_task copies and flushes it, and draws the mouse
     //   cursor for a process that owns the display.
-    // - Skip render_task when VirGL owns the display — no 2D rendering needed.
     kernel::console::start();
     // Terminal output goes to the UART from its own thread once that runs.
     kernel::serial_line::start_transmitter();
-    if has_display && !virgl_display {
+    if has_display {
         match kernel::graphics::render_task::spawn_render_thread() {
             Ok(tid) => serial_println!("[boot] Render thread spawned (tid={})", tid),
             Err(e) => serial_println!("[boot] Failed to spawn render thread: {}", e),
-        }
-    } else if virgl_display {
-        serial_println!("[boot] Render thread skipped — VirGL owns the display");
-        // Without a render thread, a kernel screen whose synchronous present
-        // failed would stay off the display; this thread presents it later.
-        if arm64_fb::SHELL_FRAMEBUFFER.get().is_some() {
-            match kernel::graphics::boot_screen::spawn_presenter() {
-                Ok(tid) => serial_println!("[boot] Screen presenter spawned (tid={})", tid),
-                Err(e) => serial_println!("[boot] Failed to spawn screen presenter: {}", e),
-            }
         }
     }
 
@@ -2563,11 +2478,7 @@ fn current_exception_level() -> u8 {
 /// Initialize the VirtIO GPU (QEMU virt) and the shell framebuffer on it.
 #[cfg(target_arch = "aarch64")]
 fn init_graphics() -> Result<(), &'static str> {
-    // GPU PCI is initialized earlier in drivers::init() — only init GPU MMIO
-    // if PCI is not available (QEMU virt platform).
-    if !kernel::drivers::virtio::gpu_pci::is_initialized() {
-        kernel::drivers::virtio::gpu_mmio::init()?;
-    }
+    kernel::drivers::virtio::gpu_mmio::init()?;
 
     arm64_fb::init_shell_framebuffer()?;
 
