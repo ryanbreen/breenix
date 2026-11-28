@@ -66,7 +66,7 @@ fn errno() -> i32 {
     ERRNO.with(|errno| errno.get())
 }
 fn malloc_thread_id() -> u32 {
-    // The linker probe has one thread and never forks.
+    // The linker probe runs on one thread and does not fork.
     1
 }
 

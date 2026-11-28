@@ -37,8 +37,8 @@ unsafe fn load_word(p: *const u8) -> usize {
 
 #[inline]
 fn zero_bytes(word: usize) -> usize {
-    // The lowest marked byte is the first zero. A borrow can also mark
-    // neighboring higher bytes, which the first-match search never uses.
+    // The lowest marked byte is the first byte equal to 0. A borrow can mark
+    // higher bytes above it; the first-match search reads only the lowest.
     word.wrapping_sub(BYTE_ONES) & !word & BYTE_HIGHS
 }
 
@@ -83,8 +83,8 @@ pub unsafe extern "C" fn memchr(s: *const u8, c: i32, n: usize) -> *mut u8 {
     let c = c as u8;
     let mut i = 0;
     // memchr stops at the first match, and n may exceed the object. Step to a
-    // word boundary first: an aligned word never straddles a page, so the
-    // word holding a match reads nothing from a later page.
+    // word boundary first: an aligned word lies within one page, so the word
+    // holding a match is in the page that holds the match.
     while i < n && s.wrapping_add(i).addr() % WORD != 0 {
         if byte(s, i) == c {
             return s.add(i).cast_mut();
@@ -189,7 +189,7 @@ pub unsafe extern "C" fn strlen(s: *const u8) -> usize {
         }
         i += 1;
     }
-    // An aligned word never straddles a page. Use a machine load so Rust
+    // An aligned word lies within one page. Use a machine load so Rust
     // does not assume that the bytes past the terminator belong to the object.
     loop {
         let matches = zero_bytes(load_word(s.wrapping_add(i)));

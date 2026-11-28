@@ -1,6 +1,6 @@
 //! Size-class arenas for malloc. Allocation uses the head of a per-class
-//! partial list. The separate list of all arenas supports cache release and
-//! provides the authoritative links for rebuilding the indexes after fork.
+//! partial list. A second per-class list links each arena: cache release
+//! walks it, and a fork child rebuilds the partial index from its links.
 use core::ptr::{self, null_mut};
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering::*};
 use libbreenix::{raw, syscall::nr};
@@ -111,9 +111,10 @@ pub(crate) fn before_fork() -> Option<Guard> {
     Guard::acquire()
 }
 
-/// Called by the sole surviving thread before child atfork callbacks. A raw
-/// fork may have copied a half-edited index. Forward ALL links are published
-/// in one store and remain valid throughout every edit.
+/// Called by the surviving thread before child atfork callbacks. A raw fork
+/// may have copied a half-edited index. Each forward link of an arena list is
+/// published in one store and stays valid during an edit, so the child
+/// rebuilds the back links and the partial index from those links.
 pub(crate) unsafe fn after_fork(pid: u32) {
     if PROCESS.load(Relaxed) != pid {
         if OWNER.load(Relaxed) != 0 {
@@ -372,8 +373,9 @@ pub unsafe fn resize(tag: usize, block: *mut u8, requested: *mut usize, size: us
         claim_slots(arena, change);
         requested.write(size);
     } else {
-        // A raw fork between these stores can retain a reserved tail, but
-        // must never inherit a header spanning slots already released.
+        // The header shrinks before the slots are released, so a raw fork
+        // between these stores can keep a reserved tail but not a header
+        // that spans released slots.
         requested.write(size);
         release_slots(arena, change);
     }
