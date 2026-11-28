@@ -15,13 +15,44 @@ use std::sync::Mutex as HostMutex;
 /// few hundred children, and a SPACE tree of about a hundred nodes, so its
 /// whole-tree bound does not cover a short grant.
 fn populated_clone() -> (Arc<BreenFs<outstanding_grants::NoWait>>, u64) {
+    staged(0)
+}
+
+/// The populated volume with `paired.new` made by SNAPSHOT_CREATE with
+/// `flags` and attached as the staging tree.
+fn staged(flags: u32) -> (Arc<BreenFs<outstanding_grants::NoWait>>, u64) {
     let disk = Arc::new(Disk(HostMutex::new(populated_image(700, 30, 32768))));
     let fs = BreenFs::mount_writable(
         disk, Arc::new(BufferCache::new(outstanding_grants::NoWait)), 3263050, 1,
     ).unwrap();
-    clone_root(&fs, b"paired.new", 0);
+    clone_root(&fs, b"paired.new", flags);
     let stage = fs.attach_staging(b"paired.new").unwrap();
     (fs, stage)
+}
+
+/// An empty staging root (SNAPSHOT_EMPTY) beside the populated root is a
+/// separate tree, so its first create owes no copy references. Another
+/// operation's grant leaves 500 allocatable blocks: above that create's
+/// unshared estimate, below the whole-SPACE-tree bound a shared copy would
+/// reserve. The create succeeds.
+#[test]
+fn a_create_in_an_independent_staging_root_reserves_no_shared_copies() {
+    let (fs, stage) = staged(SNAPSHOT_EMPTY);
+    let held = {
+        let mut state = fs.inner.state.lock();
+        let free = state.durable.free_blocks;
+        let spare = state.reservations.available(free) - 500;
+        state.reservations.reserve(free, spare, Operation::Allocate).unwrap()
+    };
+    assert_eq!(fs.statfs().unwrap().available_blocks, 500);
+    let attrs = InodeAttrs::new(0o700, 0, 0);
+    let incoming = fs.create(stage, b".breenix-incoming", NewNode::Directory { attrs });
+    writable(&fs, "the first directory create in the empty root");
+    let incoming = incoming.unwrap();
+    assert_eq!(fs.lookup(stage, b".breenix-incoming"), Ok(incoming));
+    fs.inner.state.lock().reservations.release(held);
+    fs.fsync(&fs.open(stage).unwrap(), false).unwrap();
+    assert_eq!(fs.inner.state.lock().reservations.outstanding(), 0);
 }
 
 fn writable<W: Wait>(fs: &BreenFs<W>, step: &str) {
