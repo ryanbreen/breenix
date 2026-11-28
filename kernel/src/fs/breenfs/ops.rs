@@ -923,6 +923,10 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         Ok(value)
     }
     #[cfg(test)]
+    pub fn staging_pointer_for_test(&self) -> Option<BlockPtr> {
+        self.staging.as_ref().map(|(_, root)| root.root)
+    }
+    #[cfg(test)]
     pub fn read_node_for_test(&self, ptr: BlockPtr) -> Result<Arc<btree::Node>, btree::Error> {
         self.txn.view().read_node(ptr)
     }

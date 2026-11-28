@@ -3,7 +3,7 @@
 //! These run against the production adapter, so they live beside it rather
 //! than in tests/snapshot.rs, which reaches only the Files layer.
 use super::*;
-use alloc::vec;
+use alloc::{format, vec};
 use std::sync::Mutex as HostMutex;
 
 struct NoWait;
@@ -40,9 +40,8 @@ impl BlockDevice for Disk {
     }
 }
 
-/// A persistent writer: `gen-A` booted, with the default tree, as the
-/// kernel's `mount_persistent_cached` builds it.
-pub(super) fn persistent() -> Arc<BreenFs<impl Wait>> {
+/// A formatted volume holding `gen-A` and the default tree.
+fn image() -> Arc<Disk> {
     let disk = Arc::new(Disk(HostMutex::new(vec![0; 64 * 1024 * 1024])));
     let sb = Superblock {
         fs_uuid: [0x5a; 16],
@@ -55,11 +54,21 @@ pub(super) fn persistent() -> Arc<BreenFs<impl Wait>> {
     let mut files = Files::format(super::super::commit::DeviceStore(disk.as_ref()), &sb).unwrap();
     files.create_empty_root(b"gen-A", Time::default()).unwrap();
     files.fsync(disk.as_ref(), &mut Committer::format(sb)).unwrap();
+    disk
+}
+
+/// A persistent writer on `disk`: `gen-A` booted, with the default tree, as
+/// the kernel's `mount_persistent_cached` builds it.
+fn mount_persistent(disk: Arc<Disk>) -> Arc<BreenFs<impl Wait>> {
     // The kernel mounts the booted pair from the system cache, which lives forever.
     let cache: &'static BufferCache<NoWait> = Box::leak(Box::new(BufferCache::new(NoWait)));
     let fs = BreenFs::mount_persistent_cached(disk, cache, 91, b"gen-A").unwrap();
     fs.init_service().unwrap();
     fs
+}
+
+pub(super) fn persistent() -> Arc<BreenFs<impl Wait>> {
+    mount_persistent(image())
 }
 
 pub(super) fn request(name: &[u8], flags: u32) -> SnapshotRequest {
@@ -404,4 +413,53 @@ fn fifo_writes_count_in_the_epoch_and_respect_the_freeze() {
     thaw(&fs);
     drop(fifo);
     fs.shutdown("freeze-fifo", u64::MAX).unwrap();
+}
+
+/// The leaf of the tree at `ptr` that holds `key`.
+fn leaf_of(disk: &Disk, mut ptr: format::BlockPtr, key: format::Key) -> format::BlockPtr {
+    use super::super::{btree::NodeStore, commit::DeviceStore};
+    while ptr.level != 0 {
+        let node = DeviceStore(disk).read_node(ptr).unwrap();
+        let child = node.children.partition_point(|entry| entry.key <= key).saturating_sub(1);
+        ptr = node.child(child);
+    }
+    ptr
+}
+
+/// Review of PR #3273: attach reads the draft's root directory. A draft
+/// whose root-directory leaf is unreadable is refused at attach with EIO,
+/// instead of mounting and failing the first pathname lookup. The refusal
+/// leaves the staging slot free and the booted root writable.
+#[test]
+fn attach_refuses_a_draft_whose_root_directory_is_unreadable() {
+    let disk = image();
+    let leaf = {
+        let fs = mount_persistent(disk.clone());
+        clone_root(&fs, b"B.new", 0);
+        clone_root(&fs, b"C.new", 0);
+        fs.attach_staging(b"B.new").unwrap();
+        // Enough entries for a tree of more than one leaf, so the orphan
+        // range attach already reads is not in the root directory's leaf.
+        for n in 0..200 {
+            file(&fs, STAGED_ROOT, format!("file-{n:03}").as_bytes()).unwrap();
+        }
+        fs.sync().unwrap();
+        let ptr = fs.inner.state.lock().files.files.staging_pointer_for_test().unwrap();
+        let inode = format::Key { object: 2, item_type: format::INODE, offset: 0 };
+        let orphans = format::Key { object: ops::ORPHAN_OBJECT, item_type: format::ORPHAN, offset: 0 };
+        let leaf = leaf_of(&disk, ptr, inode);
+        assert_ne!(leaf.addr, leaf_of(&disk, ptr, orphans).addr, "the fixture needs a multi-leaf draft");
+        fs.detach_staging().unwrap();
+        fs.shutdown("corrupt-draft-build", u64::MAX).unwrap();
+        leaf
+    };
+    disk.0.lock().unwrap()[leaf.addr as usize * BLOCK_SIZE + 100] ^= 0xff;
+
+    let fs = mount_persistent(disk);
+    assert_eq!(fs.attach_staging(b"B.new"), Err(Errno(EIO)), "a draft with an unreadable root directory");
+    assert_eq!(fs.attach_staging(b"C.new"), Ok(STAGED_ROOT), "the refused attach left the staging slot free");
+    fs.detach_staging().unwrap();
+    file(&fs, 2, b"after").expect("the booted root stays writable");
+    fs.sync().unwrap();
+    fs.shutdown("corrupt-draft", u64::MAX).unwrap();
 }
