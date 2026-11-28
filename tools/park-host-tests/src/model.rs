@@ -60,6 +60,9 @@ pub enum Event {
     /// An interrupt exit switched the thread out as blocked, with its wait
     /// word in this phase. Until something makes it runnable it does not run.
     SwitchedOut(Phase),
+    /// An interrupt exit requeued the thread: its wait was published and not
+    /// committed (`ExitSwitch::Requeue`).
+    Requeued,
     Sleep { depth: u32, irqs: bool },
     Receipt(ParkContext),
 }
@@ -235,6 +238,12 @@ impl Model {
         };
         match exit_switch(thread, true) {
             ExitSwitch::SwitchOut => self.events.borrow_mut().push(Event::SwitchedOut(self.word.state().1)),
+            // The kernel's `apply_exit_switch`: back to running, so the
+            // switch requeues it; its queue entry and wait word stay.
+            ExitSwitch::Requeue => {
+                self.state.set(State::Running);
+                self.events.borrow_mut().push(Event::Requeued);
+            }
             ExitSwitch::Preempt | ExitSwitch::Resume => {}
         }
     }
@@ -362,8 +371,16 @@ impl ParkHooks for Model {
         self.irqs.set(true);
         self.sleeps.set(self.sleeps.get() + 1);
         assert!(self.sleeps.get() < 16, "the wait slept with nothing left to end it");
+        let published = matches!(self.state.get(), State::Blocked { .. });
         self.run_script(At::Asleep(self.sleeps.get()));
         self.drain_inbox();
+        if !published {
+            // An interrupt exit requeued the thread before its commit, so it
+            // is running, not published: the kernel's switch returns at once
+            // (`waitqueue::switch_while_blocked`).
+            self.state.set(State::Running);
+            return;
+        }
         // A thread still blocked stays switched out in the kernel (its sleep
         // hook loops while blocked). With no arrival left, that is a hang.
         assert_eq!(self.state.get(), State::Runnable, "the wait slept with nothing left to end it");

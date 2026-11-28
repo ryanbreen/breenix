@@ -403,33 +403,6 @@ fn braked_raises_depth_and_baseline_together() {
     assert_eq!(crate::park_core::ParkHooks::baseline(&model), 0);
 }
 
-/// Publication model (design §3.2): from publishing until the switch, an
-/// interrupt exit does not read depth 0, for a baseline-0 waiter as for a
-/// braked one.
-#[test]
-fn an_interrupt_exit_between_publication_and_switch_never_reads_depth_zero() {
-    for setup in [Setup::KernelThread, Setup::Arm64Syscall, Setup::X86Syscall, Setup::Braked] {
-        let model = model_for(setup, 1);
-        for point in [Point::Published, Point::SignalChecked, Point::DeadlineChecked, Point::Committed, Point::Republished] {
-            model.at(At::Point(point), Action::InterruptExit);
-        }
-        model.at(At::Asleep(1), Action::StaleInbox);
-        model.at(At::Asleep(2), Action::Wake(0));
-        let _braked = matches!(setup, Setup::Braked).then(|| Braked::new(&model));
-        assert_eq!(run_wait(&model, WaitMode::Uninterruptible, || false), Ok(WaitEnd::Woken));
-        let exits: Vec<u32> = model
-            .events()
-            .into_iter()
-            .filter_map(|event| match event {
-                Event::InterruptExitDepth(depth) => Some(depth),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(exits.len(), 5, "{setup:?}: an exit was sampled at each point, the second pass's publication included");
-        assert!(exits.iter().all(|depth| *depth >= 1), "{setup:?}: {exits:?}");
-    }
-}
-
 /// A wake published by an interrupt waker for one wait, and applied by the
 /// inbox drain during the next, does not end the next wait: it sleeps again
 /// until its own arrival.
@@ -447,7 +420,9 @@ fn a_late_wake_from_an_earlier_wait_does_nothing() {
     model.at(At::Asleep(first_sleeps + 2), Action::Deadline);
     assert_eq!(run_wait(&model, WaitMode::Interruptible, || false), Ok(WaitEnd::Timeout));
     assert_eq!(model.sleeps() - first_sleeps, 2, "the late wake cost one extra switch and no end");
-    assert!(model.events().contains(&Event::Point(Point::Republished, 1)));
+    // Republished at the caller's baseline, 0: E2.3 removed E2.2's
+    // publication level.
+    assert!(model.events().contains(&Event::Point(Point::Republished, 0)));
 }
 
 #[test]
@@ -495,6 +470,7 @@ fn an_interrupt_exit_leaves_a_published_uncommitted_wait_runnable() {
         ExitSwitch::SwitchOut,
         "preempted after publishing and before committing, the waiter was switched out as blocked"
     );
+    assert_eq!(exit_switch(parking, true), ExitSwitch::Requeue, "the exit returns the waiter to running and requeues it");
     assert_eq!(exit_switch(parking, false), ExitSwitch::Resume, "with no reschedule pending, the waiter runs on");
 }
 
@@ -563,4 +539,22 @@ fn a_wake_after_the_commit_ends_a_wait_switched_before_it_once() {
     model.at(At::Point(Point::Committed), Action::Wake(0));
     assert_eq!(run_wait(&model, WaitMode::Uninterruptible, || false), Ok(WaitEnd::Woken));
     assert_eq!(model.sleeps(), 1);
+}
+
+/// The requeue's mechanism (E2.3 adds it, so this cannot be red on the code
+/// before it): a baseline-0 waiter publishes at depth 0, an interrupt exit
+/// requeues it, its commit's switch returns at once because it is running,
+/// and with no arrival it publishes again and sleeps until its wake.
+#[test]
+fn a_requeued_wait_with_no_arrival_publishes_again_and_sleeps() {
+    let model = Model::new(1, 0);
+    model.at(At::Point(Point::Published), Action::InterruptExit);
+    model.at(At::Asleep(2), Action::Wake(0));
+    assert_eq!(run_wait(&model, WaitMode::Uninterruptible, || false), Ok(WaitEnd::Woken));
+    let events = model.events();
+    assert!(events.contains(&Event::InterruptExitDepth(0)), "the waiter published at its baseline, depth 0");
+    assert!(events.contains(&Event::Requeued));
+    assert!(events.contains(&Event::Point(Point::Republished, 0)), "the requeued wait published again");
+    assert_eq!(model.sleeps(), 2, "one switch returned at once, the second slept until the wake");
+    assert_eq!(model.becomes_runnable.get(), 1, "only the wake made the republished waiter runnable");
 }

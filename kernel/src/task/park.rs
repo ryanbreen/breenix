@@ -21,7 +21,7 @@
 //! `schedule_current_wait`, `Completion`, the syscall prepared waits and the
 //! retry pause. Their level handling is [`release_for_sleep`] and
 //! [`retake_after_sleep`], here, and [`sleepable_braked`] names the contexts
-//! their sleep paths serve. E2.3 and E2.4 remove those callers.
+//! their sleep paths serve. E2.4 and E2.10 move those callers onto [`wait`].
 
 use super::event_queue::EventQueue;
 use super::park_core::{self, ContextInputs, ParkHooks, SignalEnd, WaitWord};
@@ -332,8 +332,8 @@ pub(crate) fn exit_thread(thread: &super::thread::Thread) -> ExitThread {
 }
 
 /// The interrupt exit's decision for `thread`, the thread it interrupted
-/// (`park_core::exit_switch`). The caller holds the lock that owns the
-/// thread's scheduler state.
+/// (`park_core::exit_switch`), without acting on it: for the ARM64 exit's
+/// lock-free check, which asks only whether the thread must be switched out.
 pub(crate) fn exit_switch_for(thread: &super::thread::Thread, need_resched: bool) -> ExitSwitch {
     let seen = exit_thread(thread);
     let exit = park_core::exit_switch(seen, need_resched);
@@ -342,17 +342,24 @@ pub(crate) fn exit_switch_for(thread: &super::thread::Thread, need_resched: bool
     exit
 }
 
-/// [`wait`] without E2.2's publication level, for the E2.3 kernel test
-/// (`park_core::wait_at_baseline`).
-#[cfg(feature = "boot_tests")]
-#[track_caller]
-pub(crate) fn wait_at_baseline_for_test(
-    queue: &WaitQueueHead,
-    done: impl FnMut() -> bool,
-    deadline_ns: Option<u64>,
-    mode: WaitMode,
-) -> Result<WaitEnd, ParkError> {
-    park_core::wait_at_baseline(&HOOKS, site(), queue.event_queue(), done, deadline_ns, mode)
+/// The interrupt exit's decision for `thread`, the thread it interrupted,
+/// made under the lock that owns the thread's scheduler state. A
+/// [`ExitSwitch::Requeue`] is applied here: the thread's wait is published
+/// but not committed, so it is returned to running and the switch requeues
+/// it (design §3.5). Its wait stays linked on its queues and its word stays
+/// `Parking`, so a wake still ends the wait; when the wait's switch finds it
+/// running, it returns at once and the wait publishes again
+/// (`park_core::wait`).
+pub(crate) fn apply_exit_switch(thread: &mut super::thread::Thread, need_resched: bool) -> ExitSwitch {
+    let exit = exit_switch_for(thread, need_resched);
+    if exit == ExitSwitch::Requeue {
+        // What ending a wait does to the scheduler state (`end_wait`); the
+        // deadline's timer entry is no longer live without `wake_time_ns`.
+        thread.blocked_in_syscall = false;
+        thread.wake_time_ns = None;
+        thread.set_running();
+    }
+    exit
 }
 
 /// The E2.3 kernel test's fixed point (design §8, "E2.3: parking and
@@ -460,7 +467,7 @@ pub(crate) struct SleepRelease(bool);
 
 /// For the sleeps not yet on [`wait`]: release the one level such a sleep
 /// releases today, if a level is held (B1 requirement 9). Callers do no
-/// arithmetic of their own; E2.3 and E2.4 move them onto [`wait`].
+/// arithmetic of their own; E2.4 and E2.10 move them onto [`wait`].
 pub(crate) fn release_for_sleep() -> SleepRelease {
     let held = depth() != 0;
     if held {

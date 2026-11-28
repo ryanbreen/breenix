@@ -5520,10 +5520,13 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     // the scheduler switches away from a blocked thread even when need_resched
     // is not yet set, matching the behaviour of all other Blocked* states.
     //
-    // The decision is `task::park::exit_switch_for`, the one the x86 exit
-    // makes too (E2.3, design §3.5).
+    // The decision is `task::park::apply_exit_switch`, the one the x86 exit
+    // makes too (E2.3, design §3.5). The exception to the note above is a
+    // wait on `task::park` that is published but not committed: it is
+    // runnable, so it is returned to running here and requeued by the switch
+    // below, or resumed when no reschedule is pending.
     let exit = match sched.current_thread_mut() {
-        Some(current) => crate::task::park::exit_switch_for(current, need_resched),
+        Some(current) => crate::task::park::apply_exit_switch(current, need_resched),
         None => crate::task::park::exit_switch(crate::task::park::ExitThread::Runnable, need_resched),
     };
     if exit == crate::task::park::ExitSwitch::Resume {

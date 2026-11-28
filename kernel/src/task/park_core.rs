@@ -508,25 +508,18 @@ pub trait ParkHooks: QueueHooks {
 struct Entry {
     depth: u32,
     irqs: bool,
-    /// Levels released for the switch: the baseline, plus E2.2's
-    /// publication level for a baseline-0 caller (§3.2).
+    /// Levels released for the switch: the baseline (§3.2).
     released: u32,
-    publication_level: bool,
 }
 
 impl Entry {
-    fn take<H: ParkHooks>(hooks: &H, raise_for_publication: bool) -> Self {
-        let depth = hooks.depth();
-        let irqs = hooks.irqs_enabled();
-        // E2.2 keeps today's publication protocol: a blocked state is
-        // published at depth 1 or more, so an interrupt exit cannot switch a
-        // published thread out as blocked before its commit (§3.2, §3.5).
-        // E2.3 removes this level.
-        let publication_level = raise_for_publication && hooks.baseline() == 0;
-        if publication_level {
-            hooks.raise();
-        }
-        Self { depth, irqs, released: hooks.baseline() + publication_level as u32, publication_level }
+    /// The wait publishes at the caller's baseline. E2.2 raised one more
+    /// level around a baseline-0 caller's publication, so that an interrupt
+    /// exit could not switch the published thread out as blocked before its
+    /// commit. Since E2.3 the exit requeues an uncommitted wait instead
+    /// ([`exit_switch`], §3.5), and that level is gone.
+    fn take<H: ParkHooks>(hooks: &H) -> Self {
+        Self { depth: hooks.depth(), irqs: hooks.irqs_enabled(), released: hooks.baseline() }
     }
 
     fn release_for_sleep<H: ParkHooks>(&self, hooks: &H) {
@@ -542,9 +535,6 @@ impl Entry {
     }
 
     fn restore<H: ParkHooks>(&self, hooks: &H) {
-        if self.publication_level {
-            hooks.lower();
-        }
         debug_assert_eq!(hooks.depth(), self.depth);
         if hooks.irqs_enabled() != self.irqs {
             hooks.set_irqs(self.irqs);
@@ -643,38 +633,12 @@ pub fn wait<H: ParkHooks>(
     hooks: &H,
     site: u64,
     queue: &EventQueue,
-    done: impl FnMut() -> bool,
-    deadline_ns: Option<u64>,
-    mode: WaitMode,
-) -> Result<WaitEnd, ParkError> {
-    wait_entered(hooks, site, queue, done, deadline_ns, mode, true)
-}
-
-/// [`wait`] without E2.2's publication level: a baseline-0 caller publishes
-/// at depth 0. A test entry only, for E2.3's kernel test of the interrupt
-/// exit (design §8, "E2.3: parking and parked").
-pub fn wait_at_baseline<H: ParkHooks>(
-    hooks: &H,
-    site: u64,
-    queue: &EventQueue,
-    done: impl FnMut() -> bool,
-    deadline_ns: Option<u64>,
-    mode: WaitMode,
-) -> Result<WaitEnd, ParkError> {
-    wait_entered(hooks, site, queue, done, deadline_ns, mode, false)
-}
-
-fn wait_entered<H: ParkHooks>(
-    hooks: &H,
-    site: u64,
-    queue: &EventQueue,
     mut done: impl FnMut() -> bool,
     deadline_ns: Option<u64>,
     mode: WaitMode,
-    raise_for_publication: bool,
 ) -> Result<WaitEnd, ParkError> {
     let (tid, word) = admit(hooks, site)?;
-    let entry = Entry::take(hooks, raise_for_publication);
+    let entry = Entry::take(hooks);
     let seq = word.begin();
     let end = match queue.prepare_checked(hooks, deadline_ns, || !done()) {
         PrepareOutcome::Mismatch => WaitEnd::Condition,
@@ -705,7 +669,7 @@ pub fn wait_any<H: ParkHooks>(
     mode: WaitMode,
 ) -> Result<WaitEnd, ParkError> {
     let (tid, word) = admit(hooks, site)?;
-    let entry = Entry::take(hooks, true);
+    let entry = Entry::take(hooks);
     let seq = word.begin();
     let mut added = 0;
     let end = 'end: {
@@ -756,6 +720,12 @@ pub enum ExitSwitch {
     Resume,
     /// Switch away and requeue it: it is runnable.
     Preempt,
+    /// Switch away and requeue it: it is published blocked, but its wait has
+    /// not committed (`Parking`), so it is runnable. The exit returns it to
+    /// running first, so the switch requeues it. Its wait word stays
+    /// `Parking`: a wake still ends the wait, and a wait that has not ended
+    /// publishes again when its switch returns ([`wait`]).
+    Requeue,
     /// Switch away and leave it off the run queues until something makes it
     /// runnable.
     SwitchOut,
@@ -764,10 +734,17 @@ pub enum ExitSwitch {
 /// The interrupt exit's decision about the interrupted thread, once the
 /// exit's depth gate has admitted a switch (depth 0, or a return to user
 /// mode). The ARM64 and the x86 exits both decide here (design §3.5).
+///
+/// Preemption does not commit a sleep (invariant I4): a thread whose wait is
+/// published but not committed is runnable, and only its own commit takes it
+/// off the run queues. A wait word in any other phase keeps the rule that
+/// came before E2.3: `Parked` has committed, `Idle` is a wait not on
+/// [`wait`], and an ended word's scheduler wake follows its arrival.
 pub const fn exit_switch(thread: ExitThread, need_resched: bool) -> ExitSwitch {
     match thread {
         ExitThread::Runnable if need_resched => ExitSwitch::Preempt,
-        ExitThread::Runnable => ExitSwitch::Resume,
+        ExitThread::BlockedOnIo(Phase::Parking) if need_resched => ExitSwitch::Requeue,
+        ExitThread::Runnable | ExitThread::BlockedOnIo(Phase::Parking) => ExitSwitch::Resume,
         ExitThread::BlockedOnIo(_) | ExitThread::Blocked | ExitThread::Terminated => ExitSwitch::SwitchOut,
     }
 }

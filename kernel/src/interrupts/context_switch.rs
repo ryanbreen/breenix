@@ -278,9 +278,12 @@ pub extern "C" fn check_need_resched_and_switch(
     // inconsistent: each recognizes the family that is provably safe for
     // where it sits.
     //
-    // The decision is `task::park::exit_switch_for`, the one the ARM64 exit
+    // The decision is `task::park::apply_exit_switch`, the one the ARM64 exit
     // makes too (E2.3, design §3.5). It reads need_resched, so the flag is
-    // taken first.
+    // taken first. A wait on `task::park` publishes BlockedOnIO before its
+    // signal and deadline checks and its commit, at its baseline; until it
+    // commits it is runnable, so the decision returns it to running and the
+    // switch below requeues it instead of switching it out.
     //
     // Check if reschedule is needed
     // CRITICAL: If current thread is blocked/terminated, we MUST schedule regardless of need_resched.

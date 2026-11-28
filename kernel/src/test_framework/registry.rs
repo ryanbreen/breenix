@@ -7868,8 +7868,9 @@ const INVOLUNTARY_SWITCH_RUN_AGAIN_NS: u64 = 2_000_000_000;
 /// invariant I4).
 ///
 /// A kernel thread at baseline 0 waits on a private queue for a condition
-/// nobody makes true, publishing its wait at depth 0
-/// (`park::wait_at_baseline_for_test`). At the wait's fixed point, published
+/// nobody makes true, publishing its wait at depth 0 (`park::wait`; before
+/// E2.3 removed the publication level, a test entry that skipped it). At the
+/// wait's fixed point, published
 /// and past its signal check, before its commit, it takes an interrupt with a
 /// reschedule pending (`park::exit_probe`): the real exception return. That
 /// exit must leave it runnable, so it runs again with no wake. Only after the
@@ -7892,7 +7893,7 @@ fn test_involuntary_switch_does_not_commit_a_park() -> TestResult {
             return;
         };
         exit_probe::arm(tid);
-        let end = park::wait_at_baseline_for_test(&QUEUE, || DONE.load(Ordering::SeqCst), None, WaitMode::Uninterruptible);
+        let end = park::wait(&QUEUE, || DONE.load(Ordering::SeqCst), None, WaitMode::Uninterruptible);
         exit_probe::disarm();
         END.store(
             match end {
