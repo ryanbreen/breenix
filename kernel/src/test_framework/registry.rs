@@ -7858,6 +7858,89 @@ fn test_irq_wake_under_held_queue_lock_is_not_lost() -> TestResult {
     TestResult::Pass
 }
 
+/// How long the involuntary-switch case waits for its waiter to run again
+/// after the forced interrupt. A requeued thread is dispatched within a few
+/// scheduling passes; a thread switched out as blocked waits for a wake that
+/// this case sends only after the window.
+const INVOLUNTARY_SWITCH_RUN_AGAIN_NS: u64 = 2_000_000_000;
+
+/// An involuntary switch does not commit a sleep (E2.3, design §3.5 and §8,
+/// invariant I4).
+///
+/// A kernel thread at baseline 0 waits on a private queue for a condition
+/// nobody makes true, publishing its wait at depth 0
+/// (`park::wait_at_baseline_for_test`). At the wait's fixed point, published
+/// and past its signal check, before its commit, it takes an interrupt with a
+/// reschedule pending (`park::exit_probe`): the real exception return. That
+/// exit must leave it runnable, so it runs again with no wake. Only after the
+/// window does this thread make the condition true and wake the queue.
+fn test_involuntary_switch_does_not_commit_a_park() -> TestResult {
+    use crate::task::park::{self, exit_probe, WaitEnd, WaitMode};
+    use crate::task::waitqueue::WaitQueueHead;
+    use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+
+    static QUEUE: WaitQueueHead = WaitQueueHead::new();
+    static DONE: AtomicBool = AtomicBool::new(false);
+    // 0 not ended, 1 woken, 2 condition, 3 another end, 4 refused.
+    static END: AtomicU8 = AtomicU8::new(0);
+    DONE.store(false, Ordering::SeqCst);
+    END.store(0, Ordering::SeqCst);
+
+    let waiter = || {
+        let Some(tid) = crate::task::scheduler::current_thread_id() else {
+            END.store(4, Ordering::SeqCst);
+            return;
+        };
+        exit_probe::arm(tid);
+        let end = park::wait_at_baseline_for_test(&QUEUE, || DONE.load(Ordering::SeqCst), None, WaitMode::Uninterruptible);
+        exit_probe::disarm();
+        END.store(
+            match end {
+                Ok(WaitEnd::Woken) => 1,
+                Ok(WaitEnd::Condition) => 2,
+                Ok(_) => 3,
+                Err(_) => 4,
+            },
+            Ordering::SeqCst,
+        );
+    };
+    let handle = match crate::task::kthread::kthread_run(waiter, "park_exit_waiter") {
+        Ok(handle) => handle,
+        Err(_) => return TestResult::Fail("could not start the waiter thread"),
+    };
+
+    let deadline = monotonic_now_ns().saturating_add(INVOLUNTARY_SWITCH_RUN_AGAIN_NS);
+    while !exit_probe::ran_again() && END.load(Ordering::SeqCst) == 0 && monotonic_now_ns() < deadline {
+        sleep_current_thread_ms(10);
+    }
+    let ran_again = exit_probe::ran_again();
+    let (exits, switched_out) = exit_probe::exits();
+
+    DONE.store(true, Ordering::SeqCst);
+    QUEUE.wake_up();
+    if crate::task::kthread::kthread_join(&handle).is_err() {
+        return TestResult::Fail("could not join the waiter thread");
+    }
+    exit_probe::disarm();
+    let end = END.load(Ordering::SeqCst);
+
+    if end == 4 {
+        return TestResult::Fail("the waiter's park was refused: it did not reach the fixed point");
+    }
+    if exits == 0 {
+        return TestResult::Fail("no interrupt exit decided about the waiter while its wait was uncommitted: the case did not reach the fixed point");
+    }
+    if switched_out != 0 || !ran_again {
+        return TestResult::Fail(
+            "an involuntary switch committed the sleep: the interrupt exit switched the waiter out as blocked before its commit, and it did not run again until woken",
+        );
+    }
+    if end != 1 && end != 2 {
+        return TestResult::Fail("the waiter's wait did not end through the final wake or its condition");
+    }
+    TestResult::Pass
+}
+
 // =============================================================================
 // ProcessContext Stage Tests
 // =============================================================================
@@ -10848,6 +10931,13 @@ static SCHEDULER_TESTS: &[TestDef] = &[
     TestDef {
         name: "irq_wake_under_held_queue_lock_is_not_lost",
         func: test_irq_wake_under_held_queue_lock_is_not_lost,
+        arch: Arch::Any,
+        timeout_ms: 10000,
+        stage: TestStage::PostScheduler,
+    },
+    TestDef {
+        name: "involuntary_switch_does_not_commit_a_park",
+        func: test_involuntary_switch_does_not_commit_a_park,
         arch: Arch::Any,
         timeout_ms: 10000,
         stage: TestStage::PostScheduler,

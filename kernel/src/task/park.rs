@@ -335,7 +335,120 @@ pub(crate) fn exit_thread(thread: &super::thread::Thread) -> ExitThread {
 /// (`park_core::exit_switch`). The caller holds the lock that owns the
 /// thread's scheduler state.
 pub(crate) fn exit_switch_for(thread: &super::thread::Thread, need_resched: bool) -> ExitSwitch {
-    park_core::exit_switch(exit_thread(thread), need_resched)
+    let seen = exit_thread(thread);
+    let exit = park_core::exit_switch(seen, need_resched);
+    #[cfg(feature = "boot_tests")]
+    exit_probe::saw_exit(thread.id, seen, exit);
+    exit
+}
+
+/// [`wait`] without E2.2's publication level, for the E2.3 kernel test
+/// (`park_core::wait_at_baseline`).
+#[cfg(feature = "boot_tests")]
+#[track_caller]
+pub(crate) fn wait_at_baseline_for_test(
+    queue: &WaitQueueHead,
+    done: impl FnMut() -> bool,
+    deadline_ns: Option<u64>,
+    mode: WaitMode,
+) -> Result<WaitEnd, ParkError> {
+    park_core::wait_at_baseline(&HOOKS, site(), queue.event_queue(), done, deadline_ns, mode)
+}
+
+/// The E2.3 kernel test's fixed point (design §8, "E2.3: parking and
+/// parked"). An armed thread's next wait, once published and past its
+/// signal check, takes an interrupt with a reschedule pending, before its
+/// commit; the probe records each exit decision made about that thread while
+/// its wait is uncommitted, and whether the thread ran again.
+#[cfg(feature = "boot_tests")]
+pub(crate) mod exit_probe {
+    use super::park_core::{ExitSwitch, ExitThread, Phase, Point};
+    use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+
+    static ARMED: AtomicU64 = AtomicU64::new(0);
+    static WATCHED: AtomicU64 = AtomicU64::new(0);
+    static EXITS: AtomicU32 = AtomicU32::new(0);
+    static SWITCHED_OUT: AtomicU32 = AtomicU32::new(0);
+    static RAN_AGAIN: AtomicBool = AtomicBool::new(false);
+
+    /// Arm the probe for thread `tid`'s next wait.
+    pub(crate) fn arm(tid: u64) {
+        EXITS.store(0, Ordering::SeqCst);
+        SWITCHED_OUT.store(0, Ordering::SeqCst);
+        RAN_AGAIN.store(false, Ordering::SeqCst);
+        WATCHED.store(tid, Ordering::SeqCst);
+        ARMED.store(tid, Ordering::SeqCst);
+    }
+
+    /// Stop recording exits.
+    pub(crate) fn disarm() {
+        ARMED.store(0, Ordering::SeqCst);
+        WATCHED.store(0, Ordering::SeqCst);
+    }
+
+    /// Whether the thread ran again after the forced interrupt.
+    pub(crate) fn ran_again() -> bool {
+        RAN_AGAIN.load(Ordering::SeqCst)
+    }
+
+    /// Exit decisions made about the watched thread while its wait was
+    /// published and uncommitted, and how many of them switched it out.
+    pub(crate) fn exits() -> (u32, u32) {
+        (EXITS.load(Ordering::SeqCst), SWITCHED_OUT.load(Ordering::SeqCst))
+    }
+
+    pub(super) fn saw_exit(tid: u64, seen: ExitThread, exit: ExitSwitch) {
+        if tid != WATCHED.load(Ordering::Relaxed) || seen != ExitThread::BlockedOnIo(Phase::Parking) {
+            return;
+        }
+        EXITS.fetch_add(1, Ordering::SeqCst);
+        if exit == ExitSwitch::SwitchOut {
+            SWITCHED_OUT.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    pub(super) fn at(point: Point) {
+        if point != Point::SignalChecked {
+            return;
+        }
+        let Some(tid) = crate::task::scheduler::current_thread_id() else {
+            return;
+        };
+        if ARMED.compare_exchange(tid, 0, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+            return;
+        }
+        force_interrupt_exit();
+        RAN_AGAIN.store(true, Ordering::SeqCst);
+    }
+
+    /// Take an interrupt now, with a reschedule pending, and return once the
+    /// thread runs again: on ARM64 a reschedule SGI to this CPU, whose
+    /// handler sets the reschedule; on x86 the reschedule vector, entered by
+    /// a software interrupt as `arch_halt_while_blocked` does.
+    fn force_interrupt_exit() {
+        #[cfg(target_arch = "aarch64")]
+        {
+            let cpu = crate::arch_impl::aarch64::cpu::cpu_id() as u8;
+            crate::arch_impl::aarch64::gic::send_sgi(crate::arch_impl::aarch64::constants::SGI_RESCHEDULE as u8, cpu);
+            // The SGI is taken at an instruction boundary shortly after the
+            // write; wait, boundedly, for its exit to decide about us.
+            let start = crate::arch_read_timestamp();
+            while EXITS.load(Ordering::SeqCst) == 0
+                && crate::arch_ticks_to_nanos(crate::arch_read_timestamp().wrapping_sub(start)) < 100_000_000
+            {
+                core::hint::spin_loop();
+            }
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            crate::task::scheduler::set_need_resched();
+            // SAFETY: the reschedule vector's gate saves and restores the
+            // general-purpose registers, as for `arch_halt_while_blocked`.
+            unsafe {
+                core::arch::asm!("int {vector}", vector = const crate::interrupts::RESCHEDULE_VECTOR);
+            }
+        }
+    }
 }
 
 // -------------------------------------------- sleeps not yet on park::wait
@@ -452,5 +565,10 @@ impl ParkHooks for KernelHooks {
 
     fn sleep(&self) {
         super::waitqueue::sleep_released();
+    }
+
+    #[cfg(feature = "boot_tests")]
+    fn point(&self, point: park_core::Point) {
+        exit_probe::at(point);
     }
 }

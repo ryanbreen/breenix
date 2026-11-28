@@ -515,14 +515,14 @@ struct Entry {
 }
 
 impl Entry {
-    fn take<H: ParkHooks>(hooks: &H) -> Self {
+    fn take<H: ParkHooks>(hooks: &H, raise_for_publication: bool) -> Self {
         let depth = hooks.depth();
         let irqs = hooks.irqs_enabled();
         // E2.2 keeps today's publication protocol: a blocked state is
         // published at depth 1 or more, so an interrupt exit cannot switch a
         // published thread out as blocked before its commit (§3.2, §3.5).
         // E2.3 removes this level.
-        let publication_level = hooks.baseline() == 0;
+        let publication_level = raise_for_publication && hooks.baseline() == 0;
         if publication_level {
             hooks.raise();
         }
@@ -643,12 +643,38 @@ pub fn wait<H: ParkHooks>(
     hooks: &H,
     site: u64,
     queue: &EventQueue,
-    mut done: impl FnMut() -> bool,
+    done: impl FnMut() -> bool,
     deadline_ns: Option<u64>,
     mode: WaitMode,
 ) -> Result<WaitEnd, ParkError> {
+    wait_entered(hooks, site, queue, done, deadline_ns, mode, true)
+}
+
+/// [`wait`] without E2.2's publication level: a baseline-0 caller publishes
+/// at depth 0. A test entry only, for E2.3's kernel test of the interrupt
+/// exit (design §8, "E2.3: parking and parked").
+pub fn wait_at_baseline<H: ParkHooks>(
+    hooks: &H,
+    site: u64,
+    queue: &EventQueue,
+    done: impl FnMut() -> bool,
+    deadline_ns: Option<u64>,
+    mode: WaitMode,
+) -> Result<WaitEnd, ParkError> {
+    wait_entered(hooks, site, queue, done, deadline_ns, mode, false)
+}
+
+fn wait_entered<H: ParkHooks>(
+    hooks: &H,
+    site: u64,
+    queue: &EventQueue,
+    mut done: impl FnMut() -> bool,
+    deadline_ns: Option<u64>,
+    mode: WaitMode,
+    raise_for_publication: bool,
+) -> Result<WaitEnd, ParkError> {
     let (tid, word) = admit(hooks, site)?;
-    let entry = Entry::take(hooks);
+    let entry = Entry::take(hooks, raise_for_publication);
     let seq = word.begin();
     let end = match queue.prepare_checked(hooks, deadline_ns, || !done()) {
         PrepareOutcome::Mismatch => WaitEnd::Condition,
@@ -679,7 +705,7 @@ pub fn wait_any<H: ParkHooks>(
     mode: WaitMode,
 ) -> Result<WaitEnd, ParkError> {
     let (tid, word) = admit(hooks, site)?;
-    let entry = Entry::take(hooks);
+    let entry = Entry::take(hooks, true);
     let seq = word.begin();
     let mut added = 0;
     let end = 'end: {
