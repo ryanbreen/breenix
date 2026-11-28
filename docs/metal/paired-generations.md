@@ -144,10 +144,12 @@ The mount syscall (`kernel/src/fs/breenfs/mount.rs:12`) gains one source, alongs
 - refuses flags 1 with `EINVAL`. The existing `GenerationView` already gives read-only access.
 
 Unmount (`mount.rs:90`) checks for this mount before its existing branches, in this order:
-1. `registry::unmount(id, force)` removes the entry. `MountTable::remove` applies its existing busy check (pins
-   from open files and working directories in the mount) first, so a busy mount is refused before any change:
-   still registered, still attached.
-2. The syscall drops its resolved walk.
+1. The syscall drops its resolved walk, keeping only its target, because the walk's pin on the staging root
+   would count as a use.
+2. `writer.unpublish_staging(...)` refuses with `EBUSY` while a staged node is in use (an open file, a mapping or
+   a working directory, which holds the directory's node rather than a registry pin), and under the same mount
+   exclusion `registry::unmount(id, force)` removes the entry, with `MountTable::remove`'s own busy check. A
+   busy mount is refused before any change: still registered, still attached.
 3. `writer.detach_staging()` (3.1).
 
 It does not call `shutdown` on the shared writer. Detaching before removal would be the wrong order: a removal
@@ -169,7 +171,7 @@ after the clone would exist only in the old generation. PR A adds `ROOT_EPOCH` (
 `SNAPSHOT_NEXT` in `abi.rs`), an ioctl on any file in the mount that returns a `u64`:
 
 - The epoch increases with each change the booted tree (tag 0) admits: create, link, unlink, rename, write,
-  truncate, setattr and xattr changes.
+  truncate, setattr and xattr changes, and the mtime and ctime stamp of each FIFO write.
 - It does not change for atime-only touches (`record_touches`), for writes to the default tree (logs in `/var`,
   `/tmp`, `/run`), or for writes to the staging tree.
 - It is in memory only and restarts at 0 on each mount.
@@ -804,6 +806,24 @@ additions are the ones DEV-44 rules: the freeze refusal and the mmap and mprotec
 - **T-A2 samples each crash window**: 17 evenly spaced write selections for a window of at most 12 writes, the
   crash corpus's representative slice for longer ones, each recovered writably and checked with
   `breenfs-check --full`.
+
+Review of PR #3273 (the same rule):
+- **A staged node in use refuses `MNT_FORCE` too.** For other mounts the force flag invalidates held handles; a
+  staged node cannot be invalidated, and a forced removal would leave the tree attached and claimed with no mount to
+  unmount.
+- **A frozen FIFO write keeps the FIFO's old times.** Its mtime and ctime stamp is a booted-tree change made without
+  admission (`touch`), so it is counted in an atomic beside the epoch and dropped while frozen, as on a read-only
+  mount, rather than failing the write.
+- **A frozen set-ID mapping's privilege clear returns `EBUSY`.** `clear_mapping_privilege` runs only for a shared
+  write mapping, which the freeze refuses with `EBUSY`, so that edit's refusal is the same error rather than
+  `EROFS`.
+- **mmap claims shared write authority before clearing the range** (`file_map::SharedWriteClaim`), so a refused
+  `MAP_FIXED` leaves the mapping it would replace. `bind` adopts the claim's count.
+- **An `EFAULT` from the freeze or the thaw leaves the flag as it was.** The freeze writes a zeroed result first
+  and restores the flag if the final copy fails; the thaw reports the epoch before it clears the flag.
+- **The freeze writes back only the booted tree's mappings**, the files `root_epoch` counts.
+- **Attach reads the draft's root directory**, past `observed`, and refuses a damaged one with its error. A
+  metadata `EIO` through `observed` latches the mount failed, and that mount is the booted writer.
 
 ## 11. For the coordinator
 
