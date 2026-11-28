@@ -657,6 +657,16 @@ impl MapInner {
             + self.bindings.iter().filter(|rec| rec.shared && rec.may_write).count()
     }
 
+    /// Refuse a shared binding with write authority of a running image
+    /// (`TEXT_BUSY`, 10.3), counting the refusal.
+    fn refuse_text_busy(&self, shared: bool, may_write: bool) -> Result<(), &'static str> {
+        if shared && may_write && self.deny_write() != 0 {
+            ETXTBSY_REFUSALS.fetch_add(1, Ordering::Relaxed);
+            return Err(TEXT_BUSY);
+        }
+        Ok(())
+    }
+
     /// Make the cache page at `index` coherent for instruction fetch before
     /// it is mapped executable (10.4): once after a fill or a write, and on
     /// each mapping while a shared writable binding can store into it
@@ -1046,6 +1056,14 @@ impl MapState {
         inner.write_opens += 1;
         drop(inner);
         Ok(WriteOpen(self.clone()))
+    }
+
+    /// mmap's refusal of a shared mapping with write authority of a running
+    /// image (`TEXT_BUSY`), made before it replaces anything. Under the
+    /// binding gate the answer holds until `bind`: `deny_write` rises from 0
+    /// only while an exec holds the gate exclusively.
+    pub(crate) fn refuse_text_busy(&self, shared: bool, may_write: bool) -> Result<(), &'static str> {
+        self.state.inner.lock().refuse_text_busy(shared, may_write)
     }
 
     /// Bindings that can store into this file without another fault.
@@ -2179,10 +2197,7 @@ pub(crate) fn bind(
     let id = {
         let mut inner = handle.map.state.inner.lock();
         // On an error return, `claim` drops after this guard and returns its count.
-        if shared && may_write && inner.deny_write() != 0 {
-            ETXTBSY_REFUSALS.fetch_add(1, Ordering::Relaxed);
-            return Err(TEXT_BUSY);
-        }
+        inner.refuse_text_busy(shared, may_write)?;
         inner
             .bindings
             .try_reserve(1)

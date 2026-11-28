@@ -258,8 +258,9 @@ pub fn sys_mmap(
         SyscallResult::Err(errno)
     };
 
-    if let Some((handle, may_write)) = file {
+    if let Some((description, handle, may_write)) = file {
         return match map_file(
+            description,
             handle,
             current_thread_id,
             root,
@@ -471,15 +472,16 @@ pub(crate) fn clear_for_mapping(
     unmap_range(process, start, end)
 }
 
-/// The file handle for a file-backed mmap request, or its errno. The
-/// descriptor is known to be open and `length` nonzero.
+/// The descriptor, file handle and write access for a file-backed mmap
+/// request, or its errno. The descriptor is known to be open and `length`
+/// nonzero.
 fn file_mapping(
     fd: i32,
     length: u64,
     prot: Protection,
     flags: MmapFlags,
     offset: u64,
-) -> Result<(Arc<VNode>, bool), u64> {
+) -> Result<(crate::ipc::fd::FileDescriptor, Arc<VNode>, bool), u64> {
     use crate::syscall::errno::{EACCES, EINVAL, ENODEV, ENOMEM, EOVERFLOW};
     let kind = flags.bits() & 3;
     if kind == 0 || !is_page_aligned(offset) {
@@ -520,14 +522,20 @@ fn file_mapping(
         return Err(EACCES as u64);
     }
     let handle = file.open.node.clone();
-    Ok((handle, may_write))
+    Ok((descriptor.clone(), handle, may_write))
 }
 
 /// Populate through a transfer lease, then register under filesystem exclusion
 /// in a short PROCESS_MANAGER section. Entries are installed by
 /// faults, not here. If registration fails, the pages population read are
 /// left for the filesystem service to retire.
+///
+/// `_description` is the request's descriptor, held until the binding is
+/// published or refused: its write access counts in the file's writers, so a
+/// close meanwhile cannot let an exec start sharing the file's pages
+/// (ETXTBSY, docs/plans/e3-page-cache.md 10.3).
 fn map_file(
+    _description: crate::ipc::fd::FileDescriptor,
     handle: Arc<VNode>,
     thread_id: u64,
     root: u64,
@@ -580,6 +588,13 @@ fn map_file(
                 } else {
                     ErrorCode::OutOfMemory as u64
                 };
+                // A running image refuses shared write authority before the
+                // range is cleared, so a refused MAP_FIXED request leaves the
+                // mapping it would replace. The gate keeps the answer until bind.
+                let shared = vma.flags.bits() & 3 != 2;
+                if let Err(error) = handle.map.refuse_text_busy(shared, may_write && !append_only) {
+                    return Err(abandon(bind_errno(error)));
+                }
                 // Claimed before the range is cleared, so a frozen root's
                 // refusal leaves the mapping a MAP_FIXED request would replace.
                 let claim = if vma.flags.bits() & 3 != 2 && vma.prot.contains(Protection::WRITE) {
