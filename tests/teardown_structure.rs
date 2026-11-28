@@ -14626,7 +14626,7 @@ fn check_kernel_stack_map_refusal_order(kernel_page_table: &str) -> Result<(), S
     }
     let set_frame = code_offset_once(
         map_body,
-        "pt[pt_index as usize].set_frame(page_frame, flags)",
+        "pt[pt_index].set_frame(page_frame, flags)",
     )?;
     if refusals[0] >= set_frame {
         return Err(
@@ -14926,7 +14926,7 @@ fn kernel_stack_release_validator_rejects_unsafe_mutations() {
 
     let map_before_refusal = kernel_page_table.replacen(
         "    if crate::memory::kernel_stack::is_kernel_stack_va(virt.as_u64())",
-        "    pt[pt_index as usize].set_frame(page_frame, flags);\n\n    if crate::memory::kernel_stack::is_kernel_stack_va(virt.as_u64())",
+        "    pt[pt_index].set_frame(page_frame, flags);\n\n    if crate::memory::kernel_stack::is_kernel_stack_va(virt.as_u64())",
         1,
     );
     assert_ne!(
