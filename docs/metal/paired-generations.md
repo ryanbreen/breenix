@@ -247,9 +247,16 @@ a window, so the paired installer uses descriptors instead.
 ### 4.2 Upload, with checksums
 
 1. The inventory is already staged (section 4's preamble).
-2. `paired have <id>` prints the inventory rows the clone already satisfies byte for byte: same type, mode, owner,
-   size and SHA-256 at the same path. Only the remaining rows need bytes from the host.
-3. The host writes each remaining regular file once, as a content-addressed object, then runs
+2. `paired have <id>` prints the inventory rows the clone already satisfies. It judges a link group as a whole.
+   An independent row (link group `-`) is satisfied when the path has the same type, mode, owner, size and
+   SHA-256, and, for a regular file, a link count of 1. A group is satisfied only when each of its member paths is
+   present with those fields, the members share one inode, and that inode's link count equals the group's size.
+   Otherwise the group is unsatisfied, members included that match on their own, because apply
+   rebuilds the group as one new inode (below). Only unsatisfied rows need bytes from the host.
+3. The host writes one object per distinct SHA-256 among the unsatisfied regular-file and symlink rows. A regular
+   file's object holds its bytes. A symlink's object holds its target bytes, because the manifest's symlink row
+   carries only the SHA-256 and length of the target (docs/fs/migration-manifest.md, Size and SHA-256), so the
+   target cannot be rebuilt from the row alone. Then it runs
    `bsync --sudo objects/ host:/run/breenix/paired/stage/.breenix-incoming/objects/`. The objects go straight into the
    draft, so each byte crosses SSH once and is written once, with no second copy from a staging area.
    bsync's `bput --adopt` checks each object's length and SHA-256 before publishing it (tools/bsync/README.md).
@@ -278,10 +285,19 @@ are already in it. The rules come from `LocalFiles` (local.rs), applied in place
 With no baseline (a generation that predates `.breenix-image`), a payload path that differs from the inventory
 is treated as an on-box change: it is carried, not lost.
 
-Construction uses the existing `Copier` rules:
-- Directories are created first. A regular file is renamed in from its object (same tree), or linked if its
-  object was already used by an earlier member of its link group.
-- Symlinks are created with their target.
+Construction uses the existing `Copier` rules, with an inode plan worked out from the inventory first:
+- Directories are created first.
+- **One inode per independent row or link group.** Several rows can share one SHA-256 without being links (two
+  identical files that the inventory lists as independent). Apply counts, for each object, the inodes that need
+  it: one per independent regular-file row and one per link group. Each of those inodes but the last is made by
+  copying the object into a fresh temporary file in the target directory. The last is the object itself, renamed
+  in (same tree). So identical independent files stay independent.
+- **Link groups are rebuilt whole.** For an unsatisfied group, apply makes the group's inode once, at the first
+  member's path, then `linkat`s each further member to it. Each member's name is replaced by a rename over it
+  (4.0), so a member that was a separate inode, or was linked to a path outside the group, stops being one. A
+  satisfied group is left alone.
+- **Symlinks** are created with `symlinkat` from the target bytes in their object, after checking the bytes'
+  length and SHA-256 against the row, as a temporary name renamed over the final one.
 - Modes, owners and set-ID bits come from the row. `layout::check_setid` runs at the end.
 - Directory mtimes are set last, bottom-up, so pet entries do not change them.
 
@@ -563,7 +579,7 @@ Scope: sections 4 to 6.
 
 | Test | Where | Checks | Red on the old code because |
 |---|---|---|---|
-| T-B1 apply over a fixture clone | `tests/persistent_install/` host test, beside `tests/metal_replace_usr_host.rs` | A fixture clone with a baseline, an inventory and objects. After apply and verify: the payload rows equal the inventory; a pet file at an unmanaged path is kept; a locally changed managed file is moved to `.breenix-carried/<prev>/` with set-ID cleared; a dropped, unchanged managed file is removed; a BusyBox hard-link group across `/bin` and `/sbin`, a symlink and set-ID `su` are exact; mount points are untouched; a rerun after a cut at each file is idempotent. Path safety (4.0): with a pet symlink at `usr/lib` pointing outside the tree, at `usr/lib/breenix/rust-current`, and at `opt/breenix/rust`, the conversion and apply refuse, and the symlinks' targets (a fixture file standing in for one in `/home`) are byte-for-byte unchanged. Epoch custody: begin, apply and publish run in sequence, and publish compares the E1 that begin recorded after apply has removed `.breenix-incoming` and the unmount has run; a recorded boot ID that differs from the fixture's refuses publish. | The check commit's stub routes `apply` to today's only in-place path, `replace_usr`, which leaves `/bin`, `/sbin` and `/lib` unchanged |
+| T-B1 apply over a fixture clone | `tests/persistent_install/` host test, beside `tests/metal_replace_usr_host.rs` | A fixture clone with a baseline, an inventory and objects. After apply and verify: the payload rows equal the inventory; a pet file at an unmanaged path is kept; a locally changed managed file is moved to `.breenix-carried/<prev>/` with set-ID cleared; a dropped, unchanged managed file is removed; a BusyBox hard-link group across `/bin` and `/sbin`, a symlink and set-ID `su` are exact; a symlink whose target the clone lacks is rebuilt from its object; two independent rows with one SHA-256 end as two inodes; a group whose members match on their own but are two inodes in the clone, and a group one of whose members is linked to a pet path, are each rebuilt as one inode with the group's link count; `paired have` reports neither group as satisfied; mount points are untouched; a rerun after a cut at each file is idempotent. Path safety (4.0): with a pet symlink at `usr/lib` pointing outside the tree, at `usr/lib/breenix/rust-current`, and at `opt/breenix/rust`, the conversion and apply refuse, and the symlinks' targets (a fixture file standing in for one in `/home`) are byte-for-byte unchanged. Epoch custody: begin, apply and publish run in sequence, and publish compares the E1 that begin recorded after apply has removed `.breenix-incoming` and the unmount has run; a recorded boot ID that differs from the fixture's refuses publish. | The check commit's stub routes `apply` to today's only in-place path, `replace_usr`, which leaves `/bin`, `/sbin` and `/lib` unchanged |
 | T-B2 manager version 2 | `scripts/metal/efi-stub/tests/live_sequence.rs` | The trial is refused for a missing root, a read-only root, or an image intent naming another userland. It is accepted when the three agree. Version 1 behaves exactly as today. | `Manifest::parse` rejects a seventh line |
 | T-B3 host flow | `tests/metal_live_flash_test.py` | `prepare --paired`: the slot intent names the new generation; the manifest carries the root line only for a version-2 manager. The retained set keeps the physical PREVIOUS's root when an acknowledged trial is not promoted (a stale base or a foreign NEXT), and drops a root only after a `promoted` line removes it from both physical slots. The commit check needs `/` to be `gen-<new>` `rw` plus the verify digest. A rollback receipt needs the old commit and `gen-<old>`. Staging order: the tool and the inventory are published, and `paired protocol` answers, before `paired begin`; the eight box subcommands and the cold verify invoke the staged tool path, not `/sbin/persistent-install`. | Today's `prepare` names CURRENT's userland (metal_live_flash.py:100) |
 
