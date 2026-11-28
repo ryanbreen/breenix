@@ -231,8 +231,11 @@ worker if an earlier deadline is published. Pop bounded due batches outside
 the socket lock, drop the wheel lock, then check socket incarnation, timer
 generation and absolute deadline under state ownership. Round coarse deadlines
 up and keep a high-resolution next deadline for pacing. Use the monotonic
-clock and the platform's deadline facility. Measure pacing resolution before
-making it the default. [Varghese and Lauck, Hashed and Hierarchical Timing
+clock and the platform's deadline facility. Drive expiry and retirement from
+due entries and deliver timer-generated notices from the affected sockets.
+The worker must do no connection-table sweep for reaping, notice collection
+or next-deadline selection. Use the wheel's populated buckets to find the next
+deadline. Measure pacing resolution before making it the default. [Varghese and Lauck, Hashed and Hierarchical Timing
 Wheels](https://www.cs.columbia.edu/~nahum/w6998/papers/sosp87-timing-wheels.pdf).
 
 ### Socket memory, readiness and local delivery
@@ -432,6 +435,9 @@ concurrency, loss or RTT named in the prediction.
   200 ms floor predates this standards-based recovery design.
 - Opt out at SSH transport setup because both programs start the handshake on
   the connected fd before they know which channels the transport will carry.
+- Count all connection visits in a timer pass because today's `run_timers`
+  scans live sockets and invokes forced reaping, even though
+  `note_timer_deadline` already wakes the worker for an earlier arm.
 - Use RFC 9438 and RFC 9937 for implementation details where they supersede
   RFC 8312 and RFC 6937 because those newer texts specify the current CUBIC and
   PRR behavior.
