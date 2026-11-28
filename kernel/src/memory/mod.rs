@@ -1,4 +1,3 @@
-#[cfg(target_arch = "aarch64")]
 pub mod boot_ranges;
 #[cfg(not(target_arch = "x86_64"))]
 pub mod arch_stub;
@@ -28,6 +27,7 @@ pub mod locked;
 use crate::memory::arch_stub::{
     Mapper, Page, PageTableFlags, PhysAddr, PhysFrame, Size4KiB, VirtAddr,
 };
+#[cfg(target_arch = "x86_64")]
 use bootloader_api::info::MemoryRegions;
 use conquer_once::spin::OnceCell;
 use spin::Mutex;
@@ -67,6 +67,7 @@ pub fn init_aarch64_heap() {
 static MMIO_NEXT_ADDR: Mutex<u64> = Mutex::new(layout::MMIO_BASE);
 
 /// Initialize the memory subsystem
+#[cfg(target_arch = "x86_64")]
 pub fn init(physical_memory_offset: VirtAddr, memory_regions: &'static MemoryRegions) {
     log::info!("Initializing memory management...");
     log::info!("Physical memory offset: {:?}", physical_memory_offset);

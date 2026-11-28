@@ -84,6 +84,7 @@ SECTIONS
     /* Read-only data */
     __kernel_rodata_start = .;
     .rodata : AT(ADDR(.rodata) - VMLINUX_OFFSET) {
+        KEEP(*(.rodata.breenix_handoff))
         *(.rodata .rodata.*)
         *(.srodata .srodata.*)
         *(.gcc_except_table .gcc_except_table.*)

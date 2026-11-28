@@ -46,7 +46,7 @@ pub struct FramebufferInfo {
 /// Passed to the kernel entry point in x0.
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
-pub struct HardwareConfig {
+pub struct HardwareConfigV7 {
     /// Magic number for validation: 0x4252_4E58 ("BRNX")
     pub magic: u32,
     /// Version of this struct (`HARDWARE_CONFIG_VERSION`)
@@ -150,12 +150,12 @@ pub struct HardwareConfig {
 pub const HARDWARE_CONFIG_MAGIC: u32 = 0x4252_4E58; // "BRNX"
 use crate::HARDWARE_CONFIG_VERSION;
 
-impl HardwareConfig {
+impl HardwareConfigV7 {
     /// Create a zeroed config with magic and version set.
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             magic: HARDWARE_CONFIG_MAGIC,
-            version: HARDWARE_CONFIG_VERSION,
+            version: MIN_HARDWARE_CONFIG_VERSION,
             uart_base_phys: 0,
             uart_irq: 0,
             uart_type: 0,
@@ -203,7 +203,12 @@ impl HardwareConfig {
             rtc_get_time: 0,
             runtime_region_count: 0,
             _pad8: 0,
-            runtime_regions: [crate::RuntimeRegion::default(); crate::MAX_RUNTIME_REGIONS],
+            runtime_regions: [crate::RuntimeRegion {
+                base: 0,
+                pages: 0,
+                kind: 0,
+                _pad: 0,
+            }; crate::MAX_RUNTIME_REGIONS],
             boot_flags: 0,
             _pad9: 0,
             boot_seed_source: 0,
@@ -211,9 +216,73 @@ impl HardwareConfig {
             boot_seed: [0; crate::BOOT_SEED_BYTES],
         }
     }
+}
 
-    #[allow(dead_code)] // Used by kernel to validate config received from loader
-    pub fn validate(&self) -> bool {
-        self.magic == HARDWARE_CONFIG_MAGIC && self.version == HARDWARE_CONFIG_VERSION
+#[derive(Clone, Copy, Debug, Default)]
+#[repr(C)]
+pub struct UefiMapHandoff {
+    pub map_phys: u64,
+    pub map_size: u64,
+    pub descriptor_size: u32,
+    pub descriptor_version: u32,
+    pub loader_check: u32,
+    pub _reserved: u32,
+}
+
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct HardwareConfig {
+    pub v7: HardwareConfigV7,
+    pub uefi_map: UefiMapHandoff,
+}
+
+impl HardwareConfig {
+    pub const fn new() -> Self {
+        Self {
+            v7: HardwareConfigV7 {
+                version: HARDWARE_CONFIG_VERSION,
+                ..HardwareConfigV7::new()
+            },
+            uefi_map: UefiMapHandoff {
+                map_phys: 0,
+                map_size: 0,
+                descriptor_size: 0,
+                descriptor_version: 0,
+                loader_check: 0,
+                _reserved: 0,
+            },
+        }
     }
+}
+
+impl Default for HardwareConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Default for HardwareConfigV7 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl core::ops::Deref for HardwareConfig {
+    type Target = HardwareConfigV7;
+
+    fn deref(&self) -> &Self::Target {
+        &self.v7
+    }
+}
+
+impl core::ops::DerefMut for HardwareConfig {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.v7
+    }
+}
+
+pub const MIN_HARDWARE_CONFIG_VERSION: u32 = 7;
+
+pub fn accepts_version(version: u32) -> bool {
+    (MIN_HARDWARE_CONFIG_VERSION..=HARDWARE_CONFIG_VERSION).contains(&version)
 }

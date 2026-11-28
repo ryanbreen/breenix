@@ -125,32 +125,10 @@ fn main() -> Status {
     // Populate RAM regions from UEFI memory map FIRST — we need the actual RAM
     // base address to know where to load the kernel on platforms like VMware
     // where guest RAM starts at 0x80000000 instead of 0x40000000.
-    handoff::populate_ram_regions(config);
-
-    log::info!("RAM regions: {} regions found", config.ram_region_count);
-    for i in 0..config.ram_region_count as usize {
-        if i >= config.ram_regions.len() {
-            break;
-        }
-        let r = &config.ram_regions[i];
-        log::info!(
-            "  RAM: {:#x} - {:#x} ({} MB)",
-            r.base,
-            r.base + r.size,
-            r.size / (1024 * 1024)
-        );
-    }
-
-    // Compute RAM base offset for kernel relocation.
-    // The kernel linker script assumes physical RAM starts at 0x40000000.
-    // On VMware Fusion, RAM starts at 0x80000000, so offset = 0x40000000.
-    // On QEMU/Parallels, RAM starts at 0x40000000, so offset = 0.
     let expected_ram_base = arm64_boot_contract::LINKED_RAM_START;
-    let actual_ram_base = if config.ram_region_count > 0 {
-        config.ram_regions[0].base & !0x3FFF_FFFF // Round down to 1GB boundary
-    } else {
-        expected_ram_base
-    };
+    let (ram_base, ram_descriptors) = handoff::populate_ram_regions()
+        .unwrap_or((expected_ram_base, 0));
+    let actual_ram_base = ram_base & !0x3FFF_FFFF;
     let ram_base_offset = if actual_ram_base > expected_ram_base {
         actual_ram_base - expected_ram_base
     } else {
@@ -186,7 +164,13 @@ fn main() -> Status {
             );
             k
         }
-        Err(e) => {
+        Err(kernel_load::LoadError::Incompatible(error)) => {
+            use core::fmt::Write;
+            log::error!("{error}");
+            let _ = writeln!(LoaderSerial(config.uart_base_phys, config.uart_type), "{error}");
+            return Status::INCOMPATIBLE_VERSION;
+        }
+        Err(kernel_load::LoadError::Load(e)) => {
             log::error!("Failed to load kernel: {}", e);
             halt();
         }
@@ -196,20 +180,7 @@ fn main() -> Status {
     {
         use core::fmt::Write;
         let mut u = LoaderSerial(config.uart_base_phys, config.uart_type);
-        let _ = writeln!(u, "[ram] {} regions:", config.ram_region_count);
-        for i in 0..config.ram_region_count as usize {
-            if i >= config.ram_regions.len() {
-                break;
-            }
-            let r = &config.ram_regions[i];
-            let _ = writeln!(
-                u,
-                "[ram]   {:#x} - {:#x} ({} MB)",
-                r.base,
-                r.base + r.size,
-                r.size / (1024 * 1024)
-            );
-        }
+        let _ = writeln!(u, "[ram] lowest={ram_base:#x} descriptors={ram_descriptors}");
         let _ = writeln!(
             u,
             "[kern] entry_phys={:#x} load={:#x}-{:#x}",
@@ -317,6 +288,18 @@ fn main() -> Status {
         config.pci_ecam_base = page_tables::ECAM_REMAP_VA;
     }
 
+    let loader_image = match uefi::boot::open_protocol_exclusive::<uefi::proto::loaded_image::LoadedImage>(
+        uefi::boot::image_handle(),
+    ) {
+        Ok(image) => {
+            let (base, size) = image.info();
+            arm64_boot_contract::phys_memory::PhysRange::from_base_size(base as u64, size)
+        }
+        Err(error) => {
+            log::error!("Cannot identify loader image for the identity map: {error:?}");
+            return error.status();
+        }
+    };
     let pt_config = PageTableConfig {
         ram_base_offset,
         ecam_ipa,
@@ -418,7 +401,7 @@ fn main() -> Status {
         }
     }
 
-    kernel_entry::jump_to_kernel(loaded_kernel.entry_phys, hw_config, page_tables, &pt_config);
+    kernel_entry::jump_to_kernel(loaded_kernel.entry_phys, hw_config, page_tables, &pt_config, loader_image);
 }
 
 /// Allocate the entire fixed stack as loader data until kernel handoff.

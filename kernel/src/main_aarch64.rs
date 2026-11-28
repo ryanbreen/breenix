@@ -690,6 +690,14 @@ kernel_main:
     "#
 );
 
+#[used]
+#[no_mangle]
+#[link_section = ".rodata.breenix_handoff"]
+static BREENIX_HANDOFF_VERSIONS: [u32; 2] = [
+    arm64_boot_contract::hw_config::MIN_HARDWARE_CONFIG_VERSION,
+    arm64_boot_contract::HARDWARE_CONFIG_VERSION,
+];
+
 #[cfg(target_arch = "aarch64")]
 #[export_name = "kernel_main_linked"]
 #[inline(never)]
@@ -712,11 +720,25 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             options(nostack, nomem, preserves_flags),
         );
     }
-    if relative_text != absolute_text && hw_config_ptr != 0 {
-        // Configure the UART on this failure path so the panic is readable on
-        // VMware too, before normal platform initialization has taken place.
-        let config = unsafe { &*(hw_config_ptr as *const kernel::platform_config::HardwareConfig) };
-        kernel::platform_config::init_from_parallels(config);
+    if hw_config_ptr != 0 {
+        // Only the stable prefix fields may be read before accepting the version.
+        let base = hw_config_ptr as *const u8;
+        let (magic, version, uart_base, uart_kind) = unsafe {
+            (base.cast::<u32>().read(), base.add(4).cast::<u32>().read(),
+             base.add(8).cast::<u64>().read(), base.add(20).read())
+        };
+        kernel::platform_config::configure_loader_uart(uart_base, uart_kind);
+        if magic != kernel::platform_config::HARDWARE_CONFIG_MAGIC
+            || !arm64_boot_contract::hw_config::accepts_version(version)
+        {
+            serial_println!(
+                "HardwareConfig v{} refused (magic {:#x}): this kernel accepts v7..v8",
+                version, magic
+            );
+            loop {
+                unsafe { core::arch::asm!("wfe", options(nomem, nostack)) };
+            }
+        }
     }
     assert_eq!(
         relative_text, absolute_text,
@@ -726,15 +748,17 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // Configure platform addresses while the loader's HardwareConfig remains
     // accessible through TTBR0, before any device or secondary CPU is started.
     if hw_config_ptr != 0 {
-        let config = unsafe { &*(hw_config_ptr as *const kernel::platform_config::HardwareConfig) };
-        assert!(
-            kernel::platform_config::init_from_parallels(config),
-            "ARM64 boot: incompatible loader HardwareConfig"
-        );
+        use kernel::platform_config::{HardwareConfigV7, UefiMapHandoff};
+        let prefix = hw_config_ptr as *mut HardwareConfigV7;
+        let config = unsafe { &*prefix };
+        let map = (config.version == 8).then(|| unsafe {
+            prefix.add(1).cast::<UefiMapHandoff>().read()
+        });
+        kernel::platform_config::init_from_parallels(config, map);
         kernel::drivers::xhci::set_firmware_rsdp(config.rsdp_addr);
 
         // The pool keeps the loader's boot seed and the loader's copy is zeroed.
-        let config = unsafe { &mut *(hw_config_ptr as *mut kernel::platform_config::HardwareConfig) };
+        let config = unsafe { &mut *prefix };
         let source = match config.boot_seed_source {
             arm64_boot_contract::BOOT_SEED_EFI_RNG => kernel::random::BootSeedSource::EfiRng,
             arm64_boot_contract::BOOT_SEED_TPM => kernel::random::BootSeedSource::Tpm,
@@ -878,29 +902,34 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     let frame_pool = kernel::platform_config::frame_pool();
     match frame_pool.source {
         kernel::platform_config::FramePoolSource::UefiMemoryMap => {
-            serial_println!("[boot] Frame pool from the UEFI memory map:")
+            let stats = frame_pool.stats;
+            serial_println!(
+                "[boot] Frame pool from the UEFI memory map: descriptors={} stride={} usable_bytes={} malformed={} overlap_bytes={} released_bytes={} buffer_bytes={} held_overlap={} held_attributes={} held_fixed={} held_window={} other_map_allocations={} excluded_attributes={}",
+                stats.descriptors, stats.stride, stats.usable_bytes, stats.malformed,
+                stats.overlap_bytes, stats.released_bytes, stats.buffer_bytes, stats.buffer_overlap,
+                stats.buffer_attributes, stats.buffer_fixed, stats.buffer_window,
+                stats.other_map_allocations, stats.excluded_attributes
+            );
+        }
+        kernel::platform_config::FramePoolSource::UefiRegionListV7 { possibly_truncated } => {
+            serial_println!("[boot] Frame pool from UEFI v7 region list{}:",
+                if possibly_truncated { " (RAM may be missing)" } else { "" });
         }
         kernel::platform_config::FramePoolSource::DeviceTree => {
-            serial_println!("[boot] Frame pool from the device tree:")
+            serial_println!("[boot] Frame pool from the device tree:");
         }
         kernel::platform_config::FramePoolSource::Unavailable(reason) => {
-            panic!("No safe physical frame pool: {}", reason)
+            panic!("No safe physical frame pool: {:?}", reason)
         }
     }
-    for range in frame_pool.ranges.as_slice() {
+    for range in frame_pool.ranges.iter() {
         serial_println!("[boot]   {:#x}-{:#x}", range.start, range.end);
     }
     serial_println!(
-        "[boot] Initializing memory management ({} MiB in {} ranges{})...",
-        frame_pool.ranges.total_bytes() >> 20,
-        frame_pool.ranges.as_slice().len(),
-        if frame_pool.ranges.truncated() {
-            ", firmware map truncated"
-        } else {
-            ""
-        }
+        "[boot] Initializing memory management ({} MiB in {} ranges)...",
+        frame_pool.ranges.total_bytes() >> 20, frame_pool.ranges.len(),
     );
-    kernel::memory::frame_allocator::init_aarch64(frame_pool.ranges.as_slice());
+    kernel::memory::frame_allocator::init_aarch64(&frame_pool.ranges);
     kernel::memory::init_aarch64_heap();
     // Per-address-space ASIDs: chooses 8 or 16 bits and sets TCR_EL1 before
     // any process exists and before secondaries copy CPU 0's TCR_EL1.

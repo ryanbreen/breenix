@@ -207,6 +207,7 @@ interactive = ["testing"]  # Boot into init_shell instead of running automated t
 disable_x86_prod_init = []
 
 [dependencies]
+arm64-boot-contract = { path = "../libs/arm64-boot-contract" }
 ufs-abi = { path = "../libs/ufs-abi" }
 screen-capture = { path = "../libs/screen-capture" }
 input-abi = { path = "../libs/input-abi" }
@@ -229,7 +230,6 @@ pic8259 = "0.10.4"
 uart_16550 = "0.3.2"
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
-arm64-boot-contract = { path = "../libs/arm64-boot-contract" }
 aarch64-cpu = "9.4"
 tock-registers = "0.8"
 rlibc = "1.0"
