@@ -900,7 +900,27 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
     }
     /// Describe COW paths without changing the private transaction.
     pub fn reservation_paths(&self, ino: u64) -> Result<txn::ReservationPaths, Error> {
-        Ok(self.txn.reservation_paths(self.tree(ino).root, ino ^ self.tag(ino))?)
+        let mut paths = self.txn.reservation_paths(self.tree(ino).root, ino ^ self.tag(ino))?;
+        // FS nodes gain a second reference only from a DEAD parent or from
+        // `snapshot`, which shares its source's root node.
+        paths.shared |= self.may_share_nodes(self.tree_id(ino));
+        Ok(paths)
+    }
+    fn tree_id(&self, ino: u64) -> u64 {
+        match self.tag(ino) {
+            0 => self.root_id,
+            DEFAULT_TREE => 1,
+            _ => self.staging.as_ref().unwrap().0,
+        }
+    }
+    /// Whether another ROOT may hold nodes of tree `id`. Only `snapshot`
+    /// shares FS nodes, and it records its source in `source_root`: a tree
+    /// with no source that no other ROOT names as one is independent. A ROOT
+    /// naming a deleted source may descend from any tree through it.
+    fn may_share_nodes(&self, id: u64) -> bool {
+        self.roots.get(&id).is_none_or(|root| root.source_root != 0)
+            || self.roots.iter().any(|(&other, root)| other != id && root.source_root != 0
+                && (root.source_root == id || !self.roots.contains_key(&root.source_root)))
     }
     pub fn root_pointer(&self) -> BlockPtr { self.root.root }
     /// Project a pinned root through the same transaction's read paths. Open

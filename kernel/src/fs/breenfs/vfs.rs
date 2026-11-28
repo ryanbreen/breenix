@@ -221,6 +221,10 @@ mod free_space;
 #[path = "../../../../tools/breenfs-host-tests/src/staging_tree.rs"]
 pub(super) mod staging_tree;
 
+#[cfg(test)]
+#[path = "../../../../tools/breenfs-host-tests/src/clone_reservation.rs"]
+mod clone_reservation;
+
 // Extended attributes use ABI errno 61 for an absent attribute.
 const ENODATA: i32 = 61;
 
@@ -1541,10 +1545,12 @@ impl<W: Wait> MountState<W> {
         let fs_levels = runs.checked_add(1)
             .and_then(|n| n.checked_mul(4 * (paths.fs_height + 2)))
             .ok_or(Errno(ENOSPC))?;
-        let space_changes = paths.uncopied_fs_nodes.checked_add(fs_levels)
-            .and_then(|n| n.checked_add(pages))
+        let copies = paths.uncopied_fs_nodes.checked_add(fs_levels).ok_or(Errno(ENOSPC))?;
+        let shared = paths.shared_copy_changes(copies).ok_or(Errno(ENOSPC))?;
+        let space_changes = copies.checked_add(pages)
             .and_then(|n| n.checked_add(1))
             .and_then(|n| n.checked_mul(3))
+            .and_then(|n| n.checked_add(shared))
             .ok_or(Errno(ENOSPC))?;
         let estimate = Estimate {
             data_blocks: pages,
@@ -1622,11 +1628,13 @@ impl<W: Wait> MountState<W> {
         // estimate and can increase its SPACE charge too.
         let result = self.files.orphan_growth_paths(dir, 3 + usize::from(inline));
         let fs_nodes = fs_nodes.checked_add(self.observed(result)?).ok_or(Errno(ENOSPC))?;
+        let shared = paths.shared_copy_changes(fs_nodes).ok_or(Errno(ENOSPC))?;
         let estimate = Estimate {
             fs_levels: fs_nodes,
             // Up to two deferred records per FS allocation and the ROOT
-            // update. Include both in the remaining-debt calculation.
-            space_changes: 6 * fs_nodes + 3,
+            // update, and the references copies of shared nodes take.
+            // Include each in the remaining-debt calculation.
+            space_changes: (6 * fs_nodes + 3).checked_add(shared).ok_or(Errno(ENOSPC))?,
             space_height: paths.space_height,
             space_nodes: paths.space_nodes,
             ..Estimate::default()
@@ -1649,8 +1657,10 @@ impl<W: Wait> MountState<W> {
         let paths = self.observed(result)?;
         let fs_levels = edits.max(3).checked_mul(4 * (paths.fs_height + 2))
             .ok_or(Errno(ENOSPC))?;
-        let space_changes = paths.uncopied_fs_nodes.checked_add(fs_levels)
-            .and_then(|n| n.checked_mul(3)).ok_or(Errno(ENOSPC))?;
+        let copies = paths.uncopied_fs_nodes.checked_add(fs_levels).ok_or(Errno(ENOSPC))?;
+        let shared = paths.shared_copy_changes(copies).ok_or(Errno(ENOSPC))?;
+        let space_changes = copies.checked_mul(3)
+            .and_then(|n| n.checked_add(shared)).ok_or(Errno(ENOSPC))?;
         let estimate = Estimate {
             data_blocks: 0,
             uncopied_fs_nodes: paths.uncopied_fs_nodes,
