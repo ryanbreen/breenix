@@ -48,7 +48,7 @@ pub enum DmaError {
 /// image `[start, loaded_end)` and a section the linker places apart from
 /// it, `[dma_start, dma_end)`. On ARM64 that section is `.dma`, at physical
 /// `0x5000_0000` past a gap (`linker.ld`), and `_end` follows it; x86 has
-/// none, and passes an empty one at `_end`.
+/// no such section and passes an empty range at `_end`.
 #[derive(Clone, Copy, Debug)]
 pub struct ImageLayout {
     pub start: u64,

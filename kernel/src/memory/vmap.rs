@@ -37,7 +37,7 @@ pub trait Space {
     /// Keep the growth `extend` made, its pages mapped.
     fn settle(&mut self);
     /// Undo the growth of `allocation` by `extra` bytes that `extend` made,
-    /// none of whose pages were mapped; returns the allocation as it was.
+    /// whose pages were not mapped; returns the allocation as it was.
     fn retract(&mut self, allocation: &Allocation, extra: u64) -> Allocation;
     /// Map `[allocation.start + offset, + len)` to new frames whole, or leave
     /// it unmapped.

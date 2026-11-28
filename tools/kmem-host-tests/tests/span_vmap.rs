@@ -788,8 +788,8 @@ fn a_moved_large_block_stays_in_a_layer_large_frees() {
     }
 }
 
-/// Span search (6.4): a request whose worst case is above every free extent
-/// is still served from an extent that holds it at its actual alignment.
+/// Span search (6.4): a request whose worst case is above the span's largest
+/// free extent is still served from an extent that holds it at its actual alignment.
 /// One span is filled with 5000-byte blocks aligned to 4096, the gaps their
 /// alignment leaves are filled with 64-byte blocks, and one 5000-byte block
 /// is freed. Its extent, about 5 KiB, holds 4097 bytes at the old 4096-aligned
@@ -817,7 +817,7 @@ fn a_span_serves_an_aligned_request_from_a_hole_below_its_worst_case() {
 /// span arena and vmap code in two windows, as `large.rs` glues them: a
 /// span block that cannot resize in place moves to `kmem_core::moved_layer`,
 /// and each unmap is flushed at once, as on ARM64. The `fail_at`-th request
-/// (allocation or resize) fails with nothing changed. It records the blocks
+/// (allocation or resize) fails and changes no state. It records the blocks
 /// live and the most data frames held at once.
 struct HostLayers {
     spans: World,
@@ -1004,7 +1004,7 @@ impl large_check::Layers for HostLayers {
 /// most one span and 16 pages of data frames at once, so it advances the
 /// frame frontier by little more than the 2 MiB span the layer needs before
 /// 32-bit DMA drivers take contiguous runs there; and a failure of each of
-/// its requests in turn returns an error with none of its blocks live.
+/// its requests in turn returns an error with 0 of its blocks live.
 #[test]
 fn the_self_check_holds_one_span_and_frees_its_blocks_on_each_failure() {
     let mut layers = HostLayers::new(None);

@@ -18,7 +18,7 @@ pub enum Place {
 pub trait Layers {
     /// A block for `layout` from the layer 6.1 routes it to.
     fn allocate(&mut self, layout: Layout) -> Option<NonNull<u8>>;
-    /// `large::reallocate`: `None` leaves the block as it was.
+    /// `large::reallocate`; a failure leaves the block as it was.
     ///
     /// # Safety
     ///
@@ -94,7 +94,7 @@ impl Held {
 /// contiguous runs for 32-bit DMA drivers come from moves past them. The
 /// span is the layer's own 2 MiB unit, which the arena then keeps as its
 /// empty span; a vmap block aligned above a page routes to vmap at any
-/// size (6.1 row 3), so 8 KiB blocks prove the growth and the move.
+/// size (6.1 row 3), so 8 KiB blocks exercise the growth and the move.
 pub fn run(layers: &mut impl Layers) -> Result<(), &'static str> {
     let mut held = Held { blocks: [None; 2] };
     let result = steps(layers, &mut held);

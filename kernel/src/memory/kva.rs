@@ -327,8 +327,8 @@ pub fn settle(id: WindowId) {
 }
 
 /// Undo the growth of `allocation` by `extra` bytes that `extend` made in
-/// window `id`, none of whose pages were mapped. Returns the allocation as
-/// it was.
+/// window `id`, whose pages were not mapped. Returns the allocation as it
+/// was.
 pub fn retract(id: WindowId, allocation: &Allocation, extra: u64) -> Allocation {
     with_window(id, |window| window.retract(allocation, extra))
         .expect("windows are set up")
