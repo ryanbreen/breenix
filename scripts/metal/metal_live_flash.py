@@ -20,6 +20,14 @@ HEALTH = 'test "$(sudo -n /bin/readlink /proc/1/exe)" = /sbin/init && cat /run/b
 DEADLINE = 600
 
 
+def encode_manifest(token, commit, size, digest, base_digest, root=None):
+    version = 2 if root is not None else 1
+    lines = [f'BREENIX-FLASH {version}', token, commit, str(size), digest, base_digest]
+    if root is not None:
+        lines.append(root)
+    return ('\n'.join(lines) + '\n').encode('ascii')
+
+
 def record_path(m, token):
     if not TOKEN.fullmatch(token):
         raise ValueError('invalid flash token')
@@ -233,8 +241,8 @@ def run(runner, args):
                 # Use a file descriptor for SSH stdin so a large image stays off the host Python heap.
                 with tempfile_image(service, entry['image']) as image:
                     publish(guest, 'kernel.img', image, entry['size'], entry['sha256'], guard)
-                manifest = (f"BREENIX-FLASH 1\n{token}\n{commit}\n{entry['size']}\n{entry['sha256']}\n"
-                            f"{entry['baseNoteSha256']}\n").encode()
+                manifest = encode_manifest(token, commit, entry['size'], entry['sha256'],
+                                           entry['baseNoteSha256'])
                 capture = service('stat', '-c', '%s', directory + '/serial.txt', capture_output=True, check=True)
                 offset = int(capture.stdout)
                 publish(guest, 'manifest', manifest, guard=guard)
