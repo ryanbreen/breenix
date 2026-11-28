@@ -310,3 +310,24 @@ fn freeze_refuses_writable_shared_root_mappings() {
     drop(reader);
     fs.shutdown("freeze-mappings", u64::MAX).unwrap();
 }
+
+/// Review of PR #3273: ROOT_FREEZE and ROOT_THAW change the flag only when
+/// the caller gets the result. A freeze whose output cannot be written
+/// returns EFAULT with the root still writable; a thaw whose output cannot be
+/// written returns EFAULT with the root still frozen.
+#[test]
+fn root_freeze_and_thaw_change_nothing_on_efault() {
+    let fs = persistent();
+    let booted = file(&fs, 2, b"booted").unwrap();
+    let root = fs.open(2).unwrap();
+    assert_eq!(fs.ioctl(&root, ROOT_FREEZE, 0), Err(Errno(EFAULT)));
+    write(&fs, &booted, 0, b"open").expect("a freeze that returned EFAULT left the root frozen");
+    let frozen = freeze(&fs).unwrap();
+    assert_eq!(fs.ioctl(&root, ROOT_THAW, 0), Err(Errno(EFAULT)));
+    assert_eq!(write(&fs, &booted, 0, b"late"), Err(Errno(EROFS)), "a thaw that returned EFAULT thawed the root");
+    assert_eq!(epoch(&fs), frozen);
+    thaw(&fs);
+    write(&fs, &booted, 0, b"open").unwrap();
+    drop((root, booted));
+    fs.shutdown("freeze-efault", u64::MAX).unwrap();
+}
