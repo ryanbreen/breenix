@@ -1799,6 +1799,24 @@ generation, and its bytes live only in BreenFS's `DirtyPages` map. A population 
 
 ```
 
+**A fill publishes only what is still the file's bytes (6.2).** A fill claims page 0 and reads its extent.
+Before it completes, a write changes page 0 (DEV-29(3) 0.1's second interleaving).
+
+```pycon
+>>> RULE = 'revalidate-vma-only'
+>>> claim = {'stale': False}
+>>> def write_during_fill():
+...     claim['stale'] = True
+>>> def complete(snapshot):
+...     if RULE == 'revalidate-file-snapshot' and claim['stale']:
+...         return 'discarded; page Absent; waiters retry'
+...     return 'published ' + snapshot
+>>> write_during_fill()
+>>> complete('old bytes')
+'discarded; page Absent; waiters retry'
+
+```
+
 ## 20. bbench rows (DEV-31)
 
 | Row | Ratio (28668b28) | Expected to move in | Parity reachable from E3 alone |
