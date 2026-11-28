@@ -44,7 +44,8 @@ DEV-37 set the scope.
   syscall that sleeps must drop its level before it switches and take it back afterwards. Each blocking
   primitive does that arithmetic itself (§1.2).
 - **Kill handling.** This no longer depends on the brake: `KillCustody::enter_syscall`
-  (`kernel/src/task/thread.rs:1278-1300`) keeps SIGKILL out of a running syscall on its own. E2 keeps it.
+  (`kernel/src/task/thread.rs:1278-1300`) keeps SIGKILL out of a running syscall on its own. E2 keeps it. E2.10a replaces only its kill-claimed
+  wait, which does level arithmetic, with a park (§4.4).
 
 ### 1.2 Each blocking primitive guesses whether its caller may sleep
 
@@ -395,8 +396,9 @@ Order, least risk first:
   handlers, mount, umount2, sync, statfs, truncate and ftruncate, and any other arm with no class above.
   These go last, after their handlers are read one by one.
 
-E2.11 starts only when the `Braked` set is empty, which the structure test checks. It then deletes the `Braked` class, the entry increment and `park_baseline`. Both syscall entries run
-at depth 0.
+E2.11 starts only when the `Braked` set is empty, which the structure test checks. It then deletes the
+`Braked` class, the entry increment, `park_baseline` and the `park::Braked` guard (§3.2, §6). Both
+syscall entries run at depth 0.
 
 ### 4.5 Per-CPU state across preemption
 
@@ -1118,7 +1120,9 @@ should own each, not several agents on one PR (DEV-30(3)).
 ### E2.11: retire the brake
 
 - **Scope.** Delete the `Braked` class, the entry increment, `park_baseline` and
-  `baseline_irqs_masked`. This is a Tier-1 commit of its own.
+  `baseline_irqs_masked`. This is a Tier-1 commit of its own. In a separate commit, delete
+  `park::Braked`, and have the ARM64 `test-loader` create its test processes unqueued and enqueue them
+  once its reads end (§6).
 - **Tests.** The structure test now requires the class table to be empty and gone. The baseline model
   reduces to depth 0 at entry.
 - **Risk retired.** The last caller-dependent rule (R4 closed).
