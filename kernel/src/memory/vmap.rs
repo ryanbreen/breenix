@@ -32,8 +32,13 @@ pub trait Space {
     /// VA for `len` bytes aligned to `align`, with a guard page after it.
     fn reserve(&mut self, len: u64, align: u64) -> Result<Allocation, Self::Error>;
     /// Grow `allocation` by `extra` bytes into the free VA after it, if
-    /// there is that much.
+    /// there is that much. `settle` or `retract` ends the growth.
     fn extend(&mut self, allocation: &Allocation, extra: u64) -> Option<Allocation>;
+    /// Keep the growth `extend` made, its pages mapped.
+    fn settle(&mut self);
+    /// Undo the growth of `allocation` by `extra` bytes that `extend` made,
+    /// none of whose pages were mapped; returns the allocation as it was.
+    fn retract(&mut self, allocation: &Allocation, extra: u64) -> Allocation;
     /// Map `[allocation.start + offset, + len)` to new frames whole, or leave
     /// it unmapped.
     fn map_fresh(&mut self, allocation: &Allocation, offset: u64, len: u64) -> Result<(), Self::Error>;
@@ -83,11 +88,19 @@ pub fn resize<S: Space>(space: &mut S, block: &mut Block, new_size: usize) -> Re
         return Ok(Resized::InPlace);
     }
     if len > block.allocation.len {
-        if let Some(grown) = space.extend(&block.allocation, len - block.allocation.len) {
-            block.allocation = grown;
+        let extra = len - block.allocation.len;
+        if let Some(grown) = space.extend(&block.allocation, extra) {
+            // `map_fresh` maps the range whole or leaves it unmapped, so a
+            // failed growth's VA goes back with no flush.
+            if let Err(error) = space.map_fresh(&grown, block.mapped, len - block.mapped) {
+                space.retract(&grown, extra);
+                return Err(error);
+            }
+            space.settle();
+            *block = Block { allocation: grown, mapped: len, size: new_size, align: block.align };
+            return Ok(Resized::InPlace);
         }
-    }
-    if len <= block.allocation.len {
+    } else {
         space.map_fresh(&block.allocation, block.mapped, len - block.mapped)?;
         block.mapped = len;
         block.size = new_size;

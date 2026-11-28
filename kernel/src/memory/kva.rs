@@ -315,9 +315,24 @@ pub fn map_at(
 }
 
 /// Grow `allocation` by `extra` bytes into the free VA after it in window
-/// `id`, if there is that much; its guard page moves past them.
+/// `id`, if there is that much; its guard page moves past them. The caller
+/// ends the growth with `settle` or `retract`.
 pub fn extend(id: WindowId, allocation: &Allocation, extra: u64) -> Option<Allocation> {
     with_window(id, |window| window.extend(allocation, extra).ok()).flatten()
+}
+
+/// Keep the growth `extend` made in window `id`, its pages mapped.
+pub fn settle(id: WindowId) {
+    with_window(id, |window| window.settle()).expect("windows are set up");
+}
+
+/// Undo the growth of `allocation` by `extra` bytes that `extend` made in
+/// window `id`, none of whose pages were mapped. Returns the allocation as
+/// it was.
+pub fn retract(id: WindowId, allocation: &Allocation, extra: u64) -> Allocation {
+    with_window(id, |window| window.retract(allocation, extra))
+        .expect("windows are set up")
+        .unwrap_or_else(|error| panic!("kernel window {} retract: {:?}", id.name(), error))
 }
 
 /// Map `to` whole: its first `moved` bytes to the frames `from` maps at the

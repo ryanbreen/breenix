@@ -194,10 +194,28 @@ impl Window {
 
     /// Grow `allocation`'s mapped part by `extra` bytes in place, from the
     /// free VA after it; its guard moves past them (vmap `realloc`, 6.5).
-    /// `NoVa`, with the window unchanged, when that VA is not free.
+    /// `NoVa`, with the window unchanged, when that VA is not free. The
+    /// caller ends the growth with `settle` once it has mapped the new
+    /// pages, or with `retract` if it could not.
     pub fn extend(&mut self, allocation: &Allocation, extra: u64) -> Result<Allocation, ExtentError> {
         let extent = self.extents.extend(allocation.extent, extra)?;
         Ok(Allocation { extent, start: allocation.start, len: allocation.len + extra })
+    }
+
+    /// Keep the growth `extend` made.
+    pub fn settle(&mut self) {
+        self.extents.settle();
+    }
+
+    /// Undo the growth of `allocation` by `extra` bytes that `extend` made:
+    /// the VA goes back to the window with no flush, so no page of it may
+    /// have been mapped. Returns the allocation as it was.
+    pub fn retract(&mut self, allocation: &Allocation, extra: u64) -> Result<Allocation, ExtentError> {
+        if extra > allocation.len {
+            return Err(ExtentError::BadRequest);
+        }
+        let extent = self.extents.retract(allocation.extent, extra)?;
+        Ok(Allocation { extent, start: allocation.start, len: allocation.len - extra })
     }
 
     /// Unmap `allocation` after its pages have moved to another range

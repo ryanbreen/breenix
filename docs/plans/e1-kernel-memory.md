@@ -1992,6 +1992,10 @@ E1-7 implementation decisions (DEV-39(2)):
 - A span or vmap block that cannot resize in place moves to a span for a size and alignment of 6.1 row 1, not
   to the slab layer (`kmem_core::moved_layer`), because `large::deallocate` frees by the span and vmap windows
   and would panic on a slab pointer until E1-9 routes `GlobalAlloc`'s free by address (PR #3307 review).
+- A vmap growth into the free VA after the block holds one spare extent node from `Extents::extend` until
+  `settle` keeps it or `retract` gives the VA back after its frames or table pages could not be had, because
+  the window's lock is dropped while the frames are taken and a retract that needed a fresh node could fail
+  (PR #3307 review: a failed 1 MiB to 8 MiB growth kept 8 MiB of VA).
 - A vmap shrink records the new size and keeps its pages for a later growth or the free, because unmapping the
   tail would map the old guard page inside the allocation and need a flush path of its own.
 - A vmap block's record (VA, mapped bytes, size, alignment) is a slab object named by the second `FrameMeta`

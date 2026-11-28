@@ -344,6 +344,14 @@ impl Space for KernelVmap {
         kva::extend(WindowId::Vmap, allocation, extra)
     }
 
+    fn settle(&mut self) {
+        kva::settle(WindowId::Vmap);
+    }
+
+    fn retract(&mut self, allocation: &Allocation, extra: u64) -> Allocation {
+        kva::retract(WindowId::Vmap, allocation, extra)
+    }
+
     fn map_fresh(&mut self, allocation: &Allocation, offset: u64, len: u64) -> Result<(), AllocError> {
         let mut frames = Frames::take(len / PAGE)?;
         kva::map_at(allocation, offset, len, |_| frames.pop(), self.ctx).inspect_err(|_| frames.give_back())

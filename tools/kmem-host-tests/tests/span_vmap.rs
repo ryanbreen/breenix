@@ -509,6 +509,12 @@ impl vmap::Space for HostVmap<'_> {
     fn extend(&mut self, allocation: &Allocation, extra: u64) -> Option<Allocation> {
         self.0.window.borrow_mut().extend(allocation, extra).ok()
     }
+    fn settle(&mut self) {
+        self.0.window.borrow_mut().settle();
+    }
+    fn retract(&mut self, allocation: &Allocation, extra: u64) -> Allocation {
+        self.0.window.borrow_mut().retract(allocation, extra).unwrap()
+    }
     fn map_fresh(&mut self, allocation: &Allocation, offset: u64, len: u64) -> Result<(), &'static str> {
         let frames = self.0.take_frames(len / PAGE)?;
         let world = self.0;
