@@ -1,0 +1,14 @@
+[package]
+name = "pagecache-host-tests"
+version = "0.1.0"
+edition = "2021"
+
+# Host checks of the E3 page cache's pure modules (docs/plans/e3-page-cache.md,
+# E3-1). It compiles kernel/src/memory/{page_tree,page_state,readahead,lru,
+# dirty_limit,oom_score}.rs unchanged.
+# Run: cargo test --manifest-path tools/pagecache-host-tests/Cargo.toml
+
+[workspace]
+
+[lib]
+doctest = true
