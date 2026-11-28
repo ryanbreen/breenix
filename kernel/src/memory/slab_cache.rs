@@ -205,7 +205,7 @@ impl List {
         Self { head: ptr::null_mut(), len: 0 }
     }
 
-    unsafe fn push(&mut self, slab: *mut Slab, on: u32) {
+    unsafe fn link(&mut self, slab: *mut Slab, on: u32) {
         unsafe {
             (*slab).prev = ptr::null_mut();
             (*slab).next = self.head;
@@ -330,7 +330,7 @@ impl SlabCache {
                 // SAFETY: the slab is on the empty list, which the lock guards.
                 unsafe {
                     lists.empty.remove(slab);
-                    lists.partial.push(slab, PARTIAL);
+                    lists.partial.link(slab, PARTIAL);
                 }
                 self.empty.fetch_sub(1, Ordering::Relaxed);
                 slab
@@ -338,7 +338,7 @@ impl SlabCache {
                 match self.grow(wait, backing, descriptors) {
                     Ok(slab) => {
                         // SAFETY: a new slab is on no list.
-                        unsafe { lists.partial.push(slab, PARTIAL) };
+                        unsafe { lists.partial.link(slab, PARTIAL) };
                         slab
                     }
                     Err(reason) => {
@@ -359,7 +359,7 @@ impl SlabCache {
                 }
                 if (*slab).free.is_null() {
                     lists.partial.remove(slab);
-                    lists.full.push(slab, FULL);
+                    lists.full.link(slab, FULL);
                 }
             }
         }
@@ -455,12 +455,12 @@ impl SlabCache {
                 (*slab).inuse -= 1;
                 if (*slab).on == FULL {
                     lists.full.remove(slab);
-                    lists.partial.push(slab, PARTIAL);
+                    lists.partial.link(slab, PARTIAL);
                 }
                 if (*slab).inuse == self.reserved {
                     lists.partial.remove(slab);
                     if lists.empty.len == 0 {
-                        lists.empty.push(slab, EMPTY);
+                        lists.empty.link(slab, EMPTY);
                         self.empty.fetch_add(1, Ordering::Relaxed);
                     } else {
                         self.release(slab, backing, descriptors);

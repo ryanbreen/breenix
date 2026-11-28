@@ -96,7 +96,7 @@ impl Stack {
         Self { head: ptr::null_mut(), len: 0 }
     }
 
-    unsafe fn push(&mut self, magazine: *mut Magazine) {
+    unsafe fn link(&mut self, magazine: *mut Magazine) {
         unsafe { (*magazine).next = self.head };
         self.head = magazine;
         self.len += 1;
@@ -144,10 +144,10 @@ impl DepotState {
             return surplus;
         }
         for _ in 0..self.filled_min.min(TRIM_BATCH) {
-            unsafe { surplus.filled.push(self.filled.pop()) };
+            unsafe { surplus.filled.link(self.filled.pop()) };
         }
         for _ in 0..self.empty_min.min(TRIM_BATCH) {
-            unsafe { surplus.empty.push(self.empty.pop()) };
+            unsafe { surplus.empty.link(self.empty.pop()) };
         }
         let current = size.load(Ordering::Relaxed);
         if contentions.wrapping_sub(self.contended_at) > CONTENTION_LIMIT && current + 1 < ROUNDS.len() {
@@ -210,13 +210,13 @@ impl Depot {
         }
     }
 
-    unsafe fn push(&self, state: &mut DepotState, magazine: *mut Magazine) {
+    unsafe fn accept(&self, state: &mut DepotState, magazine: *mut Magazine) {
         let held = unsafe { rounds(magazine) };
         if held == 0 {
-            unsafe { state.empty.push(magazine) };
+            unsafe { state.empty.link(magazine) };
         } else {
             self.rounds.fetch_add(held, Ordering::Relaxed);
-            unsafe { state.filled.push(magazine) };
+            unsafe { state.filled.link(magazine) };
         }
     }
 }
@@ -402,7 +402,7 @@ impl<B: Backing> Kmem<B> {
         if !filled.is_null() {
             depot.rounds.fetch_sub(unsafe { rounds(filled) }, Ordering::Relaxed);
             if !pair.previous.is_null() {
-                unsafe { state.empty.push(pair.previous) };
+                unsafe { state.empty.link(pair.previous) };
             }
             pair.previous = pair.loaded;
             pair.loaded = filled;
@@ -520,7 +520,7 @@ impl<B: Backing> Kmem<B> {
             }
             if !pair.previous.is_null() {
                 let mut state = depot.state.lock();
-                depot.push(&mut state, pair.previous);
+                depot.accept(&mut state, pair.previous);
             }
             pair.previous = pair.loaded;
             pair.loaded = empty;
@@ -547,7 +547,7 @@ impl<B: Backing> Kmem<B> {
                 let depot = &self.depots[class];
                 if let Some(mut state) = depot.state.lock_if(wait) {
                     // SAFETY: the magazine leaves this CPU for the depot.
-                    unsafe { depot.push(&mut state, *magazine) };
+                    unsafe { depot.accept(&mut state, *magazine) };
                     *magazine = ptr::null_mut();
                 }
             }
