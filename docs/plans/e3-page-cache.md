@@ -2348,3 +2348,16 @@ boundary) are not recorded here: the builder stops and asks the coordinator.
 - **E3-1, an added check.** The dirty charge has one host check (charge first, the one part allowed past
   `limit` for a mount that holds no charge), because its compare-and-add is the part of 11.5 that could
   plausibly break; section 18 lists no dirty-limit check for E3-1.
+- **E3-1 review, the tree's node source (4.3).** `NodeList<S>` and `PageTree<S>` carry their node source
+  type, and `NodeSource`'s contract is type-wide (any instance frees a node any instance of the type
+  allocated), because a safe `release` that accepted any source let safe code free a node to an allocator
+  other than the one that allocated it; the kernel's source is the one slab cache (E3-6), which meets the type-wide rule.
+- **E3-1 review, the hit's write (12.1).** `PageLinks` gains `compare_exchange_bits`, and a hit sets
+  `REFERENCED` only through it, because a lock-free write of the whole link record restored stale links
+  over a scan's isolation; a list operation's store can still drop a racing hit's `REFERENCED`, which loses
+  one reference hint and no list change.
+- **E3-1 review, the mount's charge (11.5).** Each mount has a `MountCharge` count that `try_charge`,
+  `charge_unchecked` and `release` update with the global count, and the lone part past `limit` claims it
+  by exchanging it from 0, because a caller's snapshot of the mount's charge let two writers on one mount,
+  overlapping under per-file `io` locks, both take the exception. 11.5's "one compare-and-add" is now
+  that compare-and-add on the global count, or, past `limit`, the claim on the mount's count.
