@@ -2080,6 +2080,28 @@ to the publication, so R does not meet W's claim. From E3-7, `io` is its own sle
 needs only a brief `MountLock` hold for its snapshot (E2.5), and W does not take `io`: R may wait on W,
 and W waits for nothing R holds.
 
+**Writers cannot overshoot the dirty limit (11.5).** `limit` is 100 pages. G's frozen frames and bounce
+copies hold 30. Four writers each dirty 40 pages at once, before any of them reaches the throttle. A writer
+that parks resumes after writeback has cleaned as many pages as it needs.
+
+```pycon
+>>> RULE = 'check-after-write'
+>>> LIMIT = 100
+>>> def peak(writers, each, frozen):
+...     charged = frozen if RULE == 'charge-before-dirtying' else 0
+...     top = charged
+...     for _ in range(writers):
+...         if RULE == 'charge-before-dirtying':
+...             while charged + each > LIMIT:
+...                 charged -= each
+...         charged += each
+...         top = max(top, charged)
+...     return top if RULE == 'charge-before-dirtying' else top + frozen
+>>> peak(writers=4, each=40, frozen=30) <= LIMIT
+True
+
+```
+
 ## 20. bbench rows (DEV-31)
 
 | Row | Ratio (28668b28) | Expected to move in | Parity reachable from E3 alone |
