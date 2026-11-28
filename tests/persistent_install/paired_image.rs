@@ -825,11 +825,16 @@ mod rehearsal {
             format!("BREENIX-USERLAND 2\n{OLD}\nshared etc var opt srv tmp run\n"),
         )
         .unwrap();
+        // As on the R240 (DEV-55): /lib/libc.so matches the selected entry, but a diagnostic
+        // loader was delivered over /lib/ld-breenix.so with the pinned one kept beside it.
+        const DIAGNOSTIC: &[u8] = b"diagnostic loader";
+        const KEPT: &str = "lib/.ld-breenix.so-before-pinned";
         if devbox {
             fs::create_dir_all(old.join("lib")).unwrap();
             for (name, bytes) in [
-                ("lib/libc.so", &libc_bytes),
-                ("lib/ld-breenix.so", &loader_bytes),
+                ("lib/libc.so", libc_bytes.as_slice()),
+                ("lib/ld-breenix.so", DIAGNOSTIC),
+                (KEPT, loader_bytes.as_slice()),
             ] {
                 fs::write(old.join(name), bytes).unwrap();
                 fs::set_permissions(old.join(name), fs::Permissions::from_mode(0o755)).unwrap();
@@ -914,9 +919,17 @@ mod rehearsal {
         // change (design 4.5). An E6 inventory replaces it, so apply carries it (4.3).
         const SELECTION: &[u8] = b"/usr/lib/breenix/rust-current";
         let conversion: BTreeSet<String> = selected.iter().map(|_| display(SELECTION)).collect();
+        // The selected toolchain's runtime entry is the source of truth for the draft's
+        // /lib runtime (DEV-55): the diagnostic loader is a locally changed managed file.
+        let runtime: BTreeSet<String> =
+            devbox.then(|| "/lib/ld-breenix.so".to_owned()).into_iter().collect();
         if with_baseline {
-            let expected: BTreeSet<String> =
-                conversion.iter().cloned().chain([display(&su)]).collect();
+            let expected: BTreeSet<String> = conversion
+                .iter()
+                .cloned()
+                .chain([display(&su)])
+                .chain(runtime.iter().cloned())
+                .collect();
             assert_eq!(paths("carried"), expected, "{receipt}");
             assert_eq!(
                 paths("deletedOnBox"),
@@ -934,6 +947,7 @@ mod rehearsal {
                 .map(|path| display(path))
                 .chain([display(&su)])
                 .chain(conversion.iter().cloned())
+                .chain(runtime.iter().cloned())
                 .collect();
             assert_eq!(paths("carried"), expected, "{receipt}");
             assert_eq!(paths("deletedOnBox"), BTreeSet::new(), "{receipt}");
@@ -964,6 +978,27 @@ mod rehearsal {
         }
         assert!(paths("onBox").contains("/usr/local/pet/note"), "{receipt}");
         m.check_root(&gen1, &replaced);
+        if devbox {
+            // The draft holds the selected runtime; the running root keeps its own loader.
+            for (name, bytes) in [
+                ("lib/libc.so", libc_bytes.as_slice()),
+                ("lib/ld-breenix.so", loader_bytes.as_slice()),
+            ] {
+                let meta = fs::symlink_metadata(gen1.join(name)).unwrap();
+                assert!(meta.is_file() && meta.nlink() == 1, "{name}");
+                assert_eq!(meta.mode() & 0o7777, 0o755, "{name}");
+                assert_eq!((meta.uid(), meta.gid()), (0, 0), "{name}");
+                assert_eq!(fs::read(gen1.join(name)).unwrap(), bytes, "{name}");
+            }
+            assert_eq!(
+                fs::read(archive.join("lib/ld-breenix.so")).unwrap(),
+                DIAGNOSTIC
+            );
+            assert!(!archive.join("lib/libc.so").exists());
+            assert_eq!(fs::read(gen1.join(KEPT)).unwrap(), loader_bytes);
+            assert_eq!(fs::read(old.join("lib/ld-breenix.so")).unwrap(), DIAGNOSTIC);
+            assert_eq!(fs::read(old.join(KEPT)).unwrap(), loader_bytes);
+        }
         let carried = archive.join(rel(&su));
         assert_eq!(fs::read(&carried).unwrap(), b"pet su");
         assert_eq!(fs::metadata(&carried).unwrap().mode() & 0o6000, 0);

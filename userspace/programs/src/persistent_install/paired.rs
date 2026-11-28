@@ -738,11 +738,13 @@ pub(crate) fn have_fixture(path: &Path, bytes: &[u8]) -> Result<Vec<String>, Str
 #[cfg(feature = "paired-host-test")]
 pub(crate) fn apply_fixture(
     path: &Path,
+    rust: &Path,
     id: &str,
     previous: &str,
     bytes: &[u8],
     checkpoint: &mut dyn FnMut() -> Result<(), String>,
 ) -> Result<String, String> {
+    Dir::open(rust).map_err(io_error)?;
     apply(
         &Dir::open(path).map_err(io_error)?,
         id,
