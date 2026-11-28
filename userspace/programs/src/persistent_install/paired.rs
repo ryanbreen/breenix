@@ -695,6 +695,9 @@ fn apply(
     let image = local::baseline_text(managed);
     write_path(root, BASELINE, &image, 0o600).map_err(io_error)?;
     write_path(root, ".complete", layout::record(id).as_bytes(), 0o644).map_err(io_error)?;
+    // BreenFS refuses to remove a directory that an open descriptor holds (EBUSY), so
+    // close this function's own handles on the incoming tree before removing it.
+    drop((objects, work, incoming));
     root.remove_tree(incoming_name).map_err(io_error)?;
     root.file.sync_all().map_err(io_error)?;
     Ok(report)
