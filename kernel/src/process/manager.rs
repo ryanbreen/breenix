@@ -844,9 +844,9 @@ impl ProcessManager {
     ) -> Result<(), &'static str> {
         // --- Page table + ELF load (build_process_at's block) ---
         // A filesystem image arrives already read into its own table.
-        let (mut page_table, loaded_elf, code_size) = match image.into_loaded(pid.as_u64()) {
-            crate::exec_elf::Loaded::Mapped(page_table, loaded_elf, code_size) => {
-                (page_table, loaded_elf, code_size)
+        let (mut page_table, loaded_elf, code_size, image_vmas) = match image.into_loaded(pid.as_u64()) {
+            crate::exec_elf::Loaded::Mapped(page_table, loaded_elf, code_size, vmas) => {
+                (page_table, loaded_elf, code_size, vmas)
             }
             crate::exec_elf::Loaded::Bytes(elf_data) => {
                 let mut page_table = crate::memory::process_memory::UnpublishedPageTable::new(
@@ -861,7 +861,7 @@ impl ProcessManager {
                     pid.as_u64(),
                 );
                 let loaded_elf = elf::load_elf_into_page_table(&elf_data, page_table.as_mut())?;
-                (page_table, loaded_elf, elf_data.len())
+                (page_table, loaded_elf, elf_data.len(), alloc::vec::Vec::new())
             }
         };
 
@@ -908,6 +908,7 @@ impl ProcessManager {
         }
 
         let mut process = Process::new(pid, name.clone(), loaded_elf.entry_point);
+        process.vmas = image_vmas;
         process.cmdline = Some(super::process::cmdline_of(argv)?);
         if let Some(parent_pid) = parent_pid {
             crate::tty::ctty::inherit(
@@ -1320,9 +1321,9 @@ impl ProcessManager {
         crate::diag_println!(
             "manager.create_process_with_argv [ARM64]: Creating ProcessPageTable"
         );
-        let (page_table, loaded_elf, code_size) = match image.into_loaded(pid.as_u64()) {
-            crate::exec_elf::Loaded::Mapped(page_table, loaded_elf, code_size) => {
-                (page_table, loaded_elf, code_size)
+        let (page_table, loaded_elf, code_size, image_vmas) = match image.into_loaded(pid.as_u64()) {
+            crate::exec_elf::Loaded::Mapped(page_table, loaded_elf, code_size, vmas) => {
+                (page_table, loaded_elf, code_size, vmas)
             }
             crate::exec_elf::Loaded::Bytes(elf_data) => {
                 let mut page_table = crate::memory::process_memory::UnpublishedPageTable::new(
@@ -1340,7 +1341,7 @@ impl ProcessManager {
                     &elf_data,
                     page_table.as_mut(),
                 )?;
-                (page_table, loaded_elf, elf_data.len())
+                (page_table, loaded_elf, elf_data.len(), alloc::vec::Vec::new())
             }
         };
         crate::diag_println!(
@@ -1351,6 +1352,7 @@ impl ProcessManager {
         // Create the process
         let entry_point = VirtAddr::new(loaded_elf.entry_point);
         let mut process = Process::new(pid, name.clone(), entry_point);
+        process.vmas = image_vmas;
         process.cmdline = Some(super::process::cmdline_of(argv)?);
         if let Some(parent_pid) = parent_pid {
             crate::tty::ctty::inherit(
@@ -4498,9 +4500,8 @@ impl ProcessManager {
             .map(alloc::sync::Arc::try_new)
             .transpose()
             .map_err(|_| "exec allocation failed")?;
-        let mut image_source = image_source.into();
+        let image_source = image_source.into();
         let interpreter_plan = image_source.interpreter_plan();
-        let exec_vmas = image_source.take_exec_vmas();
         let mut user_stack_size = crate::syscall::exec::stack_size(argv, envp)?;
         if interpreter_plan.is_some() {
             // Reserve a page for the interpreter's extra auxiliary entries,
@@ -4515,8 +4516,8 @@ impl ProcessManager {
         // Load the ELF binary into the new page table. A filesystem image
         // arrives already read into a table cleared by clear_exec_table.
         log::debug!("exec_process_with_argv: Loading ELF into new page table...");
-        let (mut new_page_table, loaded_elf) = match image_source.into_loaded(pid.as_u64()) {
-            crate::exec_elf::Loaded::Mapped(new_page_table, loaded_elf, _) => (new_page_table, loaded_elf),
+        let (mut new_page_table, loaded_elf, exec_vmas) = match image_source.into_loaded(pid.as_u64()) {
+            crate::exec_elf::Loaded::Mapped(new_page_table, loaded_elf, _, vmas) => (new_page_table, loaded_elf, vmas),
             crate::exec_elf::Loaded::Bytes(elf_data) => {
                 // Reserve the Box before allocating a root, so ENOMEM cannot strand it.
                 let mut table_storage =
@@ -4530,7 +4531,7 @@ impl ProcessManager {
                     crate::memory::process_memory::UnpublishedPageTable::from_box(table, pid.as_u64());
                 Self::clear_exec_table(new_page_table.as_mut());
                 let loaded_elf = crate::elf::load_elf_into_page_table(&elf_data, new_page_table.as_mut())?;
-                (new_page_table, loaded_elf)
+                (new_page_table, loaded_elf, Vec::new())
             }
         };
         let new_entry_point = loaded_elf.entry_point.as_u64();
@@ -4942,9 +4943,8 @@ impl ProcessManager {
             .map(alloc::sync::Arc::try_new)
             .transpose()
             .map_err(|_| "exec allocation failed")?;
-        let mut image_source = image_source.into();
+        let image_source = image_source.into();
         let interpreter_plan = image_source.interpreter_plan();
-        let exec_vmas = image_source.take_exec_vmas();
         let mut user_stack_size = crate::syscall::exec::stack_size(argv, envp)?;
         if interpreter_plan.is_some() {
             // The static stack budget does not include the interpreter's auxv entries.
@@ -4960,8 +4960,8 @@ impl ProcessManager {
         // A filesystem image arrives already read into a table cleared by
         // clear_exec_table.
         log::debug!("exec_process_with_argv [ARM64]: Loading ELF into new page table...");
-        let (mut new_page_table, loaded_elf) = match image_source.into_loaded(pid.as_u64()) {
-            crate::exec_elf::Loaded::Mapped(new_page_table, loaded_elf, _) => (new_page_table, loaded_elf),
+        let (mut new_page_table, loaded_elf, exec_vmas) = match image_source.into_loaded(pid.as_u64()) {
+            crate::exec_elf::Loaded::Mapped(new_page_table, loaded_elf, _, vmas) => (new_page_table, loaded_elf, vmas),
             crate::exec_elf::Loaded::Bytes(elf_data) => {
                 // Reserve the Box before allocating a root, so ENOMEM cannot strand it.
                 let mut table_storage =
@@ -4978,7 +4978,7 @@ impl ProcessManager {
                     &elf_data,
                     new_page_table.as_mut(),
                 )?;
-                (new_page_table, loaded_elf)
+                (new_page_table, loaded_elf, Vec::new())
             }
         };
         let new_entry_point = loaded_elf.entry_point;

@@ -3983,8 +3983,6 @@ pub fn sys_pwrite64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRe
             return match file.pwrite(buf_ptr, count as usize, offset as u64, entry.status_flags() & crate::ipc::fd::status_flags::O_APPEND != 0) { Ok(n) => SyscallResult::Ok(n), Err(e) => SyscallResult::Err(e) };
         }
     }
-    drop(entry);
-
 
     if buf_ptr == 0 || count == 0 {
         // Linux checks the descriptor before honouring a degenerate transfer
@@ -3998,51 +3996,25 @@ pub fn sys_pwrite64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRe
         return SyscallResult::Err(super::errno::EINVAL as u64);
     }
 
-    let thread_id = match crate::task::scheduler::current_thread_id() {
-        Some(id) => id,
-        None => return SyscallResult::Err(super::errno::EBADF as u64),
+    // The write runs on `entry`'s open description, held until it returns: a
+    // close of the descriptor meanwhile cannot end its write access, which
+    // counts in the file's writers (ETXTBSY, docs/plans/e3-page-cache.md
+    // 10.3), as the implicit-offset write keeps it.
+    let file = match &entry.kind {
+        FdKind::RegularFile(_) if !entry.writable() => {
+            return SyscallResult::Err(super::errno::EBADF as u64);
+        }
+        FdKind::RegularFile(file) => file,
+        _ => return SyscallResult::Err(super::errno::ESPIPE as u64),
     };
-
-    // Extract file info from fd table under process lock
-    let fd_result =
-        crate::arch_without_interrupts(|| {
-            let manager_guard = crate::process::manager();
-            if let Some(ref manager) = *manager_guard {
-                if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
-                    if let Some(fd_entry) = process.fd_table.get(fd) {
-                        match &fd_entry.kind {
-                            FdKind::RegularFile(_) if !fd_entry.writable() => {
-                                return Err(super::errno::EBADF as u64);
-                            }
-                            FdKind::RegularFile(file) => {
-                                return Ok((
-                                    file.open.fs.clone(),
-                                    file.open.node.clone(),
-                                    !process.cred.privileged(),
-                                    process.limits.get(crate::process::limits::FSIZE).soft,
-                                ));
-                            }
-                            FdKind::PipeRead(_) | FdKind::PipeWrite(_) => {
-                                return Err(super::errno::ESPIPE as u64);
-                            }
-                            _ => return Err(super::errno::ESPIPE as u64),
-                        }
-                    }
-                    return Err(super::errno::EBADF as u64);
-                }
-                Err(super::errno::EBADF as u64)
-            } else {
-                Err(super::errno::EBADF as u64)
-            }
-        });
-
-    let (fs, node, unprivileged, size_limit) = match fd_result {
-        Ok(info) => info,
-        Err(e) => return SyscallResult::Err(e),
+    let unprivileged = match crate::fs::permissions::Credentials::current(false) {
+        Ok(cred) => !cred.privileged(),
+        Err(errno) => return SyscallResult::Err(errno),
     };
 
     match write_positional_file(
-        fs.as_ref(), &node, offset as u64, count as usize, size_limit, unprivileged,
+        file.open.fs.as_ref(), &file.open.node, offset as u64, count as usize,
+        super::resource::current_fsize(), unprivileged,
         |length| copy_from_user(buf_ptr, length).map_err(|_| super::errno::EFAULT as u64),
     ) {
         Ok(bytes) => SyscallResult::Ok(bytes),

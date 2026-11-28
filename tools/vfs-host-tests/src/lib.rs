@@ -82,6 +82,10 @@ pub use attribute_support::{process, task, test_control};
 
 #[path = "../../../kernel/src/fs/vfs/exec.rs"]
 pub mod exec;
+#[path = "../../../kernel/src/exec_elf.rs"]
+pub mod exec_elf;
+#[path = "../tests/exec_cache.rs"]
+mod exec_cache;
 
 pub use vfs::format;
 #[path = "../../../kernel/src/fs/ext2/format.rs"]

@@ -2,9 +2,16 @@
 //!
 //! Each VNode carries a cache of resident file pages and a reverse map of
 //! the bindings (one per file VMA) that may map them. Page-table entries are
-//! installed only by faults, from the cache. Everything that runs after the
-//! disk has changed only removes entries, so no step there can fail for want
-//! of memory once the new size is on disk.
+//! installed from the cache, by faults and, for an image exec maps through
+//! its cache, by exec into the unpublished table (`ExecImage`). Everything
+//! that runs after the disk has changed only removes entries, so no step
+//! there can fail for want of memory once the new size is on disk.
+//!
+//! Running images do not change (docs/plans/e3-page-cache.md 10.3): while an
+//! exec binding or an exec load exists (`deny_write`), a write-open, a
+//! truncation and a shared mapping with write authority are refused with
+//! ETXTBSY, and an exec of a file with writers (`writers`) copies its pages
+//! instead of sharing the cache's.
 //!
 //! Invariant: for every binding and every file page index `i` in its range
 //! below the mapped page count, `i` is resident in the cache, or `i` is a
@@ -177,6 +184,34 @@ pub(crate) fn absent_bound() -> u64 {
     ABSENT_BOUND.load(Ordering::Relaxed)
 }
 
+/// Images exec copied into private frames instead of mapping them from the
+/// cache: a file with writers, or a layout the cache cannot map
+/// (`exec_copy_fallbacks` in `/proc/breenix/pagecache`).
+static EXEC_COPY_FALLBACKS: AtomicU64 = AtomicU64::new(0);
+
+/// Write access refused with ETXTBSY because the file is a running image
+/// (`etxtbsy_refusals` in `/proc/breenix/pagecache`).
+static ETXTBSY_REFUSALS: AtomicU64 = AtomicU64::new(0);
+
+/// The `exec_copy_fallbacks` count of `/proc/breenix/pagecache`.
+pub(crate) fn exec_copy_fallbacks() -> u64 {
+    EXEC_COPY_FALLBACKS.load(Ordering::Relaxed)
+}
+
+/// Count an image exec copies.
+pub(crate) fn note_exec_fallback() {
+    EXEC_COPY_FALLBACKS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// The `etxtbsy_refusals` count of `/proc/breenix/pagecache`.
+pub(crate) fn etxtbsy_refusals() -> u64 {
+    ETXTBSY_REFUSALS.load(Ordering::Relaxed)
+}
+
+/// The error `bind` returns for a shared mapping with write authority of a
+/// running image; mmap reports it as ETXTBSY.
+pub(crate) const TEXT_BUSY: &str = "Text file busy";
+
 fn pages(size: u64) -> u64 {
     size.div_ceil(PAGE_SIZE)
 }
@@ -247,6 +282,12 @@ struct MapInner {
     /// treats their pages as bound (see `Population`).
     populating: Vec<Claim>,
     writable_shared: usize,
+    /// Exec loads between their claim and their bindings (`ExecLoad`); with
+    /// the exec bindings they make `deny_write`.
+    exec_loads: usize,
+    /// Open descriptions with write access (`WriteOpen`); with the shared
+    /// bindings that have write authority they make `writers`.
+    write_opens: usize,
     writeback_cursor: u64,
     /// The request generation the traversal at `writeback_cursor` began
     /// under. A traversal that ends under a newer one starts over.
@@ -428,6 +469,8 @@ struct BindingRec {
     prot: Protection,
     shared: bool,
     may_write: bool,
+    /// A PT_LOAD of a running image (E3-3): counted in `deny_write`.
+    exec: bool,
     /// Private copies whose entries mprotect removed, sorted by page index.
     /// The next fault on that index maps the copy again.
     parked: Vec<(u64, CachePage)>,
@@ -481,6 +524,10 @@ struct CachePage {
     /// The last snapshot taken without a writable binding. Transactional
     /// backends also record the generation that owns its staged bytes.
     written: Option<WritebackReceipt>,
+    /// ICACHE_CLEAN (docs/plans/e3-page-cache.md 10.4): the instruction cache
+    /// was made coherent with these bytes when the page was last mapped
+    /// executable, and they have not been written since.
+    icache_clean: bool,
 }
 
 impl CachePage {
@@ -491,6 +538,7 @@ impl CachePage {
             dirty: false,
             gen: 0,
             written: None,
+            icache_clean: false,
         })
     }
 
@@ -593,6 +641,44 @@ fn sync_executable(_: PhysFrame) {}
 impl MapInner {
     fn bound(&self, index: u64) -> bool {
         self.bindings.iter().any(|rec| rec.covers(index))
+    }
+
+    /// Exec bindings and exec loads not yet bound. While this is nonzero the
+    /// file is a running image, and its bytes may not change (10.3).
+    fn deny_write(&self) -> usize {
+        self.exec_loads + self.bindings.iter().filter(|rec| rec.exec).count()
+    }
+
+    /// Descriptions open for writing, and shared bindings with write
+    /// authority: `mprotect` can make such a binding writable even after its
+    /// descriptor is closed (10.3).
+    fn writers(&self) -> usize {
+        self.write_opens
+            + self.bindings.iter().filter(|rec| rec.shared && rec.may_write).count()
+    }
+
+    /// Refuse a shared binding with write authority of a running image
+    /// (`TEXT_BUSY`, 10.3), counting the refusal.
+    fn refuse_text_busy(&self, shared: bool, may_write: bool) -> Result<(), &'static str> {
+        if shared && may_write && self.deny_write() != 0 {
+            ETXTBSY_REFUSALS.fetch_add(1, Ordering::Relaxed);
+            return Err(TEXT_BUSY);
+        }
+        Ok(())
+    }
+
+    /// Make the cache page at `index` coherent for instruction fetch before
+    /// it is mapped executable (10.4): once after a fill or a write, and on
+    /// each mapping while a shared writable binding can store into it
+    /// without a fault.
+    fn make_executable(&mut self, index: u64) {
+        let stores = self.writable_shared != 0;
+        if let Some(page) = self.pages.get_mut(index) {
+            if stores || !page.icache_clean {
+                sync_executable(page.frame);
+                page.icache_clean = !stores;
+            }
+        }
     }
 
     /// Count a binding of `handle` gaining shared write authority, unless its
@@ -811,6 +897,8 @@ impl MapState {
                     bindings: Vec::new(),
                     populating: Vec::new(),
                     writable_shared: 0,
+                    exec_loads: 0,
+                    write_opens: 0,
                     writeback_cursor: 0,
                     writeback_epoch: 0,
                 }),
@@ -952,6 +1040,30 @@ impl MapState {
         let inner = self.state.inner.lock();
         inner.bindings.iter().any(|rec| rec.shared && rec.may_write)
             || inner.pages.entries.iter().any(|(_, page)| page.dirty)
+    }
+
+    /// Write access to this file, for an open with write access or a
+    /// truncation: counted in `writers` until the returned `WriteOpen` drops,
+    /// or refused with ETXTBSY while the file is a running image (10.3).
+    /// Nonblocking; PROCESS_MANAGER may be held.
+    pub(crate) fn open_writer(&self) -> Result<WriteOpen, Errno> {
+        let mut inner = self.state.inner.lock();
+        if inner.deny_write() != 0 {
+            drop(inner);
+            ETXTBSY_REFUSALS.fetch_add(1, Ordering::Relaxed);
+            return Err(Errno(crate::syscall::errno::ETXTBSY));
+        }
+        inner.write_opens += 1;
+        drop(inner);
+        Ok(WriteOpen(self.clone()))
+    }
+
+    /// mmap's refusal of a shared mapping with write authority of a running
+    /// image (`TEXT_BUSY`), made before it replaces anything. Under the
+    /// binding gate the answer holds until `bind`: `deny_write` rises from 0
+    /// only while an exec holds the gate as its writer (`fs/vfs/exec.rs`).
+    pub(crate) fn refuse_text_busy(&self, shared: bool, may_write: bool) -> Result<(), &'static str> {
+        self.state.inner.lock().refuse_text_busy(shared, may_write)
     }
 
     /// Bindings that can store into this file without another fault.
@@ -1415,6 +1527,11 @@ impl MapState {
         let mut inner = self.state.inner.lock();
         inner.mark_populating(offset / PAGE_SIZE, pages(end));
         inner.drop_holes(offset / PAGE_SIZE, pages(end));
+        let low = inner.pages.lower_bound(offset / PAGE_SIZE);
+        let high = inner.pages.lower_bound(pages(end)).max(low);
+        for (_, page) in &mut inner.pages.entries[low..high] {
+            page.icache_clean = false;
+        }
         for (index, page) in inner.pages.range(offset / PAGE_SIZE, pages(end)) {
             let start = offset.max(index * PAGE_SIZE);
             let stop = end.min((index + 1) * PAGE_SIZE);
@@ -1493,8 +1610,9 @@ impl MapState {
             inner.mapped_size = size;
             let boundary = old.min(size);
             if boundary % PAGE_SIZE != 0 {
-                if let Some(page) = inner.pages.get(boundary / PAGE_SIZE) {
+                if let Some(page) = inner.pages.get_mut(boundary / PAGE_SIZE) {
                     page.zero_from(boundary % PAGE_SIZE);
+                    page.icache_clean = false;
                 }
                 inner.sync_if_executable(boundary / PAGE_SIZE);
             }
@@ -1719,25 +1837,16 @@ impl MapError {
     }
 }
 
-/// A population's transfer lease and its claim on the pages it populates.
-/// Until it is dropped, after mmap has published the binding or given up,
-/// eviction keeps the claimed pages: the binding is published later, and a
-/// fault on a bound page the cache lacks is SIGBUS (`MapInner::fault_frame`).
-pub(crate) struct Population {
-    file: Box<dyn MappingIo>,
+/// A population's claim on the pages it populates. Until it is dropped,
+/// after mmap or exec has published the binding or given up, eviction keeps
+/// the claimed pages: the binding is published later, and a fault on a bound
+/// page the cache lacks is SIGBUS (`MapInner::fault_frame`).
+pub(crate) struct PageClaim {
     map: MapState,
     id: u64,
 }
 
-impl core::ops::Deref for Population {
-    type Target = dyn MappingIo;
-
-    fn deref(&self) -> &Self::Target {
-        &*self.file
-    }
-}
-
-impl Drop for Population {
+impl Drop for PageClaim {
     fn drop(&mut self) {
         {
             let mut inner = self.map.state.inner.lock();
@@ -1752,9 +1861,36 @@ impl Drop for Population {
     }
 }
 
-/// Populate absent pages through a stable per-inode transfer lease. File
+/// A population's transfer lease and its claim (`PageClaim`).
+pub(crate) struct Population {
+    file: Box<dyn MappingIo>,
+    _claim: PageClaim,
+}
+
+impl core::ops::Deref for Population {
+    type Target = dyn MappingIo;
+
+    fn deref(&self) -> &Self::Target {
+        &*self.file
+    }
+}
+
+/// Populate absent pages through a new per-inode transfer lease
+/// (`populate_through`). The returned population holds the pages against
+/// eviction until dropped.
+pub(crate) fn populate(
+    handle: &VNode,
+    first: u64,
+    count: u64,
+) -> Result<Population, MapError> {
+    let file = handle.filesystem.mapping_io(handle).map_err(MapError::Io)?;
+    let claim = populate_through(handle, &*file, first, count)?;
+    Ok(Population { file, _claim: claim })
+}
+
+/// Claim pages `[first, first + count)` and read the absent ones through the
+/// transfer `file`, which the caller holds (exec holds its image's). File
 /// bytes are read without a mount guard; the map lock publishes the cache.
-/// The returned population holds the pages against eviction until dropped.
 ///
 /// A mutation can change a page after population read it and before the
 /// merge, and the mutation hooks update only cached pages. They mark the
@@ -1762,15 +1898,15 @@ impl Drop for Population {
 /// marked pages and reads them again, until a round merges with no mark. A
 /// read shorter than the size it was sampled against with no mark is an
 /// error rather than 00 bytes in the cache.
-pub(crate) fn populate(
+pub(crate) fn populate_through(
     handle: &VNode,
+    file: &dyn MappingIo,
     first: u64,
     count: u64,
-) -> Result<Population, MapError> {
+) -> Result<PageClaim, MapError> {
     static NEXT_CLAIM: AtomicU64 = AtomicU64::new(0);
     // The block cache's per-request limit, in pages.
     const POPULATE_RUN_PAGES: u64 = crate::block::cache::RUN_BYTES as u64 / PAGE_SIZE;
-    let file = handle.filesystem.mapping_io(handle).map_err(MapError::Io)?;
     let map = &handle.map;
     let id = NEXT_CLAIM.fetch_add(1, Ordering::Relaxed);
     let end = first.saturating_add(count);
@@ -1784,8 +1920,7 @@ pub(crate) fn populate(
             .map_err(|_| MapError::NoMemory)?;
         inner.populating.push(Claim { id, first, last: end, stale: None });
     }
-    let file = Population {
-        file,
+    let claim = PageClaim {
         map: map.clone(),
         id,
     };
@@ -1893,9 +2028,120 @@ pub(crate) fn populate(
             Ordering::Release,
         );
         match stale {
-            None => return Ok(file),
+            None => return Ok(claim),
             Some(marked) => range = marked,
         }
+    }
+}
+
+/// A description open with write access, or a truncation in progress,
+/// counted in its file's `writers` until dropped (`MapState::open_writer`).
+pub(crate) struct WriteOpen(MapState);
+
+impl Drop for WriteOpen {
+    fn drop(&mut self) {
+        self.0.state.inner.lock().write_opens -= 1;
+    }
+}
+
+/// An exec load's share of `deny_write`, from its admission until its
+/// bindings are published (each exec binding then counts itself).
+struct ExecLoad(MapState);
+
+impl Drop for ExecLoad {
+    fn drop(&mut self) {
+        self.0.state.inner.lock().exec_loads -= 1;
+    }
+}
+
+/// An image exec maps through its file cache (docs/plans/e3-page-cache.md
+/// 10.1-10.3): its text and rodata as shared read-only cache frames, its
+/// data as private copy-on-write mappings of them. The file's bytes cannot
+/// change from admission on: no writer exists then, and a new one is refused
+/// with ETXTBSY. Dropping it ends the load's own claims; the exec bindings it
+/// made keep the image's pages and its `deny_write` until they go.
+pub(crate) struct ExecImage<'a> {
+    node: &'a Arc<VNode>,
+    file: &'a dyn MappingIo,
+    _load: ExecLoad,
+    /// One claim per populated run of the image's file pages.
+    population: Vec<PageClaim>,
+}
+
+impl<'a> ExecImage<'a> {
+    /// Admit an exec of `node`, read through the transfer `file` the exec
+    /// holds. A file with writers is not admitted: exec copies its pages
+    /// instead (10.3), and the copy is counted.
+    pub(crate) fn new(node: &'a Arc<VNode>, file: &'a dyn MappingIo) -> Option<Self> {
+        let mut inner = node.map.state.inner.lock();
+        if inner.writers() != 0 {
+            drop(inner);
+            note_exec_fallback();
+            return None;
+        }
+        inner.exec_loads += 1;
+        drop(inner);
+        Some(Self { node, file, _load: ExecLoad(node.map.clone()), population: Vec::new() })
+    }
+
+    /// Read file pages `[first, first + count)` into the cache and hold them,
+    /// with the runs populated before, until this load ends. A second exec
+    /// of a resident image finds its pages resident and does not read them.
+    pub(crate) fn populate(&mut self, first: u64, count: u64) -> Result<(), MapError> {
+        self.population.try_reserve(1).map_err(|_| MapError::NoMemory)?;
+        self.population.push(populate_through(self.node, self.file, first, count)?);
+        Ok(())
+    }
+
+    /// The cache frame exec maps for file page `index`, made coherent for
+    /// instruction fetch first when it is `executable` (10.4). The page is
+    /// resident from `populate` until the binding covers it.
+    pub(crate) fn frame(&self, index: u64, executable: bool) -> Result<PhysFrame, &'static str> {
+        let mut inner = self.node.map.state.inner.lock();
+        let frame = inner.pages.get(index).ok_or("Absent exec image page")?.frame;
+        if executable {
+            inner.make_executable(index);
+        }
+        Ok(frame)
+    }
+
+    /// Copy the first `len` bytes of cached file page `index` to `dst`: the
+    /// tail page, which holds a segment's last file bytes and then zeros.
+    ///
+    /// # Safety
+    /// `dst` is writable for `len` bytes, at most a page.
+    pub(crate) unsafe fn copy(&self, index: u64, dst: *mut u8, len: usize) -> Result<(), &'static str> {
+        let inner = self.node.map.state.inner.lock();
+        let page = inner.pages.get(index).ok_or("Absent exec image page")?;
+        // SAFETY: the map lock pins the cache frame; the caller supplies `dst`.
+        unsafe { core::ptr::copy_nonoverlapping(page.ptr(), dst, len.min(PAGE_SIZE as usize)) };
+        Ok(())
+    }
+}
+
+impl ExecImage<'_> {
+    /// Map `[start, end)` of the unpublished table `pt` from file page
+    /// `pgoff` on, with `prot`: an exec binding of a private VMA, and an entry
+    /// for each page, installed now as exec's copies were. A writable VMA's
+    /// entries are copy-on-write (`entry_flags`), so a store copies the page.
+    /// The binding's process is set when the table is published
+    /// (`Binding::adopt_pid`).
+    pub(crate) fn map(
+        &self,
+        pt: &mut ProcessPageTable,
+        start: u64,
+        end: u64,
+        pgoff: u64,
+        prot: Protection,
+    ) -> Result<Vma, &'static str> {
+        let mut vma = Vma::new(VirtAddr::new(start), VirtAddr::new(end), prot, MmapFlags::PRIVATE);
+        vma.backing = Some(bind(self.node.clone(), ProcessId::new(0), pt, &vma, pgoff, false, None, true)?);
+        let flags = entry_flags(prot, false);
+        for (slot, address) in (start..end).step_by(PAGE_SIZE as usize).enumerate() {
+            let frame = self.frame(pgoff + slot as u64, prot.contains(Protection::EXEC))?;
+            pt.map_page(Page::containing_address(VirtAddr::new(address)), frame, flags)?;
+        }
+        Ok(vma)
     }
 }
 
@@ -1931,6 +2177,9 @@ pub(crate) fn claim_shared_write(handle: &Arc<VNode>) -> Result<SharedWriteClaim
 /// population (its lease and its claim on the range) and the mount read guard
 /// held through publication, so no content mutation or eviction has removed
 /// the populated pages. A shared writable VMA brings its `SharedWriteClaim`.
+/// A shared binding with write authority of a running image is refused
+/// (`TEXT_BUSY`, 10.3); an `exec` binding is one of an image's PT_LOADs.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn bind(
     handle: Arc<VNode>,
     pid: ProcessId,
@@ -1939,6 +2188,7 @@ pub(crate) fn bind(
     pgoff: u64,
     may_write: bool,
     claim: Option<SharedWriteClaim>,
+    exec: bool,
 ) -> Result<Binding, &'static str> {
     let shared = vma.flags.bits() & 3 != 2;
     let claim = if shared && vma.prot.contains(Protection::WRITE) {
@@ -1949,6 +2199,7 @@ pub(crate) fn bind(
     let id = {
         let mut inner = handle.map.state.inner.lock();
         // On an error return, `claim` drops after this guard and returns its count.
+        inner.refuse_text_busy(shared, may_write)?;
         inner
             .bindings
             .try_reserve(1)
@@ -1967,6 +2218,7 @@ pub(crate) fn bind(
             prot: vma.prot,
             shared: vma.flags.bits() & 3 != 2,
             may_write,
+            exec,
             parked: Vec::new(),
         });
         id
@@ -2029,6 +2281,14 @@ pub(crate) fn fork_vmas(
 }
 
 impl Binding {
+    /// An exec binding made in an unpublished table belongs to `pid` once the
+    /// table is published as that process's (`ProcessImage::into_loaded`).
+    pub(crate) fn adopt_pid(&self, pid: ProcessId) {
+        if let Some(rec) = self.handle.map.state.inner.lock().rec_mut(self.id) {
+            rec.pid = pid;
+        }
+    }
+
     /// mincore includes cached file pages even before this VA faults them in.
     pub(crate) fn resident(&self, address: u64) -> bool {
         let inner = self.handle.map.state.inner.lock();
@@ -2084,6 +2344,7 @@ impl Binding {
             prot: parent.prot,
             shared: parent.shared,
             may_write: parent.may_write,
+            exec: parent.exec,
             parked,
         };
         if rec.writable_shared() {
@@ -2192,6 +2453,7 @@ pub(crate) fn isolate(
             prot: head.prot,
             shared: head.shared,
             may_write: head.may_write,
+            exec: head.exec,
             parked: moved,
         });
         head.pages = pages;
@@ -2546,12 +2808,14 @@ pub(crate) fn resolve_page(
     };
     object.map.state.resident.store(true, Ordering::Release);
     if prot.contains(Protection::EXEC) {
-        sync_executable(frame);
+        inner.make_executable(index);
     }
     if shared && prot.contains(Protection::WRITE) {
         let cached = inner.pages.get_mut(index).expect("resident file page");
         cached.dirty = true;
         cached.gen = cached.gen.wrapping_add(1);
+        // Stores through this entry change the bytes without a fault.
+        cached.icache_clean = false;
         object.map.state.dirty.store(true, Ordering::Release);
     }
     if pt.map_page(page, frame, entry_flags(prot, shared)).is_err() {
