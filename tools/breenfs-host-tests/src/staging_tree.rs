@@ -331,3 +331,27 @@ fn root_freeze_and_thaw_change_nothing_on_efault() {
     drop((root, booted));
     fs.shutdown("freeze-efault", u64::MAX).unwrap();
 }
+
+/// Review of PR #3273: the freeze writes back only the booted tree's
+/// mappings. A default-tree file (a log in /var) with an unwritten mapped
+/// store is neither counted nor written back, so its writeback errors (such
+/// as ENOSPC) cannot refuse a booted-root freeze.
+#[test]
+fn root_freeze_leaves_default_tree_mappings_alone() {
+    use crate::memory::file_map::try_bind_host;
+    let fs = persistent();
+    let log = file(&fs, fs.default_root_inode(), b"log").unwrap();
+    write(&fs, &log, 0, &[b'a'; 4096]).unwrap();
+    let mapping = try_bind_host(log.clone(), 4096, true, true, true).unwrap();
+    mapping.store(0, b'Z').unwrap();
+    // Unmapped, so a writeback would leave the file clean.
+    drop(mapping);
+    assert!(log.map.has_dirty(), "the fixture needs an unwritten default-tree store");
+    let frozen = freeze(&fs).expect("a default-tree mapping does not block the freeze");
+    assert!(log.map.has_dirty(), "ROOT_FREEZE wrote back a default-tree mapping");
+    assert_eq!(epoch(&fs), frozen);
+    thaw(&fs);
+    fs.sync().unwrap();
+    assert!(!log.map.has_dirty(), "the store is written back by the next sync");
+    fs.shutdown("freeze-default-mapping", u64::MAX).unwrap();
+}
