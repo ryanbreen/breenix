@@ -19,14 +19,13 @@
 //! least 4 GiB precisely so that firmware/MMIO regions below 4 GiB are
 //! reachable (`common/src/legacy_memory_region.rs`'s `max_phys_addr()`, whose
 //! comment names the local APIC, I/O APIC and PCI BARs as the reason). The
-//! kernel's own master PML4 copies the bootloader's PML4 entries into the
-//! table it then installs -- including the lower-half loop at
-//! `memory/kernel_page_table.rs`'s `build_master_kernel_pml4`, whose comment
-//! names "physical memory offset" as one of the mappings it exists to
-//! preserve -- which is why the offset window survives the CR3 switch
-//! `memory::init` performs before this module runs. On the measured boots of
-//! this round that offset was 0x28000000000, a lower-half address, so the
-//! lower-half loop is the load-bearing one here.
+//! kernel's own master PML4 is a copy of the whole boot PML4
+//! (`memory/kernel_page_table.rs`'s `build_master_kernel_pml4`), taken after
+//! `kernel_page_table::init` moved each upper-half slot into its own PDPT
+//! without changing any translation, which is why the offset window survives
+//! the CR3 switch `memory::init` performs before this module runs. On the
+//! measured boots of this round that offset was 0x28000000000, a lower-half
+//! address, which that copy carries unchanged.
 //!
 //! This module therefore relies on exactly one part of that window: physical
 //! addresses BELOW `PHYS_READ_CEILING` (4 GiB). A table address at or above
