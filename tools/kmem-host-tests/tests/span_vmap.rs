@@ -605,6 +605,26 @@ fn a_vmap_block_grows_in_place_or_moves_its_ptes_without_copying() {
     assert_eq!(offered, handed, "each frame came back exactly once");
 }
 
+/// A vmap growth into the free VA after the block that cannot get its
+/// frames (6.5) leaves the block and the window as they were: the block's
+/// VA is its 1 MiB, and the 7 MiB the growth would have taken is free again
+/// for other requests.
+#[test]
+fn a_failed_vmap_growth_gives_its_va_back() {
+    let world = World::new(WindowId::Vmap, 311, 512);
+    let mut space = HostVmap(&world);
+    let mut block = vmap::allocate(&mut space, 1 << 20, 8).unwrap();
+    let before = block;
+    let free = world.window.borrow().extents.free_bytes();
+    assert_eq!(vmap::resize(&mut space, &mut block, 8 << 20), Err("no frames"));
+    assert_eq!(block, before, "a failed growth changed the block");
+    assert_eq!(world.window.borrow().extents.free_bytes(), free, "a failed growth kept VA out of the window");
+    let next = vmap::allocate(&mut space, 4096, 8).unwrap();
+    assert_eq!(next.allocation.extent.start, block.allocation.extent.end(), "the VA after the block is not free");
+    vmap::free(&mut space, next);
+    vmap::free(&mut space, block);
+}
+
 /// The address space of a VMware-shaped ARM64 guest for the DMA check: the
 /// direct map over 2 GiB of RAM from 1 GiB, whose linked window translates
 /// to the IPA plus `ram_base_offset` (`arm64_boot_contract::kernel_va_to_ipa`),
