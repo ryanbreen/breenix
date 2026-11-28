@@ -1567,7 +1567,8 @@ aarch64_ret_to_kernel_context:
 .type aarch64_enter_exception_frame, @function
 aarch64_enter_exception_frame:
     // aarch64_enter_exception_frame(frame) -> !
-    //   x0 = *const Aarch64ExceptionFrame
+    //   x0 = *const Aarch64ExceptionFrame, 16-byte aligned: SP points at it
+    //   below and SCTLR_EL1.SA is set (`sp_frame_slot.rs`).
     //
     // Reuse the same restore/ERET rules as the IRQ return path by treating
     // the prepared frame as if it had been produced by an exception entry.
@@ -2982,9 +2983,17 @@ fn inline_schedule_breadcrumb(cpu_id: usize, site: u8, extra: u16) {
     INLINE_SCHEDULE_BREADCRUMB_TRAIL[cpu_id][idx].store(value, Ordering::Relaxed);
 }
 
-static mut INLINE_SCHEDULE_ERET_FRAMES: [MaybeUninit<Aarch64ExceptionFrame>;
+// `aarch64_enter_exception_frame` moves SP onto a CPU's slot, and SCTLR_EL1.SA
+// is set, so each element must be a 16-byte-aligned stack address.
+const _: () = {
+    use super::sp_frame_slot::SpFrameSlot;
+    assert!(core::mem::align_of::<SpFrameSlot<Aarch64ExceptionFrame>>() % 16 == 0);
+    assert!(core::mem::size_of::<SpFrameSlot<Aarch64ExceptionFrame>>() % 16 == 0);
+};
+
+static mut INLINE_SCHEDULE_ERET_FRAMES: [super::sp_frame_slot::SpFrameSlot<Aarch64ExceptionFrame>;
     crate::arch_impl::aarch64::constants::MAX_CPUS] =
-    [const { MaybeUninit::zeroed() }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+    [const { super::sp_frame_slot::SpFrameSlot::zeroed() }; crate::arch_impl::aarch64::constants::MAX_CPUS];
 
 /// Per-CPU staging for a ret-based kernel dispatch.
 ///
