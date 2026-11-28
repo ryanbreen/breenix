@@ -12,3 +12,4 @@ arm64-boot-contract = { path = "../../libs/arm64-boot-contract" }
 log = "0.4"
 uefi = "0.33"
 uefi-raw = "0.9"
+x86_64 = { version = "=0.15.4", default-features = false }

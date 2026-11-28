@@ -426,15 +426,12 @@ fn function_attributes(source: &str, name: &str) -> String {
 ///
 /// Disclosed narrowing: shared code with no `cfg` at all is NOT in scope, so
 /// this census cannot speak for a primitive call added to a cfg-free shared
-/// helper. `kernel/src/memory/kernel_page_table.rs::build_master_kernel_pml4`
-/// is exactly that shape at this head: cfg-free, in a cfg-free file, and it
-/// calls the `Cr3::write` primitive -- so neither this filter nor anything
-/// built on it reaches it. Nothing on aarch64 executes it today, because its
-/// only caller is the cfg-free `kernel/src/memory/mod.rs::init`, whose only
-/// caller is `kernel_main` in `kernel/src/main.rs` behind
-/// `#[cfg(target_arch = "x86_64")]`. That is a fact about the current call
-/// graph, not something this filter checks: a cfg-free caller added on the
-/// aarch64 side would sit outside each census in this file.
+/// helper. A module gated in its parent is also outside this filter:
+/// `kernel/src/memory/kernel_page_table.rs::build_master_kernel_pml4` carries
+/// no `cfg` of its own and calls the `Cr3::write` primitive, and only the
+/// `#[cfg(target_arch = "x86_64")]` on its `mod` line in
+/// `kernel/src/memory/mod.rs` keeps it off aarch64. That gate is read by the
+/// compiler, not by this filter.
 /// claim-lint:ok: 7 of 7 censused TTBR0 install sites follow one of the 2
 /// conventions above (#786).
 fn aarch64_scoped_functions(sources: &[(String, String)]) -> Vec<(String, String, String)> {
