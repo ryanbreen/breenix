@@ -404,6 +404,10 @@ gate. E2/E3 unnecessary.
     request for the holder, because the MMIO handler took no lock before.
     The PCI handler keeps its existing spin on the queue lock, which
     thread-side holders take with interrupts masked (`with_engine`).
+  - `reserve` takes the owner's completion token as the slot's tag, `drain`
+    reports it and `finish` clears it, because a token the driver cleared
+    outside the queue lock could wipe the next owner's token and leave that
+    owner waiting on a chain already drained (seen in the rig's compile rows).
   - The check-first host test is red on the old code as a compile failure,
     because the old drivers had no multi-chain engine for it to drive.
 

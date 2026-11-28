@@ -407,16 +407,17 @@ impl DmaMemory for DirectMap {
     }
 }
 
-/// One chain slot's completion: the waiter's token, armed before the chain
-/// is published and cleared once its result is taken.
+/// One chain slot's completion. Its token is the slot's engine tag: reset
+/// and tagged under the queue lock when the slot is reserved, so the token a
+/// drain completes is the current owner's (the host check
+/// a_slot_reports_the_tag_of_the_owner_whose_chain_completed).
 struct SlotCompletion {
     completion: Completion,
-    token: AtomicU32,
 }
 
 impl SlotCompletion {
     const fn new() -> Self {
-        Self { completion: Completion::new(), token: AtomicU32::new(0) }
+        Self { completion: Completion::new() }
     }
 }
 
@@ -722,21 +723,30 @@ impl VirtioBlockDevice {
         x86_64::instructions::interrupts::without_interrupts(|| f(&mut self.engine.lock()))
     }
 
-    /// Wake each armed waiter; once the queue has stopped each finds its chain lost.
-    fn wake_all_slots(&self) {
-        for entry in &self.completions {
-            let token = entry.token.load(Ordering::Acquire);
-            if token != 0 {
-                entry.completion.complete(token);
+    /// The owner tags of the slots that have owners, for waking them after a stop.
+    fn owner_tags(engine: &BlkQueue<PciRing>, out: &mut [(usize, u32); MAX_CHAINS]) -> usize {
+        let mut count = 0;
+        for slot in 0..engine.chains() {
+            let tag = engine.tag(slot);
+            if tag != 0 {
+                out[count] = (slot, tag);
+                count += 1;
             }
         }
+        count
     }
 
     /// Stop the queue after an abandoned wait: no chain it holds is completed
     /// or reused, each waiter is woken, and later callers are refused.
     fn stop(&self, guard: BlockRequestGuard<'_>) {
-        self.with_engine(|engine| engine.stop());
-        self.wake_all_slots();
+        let mut owners = [(0usize, 0u32); MAX_CHAINS];
+        let count = self.with_engine(|engine| {
+            engine.stop();
+            Self::owner_tags(engine, &mut owners)
+        });
+        for &(slot, tag) in &owners[..count] {
+            self.completions[slot].completion.complete(tag);
+        }
         guard.wedge();
     }
 
@@ -821,10 +831,8 @@ impl VirtioBlockDevice {
                     if engine.is_stopped() {
                         return Err(Some(SubmitError::Stopped));
                     }
-                    let slot = engine.reserve().ok_or(None)?;
-                    let entry = &self.completions[slot];
-                    entry.completion.reset();
-                    entry.token.store(token, Ordering::Release);
+                    let slot = engine.reserve(token).ok_or(None)?;
+                    self.completions[slot].completion.reset();
                     let write = match &data {
                         Data::Write(buffer) => Some(&buffer[offset..offset + len]),
                         _ => None,
@@ -832,7 +840,6 @@ impl VirtioBlockDevice {
                     match engine.submit(&mut DirectMap, slot, kind, sector, write, len) {
                         Ok(_) => Ok(slot),
                         Err(error) => {
-                            entry.token.store(0, Ordering::Release);
                             engine.unreserve(slot);
                             Err(Some(error))
                         }
@@ -887,7 +894,6 @@ impl VirtioBlockDevice {
             });
             match result {
                 Ok(()) => {
-                    self.completions[slot].token.store(0, Ordering::Release);
                     self.ops_completed.fetch_add(1, Ordering::Relaxed);
                     if let Some(cache) = &self.cache {
                         match &data {
@@ -906,7 +912,6 @@ impl VirtioBlockDevice {
                     continue;
                 }
                 Err(error) => {
-                    self.completions[slot].token.store(0, Ordering::Release);
                     if kind == request_type::OUT {
                         self.invalidate_cached(sector, len);
                     }
@@ -994,19 +999,26 @@ impl VirtioBlockDevice {
         // is free, and a holder on another CPU releases it within a few
         // descriptor updates. Skipping the drain would lose the completion:
         // the ISR read above has already acknowledged it.
-        let mut tokens = [0u32; MAX_CHAINS];
+        let mut woken = [(0usize, 0u32); MAX_CHAINS];
         let mut count = 0;
-        let outcome = self.engine.lock().drain(&mut DirectMap, |slot| {
-            tokens[count] = self.completions[slot].token.load(Ordering::Acquire);
-            count += 1;
-        });
-        for &token in &tokens[..count] {
-            if let Some(entry) = self.completions.iter().find(|entry| token != 0 && entry.token.load(Ordering::Acquire) == token) {
-                entry.completion.complete(token);
+        let broken = {
+            let mut engine = self.engine.lock();
+            let outcome = engine.drain(&mut DirectMap, |slot, tag| {
+                woken[count] = (slot, tag);
+                count += 1;
+            });
+            if outcome == Drain::Broken {
+                // The chains the device held are lost: wake their owners.
+                count = Self::owner_tags(&engine, &mut woken);
+            }
+            outcome == Drain::Broken
+        };
+        for &(slot, tag) in &woken[..count] {
+            if tag != 0 {
+                self.completions[slot].completion.complete(tag);
             }
         }
-        if outcome == Drain::Broken {
-            self.wake_all_slots();
+        if broken {
             self.request_gate.wedged.store(true, Ordering::Release);
             self.request_gate.waiters.wake_up();
         }

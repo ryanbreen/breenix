@@ -258,6 +258,8 @@ pub struct BlkQueue<R> {
     storage: [ChainStorage; MAX_CHAINS],
     slot_bytes: [usize; MAX_CHAINS],
     slots: [Slot; MAX_CHAINS],
+    /// Each slot's owner tag, from `reserve` until its result is taken.
+    tags: [u32; MAX_CHAINS],
     chains: usize,
     /// Driver-private descriptor free list and chain links.
     next_free: [u16; MAX_QUEUE_SIZE as usize],
@@ -291,6 +293,7 @@ impl<R: RingMemory> BlkQueue<R> {
             storage: [ChainStorage::EMPTY; MAX_CHAINS],
             slot_bytes: [0; MAX_CHAINS],
             slots: [Slot::Free; MAX_CHAINS],
+            tags: [0; MAX_CHAINS],
             chains: storage.len(),
             next_free: [0; MAX_QUEUE_SIZE as usize],
             links: [0; MAX_QUEUE_SIZE as usize],
@@ -389,13 +392,17 @@ impl<R: RingMemory> BlkQueue<R> {
         matches!(self.slots.get(slot), Some(Slot::Issued { .. }))
     }
 
-    /// Take a free chain slot.
-    pub fn reserve(&mut self) -> Option<usize> {
+    /// Take a free chain slot for the owner `tag` (nonzero). The tag stays
+    /// with the slot, and `drain` reports it, until the owner takes the result
+    /// with `finish` or gives the slot back with `unreserve`; the slot's
+    /// ownership and its tag change together, under the caller's one lock.
+    pub fn reserve(&mut self, tag: u32) -> Option<usize> {
         if self.stopped {
             return None;
         }
         let slot = (0..self.chains).find(|&i| self.slots[i] == Slot::Free)?;
         self.slots[slot] = Slot::Reserved;
+        self.tags[slot] = tag;
         Some(slot)
     }
 
@@ -403,7 +410,14 @@ impl<R: RingMemory> BlkQueue<R> {
     pub fn unreserve(&mut self, slot: usize) {
         if self.slots.get(slot) == Some(&Slot::Reserved) {
             self.slots[slot] = Slot::Free;
+            self.tags[slot] = 0;
         }
+    }
+
+    /// The tag of the slot's owner, 0 for a free slot. A lost chain keeps
+    /// its owner's tag, so a stop can wake that owner.
+    pub fn tag(&self, slot: usize) -> u32 {
+        self.tags.get(slot).copied().unwrap_or(0)
     }
 
     /// Slots a caller could reserve now (0 once stopped).
@@ -507,9 +521,10 @@ impl<R: RingMemory> BlkQueue<R> {
         true
     }
 
-    /// Read the chains the device has returned. `completed(slot)` runs for
-    /// each one once its status byte was captured.
-    pub fn drain(&mut self, dma: &mut impl DmaMemory, mut completed: impl FnMut(usize)) -> Drain {
+    /// Read the chains the device has returned. `completed(slot, tag)` runs
+    /// for each one once its status byte was captured, with the tag of the
+    /// owner that reserved the slot.
+    pub fn drain(&mut self, dma: &mut impl DmaMemory, mut completed: impl FnMut(usize, u32)) -> Drain {
         if self.stopped {
             return Drain::Stopped;
         }
@@ -538,7 +553,7 @@ impl<R: RingMemory> BlkQueue<R> {
             self.outstanding -= 1;
             self.slots[slot as usize] = Slot::Done { kind, data_len, status: status[0], used_len };
             count += 1;
-            completed(slot as usize);
+            completed(slot as usize, self.tags[slot as usize]);
         }
         Drain::Completed(count)
     }
@@ -553,6 +568,7 @@ impl<R: RingMemory> BlkQueue<R> {
             _ => return Err(RequestError::NotIssued),
         };
         self.slots[slot] = Slot::Free;
+        self.tags[slot] = 0;
         match status {
             status::OK => {}
             status::IOERR => return Err(RequestError::Media),

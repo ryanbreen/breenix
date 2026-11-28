@@ -375,16 +375,17 @@ pub(crate) fn block_wedge_oracle_test() -> crate::test_framework::registry::Test
 }
 
 
-/// One chain slot's completion: the waiter's token, armed before the chain
-/// is published and cleared once its result is taken.
+/// One chain slot's completion. Its token is the slot's engine tag: reset
+/// and tagged under the queue lock when the slot is reserved, so the token a
+/// drain completes is the current owner's (the host check
+/// a_slot_reports_the_tag_of_the_owner_whose_chain_completed).
 struct SlotCompletion {
     completion: Completion,
-    token: AtomicU32,
 }
 
 impl SlotCompletion {
     const fn new() -> Self {
-        Self { completion: Completion::new(), token: AtomicU32::new(0) }
+        Self { completion: Completion::new() }
     }
 
     /// Wait for the device to complete the published request.
@@ -442,18 +443,6 @@ impl BlockMmioCompletion {
         }
     }
 
-    /// Arm `slot` for a request about to be published.
-    fn arm(&self, slot: usize) -> u32 {
-        let token = self.next_completion_token();
-        let entry = &self.slots[slot];
-        entry.completion.reset();
-        entry.token.store(token, Ordering::Release);
-        token
-    }
-
-    fn disarm(&self, slot: usize) {
-        self.slots[slot].token.store(0, Ordering::Release);
-    }
 }
 
 static REQUEST_GATES: [BlockMmioRequestGate; MAX_BLOCK_DEVICES] =
@@ -662,7 +651,7 @@ fn drain_device(device_index: usize) {
     let completions = &COMPLETIONS[device_index];
     loop {
         queue.drain_pending.store(false, Ordering::SeqCst);
-        let mut tokens = [0u32; MAX_CHAINS];
+        let mut woken = [(0usize, 0u32); MAX_CHAINS];
         let mut count = 0;
         let mut broken = false;
         let locked = crate::arch_without_interrupts(|| {
@@ -670,11 +659,15 @@ fn drain_device(device_index: usize) {
                 return false;
             };
             if let Some(engine) = guard.as_mut() {
-                let outcome = engine.drain(&mut DirectMap, |slot| {
-                    tokens[count] = completions.slots[slot].token.load(Ordering::Acquire);
+                let outcome = engine.drain(&mut DirectMap, |slot, tag| {
+                    woken[count] = (slot, tag);
                     count += 1;
                 });
-                broken = outcome == Drain::Broken;
+                if outcome == Drain::Broken {
+                    // The chains the device held are lost: wake their owners.
+                    broken = true;
+                    count = owner_tags(engine, &mut woken);
+                }
             }
             true
         });
@@ -688,13 +681,12 @@ fn drain_device(device_index: usize) {
             }
             continue;
         }
-        for &token in &tokens[..count] {
-            if token != 0 {
-                complete_token(device_index, token);
+        for &(slot, tag) in &woken[..count] {
+            if tag != 0 {
+                completions.slots[slot].completion.complete(tag);
             }
         }
         if broken {
-            wake_all_slots(device_index);
             REQUEST_GATES[device_index].wedged.store(true, Ordering::Release);
             REQUEST_GATES[device_index].waiters.wake_up();
         }
@@ -705,30 +697,31 @@ fn drain_device(device_index: usize) {
     }
 }
 
-fn complete_token(device_index: usize, token: u32) {
-    for entry in &COMPLETIONS[device_index].slots {
-        if entry.token.load(Ordering::Acquire) == token {
-            entry.completion.complete(token);
-            return;
+/// The owner tags of the slots that have owners, for waking them after a stop.
+fn owner_tags(engine: &BlkQueue<MmioRing>, out: &mut [(usize, u32); MAX_CHAINS]) -> usize {
+    let mut count = 0;
+    for slot in 0..engine.chains() {
+        let tag = engine.tag(slot);
+        if tag != 0 {
+            out[count] = (slot, tag);
+            count += 1;
         }
     }
-}
-
-/// Wake each armed waiter; once the queue has stopped each finds its chain lost.
-fn wake_all_slots(device_index: usize) {
-    for entry in &COMPLETIONS[device_index].slots {
-        let token = entry.token.load(Ordering::Acquire);
-        if token != 0 {
-            entry.completion.complete(token);
-        }
-    }
+    count
 }
 
 /// Stop the device's queue after an abandoned wait: no chain it holds is
 /// completed or reused, each waiter is woken, and later callers are refused.
 fn stop_device(device_index: usize, guard: BlockMmioRequestGuard<'_>) {
-    with_engine(device_index, |engine| engine.stop());
-    wake_all_slots(device_index);
+    let mut owners = [(0usize, 0u32); MAX_CHAINS];
+    let count = with_engine(device_index, |engine| {
+        engine.stop();
+        owner_tags(engine, &mut owners)
+    })
+    .unwrap_or(0);
+    for &(slot, tag) in &owners[..count] {
+        COMPLETIONS[device_index].slots[slot].completion.complete(tag);
+    }
     guard.wedge();
 }
 
@@ -1039,7 +1032,10 @@ fn read_failure_at(
         timer_ready: crate::arch_impl::aarch64::timer_interrupt::is_initialized(),
         gate_locked: gate.is_some_and(|gate| gate.is_busy()),
         gate_wedged: gate.is_some_and(|gate| gate.wedged.load(Ordering::Acquire)),
-        pending_token: entry.map_or(0, |e| e.token.load(Ordering::Acquire)),
+        pending_token: match (state, slot) {
+            (Some(_), Some(slot)) => with_engine(device_index, |engine| engine.tag(slot)).unwrap_or(0),
+            _ => 0,
+        },
         completed_token: entry.map_or(0, |e| e.completion.completed_token()),
         waiter_thread: entry.map_or(0, |e| e.completion.waiter_tid()),
         completed_desc: head.map_or(NO_COMPLETED_DESC, u32::from),
@@ -1119,8 +1115,9 @@ fn transfer(
                 if engine.is_stopped() {
                     return Err(Some(SubmitError::Stopped));
                 }
-                let slot = engine.reserve().ok_or(None)?;
-                let token = completions.arm(slot);
+                let token = completions.next_completion_token();
+                let slot = engine.reserve(token).ok_or(None)?;
+                completions.slots[slot].completion.reset();
                 let write = match &data {
                     Data::Write(buffer) => Some(&buffer[offset..offset + len]),
                     _ => None,
@@ -1128,7 +1125,6 @@ fn transfer(
                 match engine.submit(&mut DirectMap, slot, kind, sector, write, len) {
                     Ok(_) => Ok((slot, token)),
                     Err(error) => {
-                        completions.disarm(slot);
                         engine.unreserve(slot);
                         Err(Some(error))
                     }
@@ -1190,14 +1186,13 @@ fn transfer(
             engine.finish(&mut DirectMap, slot, out)
         });
         match result {
-            Some(Ok(())) => completions.disarm(slot),
+            Some(Ok(())) => {}
             Some(Err(RequestError::Lost)) | None => {
                 // Another caller stopped the queue; the chain stays owned.
                 failure.get_or_insert(TransferFailure { reason: BLOCK_MMIO_WEDGED_ERROR, stage: "finish-lost", slot: Some(slot), sector });
                 continue;
             }
             Some(Err(error)) => {
-                completions.disarm(slot);
                 let (reason, stage) = request_error_reason(error);
                 failure.get_or_insert(TransferFailure { reason, stage, slot: Some(slot), sector });
             }
@@ -1397,11 +1392,13 @@ fn report_queue_state(device_index: usize) {
         queue.engine.try_lock().map(|mut guard| {
             guard.as_mut().map(|engine| {
                 let mut slots = [' '; MAX_CHAINS];
+                let mut tags = [0u32; MAX_CHAINS];
                 for (slot, state) in slots.iter_mut().enumerate().take(engine.chains()) {
                     *state = engine.slot_state(slot);
+                    tags[slot] = engine.tag(slot);
                 }
                 (engine.device_used_idx(), engine.last_used(), engine.published_idx(),
-                    engine.outstanding(), engine.free_descriptors(), engine.is_stopped(), slots)
+                    engine.outstanding(), engine.free_descriptors(), engine.is_stopped(), slots, tags)
             })
         })
     });
@@ -1414,24 +1411,25 @@ fn report_queue_state(device_index: usize) {
     };
     let pending = queue.drain_pending.load(Ordering::Acquire);
     match sample {
-        Some(Some((used, last_used, published, outstanding, free, stopped, slots))) => log::warn!(
+        Some(Some((used, last_used, published, outstanding, free, stopped, slots, tags))) => {
+            log::warn!(
             "VirtIO block {}: used={} last_used={} published={} outstanding={} free_desc={} stopped={} drain_pending={} isr={:#x} status={:#x} slots={}",
             device_index, used, last_used, published, outstanding, free, stopped, pending,
             interrupt_status, device_status, slots.iter().collect::<alloc::string::String>()
-        ),
+            );
+            for (slot, entry) in COMPLETIONS[device_index].slots.iter().enumerate() {
+                if tags[slot] != 0 {
+                    log::warn!(
+                        "VirtIO block {} slot {}: tag={} done={} waiter={}",
+                        device_index, slot, tags[slot], entry.completion.completed_token(), entry.completion.waiter_tid()
+                    );
+                }
+            }
+        }
         _ => log::warn!(
             "VirtIO block {}: queue lock busy; drain_pending={} isr={:#x} status={:#x}",
             device_index, pending, interrupt_status, device_status
         ),
-    }
-    for (slot, entry) in COMPLETIONS[device_index].slots.iter().enumerate() {
-        let token = entry.token.load(Ordering::Acquire);
-        if token != 0 {
-            log::warn!(
-                "VirtIO block {} slot {}: token={} done={} waiter={}",
-                device_index, slot, token, entry.completion.completed_token(), entry.completion.waiter_tid()
-            );
-        }
     }
 }
 
