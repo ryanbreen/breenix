@@ -430,9 +430,9 @@ impl DeviceMounts {
     /// reaches are released at P+1 or later, and a release at R is promoted
     /// by a transaction at R+2 or later: at P+3 at the earliest, which opens
     /// only after P+1 installs, and that install moves `published` under this
-    /// lock. So a pin of P taken under `published` precedes every preparation
+    /// lock. So a pin of P taken under `published` precedes the preparations
     /// that could free P's blocks. `generation` is pinned only while it is P;
-    /// None means the caller passes again from P.
+    /// otherwise the caller gets no pin and passes again from P.
     fn pin_published(self: &Arc<Self>, generation: u64) -> Result<Option<GenerationPin>, Errno> {
         let published = self.published.lock();
         if published.as_ref().is_some_and(|sb| sb.generation > generation) {
@@ -720,8 +720,8 @@ struct MountState<W: Wait + 'static> {
     metadata_edits: u64,
     // Roots a queued delete or rename changes, with the generation that
     // carries the change (design 7.3a). Each mark lives until that
-    // generation installs, or until the mount fails and nothing more
-    // publishes, whatever the syscall that made it returns (review M7).
+    // generation installs, or until the mount fails and stops publishing,
+    // whatever the syscall that made it returns (review M7).
     marked: Vec<(u64, Selecting)>,
     // Changes the booted tree admitted since this mount (3.3).
     root_epoch: u64,
@@ -4607,8 +4607,8 @@ impl<W: Wait + 'static> BreenFs<W> {
     }
     /// Whether an extent of `ino` covers byte `floor`, read as a no-wait
     /// pass (design 7.3a row 1, review M5 on #3310): the lookup is not a
-    /// tree edit. None when a node it needs is cold; `staged` then records
-    /// it for `stage`.
+    /// tree edit. A cold node it needs gives no answer, and `staged` then
+    /// records the node for `stage`.
     fn tail_backed(
         &self,
         state: &mut MountState<W>,
@@ -5644,7 +5644,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                         && state.page(node.ino, index).is_some();
                     frozen || match self.tail_backed(state, node.ino, floor, &mut staged)? {
                         Some(backed) => backed,
-                        // Nothing is reserved yet: stage the cold nodes and retry.
+                        // The reservations come after this: stage the cold nodes and retry.
                         None => return Ok((inode, false, None)),
                     }
                 } else { false };

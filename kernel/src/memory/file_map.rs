@@ -1237,7 +1237,7 @@ impl MapState {
     /// `first` over `bytes`, the writeback's private copy. A write that
     /// completed after the snapshot copied its bytes into these pages under
     /// that guard (`commit_write`), so an edit attempt that copies here
-    /// before it changes file pages never stages bytes older than the
+    /// before it changes file pages stages bytes at least as new as the
     /// file's. A page no longer resident keeps the snapshot's bytes.
     pub(crate) fn refresh_writeback(&self, first: u64, bytes: &mut [u8]) {
         let inner = self.state.inner.lock();

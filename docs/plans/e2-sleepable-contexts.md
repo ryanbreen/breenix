@@ -1262,7 +1262,7 @@ a listed name with no scope left, fails `i7_exception_list_names_exactly_the_sit
 
 | Scope | Paths |
 |---|---|
-| `mutation` | namespace, attribute, data and snapshot changes: create, mkdir, symlink, link, unlink, rmdir, rename, setattr, xattr set and remove, write, truncate, mapped writeback, clearing a mapping's privilege bits, snapshot create, delete and rename, staging attach and detach, with their admission reads |
+| `mutation` | namespace, attribute, data and snapshot changes: create, mkdir, symlink, link, unlink, rmdir, rename, setattr, xattr set and remove, write, truncate (not its tail lookup, a no-wait pass), mapped writeback (not its setup in `mapping_io`, which runs as passes), clearing a mapping's privilege bits, snapshot create, delete and rename, staging attach and detach, with their admission reads |
 | `apply_touches` | a read's pending touch stamps, applied as an edit of their own after its pass |
 | `refresh` | the refresh loops in `edited()` and `materialize()` |
 | `replay` | N+1's changes replayed onto N's view in `materialize()` |
@@ -1298,17 +1298,36 @@ under the guard.
   read larger than the cache could not complete. The mapping overlay stays in the pass under the lock,
   because `file_map::overlay` relies on the mount guard to pin its frames.
 - **Raw node reads carry a generation ceiling.** A deferred `NodeStore::get` records its store's
-  generation, because the fetch has to verify the node against the view that asked for it.
+  generation, because the fetch has to verify the node against the view that asked for it. `Held` keys
+  the raw bytes it lends by address and that generation (review M3 on #3310), because one address can
+  hold different nodes in two views a read-only mount moves between.
+- **A read-only mount's passes follow the newest publication** (review M2 on #3310). Each pass starts
+  with `observe_publication`, which only read() ran before, and a pass that needed the device pins with
+  `DeviceMounts::pin_published`: under the `published` lock, and only while its view's generation is the
+  newest published, else it passes again. The reason: the blocks a generation P reaches are released at
+  P+1 or later and promoted by a transaction at P+3 or later, which opens only after P+1 installs and
+  moves `published` under that lock, while the observer's own state lock does not exclude the writer.
+  When the pass could not open the newer view from memory, `MountState::observing` names its superblock,
+  the pin is of that generation, and the misses are fetched through a store of that view, dropped after
+  the fetch, because the installed view's cache can answer an address the newer tree reused (review M3).
+  `check_durable_roots`, scrub batches and `snapshot_status` copy and pin the newest superblock in one
+  step (`pin_view`, `pin_newest`).
 - **Touch stamps.** A pass records the inodes it read whose stamps are pending and leaves them pending. Its
   operation applies them afterwards in an `apply_touches` step, and only getattr, whose answer reports the
   times, passes again; open, read, readlink and the rest keep the first pass's answer.
-- **The publication hold.** `PASS_HOLD` is 4. A reader past it holds a count that a freeze checks under
-  the state lock; its release wakes the worker. The host check publishes a commit that moves the reader's
+- **The publication hold.** `PASS_HOLD` is 4. A reader past it holds a count on its `DeviceMounts`
+  that the writer's freeze checks under the state lock, and its release wakes the writable mount's
+  commit signal, which the constructor registers there, because a read-only mount's reader has to hold
+  off a writer on another mount (review M2 on #3310). The host check publishes a commit that moves the reader's
   block on each of its passes, and the reader finishes within the hold and one more pass.
 - **readdir's per-pass buffer.** A pass collects up to 64 KiB of entries, counted as name bytes plus 24
   (at least their getdents64 record size), and the sink sees them once the pass completes. A sink that
-  takes a whole batch gets the next one from the batch's last cookie, because `vfs::names::parent_name`
-  scans a directory with one readdir call.
+  takes a whole batch gets the next one from the batch's last cookie, unless a metadata edit
+  (`finish_metadata`, counted in `MountState::metadata_edits`) landed since the call's first batch: then
+  the call returns at the batch boundary, because getdents64 appends a call's batches into one reply and
+  a rename between them would show both names (review M6 on #3310). `vfs::names::parent_name`, which
+  scanned a directory with one readdir call, resumes from the returned cookie until it finds the name or
+  a call returns no entries.
 - **A generation view's reads are passes of its writer** (getattr, open, lookup, parent, readdir,
   readlink and read), because a view reads its projected root under the writer's state lock.
 - **An empty read leaves atime alone.** A read at or past EOF, or into an empty buffer, does not touch
@@ -1343,7 +1362,10 @@ under the guard.
   it does for ENOMEM, because admission has no other channel back to the worker's loop.
 - **Showing the worker case is reached.** The worker check asserts that the owner published at the full
   budget (two publications in one pass) and that the deferring worker left its mapping dirty, instead of
-  running a variant that deadlocks, because a deadlocking check can report only by timing out.
+  running a variant that deadlocks, because a deadlocking check can report only by timing out. The
+  owner case passes on the tree before the fix, because it guards behaviour the change keeps (the owner
+  publishes inline at the full budget); the other-publisher case is the check that fails there (review
+  M8 on #3310, answered without a change).
 - **The contender spin stays a retry.** `MountLock::lock` has no error channel, so a context the park
   refuses keeps its receipt and retries, as E2.3 kept its halts.
 
@@ -1353,13 +1375,25 @@ under the guard.
   prepare their pages before changing the dirty map, so an attempt refused for a cold page leaves the dirty map unchanged and
   returns its grant. The writer stages the page, verified against its REF checksums, and repeats its
   admission; a staged page is used only while the extent still names the same blocks and checksums.
-  Mapped writeback's EOF page takes the same path.
+  Mapped writeback's EOF page takes the same path, and each of its attempts copies the resident mapped
+  pages over its private buffer under the lock (`FileMap::refresh_writeback`) before it edits, because a
+  write that completed meanwhile copied its bytes into those pages under the same lock (review C1 on
+  #3310).
+- **A partial truncate's tail lookup** (whether an extent backs the new EOF page) is a no-wait pass in a
+  strict scope (`tail_backed`); a cold node is staged before anything is reserved and the admission
+  repeats, because the lookup is not a tree edit (review M5 on #3310). `mapping_io`'s inode read and
+  open run as passes for the same reason.
 - **The PublishToken** is `MountLock::uncounted`, the same sleeping exclusion with no I7 count. A mount's
   constructor takes it through recovery and root selection, because recovery can publish orphan
   reclamation and the mount is not published yet. The newest published superblock moves to its own
-  spin-locked copy.
+  spin-locked copy. A writable recovery's orphan commits take `recover::Readers`: their transactions are
+  bounded by the device's oldest pin, and each commit's superblock is published before the next opens,
+  because a read-only mount of the device can be reading through them (review M4 on #3310).
 - **Selection.** `DeviceMounts::selection` becomes a per-root marker. A delete and a snapshot rename mark
-  their root under the state lock and sync with no lock held; a constructor, a generation view or a
+  their root under the state lock, hand the mark to `MountState::marked` with the generation that carries
+  the change, and sync with no lock held; that generation's install drops the mark, and an abandoned
+  publication, which fails the mount, clears them, because a sync that returns EINTR must not let a
+  constructor claim a root a queued delete still removes (review M7 on #3310); a constructor, a generation view or a
   staging attach that would select a marked root fails with EBUSY. Detach takes no marker, because the
   staging tree's own claim already refuses a delete. A constructor checks the marker after claiming its
   root and while it holds the token, so a delete either sees the claim or the constructor sees the mark.

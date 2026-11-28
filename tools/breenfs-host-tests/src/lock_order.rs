@@ -1008,7 +1008,7 @@ fn mapped_writeback_setup_waits_with_no_mount_lock() {
     fs.init_service().unwrap();
     let node = fs.open(inos.a).unwrap();
     node.map.shared_stores(&pattern(170, 3 * BLOCK_SIZE), false);
-    // The inode leaves every cache.
+    // The inode leaves the inode, decoded and buffer caches.
     fs.inner.state.lock().inodes.clear();
     fs.inner.decoded.clear();
     cache.shrink(usize::MAX);
