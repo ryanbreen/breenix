@@ -7,6 +7,10 @@ import os
 from pathlib import Path
 import re
 import shutil
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from userspace_generation import require_legacy
 
 
 def facts(path):
@@ -39,6 +43,7 @@ def inventory(root, staged=False):
 
 
 def create(root, tools_commit, mode, toolchain, rust_pin, policy_commit):
+    require_legacy(root)
     build = json.loads((root / 'build.json').read_text())
     manifest = dict(version=1, builder='mac', builderHost='apple-silicon-macos', commit=build['commit'],
                     toolsCommit=tools_commit, mode=mode, profile=build['profile'], features=build['features'],
@@ -62,6 +67,7 @@ def verify(root, *, commit, tools_commit, mode, features, suite, staged=False):
 
 def _verify(root, *, commit, tools_commit, mode, features, suite, staged=False):
     root = Path(root)
+    require_legacy(root)
     manifest = json.loads((root / 'manifest.json').read_text())
     if manifest.get('version') != 1 or manifest.get('builder') != 'mac':
         raise ValueError('unsupported prebuilt manifest')

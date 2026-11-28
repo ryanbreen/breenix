@@ -12,8 +12,10 @@ import subprocess
 import sys
 import tempfile
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent / 'metal'))
 from metal_root import require_e2fsprogs
+from userspace_generation import require_legacy
 
 ROOT = Path(__file__).resolve().parents[1]
 PROGRAMS = ROOT / 'userspace/programs'
@@ -263,6 +265,7 @@ def ext2_stats(image, debugfs):
 
 def stage_files(image, directories, entries, extra_headroom=0, *, align_to_block=False,
                 recorded=None, scratch_headroom=None):
+    require_legacy(image, *(source for _, source, _ in entries))
     expected = {}
     total_size = 0
     for path, source, mode in entries:
@@ -515,6 +518,7 @@ def main():
             k7_stage /= 'aarch64'
         k5 = json.loads((records / f'k5/{args.arch}.json').read_text())
         cargo = k7_stage / 'bin/cargo' if cargo_needed else None
+        require_legacy(args.image, release, kd, sysroot, rustc, rust_link, fixture, cargo)
         kd_record = verify_hosted_libc(kd, records, k5, rustc, cargo, arch=args.arch)
 
     staged = stage_cxx_runtime(args.image, args.suite, release / 'suite-cxx-runtime',
