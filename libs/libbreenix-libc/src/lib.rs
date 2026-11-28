@@ -98,6 +98,7 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 // =============================================================================
 
 pub use pthread::__errno_location;
+pub(crate) use pthread::{fork_child_thread_id, malloc_thread_id};
 pub use stdlib::exit::exit;
 pub use stdlib::malloc::{calloc, free, malloc, realloc};
 
@@ -1044,23 +1045,24 @@ pub extern "C" fn setpgid(pid: i32, pgid: i32) -> i32 {
 #[no_mangle]
 pub extern "C" fn fork() -> i32 {
     unsafe { pthread::atfork_prepare(); }
-    match libbreenix::process::fork() {
-        Ok(libbreenix::process::ForkResult::Child) => {
-            unsafe {
-                pthread::__breenix_after_fork();
-                pthread::atfork_child();
-            }
-            0
-        },
-        Ok(libbreenix::process::ForkResult::Parent(pid)) => {
-            unsafe { pthread::atfork_parent(); }
-            pid.raw() as i32
+    let allocator = stdlib::alloc_cache::before_fork();
+    let result = libbreenix::process::fork();
+    if matches!(result, Ok(libbreenix::process::ForkResult::Child)) {
+        // The child hook releases fork's hold on the allocator (it may have
+        // run already, inside libbreenix's fork) without the parent's wake.
+        core::mem::forget(allocator);
+        unsafe {
+            pthread::__breenix_after_fork();
+            pthread::atfork_child();
         }
-        Err(e) => {
-            // The parent handlers undo what the prepare handlers did.
-            unsafe { pthread::atfork_parent(); }
-            set_errno_from_error(e)
-        }
+        return 0;
+    }
+    drop(allocator);
+    unsafe { pthread::atfork_parent(); }
+    match result {
+        Ok(libbreenix::process::ForkResult::Parent(pid)) => pid.raw() as i32,
+        Err(error) => set_errno_from_error(error),
+        Ok(libbreenix::process::ForkResult::Child) => unreachable!(),
     }
 }
 

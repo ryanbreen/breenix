@@ -510,6 +510,7 @@ pub unsafe fn startup(envp: *const *const u8) {
 #[no_mangle]
 pub unsafe extern "C" fn __breenix_after_fork() {
     let process = pid();
+    crate::stdlib::alloc_cache::after_fork(process);
     if PROCESS.load(Acquire) == process || !RUNTIME_READY.load(Acquire) {
         return;
     }
@@ -533,6 +534,29 @@ pub unsafe extern "C" fn __breenix_after_fork() {
     PROCESS.store(process, Release);
     crate::mqueue::after_fork();
 }
+/// Allocation may run before libc startup, or on a thread created outside
+/// pthread. These paths have no initialized descriptor to read.
+pub(crate) fn malloc_thread_id() -> u32 {
+    if RUNTIME_READY.load(Acquire) {
+        let thread = unsafe { descriptor_from_tp() };
+        if !thread.is_null() {
+            // 0 is the unlocked word. A new thread's descriptor holds 0 until
+            // its entry stores the ID, which a signal handler can precede.
+            let id = unsafe { (*thread).id.load(Relaxed) };
+            if id != 0 {
+                return id;
+            }
+        }
+    }
+    tid()
+}
+
+/// The ID malloc_thread_id reports for a fork child's survivor once
+/// __breenix_after_fork has stored the child's thread ID in its descriptor.
+pub(crate) fn fork_child_thread_id() -> u32 {
+    tid()
+}
+
 unsafe fn current_id() -> u32 {
     let p = current();
     if p.is_null() {

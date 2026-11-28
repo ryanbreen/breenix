@@ -38,7 +38,8 @@ def build_probe(tmp):
     binary = tmp / "bld-allocation-probe"
     release = target / "release"
     subprocess.run(
-        ["rustc", "--edition=2021", "-Dwarnings", "-Copt-level=3", "--extern",
+        # The toolchain's release profile aborts on panic; the probe must match.
+        ["rustc", "--edition=2021", "-Dwarnings", "-Copt-level=3", "-Cpanic=abort", "--extern",
          f"bld={release / 'libbld.rlib'}", "-L", f"dependency={release / 'deps'}",
          str(probe), "-o", str(binary)],
         cwd=ROOT / "toolchain", check=True,
