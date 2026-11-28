@@ -841,6 +841,18 @@ of their steps, keeping each CPU's program order. The steps are sequentially con
     entries visited: 1 against 65 on the old `promote_best_of`. Red.
   - The x86 custody seam: selection finding a stack-marked thread skips it and records the waiter, and the
     clear kicks the waiter. Red on today's `wait_for_stacks_x86`, which waits.
+
+    The red claim, checked against today's x86 sequence. `wait_for_stacks_x86` registers in
+    `LEAVING_STACK_WAITERS`, then rechecks `LEAVING_STACK` (`scheduler.rs:2615-2626`).
+    `release_leaving_stack` clears the mark, then takes the waiters and kicks each one
+    (`scheduler.rs:2224-2236`).
+
+    ```pycon
+    >>> X86_TODAY = ['see_mark', 'register_waiter', 'recheck_mark']
+    >>> any(stranded(order) for order in interleavings(X86_TODAY, LEAVER))
+    True
+
+    ```
 - **Rows.** `process.fork-exec`; compile rows. **Boot.** Not needed on ARM64: the structures are pure and
   host-tested, and dispatch is unchanged from E9.1. x86 at the flash.
 
