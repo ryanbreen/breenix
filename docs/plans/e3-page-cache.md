@@ -490,10 +490,10 @@ only then the extents. That lookup runs under the same snapshot as the extent wa
 found in a dirty layer is `Data`. E3-8 removes the layers, because from E3-8 on the statement below
 holds. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
 
-From E3-8, the fill never reads a page that the cache holds dirty or under writeback, because those are never
-absent. So the fill reads the open view's extents and nothing else. The layered "open generation's page, then the
-frozen generation's page, then the Files view" lookup of today's `read` (design 2.5, "Foreground reads")
-becomes a tree lookup. The cache holds the newest bytes for every index it has, and the open view's extents
+From E3-8, the fill never reads a page that the cache holds dirty or under writeback, because those are
+never absent. So the fill reads the open view's extents and nothing else. The layered "open generation's
+page, then the frozen generation's page, then the Files view" lookup of today's `read` (design 2.5,
+"Foreground reads") becomes a tree lookup. The cache holds the newest bytes for every index it has, and the open view's extents
 give the bytes of every other one: <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
 
 > **Cache invariant.** For every page index i of a Native file below its size, exactly one holds: i has an
@@ -552,11 +552,10 @@ For a Native file, `read(fd, buf, n)` at offset `off`:
 2. Walk the pages that the request covers:
    - **Uptodate, Dirty or Writeback:** take a page reference, set `REFERENCED` and copy.
    - **Hole:** copy zeros.
-   - **Absent:** claim it and the rest of the readahead window (8) as
-     `Filling` in one `tree_lock` hold, then fill outside the lock. A page already claimed by someone
-     else is waited on (4.5).
-3. If the fill this read ran, or waited on, failed for a page (its frame has `FILL_FAILED`, 9.2a), return the bytes copied before it, or the
-   errno if there are none (POSIX `read`: a partial count, else -1 with errno). <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+   - **Absent:** claim it and the rest of the readahead window (8) as `Filling` in one `tree_lock` hold,
+     then fill outside the lock. A page already claimed by someone else is waited on (4.5).
+3. If the fill this read ran, or waited on, failed for a page (its frame has `FILL_FAILED`, 9.2a), return
+   the bytes copied before it, or the errno if there are none (POSIX `read`: a partial count, else -1 with errno). <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
 4. Touch atime through the existing non-blocking `touch`.
 
 The copy target is today's bounded kernel staging (`syscall/regular_read.rs:11`, 64 KiB chunks) until
@@ -663,8 +662,9 @@ Each open file description, and each file VMA, carries a small readahead state:
 - **Sequential.** A miss at index i is sequential if i = prev + 1 or i lies in the current window. Then the
   window doubles, up to `max`.
 - **Otherwise** the window resets to the request's own pages, rounded up to 4, and at most `max`.
-- **The first read at offset 0** starts with a window of twice the request, at most `max`. Files read from their start are
-  usually read through (McKusick et al. 2014, ch. 9, read clustering; McVoy and Kleiman 1991).
+- **The first read at offset 0** starts with a window of twice the request, at most `max`. Files read
+  from their start are usually read through (McKusick et al. 2014, ch. 9, read clustering; McVoy and
+  Kleiman 1991).
 - **`max`** is the device's maximum transfer times its queue depth (E4 reports the depth; before E4 it is
   1), capped at 2 MiB. It halves while the pressure flag of any zone is set (E1 5.3). The 2 MiB cap is a
   tuning constant, not a RAM ceiling.
@@ -693,8 +693,8 @@ Each open file description, and each file VMA, carries a small readahead state:
 - The worker's queue is bounded by what it may hold: at most `max` pages per stream, and a share of free
   memory overall. That budget counts everything a queued or running window holds: its claimed frames,
   its job record, the tree nodes reserved for its entries (4.3) and its bounce buffer (6.4). A window
-  that does not fit is not queued. When memory is short it drops queued windows, never demanded ones, and retires their claims (9.2a). Readahead is a
-  hint (Patterson et al. 1995). <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+  that does not fit is not queued. When memory is short it drops queued windows, never demanded ones,
+  and retires their claims (9.2a). Readahead is a hint (Patterson et al. 1995). <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
 
 ### 8.3 Scan resistance
 
@@ -993,8 +993,8 @@ background = dirtyable / 10
   - reservation pressure;
   - the page daemon asks.
 - **Removed.** `DIRTY_BUDGET` and the unreachable `DIRTY_LIMIT` go. The per-mount admission bound becomes
-  `limit`, enforced by charging before dirtying (11.5) instead of by an inline commit. BreenFS's worst-case space
-  reservation (design 2.8) is unchanged, and ENOSPC is still decided there.
+  `limit`, enforced by charging before dirtying (11.5) instead of by an inline commit. BreenFS's
+  worst-case space reservation (design 2.8) is unchanged, and ENOSPC is still decided there.
 - **No inline commit.** A writing thread never runs `commit_generation`. That is audit R11's "writers
   throttled against writeback progress rather than committing themselves". <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
 - **Effect.** On the rig's 2048 MiB guest, `background` is about 160 MiB once the guest has settled. A
@@ -1039,9 +1039,9 @@ before any parks. So the count is charged before pages become dirty:
 - **Generation holds.** A part joins the open generation with a hold, and G's freeze waits until G has no <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
   holds. The freeze first marks G closing, so no new hold joins G (a new part waits for G+1 to open), then
   waits for the holds to drain, holding no `MountLock`, then freezes under it. This is the open and
-  quiescing stages of the ZFS transaction-group pipeline (Bonwick et al. 2003; section 17 lists it). A part's copy
-  may fault and fill (E3-15), and a fill takes `MountLock` briefly (6.1); nothing that waits for holds
-  holds `MountLock`, so the copy cannot deadlock with the freeze. A hold is never kept across a wait for a
+  quiescing stages of the ZFS transaction-group pipeline (Bonwick et al. 2003; section 17 lists it). A
+  part's copy may fault and fill (E3-15), and a fill takes `MountLock` briefly (6.1); nothing that waits
+  for holds holds `MountLock`, so the copy cannot deadlock with the freeze. A hold is never kept across a wait for a
   charge (11.5) or for a page channel.
 - **Exclusion.** From its first part to its last, the writer holds `io` exclusive and BreenFS's splitting
   mark for the inode, so no other write, truncation or read of the file sees a part of it, and an
@@ -1121,8 +1121,8 @@ while holding the LRU lock:
 
 1. **Isolate.** Under the LRU lock, take up to 32 candidates from the tail. The page daemon may wait for
    the LRU lock. Direct reclaim (12.4) takes it with `try_lock` and reports no progress if it is busy,
-   since it runs inside an allocation whose caller may hold locks below it (E1 7.3's rule). For each, set `ISOLATED`, take a
-   page reference and take an owner reference: the cache's address from `FrameMeta.cache`, valid because
+   since it runs inside an allocation whose caller may hold locks below it (E1 7.3's rule). For each
+   candidate, set `ISOLATED`, take a page reference and take an owner reference: the cache's address from `FrameMeta.cache`, valid because
    the page is on a list and a FileCache empties its lists before it is freed. Release the LRU lock.
 2. **Evict.** For each page, take its owner's `tree_lock` with `try_lock`.
    - On success, recheck the state against 12.2's table: still clean, not `Filling` or `Writeback`, no
@@ -1396,8 +1396,8 @@ because it is the first PR whose readers wait on fills (7.3).
 **What waits for E4:** the drain's overlap with the device (11.3). E3 needs no E4 PR, and builds the
 drain so that E4's asynchronous `submit` overlaps it without an E3 change.
 
-**What waits for E1-9:** E3-6 to E3-10, with E3-7 to E3-10 also after E2.5 and E2.6. Retaining file data, and raising the dirty limit, by RAM is
-safe only once per-page metadata is in FrameMeta (E1-3), tree nodes come from slab caches (E1-6), the buddy
+**What waits for E1-9:** E3-6 to E3-10, with E3-7 to E3-10 also after E2.5 and E2.6. Retaining file
+data, and raising the dirty limit, by RAM is safe only once per-page metadata is in FrameMeta (E1-3), tree nodes come from slab caches (E1-6), the buddy
 has zones and watermarks (E1-8), reclaim hooks exist (E1-4), and the fixed heap is gone (E1-9). E1-9 is the
 last of those, so it is the gate.
 
@@ -1519,8 +1519,8 @@ waits for E3-6 (it needs pages retained by the cache to be worth anything), so t
   - A device that returns a short run gives `Error(EIO)` for the pages it did not reach, never 00. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
   - Two fills of different files on one mount share a bounce pool of one buffer, as a fixed interleaving:
     fill A verifies its run and pauses before its copy, then fill B starts. B waits for A's exclusion
-    before E2.5, and for A's token from E2.5, and A's frames hold file A's bytes. Today's staging is per call, so this guards the ownership the PR keeps
-    and is not red on the old tree; the PR says so.
+    before E2.5, and for A's token from E2.5, and A's frames hold file A's bytes. Today's staging is per
+    call, so this guards the ownership the PR keeps and is not red on the old tree; the PR says so.
   - DEV-29(3) 0.1's second interleaving, through the production fill: pause the fill after its device read
     of page 0, run a production BreenFS write of page 0, then complete the fill. A fault on page 0 and a
     `read` both return the write's bytes, and the fill counts one discarded page. This check comes first in
