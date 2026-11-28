@@ -48,8 +48,10 @@ construction, firmware RAM normalization, boot carves and the frame metadata
 (`tests/frame_meta.rs`: its lookup, its sparse placement, and its lease rules
 against the extracted pre-E1-3 ledger). The same crate holds the allocator's front
 (`tests/kmem_front.rs`: contexts, the emergency reserve and the shrinker registry under a fixed
-lock schedule) and the OOM caller inventory scan (`tests/oom_inventory.rs`, which checks
-`docs/plans/e1-oom-inventory.json`). Run them with
+lock schedule), the OOM caller inventory scan (`tests/oom_inventory.rs`, which checks
+`docs/plans/e1-oom-inventory.json`) and the kernel VA windows (`tests/kva_window.rs`: racing
+table installs, flush before free against a TLB that follows SDM vol. 3A §4.10.4.1 on 4 CPUs,
+the pending list, the free-extent trees and the windows' placement on E1-2x's PDPTs). Run them with
 `cargo test --manifest-path tools/kmem-host-tests/Cargo.toml`. The block-cache shrinker's
 test is in `block-host-tests`.
 
