@@ -9,7 +9,7 @@ use acpi::mcfg::Mcfg;
 use acpi::spcr::{Spcr, SpcrInterfaceType};
 use acpi::{AcpiHandler, AcpiTables, PhysicalMapping};
 
-use crate::hw_config::{GicrRange, HardwareConfig, MAX_GICR_RANGES, MAX_RAM_REGIONS};
+use crate::hw_config::{GicrRange, HardwareConfig, MAX_GICR_RANGES};
 
 /// UEFI ACPI handler.
 ///
@@ -252,24 +252,4 @@ fn read_timer_freq() -> u64 {
     }
     log::info!("  Timer frequency: {} Hz ({} MHz)", freq, freq / 1_000_000);
     freq
-}
-
-/// Populate RAM regions from UEFI memory map.
-///
-/// Called after ExitBootServices with the UEFI memory map.
-/// Only includes EfiConventionalMemory regions.
-#[allow(dead_code)] // Used in Phase 2 when kernel entry is implemented
-pub fn populate_ram_regions(
-    config: &mut HardwareConfig,
-    regions: &[(u64, u64)], // (base, size) pairs of conventional memory
-) {
-    let count = regions.len().min(MAX_RAM_REGIONS);
-    for (i, &(base, size)) in regions.iter().take(count).enumerate() {
-        config.ram_regions[i].base = base;
-        config.ram_regions[i].size = size;
-    }
-    config.ram_region_count = count as u32;
-
-    let total_mb: u64 = regions.iter().map(|(_, s)| s).sum::<u64>() / (1024 * 1024);
-    log::info!("  RAM: {} regions, {} MiB total", count, total_mb);
 }

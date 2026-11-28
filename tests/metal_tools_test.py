@@ -2681,7 +2681,8 @@ class StagingTest(unittest.TestCase):
             self.assertEqual(run.build('20261017T000009Z-metal', 'a' * 40), 0)
         pushed = [call.args[2:4] for call in push.call_args_list if call.args[:2] == ('file', 'push')]
         self.assertEqual([target.split('-tools/', 1)[1] for _, target in pushed],
-                         ['metal-build', 'host-slots.py', 'gate-artifacts.py', 'gate-tree.py', 'effort-target-guard.py', 'efi-stub/Cargo.toml',
+                         ['metal-build', 'host-slots.py', 'gate-artifacts.py', 'gate-tree.py', 'effort-target-guard.py',
+                          'userspace_generation.py', 'efi-stub/Cargo.toml',
                           'efi-stub/Cargo.lock', 'efi-stub/rust-toolchain.toml', 'efi-stub/src/bootdisk.rs',
                           'efi-stub/src/com1.rs', 'efi-stub/src/files.rs', 'efi-stub/src/http.rs', 'efi-stub/src/lib.rs',
                           'efi-stub/src/main.rs', 'efi-stub/src/manager/clock.rs', 'efi-stub/src/manager/lab.rs',

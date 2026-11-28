@@ -1,6 +1,6 @@
 # E1: kernel memory foundation (design and PR plan)
 
-Status: design, docs only. No code changes ship with this document.
+Status: E1 design and PR sequence. E1-1 records its implementation decisions below.
 
 Rulings: DEV-37(2) orders this design before any E1 code. DEV-29 adopted the toy-OS audit
 (`~/Downloads/breenix-toy-os-audit-2026-11-27.html`, findings R3 and R14, themes T3, T8 and T9) and decided Q4
@@ -524,7 +524,7 @@ filters it in one place. No fixed array sits between the two.
   - Inside `[0, 4 GiB)`, which the loader's tables already map on both loader platforms
     (`page_tables.rs:387-574`): a 2 MiB block the buffer touches keeps its entry when the loader chose
     `RAM_DATA_BLOCK` or `NORMAL_BLOCK` for it (normal memory, writable at EL1). Any other block (kernel
-    text or rodata, device, or the NC DMA block) is split into an L3 table in TTBR0. The buffer's pages
+    text or rodata, device, the NC DMA block, or an alias to a different physical address) is split into an L3 table in TTBR0. The buffer's pages
     get page descriptors with `RAM_DATA_BLOCK`'s attributes: writable, with PXN and UXN set. The block's
     other pages keep its own attributes, so the kernel image's W^X bits do not change.
   - Above 4 GiB: in a 1 GiB slot the loader has already mapped for its own image or table storage
@@ -536,6 +536,9 @@ filters it in one place. No fixed array sits between the two.
   - TTBR1 gets no entry for the buffer. A 1 GiB block there would cover holes, and E1-2 writes TTBR1
     entries only where the descriptor is invalid (4.4), so it could not later install the finer entries
     it plans. The kernel does not read the buffer at `HHDM_BASE + pa`.
+  - Per DEV-39, an existing writable identity block shared with the loader retains its execute
+    permissions. Where a buffer page can be mapped separately, set PXN and UXN and leave adjacent
+    translations intact.
   - Secondary CPUs load CPU 0's TTBR values (`boot.S:1042-1065`), so the loader's tables stay in use
     until the kernel replaces TTBR0 for the first user address space. The buffer entries are gone then.
     By that point the kernel has finished with the buffer.
@@ -1273,8 +1276,8 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
   - `exit_boot_services` with `BOOT_MAP_MEMORY_TYPE`;
   - `handoff::exit_and_encode`, which runs the exit, the metadata check, the runtime-region loop through
     the stride-aware reader, and `encode_uefi_map`, and writes `ram_region_count = 0`;
-  - the buffer's pages mapped in TTBR0 only, writable with PXN and UXN set, splitting a block whose
-    attributes are not writable normal memory (4.5.4);
+  - the buffer's pages mapped in TTBR0 only, writable with PXN and UXN where the granule permits (DEV-39), splitting a block whose
+    attributes or output address cannot serve the buffer (4.5.4);
   - `handoff_decision` before exit;
   - the filter loop deleted, and `populate_ram_regions` writing a loader-local RAM base instead of
     `HardwareConfig.ram_regions` (4.5.2).
@@ -1416,16 +1419,47 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
     4 GiB, so the largest usable range lies outside the window. `BootMemory` refuses writes to pages its
     tables do not map writable. Each storage page lies inside the window, and the build completes. The
     old code has no growable set, so this tests the new rule. E1-2 repeats it with the clip removed.
-- Boot: not needed.
-  - The standard ARM64 QEMU boot script boots the kernel directly with a device tree (1.5). It does not run
-    the loader or reaches the v7 and v8 paths, and its device tree path is settled by the host tests.
-  - Two effects are left that no host test settles: that real firmware places the pool buffer and
-    describes it with its own type, and that the MMU walks the loader's buffer entries as the host walker
-    does. They show on
-    Parallels and VMware, which the program's one final run covers (DEV-30(2)).
-  - A failure there is a named refusal (rules 5 and 6 of 4.5.5), not missing RAM. Section 14 item 8 asks
-    whether to check them earlier.
+- Boot: DEV-39(3) authorizes one `./run.sh --parallels` boot at the final head to verify that
+  firmware describes its pool allocation with the custom type and that the MMU can write through
+  the loader's TTBR0 mapping, then observe memory initialization and the rest of the boot path.
 - Rows: no row expected to move.
+
+E1-1 implementation decisions (DEV-39):
+
+- A writable identity granule that intersects the UEFI loader image retains its execute permissions,
+  because execution must survive the table switch. The loader gets the image extent from
+  `EFI_LOADED_IMAGE_PROTOCOL` and applies PXN and UXN only to separate buffer pages or blocks.
+- The valid check-first map uses 48-byte descriptors, since the old typed iterator needs an aligned
+  fixture to deterministically expose the loss of ranges 33–40.
+- The 36-byte stride, fractional and oversized lengths are exercised at the loader's production
+  encoder boundary because the UEFI crate applies its own assertions and slice construction before
+  returning the owned map. Version 2 and the 44-byte stride also go through the fake exit path.
+- The host page walker maps the fake firmware allocation at a synthetic IPA because host pointers
+  can exceed the loader's configured 40-bit physical address width. The decoder receives the wire
+  bytes the loader wrote, including the original host pointer.
+- The builder seeds the largest probed interval for growth and stages the release fragments in its
+  range storage, because it may need more storage before the last descriptor has been read. Staged
+  fragments are ineligible for storage and become allocatable only after the reader finishes.
+- The existing ARM64 heap and stack sizes use the shared highest-fit carve, so their reservation
+  remains driven by the usable map and their placement follows the carve's alignment and limit.
+- The early loader reports the descriptor count and lowest RAM base because relocation needs that
+  base alone. No bounded early RAM array is used in production.
+
+E1-1 review evidence (PR #3259):
+
+- The follow-up checks in `62fb595e` were replayed against `079583f2` before the final-head run
+  because the original implementation commit `83345629` was already on the published branch.
+- The x86 test feeds the same 200 disjoint usable spans to the old allocator's extracted `init`
+  and to the current range builder because their entry points accept different types. The old
+  allocator retained 128. The same flattened device tree yielded 32 in-window spans and
+  `truncated=true` in the old `frame_pool_from_fdt`, against 40 expected spans.
+- The same 48-byte descriptors went through the old loader's `exit_and_encode` and the old kernel
+  decoder. They admitted the NVS-overlap page at `0x6000_8000` and the specific-purpose page at
+  `0x6020_0000`. The current check compares the exact surviving intervals.
+- The old TTBR0 builder was replayed with synthetic loader and table-storage IPAs and cache
+  maintenance omitted because host pointers are not guest physical addresses. It left the buffer
+  read-only at `0x4420_4000` and `0x8420_4000`, and unmapped at `0x1_2200_0000` and
+  `0x80_2000_0000`. The current check also walks neighboring mappings and TTBR1.
 
 ### E1-2: ARM64 direct map over the described RAM
 
@@ -1892,7 +1926,7 @@ The caller inventory comes first, in E1-4, so no runtime caller is left without 
 - Check first: each PR's first commit is its tests, failing on the old code as named in section 11. The
   change follows. Where the old code has no pure form to test against, the first commit also extracts it
   unchanged, so the red result is the old behaviour's and not a stub's.
-- Boots: E1-2, E1-3, E1-5, E1-8, E1-9 and E1-10 each need one ARM64 QEMU boot of the standard boot script,
+- Boots: E1-1 uses one Parallels boot (DEV-39). E1-2, E1-3, E1-5, E1-8, E1-9 and E1-10 each need one ARM64 QEMU boot of the standard boot script,
   for the reason given in each PR, and only for the cases named. The other PRs need no boot. No PR runs an
   effort's suites (DEV-30).
 - The ARM64 QEMU boot script does not run `parallels-loader` (1.5). So the loader-to-kernel boundary is
@@ -1969,14 +2003,8 @@ where metadata leaving the heap matters most (section 1.1).
    stride, validation, versions and release order. They cannot settle two firmware effects: that real
    firmware describes the pool buffer with its own type, and that the MMU walks the loader's buffer
    entries as the host walker does.
-   - Until the program's final run (DEV-30(2)), no check reaches those effects on real firmware. If either
-     fails, each Parallels and VMware boot stops at a named refusal. RAM is not lost silently.
-   - The operator also uses Parallels for interactive work, so such a failure would block that work
-     until a fix lands.
-   - Question for the coordinator: allow one `./run.sh --parallels` boot of E1-1's final head, which
-     reads the pool's boot line (source, descriptor count, released bytes), or accept the final run as the
-     only check. Recommendation: the one Parallels boot. No ARM64 QEMU boot can reach the loader, and the
-     cost of that boot is small next to an interactive target that no longer boots.
+   - DEV-39(3) resolves the earlier testing question with one final-head Parallels boot. The VMware
+     firmware and MMU remain covered by the program's final run.
 9. Version skew. `scripts/parallels/build-efi.sh` builds the loader with the kernel from one tree, so a
    fresh image pairs matching versions. Skew comes only from an older disk image, or a loader
    built from another tree.

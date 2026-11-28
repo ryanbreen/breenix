@@ -45,6 +45,7 @@ CHECKOUT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
     die "the checkout has uncommitted changes; the SDK is built from a commit"
 COMMIT="$(git -C "$CHECKOUT" rev-parse HEAD)"
 case "$PREFIX" in /*) ;; *) PREFIX="$PWD/$PREFIX" ;; esac
+python3 "$CHECKOUT/scripts/userspace_generation.py" legacy "$CHECKOUT" "$PREFIX"
 if [ -e "$PREFIX" ] && [ -n "$(ls -A "$PREFIX")" ]; then
     die "$PREFIX is not empty"
 fi
@@ -112,6 +113,7 @@ FORK_COMMIT="$(sed -n 's/^commit = "\([0-9a-f]\{40\}\)"$/\1/p' "$CHECKOUT/rust-f
 [ -n "$FORK_COMMIT" ] || die "rust-fork.toml pins no full commit"
 FORK_REPO="$(sed -n 's/^repo = "\(.*\)"$/\1/p' "$CHECKOUT/rust-fork.toml")"
 FORK_LIBRARY="${BREENIX_RUST_FORK_LIBRARY:-$CHECKOUT/rust-fork/library}"
+python3 "$CHECKOUT/scripts/userspace_generation.py" legacy "$FORK_LIBRARY"
 [ -d "$FORK_LIBRARY" ] || die "no pinned Rust library at $FORK_LIBRARY (set BREENIX_RUST_FORK_LIBRARY or run scripts/rust-fork.sh sync)"
 FORK="$(cd "$FORK_LIBRARY/.." && pwd -P)"
 
@@ -319,6 +321,7 @@ done
 python3 -c "$LOCAL_PATH_SCAN" scan "$SDK_STAGE" "$ROOT_DIR/library-paths" "${LOCAL_PATHS[@]}" ||
     die "the SDK names local paths"
 
+python3 "$CHECKOUT/scripts/userspace_generation.py" legacy "$SDK_STAGE" "$PREFIX"
 if [ -d "$PREFIX" ]; then
     rmdir "$PREFIX"
 fi

@@ -59,6 +59,9 @@ PROFILES = {'watchdog_fault_inject': 'fault-test', '': 'production', 'xhci_fault
 # Deployed, the helpers sit beside this file; in a checkout they are in scripts/.
 TOOLS = Path(__file__).resolve().parent
 TOOLS = TOOLS if (TOOLS / 'host-slots.py').exists() else TOOLS.parent
+sys.path.insert(0, str(TOOLS))
+from userspace_generation import require_legacy
+
 HELPER = TOOLS / 'host-slots.py'
 ARTIFACTS = TOOLS / 'gate-artifacts.py'
 # The testing kernel reads its test binaries from a BXTEST disk (kernel/src/userspace_test.rs).
@@ -89,6 +92,7 @@ def paths(args):
 
 def outer(args):
     clone, out, tmp = paths(args)
+    require_legacy(clone, out, tmp, args.repo, args.rust_fork)
     started = time.time()
     for directory in (clone, out, tmp):
         shutil.rmtree(directory, ignore_errors=True)
@@ -192,6 +196,12 @@ def kernel_assembly_artifacts(messages, clone):
 
 def inner(args):
     clone, out, tmp = paths(args)
+    require_legacy(clone, out, tmp, clone / 'testdata/ext2.img', clone / 'userspace/programs',
+                   *(os.environ.get(name) for name in (
+                       'BREENIX_HOSTED_LIBC', 'BREENIX_KD_BUILD_DIR', 'BREENIX_RUSTC_PORT_BUILDS',
+                       'BREENIX_K5_SYSROOT', 'BREENIX_K6_FIXTURE', 'BREENIX_K7_STAGE',
+                       'BREENIX_LLVM_BUILDS', 'BREENIX_CXX_RUNTIME_BUILDS',
+                   )))
     logs = tmp / 'logs'
     logs.mkdir(parents=True, exist_ok=True)
     local = bool(getattr(args, 'local', False))

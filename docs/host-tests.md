@@ -43,6 +43,10 @@ The root command uses `--release --features testing,external_test_bins
 those same suites. The console crate also has a behavioral input executable:
 `cargo run --manifest-path tools/console-host-tests/Cargo.toml --bin input`.
 
+The boot-memory checks cover the loader-to-kernel UEFI map handoff, page-table
+construction, firmware RAM normalization and boot carves. Run them with
+`cargo test --manifest-path tools/kmem-host-tests/Cargo.toml`.
+
 Run the standalone `tests/*_host.py` programs separately: discovery's
 `*_test.py` pattern does not include them. The SDK Python checks use
 `python3 -m unittest discover -s sdk/tests -p '*_test.py'`. The run inspector's
