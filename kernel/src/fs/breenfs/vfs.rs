@@ -4815,7 +4815,10 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                             // A past transaction deadline cannot make progress
                             // while publication is blocked. Wait for its wake,
                             // with the ordinary interval as a retry bound.
-                            (state.failed, if state.failed || state.publication_blocked() {
+                            // A reader's publication hold also blocks the freeze;
+                            // its release wakes this loop (design 7.2 step 4).
+                            let held = fs.inner.read_holds.load(Ordering::SeqCst) != 0;
+                            (state.failed, if state.failed || state.publication_blocked() || held {
                                 monotonic_ns().saturating_add(COMMIT_INTERVAL_NS)
                             } else { state.policy.deadline() })
                         };
