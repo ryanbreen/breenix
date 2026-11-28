@@ -2020,6 +2020,29 @@ False
 
 ```
 
+**No fill waits for a lock its waiter holds (15).** Reader R holds `io`, which before E2.6 is the
+foreground exclusion, and reaches page p. The readahead worker W claimed p when it queued the window, and its
+fill needs the exclusion to take its snapshot. The model lists who waits for whom.
+
+```pycon
+>>> RULE = 'claim-at-queue'
+>>> def waits():
+...     if RULE == 'claim-at-queue':
+...         return {'R': 'W', 'W': 'R'}
+...     return {'R': 'W'}
+>>> def deadlocked(edges, node='R'):
+...     seen = set()
+...     while node in edges:
+...         if node in seen:
+...             return True
+...         seen.add(node)
+...         node = edges[node]
+...     return False
+>>> deadlocked(waits())
+False
+
+```
+
 ## 20. bbench rows (DEV-31)
 
 | Row | Ratio (28668b28) | Expected to move in | Parity reachable from E3 alone |
