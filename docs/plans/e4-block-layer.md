@@ -390,6 +390,30 @@ needed.
   write. Fix the interleaving, then deliver the earlier completions in reverse
   order. Only eligible work advances and both aliases honor bounds and the
   fence.
+- **Inline-commit check-first.** Drive the production synchronous wrapper
+  through BreenFS's pressure-triggered inline commit and cache batch. Hold a
+  data write after issue, post `SIGKILL` to the committing task, and confirm
+  the batch stays pending. Complete the write successfully and let the
+  durability operations finish. Verify G installs, cache ownership is
+  released, the mount remains writable, and the pending kill is delivered
+  after the commit has released custody.
+
+  The host model steps through the protected block wait before and after
+  the device posts its result.
+
+  ```pycon
+  >>> def wait_for_commit_data(events):
+  ...     for event in events:
+  ...         if event == 'SIGKILL':
+  ...             return 'interrupted'
+  ...         return event
+  ...     return 'pending'
+  >>> wait_for_commit_data(['SIGKILL'])
+  'pending'
+  >>> wait_for_commit_data(['SIGKILL', 'device success'])
+  'device success'
+
+  ```
 - **QEMU rows.** `disk.sequential-read` and `disk.sequential-write` through
   available run overlap, with larger gains gated on E4.7–8. `disk.fsync` tests
   fence overhead and must retain durability.
