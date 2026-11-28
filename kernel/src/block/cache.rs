@@ -258,7 +258,45 @@ impl State {
             size,
         })
     }
+
+    /// Drop clean, unpinned entries from the LRU's cold end until their
+    /// charged bytes reach `target_frames` frames, visiting at most
+    /// `target_frames + SHRINK_BATCH` entries. Returns the whole frames given back.
+    fn shrink(&mut self, target_frames: usize) -> usize {
+        use core::ops::Bound::{Excluded, Unbounded};
+        let goal = target_frames.saturating_mul(FRAME_BYTES);
+        let budget = target_frames.saturating_add(SHRINK_BATCH);
+        let (mut freed, mut visits, mut after) = (0, 0, None);
+        while freed < goal && visits < budget {
+            let next = match after {
+                None => self.lru.iter().next(),
+                Some(used) => self.lru.range((Excluded(used), Unbounded)).next(),
+            };
+            let Some((&used, &key)) = next else {
+                break;
+            };
+            after = Some(used);
+            visits += 1;
+            #[cfg(test)] measurement::shrink_visit();
+            let unpinned = match self.buffers.get(&key) {
+                Some(Entry { status: BufferState::Clean { buffer, .. }, waiters: 0, .. })
+                    if Arc::strong_count(buffer) == 1 => Some(buffer.charge.size),
+                _ => None,
+            };
+            if let Some(size) = unpinned {
+                freed += size;
+                self.remove(key);
+            }
+        }
+        freed / FRAME_BYTES
+    }
 }
+
+/// Entries a shrink may visit beyond its target, so a few pinned entries at
+/// the cold end do not end it before it frees anything.
+pub const SHRINK_BATCH: usize = 8;
+/// The unit a shrinker counts in (E1 plan, 7.3).
+const FRAME_BYTES: usize = 4096;
 
 /// claim-lint:ok: Caller contract for cache identity and access, docs/fs/breenfs-design.md section 1.2.
 /// One cache is shared by its device users; wrappers must preserve identity and
@@ -270,6 +308,9 @@ pub mod measurement {
     std::thread_local! { static DISCARD: core::cell::Cell<u64> = const { core::cell::Cell::new(0) }; }
     pub fn discard_visits() -> u64 { DISCARD.with(|n| n.get()) }
     pub(super) fn discard_visit() { DISCARD.with(|n| n.set(n.get()+1)); }
+    std::thread_local! { static SHRINK: core::cell::Cell<u64> = const { core::cell::Cell::new(0) }; }
+    pub fn shrink_visits() -> u64 { SHRINK.with(|n| n.get()) }
+    pub(super) fn shrink_visit() { SHRINK.with(|n| n.set(n.get()+1)); }
 }
 
 pub struct BufferCache<W: Wait> {
@@ -1087,6 +1128,28 @@ impl<W: Wait> BufferCache<W> {
 
     pub fn counters(&self) -> Counters {
         self.with(|state| state.counters)
+    }
+
+    /// The reclaim hook (E1 plan, 7.3): give back clean, unpinned entries from
+    /// the LRU's cold end, up to `target_frames` frames, visiting at most
+    /// `target_frames + SHRINK_BATCH` entries. A busy state lock returns 0
+    /// at once; a shrink does not wait, sleep or issue I/O.
+    pub fn shrink(&self, target_frames: usize) -> usize {
+        crate::arch_without_interrupts(|| {
+            self.state.try_lock().map_or(0, |mut state| state.shrink(target_frames))
+        })
+    }
+
+    /// Frames of clean bytes the cache could give back, at most: its charged
+    /// bytes, which also count dirty, in-flight and pinned entries.
+    pub fn reclaimable_frames(&self) -> usize {
+        self.resident_bytes() / FRAME_BYTES
+    }
+
+    /// Hold the state lock, as a caller inside the cache holds it.
+    #[cfg(test)]
+    pub fn hold_state(&self) -> impl Sized + '_ {
+        self.state.lock()
     }
 }
 
