@@ -1,5 +1,5 @@
 //! E3-1: OOM victim order (plan section 13) and the dirty charge (11.5).
-use pagecache_host_tests::dirty_limit::{DirtyCount, Throttle};
+use pagecache_host_tests::dirty_limit::{DirtyCount, MountCharge, Throttle};
 use pagecache_host_tests::oom_score::{select, Candidate, Chosen, Selection};
 
 fn space(pid: u32, private_frames: u64, table_frames: u64) -> Candidate {
@@ -42,38 +42,42 @@ fn victims_are_chosen_by_size_with_exclusions_and_ties() {
 
 #[test]
 fn a_charge_never_passes_the_limit_except_a_mount_with_nothing_charged() {
-    // limit 100 with 30 frozen frames charged; four writers of 40 pages.
+    // limit 100 with 30 frozen frames charged on the writers' mount; four
+    // writers of 40 pages.
     let count = DirtyCount::new();
-    count.charge_unchecked(30);
-    assert_eq!(count.try_charge(40, 100, 30), Ok(()));
+    let mount = MountCharge::new();
+    count.charge_unchecked(&mount, 30);
+    assert_eq!(count.try_charge(&mount, 40, 100), Ok(()));
     for _ in 0..3 {
-        assert_eq!(count.try_charge(40, 100, 70), Err(Throttle { charged: 70, limit: 100 }));
+        assert_eq!(count.try_charge(&mount, 40, 100), Err(Throttle { charged: 70, limit: 100 }));
     }
-    assert_eq!(count.charged(), 70);
+    assert_eq!((count.charged(), mount.charged()), (70, 70));
     // Writeback cleans 40: one waiting writer now fits, and the next does not.
-    assert_eq!(count.release(40), 30);
-    assert_eq!(count.try_charge(40, 100, 30), Ok(()));
-    assert_eq!(count.try_charge(40, 100, 70), Err(Throttle { charged: 70, limit: 100 }));
+    assert_eq!(count.release(&mount, 40), 30);
+    assert_eq!(count.try_charge(&mount, 40, 100), Ok(()));
+    assert_eq!(count.try_charge(&mount, 40, 100), Err(Throttle { charged: 70, limit: 100 }));
 
     // A part on a mount that holds no charge is admitted alone past the limit.
-    assert_eq!(count.try_charge(40, 100, 0), Ok(()));
-    assert_eq!(count.charged(), 110);
+    let empty = MountCharge::new();
+    assert_eq!(count.try_charge(&empty, 40, 100), Ok(()));
+    assert_eq!((count.charged(), empty.charged()), (110, 40));
     // After that, a mount that holds dirty pages waits.
-    assert!(count.try_charge(1, 100, 40).is_err());
+    assert!(count.try_charge(&empty, 1, 100).is_err());
+    assert_eq!(empty.charged(), 40);
 }
 
 #[test]
 fn two_writers_on_one_empty_mount_take_the_lone_part_exception_once() {
     // limit 120, with 100 charged by another mount; this mount holds nothing.
     let count = DirtyCount::new();
-    count.charge_unchecked(100);
+    count.charge_unchecked(&MountCharge::new(), 100);
     // Two writers to different files on the mount overlap (their io locks
-    // are per file), and each finds the mount holding nothing before either
-    // has charged.
-    let mount_seen_by_both = 0;
-    assert_eq!(count.try_charge(40, 120, mount_seen_by_both), Ok(()));
+    // are per file). The charge reads and claims the mount's count itself,
+    // so the second writer meets the first's claim.
+    let mount = MountCharge::new();
+    assert_eq!(count.try_charge(&mount, 40, 120), Ok(()));
     assert_eq!(
-        count.try_charge(40, 120, mount_seen_by_both),
+        count.try_charge(&mount, 40, 120),
         Err(Throttle { charged: 140, limit: 120 })
     );
     assert_eq!(count.charged(), 140);

@@ -12,7 +12,9 @@
 //! global count would pass `limit`, so N concurrent writers cannot pass it by
 //! N writes. The one charge allowed past `limit` is a part admitted alone
 //! while its mount holds no other charge, which keeps BreenFS's progress
-//! rule; a part is at most `limit / 2`.
+//! rule; a part is at most `limit / 2`. Each mount's charge is a count of its
+//! own ([`MountCharge`]) that the charge updates, and the lone part claims it
+//! at zero, so two writers overlapping on one mount cannot both take it.
 //!
 //! Units are frames. The module has no kernel dependency.
 
@@ -62,6 +64,30 @@ pub struct Throttle {
     pub limit: u64,
 }
 
+/// What one mount holds of the global dirty count. Its charges and releases
+/// go through [`DirtyCount`] with it, which keeps the two counts together.
+pub struct MountCharge {
+    charged: AtomicU64,
+}
+
+impl MountCharge {
+    pub const fn new() -> MountCharge {
+        MountCharge {
+            charged: AtomicU64::new(0),
+        }
+    }
+
+    pub fn charged(&self) -> u64 {
+        self.charged.load(Ordering::Acquire)
+    }
+}
+
+impl Default for MountCharge {
+    fn default() -> Self {
+        MountCharge::new()
+    }
+}
+
 /// The global count of frames dirty data holds: `DIRTY` and `MAPPED_DIRTY`
 /// pages, `WRITEBACK` frames a batch still holds, and mapped bounce copies.
 pub struct DirtyCount {
@@ -79,18 +105,19 @@ impl DirtyCount {
         self.charged.load(Ordering::Acquire)
     }
 
-    /// Charge `pages` before they become dirty. `mount_charged` is what the
-    /// writer's mount already holds; a mount that holds no charge may admit
-    /// one part past `limit`.
-    pub fn try_charge(&self, pages: u64, limit: u64, mount_charged: u64) -> Result<(), Throttle> {
+    /// Charge `pages` of `mount` before they become dirty. A part that would
+    /// pass `limit` is admitted only as the lone part of a mount that holds
+    /// no charge: it claims the mount's count at zero, so of writers that
+    /// overlap on one mount at most one is admitted past `limit`.
+    pub fn try_charge(&self, mount: &MountCharge, pages: u64, limit: u64) -> Result<(), Throttle> {
+        // The mount's count first, so a lone part's claim below sees every
+        // charge of the mount that is in progress.
+        mount.charged.fetch_add(pages, Ordering::AcqRel);
         let mut current = self.charged.load(Ordering::Acquire);
         loop {
             let next = current.saturating_add(pages);
-            if next > limit && mount_charged != 0 {
-                return Err(Throttle {
-                    charged: current,
-                    limit,
-                });
+            if next > limit {
+                break;
             }
             match self
                 .charged
@@ -100,17 +127,36 @@ impl DirtyCount {
                 Err(seen) => current = seen,
             }
         }
+        // Over the limit: withdraw from the mount, then claim the lone part's
+        // exception, which needs the mount's count to be zero.
+        mount.charged.fetch_sub(pages, Ordering::AcqRel);
+        if mount
+            .charged
+            .compare_exchange(0, pages, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            self.charged.fetch_add(pages, Ordering::AcqRel);
+            return Ok(());
+        }
+        Err(Throttle {
+            charged: current,
+            limit,
+        })
     }
 
     /// Charge a store fault's page without the check (before E2.9 a store
     /// fault cannot park; mapped admission and the background freeze catch up).
-    pub fn charge_unchecked(&self, pages: u64) {
+    pub fn charge_unchecked(&self, mount: &MountCharge, pages: u64) {
+        mount.charged.fetch_add(pages, Ordering::AcqRel);
         self.charged.fetch_add(pages, Ordering::AcqRel);
     }
 
-    /// Release `pages` whose frames became clean, were truncated, or were
-    /// freed by their batch. Returns the count after the release.
-    pub fn release(&self, pages: u64) -> u64 {
+    /// Release `pages` of `mount` whose frames became clean, were truncated,
+    /// or were freed by their batch. Returns the global count after the
+    /// release.
+    pub fn release(&self, mount: &MountCharge, pages: u64) -> u64 {
+        let held = mount.charged.fetch_sub(pages, Ordering::AcqRel);
+        debug_assert!(held >= pages, "mount dirty count released below zero");
         let previous = self.charged.fetch_sub(pages, Ordering::AcqRel);
         debug_assert!(previous >= pages, "dirty count released below zero");
         previous - pages
