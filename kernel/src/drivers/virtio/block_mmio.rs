@@ -72,27 +72,29 @@ impl BlockMmioRequestGate {
         }
     }
 
+    /// Admit the sectors `[start, end)` now if they are free, behind any
+    /// flush that holds its turn.
     fn try_admit(&self, start: u64, end: u64, write: bool) -> Option<usize> {
-        self.attempt(start, end, write, None, true)
+        self.with_table(|table| table.try_admit(start, end, write))
     }
 
     /// One admission attempt. A flush (`flush` is its turn) that has to wait
     /// holds its turn; a caller that cannot sleep tries once, ahead of
     /// waiting flushes, because it cannot wait its turn.
     fn attempt(&self, start: u64, end: u64, write: bool, flush: Option<&mut bool>, can_sleep: bool) -> Option<usize> {
+        match flush {
+            _ if !can_sleep => self.with_table(|table| table.try_admit_ahead(start, end, write)),
+            Some(queued) => self.with_table(|table| table.try_admit_flush(queued)),
+            None => self.try_admit(start, end, write),
+        }
+    }
+
+    fn with_table(&self, f: impl FnOnce(&mut RangeTable<MAX_ADMITTED>) -> Admission) -> Option<usize> {
         // No interrupt path takes the table; masking keeps a holder from being
         // preempted by a thread that would then spin on it.
-        crate::arch_without_interrupts(|| {
-            let mut table = self.ranges.lock();
-            let admission = match flush {
-                _ if !can_sleep => table.try_admit_ahead(start, end, write),
-                Some(queued) => table.try_admit_flush(queued),
-                None => table.try_admit(start, end, write),
-            };
-            match admission {
-                Admission::Admitted(entry) => Some(entry),
-                Admission::Wait => None,
-            }
+        crate::arch_without_interrupts(|| match f(&mut self.ranges.lock()) {
+            Admission::Admitted(entry) => Some(entry),
+            Admission::Wait => None,
         })
     }
 
