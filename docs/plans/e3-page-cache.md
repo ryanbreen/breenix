@@ -364,7 +364,7 @@ Hole    --write() or a store into a shared writable mapping (allocate, zero, DIR
 Uptodate --write() or a shared store (DIRTY, dirty_gen = open G; tag DIRTY)--> Dirty
 Dirty   --freeze of G = dirty_gen (WRITEBACK; tag WRITEBACK; the frame is G's stable copy)--> Writeback
 Writeback --G durable (clear WRITEBACK; clear DIRTY unless redirtied in G+1)--> Uptodate or Dirty
-Writeback --write() while WRITEBACK (copy into a new frame, replace the entry; the old frame stays G's)--> Dirty (new frame)
+Writeback --write(), or a shrink's tail zeroing (7.5), while WRITEBACK (copy into a new frame, replace the entry; the old frame stays G's)--> Dirty (new frame)
 any frame-backed state except Filling and Writeback --reclaim, clean and unmapped (12)--> Absent
 any state --truncation past it (7.5)--> Absent (a Writeback frame stays referenced by G's batch until written)
 EOF grows from s to s' --(bound pages in [s, s'), before E2.9)--> Hole
@@ -554,7 +554,10 @@ Once faults may sleep (E2.9), `read` copies from referenced cache frames straigh
 - **Shrink.** With `io` exclusive, revoke the PTEs past the new EOF through the reverse map (the existing
   `revoke`, now driven by the interval tree), then remove the tree entries. A `Writeback` frame stays
   referenced by its generation's batch and is freed when that batch finishes. Zero the tail of the new last
-  page in place (`zero_from`). BreenFS trims its extents as today. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+  page (`zero_from`). If that page is `Writeback`, its frame is G's stable copy and may already have fed
+  G's CRC, so the tail is zeroed in a copy instead: 11.2's COW-on-writeback step, with its frame and tree
+  node reserved before the shrink changes anything (2.3). G's batch keeps the old frame unchanged. BreenFS
+  trims its extents as today. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
 - **Grow.** No entries. The pages between the old and new EOF have no extent, so a fill reports them as
   holes. Before E2.9, bound pages in that range get explicit `Hole` entries (5.3).
 - **Hole entries** are dropped by reclaim as freely as clean pages (12). A hole costs nothing to recompute. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
@@ -1357,6 +1360,11 @@ waits for E3-6 (it needs pages retained by the cache to be worth anything), so t
     writes, the crash images recover G-1 or G, and G's copy of the page is G's bytes. The cache holds
     G+1's bytes. The old code holds this through immutable `Arc` pages, so the check is red only on a seam
     variant that writes in place, which the PR states. The harness keeps it from regressing. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+  - A shrink during G's drain whose new last page is in G's batch: pause the recording device after G's
+    CRC for that page, `ftruncate` to the middle of the page, then complete G. G's block and CRC match a
+    cold read of the image, and the cache's page reads the kept bytes, then 00s. The old code zeroes no
+    frozen frame (its frozen pages are immutable `Arc`s), so this guards the rule the PR adds and the PR
+    says so.
   - A shared mapped page stored after a freeze faults once, is redirtied in G+1, and G's image has the
     bytes from before the store.
   - A page that is never stored again after a freeze is not written in G+1 (red on the old code, which
@@ -1566,7 +1574,7 @@ b'AAAA'
 its frame, and G's CRC is computed from it. A shrink then zeroes the page's tail.
 
 ```pycon
->>> RULE = 'zero-in-place'
+>>> RULE = 'copy-under-writeback'
 >>> frozen = bytearray(b'GGGGGGGG')
 >>> crc_input = bytes(frozen)
 >>> def shrink_tail(entry, keep):
