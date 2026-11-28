@@ -626,8 +626,8 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
     /// Freeze generation N (E24 coordinator 597/601(1)) and return N+1's
     /// scratch Files view over frozen N and `store`, the published N-1 store.
     /// Constant work: the transaction's private maps move into one shared
-    /// immutable layer, and the open/orphan/ROOT indexes are shared
-    /// copy-on-write. This view keeps preparing N; the fork only describes N+1
+    /// immutable layer, the open and ROOT indexes are shared copy-on-write,
+    /// and the fork's orphan sets start empty. This view keeps preparing N; the fork only describes N+1
     /// for foreground callers until N+1's changes are replayed onto N's
     /// published view. Its data map starts empty: N's private data is written
     /// only by preparation.
@@ -648,9 +648,13 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             space_root: self.space_root,
             data: BTreeMap::new(),
             open_inodes: self.open_inodes.clone(),
-            orphans: self.orphans.clone(),
-            orphan_work: self.orphan_work.clone(),
-            unvalidated_orphans: self.unvalidated_orphans.clone(),
+            // The orphan sets only decide which orphans preparation
+            // reclaims. The scratch view never prepares, and N+1's unlinks,
+            // opens and closes reach these sets in N's view by replay. Shared
+            // here, N's reclaim would copy each set it edits.
+            orphans: Inodes::default(),
+            orphan_work: Inodes::default(),
+            unvalidated_orphans: Inodes::default(),
             orphan_count: 0,
             // Built on first read of the scratch tree, as cookies are.
             extent_maps: RefCell::default(),
