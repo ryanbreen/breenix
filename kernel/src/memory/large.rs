@@ -285,8 +285,9 @@ unsafe fn span_free(ptr: NonNull<u8>, layout: Layout) {
 
 /// `ptr`, allocated or last resized for `layout`, as a block of `new_size`
 /// bytes (6.6): in place where its layer allows, moving a vmap block's pages
-/// without copying them, and otherwise a new block in the new layout's layer
-/// with the bytes both sizes hold copied. The block keeps its layer while it
+/// without copying them, and otherwise a new span or vmap block
+/// (`kmem::moved_layer`) with the bytes both sizes hold copied, so each
+/// result is one `deallocate` frees. The block keeps its layer while it
 /// stays in place, and a later free with the new size finds its record.
 ///
 /// # Safety
@@ -315,8 +316,8 @@ pub unsafe fn reallocate(ptr: NonNull<u8>, layout: Layout, new_size: usize, ctx:
     }
     let new_layout = unsafe { Layout::from_size_align_unchecked(new_size, layout.align()) };
     let new_ptr = match kmem::moved_layer(new_layout, vmap_bytes())? {
-        Layer::Slab => kmem::try_alloc(new_layout, ctx)?,
-        Layer::Span => span_allocate(new_layout, ctx)?,
+        // `moved_layer` gives no slab block, and a span serves row 1 too.
+        Layer::Slab | Layer::Span => span_allocate(new_layout, ctx)?,
         Layer::Vmap => vmap_allocate(new_layout, ctx)?,
     };
     // SAFETY: both blocks are live and distinct, each at least the length copied.

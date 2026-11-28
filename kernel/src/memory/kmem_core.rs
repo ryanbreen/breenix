@@ -474,9 +474,14 @@ pub fn route(layout: Layout, vmap_bytes: u64) -> Result<Layer, AllocError> {
 }
 
 /// The layer a span or vmap block that cannot resize in place moves to, as
-/// a block of `layout` (6.6): `large::reallocate`'s fallback.
+/// a block of `layout` (6.6): `large::reallocate`'s fallback. A layout of
+/// row 1 moves to a span, which serves it, rather than to the slab layer,
+/// so the result stays one `large::deallocate` frees by its window.
 pub fn moved_layer(layout: Layout, vmap_bytes: u64) -> Result<Layer, AllocError> {
-    route(layout, vmap_bytes)
+    match route(layout, vmap_bytes)? {
+        Layer::Slab => Ok(Layer::Span),
+        layer => Ok(layer),
+    }
 }
 
 /// The slab caches and per-CPU magazines in front of the heap (6.1 row 1,

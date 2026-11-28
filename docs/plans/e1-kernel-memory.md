@@ -1989,6 +1989,9 @@ E1-7 implementation decisions (DEV-39(2)):
   drain takes the arena's and the span window's locks with `try_lock`, because a frame request made under
   the window's lock reaches the slow path. On x86 the span's frames wait on the window's pending list for
   E1-5's `kva-pending` shrinker.
+- A span or vmap block that cannot resize in place moves to a span for a size and alignment of 6.1 row 1, not
+  to the slab layer (`kmem_core::moved_layer`), because `large::deallocate` frees by the span and vmap windows
+  and would panic on a slab pointer until E1-9 routes `GlobalAlloc`'s free by address (PR #3307 review).
 - A vmap shrink records the new size and keeps its pages for a later growth or the free, because unmapping the
   tail would map the old guard page inside the allocation and need a flush path of its own.
 - A vmap block's record (VA, mapped bytes, size, alignment) is a slab object named by the second `FrameMeta`
