@@ -6,10 +6,9 @@
 //! On a panic or fatal EL1 fault `show_panic`/`show_fault` draw a red diagnostics
 //! screen with the failure, the boot stage and the last log lines. Before GPU-core
 //! handoff, a held framebuffer lock skips drawing and a delayed legacy flush leaves
-//! the screen dirty for its presenter (`spawn_presenter` on VirGL). After handoff,
-//! ruling 40 (#1749) uses the core's prepared terminal screen and reserved
-//! descriptors, outside those locks. Device waits are bounded and serial remains
-//! the panic record.
+//! the screen dirty for the render thread. After handoff, ruling 40 (#1749) uses
+//! the core's prepared terminal screen and reserved descriptors outside those
+//! locks. Device waits are bounded and serial remains the panic record.
 //!
 //! Once userspace takes the display (`stop_drawing`) the console stops drawing;
 //! when userspace actually draws (`hand_over`) the kernel's screen is cleared to
@@ -24,7 +23,6 @@ use super::primitives::{draw_char, fill_rect, Canvas, Color, Rect, TextStyle};
 use crate::console::splash::Text;
 use core::fmt::Write;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
-use spin::Mutex;
 
 /// The console has drawn on the screen (the splash, then its text), and its
 /// pixels are still on screen.
@@ -137,46 +135,6 @@ pub fn hand_over(fb: &mut arm64_fb::ShellFrameBuffer) -> bool {
     }
     LAYOUT_SETTLED.store(true, Ordering::Release);
     true
-}
-
-/// Start the thread that presents the kernel's screen when a synchronous present
-/// could not, for displays with no render thread (VirGL: the render thread's
-/// cursor and dirty-rect flushes would overwrite the frames bwm composites).
-///
-/// A diagnostics screen whose flush found the GPU lock busy is left marked
-/// dirty; this thread presents it once the GPU is free. It presents only while
-/// the kernel's screen is up (until userspace takes the display, or the
-/// diagnostics screen) and otherwise just idles.
-pub fn spawn_presenter() -> Result<u64, &'static str> {
-    let handle = crate::task::kthread::kthread_run(presenter_main, "kscreen")
-        .map_err(|_| "failed to spawn the screen presenter kthread")?;
-    let tid = handle.tid();
-    *PRESENTER.lock() = Some(handle);
-    Ok(tid)
-}
-
-static PRESENTER: Mutex<Option<crate::task::kthread::KthreadHandle>> = Mutex::new(None);
-
-/// Runs with interrupts enabled: no logging (see render_task).
-fn presenter_main() {
-    use crate::arch_impl::aarch64::timer;
-    let mut retry_at = 0u64;
-    while !crate::task::kthread::kthread_should_stop() {
-        let kernel_screen_up =
-            diagnostics_up() || !HANDED_OVER.load(Ordering::Acquire);
-        if kernel_screen_up && timer::rdtsc() >= retry_at {
-            if let Some((x, y, w, h)) = arm64_fb::take_dirty_rect() {
-                // Non-blocking: the GPU lock may be held for good by a CPU that
-                // failed inside a GPU command. Back off a second after a miss.
-                if !arm64_fb::try_flush_rect_nonblocking(x, y, w, h) {
-                    arm64_fb::mark_dirty(x, y, w, h);
-                    retry_at = timer::rdtsc() + timer::frequency_hz();
-                }
-            }
-        }
-        crate::task::scheduler::yield_current();
-        crate::arch_halt();
-    }
 }
 
 fn draw_str(canvas: &mut impl Canvas, x: i32, y: i32, s: &str, style: &TextStyle) -> i32 {
@@ -560,10 +518,9 @@ fn show_diagnostics(title: &str, headline: &str, details: &[(&str, &str)], recen
     present_diagnostics(width as u32, height as u32);
 }
 
-/// Put the diagnostics screen on the display. The render thread (or on VirGL the
-/// presenter thread) may be presenting on another CPU and hold the GPU lock, so
-/// retry for about 100 ms; if the flush still cannot be issued, leave the screen
-/// marked dirty for that thread to present once the GPU is free.
+/// Put the diagnostics screen on the display. The render thread may hold the
+/// GPU lock on another CPU, so retry for about 100 ms. If the flush still cannot
+/// be issued, leave the screen dirty for the render thread to present later.
 fn present_diagnostics(width: u32, height: u32) {
     use crate::arch_impl::aarch64::timer;
     let _ = arm64_fb::take_dirty_rect();
