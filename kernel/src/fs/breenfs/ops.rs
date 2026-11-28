@@ -242,13 +242,62 @@ impl ExtentMap {
     }
 }
 
-/// The destination of one clean read: `buf` holds file bytes from `base`.
+/// Where a clean read puts a file's bytes: one buffer (`read_verified`), or
+/// the frames of a fill batch (E3-4, docs/plans/e3-page-cache.md 6.2). The
+/// positions are byte offsets from the read's start. A read tells the
+/// target each byte once, in increasing order.
+pub(super) trait ReadTarget {
+    /// The bytes the read covers, to EOF at most.
+    fn len(&self) -> usize;
+    /// `[at, at + len)` as one slice, when the target holds it contiguously,
+    /// for a run read in place. The read reports it with `wrote` or `failed`.
+    fn contiguous(&mut self, at: usize, len: usize) -> Option<&mut [u8]>;
+    /// `[at, at + len)` was read in place and checked.
+    fn wrote(&mut self, at: usize, len: usize);
+    /// `bytes` are the checked file bytes at `at`.
+    fn copy_in(&mut self, at: usize, bytes: &[u8]);
+    /// No extent covers `[at, at + len)`: those bytes read as 00.
+    fn hole(&mut self, at: usize, len: usize);
+    /// The device read or the CRC check of the run covering `[at, at + len)`
+    /// failed. `Ok` goes on with the next run; an error ends the read.
+    fn failed(&mut self, at: usize, len: usize, error: ReadError) -> Result<(), ReadError>;
+}
+
+/// A clean read into `buf`, which tells `holes` each range of file offsets
+/// it fills with 00 bytes; a failed run fails the read.
+struct Bytes<'a> {
+    buf: &'a mut [u8],
+    base: u64,
+    holes: &'a mut dyn FnMut(u64, u64),
+}
+impl ReadTarget for Bytes<'_> {
+    fn len(&self) -> usize {
+        self.buf.len()
+    }
+    fn contiguous(&mut self, at: usize, len: usize) -> Option<&mut [u8]> {
+        Some(&mut self.buf[at..at + len])
+    }
+    fn wrote(&mut self, _: usize, _: usize) {}
+    fn copy_in(&mut self, at: usize, bytes: &[u8]) {
+        self.buf[at..at + bytes.len()].copy_from_slice(bytes);
+    }
+    fn hole(&mut self, at: usize, len: usize) {
+        self.buf[at..at + len].fill(0);
+        (self.holes)(self.base + at as u64, self.base + (at + len) as u64);
+    }
+    fn failed(&mut self, _: usize, _: usize, error: ReadError) -> Result<(), ReadError> {
+        Err(error)
+    }
+}
+
+/// One clean read: `target` takes file bytes from `base`, `len` of them.
 /// Bytes before `done` are final; a pending run of `blocks` device blocks
 /// from `phys` covers file bytes `[lo, hi)` of blocks starting at `first`.
 struct Runs<'r> {
     device: &'r dyn BlockDevice,
     base: u64,
-    buf: &'r mut [u8],
+    target: &'r mut dyn ReadTarget,
+    len: usize,
     done: usize,
     first: u64,
     lo: u64,
@@ -256,39 +305,58 @@ struct Runs<'r> {
     phys: u64,
     blocks: usize,
     crcs: [u32; RUN_BLOCKS],
-    // Whole blocks for a run that starts or ends inside a block.
-    staging: Vec<u8>,
-    // Told each range of file offsets filled with 00 bytes as a hole.
-    holes: &'r mut dyn FnMut(u64, u64),
+    // Whole blocks for a run the target cannot take in place.
+    staging: &'r mut Vec<u8>,
+}
+/// Read `bytes.len()` bytes of whole blocks from block `phys` in one device
+/// request, and check each block against its REF checksum in `crcs`.
+fn read_checked(device: &dyn BlockDevice, phys: u64, bytes: &mut [u8], crcs: &[u32]) -> Result<(), ReadError> {
+    commit::read_into(device, phys, bytes).map_err(|error| match error {
+        commit::Error::BlockRead(error) => ReadError::Device(error),
+        _ => ReadError::Data,
+    })?;
+    let corrupt = bytes
+        .chunks_exact(BLOCK_SIZE)
+        .zip(crcs)
+        .position(|(block, expected)| crc32c::checksum(block) != *expected);
+    #[cfg(feature = "breenfs_corrupt_inject")]
+    if let Some(n) = corrupt {
+        crate::serial_println!(
+            "\n[breenfs] corrupt-read block={} result=ReadError::Data", phys + n as u64);
+    }
+    match corrupt {
+        Some(_) => Err(ReadError::Data),
+        None => Ok(()),
+    }
 }
 impl<'r> Runs<'r> {
     fn new(
         device: &'r dyn BlockDevice,
         base: u64,
-        buf: &'r mut [u8],
-        holes: &'r mut dyn FnMut(u64, u64),
+        target: &'r mut dyn ReadTarget,
+        len: usize,
+        staging: &'r mut Vec<u8>,
     ) -> Self {
         Self {
-            device, base, buf, done: 0, first: 0, lo: 0, hi: 0, phys: 0, blocks: 0,
-            crcs: [0; RUN_BLOCKS], staging: Vec::new(), holes,
+            device, base, target, len, done: 0, first: 0, lo: 0, hi: 0, phys: 0, blocks: 0,
+            crcs: [0; RUN_BLOCKS], staging,
         }
     }
-    /// Fill `buf[done..at]` with 00 bytes and report it as a hole.
+    /// Tell the target that `[done, at)` is a hole.
     fn zero_hole(&mut self, at: usize) {
         if at > self.done {
-            self.buf[self.done..at].fill(0);
-            (self.holes)(self.base + self.done as u64, self.base + at as u64);
+            self.target.hole(self.done, at - self.done);
         }
     }
     fn end(&self) -> u64 {
-        self.base + self.buf.len() as u64
+        self.base + self.len as u64
     }
     /// The part of `m` this read wants, as file offsets.
     fn wanted(&self, m: &Mapped) -> Option<(u64, u64)> {
         let (lo, hi) = (self.base.max(m.offset), self.end().min(m.end));
         (lo < hi).then_some((lo, hi))
     }
-    /// Fill the hole with 00 bytes up to file offset `to`, which must not precede `done`.
+    /// The hole up to file offset `to`, which must not precede `done`.
     fn zero_to(&mut self, to: u64) -> Result<usize, ReadError> {
         let at = (to - self.base) as usize;
         if at < self.done {
@@ -339,11 +407,13 @@ impl<'r> Runs<'r> {
         let source = usize::try_from(from).ok()
             .and_then(|from| bytes.get(from..from.checked_add(length)?))
             .ok_or(ReadError::Data)?;
-        self.buf[at..at + length].copy_from_slice(source);
+        self.target.copy_in(at, source);
         self.done = at + length;
         Ok(())
     }
-    /// Issue the pending run as one device request and check its blocks.
+    /// Issue the pending run as one device request and check its blocks: in
+    /// place when the target holds the run contiguously, else through
+    /// `staging`. A failed run goes to the target, which may go on.
     fn flush(&mut self) -> Result<(), ReadError> {
         if self.blocks == 0 {
             return Ok(());
@@ -353,40 +423,38 @@ impl<'r> Runs<'r> {
         let at = self.zero_to(self.lo)?;
         let skip = (self.lo - self.first) as usize;
         let take = (self.hi - self.lo) as usize;
-        let direct = skip == 0 && take == length;
-        if !direct && self.staging.len() < length {
-            self.staging
-                .try_reserve_exact(length - self.staging.len())
-                .map_err(|_| ReadError::Device(crate::block::BlockError::OutOfMemory))?;
-            self.staging.resize(length, 0);
+        let crcs = &self.crcs[..blocks];
+        let mut direct = None;
+        if skip == 0 && take == length {
+            if let Some(bytes) = self.target.contiguous(at, length) {
+                direct = Some(read_checked(self.device, self.phys, bytes, crcs));
+            }
         }
-        let bytes = if direct { &mut self.buf[at..at + length] } else { &mut self.staging[..length] };
-        commit::read_into(self.device, self.phys, bytes).map_err(|error| match error {
-            commit::Error::BlockRead(error) => ReadError::Device(error),
-            _ => ReadError::Data,
-        })?;
-        let corrupt = bytes
-            .chunks_exact(BLOCK_SIZE)
-            .zip(&self.crcs[..blocks])
-            .position(|(block, expected)| crc32c::checksum(block) != *expected);
-        #[cfg(feature = "breenfs_corrupt_inject")]
-        if let Some(n) = corrupt {
-            crate::serial_println!(
-                "\n[breenfs] corrupt-read block={} result=ReadError::Data", self.phys + n as u64);
-        }
-        if corrupt.is_some() {
-            return Err(ReadError::Data);
-        }
-        if !direct {
-            self.buf[at..at + take].copy_from_slice(&self.staging[skip..skip + take]);
+        let staged = direct.is_none();
+        let result = match direct {
+            Some(result) => result,
+            None => {
+                if self.staging.len() < length {
+                    self.staging
+                        .try_reserve_exact(length - self.staging.len())
+                        .map_err(|_| ReadError::Device(crate::block::BlockError::OutOfMemory))?;
+                    self.staging.resize(length, 0);
+                }
+                read_checked(self.device, self.phys, &mut self.staging[..length], crcs)
+            }
+        };
+        match result {
+            Ok(()) if staged => self.target.copy_in(at, &self.staging[skip..skip + take]),
+            Ok(()) => self.target.wrote(at, take),
+            Err(error) => self.target.failed(at, take, error)?,
         }
         self.done = at + take;
         Ok(())
     }
-    /// Issue the last run and fill the hole after it with 00 bytes.
+    /// Issue the last run, and tell the target the hole after it.
     fn finish(mut self) -> Result<(), ReadError> {
         self.flush()?;
-        self.zero_hole(self.buf.len());
+        self.zero_hole(self.len);
         Ok(())
     }
 }
@@ -1712,9 +1780,24 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         buf: &mut [u8],
         holes: &mut dyn FnMut(u64, u64),
     ) -> Result<usize, ReadError> {
+        self.read_target(device, ino, offset, &mut Bytes { buf, base: offset, holes }, &mut Vec::new())
+    }
+    /// Read file bytes at `offset` into `target`, at most to EOF, returning
+    /// how many: one device request per run of blocks adjacent in the file
+    /// and on the device, read in place when `target` holds the run
+    /// contiguously and otherwise into `staging`, each block checked against
+    /// its REF CRC. Holes and failed runs go to `target` (E3-4's fill).
+    pub(super) fn read_target(
+        &self,
+        device: &dyn BlockDevice,
+        ino: u64,
+        offset: u64,
+        target: &mut dyn ReadTarget,
+        staging: &mut Vec<u8>,
+    ) -> Result<usize, ReadError> {
         let inode = self.regular(ino)?;
-        let n = inode.size.saturating_sub(offset).min(buf.len() as u64) as usize;
-        let mut runs = Runs::new(device, offset, &mut buf[..n], holes);
+        let n = inode.size.saturating_sub(offset).min(target.len() as u64) as usize;
+        let mut runs = Runs::new(device, offset, target, n, staging);
         if n != 0 {
             // A read holds its view's maps for its duration; a nested borrow
             // would read through the seek instead.

@@ -27,6 +27,7 @@ use crate::{
         BlockDevice, BlockError,
     },
     fs::{attrs::InodeAttrs, errno::Errno, vfs::*},
+    memory::file_map::{FillBatch, FillPage},
     syscall::errno::*,
 };
 use alloc::{
@@ -371,6 +372,7 @@ struct Mount<W: Wait + 'static> {
     mapping_passes: AtomicU64,
     mapping_pages_evicted: AtomicU64,
     mapping_requests_dropped: AtomicU64,
+    bounce: BouncePool,
     #[cfg(any(feature = "breenfs_commit_window", feature = "breenfs_corrupt_inject"))]
     commit_faults: Option<super::commit::faults::Faults>,
 }
@@ -2301,6 +2303,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             mapping_passes: AtomicU64::new(0),
             mapping_pages_evicted: AtomicU64::new(0),
             mapping_requests_dropped: AtomicU64::new(0),
+            bounce: BouncePool::new(),
             #[cfg(any(feature = "breenfs_commit_window", feature = "breenfs_corrupt_inject"))]
             commit_faults: super::commit::faults::Faults::for_mount(boot && writable),
         })
@@ -3642,6 +3645,28 @@ impl<W: Wait + 'static> BreenFs<W> {
         }
         status
     }
+    /// An observer that sees a newer publication by the writer starts from
+    /// its view before it reads file data (`read`, `fill`).
+    fn adopt_publication(
+        &self,
+        publication: Option<&Option<Superblock>>,
+        state: &mut MountState<W>,
+    ) -> Result<(), Errno> {
+        if let Some(sb) = publication.and_then(Option::as_ref)
+            .filter(|sb| sb.generation > state.durable.generation)
+        {
+            // An observer can skip generations without seeing the writer's
+            // overwritten ranges or changed inode set. Start from its new view.
+            self.inner.decoded.clear();
+            let store = self.inner.cache.store(self.inner.device.clone(), sb, &self.inner.decoded);
+            let result = Files::new(store, sb, self.inner.root_id, false);
+            let files = state.observed(result)?;
+            state.inodes.clear();
+            state.files.files = state.edited(&[], Ok(files))?;
+            state.durable = sb.clone();
+        }
+        Ok(())
+    }
     fn data_reader(&self) -> DataReader<'_, W> {
         DataReader {
             cache: self.inner.cache.buffers(),
@@ -4276,19 +4301,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         let publication = (!self.inner.writable)
             .then(|| self.inner.mounted_root.device.publication.lock());
         let mut state = self.foreground_lock()?;
-        if let Some(sb) = publication.as_deref().and_then(Option::as_ref)
-            .filter(|sb| sb.generation > state.durable.generation)
-        {
-            // An observer can skip generations without seeing the writer's
-            // overwritten ranges or changed inode set. Start from its new view.
-            self.inner.decoded.clear();
-            let store = self.inner.cache.store(self.inner.device.clone(), sb, &self.inner.decoded);
-            let result = Files::new(store, sb, self.inner.root_id, false);
-            let files = state.observed(result)?;
-            state.inodes.clear();
-            state.files.files = state.edited(&[], Ok(files))?;
-            state.durable = sb.clone();
-        }
+        self.adopt_publication(publication.as_deref(), &mut state)?;
         let size = state.regular(node.ino)?.size;
         if off >= size || buf.is_empty() {
             buf.fill(0);
@@ -4329,6 +4342,55 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         node.map.overlay(off, &mut buf[..length]).map_err(|_| Errno(EIO))?;
         self.touch(node, true);
         Ok(length)
+    }
+    fn cache_policy(&self) -> CachePolicy {
+        CachePolicy::Native
+    }
+    /// E3-4 (docs/plans/e3-page-cache.md 6.2-6.4). The fill holds the
+    /// foreground exclusion from its snapshot to its report. Each page comes
+    /// from the open generation's dirty page, else the frozen generation's,
+    /// as `read` resolves them until E3-8; the other pages come from the
+    /// open view's extents, read from the device, not through the block
+    /// cache (section 14), into the mount's bounce buffer, which this fill
+    /// owns until its last copy into a frame (6.4).
+    fn fill(&self, node: &VNode, _: &dyn MappingIo, pages: &mut FillBatch) -> Result<(), Errno> {
+        self.check_node(node)?;
+        let publication = (!self.inner.writable)
+            .then(|| self.inner.mounted_root.device.publication.lock());
+        let mut state = self.foreground_lock()?;
+        self.adopt_publication(publication.as_deref(), &mut state)?;
+        let size = state.regular(node.ino)?.size;
+        let mut bounce = self.inner.bounce.take()?;
+        let (first, block) = (pages.first(), BLOCK_SIZE as u64);
+        // Pages at or past EOF stay unreported: EIO.
+        let count = size.div_ceil(block).saturating_sub(first).min(pages.len() as u64) as usize;
+        let mut n = 0;
+        while n < count {
+            let offset = (first + n as u64) * block;
+            if let Some(page) = state.page(node.ino, first + n as u64) {
+                pages.copy_in(n, 0, &page[..(size - offset).min(block) as usize]);
+                pages.report(n, FillPage::Data);
+                n += 1;
+                continue;
+            }
+            // A run of pages no dirty layer holds is one read of the extents.
+            let mut end = n + 1;
+            while end < count && state.page(node.ino, first + end as u64).is_none() {
+                end += 1;
+            }
+            let len = (size - offset).min(((end - n) * BLOCK_SIZE) as u64) as usize;
+            let mut target = Frames { pages: &mut *pages, from: n, len };
+            let result = state.files.read_target(&*self.inner.data, node.ino, offset, &mut target, bounce.bytes());
+            let read = state.read_result(result)?;
+            // Below the inode's size and past the open view's EOF, `read`
+            // returns 00 bytes too.
+            if read < len {
+                ops::ReadTarget::hole(&mut target, read, len - read);
+            }
+            n = end;
+        }
+        self.touch(node, true);
+        Ok(())
     }
     fn readlink(&self, ino: u64) -> Result<Vec<u8>, Errno> {
         let mut state = self.foreground_lock()?;
@@ -4975,6 +5037,22 @@ impl<W: Wait + 'static> FileSystem for GenerationView<W> {
     fn readlink(&self, ino: u64) -> Result<Vec<u8>, Errno> {
         self.read_files(|files| Ok(files.readlink(ino)?))
     }
+    fn cache_policy(&self) -> CachePolicy {
+        CachePolicy::Native
+    }
+    /// A snapshot's fill (E3-4): its view's extents, read from the device
+    /// through the writer mount's bounce buffer. A snapshot has no dirty pages.
+    fn fill(&self, node: &VNode, _: &dyn MappingIo, pages: &mut FillBatch) -> Result<(), Errno> {
+        self.check_node(node)?;
+        let mut bounce = self.writer.inner.bounce.take()?;
+        let (ino, data) = (node.ino, &*self.writer.inner.data);
+        let offset = pages.first().saturating_mul(BLOCK_SIZE as u64);
+        let len = pages.len() * BLOCK_SIZE;
+        self.read_files(|files| {
+            files.read_target(data, ino, offset, &mut Frames { pages, from: 0, len }, bounce.bytes())
+        })?;
+        Ok(())
+    }
     fn read(&self, node: &VNode, off: u64, buf: &mut [u8]) -> Result<usize, Errno> {
         self.check_node(node)?;
         let read = self.read_files(|files| files.read_verified(&self.writer.data_reader(), node.ino, off, buf))?;
@@ -5159,6 +5237,114 @@ impl BlockDevice for DataBlocks {
         Err(BlockError::IoError)
     }
 }
+// Fill bounce buffers (docs/plans/e3-page-cache.md 6.4). A fill owns one as
+// a token from its device read through its last copy into a frame, so no
+// other fill can reuse it between a run's CRC check and that copy. Before
+// E2.5 a mount's fills hold its exclusion, so the pool keeps one buffer; a
+// fill that finds it empty allocates its own, and the pool keeps one.
+struct BouncePool(Mutex<Option<Vec<u8>>>);
+struct Bounce<'a> {
+    pool: &'a BouncePool,
+    bytes: Vec<u8>,
+}
+impl BouncePool {
+    const fn new() -> Self {
+        Self(Mutex::new(None))
+    }
+    fn take(&self) -> Result<Bounce<'_>, Errno> {
+        let bytes = match self.0.lock().take() {
+            Some(bytes) => bytes,
+            None => {
+                // One block-layer request: the most a fill's run reads at once.
+                let mut bytes = Vec::new();
+                bytes.try_reserve_exact(crate::block::cache::RUN_BYTES).map_err(|_| Errno(ENOMEM))?;
+                bytes.resize(crate::block::cache::RUN_BYTES, 0);
+                bytes
+            }
+        };
+        Ok(Bounce { pool: self, bytes })
+    }
+}
+impl Bounce<'_> {
+    fn bytes(&mut self) -> &mut Vec<u8> {
+        &mut self.bytes
+    }
+}
+impl Drop for Bounce<'_> {
+    fn drop(&mut self) {
+        let mut slot = self.pool.0.lock();
+        if slot.is_none() {
+            *slot = Some(core::mem::take(&mut self.bytes));
+        }
+    }
+}
+
+/// The page pieces of `[at, at + len)` in a target whose byte 0 is the start
+/// of batch page `from`: (batch page, offset in it, offset in the range, length).
+fn page_pieces(from: usize, at: usize, len: usize) -> impl Iterator<Item = (usize, usize, usize, usize)> {
+    let mut pos = at;
+    let end = at + len;
+    core::iter::from_fn(move || {
+        (pos < end).then(|| {
+            let within = pos % BLOCK_SIZE;
+            let take = (BLOCK_SIZE - within).min(end - pos);
+            let piece = (from + pos / BLOCK_SIZE, within, pos - at, take);
+            pos += take;
+            piece
+        })
+    })
+}
+
+/// A fill batch's frames as the target of a clean read (E3-4): the read's
+/// byte 0 is the start of batch page `from`, and it covers `len` bytes. Each
+/// page's report is the outcome of its bytes.
+struct Frames<'a> {
+    pages: &'a mut FillBatch,
+    from: usize,
+    len: usize,
+}
+impl Frames<'_> {
+    fn report(&mut self, at: usize, len: usize, outcome: FillPage) {
+        for (n, ..) in page_pieces(self.from, at, len) {
+            self.pages.report(n, outcome);
+        }
+    }
+}
+impl ops::ReadTarget for Frames<'_> {
+    fn len(&self) -> usize {
+        self.len
+    }
+    fn contiguous(&mut self, at: usize, len: usize) -> Option<&mut [u8]> {
+        let within = at % BLOCK_SIZE;
+        (within + len <= BLOCK_SIZE)
+            .then(|| &mut self.pages.page_mut(self.from + at / BLOCK_SIZE)[within..within + len])
+    }
+    fn wrote(&mut self, at: usize, len: usize) {
+        self.report(at, len, FillPage::Data);
+    }
+    fn copy_in(&mut self, at: usize, bytes: &[u8]) {
+        for (n, within, from, take) in page_pieces(self.from, at, bytes.len()) {
+            self.pages.copy_in(n, within, &bytes[from..from + take]);
+            self.pages.report(n, FillPage::Data);
+        }
+    }
+    fn hole(&mut self, at: usize, len: usize) {
+        for (n, within, _, take) in page_pieces(self.from, at, len) {
+            self.pages.page_mut(n)[within..within + take].fill(0);
+            self.pages.report(n, FillPage::Hole);
+        }
+    }
+    fn failed(&mut self, at: usize, len: usize, error: ReadError) -> Result<(), ReadError> {
+        let errno = match error {
+            ReadError::Metadata(error) => return Err(ReadError::Metadata(error)),
+            ReadError::Device(error) => read_cause_errno(error.into()),
+            ReadError::Data => Errno(EIO),
+        };
+        self.report(at, len, FillPage::Error(errno));
+        Ok(())
+    }
+}
+
 // Foreground views do not name a frozen generation's private data: N+1's
 // scratch view predates N's drain, and N's view is installed only after N's
 // data is on the device (E24 coordinator 597).

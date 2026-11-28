@@ -2355,7 +2355,13 @@ impl<'a> ExecImage<'a> {
     /// resident from `populate` until the binding covers it.
     pub(crate) fn frame(&self, index: u64, executable: bool) -> Result<PhysFrame, &'static str> {
         let mut inner = self.node.map.state.inner.lock();
-        let frame = inner.pages.get(index).ok_or("Absent exec image page")?.frame;
+        // A Hole a fill reported gets a cleared frame of its own here, as a
+        // fault gives one.
+        let frame = match inner.pages.get(index) {
+            Some(page) => page.frame,
+            None if inner.holes.contains(index) => inner.fault_frame(index)?,
+            None => return Err("Absent exec image page"),
+        };
         if executable {
             inner.make_executable(index);
         }
@@ -2369,9 +2375,14 @@ impl<'a> ExecImage<'a> {
     /// `dst` is writable for `len` bytes, at most a page.
     pub(crate) unsafe fn copy(&self, index: u64, dst: *mut u8, len: usize) -> Result<(), &'static str> {
         let inner = self.node.map.state.inner.lock();
-        let page = inner.pages.get(index).ok_or("Absent exec image page")?;
-        // SAFETY: the map lock pins the cache frame; the caller supplies `dst`.
-        unsafe { core::ptr::copy_nonoverlapping(page.ptr(), dst, len.min(PAGE_SIZE as usize)) };
+        let len = len.min(PAGE_SIZE as usize);
+        match inner.pages.get(index) {
+            // SAFETY: the map lock pins the cache frame; the caller supplies `dst`.
+            Some(page) => unsafe { core::ptr::copy_nonoverlapping(page.ptr(), dst, len) },
+            // SAFETY: the caller supplies `dst`, writable for `len` bytes.
+            None if inner.holes.contains(index) => unsafe { core::ptr::write_bytes(dst, 0, len) },
+            None => return Err("Absent exec image page"),
+        }
         Ok(())
     }
 }
