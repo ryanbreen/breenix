@@ -1898,7 +1898,9 @@ E1-6 implementation decisions (DEV-39(2)):
 - No existing kernel worker runs periodically on both architectures, so the working-set trim runs at the
   first depot exchange after each 15-second interval, returns at most 8 magazines of each kind per update,
   and grows the magazine size (15, 31, 63, 127 rounds) when the depot lock saw more than 16 contended
-  acquisitions in the interval; the slab shrinker empties the depots whole.
+  acquisitions in the interval. The slab shrinker retires at most its target plus 8 magazines per call, 8
+  per depot lock hold, because it runs with interrupts masked and 7.2 bounds each shrinker's work by its
+  target plus a fixed batch; it counts the slabs that empty while the rounds go back.
 - An `Atomic` small request that misses uses E1-4's emergency reserve, and a small request that fails reports
   `NoFrames`.
 - The free check reads the slab record before any lock is taken, so a corruption panic holds no allocator
@@ -1912,6 +1914,30 @@ E1-6 implementation decisions (DEV-39(2)):
   pages running out and did not reach the fixed heap.
 - The pressure test's first-draft variant is the same model with step 2 limited to the CPU's own magazines,
   and `kmem_front.rs` keeps testing the fixed-heap path through a small-object layer that serves no request.
+
+Decisions from the #3302 review (DEV-39(2)):
+
+- On ARM64 a CPU names itself only when TPIDR_EL1 equals the address of an entry of the per-CPU array, and
+  the entry's index is its number. 5.4a's "TPIDR_EL1 is still 0" test is replaced because the register's
+  reset value is UNKNOWN, so firmware may leave any value there before `init_cpu`.
+- A CPU with no magazine for a class takes the request's object from the slabs first, then builds a
+  magazine if a page is left, so the request's page goes to the request before any magazine.
+- A new magazine's round slots are written null when it is built, because the refill fills them through a
+  typed slice, which must cover initialized values.
+- A refill that may not wait (6.6's `try_lock`-only row) waits for no lock below it either:
+  - the frame allocator pops its free list with one `try_lock`, then tries the lock-free sequential
+    allocator, and reports `Busy`;
+  - a new slab takes its descriptor first and keeps the descriptor cache locked until it has the page, so
+    a missing page returns the descriptor without another lock;
+  - the working set's surplus at an interval is left pending on the depot, for the next exchange that may
+    wait or the shrinker, because returning it takes the slab and magazine caches' locks.
+- After the registered shrinkers, the slow path drains the reclaiming CPU's magazines again and runs the
+  slab shrinker for the same target, because a shrinker that frees through the allocator (the block cache)
+  leaves its blocks in those magazines.
+- 7.2's slow path also serves frame requests from outside the allocator before E1-8's zones: a frame
+  allocation that finds no frame runs steps 1-4 once and retries once, except in an interrupt handler or a
+  shrinker. Without that, pages idle in the slab layer are out of reach of a page fault, which would get
+  SIGKILL.
 
 ### E1-7: span arenas and vmap allocations
 

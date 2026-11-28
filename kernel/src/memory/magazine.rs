@@ -204,8 +204,8 @@ impl DepotState {
         (surplus, count)
     }
 
-    /// Detach the filled and the empty stacks, and the pending surplus (the
-    /// shrinker).
+    /// Detach the filled and the empty stacks, and the pending surplus
+    /// (`trim_depot`, which the shrinker's bounded `detach` replaces).
     fn take_all(&mut self) -> Surplus {
         let mut surplus = Surplus {
             filled: core::mem::replace(&mut self.filled, Stack::new()),
