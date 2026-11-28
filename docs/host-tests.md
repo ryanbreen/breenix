@@ -49,6 +49,11 @@ construction, firmware RAM normalization, boot carves and the frame metadata
 against the extracted pre-E1-3 ledger). Run them with
 `cargo test --manifest-path tools/kmem-host-tests/Cargo.toml`.
 
+The page cache's pure modules (`docs/plans/e3-page-cache.md`, E3-1) are the radix
+tree, the page-state table, the readahead window, the LRU scan, the dirty charge
+and the OOM selection in `kernel/src/memory`. Run their checks with
+`cargo test --manifest-path tools/pagecache-host-tests/Cargo.toml`.
+
 Run the standalone `tests/*_host.py` programs separately: discovery's
 `*_test.py` pattern does not include them. The SDK Python checks use
 `python3 -m unittest discover -s sdk/tests -p '*_test.py'`. The run inspector's
