@@ -752,7 +752,7 @@ fn fixture_root_flags(name: &[u8], flags: Option<u32>) -> Result<Option<u32>, St
 #[test]
 fn t_c3_host_version_two_manifest_round_trips_and_checks_the_pair() {
     let imported = imported();
-    for (size, length) in [(10_000_000, 256), (536_870_912, 257)] {
+    for (size, length) in [(10_000_384, 256), (536_870_912, 257)] {
         let mut data = vec![0; size];
         data[..CANDIDATE.len()].copy_from_slice(CANDIDATE);
         let armed = host_manifest(sha256(&data), size);

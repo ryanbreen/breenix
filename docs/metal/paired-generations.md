@@ -839,6 +839,8 @@ Review of PR #3273 (the same rule):
   sooner would permit sequence reuse and writing a watermark record would overwrite the older fallback.
 - T-C3 extracts the v1 host formatter and gives it an optional root line so the host fixture uses the same
   encoder while PR B retains custody of version selection and publication.
+- T-C3 uses a 10,000,384-byte image for the 256-byte manifest because both trial images must be whole
+  512-byte sectors to pass the boot-disk check at promotion.
 
 ## 11. For the coordinator
 
