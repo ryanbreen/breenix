@@ -1759,6 +1759,24 @@ buffer, then sleeps before copying. Fill B runs on the same CPU and reads file B
 
 ```
 
+**Before E3-8, a fill reads BreenFS's dirty layers first (6.2).** Page 0 was written in the open
+generation, and its bytes live only in BreenFS's `DirtyPages` map. A population or a read then fills it.
+
+```pycon
+>>> RULE = 'extents-only'
+>>> extents = {0: b'disk'}
+>>> open_dirty, frozen_dirty = {0: b'open'}, {1: b'froz'}
+>>> def fill(i):
+...     if RULE == 'dirty-layers-first':
+...         for layer in (open_dirty, frozen_dirty):
+...             if i in layer:
+...                 return layer[i]
+...     return extents.get(i, bytes(4))
+>>> (fill(0), fill(1), fill(2))
+(b'open', b'froz', b'\x00\x00\x00\x00')
+
+```
+
 ## 20. bbench rows (DEV-31)
 
 | Row | Ratio (28668b28) | Expected to move in | Parity reachable from E3 alone |
