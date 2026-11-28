@@ -45,6 +45,8 @@ pub enum RangeError {
     NoMappedStorage,
     InvalidRequest,
     NoFit,
+    /// Usable RAM above the 52-bit physical address limit.
+    AboveAddressLimit,
 }
 
 impl RangeError {
@@ -53,6 +55,7 @@ impl RangeError {
             Self::NoMappedStorage => "no mapped writable RAM for boot range storage",
             Self::InvalidRequest => "invalid boot carve size or alignment",
             Self::NoFit => "no boot range fits requested carve",
+            Self::AboveAddressLimit => "usable RAM above the 52-bit physical address limit",
         }
     }
 }
