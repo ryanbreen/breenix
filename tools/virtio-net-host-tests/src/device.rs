@@ -180,6 +180,8 @@ pub struct Device {
     pub frame_budget: Option<usize>,
     /// When set, the device asks not to be notified (used.flags, avail_event).
     pub suppress_notify: bool,
+    /// Reads of the device-specific configuration: (offset into it, bytes wide).
+    pub config_reads: Vec<(u64, u32)>,
 }
 
 static DEVICE: Mutex<Option<Device>> = Mutex::new(None);
@@ -207,6 +209,7 @@ pub fn install(cfg: Config) {
         errors: Vec::new(),
         frame_budget: None,
         suppress_notify: false,
+        config_reads: Vec::new(),
     });
 }
 
@@ -249,12 +252,26 @@ fn split(address: u64) -> Option<u64> {
 
 pub fn read8(address: u64) -> u8 {
     let Some(offset) = split(address) else { return 0 };
-    with(|d| d.config_byte(offset))
+    with(|d| {
+        d.note_config_read(offset, 1);
+        d.config_byte(offset)
+    })
+}
+
+pub fn read16(address: u64) -> u16 {
+    let Some(offset) = split(address) else { return 0 };
+    with(|d| {
+        d.note_config_read(offset, 2);
+        u16::from_le_bytes([d.config_byte(offset), d.config_byte(offset + 1)])
+    })
 }
 
 pub fn read32(address: u64) -> u32 {
     let Some(offset) = split(address) else { return 0 };
-    with(|d| d.read(offset))
+    with(|d| {
+        d.note_config_read(offset, 4);
+        d.read(offset)
+    })
 }
 
 pub fn write32(address: u64, value: u32) {
@@ -313,6 +330,12 @@ impl Device {
             self.cfg.ctrl_queue_max
         } else {
             0
+        }
+    }
+
+    fn note_config_read(&mut self, offset: u64, width: u32) {
+        if let Some(at) = offset.checked_sub(reg::CONFIG) {
+            self.config_reads.push((at, width));
         }
     }
 

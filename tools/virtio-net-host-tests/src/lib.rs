@@ -28,6 +28,9 @@ pub mod arch_impl {
             pub unsafe fn read8(address: *const u8) -> u8 {
                 crate::device::read8(address as u64)
             }
+            pub unsafe fn read16(address: *const u16) -> u16 {
+                crate::device::read16(address as u64)
+            }
             pub unsafe fn read32(address: *const u32) -> u32 {
                 crate::device::read32(address as u64)
             }
