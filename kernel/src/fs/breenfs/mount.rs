@@ -174,8 +174,8 @@ fn system_writer(id: usize) -> Option<Arc<BreenFs<SystemWait>>> {
     fs.downcast::<BreenFs<SystemWait>>().ok()
 }
 
-/// The writer behind a removed staging mount. The caller drops its own walk
-/// of the mount point, which holds the staging root, before `finish`.
+/// The writer behind a removed staging mount. The caller dropped its walk of
+/// the mount point, which held the staging root, before `unmount`.
 #[must_use]
 pub struct StagingDetach(Arc<BreenFs<SystemWait>>);
 
@@ -199,10 +199,12 @@ pub fn unmount(target: &Target, flags: u64) -> Option<Result<Option<StagingDetac
         return None;
     }
     Some((|| {
-        // A staging mount first (3.2): removal applies the table's busy check
-        // before any change, then the caller drops its walk, then detach.
+        // A staging mount first (3.2): a staged node in use refuses removal,
+        // even forced, since detach could not then release the tree. The
+        // table's busy check follows, under the same exclusion; then detach.
         if let Some(writer) = system_writer(mount.0).filter(|writer| writer.is_staging_root(*ino)) {
-            registry::unmount(mount.0, flags != 0).map_err(|error| error.0 as u64)?;
+            writer.unpublish_staging(|| registry::unmount(mount.0, flags != 0))
+                .map_err(|error| error.0 as u64)?;
             return Ok(Some(StagingDetach(writer)));
         }
         if registry::is_bind(mount.0) {

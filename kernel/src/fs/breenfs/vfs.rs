@@ -1940,6 +1940,22 @@ impl<W: Wait + 'static> BreenFs<W> {
             return Ok(ops::STAGING_TREE | 2);
         }
     }
+    /// Remove the staging tree's mount with `remove`, refused with EBUSY while
+    /// a staged node is in use (3.2). A working directory holds a node, not
+    /// a registry pin. The check and the removal share this mount exclusion,
+    /// and a staged node is opened only under it (a held node is counted), so
+    /// none appears between them and the detach that follows can release
+    /// the tree. The caller holds no walk into the tree.
+    pub fn unpublish_staging(&self, remove: impl FnOnce() -> Result<(), Errno>) -> Result<(), Errno> {
+        let state = self.foreground_lock()?;
+        if state.staging.is_none() {
+            return Err(Errno(EINVAL));
+        }
+        if state.staged_in_use() {
+            return Err(Errno(EBUSY));
+        }
+        remove()
+    }
     /// Commit and release the staging tree after its mount left the registry,
     /// so no path reaches it (3.1). Refused with EBUSY, leaving the tree
     /// attached and claimed, while a staged node is still in use.
