@@ -213,6 +213,9 @@ pub struct Transaction<'a, S> {
     // A scratch fork names nodes with fake addresses; settle refuses it:
     // N+1 allocates no real block while N is in flight (601(1)).
     scratch: Option<u64>,
+    // A scratch fork starts with an empty DEAD index; this records whether
+    // the frozen generation's index held any node (`dead_pending`).
+    frozen_dead: bool,
 }
 /// Tree geometry for the caller's reservation policy.
 pub struct ReservationPaths {
@@ -221,6 +224,21 @@ pub struct ReservationPaths {
     pub fs_height: u64,
     pub space_height: u64,
     pub space_nodes: u64,
+    /// A node an edit copies may be shared: another root or a DEAD node can
+    /// reference it. The copy then takes a reference to each child or data
+    /// extent (`prepare`), up to btree::MAX_REFERENCES deferred heads.
+    pub shared: bool,
+}
+impl ReservationPaths {
+    /// SPACE changes owed for the references that `copies` copied nodes take
+    /// when they may be shared: one deferred head per child or data extent,
+    /// at most btree::MAX_REFERENCES a node, each settled in at most three
+    /// changes (metadata_estimate). Estimate::blocks caps the total at the
+    /// whole-tree bound of design 2.8.
+    pub fn shared_copy_changes(&self, copies: u64) -> Option<u64> {
+        if !self.shared { return Some(0); }
+        copies.checked_mul(3 * btree::MAX_REFERENCES)
+    }
 }
 impl<'a, S: NodeStore> Transaction<'a, S> {
     fn blank(base: Backing<'a, S>, generation: u64, space_root: BlockPtr, state: SpaceState) -> Self {
@@ -250,6 +268,7 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
             reaped: 0,
             frozen: None,
             scratch: None,
+            frozen_dead: false,
         }
     }
     /// Start the first transaction without inventing a durable generation 0.
@@ -383,7 +402,13 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
         scratch.next_root_id = self.next_root_id;
         scratch.frozen = Some(frozen);
         scratch.scratch = Some(SCRATCH_BASE);
+        scratch.frozen_dead = self.dead_pending();
         Ok(scratch)
+    }
+    /// Whether a DEAD node still holds references to its children, so a live
+    /// node can be shared with it even when only one root remains.
+    pub(super) fn dead_pending(&self) -> bool {
+        self.state.dead.count() != 0 || self.frozen_dead
     }
     fn private_node(&self, addr: u64) -> Option<&Arc<Node>> {
         self.nodes.get(&addr)
@@ -422,6 +447,8 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
             fs_height: u64::from(root.level),
             space_height: u64::from(self.space_root.level),
             space_nodes,
+            // Files::reservation_paths knows the other roots.
+            shared: self.dead_pending(),
         })
     }
     pub fn space_node_count(&self) -> u64 {

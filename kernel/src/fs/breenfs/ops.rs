@@ -900,7 +900,11 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
     }
     /// Describe COW paths without changing the private transaction.
     pub fn reservation_paths(&self, ino: u64) -> Result<txn::ReservationPaths, Error> {
-        Ok(self.txn.reservation_paths(self.tree(ino).root, ino ^ self.tag(ino))?)
+        let mut paths = self.txn.reservation_paths(self.tree(ino).root, ino ^ self.tag(ino))?;
+        // FS nodes gain a second reference only from another ROOT (a snapshot
+        // or clone shares its source's nodes) or from a DEAD parent.
+        paths.shared |= self.roots.len() > 1;
+        Ok(paths)
     }
     pub fn root_pointer(&self) -> BlockPtr { self.root.root }
     /// Project a pinned root through the same transaction's read paths. Open

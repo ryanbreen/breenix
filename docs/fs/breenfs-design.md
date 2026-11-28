@@ -330,8 +330,12 @@ without repairing; incompat bit `META_DUP` is reserved for duplicated metadata.
 
 Before changing anything, an operation reserves its data blocks, its paths' FS-tree nodes not yet copied in this
 transaction, and one split per level. The transaction also holds space-tree nodes for its space-item changes (three
-per allocated node or extent), at most min(changes × (space height + 1), 2 × space nodes + space height). A failed
-reservation returns ENOSPC with nothing changed. `global_reserve` (total/200, clamped to 16 MiB–1 GiB) serves only
+per allocated node or extent), at most min(changes × (space height + 1), 2 × space nodes + space height). Copying a
+node that another root or a DEAD node also references takes one reference to each of its children or extents, three
+changes each (2.6). While a second root or a DEAD node exists, an operation counts those for each node it may copy,
+at most 441 references a node, so a writable clone's first edits are funded (ruling DEV-50; before it, the R240's
+first create in a populated clone latched its writer read-only with ENOSPC). A failed reservation returns ENOSPC with
+nothing changed. `global_reserve` (total/200, clamped to 16 MiB–1 GiB) serves only
 operations that free space (unlink, rmdir, truncation, snapshot deletion, xattr removal); `f_bavail` excludes it and
 outstanding reservations. `f_bavail` can remain positive after a write refuses because admission includes worst-case metadata.
 A refused write can succeed on retry once commits release quarantined blocks; the reserve is never granted to a write.
