@@ -362,20 +362,39 @@ today's behaviour exactly, so each stage stands on its own. A class converts whe
 3. its user copies run in sleepable context or use the nofault copy;
 4. it holds no `SpinLock` across a call that may park, which the validator checks.
 
+**Shared entry.** Both architectures call `KillCustody::enter_syscall` at entry for every class. Its
+kill-claimed path waits by dropping a level and taking it back (`kernel/src/task/thread.rs:1287-1299`).
+A preemptible entry reaches it at depth 0, where that release would underflow. So 10a replaces the loop
+with a park: the thread waits on its own custody word, in `Uninterruptible` mode, with the condition
+"the claim is withdrawn". The code that withdraws a claim wakes it. A termination finds it parked and
+owning nothing, as today's loop leaves it, and switches it away. `park::wait` releases exactly the entry's baseline,
+1 for a braked class and 0 for a preemptible one, so custody does no arithmetic and behaves the same for
+both classes. <!-- claim-lint:ok: normative requirement of docs/plans/e2-sleepable-contexts.md under ruling DEV-37(2), not a measured result. -->
+
+**Every dispatch arm has a class.** The table is keyed by the dispatchers' `SyscallNumber` arms on both
+architectures, not by a hand list. A structure test fails if any arm, x86 or ARM64, has no entry. An arm
+whose blocking depends on its arguments is classed by the most blocking form it can take. getrandom
+blocks until the pool is ready unless `GRND_NONBLOCK` or `GRND_INSECURE` is set
+(`kernel/src/syscall/random.rs:37-44`), so it goes with the waits in class c as a whole. No per-argument
+classifier is added. <!-- claim-lint:ok: normative requirement of docs/plans/e2-sleepable-contexts.md under ruling DEV-37(2), not a measured result. -->
+
 Order, least risk first:
 
-- **a. Leaf syscalls:** getpid, gettid, getppid, clock and time reads, uname, getrandom without blocking.
-  They exercise the mechanism first on both architectures.
+- **a. Leaf syscalls:** getpid, gettid, getppid, clock and time reads, and uname: handlers that cannot
+  wait for any arguments. They exercise the mechanism first on both architectures.
 - **b. File and pipe I/O:** read, write, pread, pwrite, lseek, readv, writev, fsync, getdents, the stat
   family, open, close, pipes and FIFOs.
 - **c. Waits:** sockets, poll, select, epoll, futex, nanosleep, clock_nanosleep, the SysV and POSIX IPC
-  waits, and TTY and PTY.
+  waits, TTY and PTY, and getrandom.
 - **d. Memory:** mmap, munmap, mprotect, brk, madvise and mlock. These follow E2.8 and E2.9, because they
   take the address-space lock.
 - **e. Process:** fork, clone, execve, exit, exit_group, wait4, waitid, kill and the signal syscalls. These
-  touch PROCESS_MANAGER and the stop and signal machinery, so they go last.
+  touch PROCESS_MANAGER and the stop and signal machinery.
+- **f. The rest.** Each arm still `Braked` after e, which the structure test lists: ioctl and its device
+  handlers, mount, umount2, sync, statfs, truncate and ftruncate, and any other arm with no class above.
+  These go last, after their handlers are read one by one.
 
-E2.11 then deletes the `Braked` class, the entry increment and `park_baseline`. Both syscall entries run
+E2.11 starts only when the `Braked` set is empty, which the structure test checks. It then deletes the `Braked` class, the entry increment and `park_baseline`. Both syscall entries run
 at depth 0.
 
 ### 4.5 Per-CPU state across preemption
@@ -682,8 +701,8 @@ series before and after each PR that §10 says could move a row (DEV-31(3)).
 | E2.7 | x86 syscalls with interrupts enabled, under the brake | E2.6 (x86 ISR inventory) | `syscall/handler.rs` (Tier 1) |
 | E2.8 | `AddressSpace` object, mapping lock and page-table lock; faults and the mmap family off PROCESS_MANAGER; signal frames out of PROCESS_MANAGER | E2.2, E2.6 | `interrupts.rs` (Tier 2) |
 | E2.9 | Restartable sleeping faults | E2.8 | `interrupts.rs` (Tier 2) |
-| E2.10a-e | Preemptible syscalls by class (§4.4), with the `CpuPin` audit | E2.6; x86 also E2.7; 10d needs E2.9 | `syscall/handler.rs` (Tier 1), once in 10a: the class table and the return-path TSS write |
-| E2.11 | Retire the brake, the `Braked` class and the baselines | E2.10a-e | `syscall/handler.rs` (Tier 1) |
+| E2.10a-f | Preemptible syscalls by class (§4.4), with the `CpuPin` audit and the custody park | E2.6; x86 also E2.7; 10d needs E2.9 | `syscall/handler.rs` (Tier 1), once in 10a: the class table and the return-path TSS write |
+| E2.11 | Retire the brake, the `Braked` class and the baselines | E2.10a-f; an empty `Braked` set | `syscall/handler.rs` (Tier 1) |
 
 E2.3, E2.4 and E2.5 are independent of each other after E2.2, and E2.6 can run beside them. One lane
 should own each, not several agents on one PR (DEV-30(3)).
@@ -935,7 +954,7 @@ should own each, not several agents on one PR (DEV-30(3)).
 - **Boot.** One ARM64 QEMU boot of the cases that fault: restart depends on the hardware's exception
   return.
 
-### E2.10a-e: preemptible syscalls by class
+### E2.10a-f: preemptible syscalls by class
 
 - **Scope.** §4.4-§4.5, one PR per class. 10a carries this group's Tier-1 commit: the class table, the
   baseline-setting entry change and the removal of the syscall-return TSS writes (§4.5).
@@ -947,7 +966,11 @@ should own each, not several agents on one PR (DEV-30(3)).
   - a structure test that the converted classes' modules have no raw spin locks or unpinned per-CPU reads
     left on their allowlists;
   - a host model of entry and exit for both classes: baseline 1 with the brake, baseline 0 without, and
-    custody unchanged;
+    custody unchanged. It includes entry on a kill-claimed thread for each class: the custody park
+    leaves the depth at the class's baseline and does not underflow. It is red on today's
+    `enter_syscall` for the preemptible class;
+  - a structure test that every `SyscallNumber` dispatch arm on x86 and ARM64 has a class, and that
+    getrandom is not in class a; <!-- claim-lint:ok: normative requirement of docs/plans/e2-sleepable-contexts.md under ruling DEV-37(2), not a measured result. -->
   - a kernel test in the testing feature, driven by a fixed point: it sets `need_resched` at a named spot
     inside a converted syscall and checks that the thread is preempted and resumes with its result intact.
 - **Risk retired.** Long syscalls that hold a CPU against runnable work. Latency to get running again then
