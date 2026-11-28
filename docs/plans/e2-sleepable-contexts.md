@@ -950,10 +950,11 @@ The builder resolved these details against the code. Each has one sentence of re
   in E2.4 and E2.10.
 - **The HALT census keeps a shrinking list.** It found 8 kernel threads that publish a timer or plain
   block and halt as the current thread themselves. E2.3 first converted the 8 to sleep through
-  `arch_halt_while_blocked`. That tree's one ARM64 QEMU boot soft-locked at about 5 s, in
-  `test_deferral`, before any boot test, and a baseline boot of main with the same script and image did
-  not. These threads run on the secondary CPUs in that window, and no other change in this PR runs there
-  before the lockup, so the conversion was taken back out. The 8 are listed in
+  `arch_halt_while_blocked`. That tree's ARM64 QEMU boot soft-locked at about 5 s, in `test_deferral`,
+  before any boot test, and a baseline boot of main with the same script and image did not. The
+  conversion was the suspect and was taken back out, but the next boot soft-locked the same way: the
+  cause was the pty hangup daemon's bare brake (next item), not the conversion. The conversion stays
+  out of E2.3 because its tree was never booted with that cause fixed. The 8 are listed in
   `tests/park_contract_structure.rs` (`HALT_CLASSIFIED`), the list may only shrink, and each moves in a
   later PR with its own boot. In main's baseline boot its own `test_deferral` probe did not run on CPU 1
   (verdict `starved` after 15 s), which that later PR has to account for.
