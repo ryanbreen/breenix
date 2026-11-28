@@ -260,3 +260,95 @@ fn later_data_lands_after_the_files_existing_extent() {
     assert!(free.iter().all(|&(s, l)| !(s >= file_end && s < extents[1].phys_start && l >= 8)),
         "a closer free range was skipped: {free:?}");
 }
+
+/// Audit R13 with fragmented releases: unlinking every other file leaves one
+/// PENDING run per file. Promotion at G+2 moves the runs it already holds to
+/// FREE and makes no allocation in proportion to them: a copy of the runs
+/// would be one buffer of 16 bytes per run. Its other heap is the SPACE
+/// tree work of deleting those PENDING items and adding as many FREE items,
+/// plus the FREE index's entries for them (design 2.5, "Free space in
+/// memory"), so it may not exceed the heap of the commit that released them.
+#[test]
+fn alternating_unlinks_promote_without_copying_the_runs() {
+    const FILES: usize = 10_000;
+    let disk = Disk::new(32_768);
+    let sb = superblock(0x34, disk.blocks);
+    let mut committer = Committer::format(sb.clone());
+    let mut files = Files::format(DeviceStore(&disk), &sb).unwrap();
+    for n in 0..FILES {
+        let ino = files.create(2, format!("f{n:05}").as_bytes(), 0o100644, at(1)).unwrap();
+        files.write(&disk, ino, 0, &block_pattern(n), at(2)).unwrap();
+    }
+    let created = files.fsync(&disk, &mut committer).unwrap();
+    let mut files = Files::new(DeviceStore(&disk), &created, 1, true).unwrap();
+    for n in (0..FILES).step_by(2) {
+        files.unlink(2, format!("f{n:05}").as_bytes(), at(3)).unwrap();
+    }
+    let start = live();
+    reset_peak();
+    let unlinked = commit(&mut files, &disk, &mut committer);
+    let release_peak = peak() - start;
+    let runs = pending(&disk, &unlinked).iter().filter(|&&(_, _, g)| g == unlinked.generation).count();
+    assert!(runs >= FILES / 2, "alternating releases became {runs} PENDING runs");
+    let free_before = free(&disk, &unlinked).len();
+    let start = live();
+    reset_peak();
+    let (sb, largest) = largest_allocation(|| {
+        let mut sb = unlinked.clone();
+        for tick in 4..6 {
+            files.setattr(2, &touch(tick), at(tick)).unwrap();
+            sb = commit(&mut files, &disk, &mut committer);
+        }
+        sb
+    });
+    let promotion_peak = peak() - start;
+    let added = free(&disk, &sb).len().saturating_sub(free_before);
+    println!("R13_ALTERNATING runs={runs} free_items_added={added} release_peak={release_peak} \
+promotion_peak={promotion_peak} largest={largest}");
+    assert!(pending(&disk, &sb).iter().all(|&(_, _, g)| g > unlinked.generation), "G+2 promoted the runs");
+    assert!(added >= FILES / 2 - 1, "{added} FREE items for {runs} runs");
+    assert!(largest <= 64 * 1024, "largest allocation {largest} for {runs} runs");
+    // Promotion deletes the PENDING items G inserted and adds as many FREE
+    // items, so its tree work mirrors G's own. It may not cost more heap
+    // than the commit that made the releases.
+    assert!(promotion_peak <= release_peak, "promotion heap peak {promotion_peak}, release commit {release_peak}");
+}
+
+/// Heap that preparing a frozen generation takes to reclaim `FILES` orphans,
+/// with N+1's scratch view alive (the kernel's frozen publication) or dropped.
+fn frozen_orphan_reclaim_peak(scratch_alive: bool) -> isize {
+    const FILES: usize = 10_000;
+    let disk = Disk::new(32_768);
+    let sb = superblock(0x35, disk.blocks);
+    let mut committer = Committer::format(sb.clone());
+    let mut files = Files::format(DeviceStore(&disk), &sb).unwrap();
+    for n in 0..FILES {
+        let ino = files.create(2, format!("o{n:05}").as_bytes(), 0o100644, at(1)).unwrap();
+        files.write(&disk, ino, 0, &block_pattern(n), at(2)).unwrap();
+    }
+    let created = files.fsync(&disk, &mut committer).unwrap();
+    let mut files = Files::new(DeviceStore(&disk), &created, 1, true).unwrap();
+    for n in 0..FILES {
+        files.unlink(2, format!("o{n:05}").as_bytes(), at(3)).unwrap();
+    }
+    let scratch = files.fork(DeviceStore(&disk)).unwrap();
+    let scratch = scratch_alive.then_some(scratch);
+    let start = live();
+    reset_peak();
+    files.prepare_commit().unwrap();
+    let measured = peak() - start;
+    drop(scratch);
+    measured
+}
+
+/// Frozen publication (E24 601(1)) shares N's orphan sets with N+1's scratch
+/// view. Reclaiming N's orphans must not copy those sets: a copy is one
+/// B-tree entry per unlinked inode for each set, at commit. Preparing N with
+/// the scratch view alive takes no more heap than with it dropped.
+#[test]
+fn frozen_orphan_reclaim_copies_no_orphan_set() {
+    let dropped = frozen_orphan_reclaim_peak(false);
+    let alive = frozen_orphan_reclaim_peak(true);
+    println!("R13_FROZEN_ORPHANS dropped={dropped} alive={alive}");
+    assert!(alive <= dropped + 4096, "scratch view alive: {alive} bytes, dropped: {dropped}");
+}
