@@ -26,47 +26,30 @@ output parent to create the versioned copy without modifying the box.
 
 ## Install and activate
 
-Create `/opt/breenix/rust` with `sudo -n mkdir -p -m 0755` on the destination
-before using `bsync --sudo`. Set `host` to your SSH destination and `id` to the
-staged version. Sync `"$out/$id"` to `"$host:/opt/breenix/rust/$id"` and
-`"${out%/*}/runtime/$id"` to `"$host:/lib"` with `bsync --sudo`.
+Create `/opt/breenix/rust` with `sudo -n mkdir -p -m 0755` before using
+`bsync --sudo`. Set `host` to your SSH destination and `id` to the staged
+version. Sync `"$out/$id"` to `"$host:/opt/breenix/rust/$id"`. Check the
+installed files against the Mac's manifest, including ownership and modes.
 
-Check the installed bytes against the Mac's manifest and confirm root ownership
-and modes. Generate the activation payload on the Mac using fresh SSH output.
-The command checks both installed runtime digests and the retained Mac copy for
-the selected version.
+Publish the selection as `/usr/lib/breenix/rust-current` in the paired
+userspace inventory. Include the version's matching runtime from
+`"${out%/*}/runtime/$id"` under `/lib`. The paired installer validates the
+version's manifest and the generation's runtime before publishing and again
+after the trial boots.
 
-```sh
-ssh "$host" /bin/sha256sum /lib/ld-breenix.so /lib/libc.so > "$digests" &&
-  scripts/devbox/toolchain.py current --out "$out" "$id" < "$digests" > "$payload"
-```
-
-Set `digests` and `payload` to files in the local deployment log directory.
-Continue only if both commands succeed. Run the pinned `rustc -vV` and `cargo -V`
-from the candidate directory with `RUST_TARGET_PATH=<version>/targets` for
-rustc. Then publish the one-line payload atomically with
-`sudo -n bput /opt/breenix/rust/CURRENT <length> <sha256> 0644` and read back
-`CURRENT`.
+On the first paired deploy the installer copies the current selection into
+the running and retained rollback roots, then makes
+`/opt/breenix/rust/CURRENT` a symlink to `/usr/lib/breenix/rust-current`.
+The legacy inventory keeps the inherited selection. A paired inventory
+can name a different version.
 
 ## Upgrade and roll back
 
-Before an upgrade, save the output of
-`ssh "$host" /bin/cat /opt/breenix/rust/CURRENT` in the deployment log as the
-previous ID. Keep its installed version directory, Mac manifest and retained
-runtime. Run the activation payload check for that ID before any runtime
-writes so a missing or damaged rollback copy stops the upgrade.
-
-Serialize deployments. If either runtime digest changes, finish any programs
-using this runtime and keep new invocations paused until the switch or rollback
-completes. Both versions resolve the same absolute paths in `/lib`. The two
-files are published individually, so a runtime change and the `CURRENT` update
-are separate operations.
-
-To roll back, set `id` to the saved previous ID. If the installed runtime
-differs, sync `"${out%/*}/runtime/$id"` to `"$host:/lib"` with `bsync --sudo`
-and verify both files' ownership and modes. Follow the same activation check,
-version commands and `CURRENT` publication above. If a runtime transfer is
-interrupted, complete it or restore the previous pair before resuming use.
+Keep the installed version directories for the current and previous pairs.
+Stage new version directories under their own IDs and use the
+[paired metal deploy](../../docs/metal/paired-generations.md) to switch the
+selection and runtime together. The previous pair restores its selection
+and runtime together on rollback.
 
 ## Use the selected toolchain
 

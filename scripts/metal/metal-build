@@ -143,6 +143,8 @@ def outer(args):
              '--stub', args.stub, '--guard-target', target, '--features', args.features, '--suite', args.suite]
     if args.kernel_only:
         inner.append('--kernel-only')
+    if getattr(args, 'paired_tools', False):
+        inner.append('--paired-tools')
     if args.milestone:
         inner += ['--milestone', args.milestone]
     status = subprocess.call([sys.executable, str(HELPER), 'supervise', '--'] + inner,
@@ -280,6 +282,21 @@ def inner(args):
                     keep_logs(logs, out)
                     return 1
                 timings['userspace'] = round(time.time() - started)
+                if getattr(args, 'paired_tools', False):
+                    started = time.time()
+                    log = logs / 'paired-tools.log'
+                    target = tmp / 'paired-host'
+                    with log.open('w') as output:
+                        status = subprocess.call(['cargo', 'build', '--locked', '--release', '--bin', 'bsync',
+                                                  '--target', 'x86_64-unknown-linux-gnu',
+                                                  '--manifest-path', str(clone / 'tools/bsync/Cargo.toml'),
+                                                  '--target-dir', str(target)], cwd=clone, stdout=output,
+                                                 stderr=subprocess.STDOUT)
+                    if not clean_build(status, log, 'paired deployment uploader', logs, out):
+                        return 1
+                    shutil.copy2(target / 'x86_64-unknown-linux-gnu/release/bsync', out / 'paired-bsync')
+                    timings['pairedTools'] = round(time.time() - started)
+
                 breenfs_tools = ('breenfs-mkfs', 'breenfs-check', 'breenfs-extract')
                 if breenfs_manifest.is_file():
                     started = time.time()
@@ -604,6 +621,13 @@ def inner(args):
         breenfs_vfs = clone / 'kernel/src/fs/breenfs/vfs.rs'
         build['writablePersistentRoot'] = (
             breenfs_vfs.is_file() and 'fn mount_persistent_cached' in breenfs_vfs.read_text())
+        # The paired writer can only deploy a kernel that still uses the
+        # supported v1 on-disk incompatibility mask.
+        format_source = clone / 'kernel/src/fs/breenfs/format.rs'
+        if format_source.is_file():
+            source = format_source.read_text()
+            if re.findall(r'(?m)^\s*incompat: (\d+),$', source) == ['1'] and 's.incompat == 1' in source:
+                build['breenfsIncompat'] = 1
         if kernel_only:
             build['kernelOnly'] = True
         else:
@@ -698,6 +722,7 @@ def main():
     parser.add_argument('--catchup', action='store_true', help='request catch-up under the policy from origin/main')
     parser.add_argument('--inner', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--kernel-only', action='store_true', help='build the production kernel without userland')
+    parser.add_argument('--paired-tools', action='store_true', help='include the paired flash host uploader')
     parser.add_argument('--stub-only', action='store_true', help='build only the deployed EFI applications')
     parser.add_argument('--tools-profile', choices=('disk-readback', 'boot-manager', 'persistent-export', 'reclaim-ext2'),
                         default='disk-readback',
@@ -717,6 +742,8 @@ def main():
         parser.error('--suite must be a suite id or ids joined by commas')
     if args.kernel_only and (args.stub_only or args.features or args.suite or args.milestone):
         parser.error('--kernel-only needs a production kernel without suite inputs')
+    if args.paired_tools and (args.kernel_only or args.stub_only or args.features or args.suite or args.milestone):
+        parser.error('--paired-tools needs a production kernel and userspace without suite inputs')
     if args.stub_only:
         return stub_only(args)
     return inner(args) if args.inner else outer(args)

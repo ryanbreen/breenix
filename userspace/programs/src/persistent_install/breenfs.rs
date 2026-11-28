@@ -165,7 +165,7 @@ fn installed_image(id: &str) -> Result<bool, String> {
     }
 }
 
-fn is_metal_generation(name: &str) -> bool {
+pub(super) fn is_metal_generation(name: &str) -> bool {
     let Some(id) = name.strip_suffix("-metal") else { return false; };
     id.len() == 16 && id.as_bytes()[8] == b'T' && id.as_bytes()[15] == b'Z'
         && id.as_bytes()[..8].iter().chain(&id.as_bytes()[9..15]).all(u8::is_ascii_digit)
@@ -230,7 +230,7 @@ fn open(path: &str) -> Result<File, String> {
     File::open(path).map_err(|error| fail("open", Path::new(path), error))
 }
 
-fn request(name: &str, flags: u32) -> SnapshotRequest {
+pub(super) fn request(name: &str, flags: u32) -> SnapshotRequest {
     let mut request = SnapshotRequest { flags, name_len: name.len() as u32, name: [0; 256] };
     request.name[..name.len()].copy_from_slice(name.as_bytes());
     request

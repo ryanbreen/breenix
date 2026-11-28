@@ -13,9 +13,9 @@ use std::{
 #[cfg(not(target_os = "breenix"))]
 #[allow(dead_code)] // The standalone host regression only uses the streaming interface.
 #[path = "../../../../libs/libbreenix/src/crypto/sha256.rs"]
-mod sha256;
+pub(super) mod sha256;
 #[cfg(target_os = "breenix")]
-use libbreenix::crypto::sha256;
+pub(super) use libbreenix::crypto::sha256;
 
 const BASELINE: &str = ".breenix-image";
 const VERSION: &str = "BREENIX-IMAGE-1";
@@ -40,29 +40,37 @@ fn fingerprint(path: &Path, meta: &Metadata) -> Result<String, String> {
         // not make the entire directory a local change.
         return Ok("directory".into());
     }
-    let mut hash = sha256::Sha256::new();
-    for value in [meta.mode(), meta.uid(), meta.gid()] {
-        hash.update(&value.to_le_bytes());
-    }
+    let read = |file: File| identity(meta.mode(), meta.uid(), meta.gid(), file)
+        .map_err(|error| fail("read", path, error));
     if meta.is_file() {
-        let mut file = File::open(path).map_err(|error| fail("open", path, error))?;
-        let mut buffer = [0; 64 * 1024];
-        loop {
-            let read = file.read(&mut buffer).map_err(|error| fail("read", path, error))?;
-            if read == 0 { break; }
-            hash.update(&buffer[..read]);
-        }
+        read(File::open(path).map_err(|error| fail("open", path, error))?)
     } else if meta.is_symlink() {
-        hash.update(fs::read_link(path).map_err(|error| fail("readlink", path, error))?
-                    .as_os_str().as_bytes());
+        let link = fs::read_link(path).map_err(|error| fail("readlink", path, error))?;
+        identity(meta.mode(), meta.uid(), meta.gid(), link.as_os_str().as_bytes())
+            .map_err(|error| fail("read", path, error))
     } else {
-        return Ok("unsupported".into());
+        Ok("unsupported".into())
     }
+}
+
+pub(super) fn identity(mode: u32, uid: u32, gid: u32, mut data: impl Read) -> std::io::Result<String> {
+    let mut hash = sha256::Sha256::new();
+    for value in [mode, uid, gid] { hash.update(&value.to_le_bytes()); }
+    let mut buffer = [0; 64 * 1024];
+    loop {
+        let read = data.read(&mut buffer)?;
+        if read == 0 { break; }
+        hash.update(&buffer[..read]);
+    }
+    Ok(hex(hash.finalize()))
+}
+
+pub(super) fn hex(bytes: impl AsRef<[u8]>) -> String {
     let mut result = String::new();
-    for byte in hash.finalize() {
+    for byte in bytes.as_ref() {
         write!(result, "{byte:02x}").expect("formatting into a string cannot fail");
     }
-    Ok(result)
+    result
 }
 
 fn entries(root: &Path, scratch: Option<&Path>, legacy_shared: bool) -> Result<BTreeMap<PathBuf, String>, String> {
@@ -89,12 +97,17 @@ fn entries(root: &Path, scratch: Option<&Path>, legacy_shared: bool) -> Result<B
 }
 
 pub(super) fn record(copier: &mut Copier, staged: &Path, scratch: Option<&Path>) -> Result<(), String> {
+    let text = baseline_text(entries(staged, scratch, false)?)?;
+    copier.write_file(&staged.join(BASELINE), &text, 0o600)
+}
+
+pub(super) fn baseline_text(entries: impl IntoIterator<Item = (PathBuf, String)>) -> Result<String, String> {
     let mut text = format!("{VERSION}\0");
-    for (path, digest) in entries(staged, scratch, false)? {
+    for (path, digest) in entries {
         let path = path.to_str().ok_or("image contains a non-UTF-8 path")?;
         write!(text, "{digest}\t{path}\0").expect("formatting into a string cannot fail");
     }
-    copier.write_file(&staged.join(BASELINE), &text, 0o600)
+    Ok(text)
 }
 
 fn read_baseline(current: &Path) -> Result<Option<BTreeMap<PathBuf, String>>, String> {
@@ -107,6 +120,10 @@ fn read_baseline(current: &Path) -> Result<Option<BTreeMap<PathBuf, String>>, St
         return Err("image baseline is not a regular file".into());
     }
     let text = fs::read_to_string(&path).map_err(|error| fail("read image baseline", &path, error))?;
+    parse_baseline(&text).map(Some)
+}
+
+pub(super) fn parse_baseline(text: &str) -> Result<BTreeMap<PathBuf, String>, String> {
     let text = text.strip_prefix(&format!("{VERSION}\0")).ok_or("invalid image baseline header")?;
     let mut files = BTreeMap::new();
     if !text.is_empty() && !text.ends_with('\0') {
@@ -121,7 +138,7 @@ fn read_baseline(current: &Path) -> Result<Option<BTreeMap<PathBuf, String>>, St
             return Err("invalid image baseline path".into());
         }
     }
-    Ok(Some(files))
+    Ok(files)
 }
 
 fn breenfs_payload(path: &Path) -> bool {

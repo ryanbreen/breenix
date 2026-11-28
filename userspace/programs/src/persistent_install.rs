@@ -25,7 +25,7 @@ mod breenfs;
 #[path = "../../../kernel/src/fs/breenfs/abi.rs"]
 pub mod breenfs_abi;
 
-#[cfg(feature = "paired-host-test")]
+#[cfg(any(target_os = "breenix", feature = "paired-host-test"))]
 #[path = "persistent_install/paired.rs"]
 pub(crate) mod paired;
 
@@ -970,6 +970,14 @@ fn install() -> Result<Totals, String> {
 }
 
 fn main() {
+    #[cfg(target_os = "breenix")]
+    if std::env::args().nth(1).as_deref() == Some("paired") {
+        if let Err(error) = paired::run(std::env::args().skip(2).collect()) {
+            eprintln!("persistent-install paired: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     match install() {
         Ok(totals) => {
             println!(
