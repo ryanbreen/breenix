@@ -19,18 +19,29 @@ mod installer;
 /// The rehearsal's scratch directories. The rehearsal runs as root and deletes its
 /// workspace recursively when it ends, so the workspace must be a directory it made.
 mod workspace {
-    use std::{fs, path::PathBuf};
+    use std::{
+        ffi::{CString, OsString},
+        fs,
+        os::unix::ffi::{OsStrExt, OsStringExt},
+        path::PathBuf,
+    };
 
-    /// A new, empty directory under the temporary directory, owned by this run.
+    /// A new, empty directory under the temporary directory, owned by this run. mkdtemp
+    /// creates it with mode 0700 and fails rather than return a name that exists.
     pub fn workspace(prefix: &str) -> PathBuf {
-        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "{prefix}-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-        fs::create_dir_all(&dir).unwrap();
-        dir
+        let template = std::env::temp_dir().join(format!("{prefix}-XXXXXX"));
+        let mut bytes = CString::new(template.as_os_str().as_bytes())
+            .unwrap()
+            .into_bytes_with_nul();
+        let made = unsafe { libc::mkdtemp(bytes.as_mut_ptr().cast()) };
+        assert!(
+            !made.is_null(),
+            "mkdtemp {}: {}",
+            template.display(),
+            std::io::Error::last_os_error()
+        );
+        bytes.pop();
+        PathBuf::from(OsString::from_vec(bytes))
     }
 
     #[test]
