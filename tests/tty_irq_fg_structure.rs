@@ -737,8 +737,8 @@ fn validate_the_detector_is_wired(driver: &str, process: &str) -> Result<(), Str
     Ok(())
 }
 
-/// Rule 8: the foreground signal worker sleeps through `arch_halt_while_blocked`
-/// and never through `arch_halt_with_interrupts`.
+/// Rule 8: the foreground signal worker sleeps through `arch_halt_while_blocked`,
+/// and its body has no call to `arch_halt_with_interrupts`.
 ///
 /// The worker publishes a timer sleep and then waits for its wake. A halt that
 /// does not first reread the blocked state with interrupts masked can begin

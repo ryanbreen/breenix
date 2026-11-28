@@ -162,7 +162,7 @@ static FG_SIGNAL_THREAD: spin::Once<()> = spin::Once::new();
 
 /// Drain passes the foreground signal worker has begun, and its thread ID
 /// (0 until it runs), so a signal that was not sent can be placed: the worker
-/// did not run, or it ran and found nothing queued.
+/// began no pass, or it began passes and the signal was not in the queue.
 static FG_SIGNAL_PASSES: AtomicU64 = AtomicU64::new(0);
 static FG_SIGNAL_TID: AtomicU64 = AtomicU64::new(0);
 
@@ -187,7 +187,7 @@ pub(crate) fn foreground_signal_progress() -> (u64, u64, usize) {
 }
 
 /// Key bytes queued for terminal `number` (1 to 6) and not yet admitted to
-/// its line discipline, or `None` while the queue is busy.
+/// its line discipline. No count is returned while the queue is busy.
 #[cfg(feature = "boot_tests")]
 pub(crate) fn pending_key_count(number: usize) -> Option<usize> {
     let keys = PENDING_KEYS.get(number.checked_sub(1)?)?;
@@ -243,8 +243,8 @@ fn foreground_signal_thread() {
         // Halt only while still blocked, rereading the state with interrupts
         // masked: a halt begun after the wake (its IPI already taken, or this
         // thread switched out before the halt and dispatched again once woken)
-        // would last until this CPU's next interrupt, which a CPU taking no
-        // timer ticks may never get.
+        // would last until this CPU's next interrupt, and on a CPU taking no
+        // timer ticks only an IPI ends it.
         scheduler::with_current(|sched| sched.block_current_for_timer(wake_at));
         while scheduler::thread_state(tid) == Some(ThreadState::BlockedOnTimer) {
             crate::arch_halt_while_blocked();
