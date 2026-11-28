@@ -2300,6 +2300,17 @@ PR, but it reopens the attribution, as E1 and E2 also rule (E1 section 13, E2 se
    rule, which needs nothing on x86 (10.4). <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
 9. **No format change.** No E3 step changes BreenFS's on-disk format, and none touches `compiler/` or
    `src/llvm-project`. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+10. **Q9: changes from this design's review.** Three of them reach past E3's own structures, so the
+    coordinator should see them before E3-4 starts:
+    - **Generation holds** (11.5a). A write part joins the open generation with a hold, and a freeze waits for
+      the holds to drain before it takes `MountLock`. That adds a BreenFS synchronisation point beside the
+      lock order of section 15. E5's design should keep it, or replace it with its own commit protocol.
+    - **E3-7 needs E2.5 and E2.6** (18). `io` cannot be the foreground exclusion once readers wait on fills,
+      so the sleeping `io` lock moves from E3-15 to E3-7. E3-7 to E3-10 therefore also wait for E2.5 and
+      E2.6, not only for E1-9.
+    - **The frame-vector type** (18). E1 section 8 names it, and no E1 PR before E1-9 builds it. E3-4 builds
+      it over today's frame leases. If the coordinator prefers it in an E1 PR, E3-4 depends on that PR
+      instead.
 
 ## 22. Deviations recorded by builders (DEV-39(2))
 
