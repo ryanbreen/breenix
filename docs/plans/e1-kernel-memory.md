@@ -480,14 +480,32 @@ pageblocks. That is what leaves contiguous runs available long after boot.
 
 ### 6.1 Routing
 
-`GlobalAlloc` gets the `Layout` on both `alloc` and `dealloc`, so the layer is chosen from the layout
-alone, with no lookup:
+An allocation's layer is chosen from its `Layout`. The rows are tested in order, and the first match wins,
+so each layout has exactly one layer:
 
-| Request | Layer | Backing |
-|---|---|---|
-| size <= 4096 and align <= 4096 | slab cache of the class (6.2) | order-0 frames through the direct map |
-| 4096 < size <= 512 KiB, or align > 4096 up to 2 MiB | span arena running `heap_index` (6.4) | 2 MiB spans in the span window |
-| size > 512 KiB | vmap allocation (6.5) | discontiguous order-0 frames in the vmap window |
+| # | Request | Layer | Backing |
+|---|---|---|---|
+| 1 | size <= 4096 and align <= 4096 | slab cache of the class (6.2) | order-0 frames through the direct map |
+| 2 | size <= 512 KiB and align <= 4096 | span arena running `heap_index` (6.4) | 2 MiB spans in the span window |
+| 3 | otherwise: size > 512 KiB, or align > 4096 at any size | vmap allocation (6.5) | discontiguous order-0 frames in the vmap window |
+
+- Alignment above 4096 is a property of the virtual address, so it goes to vmap, whose VA allocator
+  aligns the extent to max(align, 4096). The frames under it need no alignment. Span arenas get only
+  align <= 4096. `heap_index` places its boundary tag in-band before each block. A 4 KiB block aligned to
+  2 MiB inside a 2 MiB span would have to start at offset 0, where the tag must be, so it cannot fit.
+- An alignment larger than the vmap window returns `AllocError`. There is no fourth case.
+- Zero-size layouts do not reach `GlobalAlloc` (Rust's allocation APIs handle them).
+
+A free is routed by the pointer's address, not by its layout:
+
+- an address in the span window or the vmap window belongs to that layer (two range compares);
+- otherwise it is a direct-map address, and `FrameMeta.use` names its slab (6.2).
+
+The layout passed to `dealloc` is then checked against the layer's own record of the block: the slab's
+class, `heap_index`'s block size, or the vmap extent's length. A mismatch is corruption and panics with
+both values, as in 6.2. So a `realloc` that keeps a block in place while its new size would route
+elsewhere cannot send the later free to the wrong layer. An example is a 1 MiB vmap block shrunk to
+300 KiB. The block stays in the layer that holds it until it moves.
 
 The size limits are constants of the layout, not of RAM. The windows' sizes scale with RAM (section 9).
 
@@ -629,8 +647,11 @@ Bonwick and Adams 2001.
 
 - `#[global_allocator]` becomes `KernelAllocator`:
   - `alloc` routes by layout and returns null only after the slow path (7.2);
-  - `dealloc` cannot fail;
-  - `realloc` stays in place where the layer allows: same slab class, `grow_in_place`, or the vmap move.
+  - `dealloc` cannot fail. It routes by address (6.1);
+  - `realloc` stays in place where the block's current layer allows it: the same slab class,
+    `grow_in_place` or `shrink_in_place` in a span, or the vmap move. Otherwise it allocates in the new
+    layout's layer, copies and frees. A shrink in place keeps the block in its layer. The layer records
+    the new size, so a later `dealloc` with the new layout passes 6.1's check.
 - Explicit APIs for code that can say more than `Layout` can:
   - `kmem::try_alloc(layout, Ctx)` and `kmem::alloc_pages(order, zone, Ctx)`.
 - `Ctx` is `Normal`, `Atomic` or `NoReclaim`. Each is a list of steps the allocator may take, enforced in
@@ -1233,7 +1254,14 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
     virtio list the same way), returns an address for it with no error. That address is not the first
     frame's, and the second page is not at +4096, so a device given it would write to the wrong memory,
     which is red. `dma::bus_address` refuses it, and the same buffer from `dma::alloc` is accepted.
-  - Routing: each `Layout` reaches exactly one layer (6.1).
+  - Routing: for each size in {1, 16, 4096, 4097, 512 KiB, 512 KiB + 1, 4 MiB} and each alignment in
+    {1, 16, 4096, 8192, 2 MiB, 1 GiB}, the layout reaches exactly one layer, and the allocation succeeds
+    and meets its alignment. Check first: the table in this design's first draft, applied to the same
+    grid, matches two rows for (4 MiB, 8 KiB), matches 0 rows for alignment 1 GiB, and sends
+    (4096, 2 MiB) to a span that cannot hold it under `heap_index`'s in-band tag. That is red.
+  - Cross-layer `realloc`: a 1 MiB vmap block shrunk in place to 300 KiB and freed with the new layout
+    returns to vmap. A free routed by layout would send it to a span arena. A free of a pointer with a
+    layout that disagrees with the block's record panics in the model with both values.
 - Boot: one ARM64 QEMU boot of the boot-path gate. Retiring the heap changes boot memory order, and the
   conversions change what devices are given. Cases: the boot-path milestone stages, which bring up the
   virtio block, net and input devices.
