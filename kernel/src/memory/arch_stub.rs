@@ -919,8 +919,7 @@ pub mod tlb {
     #[cfg(target_arch = "aarch64")]
     #[inline]
     pub fn flush(addr: VirtAddr) {
-        // The TLBI VAAE1IS instruction expects the address shifted right by 12
-        let page = addr.as_u64() >> 12;
+        let page = crate::memory::tlbi::vaa_operand(addr.as_u64());
         unsafe {
             core::arch::asm!(
                 "dsb ishst",           // Ensure stores complete
@@ -942,7 +941,8 @@ pub mod tlb {
         unsafe {
             core::arch::asm!("dsb ishst", options(nostack));
             for &page in pages {
-                core::arch::asm!("tlbi vaae1is, {0}", in(reg) (page >> 12), options(nostack));
+                let operand = crate::memory::tlbi::vaa_operand(page);
+                core::arch::asm!("tlbi vaae1is, {0}", in(reg) operand, options(nostack));
             }
             core::arch::asm!("dsb ish", "isb", options(nostack));
         }

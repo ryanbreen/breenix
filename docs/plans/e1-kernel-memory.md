@@ -1211,6 +1211,8 @@ or 52-bit VA (ARM64) question, outside E1.
 - The Rust Reference, the `used` attribute (an item kept in the object file, which the linker may still
   remove), and the `uefi` crate 0.33's `table::set_system_table`, `MemoryMap` and `MemoryMapMeta`
   documentation.
+- Raimund Seidel and Cecilia R. Aragon, "Randomized Search Trees", Algorithmica 16(4/5), 1996 (the
+  treaps of E1-5's free-extent trees).
 - J. W. J. Williams, "Algorithm 232: Heapsort", Communications of the ACM 7(6), 1964; Knuth, *TAOCP*
   vol. 3, §5.2.3.
 - POSIX.1-2017 (The Open Group Base Specifications, Issue 7) and the Linux man pages, for errno values only.
@@ -1785,6 +1787,58 @@ E1-4 implementation decisions (DEV-39(2)):
   is a hardware effect. Case: the init self-check maps, writes, unmaps and remaps a page in each window, and
   reports through the boot-path stages.
 - Rows: no row expected to move.
+
+E1-5 implementation decisions (DEV-39(2)):
+
+- Placement. x86 windows take the lowest runs of PML4 slots in 257 to 401 whose E1-2x PDPT is empty,
+  in the order span, vmap, stack. ARM64 windows take invalid TTBR1 L0 entries above the RAM end (at least
+  4 GiB) and below the ECAM reservation's entry (447), and `kva::init` links an L1 table under each. The
+  design gives each window's slot count, not its slots, and these ranges hold no other region.
+- The stack window is RAM rounded up to 1 GiB. Its stacks are backed by RAM, so the window does not limit
+  them before RAM does, and E1-10 can resize it.
+- Shapes: the span window hands out 2 MiB-aligned spans with no guard, so `(va - base) >> 21` indexes them
+  (6.4); vmap allocations carry their guard page after them (6.5), and stacks theirs below (E1-10).
+- No unwinding. `map_range` counts the table pages a range can need (another CPU only adds tables) and
+  takes each of them before its first write, so a shortfall returns `NoTables` with no entry written and each
+  page given back. An unwound leaf could have been cached by a speculative walk and would need a flush.
+- An unmap clears only the valid bit, so the invalid descriptor keeps its address (SDM vol. 3A §4.5 and
+  the Arm ARM ignore those bits). The pending list holds extents, not frame lists, and the flush finds the
+  leaves and frames in the tables, so the unmap path does not allocate. Only a `Flushed` batch, which only
+  `Batch::flush` makes, reaches the frames.
+- The new shootdown kinds carry the page count in the kind byte and the list's address in the argument,
+  because a request slot holds one word. The PGE toggle is `TlbOps::toggle_global_pages`, a CR3 reload
+  when PGE is already clear, as `pat.rs` does.
+- ARM64 flushes at each release, 32 pages per `flush_pages` call, so its pending list empties at once and
+  it registers no shrinker. x86 registers `kva-pending` at cost 20, below the block cache's 30.
+- `AllocError` gains `NoVa { window }`, with the window as its `WindowId` number because `kmem_core.rs` is
+  included without the window module, and `NoFrames` with no zone or order until E1-8.
+- The compare-exchange install also serves `map_kernel_page`, so its callers no longer serialize first
+  mappings under one entry.
+- The address-space fixture uses the vmap window of 512 GiB of RAM, 4 × 512 GiB, because 4 × 128 GiB is one
+  512 GiB slot.
+- The check-first flush test calls `tlb_request::kernel_unmap_request`. On the red commit it returns
+  `unmap_kernel_page`'s documented flush, `tlb::flush_all`'s CR3 reload, so the test fails on that code.
+- The free-extent trees are treaps (Seidel and Aragon 1996): split and merge give O(log n) expected with no
+  rebalancing rules.
+- The self-check maps 4 KiB pages. The 2 MiB leaf is covered by the host test in both encodings, because
+  the boot has no 2 MiB-aligned contiguous allocator before E1-8.
+
+E1-5 review decisions (DEV-39(2)):
+
+- The `TLBI VAAE1IS` operand is `(va >> 12) & (2^44 - 1)` (`memory/tlbi.rs`): VA[55:12] with TTL 0 and the
+  RES0 bits clear, because a TTBR1 address's VA[59:56] otherwise lands in the TTL as 0b1111 (64 KiB
+  granule, level 3), which does not describe a 4 KiB entry (Arm ARM, TLBI VAAE1IS).
+- When the RAM-sized windows do not fit their slots, `place` halves the three together, 1 : 4 : 1, down to
+  1 GiB each, because with no RAM ceiling (DEV-29 Q5) smaller windows that run out of VA before RAM beat
+  no windows; x86 at 16 TiB (192 of 145 slots) and ARM64 at 32 TiB (384 of 383 entries) need it.
+- The free-extent search walks the size tree from the request's exact size and takes the smallest extent it
+  fits at its actual alignment, because the worst-case padded size refuses an aligned extent that fits.
+- Each allocation holds its retirement node from `allocate` until `retire` or `give_back`, because a shared
+  spare pool can be emptied by unflushed unmaps, and an unmap that then needs a node page has no error path.
+  `kva::reserve` is where a node page is added, and there a failure is an `AllocError`.
+- `Batch::flush` takes a `KernelTlb` instead of a closure, and x86's (`tlb_request::KernelUnmap`) chooses the
+  request and runs it here and then on each other CPU, because the host tests must drive the routing
+  production uses; `tlb.rs` supplies only the two deliveries.
 
 ### E1-6: slab caches with per-CPU magazines
 

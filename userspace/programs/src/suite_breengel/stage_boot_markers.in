@@ -5,6 +5,7 @@
     "Breenix ARM64 Kernel Starting",
     "[boot] Current exception level: EL1",
     "[boot] MMU already enabled",
+    "[boot] Kernel VA windows self-check passed",
     "[boot] Memory management ready",
     "[boot] Timer frequency:",
     "[boot] Current timestamp:",
