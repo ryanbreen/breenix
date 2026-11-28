@@ -1020,13 +1020,27 @@ the tree (the `11` kind value 3 is unused). E3 does not need it to close the gap
 
 ### 12.2 What can be reclaimed
 
-| Page | E3-6 (before E2.9) | From E3-13 |
-|---|---|---|
-| Clean, unmapped (`leaf_refs` = 0), not `Filling` or `Writeback` | Freed | Freed |
-| Hole entry | Dropped (no frame) | Dropped |
-| Clean, mapped | Kept | Unmapped through the reverse map, flushed, freed |
-| Dirty | Kept; the page daemon asks its mount to commit | Same |
-| Writeback | Kept until its generation is durable and the open view has adopted it (11.2) | Same |
+| Page | E3-6 to E3-10 | From E3-11 | From E3-13 |
+|---|---|---|---|
+| Clean, not `Filling` or `Writeback`, covered by no binding and no population claim | Freed | Freed | Freed |
+| Clean, no PTE (`leaf_refs` = 0), covered by a binding or a population claim | Kept | Freed | Freed |
+| Hole entry | Dropped if covered by no binding or claim | Dropped | Dropped |
+| Clean, mapped | Kept | Kept | Unmapped through the reverse map, flushed, freed |
+| Covered by a locked binding (`mlock`, `mlockall`, `MAP_LOCKED`) | Kept | Kept | Kept |
+| Dirty | Kept; the page daemon asks its mount to commit | Same | Same |
+| Writeback | Kept until its generation is durable and the open view has adopted it (11.2) | Same | Same |
+
+- **Covered pages before E3-11.** A PTE count of 0 does not mean a page is unneeded. An eager mapping
+  that has not touched a page yet, and a population whose binding is not published yet, both rely on it,
+  and before E3-11 a fault cannot refill it: it would take 5.3's `absent_bound` SIGBUS, which is the
+  #3208 shape again. So until E3-11 reclaim keeps today's rule, that a page any binding or population
+  claim covers is not evicted (`file_map.rs:1138-1183`). It is checked under `tree_lock` through the
+  binding interval tree (4.1) and the claims. From E3-11 a fault can fill, so only PTEs and locks keep a
+  page.
+- **Locked bindings.** A binding records whether its VMA is locked (`mlock`, `mlockall`, `MAP_LOCKED`;
+  `syscall/memory_advice.rs:255-353`). POSIX `mlock` requires the pages to stay resident, so reclaim's
+  recheck skips a page a locked binding covers, and the scan moves it to `active` so it is not met again
+  at once.
 
 Mapped pages wait for E3-13. Unmapping one takes each mapping address space's page-table lock, which E2.8
 makes per address space; before that it would mean PROCESS_MANAGER sections from the reclaim path.
@@ -1036,12 +1050,15 @@ makes per address space; before that it would mean PROCESS_MANAGER sections from
 The FileCache tree lock comes before the zone's LRU lock (section 15). So the scan does not take a tree lock
 while holding the LRU lock:
 
-1. **Isolate.** Under the LRU lock, take up to 32 candidates from the tail. For each, set `ISOLATED`, take a
+1. **Isolate.** Under the LRU lock, take up to 32 candidates from the tail. The page daemon may wait for
+   the LRU lock. Direct reclaim (12.4) takes it with `try_lock` and reports no progress if it is busy,
+   since it runs inside an allocation whose caller may hold locks below it (E1 7.3's rule). For each, set `ISOLATED`, take a
    page reference and take an owner reference: the cache's address from `FrameMeta.cache`, valid because
    the page is on a list and a FileCache empties its lists before it is freed. Release the LRU lock.
 2. **Evict.** For each page, take its owner's `tree_lock` with `try_lock`.
-   - On success, recheck the state. If it is still clean, unmapped and not `Filling` or `Writeback`, remove
-     the entry and drop the tree's page reference.
+   - On success, recheck the state against 12.2's table: still clean, not `Filling` or `Writeback`, no
+     locked binding, and before E3-11 no binding or claim covering it. If so, remove the entry and drop
+     the tree's page reference.
    - Otherwise, or if the lock was busy, put the page back.
 3. **Free.** Drop the isolation references. A page whose last reference goes is returned to E1 after its
    flush (for a mapped page in E3-13, after `LeafBatch` has flushed).
@@ -1473,8 +1490,13 @@ waits for E3-6 (it needs pages retained by the cache to be worth anything), so t
     This is the bimodal `rustc -vV` mechanism of audit R5. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
   - Close and reopen a file: its pages are still resident (red on the old code, which builds a new
     `MapState`).
-  - Under a fixed frame budget, run a working set and a stream. Reclaim frees stream pages first and never
-    a bound, dirty, `Filling` or `Writeback` page. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+  - Under a fixed frame budget, run a working set and a stream. Reclaim frees stream pages first and never <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+    a bound, dirty, `Filling` or `Writeback` page.
+  - Eager mapping before its first touch: populate a mapping, run the production shrinker and the page
+    daemon under a frame budget, then fault every page. Each maps the file's bytes and `absent_bound`
+    stays 0. The same holds for a page an `mlock`ed mapping covers. A third case holds the LRU lock and
+    runs direct reclaim, which returns no progress without waiting. These guard the reclaim the PR adds,
+    which the old tree does not have, so they are not red there; the PR says so. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
   - A FileCache dropped while reclaim holds one of its pages isolated is freed only after the isolation
     ends.
   - Unlink, then the last close, drops every page. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
@@ -1983,7 +2005,7 @@ mapping has not touched page 0 yet, so its PTE count is 0. Faults cannot fill be
 page must stay resident in any case.
 
 ```pycon
->>> RULE = 'leaf-refs-zero'
+>>> RULE = 'covered-until-e3-11'
 >>> page = {'leaf_refs': 0, 'covered': True, 'mlocked': False}
 >>> def reclaimable(p, faults_fill):
 ...     if RULE == 'leaf-refs-zero':
