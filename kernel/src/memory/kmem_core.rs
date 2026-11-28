@@ -361,7 +361,10 @@ impl Default for Stats {
 /// and holds `count` entries `stride` bytes apart. The address of entry `n`
 /// names CPU `n`. Other values, such as 0 or a value firmware left in a
 /// register whose reset value is UNKNOWN (ARM64's TPIDR_EL1), give an empty
-/// `Option` and are not read through.
+/// `Option` and are not read through. ARM64's `kmem::named_cpu` is its
+/// kernel caller (x86-64 names a CPU through `per_cpu`), and the host tests
+/// compile it on their host.
+#[cfg(any(target_arch = "aarch64", test))]
 pub fn cpu_of_base(base: u64, first: u64, stride: u64, count: usize) -> Option<usize> {
     let offset = base.checked_sub(first)?;
     if stride == 0 || offset % stride != 0 {
