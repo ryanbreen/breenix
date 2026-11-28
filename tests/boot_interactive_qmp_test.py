@@ -135,7 +135,7 @@ class BootInteractiveQmpTest(unittest.TestCase):
 
     def copy_hosted_stage_scripts(self, *extra):
         scripts = self.root / "scripts"
-        for name in ("write-boot-target.sh", "rust_host_stage.py", "lib/root-fs.sh",
+        for name in ("write-boot-target.sh", "rust_host_stage.py", "userspace_generation.py", "lib/root-fs.sh",
                      "metal/metal_root.py", "metal/metal_probe.py", "metal/transfer_fixture.py",
                      *extra):
             destination = scripts / name
