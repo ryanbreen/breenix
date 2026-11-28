@@ -357,11 +357,12 @@ fn halt_census(root: &Path) -> Vec<Site> {
 /// Kernel threads that still publish a timer or plain block, set a
 /// reschedule, and halt as the current thread until the next interrupt's exit
 /// switches them out. (file, function, why). E2.3 converted these 8 to sleep
-/// through `arch_halt_while_blocked`, and that tree's one ARM64 QEMU boot
-/// soft-locked before any boot test while main's did not; these threads run
-/// on the secondary CPUs in that window, so the conversion was taken back out
-/// of E2.3. Each moves in a later PR that gets its own boot. The list only
-/// shrinks: an entry that matches no site fails
+/// through `arch_halt_while_blocked`; when that tree's ARM64 boot soft-locked
+/// they were the suspect and came back out, and the next boot showed the cause
+/// was elsewhere (the pty hangup daemon's bare brake). No tree with the
+/// conversion and that fix was booted, so each moves in a later PR that gets
+/// its own boot (docs/plans/e2-sleepable-contexts.md, "E2.3 as built"). The
+/// list only shrinks: an entry that matches no site fails
 /// `every_halt_classification_still_matches_a_site`.
 const HALT_CLASSIFIED: &[(&str, &str, &str)] = &[
     ("kernel/src/console/mod.rs", "sleep_ms", "x86 render-thread timer sleep"),
