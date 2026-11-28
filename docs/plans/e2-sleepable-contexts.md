@@ -954,10 +954,18 @@ The builder resolved these details against the code. Each has one sentence of re
   before any boot test, and a baseline boot of main with the same script and image did not. The
   conversion was the suspect and was taken back out, but the next boot soft-locked the same way: the
   cause was the pty hangup daemon's bare brake (next item), not the conversion. The conversion stays
-  out of E2.3 because its tree was never booted with that cause fixed. The 8 are listed in
+  out of E2.3 because no tree with both the conversion and that fix has been booted. The 8 are listed in
   `tests/park_contract_structure.rs` (`HALT_CLASSIFIED`), the list may only shrink, and each moves in a
   later PR with its own boot. In main's baseline boot its own `test_deferral` probe did not run on CPU 1
-  (verdict `starved` after 15 s), which that later PR has to account for.
+  (verdict `starved` after 15 s), which that later PR has to account for. With the 8 listed, the census
+  is a ratchet against new sites and passes on main too; it is not a check of E2.3's code.
+- **A syscall's back-off releases its brake.** mlock's population retry, when another thread is
+  installing the page, set a reschedule and halted as the current thread at the syscall's braked level,
+  so the interrupt that ended the halt could not switch it away, and no receipt recorded it. It publishes
+  no blocked state, so the HALT census did not see it. It now backs off through `park::retry_pause`, which
+  releases that level for the halt. `retry_pause` records a receipt at its caller's site when the caller
+  holds more than that one level. A structure check finds a direct halt anywhere under
+  `kernel/src/syscall`.
 - **Three more `park::Braked` sites.** The pty hangup daemon, the x86 console input clock and xHCI's
   `wait_console_ready` took a bare `preempt_disable()` so that `Completion` would sleep as in a syscall.
   Since E2.2 that is `LocksHeld(1)`, and the wait spins its CPU for its timeout. On this PR's first two
