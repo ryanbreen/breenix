@@ -310,7 +310,7 @@ fn root_volume_unmount_releases_staging_custody() {
     let id = mount::find_mount("/run/breenix/paired/stage").unwrap();
     assert_ne!(id, run_id);
     assert!(std::str::from_utf8(&mount::mounts_text()).unwrap().lines()
-        .any(|line| line == "draft.new /run/breenix/paired/stage breenfs rw 0 0"));
+        .any(|line| line == "none /run/breenix/paired/stage breenfs rw 0 0"), "only / shows its source");
     let Some(mount::Entered::Fs(entered, staged_root)) = mount::enter((run_id, stage)) else {
         panic!("the covered directory must enter the draft");
     };

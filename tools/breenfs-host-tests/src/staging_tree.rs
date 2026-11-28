@@ -232,12 +232,20 @@ fn reattach_serves_the_new_root_not_cached_inodes() {
     fs.detach_staging().unwrap();
 
     fs.attach_staging(b"A.new").unwrap();
-    assert_eq!(fs.getattr(aliased).unwrap().kind, NodeKind::Regular);
     assert_eq!(read(&fs, aliased), b"A's first file");
     assert_eq!(read(&fs, other), b"A's second file");
     let mapped = crate::memory::file_map::bind_host(fs.open(other).unwrap(), 4096, true, false, true);
     assert_eq!(mapped.load(0), Ok(b'A'));
     drop(mapped);
+    // Stat last, so A's inodes are what the inode cache and NodeStates hold
+    // when A is detached.
+    assert_eq!(fs.getattr(aliased).unwrap().kind, NodeKind::Regular);
+    assert_eq!(fs.getattr(other).unwrap().size, b"A's second file".len() as u64);
+    {
+        let state = fs.inner.state.lock();
+        assert!(state.inodes.get(aliased).is_some() && state.nodes.contains_key(&other),
+            "the fixture needs A's inodes cached at detach");
+    }
     fs.detach_staging().unwrap();
 
     fs.attach_staging(b"B.new").unwrap();
@@ -246,6 +254,7 @@ fn reattach_serves_the_new_root_not_cached_inodes() {
     assert_eq!(fs.getattr(other).unwrap().size, b_bytes.len() as u64);
     assert_eq!(read(&fs, other), b_bytes);
     let mapped = crate::memory::file_map::bind_host(fs.open(other).unwrap(), 3 * 4096, true, false, true);
+    assert_eq!(mapped.load(7), Ok(b_bytes[7]), "a page A cached for the same inode number");
     assert_eq!(mapped.load(4096 + 7), Ok(b_bytes[4096 + 7]));
     drop(mapped);
     fs.detach_staging().unwrap();
