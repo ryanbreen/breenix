@@ -355,3 +355,22 @@ fn root_freeze_leaves_default_tree_mappings_alone() {
     assert!(!log.map.has_dirty(), "the store is written back by the next sync");
     fs.shutdown("freeze-default-mapping", u64::MAX).unwrap();
 }
+
+/// Review of PR #3273: while frozen, an unprivileged shared-write mmap or
+/// mprotect of a set-ID booted-root file first clears the set-ID bits
+/// (clear_mapping_privilege). That refusal is the freeze's EBUSY (DEV-44),
+/// not EROFS.
+#[test]
+fn frozen_set_id_shared_write_is_busy() {
+    let fs = persistent();
+    let ino = fs.create(2, b"setid", NewNode::Regular { attrs: InodeAttrs::new(0o104755, 0, 0) }).unwrap();
+    let node = fs.open(ino).unwrap();
+    freeze(&fs).unwrap();
+    assert_eq!(fs.clear_mapping_privilege(&node), Err(Errno(EBUSY)));
+    assert_eq!(fs.getattr(ino).unwrap().attrs.mode & 0o4000, 0o4000);
+    thaw(&fs);
+    fs.clear_mapping_privilege(&node).unwrap();
+    assert_eq!(fs.getattr(ino).unwrap().attrs.mode & 0o4000, 0);
+    drop(node);
+    fs.shutdown("freeze-setid", u64::MAX).unwrap();
+}
