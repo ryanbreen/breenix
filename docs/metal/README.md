@@ -696,7 +696,7 @@ partition starts on a 1 MiB boundary.
 
 | # | Partition | Type GUID | Size | Holds | Written by |
 |---|---|---|---|---|---|
-| 1 | EFI system partition | `C12A7328-F81F-11D2-BA4B-00A0C93EC93B` | 2 GiB, FAT32 | `\EFI\BREENIX\BOOTMGR.EFI` (the manager), `MANAGER.CFG`, `A\SLOTS.REC` and `B\SLOTS.REC`, the kernel images they name, and `\EFI\BOOT\BOOTX64.EFI` (a copy of the manager on the removable-media path) | the install's delivery stub; the manager when it commits or rolls back a slot |
+| 1 | EFI system partition | `C12A7328-F81F-11D2-BA4B-00A0C93EC93B` | 2 GiB, FAT32 | `\EFI\BREENIX\BOOTMGR.EFI`, `PAIR.EFI` for the paired manager, `MANAGER.CFG`, `A\SLOTS.REC` and `B\SLOTS.REC`, their kernel images, and `\EFI\BOOT\BOOTX64.EFI` for the removable-media path | the install's delivery stub and the manager |
 | 2 | Breenix test root | `DAC951C3-27DF-4E3D-8B9E-487906AC2C81` | 4 GiB, ext2 | the root test boots get | the delivery stub, before each test boot |
 | 3 | Breenix system | `2EF14A34-ABBD-48F8-83D6-F2A8C7B4A9FE` | 8 GiB, ext2 | the persistent install's root: userland, `/etc`, `/root` | persistent boots; the install boot's migration |
 | 4 | Breenix home | `9BFEAEF9-4F51-45DE-8BCF-5CEC1603B862` | 16 GiB, ext2 | `/home` of the persistent install | persistent boots |
@@ -1037,12 +1037,15 @@ A loader that returns to firmware triggers a cold reset. `--inject upgrade-no-ss
 that path with an invalid loader. The live command reports the outcome and SSH timings in
 `live-flash.json` under the persistent boot record.
 
-The first deployment requires a powered-off network installer boot with
+Installing the paired manager requires an approved, powered-off network installer boot with
 `metal-run install-persistent --kernel-only --recovery --replace-manager`. Confirm the network
-test loop and power control before running it. The firmware verifies CURRENT, adds `LIVE.EFI`
-and the BreenFS system partition reference on the ESP, and makes the new boot option first.
-`Breenix boot manager` remains selectable in firmware setup and loads the original manager.
-After the installation shuts down, start the persistent session with the new manager.
+test loop and power control before running it. The boot host and service must have the reviewed
+replacement tools because the EFI applications build from the deployed tool sources.
+The firmware verifies CURRENT, checks or creates the BreenFS partition reference, and writes
+and reads back `PAIR.EFI` before publishing its boot option ahead of HTTP recovery.
+The earlier EFI executables remain selectable in firmware setup. The host records manifest
+version 2 after the installer confirms success. After shutdown, start the persistent session
+and check the manager's CURRENT and PREVIOUS serial line against the pre-install slot records.
 
 **Network recovery.** Use `metal-run install-persistent --kernel-only --recovery --sha <commit>`
 when the persistent system cannot stage its own kernel. Start with the machine powered off.

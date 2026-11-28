@@ -31,7 +31,7 @@ const PARTITIONS: usize = ORIGINAL_PARTS + 2;
 const CHUNK_SECTORS: usize = 128;
 const CONFIG_LINES: usize = 16;
 const MANAGER_FILE: &str = "\\EFI\\BREENIX\\BOOTMGR.EFI";
-const LIVE_MANAGER: &str = "\\EFI\\BREENIX\\LIVE.EFI";
+const PAIRED_MANAGER: &str = "\\EFI\\BREENIX\\PAIR.EFI";
 const LIVE_CONFIG: &str = "\\EFI\\BREENIX\\LIVE.CFG";
 const CONFIG_FILE: &str = "\\EFI\\BREENIX\\MANAGER.CFG";
 const PART_TYPES: [&str; PARTITIONS] = [
@@ -258,7 +258,7 @@ fn parse<'t>(text: &'t str) -> Result<Request<'t>, Status> {
         let valid_files = match request.action {
             Action::ReplaceUsr => files.next().is_none() && request.breenfs_upgrade.is_some(),
             Action::Upgrade if request.replace_manager => request.breenfs_upgrade.is_some_and(|guids| guids[2..] == [[0; 16]; 2])
-                && files.next().and_then(|line| line.split_once(' ')).is_some_and(|(path, _)| path == LIVE_MANAGER)
+                && files.next().and_then(|line| line.split_once(' ')).is_some_and(|(path, _)| path == PAIRED_MANAGER)
                 && files.next().is_none(),
             Action::Upgrade => files.next().is_some_and(|line| line.starts_with(r"\EFI\BREENIX\NEXT.IMG "))
                 && files.next().is_some_and(|line| line.starts_with(r"\EFI\BREENIX\NEXT.TXT "))
@@ -1245,17 +1245,27 @@ pub(super) unsafe fn run(boot: &BootServices, runtime: &RuntimeServices, volume:
     if request.replace_manager {
         ensure_idle_slots(&store, &records)?;
         report_slot(boot, &root, &store, &records, &request, "CURRENT")?;
-        // The previous boot option is still available in firmware setup.
         root.size(MANAGER_FILE)?;
-        root.size(CONFIG_FILE)?;
         let system = request.breenfs_upgrade.ok_or(INVALID_PARAMETER)?[0];
+        let http = recorded_http_option(&root).ok_or(VOLUME_CORRUPTED)?;
+        // Keep the existing manager and its configuration bootable until the
+        // new executable has been read back and the new option is published.
+        if root.size(PAIRED_MANAGER) != Err(NOT_FOUND) {
+            return Err(VOLUME_CORRUPTED);
+        }
+        let mut signature = [0; 16];
+        match root.read_bounded(LIVE_CONFIG, &mut signature) {
+            Ok(16) if signature == system => (),
+            Err(NOT_FOUND) => root.write_new(LIVE_CONFIG, &system)?,
+            Ok(_) => return Err(VOLUME_CORRUPTED),
+            Err(status) => return Err(status),
+        }
         slot_store::prepare_records(&root)?;
         files::flush_volume(boot, esp)?;
         write_esp_files(boot, &root, payload.handle(), text, "esp-file ", None)?;
-        root.write(LIVE_CONFIG, &system)?;
         files::flush_volume(boot, esp)?;
-        load_option(boot, runtime, esp, "Breenix live boot manager", LIVE_MANAGER, None)?;
-        say!("live manager installed; the prior boot option is retained");
+        load_option(boot, runtime, esp, "Breenix paired boot manager", PAIRED_MANAGER, Some(http))?;
+        say!("paired live manager installed; prior boot options retained");
         say!("persistent install request complete");
         metal_efi::com1::halt();
     }

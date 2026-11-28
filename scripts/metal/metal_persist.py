@@ -580,7 +580,7 @@ def manager_replacement_request(directory, layout, generation, manager):
                       'esp ' + parts['esp']['guid'],
                       'breenfs-upgrade ' + ' '.join(parts[role]['guid'] for role in BREENFS_ROLES),
                       'current-userland ' + generation, 'manager-replacement yes']
-    request.esp_file('efi/breenix/live.efi', manager)
+    request.esp_file('efi/breenix/pair.efi', manager)
     return request.finish(), request
 
 

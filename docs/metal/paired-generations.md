@@ -888,3 +888,7 @@ Review of PR #3273 (the same rule):
   Until then, a missing root costs one failed trial, ended by `force_rollback` (section 5) at the 600 s deadline.
 - **DEV-47 approves the ESP slot layout change.** The coordinator schedules the manager replacement after
   PR B, PR C and the DEV-45 fix merge. The ordering in DEV-47(4) governs the live run.
+- The replacement uses a fresh `PAIR.EFI` because writing the DEV-33 manager's active `LIVE.EFI` could
+  destroy it before the new executable verifies. The reviewed installer tooling must be available for this
+  step because `--sha` selects the kernel while the installer takes its EFI sources from the deployed tools.
+  Changing the DEV-47(4) deployment order requires the coordinator's ruling.

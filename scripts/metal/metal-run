@@ -870,7 +870,7 @@ def argument_parser(automatic=False):
     options.add_argument('--replace-usr', action='store_true', help='replace /usr on the selected writable root')
     options.add_argument('--migration-image', action='store_true', help=argparse.SUPPRESS)
     p.add_argument('--recovery', action='store_true', help='use the powered-off network installer')
-    p.add_argument('--replace-manager', action='store_true', help='bootstrap the new manager once via --recovery')
+    p.add_argument('--replace-manager', action='store_true', help='install the paired boot manager once via --recovery')
     p.add_argument('--carry-local', action='store_true', help=argparse.SUPPRESS)
     p = sub.add_parser('migrate-persistent', help='run one phase of the E24 persistent migration')
     p.add_argument('phase', choices=('migrate', 'readback', 'cutover', 'rescue', 'return'))
