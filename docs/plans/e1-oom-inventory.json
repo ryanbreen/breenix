@@ -2666,6 +2666,7 @@
    "rollback": "before the VMA or page-table change is published",
    "functions": [
     "Binding::fork",
+    "MapInner::add_holes",
     "MapInner::poison",
     "MapState::prepare_write",
     "MapState::writeback_snapshot",

@@ -818,6 +818,15 @@ impl FileSystem for Ext2Adapter {
             fs.ensure_writable().map_err(errno)?;
             let ino = handle.verify(fs).map_err(errno)?;
             let epoch = handle.object.size_epoch.load(Ordering::Acquire);
+            // The last batch publishes the larger size. The Hole room the EOF
+            // transition needs is reserved first, under this guard, so a
+            // reservation that fails is this call's ENOMEM, not a success
+            // whose newly valid mapped pages stay absent.
+            let before = fs.read_inode(ino).map_err(errno)?.size();
+            let end = offset.saturating_add(len);
+            if end > before {
+                node.map.prepare_resize(before, end).map_err(|_| Errno(ENOMEM))?;
+            }
             if allocation.advance(fs, ino, epoch, clear_setid).map_err(errno)? {
                 let inode = fs.read_inode(ino).map_err(errno)?;
                 node.map.transition(inode.size());

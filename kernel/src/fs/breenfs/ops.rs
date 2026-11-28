@@ -258,12 +258,26 @@ struct Runs<'r> {
     crcs: [u32; RUN_BLOCKS],
     // Whole blocks for a run that starts or ends inside a block.
     staging: Vec<u8>,
+    // Told each range of file offsets filled with 00 bytes as a hole.
+    holes: &'r mut dyn FnMut(u64, u64),
 }
 impl<'r> Runs<'r> {
-    fn new(device: &'r dyn BlockDevice, base: u64, buf: &'r mut [u8]) -> Self {
+    fn new(
+        device: &'r dyn BlockDevice,
+        base: u64,
+        buf: &'r mut [u8],
+        holes: &'r mut dyn FnMut(u64, u64),
+    ) -> Self {
         Self {
             device, base, buf, done: 0, first: 0, lo: 0, hi: 0, phys: 0, blocks: 0,
-            crcs: [0; RUN_BLOCKS], staging: Vec::new(),
+            crcs: [0; RUN_BLOCKS], staging: Vec::new(), holes,
+        }
+    }
+    /// Fill `buf[done..at]` with 00 bytes and report it as a hole.
+    fn zero_hole(&mut self, at: usize) {
+        if at > self.done {
+            self.buf[self.done..at].fill(0);
+            (self.holes)(self.base + self.done as u64, self.base + at as u64);
         }
     }
     fn end(&self) -> u64 {
@@ -280,7 +294,7 @@ impl<'r> Runs<'r> {
         if at < self.done {
             return Err(ReadError::Metadata(Error::EIO));
         }
-        self.buf[self.done..at].fill(0);
+        self.zero_hole(at);
         Ok(at)
     }
     /// Add the wanted blocks of a device extent, checked against `crcs`
@@ -372,7 +386,7 @@ impl<'r> Runs<'r> {
     /// Issue the last run and fill the hole after it with 00 bytes.
     fn finish(mut self) -> Result<(), ReadError> {
         self.flush()?;
-        self.buf[self.done..].fill(0);
+        self.zero_hole(self.buf.len());
         Ok(())
     }
 }
@@ -1684,9 +1698,23 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         offset: u64,
         buf: &mut [u8],
     ) -> Result<usize, ReadError> {
+        self.read_verified_holes(device, ino, offset, buf, &mut |_, _| {})
+    }
+    /// `read_verified`, also reporting each range of file offsets `[lo, hi)`
+    /// it fills with 00 bytes because no extent covers it, in increasing
+    /// order. Those are the read's holes below EOF; the other bytes came
+    /// from extents (E3-2, for E3-4's `fill` to return them as `Hole`).
+    pub(super) fn read_verified_holes(
+        &self,
+        device: &dyn BlockDevice,
+        ino: u64,
+        offset: u64,
+        buf: &mut [u8],
+        holes: &mut dyn FnMut(u64, u64),
+    ) -> Result<usize, ReadError> {
         let inode = self.regular(ino)?;
         let n = inode.size.saturating_sub(offset).min(buf.len() as u64) as usize;
-        let mut runs = Runs::new(device, offset, &mut buf[..n]);
+        let mut runs = Runs::new(device, offset, &mut buf[..n], holes);
         if n != 0 {
             // A read holds its view's maps for its duration; a nested borrow
             // would read through the seek instead.
