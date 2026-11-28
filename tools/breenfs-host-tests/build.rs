@@ -66,7 +66,7 @@ fn main() {
     out.push_str(&item(&source, "pub(crate) fn absent_bound("));
     out.push('\n');
     out.push_str("impl MapInner {\n");
-    for marker in ["    fn bound(", "    fn gain_writable_shared(", "    fn mark_populating(", "    fn holes(", "    fn reserve_poison(", "    fn poison(", "    fn fault_frame("] {
+    for marker in ["    fn bound(", "    fn gain_writable_shared(", "    fn mark_populating(", "    fn unbacked(", "    fn new_holes(", "    fn reserve_holes(", "    fn add_holes(", "    fn drop_holes(", "    fn reserve_poison(", "    fn poison(", "    fn fault_frame("] {
         out.push_str(&item(&source, marker));
         out.push('\n');
     }

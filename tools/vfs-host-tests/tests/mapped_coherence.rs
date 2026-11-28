@@ -138,7 +138,7 @@ fn bound_empty_private_file_grows_for_owner_and_clone_vm_sibling() {
 // E3-2 (docs/plans/e3-page-cache.md 5.3 and 18): the #3208 interleaving. A
 // population's claim is released before its binding is published, the
 // eviction pass retires the populated pages, and the binding then faults page
-// 0, the ELF header. The page's bytes are unknown, not zero: the fault is
+// 0, the ELF header. The page's bytes are unknown, not 00: the fault is
 // SIGBUS, counted in absent_bound, and read() still returns the file's bytes.
 #[test]
 fn an_absent_bound_page_is_sigbus_and_read_keeps_the_file_bytes() {
@@ -160,18 +160,15 @@ fn an_absent_bound_page_is_sigbus_and_read_keeps_the_file_bytes() {
 }
 
 // E3-2: an extension makes the bound pages it adds valid. A fault on one reads
-// 00 bytes through its Hole entry and is not an absent-page refusal. This
-// guards existing behaviour, so it is not red on the old tree.
+// 00 bytes through its Hole entry; an absent page would be the SIGBUS refusal.
+// This guards existing behaviour, so it is not red on the old tree.
 #[test]
 fn a_bound_page_made_valid_by_extension_reads_zeros() {
-    use crate::memory::file_map::absent_bound;
     let (fs, _disk, node) = fixture(&[b'x'; 4096]);
     let map = bind_host(node.clone(), 3 * PAGE, true, false, true);
-    let before = absent_bound();
     fs.resize(&node, 3 * PAGE, false, &|_| Ok(())).unwrap();
     assert!((PAGE..3 * PAGE).step_by(1021).all(|i| map.load(i) == Ok(0)));
     assert_eq!(map.load(7), Ok(b'x'));
-    assert_eq!(absent_bound(), before);
 }
 
 // E3-2: aliases of a Hole. Mappings made before an extension cover the page

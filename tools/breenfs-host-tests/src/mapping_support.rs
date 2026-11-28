@@ -28,6 +28,7 @@ struct MapShared {
 struct MapInner {
     mapped_size: u64,
     pages: PageVec<CachePage>,
+    holes: PageVec<()>,
     poisoned: PageVec<()>,
     bindings: Vec<BindingRec>,
     populating: Vec<Claim>,
@@ -122,6 +123,9 @@ impl MapState {
                 inner: Mutex::new(MapInner {
                     mapped_size: size,
                     pages: PageVec {
+                        entries: Vec::new(),
+                    },
+                    holes: PageVec {
                         entries: Vec::new(),
                     },
                     poisoned: PageVec {
@@ -220,16 +224,24 @@ pub fn try_bind_host(
     node: Arc<VNode>, length: u64, shared: bool, writable: bool, populate: bool,
 ) -> Result<HostBinding, Errno> {
     let io = node.filesystem.mapping_io(&node).unwrap();
-    if populate {
-        let bytes = io.read(0, length.min(io.size()) as usize).unwrap();
-        let mut inner = node.map.state.inner.lock();
-        for (index, bytes) in bytes.chunks(4096).enumerate() {
+    let bytes = io.read(0, length.min(io.size()) as usize).unwrap();
+    let mut inner = node.map.state.inner.lock();
+    for (index, bytes) in bytes.chunks(4096).enumerate() {
+        let index = index as u64;
+        if populate {
             let mut page = CachePage::allocate().unwrap();
             page._storage[..bytes.len()].copy_from_slice(bytes);
-            inner.pages.try_insert(index as u64, page).unwrap();
+            inner.pages.try_insert(index, page).unwrap();
+            inner.holes.remove(index);
+        } else if !inner.pages.contains(index) && bytes.iter().all(|byte| *byte == 0) {
+            // An unpopulated fixture binding stands for the sparse pages of
+            // a file: the pages that read as 00 are recorded as Holes, as a
+            // fill reports them (E3-4), and the others stay absent.
+            inner.holes.try_insert(index, ()).unwrap();
         }
-        node.map.refresh(&inner);
     }
+    node.map.refresh(&inner);
+    drop(inner);
     let id = publish_host(&node, &*io, length, shared, writable)?;
     Ok(HostBinding(Arc::new(HostBindingOwner { node, id })))
 }
