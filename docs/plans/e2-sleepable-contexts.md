@@ -1128,7 +1128,7 @@ The builder resolved these details against the code. Each has one sentence of re
   (`AhciReadError::NotSleepable`, and the virtio gates' `gate-not-sleepable` stage), which BreenFS maps
   to EIO, rather than as a new `BlockError::NotSleepable`, because those receipts already carry the
   phase and context the read-failure path records. Both are pre-issue, so neither latches the volume
-  read-only. `WaitPublication` and the virtio kill stages keep EAGAIN, because they are kill refusals,
+  read-only, and so is a virtio device's `irq-unavailable` refusal, which comes before the transfer. `WaitPublication` and the virtio kill stages keep EAGAIN, because they are kill refusals,
   which E2.10a's custody park owns. <!-- claim-lint:ok: describes kernel/src/fs/breenfs/vfs.rs read_cause_errno and latches_on_read at this PR's head. -->
 - **Early boot and a busy device.** Early boot is the only thread, so an AHCI port, a request gate or
   a chain slot that is busy there is refused (`EarlyBootPortOwned`, "already in progress during early
@@ -1158,8 +1158,16 @@ The builder resolved these details against the code. Each has one sentence of re
   interrupts, because `spawn_on_cpu` refuses a CPU not yet counted online. The poller's thread ID is
   published at the spawn, so the CPU is ready before the poller first runs. A CPU without a poller
   refuses a sleeping request with `CompletionNotReady` rather than polling.
+- **A secondary that arrives out of order (the #3298 review).** DEV-48(3) starts each CPU's poller
+  before that CPU dispatches. A secondary that comes online ahead of a lower-numbered one is not yet
+  counted online, so its poller starts at the arrival whose count covers it
+  (`admission::pollers_to_start`), after it has begun dispatching its idle thread, because
+  `spawn_on_cpu` refuses a CPU the count does not cover and the scheduler treats that CPU as offline
+  until then.
 - **The readiness table.** `park::attach_completion_source`, `arm_completion_source` and
-  `completion_source_ready` sit over a fixed table (`park_core::CompletionSources`), and the
+  `completion_source_ready` sit over a fixed table (`park_core::CompletionSources`) with a slot for
+  each source the drivers can attach (`BLOCK_COMPLETION_SOURCES`: AHCI's controller, virtio-blk-pci's
+  device and each VirtIO MMIO block device, the bound `block_mmio.rs` asserts), and the
   revocation writes one `READINESS_RECEIPT` serial line per device that is not armed. The AHCI
   controller and the virtio-blk MMIO devices attach armed when their interrupt is routed and unmasked
   at attach. x86 virtio-blk PCI attaches unarmed and is armed where `run_post_init_self_tests` unmasks

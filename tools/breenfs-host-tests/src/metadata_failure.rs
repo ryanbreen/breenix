@@ -282,7 +282,7 @@ fn virtio_context_refusal_returns_eagain_without_latching() {
 }
 
 /// E2.4 (design §6): the block I/O caller rule refuses a context that may
-/// not sleep with EIO, never EAGAIN, and the refusal came before the request
+/// not sleep with EIO, not EAGAIN, and the refusal came before the request
 /// was issued, so it does not latch the volume read-only. So does a device
 /// whose completion source is not armed (`irq-unavailable`, the #3298
 /// review): `read_sectors` refuses it before `transfer` issues anything.

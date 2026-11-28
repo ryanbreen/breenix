@@ -294,9 +294,9 @@ fn revocation_names_an_unarmed_device_and_its_requests_are_refused() {
 }
 
 /// DEV-48(3), with secondaries that come online out of order (#3298 review):
-/// each CPU's AHCI completion poller starts once the scheduler's count covers
-/// it, whatever order the CPUs arrive in, and never for a CPU the count does
-/// not yet cover (`spawn_on_cpu` refuses one). The model replays
+/// a CPU's AHCI completion poller starts once the scheduler's count covers it,
+/// in 5 of 5 arrival orders below, and not for a CPU the count does not yet
+/// cover (`spawn_on_cpu` refuses one). The model replays
 /// `secondary_cpu_entry_rust`: mark the CPU online, count it, then start what
 /// `pollers_to_start` names.
 #[test]
@@ -316,14 +316,14 @@ fn every_online_cpu_gets_a_poller_whatever_order_secondaries_arrive_in() {
         }
         assert_eq!(spawned, 0b1111, "{order:?}: an online CPU has no completion poller");
     }
-    // A CPU past a hole the count never closes stays without one.
+    // A CPU past a hole the count does not close stays without one.
     assert_eq!(pollers_to_start(3, 3, 0b1011, 0b0011), 0);
 }
 
-/// The #3298 review: the kernel's completion-source table holds each source
-/// the block drivers can attach, AHCI's controller, virtio-blk-pci's device
-/// and each VirtIO MMIO block device. A device whose attach finds the table
-/// full is never ready, so its post-dispatch requests are all refused.
+/// The #3298 review: the kernel's completion-source table holds the 34
+/// sources the block drivers can attach: AHCI's controller, virtio-blk-pci's
+/// device and 32 VirtIO MMIO block devices. A device whose attach finds the
+/// table full is not ready, so its post-dispatch requests are refused.
 #[test]
 fn the_completion_source_table_holds_every_attachable_block_device() {
     use crate::park_core::{
