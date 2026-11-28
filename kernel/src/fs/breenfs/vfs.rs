@@ -4725,7 +4725,11 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             return Ok(());
         }
         state.protect_edit()?;
-        state.root_change(node.ino, &self.inner.root_frozen)?;
+        // Only a shared write mapping clears these bits here. While the root
+        // is frozen that mapping is refused with EBUSY (DEV-44(2a)), so this
+        // edit's refusal is too, rather than root_change's EROFS.
+        state.root_change(node.ino, &self.inner.root_frozen)
+            .map_err(|error| if error == Errno(EROFS) { Errno(EBUSY) } else { error })?;
         let _edit = self.inner.costs.span(CostOp::Setattr, CostPhase::Edit);
         inode.mode &= !content_privilege(inode.mode);
         inode.ctime = now();
