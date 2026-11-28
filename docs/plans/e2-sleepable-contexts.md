@@ -501,6 +501,23 @@ fault(addr, access):
 - **Atomic contexts.** A kernel access to user memory from an atomic context must use the nofault copy,
   which turns any fault that would need to wait into EFAULT (`write_user_bytes_nofault` today). It never
   parks. <!-- claim-lint:ok: normative requirement of docs/plans/e2-sleepable-contexts.md under ruling DEV-37(2), not a measured result. -->
+- **The ARM64 synchronous-exception return.** Today's epilogue cannot resume a fault that unmasked
+  interrupts or slept:
+  - entry stores the interrupted kernel SP (`sp + 272`) in the per-CPU `user_rsp_scratch` slot
+    (`kernel/src/arch_impl/aarch64/boot.S:564-579`), and an EL1 return reloads SP from that slot
+    (`:668-672`);
+  - an IRQ nested after the fault unmasks writes the same slot (`:736-750`), and a fault that slept may
+    resume on another CPU, whose slot belongs to someone else. Either way the outer return lands on the
+    wrong kernel stack;
+  - the epilogue's single return sequence clears the saved SPSR's I and F bits (`:628-631`). A user-copy fault
+    taken inside an interrupts-masked kernel section would come back with interrupts enabled.
+
+  So E2.9 changes the epilogue before any fault unmasks. The return SP for an EL1 return is kept in the
+  exception frame, which lives on the thread's own stack, and is reloaded from there. The per-CPU slot
+  stays only for the redirect-to-idle path, which writes it on purpose. The saved SPSR is restored as
+  saved. Interrupts are unmasked only where the code writes a new SPSR on purpose (the refusal and idle
+  redirects at `:605-626`, which store `0x5`) and on EL0 returns, where user mode runs unmasked. This is a change to
+  `boot.S`, in a commit of its own. <!-- claim-lint:ok: normative requirement of docs/plans/e2-sleepable-contexts.md under ruling DEV-37(2), not a measured result. -->
 - **What goes away:** `FaultManagerUnavailable::Busy` returning `Resolved` (`interrupts.rs:980`), the
   `HeldHere` direct paths, and `find_process_by_cr3*` on the fault path.
 
@@ -866,7 +883,16 @@ should own each, not several agents on one PR (DEV-30(3)).
   - a signal posted during an interrupt taken in user mode: the interrupt return sets `user_work` and
     writes no frame, and the continuation writes the frame. With the user stack page absent, the
     continuation's write faults, parks and completes. A structure test pins that the interrupt- and
-    exception-return paths on both architectures do not call the frame writer.
+    exception-return paths on both architectures do not call the frame writer;
+  - ARM64 exception return, as a kernel test in the testing feature driven by fixed points, since
+    the effect is the hardware's `eret`. Inside a syscall, a user copy faults at EL1. At a named point
+    after the fault unmasks, the test overwrites this CPU's `user_rsp_scratch` as a nested IRQ would.
+    The fault then parks and is woken on a second, named CPU. The test checks that the syscall resumes
+    on its own stack with its locals intact. A second case takes the same fault inside an
+    interrupts-masked section, using the nofault copy, and checks that DAIF.I and DAIF.F are still set
+    after the return. Both are red on today's epilogue. A structure test pins that the sync epilogue's
+    EL1 return does not load SP from the per-CPU slot outside the idle redirect, and that the epilogue
+    clears no DAIF bit on an EL1 return.
 - **Risk retired.** Faults that cannot wait, which T1 names as the reason for R1, R6 and R12. The busy
   refault loop (T8). It also unblocks E3's lazy mmap.
 - **Rows.** `memory.anonymous-touch`, `memory.driver-touch` and `memory.malloc-4t` under contention.
