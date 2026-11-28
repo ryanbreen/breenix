@@ -27,6 +27,9 @@ use core::sync::atomic::{fence, AtomicBool, AtomicU32, Ordering};
 
 /// Capacity for block devices across the QEMU virt MMIO transport slots.
 pub const MAX_BLOCK_DEVICES: usize = VIRTIO_MMIO_COUNT;
+// Each device registers a completion source (design §6), so the park
+// contract's table is sized for this many.
+const _: () = assert!(MAX_BLOCK_DEVICES == crate::task::park_core::VIRTIO_BLK_MMIO_COMPLETION_SOURCES);
 
 const VIRTIO_IRQ_BASE: u32 = 48;
 /// A request waits for its completion in sleeps of this length, checking

@@ -33,7 +33,7 @@
 //! its baseline ([`release_baseline`]), and early boot polls.
 
 use super::event_queue::EventQueue;
-use super::park_core::{self, CompletionSources, ContextInputs, EarlyBootIo, ParkHooks, SignalEnd, WaitWord};
+use super::park_core::{self, CompletionSources, ContextInputs, BLOCK_COMPLETION_SOURCES, EarlyBootIo, ParkHooks, SignalEnd, WaitWord};
 use super::waitqueue::{KernelHooks, WaitQueueHead};
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
@@ -111,20 +111,12 @@ pub fn record_io_refusal(context: ParkContext) {
 }
 
 /// The attached block devices' completion sources (design §6).
-static COMPLETION_SOURCES: CompletionSources<16> = CompletionSources::new();
+static COMPLETION_SOURCES: CompletionSources<BLOCK_COMPLETION_SOURCES> = CompletionSources::new();
 
-/// The kinds of block device that register a completion source, for the
-/// readiness receipts.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(u32)]
-pub enum BlockSource {
-    Ahci = 1,
-    VirtioBlkPci = 2,
-    VirtioBlkMmio = 3,
-}
+pub use park_core::BlockSource;
 
 const fn source_key(kind: BlockSource, index: u32) -> u64 {
-    (kind as u64) << 32 | index as u64
+    kind.key(index)
 }
 
 fn source_name(key: u64) -> &'static str {
@@ -168,7 +160,7 @@ pub fn revoke_early_boot_io() {
     if !crate::arch_impl::aarch64::timer_interrupt::timer_is_running() {
         crate::serial_println!("[park] READINESS_RECEIPT the timer is not running at the first dispatch");
     }
-    let mut unready = [0u64; 16];
+    let mut unready = [0u64; BLOCK_COMPLETION_SOURCES];
     match park_core::revoke(&EARLY_BOOT_IO, &COMPLETION_SOURCES, &mut unready) {
         None => crate::serial_println!("[park] READINESS_RECEIPT the early-boot I/O token was not held"),
         Some(count) => {

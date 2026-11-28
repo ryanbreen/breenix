@@ -870,6 +870,29 @@ pub fn io_context<H: ParkHooks>(hooks: &H, site: u64, token: &EarlyBootIo) -> Re
     })
 }
 
+/// The kinds of block device that register a completion source.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum BlockSource {
+    Ahci = 1,
+    VirtioBlkPci = 2,
+    VirtioBlkMmio = 3,
+}
+
+impl BlockSource {
+    /// The [`CompletionSources`] key of device `index` of this kind.
+    pub const fn key(self, index: u32) -> u64 {
+        (self as u64) << 32 | index as u64
+    }
+}
+
+/// How many VirtIO MMIO block devices can attach: one per MMIO transport
+/// slot (`drivers::virtio::block_mmio::MAX_BLOCK_DEVICES`, which asserts it).
+pub const VIRTIO_BLK_MMIO_COMPLETION_SOURCES: usize = 32;
+
+/// The capacity of the kernel's completion-source table.
+pub const BLOCK_COMPLETION_SOURCES: usize = 16;
+
 /// The completion sources of the attached block devices (design §6,
 /// "Completion readiness before revocation"). A sleeping caller can park on
 /// a command only if something will complete it: the device's interrupt,

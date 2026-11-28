@@ -319,3 +319,23 @@ fn every_online_cpu_gets_a_poller_whatever_order_secondaries_arrive_in() {
     // A CPU past a hole the count never closes stays without one.
     assert_eq!(pollers_to_start(3, 3, 0b1011, 0b0011), 0);
 }
+
+/// The #3298 review: the kernel's completion-source table holds each source
+/// the block drivers can attach, AHCI's controller, virtio-blk-pci's device
+/// and each VirtIO MMIO block device. A device whose attach finds the table
+/// full is never ready, so its post-dispatch requests are all refused.
+#[test]
+fn the_completion_source_table_holds_every_attachable_block_device() {
+    use crate::park_core::{
+        BlockSource, CompletionSources, BLOCK_COMPLETION_SOURCES, VIRTIO_BLK_MMIO_COMPLETION_SOURCES,
+    };
+    let sources = CompletionSources::<BLOCK_COMPLETION_SOURCES>::new();
+    let mut keys = vec![BlockSource::Ahci.key(0), BlockSource::VirtioBlkPci.key(0)];
+    keys.extend((0..VIRTIO_BLK_MMIO_COMPLETION_SOURCES as u32).map(|index| BlockSource::VirtioBlkMmio.key(index)));
+    for &key in &keys {
+        assert!(sources.attach(key, true), "device {key:#x} found the table full");
+    }
+    for &key in &keys {
+        assert!(sources.ready(key), "device {key:#x} is armed but not ready");
+    }
+}
