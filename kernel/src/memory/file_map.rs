@@ -1706,6 +1706,17 @@ pub(crate) enum MapError {
     Io,
 }
 
+impl MapError {
+    /// The errno mmap reports for this population failure.
+    pub(crate) fn errno(self) -> i32 {
+        use crate::syscall::errno::{EIO, ENOMEM};
+        match self {
+            MapError::NoMemory => ENOMEM,
+            MapError::Io => EIO,
+        }
+    }
+}
+
 /// A population's transfer lease and its claim on the pages it populates.
 /// Until it is dropped, after mmap has published the binding or given up,
 /// eviction keeps the claimed pages: the binding is published later, and a

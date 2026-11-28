@@ -39,6 +39,7 @@ fn main() {
         // Population is production code; MappingIo is the host BreenFS transfer.
         "struct Claim",
         "pub(crate) enum MapError",
+        "impl MapError",
         "pub(crate) struct Population",
         "impl core::ops::Deref for Population",
         "impl Drop for Population",
