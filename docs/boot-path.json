@@ -59,6 +59,10 @@
             "name": "MMU enabled",
             "marker": "[boot] MMU already enabled"
           },
+          {
+            "name": "Kernel VA windows self-check",
+            "marker": "[boot] Kernel VA windows self-check passed"
+          },
           "Memory management ready"
         ],
         "x86_64": [

@@ -16,6 +16,9 @@ use x86_64::{
 mod x86_kernel_half;
 pub(crate) use x86_kernel_half::inherit_master_slots;
 
+use crate::memory::kva::KernelTables;
+use crate::memory::kva_map::{self, Format, TableMemory, X86};
+
 /// The master kernel PML4 frame (Phase 2), published as a physical address in a
 /// lock-free cell rather than as a `Mutex<Option<PhysFrame>>`.
 ///
@@ -62,24 +65,31 @@ pub fn init(phys_mem_offset: VirtAddr) {
     log::info!("Global kernel page table initialized successfully");
 }
 
-/// The table and newly allocated frame must be mapped by the physical offset.
-/// The caller must serialize creation of children in the same entry.
-unsafe fn ensure_child_table(
-    table: &mut PageTable,
+/// The child table under entry `index` of the table at `table`, installed from a
+/// new frame when the entry is empty. Both must be mapped by the physical offset.
+fn ensure_child_table(
+    mem: &KernelTables,
+    table: u64,
     index: usize,
-    phys_mem_offset: VirtAddr,
-) -> Result<PhysFrame, &'static str> {
-    let entry = &mut table[index];
-    if !entry.is_unused() {
-        return entry
-            .frame()
-            .map_err(|_| "Kernel mapping needs a child table");
+) -> Result<u64, &'static str> {
+    let entry = mem.load(table, index);
+    if entry != 0 {
+        // A PDPTE or PD entry: present and not a 1 GiB or 2 MiB page.
+        if !X86::is_valid(entry) || !X86::is_table(entry, 1) {
+            return Err("Kernel mapping needs a child table");
+        }
+        return Ok(X86::address(entry));
     }
 
     let frame = allocate_frame().ok_or("Out of memory for kernel page table")?;
-    (*table_ptr(phys_mem_offset, frame)).zero();
-    entry.set_frame(frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
-    Ok(frame)
+    let (child, spare) =
+        kva_map::install_table::<X86, _>(mem, table, index, frame.start_address().as_u64());
+    if let Some(spare) = spare {
+        crate::memory::frame_allocator::deallocate_frame(PhysFrame::containing_address(
+            PhysAddr::new(spare),
+        ));
+    }
+    Ok(child)
 }
 
 /// Map a page in the global kernel address space
@@ -111,12 +121,10 @@ pub unsafe fn map_kernel_page(
     let pd_index = usize::from(virt.p2_index());
     let pt_index = usize::from(virt.p1_index());
 
-    let pdpt = &mut *table_ptr(phys_mem_offset, pdpt_frame);
-
-    let pd_frame = ensure_child_table(pdpt, pdpt_index, phys_mem_offset)?;
-    let pd = &mut *table_ptr(phys_mem_offset, pd_frame);
-    let pt_frame = ensure_child_table(pd, pd_index, phys_mem_offset)?;
-    let pt = &mut *table_ptr(phys_mem_offset, pt_frame);
+    let mem = KernelTables;
+    let pd = ensure_child_table(&mem, pdpt_frame.start_address().as_u64(), pdpt_index)?;
+    let pt = ensure_child_table(&mem, pd, pd_index)?;
+    let pt = &mut *table_ptr(phys_mem_offset, PhysFrame::containing_address(PhysAddr::new(pt)));
 
     if crate::memory::kernel_stack::is_kernel_stack_va(virt.as_u64())
         && pt[pt_index].flags().contains(PageTableFlags::PRESENT)
@@ -152,42 +160,10 @@ pub unsafe fn unmap_kernel_page(virt: VirtAddr) -> Result<Option<PhysFrame>, &'s
     }
 
     let pml4_frame = master_kernel_pml4().ok_or("Master kernel PML4 not initialized")?;
-    let phys_mem_offset = crate::memory::physical_memory_offset();
-    let pml4 = &*table_ptr(phys_mem_offset, pml4_frame);
-    let pdpt_frame = pml4[virt.p4_index()]
-        .frame()
-        .map_err(|_| "Kernel PDPT not installed")?;
-
-    let pdpt_index = usize::from(virt.p3_index());
-    let pd_index = usize::from(virt.p2_index());
-    let pt_index = usize::from(virt.p1_index());
-
-    let pdpt = &mut *table_ptr(phys_mem_offset, pdpt_frame);
-    if pdpt[pdpt_index].is_unused() {
-        return Ok(None);
-    }
-    let pd_frame = pdpt[pdpt_index]
-        .frame()
-        .map_err(|_| "Cannot unmap a page through a non-table PDPTE")?;
-
-    let pd = &mut *table_ptr(phys_mem_offset, pd_frame);
-    if pd[pd_index].is_unused() {
-        return Ok(None);
-    }
-    let pt_frame = pd[pd_index]
-        .frame()
-        .map_err(|_| "Cannot unmap a page through a non-table PDE")?;
-
-    let pt = &mut *table_ptr(phys_mem_offset, pt_frame);
-    let entry = &mut pt[pt_index];
-    if entry.is_unused() {
-        return Ok(None);
-    }
-
-    let frame = PhysFrame::containing_address(entry.addr());
-    entry.set_unused();
-
-    Ok(Some(frame))
+    let mem = KernelTables;
+    let unmapped =
+        kva_map::unmap_page::<X86, _>(&mem, pml4_frame.start_address().as_u64(), virt.as_u64())?;
+    Ok(unmapped.map(|phys| PhysFrame::containing_address(PhysAddr::new(phys))))
 }
 
 /// Copy the boot root and switch to the permanent kernel root. Process roots
@@ -207,15 +183,13 @@ pub fn build_master_kernel_pml4() {
         // Prebuild the existing 128 MiB kernel-stack and 16 MiB IST-stack
         // ranges so their runtime mappers do not race to install a PD or PT.
         // Use their boot-owned PDPTs and leave any existing entries intact.
+        let mem = KernelTables;
         for (slot, pt_count) in [(402, 64), (403, 8)] {
             let pdpt_frame = master[slot].frame().expect("Stack PDPT not installed");
-            let pdpt = &mut *table_ptr(phys_mem_offset, pdpt_frame);
-            let pd_frame = ensure_child_table(pdpt, 0, phys_mem_offset)
+            let pd = ensure_child_table(&mem, pdpt_frame.start_address().as_u64(), 0)
                 .expect("Failed to prepare the stack PD");
-            let pd = &mut *table_ptr(phys_mem_offset, pd_frame);
             for index in 0..pt_count {
-                ensure_child_table(pd, index, phys_mem_offset)
-                    .expect("Failed to prepare the stack PT");
+                ensure_child_table(&mem, pd, index).expect("Failed to prepare the stack PT");
             }
         }
     }
