@@ -56,6 +56,7 @@ fn per_device_tables_use_the_block_limit() {
     for name in [
         "REQUEST_GATES",
         "COMPLETIONS",
+        "QUEUES",
         "BLOCK_DEVICES",
         "QUEUE_MEM",
         "REQ_HEADERS",

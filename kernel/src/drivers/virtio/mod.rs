@@ -20,6 +20,7 @@
 
 #[cfg(target_arch = "x86_64")]
 pub mod block;
+pub mod blk_queue;
 #[cfg(target_arch = "x86_64")]
 pub mod net_legacy;
 #[cfg(target_arch = "x86_64")]

@@ -376,6 +376,64 @@ gate. E2/E3 unnecessary.
 - **QEMU rows.** `disk.sequential-read`, `disk.sequential-write` where callers
   already issue multi-block I/O. A depth-one file caller will still feed one
   request. No direct target for one-append fsync or metadata rows.
+- **Details resolved in E4.1 (DEV-39(2)).**
+  - Both drivers share one engine, `kernel/src/drivers/virtio/blk_queue.rs`,
+    which the host tests compile unchanged, because one ring implementation
+    can be checked once against a fake device for both transports.
+  - Each chain slot owns up to 16 individually allocated frames (64 KiB, the
+    block cache's `RUN_BYTES`), and a device holds at most 512 KiB of them. On
+    a 256-entry ring that is 8 chains, because one coalesced cache run then
+    stays one request and the frame cost per disk stays bounded. A ring too
+    small for a 16-frame chain gets the longest chain that fits
+    (`Limits::chain_plan`: one 14-frame chain on 16 entries), because the
+    single-chain driver before E4.1 ran such a disk with 3 descriptors.
+  - A synchronous call is admitted for its whole sector range until its last
+    chain returns, and a flush is admitted for the whole device. This is the
+    same-range exclusion and flush ordering E4.1 must preserve, and E4.4
+    replaces it with its conflict and fence policy.
+  - A flush that has to wait holds its turn in the range table, and later
+    requests wait behind it, because otherwise requests on other sectors can
+    keep a flush out indefinitely. A caller that cannot sleep is admitted
+    past a waiting flush, because it makes one attempt and refusing it would
+    fail a disjoint boot-time read (DEV-24).
+  - A submitted chain is staged until `publish` stores `avail.idx` over it,
+    and only issued chains are completed, because section 2.7.8 lets the
+    device return only chains it was given. A stopped queue publishes no
+    staged chain, because that chain's caller has already had its error.
+  - The PCI driver marks a write pending when the write is admitted, before
+    it builds a chain, because another caller's publish can make the write
+    visible and the writer's own publish result does not show it.
+  - A wait that cannot sleep keeps a window of one chain, because the boot
+    thread's bounded polling is the existing contract.
+  - An abandoned wait, or a used ring that names a head the driver did not
+    issue, stops the queue for good: each chain on the device keeps its
+    memory and no slot is reused. E4.1 does not reset the device, because
+    reset, rebuild and reopening admission are E4.4's recovery work.
+  - `seg_max` bounds the data descriptors and excludes the header and status
+    descriptors, because section 5.2.4 counts segments of the request's data.
+  - The MMIO driver now negotiates `VIRTIO_F_VERSION_1` on version 2
+    transports (section 6.1 requires accepting it), and `SIZE_MAX` and
+    `SEG_MAX` on both versions. Used lengths are checked exactly only with
+    `VERSION_1`, because section 5.2.6.3 tells legacy drivers to ignore them.
+  - The MMIO interrupt handler only tries the queue lock and leaves a drain
+    request for the holder, because the MMIO handler took no lock before.
+    The PCI handler keeps its existing spin on the queue lock, which
+    thread-side holders take with interrupts masked (`with_engine`). The
+    MMIO queue report drains after its sample too, because it is also a
+    holder an interrupt can find.
+  - `reserve` takes the owner's completion token as the slot's tag, `drain`
+    reports it and `finish` clears it, because a token the driver cleared
+    outside the queue lock could wipe the next owner's token and leave that
+    owner waiting on a chain already drained (seen in the rig's compile rows).
+  - The first host test is red on the old code as a compile failure,
+    because the old drivers had no multi-chain engine for it to drive, and
+    so is the chain-plan check, because the old attach sizing was inline.
+    Driver interleavings (the late token clear, the queue report, the PCI
+    write flag, the flush turn) are checked by compiling the production
+    driver functions against a fake device
+    (`tests/virtio_blk_mmio_driver_test.py`,
+    `tests/virtio_blk_pci_driver_test.py`), because only the driver code
+    carries those races.
 
 ### E4.2 Attach geometry and limits
 
