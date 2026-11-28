@@ -239,9 +239,25 @@ The same as on x86 (§1.2), plus the ARM64-only per-CPU state that today sits un
 
 - `CpuSchedulerState::previous_thread` and `pending_next` (`scheduler.rs:2920`, `:2924`);
 - `INLINE_SCHEDULE_STATE[cpu]` and the outgoing thread's inline-save fields;
-- this CPU's R17 inbox drain (`apply_arm_wake_inboxes`, `scheduler.rs:6298`) and pinned-wake delivery
-  (`deliver_pinned_wakes_for_this_cpu`, `:7362`);
+- this CPU's R17 inbox drain (`apply_arm_wake_inboxes`, `scheduler.rs:6298`);
 - this CPU's timer heap. `TimerHeaps` becomes per CPU on ARM64, as on x86.
+
+**Pinned placement moves onto R17 records.** ARM64's held pinned wakes are delivered today by
+`deliver_pinned_wakes_for_this_cpu`, through `pinned_wake_is_waiting_here`, which reads every CPU's queue
+and `cpu_state` (`scheduler.rs:7316-7386`). That is sound only while one global lock covers every queue.
+Under the home CPU's lock alone, a peer could grow its own queue during the scan and leave the reader
+holding freed storage. So E9.1 deletes both functions on ARM64. x86 already skips them (`:7364`). ARM64
+then uses x86's placement path:
+
+- `hold(tid, WAKE_PLACE, home)` records the placement and the home CPU in the thread's R17 record
+  (`rq.rs:1252-1268`);
+- the home CPU's drain applies it through `place_held` (`rq.rs:1304-1330`). That function reads the owner
+  from the index, works under the local lock when the owner is the home, and otherwise try-locks the
+  owner and checks the owner again once it holds the lock. A busy owner or a stack still being left
+  re-holds the record, without dropping it.
+
+No CPU reads a queue or a CPU's state without holding that CPU's lock, or without having try-locked it
+and revalidated the owner. <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
 
 What stays under the list lock and `lock_all`: the thread list, retirement grace, `unpinned_free`, the
 exit-kick watch and the signal-timer groups, exactly as `rq.rs:23-27` lists for x86.
@@ -730,7 +746,9 @@ of their steps, keeping each CPU's program order. The steps are sequentially con
   4. ARM64 timer heaps per CPU;
   5. the switch transaction under `rq::local` with `release_after_pivot` (§3.5), one commit per entry
      point: interrupt return, inline switch, exit switch;
-  6. ARM64 wakes, notices and placement through `rq::wake`, `wake_or_hold` and `notify_or_hold`;
+  6. ARM64 wakes, notices and placement through `rq::wake`, `wake_or_hold` and `notify_or_hold`, and
+     pinned placement through `hold(.., WAKE_PLACE, home)` and `place_held`, with
+     `deliver_pinned_wakes_for_this_cpu` and `pinned_wake_is_waiting_here` deleted (§3.2);
   7. `lock_for_context_switch` and `force_unlock_scheduler` deleted.
 - **Tests, check-first.**
   - **Independent dispatch, a kernel test in the testing feature.** A test hook stops CPU 1 inside its
@@ -776,10 +794,12 @@ of their steps, keeping each CPU's program order. The steps are sequentially con
     once, after it revalidates the owner under the owner's lock. Red on the design as first written,
     because §3.2 moved `deliver_pinned_wakes_for_this_cpu` under the home CPU's lock alone. Its
     `pinned_wake_is_waiting_here` reads every CPU's queue and `cpu_state` (`scheduler.rs:7316-7386`).
+    Green on §3.2's R17 placement through `place_held`.
 
     ```pycon
     >>> def pinned_delivery_reads(home, cpus, owner):
-    ...     return [(cpu, 'held' if cpu == home else 'unlocked') for cpu in cpus]
+    ...     tried = [] if owner == home else [(owner, 'try-locked, owner rechecked')]
+    ...     return [(home, 'held')] + tried
     >>> [read for read in pinned_delivery_reads(0, [0, 1, 2, 3], owner=2) if read[1] == 'unlocked']
     []
 
