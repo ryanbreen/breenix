@@ -518,8 +518,6 @@ fn interrupted_wait_preserves_the_original_restart_or_exit_errno() {
 pub mod fifo;
 #[path = "../../../kernel/src/ipc/pipe.rs"]
 pub mod pipe;
-#[path = "../../../kernel/src/task/waitqueue_alloc.rs"]
-mod waitqueue_alloc;
 pub mod arch_impl {
     pub mod traits {
         pub trait CpuOps {

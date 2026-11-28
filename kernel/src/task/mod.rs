@@ -26,9 +26,9 @@ pub(crate) mod preempt_fault;
 pub mod thread;
 pub mod user_dispatch;
 pub mod userspace_completion;
+pub mod event_queue;
 pub mod waitqueue;
 pub(crate) mod wake_inbox;
-pub(crate) mod waitqueue_alloc;
 
 // Architecture-specific context switching
 // Note: context.rs contains x86_64 assembly - ARM64 uses separate implementation

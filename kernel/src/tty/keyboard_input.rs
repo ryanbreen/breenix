@@ -27,6 +27,12 @@ impl PendingInput {
         false
     }
 
+    /// Bytes queued and not yet admitted.
+    #[cfg(feature = "boot_tests")]
+    pub(super) fn len(&self) -> usize {
+        self.len
+    }
+
     pub(super) fn drain(&mut self, mut process: impl FnMut(u8, InputSource) -> bool) {
         while self.len != 0 {
             let (byte, source) = self.bytes[self.head];

@@ -737,9 +737,48 @@ fn validate_the_detector_is_wired(driver: &str, process: &str) -> Result<(), Str
     Ok(())
 }
 
+/// Rule 8: the foreground signal worker sleeps through `arch_halt_while_blocked`,
+/// and its body has no call to `arch_halt_with_interrupts`.
+///
+/// The worker publishes a timer sleep and then waits for its wake. A halt that
+/// does not first reread the blocked state with interrupts masked can begin
+/// after the wake: the wake IPI was taken before it, or the worker was switched
+/// out before the halt and dispatched again once woken. The halt then lasts
+/// until that CPU's next interrupt, with the worker Running and its queued
+/// signals unsent; on a CPU taking no timer ticks that is indefinite.
+/// `arch_halt_while_blocked` rereads the state masked, and on ARM64 switches a
+/// preemptible waiter out instead of halting as the current thread.
+fn validate_signal_worker_halts_only_while_blocked(driver: &str) -> Result<(), String> {
+    let body = function_body(driver, "foreground_signal_thread")
+        .ok_or_else(|| "foreground_signal_thread not found".to_string())?;
+    let code = normalized_code(body).replace(' ', "");
+    if code.contains("arch_halt_with_interrupts(") {
+        return Err(
+            "foreground_signal_thread halts through arch_halt_with_interrupts, which does not reread its blocked state with interrupts masked"
+                .to_string(),
+        );
+    }
+    if !code.contains("arch_halt_while_blocked(") {
+        return Err("foreground_signal_thread does not sleep through arch_halt_while_blocked".to_string());
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // The rules, against the tree
 // ---------------------------------------------------------------------------
+
+#[test]
+fn the_foreground_signal_worker_halts_only_while_blocked() {
+    let driver = repo_text(DRIVER);
+    validate_signal_worker_halts_only_while_blocked(&driver).expect("rule 8");
+
+    // The halt this rule replaced, restored, reddens it.
+    let restored = replace_once(&driver, "crate::arch_halt_while_blocked();", "crate::arch_halt_with_interrupts();");
+    let error = validate_signal_worker_halts_only_while_blocked(&restored)
+        .expect_err("rule 8 has to redden on the restored unconditional halt");
+    assert!(error.contains("arch_halt_with_interrupts"), "rule 8 reddened for the wrong reason: {error}");
+}
 
 #[test]
 fn no_tty_interrupt_entry_acquires_the_foreground_pgrp_mutex() {

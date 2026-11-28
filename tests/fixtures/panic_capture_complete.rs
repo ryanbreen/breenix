@@ -137,7 +137,6 @@ fn publish_waits() -> [task::lockup::WaitSite; 2] {
     use task::lockup::{name_words, WaitSite};
 
     let mut first = WaitSite::default();
-    assert_eq!(first.queue_hint, 0);
     let name = task::lockup::CommandName::default();
     name.publish("GUI app]\n");
     first.publish(21689, 21688, task::lockup::site_pc(), 0xffff000058392010, name.words());

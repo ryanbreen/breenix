@@ -191,8 +191,6 @@ impl CommandName {
 #[derive(Default)]
 pub(crate) struct WaitSite {
     slot: Option<usize>,
-    /// Queue identity handed to the I/O publisher within one scheduler hold.
-    pub(super) queue_hint: u64,
 }
 
 impl WaitSite {

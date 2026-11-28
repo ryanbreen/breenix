@@ -160,9 +160,38 @@ static FG_SIGNAL_OVERFLOWS: AtomicU64 = AtomicU64::new(0);
 /// Starts the timer-driven foreground signal worker exactly once.
 static FG_SIGNAL_THREAD: spin::Once<()> = spin::Once::new();
 
+/// Drain passes the foreground signal worker has begun, and its thread ID
+/// (0 until it runs), so a signal that was not sent can be placed: the worker
+/// began no pass, or it began passes and the signal was not in the queue.
+static FG_SIGNAL_PASSES: AtomicU64 = AtomicU64::new(0);
+static FG_SIGNAL_TID: AtomicU64 = AtomicU64::new(0);
+
 /// Terminal signals the interrupt side could not queue for sending.
 pub fn foreground_signal_overflows() -> u64 {
     FG_SIGNAL_OVERFLOWS.load(Ordering::Relaxed)
+}
+
+/// The foreground signal worker's progress: its thread ID (0 before it
+/// runs), the drain passes it has begun, and the signals queued for it now.
+#[cfg(feature = "boot_tests")]
+pub(crate) fn foreground_signal_progress() -> (u64, u64, usize) {
+    let queued = FG_SIGNAL_QUEUE
+        .iter()
+        .filter(|slot| slot.load(Ordering::Acquire) != 0)
+        .count();
+    (
+        FG_SIGNAL_TID.load(Ordering::Acquire),
+        FG_SIGNAL_PASSES.load(Ordering::Acquire),
+        queued,
+    )
+}
+
+/// Key bytes queued for terminal `number` (1 to 6) and not yet admitted to
+/// its line discipline. No count is returned while the queue is busy.
+#[cfg(feature = "boot_tests")]
+pub(crate) fn pending_key_count(number: usize) -> Option<usize> {
+    let keys = PENDING_KEYS.get(number.checked_sub(1)?)?;
+    crate::arch_without_interrupts(|| keys.try_lock().map(|keys| keys.len()))
 }
 
 /// Queue `sig` for the members of `pgrp`; the timer-driven worker drains it.
@@ -191,7 +220,9 @@ fn foreground_signal_thread() {
     use crate::task::{scheduler, thread::ThreadState};
 
     let tid = scheduler::current_thread_id().expect("foreground signal worker identity");
+    FG_SIGNAL_TID.store(tid, Ordering::Release);
     loop {
+        FG_SIGNAL_PASSES.fetch_add(1, Ordering::AcqRel);
         // UART admission must survive absent displays and blocked GPU presents.
         // This task runs independently of the renderer, including in desktop mode.
         #[cfg(target_arch = "aarch64")]
@@ -209,13 +240,14 @@ fn foreground_signal_thread() {
         let (seconds, nanos) = crate::time::get_monotonic_time_ns();
         let wake_at = seconds.saturating_mul(1_000_000_000)
             .saturating_add(nanos).saturating_add(10_000_000);
+        // Halt only while still blocked, rereading the state with interrupts
+        // masked: a halt begun after the wake (its IPI already taken, or this
+        // thread switched out before the halt and dispatched again once woken)
+        // would last until this CPU's next interrupt, and on a CPU taking no
+        // timer ticks only an IPI ends it.
         scheduler::with_current(|sched| sched.block_current_for_timer(wake_at));
-        scheduler::yield_current();
-        loop {
-            crate::arch_halt_with_interrupts();
-            if scheduler::thread_state(tid) != Some(ThreadState::BlockedOnTimer) {
-                break;
-            }
+        while scheduler::thread_state(tid) == Some(ThreadState::BlockedOnTimer) {
+            crate::arch_halt_while_blocked();
         }
     }
 }

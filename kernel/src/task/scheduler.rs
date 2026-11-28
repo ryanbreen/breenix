@@ -2503,6 +2503,8 @@ impl CurrentSched<'_> {
         self.block(rq::Block::Io { wake_time_ns: None });
     }
 
+    /// `Scheduler::block_current_for_io_with_timeout` under this CPU's
+    /// run-queue lock (`rq::block_current`).
     pub fn block_current_for_io_with_timeout(&mut self, wake_time_ns: Option<u64>) -> bool {
         self.block(rq::Block::Io { wake_time_ns })
     }
@@ -6200,7 +6202,23 @@ impl Scheduler {
         }
     }
 
-    fn block_current_for_io_publish(&mut self, wake_time_ns: Option<u64>) -> Option<u64> {
+    /// Publish the current thread blocked on I/O (E2.1, written from brief B1):
+    /// charge its CPU time, set `BlockedOnIO` with the optional absolute
+    /// deadline `wake_time_ns`, put that deadline in the timer heap, mark the
+    /// thread blocked in a syscall when it has an owning process (#775 round 4),
+    /// and take it off the ready queues. ARM64 also points the thread's wake
+    /// node at this CPU and records `queue` in its wait-site record.
+    ///
+    /// Returns the thread's ID. It publishes no state and returns no ID when
+    /// there is no current thread or it must not sleep
+    /// (`Thread::must_not_sleep`). The ARM64 boot continuation is CPU 0's
+    /// idle thread (`main_aarch64.rs`, `init_with_current`), and its disk
+    /// waits publish here like any other thread's.
+    pub(crate) fn block_current_for_io_publish(
+        &mut self,
+        wake_time_ns: Option<u64>,
+        #[cfg(target_arch = "aarch64")] queue: u64,
+    ) -> Option<u64> {
         let cpu = Self::current_cpu_id();
         let current_id = self.cpu_state[cpu].current_thread?;
         let thread = self.get_thread_mut(current_id)?;
@@ -6208,56 +6226,26 @@ impl Scheduler {
         if let Some(wake) = &thread.wake {
             wake.cpu.store(cpu, Ordering::Release);
         }
-        #[cfg(target_arch = "aarch64")]
-        let wait_queue = core::mem::take(&mut thread.wait_site.queue_hint);
-        // A thread a SIGKILL is pending for does not sleep here:
-        // `Thread::must_not_sleep`.
         if thread.must_not_sleep() {
             return None;
         }
-
-        // Charge elapsed CPU ticks before blocking
         thread.charge_cpu(crate::time::get_cpu_ticks());
-
         thread.stop_timer_cpu();
         thread.state = ThreadState::BlockedOnIO;
         #[cfg(target_arch = "aarch64")]
-        thread.publish_wait(super::lockup::site_pc(), wait_queue);
+        thread.publish_wait(super::lockup::site_pc(), queue);
         thread.wake_time_ns = wake_time_ns;
-        // The observation belongs to this wait, not to whatever the thread did
-        // before it.
         thread.timer_pop = wake_time_ns.map(TimerPopRecord::armed);
-        // Mark blocked_in_syscall so the context switch path resumes
-        // inside the syscall (wait_timeout loop) rather than restoring
-        // stale userspace context.
-        //
-        // #775 round 4: only when there IS a syscall context to resume into.
-        // The flag routes the x86 save through
-        // `save_kernel_context_with_guard`, which writes into
-        // `process.main_thread` and writes no register at all when the
-        // thread has no process -- so on a process-less thread the flag
-        // makes each later context save a silent no-op while the restore
-        // keeps replaying the last one that landed. The boot thread is exactly such a thread and
-        // it waits here: `Completion::wait_timeout_uninterruptible()` backs
-        // the ext2 root read during init. Same predicate, same reason as
-        // `block_current_for_timer` above.
-        // claim-lint:ok: the replay and the page fault it ends in are the
-        // 2 committed captures under
-        // docs/planning/green-program/sockets/serials/775/round4/boot-replay/.
         thread.blocked_in_syscall = thread.owner_pid.is_some();
-
-        // The departure belongs to the publication, not to the wrapper: this is
-        // the only function in the family that published a blocked state
-        // without departing the thread itself, which left the post-condition
-        // resting on whichever caller remembered it.
+        if let Some(deadline) = wake_time_ns {
+            self.timer_heap.push(cpu, Reverse((deadline, current_id)));
+            self.publish_timer_deadline();
+        }
         for q in self.per_cpu_queues.iter_mut() {
             q.retain(|&id| id != current_id);
         }
-
-        // Linux set_current_state() is smp_store_mb(): publish the sleep
-        // state before later condition checks or schedule entry observe
-        // wakeups. On AArch64 Rust lowers SeqCst fence to a full DMB.
-        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+        // The blocked state is visible before the caller's condition check.
+        core::sync::atomic::fence(Ordering::SeqCst);
         Some(current_id)
     }
 
@@ -6280,22 +6268,16 @@ impl Scheduler {
         let _ = self.block_current_for_io_with_timeout(None);
     }
 
-    /// Block the current thread for device I/O, optionally with a timeout.
-    ///
-    /// A timed BlockedOnIO wait is used by completions: the ISR wakes it via
-    /// unblock_for_io(), while the timer path wakes it by observing
-    /// wake_time_ns without clearing blocked_in_syscall prematurely.
+    /// Block the current thread for device I/O until a wake or the optional
+    /// absolute deadline `wake_time_ns`. True when the blocked state was
+    /// published (`block_current_for_io_publish`). Call it under the scheduler
+    /// lock, in the same hold as the caller's condition check.
     pub fn block_current_for_io_with_timeout(&mut self, wake_time_ns: Option<u64>) -> bool {
-        if let Some(current_id) = self.block_current_for_io_publish(wake_time_ns) {
-            // Insert into timer heap if a timeout was specified
-            if let Some(wt) = wake_time_ns {
-                self.timer_heap.push(Self::current_cpu_id(), Reverse((wt, current_id)));
-                self.publish_timer_deadline();
-            }
-            true
-        } else {
-            false
-        }
+        #[cfg(target_arch = "aarch64")]
+        let published = self.block_current_for_io_publish(wake_time_ns, 0);
+        #[cfg(not(target_arch = "aarch64"))]
+        let published = self.block_current_for_io_publish(wake_time_ns);
+        published.is_some()
     }
 
     /// Unblock a thread that was blocked for device I/O.
@@ -6371,23 +6353,13 @@ impl Scheduler {
         self.kick_for_io_wake(wake);
     }
 
-    /// Immediate task-context waitqueue wake.
-    ///
-    /// Mirrors Linux's waitqueue -> try_to_wake_up nesting: the waitqueue lock
-    /// is held by the caller, and this helper performs the scheduler state
-    /// transition before the waitqueue wake returns.
+    /// Task-context wake of an event-queue waiter (E2.1): make `tid` runnable
+    /// if it is published blocked, through the I/O wake path, which leaves
+    /// `blocked_in_syscall` for the waiter to clear when it finishes its wait.
+    /// A thread that is already running or ready is left as it is. Takes no
+    /// waitqueue lock (brief B1, requirement 5).
     pub fn wake_waitqueue_thread(&mut self, tid: u64) {
-        let wake = self.wake_io_thread_locked(tid, false);
-        #[cfg(target_arch = "aarch64")]
-        if let Some(target) = wake.current_cpu {
-            self.trace_wake_current(tid, target);
-        }
-        #[cfg(target_arch = "aarch64")]
-        if let Some(target) = wake.resched_target() {
-            self.send_resched_ipi_to_cpu(target);
-        }
-        #[cfg(target_arch = "x86_64")]
-        self.kick_for_io_wake(wake);
+        self.unblock_for_io(tid);
     }
 
     /// x86_64: reach the CPU an I/O wake left work for. A thread queued on
@@ -9356,10 +9328,12 @@ pub fn adopt_legacy_exec(row_thread: &Thread, root: u64) {
     });
 }
 
-/// Wake a waitqueue waiter immediately from task context.
-///
-/// The caller must not be in interrupt context; hard IRQ paths must use
-/// `isr_unblock_for_io` so they never spin on the scheduler lock.
+/// Task-context wake of an event-queue waiter
+/// (`Scheduler::wake_waitqueue_thread`). x86_64: under the lock of the CPU
+/// that owns it, or held for that CPU when its lock stays busy, not under the
+/// whole scheduler (#1649). Elsewhere, and on x86_64 before the run-queue
+/// locks exist, under the whole scheduler lock. The caller must not hold the
+/// scheduler lock.
 pub fn wake_waitqueue_thread(tid: u64) {
     #[cfg(target_arch = "x86_64")]
     if owner_wake(tid, rq::Wake::Io { from_isr_buffer: false }) {
