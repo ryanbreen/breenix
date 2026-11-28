@@ -2,7 +2,9 @@
 
 Status: design and PR sequence. E3-1 adds the pure modules, which no kernel path calls yet. E3-2 makes
 absent, Hole and poisoned pages explicit in today's mapping cache. E3-3 maps exec images through the
-cache, with the ETXTBSY rule of 10.3 (adopted by DEV-49(1)). Builders
+cache, with the ETXTBSY rule of 10.3 (adopted by DEV-49(1)). E3-4 adds the fill interface: population fills
+claimed frames through `FileSystem::fill`, and BreenFS's fill reads its runs from the device, not through
+the block cache. Builders
 append the detail deviations they make under DEV-39(2) to section 22.
 
 Rulings. DEV-41(2) starts this design and orders implementation to begin as soon as its E1 and E2
@@ -2459,3 +2461,54 @@ boundary) are not recorded here: the builder stops and asks the coordinator.
   cache path with admission switched off (`ExecImage::ADMIT` false: exec copies each image and a write
   is not refused, today's behaviour), and the next commit turns admission on, because a seam the
   kernel does not call would not build without warnings.
+- **E3-4, the fill's signature (6.1).** `fill(&self, node, io, pages: &mut FillBatch) -> Result<(), Errno>`
+  takes the transfer its caller holds, and the batch carries its first page and each page's outcome
+  (`FillPage`, reported `Error(EIO)` until the backend reports it), because population reads through the
+  transfer it holds (exec holds its image's, and ext2 refuses a second), and outcomes reserved with the
+  frames need no allocation after the claim; `Err` fails the whole batch, for a failure before any page's
+  outcome is known.
+- **E3-4, the exclusion's span (6.1).** BreenFS's fill holds the foreground exclusion from its snapshot to
+  its report, and population publishes the report afterwards under the map lock with 6.1a's mark check,
+  because before E3-7 readers and faults do not wait on a claim (7.3), so a thread holding the exclusion
+  cannot be waiting for one, and a write between the report and the merge marks the claim (the interleaving check drives that window).
+- **E3-4, the device's maximum transfer (6.2, 6.4).** A run is at most `RUN_BYTES` (64 KiB, the block
+  layer's one request), and the bounce buffer is that size, because `BlockDevice` reports no read transfer
+  limit before E4.
+- **E3-4, the bounce pool (6.4).** It is one heap buffer per mount, taken as an owned token and returned
+  when the token drops; a fill that finds the pool empty allocates its own and the pool keeps one, because
+  the block API reads into one contiguous slice and frame-backed buffers wait for E1-9. A snapshot's fill
+  takes the writer mount's buffer before its view's exclusion, which costs at most a second buffer, since
+  tokens are owned.
+- **E3-4, one batch per run of absent pages.** Population fills each maximal run of absent pages as one
+  batch, with no 16-page window, because a window splits a device run that crosses it; the batch's
+  frames are allocated before its fill, as population allocated its range's frames before its merge.
+- **E3-4, a Hole from a fill.** Population records the page in the Hole set and drops its frame (5.2), and
+  exec gives a Hole page the cleared frame a fault gives it, or copies a Hole tail page as 00 bytes,
+  because exec maps cache frames itself and before E3-4 the pages it populated were resident.
+- **E3-4, an error under a mark.** A page a fill reports as an error inside its claim's mark is filled
+  again with the other marked pages instead of failing the population, because the mark says its bytes
+  changed during the fill; outside a mark the population fails with that page's errno, as a short read
+  failed it before.
+- **E3-4, a failed run (6.2).** A failed CRC or device read makes the pages of its run `Error`, as 6.2
+  says, and the fill goes on with the next run; a one-block run is read in place into its frame, since
+  the frame holds it contiguously, so only multi-block runs go through the bounce buffer.
+- **E3-4, past the open view's EOF.** Pages below the inode's size that the open view's read does not
+  reach are reported `Hole`, because `read` returns 00 bytes for them.
+- **E3-4, atime.** BreenFS's fill touches atime as its `read` did for population (POSIX `mmap` lets a
+  mapping mark `st_atime`); a snapshot's fill, like a snapshot's `read`, does not.
+- **E3-4, the counts.** `/proc/breenix/pagecache` gains `fills`, `fill_pages`, `fill_errors` and
+  `fill_discarded`, and the interleaving check reads a per-thread tally kept beside `fill_discarded`
+  (`fill_window`), because host tests run on parallel threads that share the global counts.
+- **E3-4, `cache_policy`.** BreenFS and its snapshot views declare `Native`, and ext2 and the other
+  filesystems keep the default `MappedOnly`; E3-4 adds no reader of the policy, because E3-7 is the PR that
+  routes `read` and `write` by it.
+- **E3-4, the frame vector.** `FrameVec` keeps an offset and a length per leased frame, as E1 section 8
+  names it, and a fill batch uses whole pages, because E4's partial segments are the first that need
+  other values.
+- **E3-4, existing checks.** The #3232 truncation check restores the file in the window after the fill
+  (`fill_window::on_filled`) rather than at the second 16-page run's first frame, and
+  `population_reads_runs_not_pages` counts one request per run of the whole file, because population
+  no longer reads in 16-page windows; each keeps the interleaving or shape it checked.
+- **E3-4, the check commit.** It carries the interface, population through `fill` and the window seam,
+  with BreenFS on the default fill as well (today's reads through the transfer), and the next commit adds
+  BreenFS's fill, so the red results are today's behaviour through the same checks.
