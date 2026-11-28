@@ -647,8 +647,24 @@ Each CPU owns one deadline queue under its run-queue lock. It holds:
 
 The queue is a per-CPU heap of intrusive nodes, one per sleeping thread (in the thread) and one per
 housekeeping kind (in the per-CPU area), so arming never allocates and never refuses. "A full heap refuses
-admission" (`deadlines.rs:2`) goes. A deadline for a thread another CPU owns is posted to that CPU's inbox
-as work. The owner arms it, and kicks itself only when the posted deadline is its new earliest one. <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
+admission" (`deadlines.rs:2`) goes.
+
+A thread's deadline is never posted to another CPU. The R17 inbox carries wake bits only
+(`publish_wake(tid, bits, ..)`, `rq.rs:1263`). A deadline left there would stay with the old owner after a
+migration. Instead:
+
+- **Arm.** Only the owner arms a thread's deadline, under the owner's lock. A sleeper arms its own
+  deadline in the park commit (E2 §3.3 step 3), which runs on its owner CPU. Housekeeping deadlines are
+  per CPU and armed by that CPU.
+- **Migrate.** The thread's deadline node is part of the scheduling state that `set_owner` moves while
+  it holds both CPUs' locks (S1). It unlinks the node from the source queue and links it into the
+  target's. If the node becomes the target's head, the target is kicked after the unlock to reprogram
+  its compare. The source reprograms at its next queue change.
+- **Cancel and expire.** Each park takes a new sleep sequence number, stored in the node. A wake cancels
+  the node under the owner's lock. That happens either directly or in the drain of the held wake, which
+  also runs under that lock. An expiry wakes the thread only if the node's sequence equals the thread's
+  current sleep sequence and the thread is still parked. Otherwise it is a stale expiry, counted and
+  dropped. Arm, cancel and expiry all run under the one owner lock, so they are totally ordered. <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
 
 ### 8.2 Programming the hardware
 
@@ -1128,15 +1144,16 @@ of their steps, keeping each CPU's program order. The steps are sequentially con
     B's compare must cover it. A second case lets a deadline from the thread's earlier sleep expire
     during a later sleep, which must not wake the later sleep. Red on §8.1 as first written. That text
     posts a remote deadline to the owner's inbox, and the R17 inbox carries only wake bits
-    (`publish_wake(tid, bits, ..)`, `rq.rs:1263`), so a migrated thread's deadline stays with A.
+    (`publish_wake(tid, bits, ..)`, `rq.rs:1263`), so a migrated thread's deadline stays with A. Green
+    on §8.1's owner-only arming, node migration under `set_owner`, and sleep sequence numbers.
 
     ```pycon
     >>> def deadline_queue_after(owner_at_post, owner_at_drain):
-    ...     return owner_at_post if owner_at_post == owner_at_drain else None
+    ...     return owner_at_drain
     >>> deadline_queue_after(owner_at_post='A', owner_at_drain='B')
     'B'
     >>> def expiry_wakes(deadline_sleep, current_sleep):
-    ...     return True
+    ...     return deadline_sleep == current_sleep
     >>> expiry_wakes(deadline_sleep=4, current_sleep=5)
     False
 
