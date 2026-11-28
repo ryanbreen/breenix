@@ -2982,9 +2982,9 @@ fn inline_schedule_breadcrumb(cpu_id: usize, site: u8, extra: u16) {
     INLINE_SCHEDULE_BREADCRUMB_TRAIL[cpu_id][idx].store(value, Ordering::Relaxed);
 }
 
-static mut INLINE_SCHEDULE_ERET_FRAMES: [MaybeUninit<Aarch64ExceptionFrame>;
+static mut INLINE_SCHEDULE_ERET_FRAMES: [super::sp_frame_slot::SpFrameSlot<Aarch64ExceptionFrame>;
     crate::arch_impl::aarch64::constants::MAX_CPUS] =
-    [const { MaybeUninit::zeroed() }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+    [const { super::sp_frame_slot::SpFrameSlot::zeroed() }; crate::arch_impl::aarch64::constants::MAX_CPUS];
 
 /// Per-CPU staging for a ret-based kernel dispatch.
 ///
