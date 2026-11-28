@@ -1152,14 +1152,17 @@ class Driver:
             installed = disk.get('liveManager') or {}
             if the_layout['version'] != 3 or not current.get('writableRoot') or slots.get('next'):
                 raise Finish(m.EXIT_CANCELLED, 'manager replacement requires a writable format-3 CURRENT and empty NEXT')
-            if installed.get('manifestVersion', 1) != 1:
-                raise Finish(m.EXIT_CANCELLED, 'the paired live manager is already installed')
-            if manager_build.get('manifestVersion') != 2 or manager_build['sha256'] == installed.get('sha256'):
-                raise Finish(m.EXIT_CANCELLED, 'manager replacement requires a different, version-2 manager build')
+            if manager_build.get('manifestVersion') != 2 or manager_build.get('sourceCommit') != self.args.commit:
+                raise Finish(m.EXIT_CANCELLED, 'manager replacement requires a version-2 manager built from the requested commit')
+            installed_version = installed.get('manifestVersion', 1)
+            if installed_version == 2 and installed.get('sourceCommit') == self.args.commit:
+                raise Finish(m.EXIT_CANCELLED, 'the paired live manager from this commit is already installed')
+            if installed_version not in (1, 2) or (installed_version == 1 and manager_build['sha256'] == installed.get('sha256')):
+                raise Finish(m.EXIT_CANCELLED, 'manager replacement requires a different, supported manager build')
             config, request = metal_persist.manager_replacement_request(
                 scratch, the_layout, generation, manager, manager_build['sha256'])
             self.persist = {'managerReplacement': True, 'sha256': manager_build['sha256'], 'manifestVersion': 2,
-                            'userland': generation}
+                            'sourceCommit': manager_build['sourceCommit'], 'userland': generation}
             m.write_json(self.dir / 'persist.json', self.persist)
             return {'persist.cfg': config, 'persist.dat': request.data}, extracted
         slot = scratch / 'next.img'
@@ -2098,7 +2101,8 @@ class Driver:
                         or self.slot_userlands != {'CURRENT': self.persist['userland']}):
                     raise Finish(m.EXIT_SHORT, 'firmware did not confirm the manager replacement and CURRENT')
                 metal_persist.update_disk(liveManager=dict(boot=self.id, sha256=self.persist['sha256'],
-                                                          manifestVersion=self.persist['manifestVersion']))
+                                                          manifestVersion=self.persist['manifestVersion'],
+                                                          sourceCommit=self.persist['sourceCommit']))
                 raise Finish(m.EXIT_DONE, 'paired live boot manager installed; prior boot options retained')
         if self.persist and PERSIST_DONE in line and 'persist-written' not in self.seen:
             slot = self.persist['slot']

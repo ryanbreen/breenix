@@ -582,7 +582,8 @@ def boot(args):
                              build_selection +
                              tools_only + (['--smb-helper'] if smb else []) + (['--catchup'] if catchup else [])
                              + (['--migration-build'] if migration else [])
-                             + (['--kernel-only'] if getattr(args, 'kernel_only', False) else []),
+                             + (['--kernel-only'] if getattr(args, 'kernel_only', False) else [])
+                             + (['--replace-manager'] if getattr(args, 'replace_manager', False) else []),
                              stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         print(json.dumps({'id': boot_id, 'build': 'started', 'commit': sha}), flush=True)
         if toolchain_ssh:
@@ -706,7 +707,7 @@ def stub_sources(stub):
 
 
 def build(boot_id, sha, features=None, suite=None, tools_profile=None, catchup=False, smb_helper=False,
-          migration=False, milestone=None, kernel_only=False, live=False, paired_tools=False):
+          migration=False, milestone=None, kernel_only=False, live=False, paired_tools=False, replace_manager=False):
     """Detached: build in the metal build container, stream the inputs into the boot's stage folder, signal the driver."""
     validate_id(boot_id)
     env = host_env()
@@ -762,6 +763,7 @@ def build(boot_id, sha, features=None, suite=None, tools_profile=None, catchup=F
                       *(['--stub-only', '--tools-profile', tools_profile] if tools_profile else []),
                       *(['--kernel-only'] if kernel_only else []),
                       *(['--paired-tools'] if paired_tools else []),
+                      *(['--replace-manager'] if replace_manager else []),
                       *(['--catchup'] if catchup else [])).returncode
     print(f'[metal-run] build exit {status} after {time.time() - started:.0f} s', flush=True)
     if status == 3:
@@ -870,7 +872,7 @@ def argument_parser(automatic=False):
     options.add_argument('--replace-usr', action='store_true', help='replace /usr on the selected writable root')
     options.add_argument('--migration-image', action='store_true', help=argparse.SUPPRESS)
     p.add_argument('--recovery', action='store_true', help='use the powered-off network installer')
-    p.add_argument('--replace-manager', action='store_true', help='install the paired boot manager once via --recovery')
+    p.add_argument('--replace-manager', action='store_true', help="install the selected commit's paired boot manager via --recovery")
     p.add_argument('--carry-local', action='store_true', help=argparse.SUPPRESS)
     p = sub.add_parser('migrate-persistent', help='run one phase of the E24 persistent migration')
     p.add_argument('phase', choices=('migrate', 'readback', 'cutover', 'rescue', 'return'))
@@ -895,6 +897,7 @@ def argument_parser(automatic=False):
     sub.add_parser('status')
     p = sub.add_parser('_build')
     p.add_argument('--kernel-only', action='store_true')
+    p.add_argument('--replace-manager', action='store_true', help=argparse.SUPPRESS)
     p.add_argument('id')
     p.add_argument('sha')
     p.add_argument('--features', choices=(FAULT_FEATURE, FENCE_FEATURE, PANIC_FEATURE, TESTING_FEATURE, 'capture_panic_oracle', 'gt710_core_probe', 'gt710_clock_probe', 'watchdog_fault_inject', *metal_power_cut.FEATURES))
@@ -962,7 +965,7 @@ def main():
         return install_persistent(args)
     if args.command == '_build':
         return build(args.id, args.sha, args.features, args.suite, args.tools_profile, args.catchup, args.smb_helper,
-                     args.migration_build, args.milestone, args.kernel_only)
+                     args.migration_build, args.milestone, args.kernel_only, replace_manager=args.replace_manager)
     if args.command == '_prebuilt':
         return deliver_prebuilt(args.id, args.sha, args.prebuilt, args.mode, args.features, args.suite, args.catchup, args.smb_helper)
     env = host_env()

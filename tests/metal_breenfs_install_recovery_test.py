@@ -281,7 +281,7 @@ class ManagerReplacementTest(existing.StateTest):
         manager = inputs / 'manager.efi'
         manager.write_bytes(b'paired manager')
         digest = boot.metal_image.sha256(manager)
-        build = dict(manager=dict(sha256=digest, manifestVersion=2))
+        build = dict(manager=dict(sha256=digest, manifestVersion=2, sourceCommit=args.commit))
         driver.phase = driver.event = Mock()
 
         with patch.object(migration, 'require_closed', return_value={'closed': '20261121T172024Z-metal'}), \
@@ -307,7 +307,8 @@ class ManagerReplacementTest(existing.StateTest):
                     self.assertEqual(persist.read_disk()['liveManager'], legacy)
 
             files, _ = driver.prepare_install(inputs, build)
-            self.assertIn(r'esp-file \EFI\BREENIX\PAIR.EFI ', files['persist.cfg'].read_text())
+            self.assertIn(r'esp-file \EFI\BREENIX\PAIR-' + digest.upper() + '.EFI ',
+                          files['persist.cfg'].read_text())
             self.assertIn(f'manager-replacement {digest}\n', files['persist.cfg'].read_text())
             self.assertEqual(persist.read_disk()['liveManager'], legacy)
             self.assertEqual(metal_live_flash.site(m)['manifestVersion'], 1)
@@ -321,10 +322,34 @@ class ManagerReplacementTest(existing.StateTest):
             self.assertEqual(completed.exception.status, m.EXIT_DONE)
             self.assertEqual(persist.read_disk()['slots'], slots)
             self.assertEqual(persist.read_disk()['liveManager'],
-                             dict(boot=args.id, sha256=digest, manifestVersion=2))
+                             dict(boot=args.id, sha256=digest, manifestVersion=2, sourceCommit=args.commit))
             self.assertEqual(metal_live_flash.site(m)['manifestVersion'], 2)
             with self.assertRaises(boot.Finish):
                 driver.prepare_install(inputs, build)
+
+            previous = persist.read_disk()['liveManager']
+            args.commit = 'e' * 40
+            manager.write_bytes(b'revised paired manager')
+            revised_digest = boot.metal_image.sha256(manager)
+            for unpinned in ({}, {'sourceCommit': 'f' * 40}):
+                with self.assertRaises(boot.Finish):
+                    driver.prepare_install(inputs, dict(manager=dict(
+                        sha256=revised_digest, manifestVersion=2, **unpinned)))
+            revised = dict(manager=dict(sha256=revised_digest, manifestVersion=2, sourceCommit=args.commit))
+            files, _ = driver.prepare_install(inputs, revised)
+            self.assertIn(r'esp-file \EFI\BREENIX\PAIR-' + revised_digest.upper() + '.EFI ',
+                          files['persist.cfg'].read_text())
+            self.assertEqual(persist.read_disk()['liveManager'], previous)
+            driver.seen = {'stub'}
+            driver.slot_userlands.clear()
+            driver.on_persist_line(f'metal-stub: slot userland: CURRENT {generation}', 1)
+            driver.on_persist_line(f'metal-stub: paired live manager installed; sha256={revised_digest}', 2)
+            with self.assertRaises(boot.Finish) as completed:
+                driver.on_persist_line(boot.PERSIST_DONE, 3)
+            self.assertEqual(completed.exception.status, m.EXIT_DONE)
+            self.assertEqual(persist.read_disk()['slots'], slots)
+            self.assertEqual(persist.read_disk()['liveManager'],
+                             dict(boot=args.id, sha256=revised_digest, manifestVersion=2, sourceCommit=args.commit))
 
 
 if __name__ == '__main__':

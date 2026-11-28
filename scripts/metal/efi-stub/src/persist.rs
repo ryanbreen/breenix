@@ -32,7 +32,7 @@ const PARTITIONS: usize = ORIGINAL_PARTS + 2;
 const CHUNK_SECTORS: usize = 128;
 const CONFIG_LINES: usize = 16;
 const MANAGER_FILE: &str = "\\EFI\\BREENIX\\BOOTMGR.EFI";
-const PAIRED_MANAGER: &str = "\\EFI\\BREENIX\\PAIR.EFI";
+const PAIRED_MANAGER_PREFIX: &str = "\\EFI\\BREENIX\\PAIR-";
 const LIVE_CONFIG: &str = "\\EFI\\BREENIX\\LIVE.CFG";
 const CONFIG_FILE: &str = "\\EFI\\BREENIX\\MANAGER.CFG";
 const PART_TYPES: [&str; PARTITIONS] = [
@@ -258,12 +258,15 @@ fn parse<'t>(text: &'t str) -> Result<Request<'t>, Status> {
     }
     if request.expected_userland.is_some() {
         let mut files = text.lines().filter_map(|line| line.strip_prefix("esp-file "));
-        let valid_files = match request.action {
-            Action::ReplaceUsr => files.next().is_none() && request.breenfs_upgrade.is_some(),
-            Action::Upgrade if request.manager_digest.is_some() => request.breenfs_upgrade.is_some_and(|guids| guids[2..] == [[0; 16]; 2])
-                && files.next().and_then(|line| line.split_once(' ')).is_some_and(|(path, _)| path == PAIRED_MANAGER)
+        let valid_files = match (request.action, request.manager_digest) {
+            (Action::ReplaceUsr, None) => files.next().is_none() && request.breenfs_upgrade.is_some(),
+            (Action::Upgrade, Some((digest, _))) => request.breenfs_upgrade.is_some_and(|guids| guids[2..] == [[0; 16]; 2])
+                && files.next().and_then(|line| line.split_once(' '))
+                    .and_then(|(path, _)| path.strip_prefix(PAIRED_MANAGER_PREFIX)?.strip_suffix(".EFI"))
+                    .is_some_and(|stem| stem.len() == digest.len()
+                        && stem.bytes().zip(digest.bytes()).all(|(a, b)| a == b.to_ascii_uppercase()))
                 && files.next().is_none(),
-            Action::Upgrade => files.next().is_some_and(|line| line.starts_with(r"\EFI\BREENIX\NEXT.IMG "))
+            (Action::Upgrade, None) => files.next().is_some_and(|line| line.starts_with(r"\EFI\BREENIX\NEXT.IMG "))
                 && files.next().is_some_and(|line| line.starts_with(r"\EFI\BREENIX\NEXT.TXT "))
                 && files.next().is_none(),
             _ => false,
@@ -278,7 +281,6 @@ fn parse<'t>(text: &'t str) -> Result<Request<'t>, Status> {
     } else if request.action == Action::ReplaceUsr || request.manager_digest.is_some() {
         return Err(INVALID_PARAMETER);
     }
-    if request.manager_digest.is_some() && request.action != Action::Upgrade { return Err(INVALID_PARAMETER); }
     let (original, additions) = request.parts.split_at(ORIGINAL_PARTS);
     match request.action {
         Action::Install => {
@@ -1279,7 +1281,9 @@ pub(super) unsafe fn run(boot: &BootServices, runtime: &RuntimeServices, volume:
             Err(status) => return Err(status),
         }
         slot_store::prepare_records(&root)?;
-        load_option(boot, runtime, esp, "Breenix paired boot manager", PAIRED_MANAGER, Some(http),
+        // The image-specific option name lets a retry reuse it and keeps earlier managers selectable.
+        let description = name.strip_prefix(r"\EFI\BREENIX\").ok_or(INVALID_PARAMETER)?;
+        load_option(boot, runtime, esp, description, name, Some(http),
             |referenced| {
                 files::publish_paired_manager(referenced,
                     || root.matches_file(name, manager.as_ref()),
