@@ -2040,7 +2040,8 @@ impl<W: Wait + 'static> BreenFs<W> {
     /// booted-tree file has a writable shared mapping or mapped stores not
     /// yet written back. Those stores change the file without admission, so
     /// they would be in neither E2 nor a refusal.
-    fn root_freeze(&self) -> Result<RootEpoch, (Errno, RootEpoch)> {
+    /// Also returns the flag's previous value, for `restore_root_frozen`.
+    fn root_freeze(&self) -> Result<(RootEpoch, bool), (Errno, RootEpoch)> {
         let busy = |epoch: RootEpoch| epoch.writable_mappings != 0 || epoch.dirty_files != 0;
         {
             let state = self.foreground_lock().map_err(|error| (error, RootEpoch::default()))?;
@@ -2063,12 +2064,26 @@ impl<W: Wait + 'static> BreenFs<W> {
             self.inner.root_frozen.store(was, Ordering::Release);
             return Err((Errno(EBUSY), epoch));
         }
-        Ok(epoch)
+        Ok((epoch, was))
     }
-    fn root_thaw(&self) -> Result<RootEpoch, Errno> {
-        let state = self.foreground_lock()?;
+    /// Undo a freeze whose caller could not be given E2. Taken under the
+    /// exclusion admission reads the flag under, when it can be.
+    fn restore_root_frozen(&self, was: bool) {
+        let _state = self.foreground_lock();
+        self.inner.root_frozen.store(was, Ordering::Release);
+    }
+    /// Thaw, reporting the epoch first: a caller that cannot receive it
+    /// (EFAULT) leaves the root frozen. A frozen epoch does not move, so the
+    /// value reported is the one at the thaw.
+    fn root_thaw(&self, report: &dyn Fn(&RootEpoch) -> Result<(), Errno>) -> Result<(), Errno> {
+        let epoch = {
+            let state = self.foreground_lock()?;
+            self.root_epoch(&state)
+        };
+        report(&epoch)?;
+        let _state = self.foreground_lock()?;
         self.inner.root_frozen.store(false, Ordering::Release);
-        Ok(self.root_epoch(&state))
+        Ok(())
     }
     fn mount_with(
         device: Arc<dyn BlockDevice>,
@@ -3781,18 +3796,32 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                 {
                     return Err(Errno(EPERM));
                 }
-                let result = match request {
-                    ROOT_EPOCH => self.foreground_lock().map(|state| self.root_epoch(&state)),
-                    ROOT_THAW => self.root_thaw(),
-                    _ => self.root_freeze().or_else(|(error, epoch)| {
-                        // A refusal still reports what blocked it (DEV-44).
-                        crate::syscall::userptr::copy_to_user(arg as *mut RootEpoch, &epoch)
-                            .map_err(|error| Errno(error as i32))?;
-                        Err(error)
-                    }),
-                }?;
-                crate::syscall::userptr::copy_to_user(arg as *mut RootEpoch, &result)
-                    .map_err(|error| Errno(error as i32))?;
+                let report = |epoch: &RootEpoch| {
+                    crate::syscall::userptr::copy_to_user(arg as *mut RootEpoch, epoch)
+                        .map_err(|error| Errno(error as i32))
+                };
+                // The flag changes only for a caller that is given the
+                // result: an unwritable output (EFAULT) changes nothing.
+                match request {
+                    ROOT_EPOCH => report(&self.foreground_lock().map(|state| self.root_epoch(&state))?)?,
+                    ROOT_THAW => self.root_thaw(&report)?,
+                    _ => {
+                        report(&RootEpoch::default())?;
+                        match self.root_freeze() {
+                            Ok((epoch, was)) => {
+                                if let Err(error) = report(&epoch) {
+                                    self.restore_root_frozen(was);
+                                    return Err(error);
+                                }
+                            }
+                            // A refusal still reports what blocked it (DEV-44).
+                            Err((error, epoch)) => {
+                                report(&epoch)?;
+                                return Err(error);
+                            }
+                        }
+                    }
+                }
             }
             SCRUB_START => self.start_scrub()?,
             SCRUB_CANCEL => {
