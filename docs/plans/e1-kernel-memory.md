@@ -237,9 +237,26 @@ glue: locks, interrupt masking, the direct map and page tables.
       mapped. E1-2 sets TCR_EL1.IPS from ID_AA64MMFR0_EL1.PARange (Arm ARM, the ID_AA64MMFR0_EL1 and TCR_EL1
       register descriptions) at both sites. RAM above the width the CPU reports is excluded from the range
       set and counted in `/proc/breenix/kmem`, so it is reported rather than silently missing.
-- There is no `MAX_REGIONS`. The range set lives in a page carved from the largest range, and grows by
-  carving another page if the firmware describes more. Building it takes two passes over the firmware
-  description: the first finds the largest range, and the second fills the set.
+- There is no `MAX_REGIONS`. The range set's storage grows by a page at a time if the firmware describes
+  more ranges.
+- The kernel writes the set's own pages as it builds them, so they must be RAM that the live tables
+  already map writable. The set can describe RAM that is not mapped yet, but its storage cannot be in it.
+  - On ARM64, each storage page, the first and each growth page alike, comes from usable RAM inside the
+    boot window, `direct_map_ram_window` (below `DIRECT_MAP_RAM_END`). Each page must also pass a write
+    probe, `AT S1E1W` at its `HHDM_BASE + pa` with the `PAR_EL1` checks of 4.5.4. Pages are written
+    through that address.
+  - The largest usable range may lie above 4 GiB, outside the map, on any machine with more RAM above
+    4 GiB than below it. A rule of "a page from the largest range" would then put writable bookkeeping
+    in an unmapped slot, and the first write would fault before the boot can print.
+  - On x86 the bootloader's physical-memory mapping covers the described RAM (4.6), so any usable page
+    qualifies.
+- Building the set takes two passes over the firmware description, after the in-place sort (4.5.5) on
+  the UEFI path. The first pass streams the same filtered usable intervals the second pass inserts. It
+  picks the largest one inside the window, so the storage page is a page the set would hold anyway. The
+  second pass fills the set. A growth page is carved from the set with `below` set to the window's end,
+  and is probed the same way.
+- If the window holds no usable page that passes the probe, the build stops, with that reason named, as
+  `FramePoolSource::Unavailable`.
 - A boot carve takes `(bytes, align, below)` and removes the highest fitting run from the range set. It
   feeds the metadata pages, section descriptors and directory (4.2), and ARM64's extra direct-map tables (4.4). It returns
   an error instead of panicking. A boot that cannot carve its metadata still stops, at an explicit
@@ -1333,6 +1350,10 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
     floor is applied.
   - A carve with alignment and a `below` limit returns the highest fitting run, or an error when no run fits;
     the range set loses exactly the carved bytes.
+  - Range-set storage (4.1): the reference fixture with a 2 GiB conventional descriptor added above
+    4 GiB, so the largest usable range lies outside the window. `BootMemory` refuses writes to pages its
+    tables do not map writable. Each storage page lies inside the window, and the build completes. The
+    old code has no growable set, so this tests the new rule. E1-2 repeats it with the clip removed.
 - Boot: not needed.
   - The standard ARM64 QEMU boot script boots the kernel directly with a device tree (1.5). It does not run
     the loader or reaches the v7 and v8 paths, and its device tree path is settled by the host tests.
@@ -1360,6 +1381,10 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
     includes reading the UEFI map through the loader's mappings and releasing its buffer. Then the table
     pages are carved, and then the direct map is extended. So a table page may come from the released
     buffer, and no code reads the map through the extended direct map.
+  - Removing the clip lets the set describe RAM above 4 GiB before the direct map covers it. The set's
+    own storage pages stay inside the boot window and pass the write probe (4.1), so building the set
+    writes only to RAM the boot tables map. The set may describe unmapped RAM while E1-2 builds the
+    tables for it.
 - x86-64: no change.
 - ARM64: RAM above 4 GiB joins the frame pool, up to the CPU's physical address width. That holds on both
   paths: the device tree, and E1-1's UEFI map.
@@ -1379,6 +1404,12 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
       depends on the direct-map window.
   - Planner: each page of each range is covered exactly once; no descriptor covers a non-RAM address;
     blocks are used wherever alignment allows; the number of table pages is minimal for the input.
+  - Range-set storage: a variant of the 6 GiB fixture whose largest conventional descriptor lies above
+    4 GiB, outside the window. `BootMemory` refuses a write to a page its tables do not map writable, as
+    the MMU would fault. Each storage page the build uses, the first and each growth page alike, lies
+    inside the window, and the build completes. The fixture describes enough
+    ranges that the set grows at least once. Check first: the same build with storage taken from the
+    largest range writes above 4 GiB and is refused, which is red.
   - Table placement: on the 6 GiB fixture, the planner's table pages are carved with an unbounded carve
     (the highest fitting run) and land above 4 GiB, outside the mapped window, which is red. With `below`
     set to the window's end, each table page lies inside the window. With the window's spare RAM made
