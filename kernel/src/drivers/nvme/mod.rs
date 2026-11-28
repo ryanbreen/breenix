@@ -230,6 +230,9 @@ struct RequestGate {
 struct RequestGuard<'a> {
     gate: &'a RequestGate,
     release_on_drop: bool,
+    /// The admitted caller's context: it sleeps for its command, or polls it
+    /// in early boot.
+    io: crate::task::park::IoContext,
 }
 
 impl RequestGate {
@@ -242,6 +245,8 @@ impl RequestGate {
     }
 
     fn lock(&self) -> Result<RequestGuard<'_>, &'static str> {
+        use crate::task::park::{self, IoContext, WaitEnd, WaitMode};
+        let io = park::io_context().map_err(|_| "NVMe command from a context that may not sleep")?;
         loop {
             if self.wedged.load(Ordering::Acquire) {
                 return Err("NVMe controller wedged after an abandoned command");
@@ -254,22 +259,25 @@ impl RequestGate {
                 return Ok(RequestGuard {
                     gate: self,
                     release_on_drop: true,
+                    io,
                 });
             }
-            if !request_gate_can_sleep() {
+            // The block I/O caller rule (design §6): a context that may park
+            // waits its turn; early boot, the only thread, does not wait; any
+            // other context was refused with a receipt above.
+            if io != IoContext::Sleepable {
                 return Err("NVMe command already in progress");
             }
-            if self
-                .waiters
-                .prepare_to_wait(crate::task::thread::ThreadState::BlockedOnIO)
-                .is_none()
-            {
-                return Err("NVMe command already in progress");
+            match park::wait(
+                &self.waiters,
+                || !self.locked.load(Ordering::Acquire) || self.wedged.load(Ordering::Acquire),
+                None,
+                WaitMode::Uninterruptible,
+            ) {
+                Ok(WaitEnd::NoMemory | WaitEnd::Killed) => return Err("NVMe command already in progress"),
+                Ok(_) => {}
+                Err(_) => return Err("NVMe command from a context that may not sleep"),
             }
-            if self.locked.load(Ordering::Acquire) && !self.wedged.load(Ordering::Acquire) {
-                crate::task::waitqueue::schedule_current_wait();
-            }
-            self.waiters.finish_wait();
         }
     }
 }
@@ -289,11 +297,6 @@ impl Drop for RequestGuard<'_> {
             self.gate.waiters.wake_up_one();
         }
     }
-}
-
-#[inline]
-fn request_gate_can_sleep() -> bool {
-    crate::task::scheduler::current_thread_id().is_some() && crate::per_cpu::preempt_count() > 0
 }
 
 /// An attached NVMe controller and its namespace.
@@ -718,26 +721,25 @@ impl NvmeController {
         }
     }
 
-    /// Whether the submitter can sleep until the IRQ handler completes the
-    /// command. A scheduler thread can, even with interrupts masked (a
-    /// syscall): the completion wait parks it and interrupts are serviced
-    /// while it sleeps, as for VirtIO block. Busy-polling there instead
-    /// would hold the only CPU with interrupts off for the whole command.
-    fn irq_completion_available(&self) -> bool {
-        self.irq_driven
-            && (crate::task::scheduler::current_thread_id().is_some()
-                || x86_64::instructions::interrupts::are_enabled())
+    /// Whether the IRQ handler completes the admitted caller's command
+    /// while the caller sleeps (design §6): a context that may park, on a
+    /// controller whose completion queue raises INTx. A sleeping caller with
+    /// interrupts masked (a syscall) is serviced while it sleeps, as for
+    /// VirtIO block. Early boot polls the completion queue instead.
+    fn irq_completion_available(&self, io: crate::task::park::IoContext) -> bool {
+        self.irq_driven && io == crate::task::park::IoContext::Sleepable
     }
 
     /// Poll the I/O completion queue for the in-flight command until
-    /// `timeout_ns` passes. A scheduler thread busy-polls only for
+    /// `timeout_ns` passes. A sleeping caller busy-polls only for
     /// `POLL_SPIN_NS` and then sleeps between polls: a syscall arrives with
     /// interrupts masked, and polling there for the whole command would keep
-    /// the timer and every other interrupt off the CPU.
-    fn poll_io_completion(&self, token: u32, timeout_ns: u64) -> bool {
+    /// the timer and every other interrupt off the CPU. Early boot, the only
+    /// thread, spins.
+    fn poll_io_completion(&self, token: u32, timeout_ns: u64, io: crate::task::park::IoContext) -> bool {
         let start = now_ns();
         let deadline = start.saturating_add(timeout_ns);
-        let can_sleep = crate::task::scheduler::current_thread_id().is_some();
+        let can_sleep = io == crate::task::park::IoContext::Sleepable;
         loop {
             self.drain_io_cq();
             if self.completed_status.load(Ordering::Acquire) != NO_STATUS {
@@ -784,14 +786,14 @@ impl NvmeController {
         // The command is already published to the device, so abandoning
         // either wait would leave the data page live for DMA.
         let timeout_ns = io_timeout_ns();
-        let completed = if self.irq_completion_available() {
+        let completed = if self.irq_completion_available(guard.io) {
             matches!(
                 self.completion
                     .wait_timeout_uninterruptible(token, timeout_ns),
                 Ok(true)
             )
         } else {
-            self.poll_io_completion(token, timeout_ns)
+            self.poll_io_completion(token, timeout_ns, guard.io)
         };
 
         self.pending_token.store(0, Ordering::Release);

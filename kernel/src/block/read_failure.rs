@@ -5,7 +5,15 @@ use core::fmt;
 pub enum AhciReadError {
     Range,
     BufferSize,
-    CannotPark,
+    /// The caller's context may neither park nor poll (design §6): a
+    /// receipt, and EIO.
+    NotSleepable,
+    /// Early boot polls its own commands, so a port another thread owns
+    /// there is a contract violation, not a wait.
+    EarlyBootPortOwned,
+    /// No completion source will complete a sleeping caller's command on
+    /// this CPU: the controller has no interrupt and this CPU no poller.
+    CompletionNotReady,
     Interrupted,
     WaiterAllocation,
     WaitPublication,
@@ -65,9 +73,16 @@ pub struct VirtioReadFailure {
     pub device_status: u32,
 }
 impl VirtioReadFailure {
-    /// These branches return before acquiring or issuing this read request.
+    /// A kill refused the request before it was acquired or issued.
     pub fn context_refused(self) -> bool {
-        matches!(self.stage, "gate-cannot-sleep" | "gate-publish-refused" | "gate-kill-claimed")
+        matches!(self.stage, "gate-publish-refused" | "gate-kill-claimed")
+    }
+
+    /// The request was refused before it was issued, so it establishes no
+    /// failure of the sector: a kill, or the block I/O caller rule (design
+    /// §6), which refuses a context that may not sleep with EIO.
+    pub fn pre_issue(self) -> bool {
+        self.context_refused() || matches!(self.stage, "gate-not-sleepable" | "gate-early-boot-busy")
     }
 }
 impl fmt::Display for VirtioReadFailure {

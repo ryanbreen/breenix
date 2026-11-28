@@ -67,7 +67,15 @@ struct BlockRequestGuard<'a> {
     gate: &'a BlockRequestGate,
     entry: usize,
     release_on_drop: bool,
+    /// The admitted caller's context: it waits for its commands by
+    /// sleeping, or polls them in early boot.
+    io: IoContext,
 }
+
+use crate::task::park::IoContext;
+
+/// A request from a context that may neither park nor poll (design §6).
+const NOT_SLEEPABLE_ERROR: &str = "Block request from a context that may not sleep";
 
 impl BlockRequestGate {
     const fn new() -> Self {
@@ -123,43 +131,50 @@ impl BlockRequestGate {
             x86_64::instructions::interrupts::without_interrupts(|| self.ranges.lock().cancel_flush(&mut queued));
             self.waiters.wake_up();
         }
-        entry.map(|entry| BlockRequestGuard { gate: self, entry, release_on_drop: true })
+        entry.map(|(entry, io)| BlockRequestGuard { gate: self, entry, release_on_drop: true, io })
     }
 
-    fn wait_for_admission(&self, start: u64, end: u64, write: bool, mut flush: Option<&mut bool>) -> Result<usize, &'static str> {
+    /// The block I/O caller rule (design §6): a context that may park waits
+    /// its turn; early boot, the only thread, tries once; any other context
+    /// is refused with a receipt. Returns the entry and the caller's context,
+    /// which picks how its commands are waited for.
+    fn wait_for_admission(&self, start: u64, end: u64, write: bool, mut flush: Option<&mut bool>) -> Result<(usize, IoContext), &'static str> {
+        use crate::task::park::{self, WaitEnd, WaitMode};
+        let io = park::io_context().map_err(|_| NOT_SLEEPABLE_ERROR)?;
+        let sleeps = io == IoContext::Sleepable;
         loop {
-            let can_sleep = block_request_gate_can_sleep();
-            if let Some(entry) = self.attempt(start, end, write, flush.as_deref_mut(), can_sleep) {
-                return Ok(entry);
-            }
-
-            if !can_sleep {
-                return Err("Block request already in progress");
-            }
-
-            if self
-                .waiters
-                .prepare_to_wait(crate::task::thread::ThreadState::BlockedOnIO)
-                .is_none()
-            {
-                return Err("Block request already in progress");
-            }
-
-            if self.wedged.load(Ordering::Acquire) {
-                self.waiters.finish_wait();
-                return Err(WEDGED_ERROR);
-            }
-
-            // Published before this check, so a release after it wakes us.
-            if let Some(entry) = self.attempt(start, end, write, flush.as_deref_mut(), can_sleep) {
-                self.waiters.finish_wait();
-                return Ok(entry);
-            }
-            crate::task::waitqueue::schedule_current_wait();
-            self.waiters.finish_wait();
-
             if self.wedged.load(Ordering::Acquire) {
                 return Err(WEDGED_ERROR);
+            }
+            if let Some(entry) = self.attempt(start, end, write, flush.as_deref_mut(), sleeps) {
+                return Ok((entry, io));
+            }
+            if !sleeps {
+                return Err("Block request already in progress during early boot");
+            }
+            // The attempt runs under the queue lock, atomically with
+            // publishing the wait, so a release before the enqueue is seen.
+            let mut admitted = None;
+            let ended = park::wait(
+                &self.waiters,
+                || {
+                    if self.wedged.load(Ordering::Acquire) {
+                        return true;
+                    }
+                    admitted = self.attempt(start, end, write, flush.as_deref_mut(), true);
+                    admitted.is_some()
+                },
+                None,
+                WaitMode::Uninterruptible,
+            );
+            if let Some(entry) = admitted {
+                return Ok((entry, io));
+            }
+            match ended {
+                Ok(WaitEnd::NoMemory) => return Err("Block request waiter publication refused"),
+                Ok(WaitEnd::Killed) => return Err("Block request waiter publication refused"),
+                Ok(_) => {}
+                Err(_) => return Err(NOT_SLEEPABLE_ERROR),
             }
         }
     }
@@ -185,22 +200,6 @@ impl Drop for BlockRequestGuard<'_> {
         if self.release_on_drop {
             self.gate.release(self.entry);
         }
-    }
-}
-
-#[inline]
-fn block_request_gate_can_sleep() -> bool {
-    if crate::task::scheduler::current_thread_id().is_none() {
-        return false;
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    {
-        crate::per_cpu::preempt_count() > 0
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        false
     }
 }
 
@@ -716,39 +715,40 @@ impl VirtioBlockDevice {
     /// request, and a slow device is not a failed one, so there is no
     /// timeout: the wait ends when the device completes the request. It
     /// sleeps in slices only to notice a device that has failed, the one case
-    /// where the request is abandoned. A wait that cannot sleep spins
-    /// instead, and is abandoned past the bootstrap limit rather than
-    /// spinning the boot CPU forever.
-    fn wait_for_completion(&self, slot: usize, token: u32, request: u32) -> Result<(), &'static str> {
+    /// where the request is abandoned. Early boot polls instead, and is
+    /// abandoned past the bootstrap limit rather than spinning the boot CPU
+    /// forever.
+    fn wait_for_completion(&self, slot: usize, token: u32, request: u32, io: IoContext) -> Result<(), &'static str> {
         let started_ns = monotonic_now_ns();
-        let sleeps = crate::task::completion::wait_sleeps();
+        let sleeps = io == IoContext::Sleepable;
         loop {
-            if let Ok(true) = self.completions[slot]
-                .completion
-                .wait_timeout_uninterruptible(token, BLOCK_WAIT_SLICE_NS)
-            {
-                return Ok(());
+            match self.completions[slot].completion.wait_timeout_uninterruptible(token, BLOCK_WAIT_SLICE_NS) {
+                Ok(true) => return Ok(()),
+                Ok(false) => {}
+                Err(_) => return Err(NOT_SLEEPABLE_ERROR),
             }
             if self.device.has_failed() {
                 return Err("Block device failed with a request outstanding");
             }
             let waited_ns = monotonic_now_ns().saturating_sub(started_ns);
             if !sleeps && waited_ns >= BLOCK_BOOTSTRAP_WAIT_LIMIT_NS {
-                return Err("Block request not completed before the kernel could sleep");
+                return Err("Block request not completed during early boot");
             }
             report_slow_request(self, request, waited_ns);
         }
     }
 
-    #[cfg(target_arch = "x86_64")]
-    fn irq_completion_available(&self) -> bool {
-        crate::task::scheduler::current_thread_id().is_some()
-            || x86_64::instructions::interrupts::are_enabled()
-    }
-
-    #[cfg(not(target_arch = "x86_64"))]
-    fn irq_completion_available(&self) -> bool {
-        true
+    /// Whether something will complete the admitted caller's commands
+    /// (design §6): early boot polls them, and a sleeping caller needs the
+    /// devices' legacy interrupt line unmasked (`arm_completion_source`).
+    /// A device that is not ready refuses the request rather than polling.
+    fn completion_ready(&self, io: IoContext) -> Result<(), &'static str> {
+        use crate::task::park::{completion_source_ready, BlockSource};
+        if io == IoContext::EarlyBoot || completion_source_ready(BlockSource::VirtioBlkPci, 0) {
+            Ok(())
+        } else {
+            Err("Block IRQ completion not armed")
+        }
     }
 
     /// Run `f` with the engine locked and interrupts masked. The interrupt
@@ -791,10 +791,8 @@ impl VirtioBlockDevice {
         if self.cache.as_ref().is_some_and(|cache| cache.lookup(start_sector, buffer)) {
             return Ok(());
         }
-        if !self.irq_completion_available() {
-            return Err("Block IRQ completion unavailable before interrupts are enabled");
-        }
         let guard = self.request_gate.admit(start_sector, end, false)?;
+        self.completion_ready(guard.io)?;
         self.transfer(guard, start_sector, Data::Read(buffer))
     }
 
@@ -805,10 +803,8 @@ impl VirtioBlockDevice {
         if self.read_only || !crate::block::hardware_write_allowed(disk, start_sector, buffer.len() / SECTOR_SIZE) {
             return Err("Read-only filesystem");
         }
-        if !self.irq_completion_available() {
-            return Err("Block IRQ completion unavailable before interrupts are enabled");
-        }
         let guard = self.request_gate.admit(start_sector, end, true)?;
+        self.completion_ready(guard.io)?;
         self.transfer(guard, start_sector, Data::Write(buffer))
     }
 
@@ -847,7 +843,7 @@ impl VirtioBlockDevice {
         };
         let chunk = self.chain_bytes;
         // The boot thread's bounded polling keeps one request on the device.
-        let window = if crate::task::completion::wait_sleeps() { MAX_CHAINS } else { 1 };
+        let window = if guard.io == IoContext::Sleepable { MAX_CHAINS } else { 1 };
         let chunks = if total == 0 { 1 } else { total.div_ceil(chunk) };
         // (slot, token, chunk index), oldest first.
         let mut in_flight = [(0usize, 0u32, 0usize); MAX_CHAINS];
@@ -895,7 +891,7 @@ impl VirtioBlockDevice {
                     }
                     Err(None) if count > 0 => break,
                     Err(None) => {
-                        if let Err(reason) = self.wait_for_slot() {
+                        if let Err(reason) = self.wait_for_slot(guard.io) {
                             failure = Some(reason);
                         }
                     }
@@ -914,7 +910,7 @@ impl VirtioBlockDevice {
             let offset = index * chunk;
             let len = (total - offset).min(chunk);
             let sector = start_sector + (offset / SECTOR_SIZE) as u64;
-            if let Err(reason) = self.wait_for_completion(slot, token, kind) {
+            if let Err(reason) = self.wait_for_completion(slot, token, kind, guard.io) {
                 if kind == request_type::OUT {
                     self.invalidate_cached(start_sector, total);
                 }
@@ -970,23 +966,22 @@ impl VirtioBlockDevice {
     }
 
     /// Wait until a chain slot is free, as admission waits for a range.
-    fn wait_for_slot(&self) -> Result<(), &'static str> {
-        let gate = &self.request_gate;
+    /// Early boot, with one request on the device at a time, never waits.
+    fn wait_for_slot(&self, io: IoContext) -> Result<(), &'static str> {
+        use crate::task::park::{self, WaitEnd, WaitMode};
         let free = || self.with_engine(|engine| engine.free_slots() > 0 || engine.is_stopped());
         if free() {
             return Ok(());
         }
-        if !block_request_gate_can_sleep() {
-            return Err("Block request already in progress");
+        if io != IoContext::Sleepable {
+            return Err("Block request already in progress during early boot");
         }
-        if gate.waiters.prepare_to_wait(crate::task::thread::ThreadState::BlockedOnIO).is_none() {
-            return Err("Block request already in progress");
+        match park::wait(&self.request_gate.waiters, free, None, WaitMode::Uninterruptible) {
+            Ok(WaitEnd::NoMemory) => Err("Block request waiter publication refused"),
+            Ok(WaitEnd::Killed) => Err("Block request waiter publication refused"),
+            Ok(_) => Ok(()),
+            Err(_) => Err(NOT_SLEEPABLE_ERROR),
         }
-        if !free() {
-            crate::task::waitqueue::schedule_current_wait();
-        }
-        gate.waiters.finish_wait();
-        Ok(())
     }
 
     fn invalidate_cached(&self, sector: u64, len: usize) {
@@ -1004,10 +999,8 @@ impl VirtioBlockDevice {
         if !self.flush_supported {
             return Ok(());
         }
-        if !self.irq_completion_available() {
-            return Err("Block IRQ completion unavailable before interrupts are enabled");
-        }
         let guard = self.request_gate.admit_flush()?;
+        self.completion_ready(guard.io)?;
         // A write sets this flag before it builds a chain; admission
         // excludes writes while it is read.
         if !self.writes_pending.load(Ordering::Acquire) { return Ok(()); }
@@ -1131,6 +1124,9 @@ pub fn init() -> Result<(), &'static str> {
 
     let device_count = initialized_devices.len();
     with_block_devices(|devices| *devices = initialized_devices);
+    // The devices' completion source, their legacy interrupt line, is armed
+    // once it is unmasked (`drivers::run_post_init_self_tests`, design §6).
+    crate::task::park::attach_completion_source(crate::task::park::BlockSource::VirtioBlkPci, 0, false);
 
     // NOTE: The VirtIO interrupt handler is registered directly in the IDT.
     // See kernel/src/interrupts.rs -> virtio_block_interrupt_handler()

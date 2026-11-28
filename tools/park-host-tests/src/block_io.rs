@@ -9,9 +9,9 @@
 //! (DEV-24: `tid=Some(1) preempt_count=2 port_owner=21`). So the checks feed
 //! the decision the contexts the boot code issues its loads from.
 
-use crate::admission::{decide, Admission, Arch};
+use crate::admission::{decide, Admission};
 use crate::block::read_failure::AhciReadError;
-use crate::park_core::ContextInputs;
+use crate::park_core::{ContextInputs, IoContext};
 use std::path::PathBuf;
 
 /// The `breenfs-commit` worker that owned port 0 in DEV-24's serial.
@@ -29,9 +29,11 @@ fn arm64_boot_continuation() -> ContextInputs {
     ContextInputs { dispatching: true, has_thread: true, idle: true, depth: 1, ..ContextInputs::default() }
 }
 
-/// A kernel thread at baseline 0 and depth 0: the `init-loader` (design §6).
-fn kernel_thread() -> ContextInputs {
-    ContextInputs { dispatching: true, has_thread: true, ..ContextInputs::default() }
+/// A kernel thread holding one `park::Braked` level, its depth and baseline
+/// raised together: the `init-loader`, which holds it as the `test-loader`
+/// and x86's `boot_storage` do (design §6, as built).
+fn braked_kernel_thread() -> ContextInputs {
+    ContextInputs { dispatching: true, has_thread: true, depth: 1, baseline: 1, ..ContextInputs::default() }
 }
 
 // ------------------------------------------------- the boot code's contexts
@@ -150,7 +152,7 @@ fn init_loads_after_first_dispatch() -> Vec<(String, ContextInputs)> {
             let context = match function.as_str() {
                 "kernel_main" if at < dispatch => continue,
                 "kernel_main" => arm64_boot_continuation(),
-                "run_init_loader" => kernel_thread(),
+                "run_init_loader" => braked_kernel_thread(),
                 other => panic!("{entry}() in {other}: name the context that function runs in"),
             };
             loads.push((format!("{entry}() in {function}"), context));
@@ -161,20 +163,11 @@ fn init_loads_after_first_dispatch() -> Vec<(String, ContextInputs)> {
 
 // --------------------------------------------------------------- the checks
 
-/// The seam reaches the old path: the recorded DEV-24 context, against an
-/// owned port, gets the old answer (`CannotPark` on x86, the `yield` poll on
-/// ARM64).
-#[test]
-fn the_dev24_context_gets_the_old_answer_through_the_seam() {
-    assert_eq!(decide(dev24(), OWNER, Arch::X86_64), Admission::Refuse(AhciReadError::CannotPark));
-    assert_eq!(decide(dev24(), OWNER, Arch::Aarch64), Admission::Poll);
-}
-
 /// The boot handoff: each init-image load the ARM64 boot makes once the
 /// scheduler dispatches parks for a port another thread owns, and gets the
-/// port when that owner releases it. Before E2.4 the post-SMP fallbacks run on
+/// port when that owner releases it. Before E2.4 the post-SMP fallbacks ran on
 /// the boot continuation, CPU 0's idle context, which may not park, and ARM64
-/// polls there.
+/// polled there.
 #[test]
 fn init_loads_after_the_first_dispatch_park_for_an_owned_port() {
     let loads = init_loads_after_first_dispatch();
@@ -182,13 +175,14 @@ fn init_loads_after_the_first_dispatch_park_for_an_owned_port() {
     let wrong: Vec<String> = loads
         .iter()
         .filter_map(|(site, context)| {
-            let answer = decide(*context, OWNER, Arch::Aarch64);
+            // The token is revoked at the first dispatch.
+            let answer = decide(*context, false, OWNER);
             (answer != Admission::Park).then(|| format!("{site}: {answer:?}"))
         })
         .collect();
     assert!(wrong.is_empty(), "init-image loads that do not park for an owned port:\n  {}", wrong.join("\n  "));
     for (site, context) in &loads {
-        assert_eq!(decide(*context, 0, Arch::Aarch64), Admission::Acquire, "{site}: a released port");
+        assert_eq!(decide(*context, false, 0), Admission::Acquire(IoContext::Sleepable), "{site}: a released port");
     }
 }
 
@@ -197,11 +191,104 @@ fn init_loads_after_the_first_dispatch_park_for_an_owned_port() {
 /// into EAGAIN.
 #[test]
 fn the_dev24_context_is_refused_not_polled() {
-    for arch in [Arch::X86_64, Arch::Aarch64] {
-        let answer = decide(dev24(), OWNER, arch);
-        assert!(
-            matches!(answer, Admission::Refuse(error) if error != AhciReadError::CannotPark),
-            "{arch:?}: the DEV-24 context got {answer:?}"
-        );
+    assert_eq!(decide(dev24(), false, OWNER), Admission::Refuse(AhciReadError::NotSleepable));
+}
+
+/// An atomic caller is refused whatever the port's state, so it gets no data:
+/// a free port is not taken either. Through the production rule
+/// (`park_core::io_context`) the refusal writes a receipt and returns
+/// `NotSleepable`; it never polls.
+#[test]
+fn an_atomic_caller_gets_not_sleepable_a_receipt_and_no_data() {
+    use crate::model::{Event, Model};
+    use crate::park_core::{io_context, EarlyBootIo, ParkContext, ParkError};
+    let atomic = [
+        ("hard IRQ", ContextInputs { dispatching: true, has_thread: true, hardirq: true, ..ContextInputs::default() }),
+        ("a held spin lock", ContextInputs { dispatching: true, has_thread: true, depth: 1, ..ContextInputs::default() }),
+        ("the idle continuation", arm64_boot_continuation()),
+        ("interrupts masked", ContextInputs { dispatching: true, has_thread: true, irqs_masked: true, ..ContextInputs::default() }),
+    ];
+    let token = EarlyBootIo::new();
+    assert!(token.mint() && token.revoke());
+    for (name, context) in atomic {
+        for owner in [0, OWNER] {
+            assert_eq!(decide(context, false, owner), Admission::Refuse(AhciReadError::NotSleepable), "{name}, owner {owner}");
+        }
+        let model = Model::new(0, context.baseline);
+        model.inputs.set(Some(context));
+        let refused = crate::park_core::classify(context);
+        assert!(matches!(refused, ParkContext::Atomic(_)), "{name}: {refused:?}");
+        assert_eq!(io_context(&model, 0x24, &token), Err(ParkError::NotSleepable(refused)), "{name}");
+        assert_eq!(model.events(), vec![Event::Receipt(refused)], "{name}: one receipt");
     }
+}
+
+/// The early-boot token: minted once, it lets the boot thread poll; revoked
+/// at the first dispatch, early boot's polling is refused, and it cannot be
+/// minted again. While it is held the boot thread owns the controller, so
+/// polled I/O against a port another thread owns is refused, not waited for.
+#[test]
+fn the_early_boot_token_is_refused_after_revocation_and_against_an_owned_port() {
+    use crate::park_core::{io_rule, EarlyBootIo, ParkContext};
+    let early = ContextInputs::default();
+    assert_eq!(crate::park_core::classify(early), ParkContext::EarlyBoot);
+    let token = EarlyBootIo::new();
+    assert_eq!(io_rule(ParkContext::EarlyBoot, token.held()), Err(ParkContext::EarlyBoot), "before the mint");
+    assert!(token.mint());
+    assert!(!token.mint(), "minted twice");
+    assert_eq!(io_rule(ParkContext::EarlyBoot, token.held()), Ok(IoContext::EarlyBoot));
+    assert_eq!(decide(early, token.held(), 0), Admission::Acquire(IoContext::EarlyBoot));
+    assert_eq!(decide(early, token.held(), OWNER), Admission::Refuse(AhciReadError::EarlyBootPortOwned));
+    assert!(token.revoke());
+    assert!(token.revoked() && !token.held());
+    assert!(!token.mint(), "minted again after revocation");
+    assert!(!token.revoke(), "revoked twice");
+    assert_eq!(io_rule(ParkContext::EarlyBoot, token.held()), Err(ParkContext::EarlyBoot));
+    assert_eq!(decide(early, token.held(), 0), Admission::Refuse(AhciReadError::NotSleepable));
+}
+
+/// The testing loader holds its CPU between binaries. One bare level at
+/// baseline 0 is `LocksHeld(1)`, which E2.4 refuses; the same level held as
+/// `park::Braked` raises the baseline with it, so its reads are a sleepable
+/// context and park for an owned port.
+#[test]
+fn a_braked_level_is_sleepable_and_a_bare_level_is_not() {
+    use crate::park_core::{AtomicReason, ParkContext};
+    let bare = ContextInputs { dispatching: true, has_thread: true, depth: 1, ..ContextInputs::default() };
+    assert_eq!(crate::park_core::classify(bare), ParkContext::Atomic(AtomicReason::LocksHeld(1)));
+    assert_eq!(decide(bare, false, OWNER), Admission::Refuse(AhciReadError::NotSleepable));
+    assert_eq!(crate::park_core::classify(braked_kernel_thread()), ParkContext::Sleepable);
+    assert_eq!(decide(braked_kernel_thread(), false, OWNER), Admission::Park);
+}
+
+/// The revocation assertion (design §6, "Completion readiness before
+/// revocation"): revoking the token while an attached device's completion
+/// source is unarmed names that device, and its sleeping requests are refused
+/// and counted, not polled, until the source is armed.
+#[test]
+fn revocation_names_an_unarmed_device_and_its_requests_are_refused() {
+    use crate::park_core::{revoke, CompletionSources, EarlyBootIo};
+    const ARMED: u64 = 3 << 32;
+    const UNARMED: u64 = 1 << 32;
+    let sources = CompletionSources::<4>::new();
+    assert!(sources.attach(ARMED, true));
+    assert!(sources.attach(UNARMED, false));
+    let token = EarlyBootIo::new();
+    assert!(token.mint());
+    let mut unready = [0u64; 4];
+    assert_eq!(revoke(&token, &sources, &mut unready), Some(1));
+    assert_eq!(unready[0], UNARMED);
+    assert!(token.revoked());
+    assert!(sources.ready(ARMED));
+    assert!(!sources.ready(UNARMED));
+    assert!(!sources.ready(UNARMED));
+    assert_eq!(sources.refusals(UNARMED), 2);
+    assert!(!sources.ready(5 << 32), "a device that never attached is not ready");
+    sources.arm(UNARMED);
+    assert!(sources.ready(UNARMED));
+    assert_eq!(revoke(&token, &sources, &mut unready), None, "the token is revoked once");
+    let full = CompletionSources::<1>::new();
+    assert!(full.attach(ARMED, true));
+    assert!(!full.attach(UNARMED, true), "a full table refuses the device, which is then never ready");
+    assert!(!full.ready(UNARMED));
 }

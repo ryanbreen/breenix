@@ -3,47 +3,35 @@
 //! that a host check drives the production rule. The file uses only `core`
 //! and the park contract's pure core, so `tools/park-host-tests` compiles it
 //! unchanged.
+//!
+//! Block I/O requires a context that may park or the early-boot token
+//! (`park_core::io_rule`). A busy port always parks a sleeping caller. Early
+//! boot is the only thread and owns the controller, so a port another
+//! thread owns there is a contract violation, refused. Any other context is
+//! refused whatever the port's state: it gets no data, never a poll.
 
 use crate::block::read_failure::AhciReadError;
-use crate::task::park_core::{classify, ContextInputs, ParkContext};
-
-/// The architecture the decision is made for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Arch {
-    X86_64,
-    Aarch64,
-}
-
-/// The architecture this kernel is built for.
-#[cfg(target_arch = "x86_64")]
-pub const ARCH: Arch = Arch::X86_64;
-#[cfg(target_arch = "aarch64")]
-pub const ARCH: Arch = Arch::Aarch64;
+use crate::task::park_core::{classify, io_rule, ContextInputs, IoContext};
 
 /// What `begin_port_io` does with a caller.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Admission {
-    /// The port has no owner: take it.
-    Acquire,
+    /// The port has no owner: take it, and wait for its commands as the
+    /// context says (sleep, or poll in early boot).
+    Acquire(IoContext),
     /// Another thread owns the port: park until it is released.
     Park,
-    /// Spin once and look at the port again.
-    Poll,
-    /// Refuse the caller with this error.
+    /// Refuse the caller with this error, after a receipt.
     Refuse(AhciReadError),
 }
 
-/// Admission for a caller in `context` when the port's owner is `owner`
-/// (0 for none).
-pub const fn decide(context: ContextInputs, owner: u64, arch: Arch) -> Admission {
-    if owner == 0 {
-        return Admission::Acquire;
-    }
-    match classify(context) {
-        ParkContext::Sleepable => Admission::Park,
-        _ => match arch {
-            Arch::X86_64 => Admission::Refuse(AhciReadError::CannotPark),
-            Arch::Aarch64 => Admission::Poll,
-        },
+/// Admission for a caller in `context`, with the early-boot token held or
+/// not, when the port's owner is `owner` (0 for none).
+pub const fn decide(context: ContextInputs, token_held: bool, owner: u64) -> Admission {
+    match io_rule(classify(context), token_held) {
+        Err(_) => Admission::Refuse(AhciReadError::NotSleepable),
+        Ok(io) if owner == 0 => Admission::Acquire(io),
+        Ok(IoContext::Sleepable) => Admission::Park,
+        Ok(IoContext::EarlyBoot) => Admission::Refuse(AhciReadError::EarlyBootPortOwned),
     }
 }

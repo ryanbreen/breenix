@@ -116,6 +116,8 @@ extern "C" fn fault_test_thread(_arg: u64) -> ! {
 fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     // The local APIC as firmware left it, before anything here writes it.
     let apic_handoff = kernel::arch_impl::x86_64::apic::Handoff::read();
+    // The early-boot I/O token (design §6), held until the first dispatch.
+    kernel::task::park::mint_early_boot_io();
 
     // Initialize logger early so all log messages work
     logger::init_early();
@@ -584,6 +586,13 @@ extern "C" fn kernel_main_on_kernel_stack_checked(
     process::init();
     log::info!("Process management initialized");
     kernel::console::splash::stage(kernel::console::splash::Stage::ProcessManagement);
+
+    // The first dispatch (design §6): the APs dispatch from
+    // start_application_processors on, so the early-boot I/O token is revoked
+    // here. x86's storage drivers attach later, on the boot_storage kernel
+    // thread (E2.4x), each with its completion source armed before its first
+    // command.
+    kernel::task::park::revoke_early_boot_io();
 
     // Start the application processors now that the scheduler and process
     // manager exist, then report what came online.

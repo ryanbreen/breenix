@@ -362,11 +362,9 @@ impl InitLaunch {
         }
     }
 
-    /// Launch this program from its pre-loaded ELF (see `launch_init_from_elf`).
-    fn launch(
-        &self,
-        elf_data: kernel::exec_elf::MappedElf,
-    ) -> Result<core::convert::Infallible, &'static str> {
+    /// Start this program as PID 1 from its pre-loaded ELF, through the
+    /// scheduler (see `start_init_from_elf`).
+    fn launch(&self, elf_data: kernel::exec_elf::MappedElf) -> Result<(), &'static str> {
         let argv: alloc::vec::Vec<&[u8]> = self.argv.iter().map(|arg| arg.as_slice()).collect();
         let mut shown = self.path.clone();
         for arg in self.argv.iter().skip(1) {
@@ -381,7 +379,7 @@ impl InitLaunch {
         splash::stage(Stage::StartingPid1);
         splash::set_status(format_args!("Starting {}", shown));
         splash::first_process_started();
-        launch_init_from_elf(elf_data, &self.path, &exe_path, &argv)
+        start_init_from_elf(elf_data, &self.path, &exe_path, &argv)
     }
 }
 
@@ -393,258 +391,6 @@ impl InitLaunch {
 fn release_boot_preempt_pin() {
     kernel::per_cpu_aarch64::preempt_enable();
     kernel::task::softirqd::init_online_daemons();
-    kernel::drivers::ahci::start_completion_pollers();
-}
-
-/// Create a userspace process from a pre-loaded ELF and jump to it.
-///
-/// Takes an ELF that was read into its page table earlier (e.g., before SMP
-/// bring-up) and completes the process-creation and userspace-entry sequence.
-/// The read validated it as an executable for this machine.
-#[cfg(target_arch = "aarch64")]
-#[cfg_attr(
-    any(
-        feature = "kthread_test_only",
-        feature = "kthread_stress_test",
-        feature = "workqueue_test_only"
-    ),
-    allow(dead_code)
-)]
-fn launch_init_from_elf(
-    elf_data: kernel::exec_elf::MappedElf,
-    path: &str,
-    exe_path: &[u8],
-    argv: &[&[u8]],
-) -> Result<core::convert::Infallible, &'static str> {
-    use alloc::string::String;
-    use kernel::arch_impl::aarch64::context::return_to_userspace;
-
-    // Disable interrupts for the entire process setup.
-    // A pending timer interrupt would fire immediately on enable_interrupts(),
-    // context-switch the boot thread away before it registers with the scheduler,
-    // and it would never be scheduled back. Interrupts are re-enabled just before
-    // return_to_userspace() below via the SPSR loaded by ERET.
-    unsafe {
-        kernel::arch_impl::aarch64::cpu::Aarch64Cpu::disable_interrupts();
-    }
-
-    let proc_name = path.rsplit('/').next().unwrap_or(path);
-
-    let (pid, init_thread, designated_pid_raw, reserved_collisions) = {
-        let mut manager_guard = kernel::process::manager();
-        if let Some(ref mut manager) = *manager_guard {
-            let ticket =
-                manager.create_init_process_with_argv(String::from(proc_name), exe_path, elf_data, argv)?;
-            let publication = manager.designate_init(ticket)?;
-            // Decide suite controls after designation and before the init thread is published.
-            let suite_path = if argv.get(1) == Some(&b"suite".as_slice()) { argv.get(2).copied() } else { None };
-            kernel::test_control::latch_init_program(suite_path.unwrap_or(exe_path));
-            let pid = publication.pid();
-            let init_thread = manager.publish_init(publication);
-            let designated_pid_raw = manager
-                .designated_init()
-                .ok_or("init designation missing after publication")?
-                .as_u64();
-            let reserved_collisions =
-                kernel::tracing::providers::teardown::init_reserved_pid_collisions_total();
-            (pid, init_thread, designated_pid_raw, reserved_collisions)
-        } else {
-            return Err("process manager not initialized");
-        }
-    };
-    kernel::serial_println!(
-        "[INIT_DESIGNATION:aarch64:designated_pid={}:reserved_collisions={}]",
-        designated_pid_raw,
-        reserved_collisions
-    );
-
-    // Advance test stage to ProcessContext - a user process now exists with an fd_table
-    // This allows tests that need process context (like sys_socket) to run
-    #[cfg(feature = "boot_tests")]
-    {
-        let failures = kernel::test_framework::advance_to_process_context(pid);
-        if failures > 0 {
-            kernel::serial_println!("[boot_tests] {} ProcessContext test(s) failed", failures);
-        }
-    }
-
-    let (entry_point, user_sp, ttbr0_phys, main_thread_id) = {
-        let manager_guard = kernel::process::manager();
-        if let Some(ref manager) = *manager_guard {
-            if let Some(process) = manager.get_process(pid) {
-                let entry = process.entry_point.as_u64();
-                let thread = process
-                    .main_thread
-                    .as_ref()
-                    .ok_or("process has no main thread")?;
-                // Get the SP from the thread's context (points to argc on the stack)
-                // For ARM64 userspace threads, the initial SP is stored in sp_el0
-                let sp = thread.context.sp_el0;
-                let ttbr0 = process
-                    .page_table
-                    .as_ref()
-                    .ok_or("process has no page table")?
-                    .level_4_frame()
-                    .start_address()
-                    .as_u64();
-                (entry, sp, ttbr0, thread.id)
-            } else {
-                return Err("process not found after creation");
-            }
-        } else {
-            return Err("process manager not available");
-        }
-    };
-
-    // Init's filesystem setup is complete. The watchdog workers may now
-    // contend on the root mount without parking the boot continuation
-    // inside process construction, before it has a schedulable init thread.
-    #[cfg(not(any(feature = "testing", feature = "boot_tests")))]
-    kernel::drivers::i6300esb::start();
-
-    // Re-enable preemption now that the boot sequence is complete.
-    // It was disabled in kernel_main after per-CPU init to prevent the scheduler
-    // from context-switching the boot CPU away from its boot stack (which would
-    // leave the boot CPU stuck in idle_loop_arm64 and never return here).
-    // From this point on, the init thread is being set as CPU 0's current thread,
-    // and the scheduler can run normally. IRQs remain masked through ERET.
-    release_boot_preempt_pin();
-
-    // Register the userspace thread with the scheduler as the current running thread.
-    kernel::task::scheduler::spawn_as_current(init_thread);
-    kernel::drivers::ahci::emit_polling_attribution_once_if_scheduler_ready();
-
-    // CRITICAL: Reset ALL idle threads' saved contexts to point to idle_loop_arm64.
-    // Timer interrupts during boot may have saved idle threads' ELR pointing to
-    // kernel_main or other boot code. Without this, when a CPU dispatches its idle
-    // thread, it ERETSs to the stale ELR (which could be 0x0 or a boot address).
-    //
-    // We ask the scheduler which threads are idle threads (one per CPU) and reset
-    // only those. This is robust to any number of kthreads or render threads created
-    // before secondary CPUs come online, because the thread IDs are not predictable
-    // by arithmetic alone.
-    //
-    // We must NOT reset the init main thread's context. Corrupting init's spsr_el1
-    // to EL1h (0x5) causes dispatch_thread_locked to terminate it immediately via
-    // the safety guard (spsr & 0xF != 0 → not EL0t → not a valid userspace thread).
-    {
-        let idle_loop_addr =
-            kernel::arch_impl::aarch64::context_switch::idle_loop_arm64 as *const () as u64;
-        // Collect idle thread IDs from the scheduler's per-CPU state.
-        // cpu_state[cpu].idle_thread is set by init_scheduler and register_cpu_idle_thread.
-        let mut idle_tids = [0u64; kernel::arch_impl::aarch64::constants::MAX_CPUS];
-        let cpus_online = kernel::arch_impl::aarch64::smp::cpus_online() as usize;
-        let idle_count =
-            kernel::task::scheduler::collect_idle_thread_ids(&mut idle_tids[..cpus_online]);
-        // Reset each idle thread's saved context.
-        for i in 0..idle_count {
-            let tid = idle_tids[i];
-            kernel::task::scheduler::with_thread_mut(tid, |idle_thread| {
-                idle_thread.context.elr_el1 = idle_loop_addr;
-                idle_thread.context.spsr_el1 = 0x5; // EL1h, DAIF clear
-                idle_thread.context.x30 = 0;
-            });
-        }
-        serial_println!(
-            "[boot] Reset {} idle thread contexts (CPUs online: {})",
-            idle_count,
-            cpus_online
-        );
-    }
-
-    // Set per-CPU pointers to the thread in the scheduler
-    kernel::task::scheduler::with_thread_mut(main_thread_id, |thread| {
-        let thread_ptr = thread as *mut kernel::task::thread::Thread;
-        kernel::per_cpu_aarch64::set_current_thread(thread_ptr);
-        if let Some(kernel_stack_top) = thread.kernel_stack_top {
-            kernel::per_cpu_aarch64::set_kernel_stack_top(kernel_stack_top.as_u64());
-            // CRITICAL: Also set user_rsp_scratch so the boot.S ERET path
-            // restores SP to the correct kernel stack. return_to_userspace()
-            // sets SP_EL1 from percpu.kernel_stack_top, but the boot.S ERET
-            // path uses user_rsp_scratch (offset 40) to set SP before ERET.
-            // Without this, the first timer IRQ return without a context switch
-            // would set SP_EL1 to the stale boot stack from user_rsp_scratch,
-            // causing subsequent exception frames to be pushed on the wrong stack.
-            kernel::per_cpu_aarch64::set_user_rsp_scratch(kernel_stack_top.as_u64());
-        }
-    });
-
-    // Mark the process as running.
-    {
-        let mut manager_guard = kernel::process::manager();
-        if let Some(ref mut manager) = *manager_guard {
-            manager.set_current_pid(pid);
-        }
-    }
-
-    // Create TLB pressure before switching TTBR0 to the process page table.
-    // Touch many HHDM pages to help evict boot identity map entries from the
-    // TLB. The subsequent TLBI will do a full invalidation, but warming the
-    // HHDM entries in the TLB is still beneficial for early process execution.
-    // Interrupts are already disabled at this point (since step 'd').
-    for i in 0..4096u64 {
-        let addr = (0xFFFF_0000_4000_0000u64 + i * 4096) as *const u8;
-        unsafe {
-            core::ptr::read_volatile(addr);
-        }
-    }
-
-    // Switch to process page table with ASID=1 tagging. The TLB pressure
-    // above has evicted stale entries from the boot identity map. ASID=1
-    // ensures any remaining stale boot entries (ASID=0) don't match.
-    //
-    // R157/ASID-05: this site used to spell the tag itself, as
-    // `ttbr0_phys | (1u64 << 48)`. It no longer does. `adopt_process_ttbr0`
-    // normalises what it is handed -- clearing bits [63:48] before setting the
-    // userspace ASID -- so an or-only tag here was both redundant and a second
-    // spelling of a field the discipline owns.
-    // claim-lint:ok: 0 of 0 constructions of the userspace ASID tag remain
-    // outside the discipline's own file; the census is
-    // `the_asid_tag_is_constructed_in_one_place` in
-    // `tests/ttbr0_shadow_reconciliation_structure.rs`
-    let ttbr0_value = ttbr0_phys;
-    //
-    // Install through the shared discipline rather than a raw `msr`: init is
-    // the one thread that reaches EL0 without passing through
-    // `dispatch_thread_locked`, so nothing else on this path reconciles the
-    // per-CPU TTBR0 shadows with the register. `setup_idle_return_locked`
-    // publishes the KERNEL root into `next_cr3` on every idle dispatch, the
-    // syscall return corridor reads that word FIRST, and nothing on the idle
-    // return corridor consumes it -- so a `next_cr3` armed before this point
-    // decides where init's first `svc` returns.
-    // claim-lint:ok: 9 of the 10 censused process-root installs are routed
-    // through the discipline, the 10th being the Tier-1 site; the census is
-    // tests/ttbr0_shadow_reconciliation_structure.rs.
-    //
-    // On this branch's tree the boot CPU is pinned for the whole boot, so it
-    // takes no idle dispatch before this call and the word is not observed
-    // armed here: this install is DEFENSIVE at this site. The same install
-    // shape was measured firing on fix/562-761-aarch64-testing-profile, whose
-    // boot sequence hands the loader to a kernel thread and does let the boot
-    // CPU idle first: 13 of 26 baseline boots there aborted at init's own
-    // return address with FAR=ELR and ESR 0x8200000e, 0 of 24 did with the two
-    // shadow stores added, and 4 of 8 did again on reversion (#786).
-    // claim-lint:ok: the A/B/A rows are the committed arithmetic of
-    // docs/planning/green-program/aarch64-testing/serials/r7/aba/CLASSIFICATION.tsv
-    // at fix/562-761-aarch64-testing-profile commit 1245c64b, restated in
-    // docs/planning/green-program/aarch64-testing/TTBR0-SHADOW-SLICE-2026-09-04.md
-    kernel::arch_impl::aarch64::ttbr0::adopt_process_ttbr0(ttbr0_value);
-    // DO NOT call enable_interrupts() here. Interrupts are currently disabled
-    // (since step 'd'). The ERET in return_to_userspace() loads SPSR_EL1=0
-    // into PSTATE, which has DAIF clear (interrupts enabled). The pending
-    // timer interrupt will fire immediately after ERET in EL0 context,
-    // entering via the Lower EL IRQ vector. This is correct because:
-    // - SP_EL1 is set to kernel_stack_top by return_to_userspace()
-    // - The init thread is registered with the scheduler
-    // - Per-CPU pointers are configured
-    // - TTBR0 is set to the process page table
-    //
-    // If we enabled interrupts HERE (before ERET), the pending timer would
-    // fire in EL1 context, the scheduler would context-switch the boot thread
-    // away (thinking it's the init process), and it would never reach ERET.
-    unsafe {
-        return_to_userspace(entry_point, user_sp);
-    }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -720,6 +466,9 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             options(nostack, nomem, preserves_flags),
         );
     }
+    // The early-boot I/O token (design §6): held from here until the first
+    // dispatch, so the storage drivers' early commands poll.
+    kernel::task::park::mint_early_boot_io();
     if hw_config_ptr != 0 {
         // Only the stable prefix fields may be read before accepting the version.
         let base = hw_config_ptr as *const u8;
@@ -888,8 +637,8 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
 
     // Zero the boot identity map L0 entry to prevent new TLB entries from
     // being created for the user VA range while we're still in kernel init.
-    // This is a defense-in-depth measure; the TLBI in launch_init_from_elf
-    // will do a full invalidation before switching to the process page table.
+    // This is a defense-in-depth measure; user threads, PID 1 included, run
+    // under their own ASIDs, which boot's entries do not match.
     //
     // We can't use `extern "C" { static mut ttbr0_l0: u64; }` because the
     // symbol is in .bss.boot (low physical memory) while the kernel runs in
@@ -1222,8 +971,8 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         }
     }
 
-    // TLB eviction for TTBR0 identity map is handled in launch_init_from_elf()
-    // right before the TTBR0 switch. We cannot modify TTBR0 page tables earlier
+    // The boot identity map's entries are not matched by user threads, which
+    // run under their own ASIDs. We cannot modify TTBR0 page tables earlier
     // because Parallels monitors TTBR0/page table changes and hangs if they occur
     // while timer interrupts and kthreads are active.
 
@@ -1248,7 +997,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // setup_idle_return_locked redirects CPU 0 to idle_loop_arm64, abandoning
     // the boot sequence. Preventing preemption here keeps the boot CPU on its
     // boot stack until init is ready to run.
-    // Re-enabled in launch_init_from_elf before spawn_as_current.
+    // Released where the boot continuation becomes CPU 0's idle loop.
     kernel::per_cpu_aarch64::preempt_disable();
 
     // Initialize process manager
@@ -1393,6 +1142,14 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     timer_interrupt::init();
     serial_println!("[boot] Timer interrupt initialized");
     splash::stage(Stage::TimerInterrupt);
+
+    // The first dispatch (design §6): the timer runs, and the secondaries are
+    // released below. CPU 0's AHCI completion poller, on a controller with
+    // no interrupt, starts first; each secondary's starts in its bring-up.
+    // From here block I/O needs a context that may park: this continuation,
+    // CPU 0's idle thread once the scheduler dispatches, reads no storage.
+    kernel::drivers::ahci::start_completion_poller(0);
+    kernel::task::park::revoke_early_boot_io();
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::AARCH64_TIMER_INIT);
 
@@ -1792,7 +1549,6 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     }
 
     kernel::task::softirqd::init_online_daemons();
-    kernel::drivers::ahci::start_completion_pollers();
     #[cfg(all(feature = "boot_tests", not(feature = "testing")))]
     kernel::task::softirq_tests::test_deferral();
 
@@ -1967,9 +1723,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     splash::stage(Stage::BootComplete);
 
     // In testing mode, load test binaries from ext2 and let the scheduler
-    // dispatch them. Do NOT call launch_init_from_elf() - its manual
-    // spawn_as_current() + return_to_userspace() bypasses the scheduler and
-    // conflicts with the 60+ test processes already in the ready queue.
+    // dispatch them; a testing kernel starts no init.
     //
     // This context is CPU 0's idle thread, and dispatching an idle thread
     // always restarts it at idle_loop_arm64, so a block here would abandon
@@ -2000,92 +1754,211 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         }
     }
 
-    // Launch userspace init from the pre-loaded ELF (read before SMP bring-up).
-    // If the pre-load succeeded, use the cached bytes; otherwise fall back to
-    // reading from ext2 now (may fail on Parallels with 8 CPUs) or test disk.
+    // PID 1 is loaded and started by the `init-loader` kernel thread (design
+    // §6, "Boot order"): this context reads no storage once the scheduler
+    // dispatches, and PID 1 starts through the scheduler, not on it. It hands
+    // the thread the image early boot pre-loaded, if any, and becomes CPU 0's
+    // idle loop, as the testing path above does.
     if device_count > 0 {
-        if let Some(elf_data) = init_elf {
-            serial_println!("[boot] Launching init from pre-loaded ELF...");
-            match init_launch.launch(elf_data) {
-                Err(e) => {
-                    serial_println!("[boot] Failed to launch pre-loaded init: {}", e);
-                    // A probe, program or suite binary that would not launch: run
-                    // the default /sbin/init in its place.
-                    if runs_own_binary && boot_mode != BootMode::Default {
-                        serial_println!(
-                            "[boot] Ignoring boot mode {:?}: {} could not be launched; running /sbin/init",
-                            boot_mode.name(),
-                            init_launch.path
-                        );
-                        match read_init_from_ext2("/sbin/init") {
-                            Ok(elf_data) => match InitLaunch::default_init().launch(elf_data) {
-                                Err(e) => serial_println!("[boot] Failed to launch /sbin/init: {}", e),
-                                Ok(never) => match never {},
-                            },
-                            Err(e) => serial_println!("[boot] Failed to read /sbin/init: {}", e),
-                        }
-                    }
-                    serial_println!("[boot] Loading userspace init_shell from test disk...");
-                    match kernel::boot::test_disk::run_userspace_from_disk("init_shell") {
-                        Err(e) => {
-                            serial_println!("[boot] Failed to load init_shell: {}", e);
-                            serial_println!("[boot] Falling back to kernel shell...");
-                        }
-                        Ok(never) => match never {},
-                    }
-                }
-                Ok(never) => match never {},
-            }
-        } else {
-            // Pre-load was not attempted or failed — try ext2 now as a last resort
-            // (single-CPU machines or QEMU where SMP interference isn't a concern).
-            serial_println!("[boot] No pre-loaded init — attempting ext2 read post-SMP...");
-            match read_init_from_ext2(&init_launch.path) {
-                Ok(elf_data) => {
-                    serial_println!("[boot] Late ext2 read succeeded, launching init...");
-                    match init_launch.launch(elf_data) {
-                        Err(e) => {
-                            serial_println!("[boot] Failed to launch init: {}", e);
-                            serial_println!(
-                                "[boot] Loading userspace init_shell from test disk..."
-                            );
-                            match kernel::boot::test_disk::run_userspace_from_disk("init_shell") {
-                                Err(e) => {
-                                    serial_println!("[boot] Failed to load init_shell: {}", e);
-                                    serial_println!("[boot] Falling back to kernel shell...");
-                                }
-                                Ok(never) => match never {},
-                            }
-                        }
-                        Ok(never) => match never {},
-                    }
-                }
-                Err(e) => {
-                    serial_println!("[boot] Failed to load init from ext2: {}", e);
-                    serial_println!("[boot] Loading userspace init_shell from test disk...");
-                    match kernel::boot::test_disk::run_userspace_from_disk("init_shell") {
-                        Err(e) => {
-                            serial_println!("[boot] Failed to load init_shell: {}", e);
-                            serial_println!("[boot] Falling back to kernel shell...");
-                        }
-                        Ok(never) => match never {},
-                    }
-                }
-            }
+        *INIT_HANDOFF.lock() = Some(InitHandoff { elf: init_elf, launch: init_launch, runs_own_binary, boot_mode });
+        if let Err(e) = kernel::task::kthread::kthread_run(run_init_loader, "init-loader") {
+            serial_println!("[boot] Failed to start the init loader thread: {:?}", e);
         }
+    } else {
+        serial_println!("[interactive] No userspace init — idling");
     }
-
-    // No userspace init loaded — idle the kernel.
-    // With the kernel shell removed, there's nothing to do here except
-    // keep the kernel alive so interrupt-driven subsystems (timer, scheduler)
-    // continue running.
-    serial_println!("[interactive] No userspace init — idling");
+    // Once the pin drops, a tick could switch this idle context away for
+    // good, so keep IRQs masked until CPU 0's softirq daemon has been
+    // published.
+    unsafe {
+        kernel::arch_impl::aarch64::cpu::Aarch64Cpu::disable_interrupts();
+    }
+    release_boot_preempt_pin();
+    unsafe {
+        kernel::arch_impl::aarch64::cpu::Aarch64Cpu::enable_interrupts();
+    }
     loop {
         unsafe {
             core::arch::asm!("wfi", options(nomem, nostack));
         }
         kernel::net::drain_loopback_from_idle();
     }
+}
+
+/// What the boot continuation hands the `init-loader` kernel thread: the
+/// image early boot pre-loaded, if it could, and the program to run as PID 1.
+#[cfg(target_arch = "aarch64")]
+struct InitHandoff {
+    elf: Option<kernel::exec_elf::MappedElf>,
+    launch: InitLaunch,
+    runs_own_binary: bool,
+    boot_mode: BootMode,
+}
+
+/// The handoff, taken once by `run_init_loader`. A static rather than a
+/// closure, so the continuation names the thread's entry without calling it
+/// (tests/block_io_caller_structure.rs).
+#[cfg(target_arch = "aarch64")]
+static INIT_HANDOFF: spin::Mutex<Option<InitHandoff>> = spin::Mutex::new(None);
+
+/// The production profile's PID 1, loaded and started on the `init-loader`
+/// kernel thread (design §6, "Boot order"). The boot continuation reads no
+/// storage once the scheduler dispatches, so this thread takes the image
+/// early boot pre-loaded, or does the late read of it and the `init_shell`
+/// fallback itself, and starts PID 1 through the scheduler.
+///
+/// It holds one `park::Braked` level, as the testing `test-loader` and the
+/// x86 `boot_storage` thread do (E2.4x): AHCI's port lock is a spin section
+/// that does not raise the preemption depth, and preempted inside it at
+/// baseline 0 the loader would leave a braked contender spinning on its CPU.
+#[cfg(target_arch = "aarch64")]
+fn run_init_loader() {
+    let braked = kernel::task::park::Braked::new();
+    let Some(InitHandoff { elf, launch, runs_own_binary, boot_mode }) = INIT_HANDOFF.lock().take() else {
+        serial_println!("[boot] init-loader started without a handoff");
+        return;
+    };
+    let started = match elf {
+        Some(elf_data) => {
+            serial_println!("[boot] Launching init from pre-loaded ELF...");
+            match launch.launch(elf_data) {
+                Ok(()) => true,
+                Err(e) => {
+                    serial_println!("[boot] Failed to launch pre-loaded init: {}", e);
+                    // A probe, program or suite binary that would not launch: run
+                    // the default /sbin/init in its place.
+                    runs_own_binary && boot_mode != BootMode::Default && {
+                        serial_println!(
+                            "[boot] Ignoring boot mode {:?}: {} could not be launched; running /sbin/init",
+                            boot_mode.name(),
+                            launch.path
+                        );
+                        match read_init_from_ext2("/sbin/init") {
+                            Ok(elf_data) => match InitLaunch::default_init().launch(elf_data) {
+                                Ok(()) => true,
+                                Err(e) => {
+                                    serial_println!("[boot] Failed to launch /sbin/init: {}", e);
+                                    false
+                                }
+                            },
+                            Err(e) => {
+                                serial_println!("[boot] Failed to read /sbin/init: {}", e);
+                                false
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None => {
+            // The pre-load was not attempted or failed: read the image now.
+            serial_println!("[boot] No pre-loaded init — attempting ext2 read post-SMP...");
+            match read_init_from_ext2(&launch.path) {
+                Ok(elf_data) => {
+                    serial_println!("[boot] Late ext2 read succeeded, launching init...");
+                    match launch.launch(elf_data) {
+                        Ok(()) => true,
+                        Err(e) => {
+                            serial_println!("[boot] Failed to launch init: {}", e);
+                            false
+                        }
+                    }
+                }
+                Err(e) => {
+                    serial_println!("[boot] Failed to load init from ext2: {}", e);
+                    false
+                }
+            }
+        }
+    };
+    let started = started || {
+        serial_println!("[boot] Loading userspace init_shell from test disk...");
+        match kernel::boot::test_disk::run_userspace_from_disk("init_shell") {
+            Ok(()) => true,
+            Err(e) => {
+                serial_println!("[boot] Failed to load init_shell: {}", e);
+                serial_println!("[boot] Falling back to kernel shell...");
+                false
+            }
+        }
+    };
+    if !started {
+        // With the kernel shell removed, there's nothing to run: the kernel
+        // stays up so interrupt-driven subsystems keep running.
+        serial_println!("[interactive] No userspace init — idling");
+    }
+    drop(braked);
+}
+
+/// Create PID 1 from a pre-loaded ELF and start it through the scheduler.
+///
+/// The image was read into its page table earlier (before the timer, or by
+/// the `init-loader`'s late read); the read validated it as an executable for
+/// this machine. The scheduler's switch installs init's address space, under
+/// its ASID, as it does for every user thread.
+#[cfg(target_arch = "aarch64")]
+#[cfg_attr(
+    any(
+        feature = "kthread_test_only",
+        feature = "kthread_stress_test",
+        feature = "workqueue_test_only"
+    ),
+    allow(dead_code)
+)]
+fn start_init_from_elf(
+    elf_data: kernel::exec_elf::MappedElf,
+    path: &str,
+    exe_path: &[u8],
+    argv: &[&[u8]],
+) -> Result<(), &'static str> {
+    use alloc::string::String;
+
+    let proc_name = path.rsplit('/').next().unwrap_or(path);
+
+    #[cfg_attr(not(feature = "boot_tests"), allow(unused_variables))]
+    let (pid, init_thread, designated_pid_raw, reserved_collisions) = {
+        let mut manager_guard = kernel::process::manager();
+        let manager = manager_guard.as_mut().ok_or("process manager not initialized")?;
+        let ticket = manager.create_init_process_with_argv(String::from(proc_name), exe_path, elf_data, argv)?;
+        let publication = manager.designate_init(ticket)?;
+        // Decide suite controls after designation and before the init thread is published.
+        let suite_path = if argv.get(1) == Some(&b"suite".as_slice()) { argv.get(2).copied() } else { None };
+        kernel::test_control::latch_init_program(suite_path.unwrap_or(exe_path));
+        let pid = publication.pid();
+        let init_thread = manager.publish_init(publication);
+        let designated_pid_raw = manager
+            .designated_init()
+            .ok_or("init designation missing after publication")?
+            .as_u64();
+        let reserved_collisions = kernel::tracing::providers::teardown::init_reserved_pid_collisions_total();
+        (pid, init_thread, designated_pid_raw, reserved_collisions)
+    };
+    kernel::serial_println!(
+        "[INIT_DESIGNATION:aarch64:designated_pid={}:reserved_collisions={}]",
+        designated_pid_raw,
+        reserved_collisions
+    );
+
+    // Advance test stage to ProcessContext - a user process now exists with an
+    // fd_table, and its thread is published but not yet runnable. The braked
+    // level is released around it, as the test-loader does: the cohort's lock
+    // oracles need this CPU to dispatch their network work while it waits.
+    #[cfg(feature = "boot_tests")]
+    {
+        let failures = kernel::task::park::without_braked(|| kernel::test_framework::advance_to_process_context(pid));
+        if failures > 0 {
+            kernel::serial_println!("[boot_tests] {} ProcessContext test(s) failed", failures);
+        }
+    }
+
+    // Init's filesystem setup is complete. The watchdog workers may now
+    // contend on the root mount.
+    #[cfg(not(any(feature = "testing", feature = "boot_tests")))]
+    kernel::drivers::i6300esb::start();
+
+    kernel::task::scheduler::spawn(init_thread);
+    kernel::drivers::ahci::emit_polling_attribution_once_if_scheduler_ready();
+    Ok(())
 }
 
 /// The testing profile's boot continuation, run on the `test-loader` kernel
@@ -2153,7 +2026,7 @@ fn load_test_binaries_from_ext2() {
     let mut failed = 0;
     // A testing kernel never launches init, so the boot tests' ProcessContext
     // cohort runs here instead: once, with the first test process published
-    // and not yet runnable, the state `launch_init_from_elf` gives it. The
+    // and not yet runnable, the state `start_init_from_elf` gives it. The
     // loader's preempt pin is released around it: the cohort's lock oracles
     // need this CPU to dispatch their network work while the loader waits.
     #[cfg(feature = "boot_tests")]

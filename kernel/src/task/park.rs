@@ -18,19 +18,28 @@
 //! # What still decides by hand
 //!
 //! A few sleeps have not moved onto [`wait`] yet: the wait-queue's own
-//! `schedule_current_wait`, `Completion`, the syscall prepared waits and the
-//! retry pause. Their level handling is [`release_for_sleep`] and
-//! [`retake_after_sleep`], here, and [`sleepable_braked`] names the contexts
-//! their sleep paths serve. E2.4 and E2.10 move those callers onto [`wait`].
+//! `schedule_current_wait`, the syscall prepared waits and the retry pause.
+//! Their level handling is [`release_for_sleep`] and [`retake_after_sleep`],
+//! here, and [`sleepable_braked`] names the contexts their sleep paths serve.
+//! E2.10 moves those callers onto [`wait`].
+//!
+//! # Block I/O (E2.4, §6)
+//!
+//! Block I/O requires a context that may park or the early-boot token
+//! ([`io_context`]). `kernel_main` mints the token before any storage
+//! command and revokes it at the first dispatch ([`revoke_early_boot_io`]),
+//! which is also when [`context`] stops answering `EarlyBoot`. `Completion`
+//! decides its wait by the same rule: a sleepable caller sleeps, releasing
+//! its baseline ([`release_baseline`]), and early boot polls.
 
 use super::event_queue::EventQueue;
-use super::park_core::{self, ContextInputs, ParkHooks, SignalEnd, WaitWord};
+use super::park_core::{self, CompletionSources, ContextInputs, EarlyBootIo, ParkHooks, SignalEnd, WaitWord};
 use super::waitqueue::{KernelHooks, WaitQueueHead};
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 pub use super::park_core::{
-    announce, exit_switch, should_wake, withdraw, Arrival, AtomicReason, ExitSwitch, ExitThread, ParkContext, ParkError,
-    Receipt, WaitEnd, WaitMode,
+    announce, exit_switch, should_wake, withdraw, Arrival, AtomicReason, ExitSwitch, ExitThread, IoContext, ParkContext,
+    ParkError, Receipt, WaitEnd, WaitMode,
 };
 
 /// A thread's park state: its wait word and its baseline.
@@ -62,15 +71,116 @@ fn baseline() -> u32 {
     current_thread().map_or(0, |thread| thread.park.baseline.load(Ordering::Relaxed))
 }
 
-/// The scheduler dispatches here: it has a current thread and, on ARM64, the
-/// timer runs, so something ends a sleep. (Until E2.4's early-boot token,
-/// these are the conditions the converted predicates tested.)
+/// The scheduler dispatches here: the early-boot token has been revoked,
+/// which `kernel_main` does at the first dispatch once the timer runs
+/// (design §6), and this CPU has a current thread.
 fn dispatching() -> bool {
+    EARLY_BOOT_IO.revoked() && crate::task::scheduler::current_thread_id().is_some()
+}
+
+// ------------------------------------------- block I/O's caller rule (E2.4)
+
+static EARLY_BOOT_IO: EarlyBootIo = EarlyBootIo::new();
+
+/// Mint the early-boot I/O token: `kernel_main`, once, before any storage
+/// driver issues a command (design §6).
+pub fn mint_early_boot_io() {
+    let minted = EARLY_BOOT_IO.mint();
+    debug_assert!(minted, "the early-boot I/O token is minted once");
+}
+
+/// Whether the early-boot I/O token is held: the boot thread polls its
+/// commands.
+pub fn early_boot_io_held() -> bool {
+    EARLY_BOOT_IO.held()
+}
+
+/// The block I/O caller rule for the current context (design §6): a context
+/// that may park, or early boot with the token held. A refusal writes a
+/// receipt at the caller and returns `NotSleepable`.
+#[track_caller]
+pub fn io_context() -> Result<IoContext, ParkError> {
+    park_core::io_context(&HOOKS, site(), &EARLY_BOOT_IO)
+}
+
+/// A refusal decided through a seam of the caller's own (AHCI admission):
+/// the receipt `io_context` would have written.
+#[track_caller]
+pub fn record_io_refusal(context: ParkContext) {
+    record(context, site());
+}
+
+/// The attached block devices' completion sources (design §6).
+static COMPLETION_SOURCES: CompletionSources<16> = CompletionSources::new();
+
+/// The kinds of block device that register a completion source, for the
+/// readiness receipts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum BlockSource {
+    Ahci = 1,
+    VirtioBlkPci = 2,
+    VirtioBlkMmio = 3,
+}
+
+const fn source_key(kind: BlockSource, index: u32) -> u64 {
+    (kind as u64) << 32 | index as u64
+}
+
+fn source_name(key: u64) -> &'static str {
+    match key >> 32 {
+        1 => "ahci",
+        2 => "virtio-blk-pci",
+        3 => "virtio-blk-mmio",
+        _ => "unknown",
+    }
+}
+
+/// Block device `index` of `kind` attaches, with its completion source armed
+/// (its interrupt routed and unmasked, or its poller started) or not.
+pub fn attach_completion_source(kind: BlockSource, index: u32, armed: bool) {
+    if !COMPLETION_SOURCES.attach(source_key(kind, index), armed) {
+        crate::serial_println!(
+            "[park] completion source table full: {} {} is never ready",
+            source_name(source_key(kind, index)), index
+        );
+    }
+}
+
+/// Block device `index` of `kind` can complete a sleeping caller's command.
+pub fn arm_completion_source(kind: BlockSource, index: u32) {
+    COMPLETION_SOURCES.arm(source_key(kind, index));
+}
+
+/// Whether a sleeping caller may issue a command to block device `index` of
+/// `kind`: its completion source is armed. A device that is not ready
+/// refuses the request, and counts the refusal, rather than polling.
+pub fn completion_source_ready(kind: BlockSource, index: u32) -> bool {
+    COMPLETION_SOURCES.ready(source_key(kind, index))
+}
+
+/// The first dispatch (design §6): revoke the early-boot token. Before it,
+/// `kernel_main` has started the timer and armed each attached block
+/// device's completion source; each one that is not armed gets a receipt
+/// naming it, and its requests are refused until it is.
+pub fn revoke_early_boot_io() {
     #[cfg(target_arch = "aarch64")]
     if !crate::arch_impl::aarch64::timer_interrupt::timer_is_running() {
-        return false;
+        crate::serial_println!("[park] READINESS_RECEIPT the timer is not running at the first dispatch");
     }
-    crate::task::scheduler::current_thread_id().is_some()
+    let mut unready = [0u64; 16];
+    match park_core::revoke(&EARLY_BOOT_IO, &COMPLETION_SOURCES, &mut unready) {
+        None => crate::serial_println!("[park] READINESS_RECEIPT the early-boot I/O token was not held"),
+        Some(count) => {
+            for &key in &unready[..count.min(unready.len())] {
+                crate::serial_println!(
+                    "[park] READINESS_RECEIPT {} {} has no armed completion source at the first dispatch",
+                    source_name(key),
+                    key & 0xffff_ffff
+                );
+            }
+        }
+    }
 }
 
 /// Whether the current context may park (design §3.1). The only
@@ -260,37 +370,6 @@ pub fn wait(
     mode: WaitMode,
 ) -> Result<WaitEnd, ParkError> {
     park_core::wait(&HOOKS, site(), queue.event_queue(), done, deadline_ns, mode)
-}
-
-/// [`wait`], except that the ARM64 boot continuation, which runs as CPU 0's
-/// idle thread and reads storage there until E2.4 moves those reads into
-/// a kernel thread (design §6), keeps the sleep it had before E2.2: publish,
-/// release its one level, switch, finish. It still gets its receipt. Other
-/// refused contexts get `Err(NotSleepable)`.
-#[track_caller]
-pub fn wait_allowing_boot_idle(
-    queue: &WaitQueueHead,
-    mut done: impl FnMut() -> bool,
-    deadline_ns: Option<u64>,
-    mode: WaitMode,
-) -> Result<WaitEnd, ParkError> {
-    match park_core::wait(&HOOKS, site(), queue.event_queue(), &mut done, deadline_ns, mode) {
-        Err(ParkError::NotSleepable(ParkContext::Atomic(AtomicReason::Idle))) => {
-            use super::thread::ThreadState;
-            use super::waitqueue::PrepareOutcome;
-            Ok(match queue.prepare_to_wait_checked(ThreadState::BlockedOnIO, deadline_ns, || !done()) {
-                PrepareOutcome::Queued => {
-                    super::waitqueue::schedule_current_wait();
-                    queue.finish_wait();
-                    WaitEnd::Woken
-                }
-                PrepareOutcome::Mismatch => WaitEnd::Condition,
-                PrepareOutcome::OutOfMemory => WaitEnd::NoMemory,
-                PrepareOutcome::PublishFailed => WaitEnd::Killed,
-            })
-        }
-        other => other,
-    }
 }
 
 /// The most queues one [`wait_any`] waits on.
@@ -508,6 +587,54 @@ pub(crate) fn retake_after_sleep(released: SleepRelease) {
     if released.0 {
         crate::per_cpu::preempt_disable();
     }
+}
+
+/// What [`release_baseline`] released.
+#[derive(Clone, Copy)]
+#[must_use]
+pub(crate) struct BaselineRelease(u32);
+
+/// For a sleep in a sleepable context that is not on [`wait`]
+/// (`Completion`): release the levels of the thread's baseline, as [`wait`]
+/// does for its switch (§3.2). In a sleepable context the depth is the
+/// baseline, so the CPU may switch away afterwards at any baseline: 0 for a
+/// kernel thread, 1 for a syscall or a [`Braked`] thread, more for nested
+/// guards.
+pub(crate) fn release_baseline() -> BaselineRelease {
+    let levels = baseline();
+    for _ in 0..levels {
+        crate::per_cpu::preempt_enable();
+    }
+    BaselineRelease(levels)
+}
+
+/// Take back what [`release_baseline`] released.
+pub(crate) fn retake_baseline(released: BaselineRelease) {
+    for _ in 0..released.0 {
+        crate::per_cpu::preempt_disable();
+    }
+}
+
+/// For a prepared wait (`syscall::blocking_io::wait_prepared`), which
+/// releases one braked level for its sleep and holds it through publication
+/// and its signal check: a kernel thread at baseline 0 takes a syscall's
+/// shape, one [`Braked`] level, for the wait (design §3.2). A context already
+/// at a braked baseline, or one that may not park, is left as it is.
+pub fn braked_for_prepared_wait() -> Option<Braked> {
+    (baseline() == 0 && context() == ParkContext::Sleepable).then(Braked::new)
+}
+
+/// Run `f` with the baseline released when the current context may park,
+/// and as it is otherwise: for a bounded spin between device polls that
+/// should let the CPU be preempted (the GPU receipt wait), not a sleep.
+pub fn with_baseline_released<R>(f: impl FnOnce() -> R) -> R {
+    if context() != ParkContext::Sleepable {
+        return f();
+    }
+    let released = release_baseline();
+    let result = f();
+    retake_baseline(released);
+    result
 }
 
 /// Back off when no waiter could be published (no memory for the entry):

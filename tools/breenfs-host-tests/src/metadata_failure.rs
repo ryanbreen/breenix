@@ -106,7 +106,8 @@ fn ahci_preissue_refusal_leaves_root_writable() {
     let store = CachedNodeStore::new(&cache, disk.as_ref(), &sb);
     let writes = disk.writes.load(Ordering::Relaxed);
     for (error, expected) in [
-        (AhciReadError::CannotPark, EAGAIN),
+        (AhciReadError::NotSleepable, EIO),
+        (AhciReadError::EarlyBootPortOwned, EIO),
         (AhciReadError::Interrupted, EINTR),
         (AhciReadError::AdmissionTimeout, ETIMEDOUT),
         (AhciReadError::ControllerAbsent, EIO),
@@ -247,7 +248,7 @@ fn virtio_read_receipt_reaches_metadata_serial_and_report() {
 fn virtio_context_refusal_returns_eagain_without_latching() {
     use crate::block::read_failure::VirtioReadFailure;
     super::failed_mount_teardown::init_log();
-    for stage in ["gate-cannot-sleep", "gate-publish-refused", "gate-kill-claimed"] {
+    for stage in ["gate-publish-refused", "gate-kill-claimed"] {
         let (fs, disk, sb, ptr) = fixture();
         let receipt = VirtioReadFailure {
             reason: "request gate refused before issue", stage, device: 0,
@@ -277,5 +278,33 @@ fn virtio_context_refusal_returns_eagain_without_latching() {
         assert_eq!(fs.inner.state.lock().observed::<()>(Err(error.into())), Err(Errno(EAGAIN)));
         assert_eq!(super::failed_mount_teardown::messages().iter().filter(|line|
             line.contains("metadata read refused") && line.contains(&alloc::format!("virtio_stage={stage}"))).count(), 1);
+    }
+}
+
+/// E2.4 (design §6): the block I/O caller rule refuses a context that may
+/// not sleep with EIO, never EAGAIN, and the refusal came before the request
+/// was issued, so it does not latch the volume read-only.
+#[test]
+fn virtio_caller_rule_refusal_returns_eio_without_latching() {
+    use crate::block::read_failure::VirtioReadFailure;
+    for stage in ["gate-not-sleepable", "gate-early-boot-busy"] {
+        let (fs, disk, sb, ptr) = fixture();
+        let receipt = VirtioReadFailure {
+            reason: "request gate refused before issue", stage, device: 0,
+            sector: ptr.addr * 8, bytes: NODE_SIZE, thread: Some(73), preempt_count: 2, kill_custody: Some(1),
+            in_interrupt: false, interrupts_enabled: true, timer_ready: true,
+            gate_locked: true, gate_wedged: false, pending_token: 17, completed_token: 0, waiter_thread: 0,
+            completed_desc: u32::MAX, completed_status: u32::MAX,
+            used_idx: 9, last_used_idx: 9, device_status: 15,
+        };
+        let writes = disk.writes.load(Ordering::Relaxed);
+        *disk.read_error.lock().unwrap() = Some(BlockError::VirtioRead(receipt));
+        let cache = BufferCache::new(NoWait);
+        let store = CachedNodeStore::new(&cache, disk.as_ref(), &sb);
+        let error = store.read_node(ptr).err().expect("injected refusal succeeded");
+        assert_eq!(fs.inner.state.lock().observed::<()>(Err(error.into())), Err(Errno(EIO)), "{stage}");
+        assert_eq!(fs.failure(), None, "{stage}");
+        assert_eq!(fs.read_only(), Ok(false), "{stage}");
+        assert_eq!(disk.writes.load(Ordering::Relaxed), writes);
     }
 }

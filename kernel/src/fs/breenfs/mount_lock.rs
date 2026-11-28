@@ -131,8 +131,8 @@ impl<T> MountLock<T> {
 
     /// Park until the lock is released or a round ends. False when an
     /// interruptible acquisition must unwind for a kill. A context that may
-    /// not park (`task::park::context`) spins instead, with a receipt; the
-    /// boot continuation keeps its pre-E2.2 sleep until E2.4.
+    /// not park (`task::park::context`) spins instead, with a receipt. Since
+    /// E2.4 the boot continuation reads no storage, so it never waits here.
     #[cfg(not(test))]
     fn park(&self, interruptible: bool) -> bool {
         use crate::task::{
@@ -143,7 +143,7 @@ impl<T> MountLock<T> {
         let deadline = super::commit_signal::monotonic_ns().saturating_add(PARK_ROUND_NS);
         // The recheck runs under the queue lock, atomically with publishing
         // the wait, so a release before the enqueue is seen here.
-        let end = park::wait_allowing_boot_idle(
+        let end = park::wait(
             &self.queue,
             || !self.held.load(Ordering::SeqCst),
             Some(deadline),
