@@ -335,6 +335,52 @@ commit and `/` source `gen-<old>` over SSH. The failed generation stays as a rec
   on-disk format cannot roll back, so paired deploys refuse a kernel that sets an incompat bit the running kernel
   lacks. Format v2 converts offline (DEV-29 Q3).
 
+### 5.1 ESP slot state without renames (PR C)
+
+**The defect, from the code.** Both slot actions (commit and rollback) and the attempt record move files by rename: `slot_transaction`'s
+`move_pair` and `live_sequence::publish` (delete the old name, then rename the temporary one). `Root::write` also
+deletes and recreates a file (files.rs:116). A FAT rename is a directory-entry edit that the firmware's driver may
+write as more than one sector (the FAT specification's long-name entries sit beside the short entry), so a power
+cut can leave both names, or neither. `move_pair` returns `invalid` for both cases, `recover` fails, and
+`main.rs:317-320` returns to firmware before trying CURRENT or PREVIOUS. The host fixture
+(`tests/live_sequence.rs:109`) moves a name in one step, so no test reaches the torn states. Deleting either of two
+names that share one cluster chain would free clusters the other still uses, so recovery cannot repair a torn
+rename by deleting a name.
+
+**The design.** PR C changes the manager's ESP state so that no step depends on a rename:
+- **Images are written once.** Each new slot image (a trial, or an image the installer writes) goes to a fresh
+  file `K<seq>.IMG`, `<seq>` being seven decimal digits taken from the record sequence below, which only grows, so
+  no name is reused. An image is written, then flushed, and is not renamed or rewritten afterwards.
+- **The slots are a record, kept twice.** `\EFI\BREENIX\A\SLOTS.REC` and `\EFI\BREENIX\B\SLOTS.REC` are each one
+  4096-byte file, allocated when the manager is installed and afterwards only rewritten in place at the same length
+  (a new `Root::overwrite`: open without create, write at offset 0, flush). They sit in separate directories, so
+  their directory entries are in different sectors. A record holds a magic line, a sequence number, the attempt
+  manifest (up to `MANIFEST_MAX` bytes, section 4.7), and for CURRENT, PREVIOUS and a trial each: the image name,
+  size, SHA-256 and note bytes. A SHA-256 over the rest ends it. A record whose digest does not match is ignored.
+- **Each of the four transitions is one record write.** Try, promote, commit and rollback each build the next state, write it
+  into the record that does not hold the newest valid sequence (with sequence + 1), and flush. A cut leaves the
+  old record valid, or the new one valid, or the new one torn and ignored. The attempt record (`LIVE.ID` today)
+  is the record's attempt field, so it changes in the same write.
+- **Old images are deleted last.** After a record write is durable, the manager deletes each `K*.IMG` that neither
+  valid record names. A cut there leaves a stray image, which the next startup deletes.
+- **Startup returns to firmware only after the named images fail.** The manager reads both records and uses the
+  newest valid one. It boots that record's CURRENT, and if CURRENT is missing, has the wrong size or its bootloader
+  returns, it checks the image's SHA-256 against PREVIOUS's entry and boots PREVIOUS, then the older record's two
+  images. It returns to firmware only when no named image verifies.
+- **Import from today's layout.** A manager that finds no valid record runs today's `slot_transaction::recover`.
+  If that succeeds, it writes record A naming the existing `CURRENT.IMG` and `PREVIOUS.IMG` in place (the record
+  holds names, so no file is renamed). If it fails, the manager does not return to firmware. It boots, with no ESP
+  write, the first of `CURRENT.IMG`, `PREVIOUS.IMG`, `NEXT.IMG`, `SWAP.IMG` and `TRY.IMG` that passes
+  `bootdisk::looks_like_disk`, and prints `slot recovery failed; booting <name> read-only`. That box then needs the
+  netbooted recovery route to repair its ESP.
+
+PR C also ships manifest version 2 (section 4.7), because both reach the box only through a manager replacement.
+
+| Test | Where | Checks | Red on the old code because |
+|---|---|---|---|
+| T-C1 power cut at each ESP write | `scripts/metal/efi-stub/tests/live_sequence.rs`, with a fixture whose overwrite can stop after any 512-byte sector and whose rename leaves both names or neither | For try, promote, commit, rollback and the import, a cut after each device write. The next startup boots a pair whose image verifies, and the pair is the old one or the new one. | The fixture's torn rename makes `recover` fail, and startup returns to firmware |
+| T-C2 failed import | same file | Both names, or neither, for CURRENT→PREVIOUS: startup boots a verified image without writing the ESP. | `main.rs:317-320` returns to firmware |
+
 ## 6. CURRENT, PREVIOUS and reclamation
 
 At rest, the system volume holds the default tree, `gen-<current>` and `gen-<previous>`. During a deploy, it also
@@ -366,16 +412,19 @@ same `/home`.
 | 4 | Upload or apply into the draft | A partial `<id>.new`, which no slot names. The running root and shared state are as committed. | CURRENT pair | Deletes the draft and starts again |
 | 5 | Publish rename | `<id>.new` or `gen-<id>` | CURRENT pair (no attempt is armed) | Reclaims it if it is no longer wanted |
 | 6 | `kernel.img` or manifest publication | The old manifest or no manifest. `bput`'s rename is the commit point, and the manifest is written after the image. | CURRENT pair, with no attempt | Arms again |
-| 7 | Manager writing TRY.IMG and LIVE.ID | Before LIVE.ID is durable, no attempt is recorded. After, the attempt is used. | Before: the manager retries the trial. After: rollback to the CURRENT pair. | n/a |
+| 7 | Manager writing the trial image and the record that names it (5.1) | Before the record write is durable, the older record is newest and no attempt is recorded. After, the attempt is used. A torn record is ignored. | Before: the manager retries the trial. After: rollback to the CURRENT pair. | n/a |
 | 8 | Trial session, before `committed` is durable | The new generation holds whatever the trial wrote | Rollback to the CURRENT pair | Reclaims the failed generation |
 | 9 | `committed` publication | Present or absent, by rename | Present: the manager promotes the pair. Absent: rollback. | n/a |
-| 10 | Manager promotion | `SLOT.TXN` and phase markers resume the rename sequence (slot actions, docs/metal/README.md) | The promoted pair | n/a |
+| 10 | Manager promotion | With PR C's manager: one record write, so the old or the promoted record is newest. With today's manager: `SLOT.TXN` resumes the renames, but a torn rename fails recovery and returns to firmware (5.1). | PR C: the old or the promoted pair. Today: the netbooted recovery route. | n/a |
 | 11 | Any BreenFS commit on the way | Commit G is either durable or absent, and G−1 is intact (format 2.5) | As above | As above |
 
-Each row above leaves the box booting a complete pair whose kernel and root were committed together. Only rows 7
-to 9 can change which pair that is, and the manager's attempt record and the `committed` receipt decide it.
+With PR C's manager, each row above leaves the box booting a complete pair whose kernel and root were committed
+together. Only rows 7 to 10 can change which pair that is, and the manager's record and the `committed` receipt
+decide it. With today's manager, rows 7 and 10 can also leave a torn rename, which needs the recovery route.
 
-## 9. Implementation plan: two PRs
+## 9. Implementation plan: three PRs
+
+PR A (kernel) and PR C (boot manager, section 5.1) are independent. PR B (tools and installer) uses both.
 
 Both PRs follow DEV-30 and DEV-39. Each test is committed first and fails on the old code. Tests are deterministic
 and run once, at the final head. No suite runs. No new warnings on x86-64 or ARM64. Each PR gets the
@@ -479,3 +528,9 @@ That is three reboots in total (one in step 1, two in step 2), plus the step-0 f
 - #3226 is open. The upload is bounded (4.2), and the host stops before uploading more than 1 GiB.
 - The manager's version-2 check reaches the box at the next manager replacement, which the coordinator schedules.
   Until then, a missing root costs one failed trial and the 600 s deadline.
+- **Decision needed: PR C changes the ESP's slot layout** (an on-disk format of the boot manager). It replaces
+  today's renamed `CURRENT/PREVIOUS/NEXT/TRY` files and `LIVE.ID` with write-once images and two in-place
+  records, and imports today's layout on first start. Today's manager, which the live kernel flash already uses,
+  returns to firmware after a torn rename. PR C reaches the box only through a manager replacement by the netbooted
+  installer, as DEV-33(3) authorized once before. The recommendation is to schedule that replacement before PR B's
+  live run, so the live run exercises PR C's records and the version-2 manifest.
