@@ -1106,6 +1106,19 @@ of their steps, keeping each CPU's program order. The steps are sequentially con
     0
 
     ```
+  - **The free waits only for CPUs it interrupted.** A host model unmaps a page of A while CPU 1 has A
+    loaded and CPUs 2 and 3 sit idle on the kernel root, caching A's PCID. The frame must be freed once
+    CPU 1 acknowledges. No wait may depend on CPUs 2 and 3 ever running A again. Red on §9.2 as first
+    written. Its lifetime rule waits for every CPU in the set to acknowledge or flush, yet it sends no
+    IPI to the CPUs that only cache the PCID.
+
+    ```pycon
+    >>> def free_waits_for(loaded_at_selection, cached_only):
+    ...     return loaded_at_selection | cached_only
+    >>> sorted(free_waits_for({1}, cached_only={2, 3}))
+    [1]
+
+    ```
 - **Rows.** None on QEMU (ARM64). On the R240: `process.fork-exec`, the compile rows and `ssh.round-trip`. <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
 - **Boot.** x86 only. Its evidence is the coordinator's batched kernel-only flash (DEV-31(2), DEV-32).
 
