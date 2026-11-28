@@ -20,7 +20,7 @@ pub fn load_image(
     purpose: Purpose,
 ) -> Result<(Image, ExecIdentity, alloc::vec::Vec<u8>), Errno> {
     let ((image, interpreter), identity, path) = with_image(
-        path.as_ref(), cred, &killed, false, |size, read| {
+        path.as_ref(), cred, &killed, false, |size, read, source| {
             let mut header = [0; crate::exec_elf::ELF_HEADER];
             let prefix = size.min(header.len() as u64) as usize;
             read(0, &mut header[..prefix])?;
@@ -28,7 +28,7 @@ pub fn load_image(
                 let line = crate::exec_elf::read_shebang(&header[2..prefix], size, read)?;
                 Ok((Image::Script(line), None))
             } else {
-                let (elf, interpreter) = MappedElf::load(&header[..prefix], size, read, purpose)?;
+                let (elf, interpreter) = MappedElf::load(&header[..prefix], size, read, purpose, source)?;
                 Ok((Image::Elf(elf), interpreter))
             }
         },
@@ -58,7 +58,11 @@ fn with_image<T>(
     cred: &Credentials,
     killed: impl Fn() -> bool,
     require_read: bool,
-    consume: impl FnOnce(u64, &mut dyn FnMut(u64, &mut [u8]) -> Result<(), Errno>) -> Result<T, Errno>,
+    consume: impl for<'s> FnOnce(
+        u64,
+        &mut dyn FnMut(u64, &mut [u8]) -> Result<(), Errno>,
+        Option<crate::exec_elf::Source<'s>>,
+    ) -> Result<T, Errno>,
 ) -> Result<(T, ExecIdentity, alloc::vec::Vec<u8>), Errno> {
     trace(b'1');
     let resolved = crate::fs::namei::resolve_bytes(path, true).map_err(|errno| {
@@ -93,10 +97,13 @@ fn with_image<T>(
     // Retain mutation exclusion, then block new mmap bindings on this VNode.
     // Existing bindings retain their authority, checked before copying below.
     // The page-map lock is not held across I/O.
-    let _image = fs.mapping_io(&node)?;
+    // The same transfer serves exec's reads through the image's cache.
+    let transfer = fs.mapping_io(&node)?;
     let _bindings = node.map.block_mapping_bindings().map_err(Errno)?;
     let flags = super::mount::flags_at(&resolved.path);
-    let (image, identity) = read_image(fs.as_ref(), &node, flags, cred, killed, require_read, consume)?;
+    let source = crate::exec_elf::Source { node: &node, file: &*transfer };
+    let (image, identity) = read_image(fs.as_ref(), &node, flags, cred, killed, require_read,
+        |size, read| consume(size, read, Some(source)))?;
     Ok((image, identity, resolved.path))
 }
 

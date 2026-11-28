@@ -184,18 +184,22 @@ fn interp_handoff_auxv_aarch64() {
         headers.load_interpreter(
             Box::new([0; PAGE as usize]),
             region.clone(),
+            true,
             |path, consume| {
                 assert_eq!(path, &PATH[..PATH.len() - 1]);
                 consume(interpreter.len() as u64, &mut |offset, dst| {
                     let offset = offset as usize;
                     dst.copy_from_slice(&interpreter[offset..offset + dst.len()]);
                     Ok(())
-                })
+                }, None)
             },
-            |page, address, flags| {
-                assert_eq!(address, PROGRAM_BASE + PAGE);
-                assert_eq!(flags, 5);
-                Ok(page.as_mut_ptr())
+            |page, image, bias, read, _| {
+                image.load_segments(read, |address, flags| {
+                    assert_eq!(address + bias, PROGRAM_BASE + PAGE);
+                    assert_eq!(flags, 5);
+                    Ok(page.as_mut_ptr())
+                }, |_, _| {})?;
+                Ok(false)
             },
         )
     }.unwrap();
@@ -250,11 +254,12 @@ fn missing_interp_fails_aarch64() {
         headers.load_interpreter(
             (),
             PROGRAM_BASE..PROGRAM_BASE + 0x10000,
+            true,
             |path, _| {
                 assert_eq!(path, &PATH[..PATH.len() - 1]);
                 Err(Errno(ENOENT))
             },
-            |_, _, _| panic!("missing interpreter reached the mapper"),
+            |_, _, _, _, _| panic!("missing interpreter reached the mapper"),
         )
     };
     assert!(matches!(result, Err(Errno(ENOENT))));
@@ -276,12 +281,13 @@ fn interpreter_machine_must_match_program() {
             headers.load_interpreter(
                 (),
                 PROGRAM_BASE..PROGRAM_BASE + 0x10000,
+                true,
                 |_, consume| consume(interpreter.len() as u64, &mut |offset, dst| {
                     let offset = offset as usize;
                     dst.copy_from_slice(&interpreter[offset..offset + dst.len()]);
                     Ok(())
-                }),
-                |_, _, _| panic!("interpreter for the wrong machine reached the mapper"),
+                }, None),
+                |_, _, _, _, _| panic!("interpreter for the wrong machine reached the mapper"),
             )
         };
         assert!(matches!(result, Err(Errno(ENOEXEC))));

@@ -1,7 +1,8 @@
 # E3: unified page cache and pager (design and PR plan)
 
 Status: design and PR sequence. E3-1 adds the pure modules, which no kernel path calls yet. E3-2 makes
-absent, Hole and poisoned pages explicit in today's mapping cache. Builders
+absent, Hole and poisoned pages explicit in today's mapping cache. E3-3 maps exec images through the
+cache, with the ETXTBSY rule of 10.3 (adopted by DEV-49(1)). Builders
 append the detail deviations they make under DEV-39(2) to section 22.
 
 Rulings. DEV-41(2) starts this design and orders implementation to begin as soon as its E1 and E2
@@ -2404,3 +2405,57 @@ boundary) are not recorded here: the builder stops and asks the coordinator.
   mmap populates each mapping (`map_file`, `syscall/mmap.rs`) and those fixtures stand for sparse files.
 - **E3-2, `/proc/breenix/pagecache`.** It lists only `absent_bound` until E3-6 adds the rest of
   section 16, because E3-2 has no other counter to report.
+- **E3-3, the fallback is per image.** A segment that breaks congruence, or a virtual page two
+  PT_LOADs share, sends the whole image to the copying fallback (`Headers::cache_plan`), not only that
+  segment, because one table would otherwise mix the copy loader's page ownership with cached
+  bindings; the fallback is counted (`exec_copy_fallbacks`), and Breenix's own images have neither
+  layout.
+- **E3-3, entries installed at exec.** Exec installs an entry for each cached page into the
+  unpublished table (`ExecImage::map`), as its copies were installed, instead of leaving the first
+  accesses to fault, because 10.2 populates eagerly before E2.9 and a fault on text would only add
+  cost; E3-12 makes exec lazy.
+- **E3-3, a segment's last partial page.** When `p_memsz` equals `p_filesz`, the page holding the
+  segment's last bytes is mapped whole from the cache, so its bytes past `p_filesz` are the file's
+  (or 00 past EOF), because the gABI leaves memory past `p_memsz` unspecified and only a segment with
+  BSS needs the tail copy of 10.1. The tail copy keeps the file's bytes from the start of its page.
+- **E3-3, admission comes first.** `ExecImage::new` takes the image's `deny_write` share before exec
+  reads the headers, and it reads the cache through the transfer exec already holds
+  (`populate_through`), because a second transfer of an ext2 inode is refused while the first is held;
+  the headers are still read through `FileSystem::read`.
+- **E3-3, where `writers` lives.** A write-open's count is held by its open file description
+  (`OpenFileDescription::writer`) until the last descriptor that shares it closes, and an `O_TRUNC`
+  open counts as write access even with `O_RDONLY`, because both change the file. A path
+  `truncate` holds a writer for its duration, after its permission check, so EACCES is still reported
+  before ETXTBSY. `ftruncate` and `fallocate` need a descriptor open for writing, which already counts.
+  `pwrite64` and `mmap` hold their descriptor's open description until the write returns or the
+  binding is published, because a concurrent last close would otherwise end the write access, and an exec
+  could start sharing the file's pages, while the write or the shared binding was still pending.
+- **E3-3, mmap refuses first.** `map_file` asks `MapState::refuse_text_busy` before it claims shared
+  write access or clears the range, and `bind` keeps the same check, because a refusal found only in
+  `bind` comes after `MAP_FIXED` has unmapped the old mapping; under the binding gate the early answer
+  holds until `bind`, since `deny_write` rises from 0 only while an exec holds the gate as its writer.
+- **E3-3, populated runs.** Exec populates each stretch of adjacent file pages that a piece maps or
+  copies, holding one claim per run, rather than one span from the lowest file page to the highest,
+  because the pages between two loads are mapped by neither and a sparse gap between them can be large.
+- **E3-3, `ICACHE_CLEAN`.** The flag is set only while the file has no shared writable binding, and a
+  shared write fault, a `write()` and a truncation's tail zeroing clear it, because stores through a
+  writable shared entry change the bytes without a fault; the loader's existing whole instruction-cache
+  invalidation after a load (`finish_image_load`) stays.
+- **E3-3, the counts.** `/proc/breenix/pagecache` gains `exec_copy_fallbacks` and
+  `etxtbsy_refusals`, and each refusal logs one line naming the inode, because DEV-49(1) asks the boot
+  and the rig to show any refusal our own tools hit.
+- **E3-3, the sharing check's measure.** The check counts the file bytes the loader reads for an
+  image's segments (through its reader and through the cache's transfer), not device reads, because the
+  host BreenFS block cache serves a repeated read of a small image without a device read on the old
+  tree too, so a device count could not be red.
+- **E3-3, stores in the host checks.** The host checks map each cached piece through the production
+  `ExecImage::map` and `entry_flags` into a recording table, and drop the exec load before they check
+  write refusal, as `MappedElf::load` does; a store's outcome under each recorded entry (SIGSEGV for
+  text, a private copy for data) is modeled from the entry's flags, because the kernel's permission and
+  copy-on-write fault paths do not run on the host. The `bind` record is a host stand-in that calls
+  the production `MapInner::refuse_text_busy`, because the kernel's record carries page-table and
+  process fields the host model does not have.
+- **E3-3, the check commit.** Each interface the checks drive is new, so the check commit carries the
+  cache path with admission switched off (`ExecImage::ADMIT` false: exec copies each image and a write
+  is not refused, today's behaviour), and the next commit turns admission on, because a seam the
+  kernel does not call would not build without warnings.
