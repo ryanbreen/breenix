@@ -336,11 +336,21 @@ fn root_volume_unmount_releases_staging_custody() {
     assert!(!user.may(run.getattr(paired).unwrap().attrs, 1));
 
     let target = Target::Inode { mount: Mount(id), ino: staged_root };
-    let cwd = mount::pin(id).unwrap();
-    // The umount syscall's walk to the mount point holds the staging root.
-    let walk = draft.open(staged_root).unwrap();
+    // The umount syscall drops its walk to the mount point before this entry.
+    let pinned = mount::pin(id).unwrap();
     assert!(matches!(unmount(&target, 0), Some(Err(error)) if error == EBUSY as u64));
     assert_eq!(mount::find_mount("/run/breenix/paired/stage"), Some(id), "a busy unmount changes nothing");
+    staged_write().expect("still attached after a busy unmount");
+    drop(pinned);
+    // A real working directory holds the staged directory's VNode, not a
+    // registry pin. A forced unmount is refused for it too: detach could not
+    // release the tree, and with the mount gone nothing could again.
+    let cwd = draft.open(staged_root).unwrap();
+    for flags in [0, 1] {
+        assert!(matches!(unmount(&target, flags), Some(Err(error)) if error == EBUSY as u64),
+            "a cwd in the draft must refuse the unmount (flags {flags})");
+        assert_eq!(mount::find_mount("/run/breenix/paired/stage"), Some(id), "a busy unmount changes nothing");
+    }
     staged_write().expect("still attached after a busy unmount");
     drop(cwd);
     let detach = match unmount(&target, 0) {
@@ -348,7 +358,6 @@ fn root_volume_unmount_releases_staging_custody() {
         _ => panic!("a staging mount unmounts through its own branch"),
     };
     assert_ne!(mount::find_mount("/run/breenix/paired/stage"), Some(id));
-    drop(walk);
     drop(draft);
     detach.finish().unwrap();
 
