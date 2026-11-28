@@ -137,3 +137,41 @@ impl Recovery {
         self.partial_seen = false;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SMSS: u32 = 1460;
+
+    /// RFC 6582 section 6: once the cumulative ACK has moved more than 2^31
+    /// bytes past a `recover` set by a timeout, wrap-safe comparison puts
+    /// that old marker ahead of the ACK. Three duplicates beyond everything
+    /// the timeout marked must still start fast retransmit.
+    #[test]
+    fn a_marker_left_behind_by_two_gib_of_progress_does_not_block_recovery() {
+        let mut cc = Controller::new_reno();
+        cc.start(SMSS);
+        let mut recovery = Recovery::new(0);
+        let marked = 10 * SMSS - 1;
+        recovery.timeout(&mut cc, marked, 10 * SMSS, SMSS, true);
+
+        // The flight the timeout marked is acknowledged, then the ACK moves on
+        // in steps of under 2^31 to just over 2^31 past the marker.
+        let mut ack = marked.wrapping_add(1);
+        recovery.advance(&mut cc, ack, 10 * SMSS, 0, SMSS);
+        let target = marked.wrapping_add(1 << 31).wrapping_add(4 * SMSS);
+        while ack != target {
+            let step = target.wrapping_sub(ack).min(1 << 30);
+            ack = ack.wrapping_add(step);
+            recovery.advance(&mut cc, ack, step, 4 * SMSS, SMSS);
+        }
+
+        let highest_sent = ack.wrapping_add(4 * SMSS - 1);
+        let entered = (0..3)
+            .map(|_| recovery.duplicate(&mut cc, ack, highest_sent, 4 * SMSS, SMSS))
+            .collect::<alloc::vec::Vec<_>>();
+        assert_eq!(entered, [false, false, true], "the third duplicate's fast retransmit");
+        assert!(recovery.active());
+    }
+}

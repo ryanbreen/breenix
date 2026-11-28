@@ -91,6 +91,13 @@ impl Flow {
     /// connect() from `local_port`, answered with a SYN+ACK offering an MSS
     /// of `SMSS` and a 65535-byte window.
     pub fn connect(local_port: u16) -> Flow {
+        Flow::open(local_port, SMSS as u16, false)
+    }
+
+    /// connect() from `local_port`, answered with a SYN+ACK offering an MSS
+    /// of `mss` and a 65535-byte window. With `lose_syn`, the first SYN is
+    /// lost and the SYN+ACK answers the one the retransmission timer resends.
+    pub fn open(local_port: u16, mss: u16, lose_syn: bool) -> Flow {
         let id = tcp::tcp_connect(
             [0; 4],
             local_port,
@@ -105,13 +112,21 @@ impl Flow {
         assert_eq!(sent.len(), 1, "connect sent {sent:?}");
         assert_eq!(sent[0].flags & SYN, SYN);
         let isn = sent[0].seq;
+        if lose_syn {
+            let deadline = tcp::tcp_sender_info(&id).expect("the connection").rtx_deadline_ms;
+            set_clock(deadline);
+            tcp::run_timers();
+            let resent = take_sent(local_port);
+            assert_eq!(resent.len(), 1, "the SYN's timeout sent {resent:?}");
+            assert_eq!((resent[0].flags & SYN, resent[0].seq), (SYN, isn));
+        }
         let mut flow = Flow {
             id,
             data_start: isn.wrapping_add(1),
             peer_seq: 0x4000_0000,
             window: PEER_WINDOW,
         };
-        let [hi, lo] = (SMSS as u16).to_be_bytes();
+        let [hi, lo] = mss.to_be_bytes();
         flow.deliver(flow.peer_seq, flow.data_start, SYN | ACK, &[2, 4, hi, lo]);
         flow.peer_seq = flow.peer_seq.wrapping_add(1);
         assert_eq!(tcp::tcp_get_state(&id), Some(tcp::TcpState::Established));

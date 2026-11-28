@@ -194,3 +194,95 @@ fn a_timeout_repairs_the_oldest_segment_and_marks_recover() {
     assert!(!info.in_recovery);
     assert_eq!(info.rtx_deadline_ms, 0);
 }
+
+#[test]
+fn a_lost_first_segment_fast_retransmits() {
+    // SMSS 1000 gives a four-segment initial window (RFC 5681 3.1), so the
+    // three segments behind a lost first one draw three duplicates.
+    let _serial = harness::lock(3_000_000);
+    let smss = 1000;
+    let flow = Flow::open(40003, smss as u16, false);
+    let start = flow.data_start;
+    let fast_before = stat("fast_retransmits");
+
+    flow.write(4 * smss);
+    let flight: Vec<_> = (0..4).map(|n| (start + n * smss as u32, smss)).collect();
+    assert_eq!(data(&flow.sent()), flight, "the four-segment initial window");
+
+    harness::advance(RTT_MS);
+    for _ in 0..3 {
+        flow.ack(start);
+    }
+    let info = flow.info();
+    assert!(info.in_recovery, "three duplicates of the first data byte started no recovery");
+    assert_eq!(data(&flow.sent()), vec![(start, smss)], "the first segment's fast retransmit");
+    assert_eq!(stat("fast_retransmits") - fast_before, 1);
+
+    harness::advance(RTT_MS);
+    flow.ack(start + 4 * smss as u32);
+    let info = flow.info();
+    assert!(!info.in_recovery);
+    assert_eq!(info.rtx_deadline_ms, 0);
+}
+
+#[test]
+fn limited_transmit_sends_new_data_on_the_first_two_duplicates() {
+    // RFC 3042 and RFC 5681 3.2: after an idle restart the window is three
+    // segments, so one loss leaves only two to draw duplicates. Each of the
+    // first two sends one new segment without moving cwnd, and the third
+    // duplicate that draws starts fast retransmit. The threshold is taken
+    // from the flight without the Limited Transmit segments.
+    let _serial = harness::lock(4_000_000);
+    let flow = warmed_flow(40004, 6);
+    let base = flow.at(3);
+    harness::advance(2_000);
+    flow.write((6 * SMSS) as usize);
+    let flight: Vec<_> = (0..3).map(|n| (base + n * SMSS, SMSS as usize)).collect();
+    assert_eq!(data(&flow.sent()), flight, "the idle restart's three-segment window");
+    assert_eq!(flow.info().cwnd, 3 * SMSS);
+
+    harness::advance(RTT_MS);
+    flow.ack(base);
+    assert_eq!(data(&flow.sent()), vec![(base + 3 * SMSS, SMSS as usize)], "the first duplicate's segment");
+    assert_eq!(flow.info().cwnd, 3 * SMSS, "Limited Transmit moved cwnd");
+    flow.ack(base);
+    assert_eq!(data(&flow.sent()), vec![(base + 4 * SMSS, SMSS as usize)], "the second duplicate's segment");
+    assert_eq!(flow.info().cwnd, 3 * SMSS, "Limited Transmit moved cwnd");
+
+    flow.ack(base);
+    let info = flow.info();
+    assert!(info.in_recovery, "the third duplicate started no recovery");
+    assert_eq!(data(&flow.sent()), vec![(base, SMSS as usize)], "the fast retransmit");
+    assert_eq!((info.cwnd, info.ssthresh), (5 * SMSS, 2 * SMSS), "(cwnd, ssthresh) on entry");
+
+    // The full ACK ends recovery; the last queued segment goes, and its ACK
+    // stops the retransmission timer.
+    harness::advance(RTT_MS);
+    flow.ack(base + 5 * SMSS);
+    assert!(!flow.info().in_recovery);
+    assert_eq!(data(&flow.sent()), vec![(base + 5 * SMSS, SMSS as usize)]);
+    harness::advance(RTT_MS);
+    flow.ack(base + 6 * SMSS);
+    assert_eq!(flow.info().rtx_deadline_ms, 0);
+}
+
+#[test]
+fn a_lost_syn_starts_data_with_one_segment() {
+    // RFC 5681 3.1: when the SYN or SYN+ACK was lost, the initial window
+    // after the handshake is one segment.
+    let _serial = harness::lock(5_000_000);
+    let flow = Flow::open(40005, SMSS as u16, true);
+    let info = flow.info();
+    assert_eq!(info.cwnd, SMSS, "the window after a lost SYN");
+    assert_eq!(info.rto_ms, 3_000, "RFC 6298 5.7's timeout after a lost SYN");
+
+    flow.write((3 * SMSS) as usize);
+    assert_eq!(data(&flow.sent()), vec![(flow.at(0), SMSS as usize)], "one segment leaves");
+    harness::advance(RTT_MS);
+    flow.ack(flow.at(1));
+    assert_eq!(flow.info().cwnd, 2 * SMSS, "slow start from one segment");
+    assert_eq!(data(&flow.sent()), vec![(flow.at(1), SMSS as usize), (flow.at(2), SMSS as usize)]);
+    harness::advance(RTT_MS);
+    flow.ack(flow.at(3));
+    assert_eq!(flow.info().rtx_deadline_ms, 0);
+}
