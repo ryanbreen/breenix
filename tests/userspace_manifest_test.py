@@ -17,6 +17,7 @@ class ManifestTests(unittest.TestCase):
         self.repo = Path(temp.name)
         (self.repo / 'scripts').mkdir()
         shutil.copy(ROOT / 'scripts/userspace-manifest.py', self.repo / 'scripts')
+        shutil.copy(ROOT / 'scripts/userspace_generation.py', self.repo / 'scripts')
         self.source = self.repo / 'userspace/programs/src/hello.rs'
         self.source.parent.mkdir(parents=True)
         self.source.write_text('fn main() {}\n')

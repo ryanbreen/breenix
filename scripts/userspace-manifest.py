@@ -21,6 +21,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+from userspace_generation import require_legacy
+
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = '.userspace-manifest.json'
 # Ignored by git, but still inputs of the build.
@@ -57,7 +59,10 @@ def fingerprint(arch):
 
 
 def inventory(arch):
-    return {path.name: digest(path) for path in sorted([*elf_dir(arch).glob('*.elf'), *elf_dir(arch).glob('libc-busybox.links')])}
+    directory = elf_dir(arch)
+    inputs = sorted([*directory.glob('*.elf'), *directory.glob('libc-busybox.links')])
+    require_legacy(directory, *inputs)
+    return {path.name: digest(path) for path in inputs}
 
 
 def write(arch):
@@ -85,6 +90,7 @@ def check(arch, disk):
                        if recorded.get(name) != actual.get(name))
         return f'installed {arch} ELFs differ from the last build ({", ".join(names)}); {rebuild}'
     if disk is not None:
+        require_legacy(disk)
         if not disk.is_file():
             return f'no disk image at {disk}'
         if disk.stat().st_mtime < path.stat().st_mtime:
@@ -98,9 +104,12 @@ def main():
     parser.add_argument('--arch', choices=('x86_64', 'aarch64'), required=True)
     parser.add_argument('--disk', type=Path)
     args = parser.parse_args()
-    if args.operation == 'write':
-        return write(args.arch)
-    error = check(args.arch, args.disk)
+    try:
+        if args.operation == 'write':
+            return write(args.arch)
+        error = check(args.arch, args.disk)
+    except ValueError as failure:
+        error = str(failure)
     if error:
         print(f'ERROR: {error}', file=sys.stderr)
         return 1

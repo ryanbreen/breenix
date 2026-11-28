@@ -32,6 +32,8 @@ import signal
 import struct
 import subprocess
 import sys
+
+from userspace_generation import require_legacy
 import tarfile
 import tempfile
 
@@ -1014,6 +1016,7 @@ class Harness:
     # --------------------------------------------------------------- stage phase
 
     def stage_image(self, image):
+        require_legacy(image, self.sdk)
         debugfs, e2fsck = find_e2fsprogs('debugfs'), find_e2fsprogs('e2fsck')
         if not debugfs or not e2fsck:
             sys.exit('sdk-suite: debugfs and e2fsck (e2fsprogs) are needed to stage the disk image')
@@ -1150,6 +1153,7 @@ def main():
     parser.add_argument('--image', help='an ext2 disk image (a copy) to stage the results onto')
     parser.add_argument('--rebuild', action='store_true', help='discard a cached build of this commit')
     args = parser.parse_args()
+    require_legacy(args.image)
     # The builds share the Mac with its user: run this script's whole process tree at
     # background priority. The boot that follows it is a separate process and keeps its own.
     if sys.platform == 'darwin' and os.environ.get('BREENIX_SDK_SUITE_BACKGROUND') != '1' and shutil.which('taskpolicy'):

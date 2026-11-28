@@ -12,8 +12,10 @@ import sys
 import tempfile
 import tomllib
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "metal"))
 from metal_root import require_e2fsprogs
+from userspace_generation import require_legacy
 
 ROOT = Path(__file__).resolve().parents[1]
 DEV = Path("opt/breenix-dev/25.2")
@@ -242,6 +244,7 @@ def kernel_assembly_record(tree, files, arch, milestone):
 
 
 def seal(bundle, commit, arch, tool_record, milestone=None):
+    require_legacy(bundle, bundle / "root", tool_record)
     if not COMMIT.fullmatch(commit):
         raise ValueError("invalid toolchain build commit")
     tree = bundle / "root"
@@ -462,6 +465,8 @@ def install(debugfs, image, bundle, arch, scratch, milestone=None):
 
 
 def stage(base, output, suites, bundle, arch, milestone=None):
+    require_legacy(base, output, bundle, bundle / "root" if bundle is not None else None)
+    base = base.resolve(strict=True)
     seeds = {ROOT / directory / image for directory in ("target", "testdata")
              for image in ("ext2.img", "ext2-aarch64.img")}
     if (base == output or (output.exists() and base.samefile(output))
@@ -521,7 +526,7 @@ def main():
         elif args.command == "seal":
             seal(args.bundle, args.commit, args.arch, args.tool_record, args.milestone)
         else:
-            stage(args.base.resolve(strict=True), args.output.absolute(), args.suite,
+            stage(args.base, args.output.absolute(), args.suite,
                   args.toolchain_bundle, args.arch, args.milestone)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"toolchain image: {error}\n")
