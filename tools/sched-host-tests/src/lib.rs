@@ -4,6 +4,10 @@ mod inline_entry;
 #[cfg(test)]
 mod arch_impl {
     pub mod aarch64 {
+        pub mod constants {
+            pub const SGI_RESCHEDULE: u32 = 0;
+        }
+
         pub mod switch_save {
             pub fn is_saving(tid: u64) -> bool {
                 tid == 1 && crate::SAVING_CPU.get().is_some()
@@ -41,7 +45,8 @@ use std::{
 };
 
 #[cfg(test)]
-static SCHEDULER_HELD: [AtomicU32; 3] = [const { AtomicU32::new(0) }; 3];
+static SCHEDULER_HELD: [AtomicU32; queue::MAX_CPUS] =
+    [const { AtomicU32::new(0) }; queue::MAX_CPUS];
 #[cfg(test)]
 static PINNED_HOLDS_OUTSTANDING: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
 #[cfg(test)]
@@ -63,6 +68,3 @@ mod tracing {
         0
     }
 }
-
-#[cfg(test)]
-fn post_resched_arm64(_: usize) {}

@@ -47,6 +47,7 @@ fn item<'a>(source: &'a str, signature: &str, end: &str) -> &'a str {
 fn queue_operations(kernel: &Path, out: &Path) {
     let rq = read(&kernel.join("task/scheduler/rq.rs"));
     let arm = read(&kernel.join("task/scheduler/rq/arm64.rs"));
+    let scheduler = read(&kernel.join("task/scheduler.rs"));
     let mut code = String::new();
     for signature in [
         "pub(super) struct RqLock {",
@@ -69,6 +70,15 @@ fn queue_operations(kernel: &Path, out: &Path) {
         "fn steal_from(",
     ] {
         code.push_str(item(&rq, signature, "\n}"));
+        code.push('\n');
+    }
+    for signature in [
+        "fn post_resched_arm64(",
+        "fn request_resched_arm64(",
+        "fn publish_wake(",
+        "fn kick_wake_inbox(",
+    ] {
+        code.push_str(item(&scheduler, signature, "\n}"));
         code.push('\n');
     }
     code.push_str("impl Held {\n");
@@ -104,7 +114,8 @@ fn queue_operations(kernel: &Path, out: &Path) {
     fs::write(
         out.join("queue_operations.rs"),
         code.replace("#[cfg(target_arch = \"aarch64\")]", "")
-            .replace("#[cfg(target_arch = \"x86_64\")]", "#[cfg(any())]"),
+            .replace("#[cfg(target_arch = \"x86_64\")]", "#[cfg(any())]")
+            .replace("super::post_resched_arm64", "post_resched_arm64"),
     )
     .unwrap();
 }
