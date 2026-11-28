@@ -179,6 +179,11 @@ impl Small for SimSmall<'_> {
     fn cpus(&self) -> usize {
         self.kmem.slot_count()
     }
+
+    fn release_freed(&self, target: usize) -> usize {
+        self.drain_own(false);
+        self.kmem.shrink(target)
+    }
 }
 
 struct SimCpu {

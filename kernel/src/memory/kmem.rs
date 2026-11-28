@@ -196,6 +196,15 @@ impl Small for KernelSmall {
     fn cpus(&self) -> usize {
         KMEM.slot_count()
     }
+
+    fn release_freed(&self, target: usize) -> usize {
+        crate::arch_without_interrupts(|| {
+            if let Some(cpu) = named_cpu() {
+                KMEM.drain(cpu, false);
+            }
+            KMEM.shrink(target) + super::slab::release_empty()
+        })
+    }
 }
 
 /// Install the per-CPU slot table for the `cpus` CPUs the firmware

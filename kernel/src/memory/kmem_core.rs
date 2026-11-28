@@ -403,6 +403,11 @@ pub trait Small {
     fn drain(&self, cpu: usize) -> bool;
     /// The CPUs the per-CPU slot table describes.
     fn cpus(&self) -> usize;
+    /// 7.2 step 3 again, after the other shrinkers ran: what they freed on
+    /// this CPU went to its magazines, so move those to the depots with
+    /// `try_lock`, and run the slab shrinker for `target` pages. Returns the
+    /// pages given back.
+    fn release_freed(&self, target: usize) -> usize;
 }
 
 /// The allocator's front (6.1, 6.6, 7.2): requests up to a page go to the
@@ -542,7 +547,13 @@ impl<M: Pool, R: Pool, S: Small> Front<'_, M, R, S> {
     /// the request's frames plus the batch.
     fn reclaim<C: Cpu>(&self, layout: Layout, cpu: &C) {
         let target = layout.size().div_ceil(PAGE) + RECLAIM_BATCH_FRAMES;
-        let freed = cpu.masked(|| self.reclaim.run(cpu.id(), || self.shrinkers.reclaim(target)));
+        // A shrinker that frees through the allocator leaves its blocks in
+        // this CPU's magazines, so the slab layer returns them afterwards;
+        // the count is the shrinkers' frames plus those pages.
+        let freed = cpu.masked(|| {
+            self.reclaim
+                .run(cpu.id(), || self.shrinkers.reclaim(target) + self.small.release_freed(target))
+        });
         match freed {
             Some(frames) => {
                 add(&self.stats.reclaim_runs, 1);

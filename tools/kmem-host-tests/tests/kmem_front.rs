@@ -90,6 +90,10 @@ impl Small for NoSmall {
     fn cpus(&self) -> usize {
         0
     }
+
+    fn release_freed(&self, _target: usize) -> usize {
+        0
+    }
 }
 
 /// The simulated CPU. Masking interrupts on one CPU with no interrupt
