@@ -275,8 +275,14 @@ impl<R: TxRing> TxQueue<R> {
             return Err(TxError::TooLong);
         }
         self.reclaim();
-        if (self.free() as usize) < count && (self.arm_and_recheck() == 0 || (self.free() as usize) < count) {
-            return Err(TxError::Full);
+        // A re-check that takes chains back puts suppression back, so while
+        // the chain still does not fit, ask again: the refusal must leave the
+        // request standing, or the next completion raises no interrupt.
+        // Each pass takes back at least one chain, so this ends.
+        while (self.free() as usize) < count {
+            if self.arm_and_recheck() == 0 {
+                return Err(TxError::Full);
+            }
         }
         let mut slots = [0u16; MAX_CHAIN];
         for i in 0..count {
