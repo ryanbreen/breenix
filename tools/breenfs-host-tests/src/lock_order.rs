@@ -466,13 +466,21 @@ fn a_reader_that_waited_across_a_commit_answers_from_the_new_generation() {
 
 #[test]
 fn a_publication_hold_lets_a_reader_finish_while_commits_keep_arriving() {
+    publication_hold(false);
+}
+
+/// The reader is the writer's own mount, or with `read_only` a read-only
+/// mount of the same device.
+fn publication_hold(read_only: bool) {
     let (disk, inos) = image();
     let fs = mount(&disk, 125);
-    disk.stop("reader-a", true, false);
-    let a = {
-        let fs = fs.clone();
-        spawn("reader-a", move || read_all(&fs, inos.f, BLOCK_SIZE))
+    let reader = if read_only {
+        Fs::mount(disk.clone(), Arc::new(BufferCache::new(YieldWait)), 157, 1).unwrap()
+    } else {
+        fs.clone()
     };
+    disk.stop("reader-a", true, false);
+    let a = spawn("reader-a", move || read_all(&reader, inos.f, BLOCK_SIZE));
     // Each time A is in the device, publish a generation that moves the
     // block it is reading, so its next pass needs the device again.
     let mut refused = 0;
@@ -844,4 +852,31 @@ fn a_mapped_writeback_retry_keeps_a_write_that_landed_meanwhile() {
     let observer = Fs::mount(disk.clone(), Arc::new(BufferCache::new(YieldWait)), 143, 1).unwrap();
     let read = read_all(&observer, inos.b, 2 * BLOCK_SIZE).unwrap();
     assert!(read[BLOCK_SIZE..] == fresh[..], "the writeback's retry put older mapped bytes over a completed write");
+}
+
+/// Review M2 (#3310): a read-only mount's passes read the writer's newest
+/// publication, so the generation they pin is one no commit preparation has
+/// already passed. The writer changes f's mode and publishes four more
+/// generations, which promote the blocks the observer's first view reached.
+#[test]
+fn a_read_only_mount_passes_from_the_newest_publication() {
+    let (disk, inos) = image();
+    let fs = mount(&disk, 144);
+    let observer = Fs::mount(disk.clone(), Arc::new(BufferCache::new(YieldWait)), 145, 1).unwrap();
+    assert_eq!(observer.getattr(inos.d).map(|attrs| attrs.ino), Ok(inos.d));
+    fs.setattr(inos.f, SetAttr { mode: Some(0o640), ..SetAttr::default() }).unwrap();
+    let other = fs.open(inos.b).unwrap();
+    for round in 0..4u8 {
+        fs.write(&other, at(0), &pattern(130 + round, 3 * BLOCK_SIZE)).unwrap();
+        fs.fsync(&other, false).unwrap();
+    }
+    let mode = observer.getattr(inos.f).map(|attrs| attrs.attrs.mode & 0o7777);
+    assert_eq!(mode, Ok(0o640), "the observer passed from a view older than the newest publication");
+}
+
+/// Review M2 (#3310): a read-only reader past PASS_HOLD holds off the
+/// writer's publication, which runs on another mount of the device.
+#[test]
+fn a_read_only_readers_publication_hold_stops_the_writer() {
+    publication_hold(true);
 }
