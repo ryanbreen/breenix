@@ -285,8 +285,8 @@ moves x86 to the ARM64 rule: skip, record the waiter, and have the leaving CPU k
   scheduler stack, force-unlock there (§1.1).
 - **Under E9.1:** lock this CPU's run-queue lock masked (`rq::local`), decide, save the outgoing context,
   mark the outgoing thread in `switch_save`, forget the `Held` guard before the pivot (as the global
-  guard is leaked today), and release the lock on the scheduler stack with a new
-  `rq::release_after_pivot(cpu)`. That function publishes the summaries
+  guard is leaked today) in exchange for a `PivotToken`, and release the lock on the scheduler stack with
+  a new `rq::release_after_pivot(token)`. That function publishes the summaries
   (`Held::publish`), unlocks, clears the `SCHEDULER_HELD` count and sends the deferred SGIs, in the same
   order `Held::drop` uses.
 - **The outgoing thread.** It is queued on this CPU, or on its pinned home through `retain_affine`,
@@ -295,6 +295,15 @@ moves x86 to the ARM64 rule: skip, record the waiter, and have the leaving CPU k
 - **Identity.** The CPU index used for the lock comes from the same masked read the pivot already checks
   (`CpuId::current_checked`, `context_switch.rs:6972`). A disagreement retracts the transaction as it does
   today.
+- **The acquired lock travels with the transaction.** Today's rollback can release any CPU's view of the
+  lock, because there is one global lock (`force_unlock_scheduler`). Under E9.1 the lock is per CPU. So
+  forgetting the `Held` guard yields a `PivotToken { cpu }` naming the lock actually acquired. The
+  token passes through `aarch64_inline_schedule_switch` to the trampoline in a callee-saved register.
+  It is not kept in `INLINE_SCHEDULE_STATE[cpu]`, which the retraction empties and which a disagreeing
+  identity would index differently. `release_after_pivot(token)` and the retraction fallback both
+  release `token.cpu`'s lock. Neither re-reads the CPU identity to choose it. A token whose CPU differs
+  from the fresh identity at release is recorded as a receipt, alongside the existing retraction
+  counters.
 
 The lock is now this CPU's alone, so a peer's dispatch, wake or steal is held up only on try-locks of
 this CPU, and those do not wait (S2).
@@ -849,11 +858,13 @@ of their steps, keeping each CPU's program order. The steps are sequentially con
   - **Release by the acquired identity.** A seam test acquires CPU 1's run-queue lock and forgets the
     guard before the pivot. It then makes `CpuId::current_checked` answer 2 at the pivot. Both the
     retraction fallback and `release_after_pivot` must release CPU 1's lock and leave CPU 2's untouched.
-    Red on §3.5 as first written, which names the lock only by the CPU identity read at release.
+    Red on §3.5 as first written, which names the lock only by the CPU identity read at release. Green
+    on §3.5's `PivotToken`.
 
     ```pycon
     >>> def released_lock(acquired_cpu, cpu_at_release):
-    ...     return cpu_at_release
+    ...     token = acquired_cpu
+    ...     return token
     >>> released_lock(acquired_cpu=1, cpu_at_release=2)
     1
 
