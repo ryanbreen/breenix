@@ -273,8 +273,20 @@ impl Root {
         let file = self.open(path, FILE_MODE_READ | FILE_MODE_WRITE | FILE_MODE_CREATE)?;
         file.write_all(data)?;
         drop(file);
+        if self.matches_file(path, data)? {
+            Ok(())
+        } else {
+            Err(VOLUME_CORRUPTED)
+        }
+    }
+
+    /// Compare the complete contents of a file with the supplied bytes.
+    ///
+    /// # Safety
+    /// The root's directory handle must still be open.
+    pub unsafe fn matches_file(&self, path: &str, data: &[u8]) -> Result<bool, Status> {
         if self.size(path)? != data.len() as u64 {
-            return Err(VOLUME_CORRUPTED);
+            return Ok(false);
         }
         let file = self.open(path, FILE_MODE_READ)?;
         let mut buffer = [0u8; 4096];
@@ -283,11 +295,11 @@ impl Root {
             let mut size = buffer.len().min(data.len() - at);
             ok(((*file.file).read)(file.file, &mut size, buffer.as_mut_ptr().cast()))?;
             if size == 0 || size > data.len() - at || buffer[..size] != data[at..at + size] {
-                return Err(VOLUME_CORRUPTED);
+                return Ok(false);
             }
             at += size;
         }
-        Ok(())
+        Ok(true)
     }
 
     /// # Safety
@@ -355,13 +367,14 @@ impl Root {
 
 /// Publish a paired manager image, resuming an interrupted install when possible.
 pub fn publish_paired_manager(
-    _referenced: bool,
+    referenced: bool,
     matches: impl FnOnce() -> Result<bool, Status>,
     write: impl FnOnce() -> Result<(), Status>,
 ) -> Result<(), Status> {
     match matches() {
-        Err(NOT_FOUND) => write(),
-        Ok(_) => Err(VOLUME_CORRUPTED),
+        Ok(true) => Ok(()),
+        Ok(false) | Err(NOT_FOUND) if !referenced => write(),
+        Ok(false) | Err(NOT_FOUND) => Err(VOLUME_CORRUPTED),
         Err(status) => Err(status),
     }
 }

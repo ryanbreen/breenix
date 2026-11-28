@@ -892,3 +892,5 @@ Review of PR #3273 (the same rule):
   destroy it before the new executable verifies. The reviewed installer tooling must be available for this
   step because `--sha` selects the kernel while the installer takes its EFI sources from the deployed tools.
   Changing the DEV-47(4) deployment order requires the coordinator's ruling.
+- An interrupted replacement can reuse the exact staged `PAIR.EFI` because the boot option and its readback
+  can outlive the host's receipt. A differing file is rewritten only while it has no boot option.

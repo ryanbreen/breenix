@@ -757,7 +757,9 @@ unsafe fn write_config(boot: &BootServices, root: &Root, request: &Request, imag
 }
 
 /// The manager's load option, first in BootOrder, the HTTP boot option second (sections 3.1.2 and 3.1.3).
-unsafe fn load_option(boot: &BootServices, runtime: &RuntimeServices, esp: Handle, description: &str, manager_path: &str, http_option: Option<u16>) -> Result<(), Status> {
+unsafe fn load_option(boot: &BootServices, runtime: &RuntimeServices, esp: Handle, description: &str,
+                      manager_path: &str, http_option: Option<u16>,
+                      prepare: impl FnOnce(bool) -> Result<(), Status>) -> Result<(), Status> {
     let mut path: *mut c_void = null_mut();
     ok((boot.handle_protocol)(esp, &DEVICE_PATH, &mut path))?;
     let prefix = path_length(path.cast()).ok_or(INVALID_PARAMETER)?;
@@ -772,6 +774,7 @@ unsafe fn load_option(boot: &BootServices, runtime: &RuntimeServices, esp: Handl
     let path_start = len;
     option[len..len + prefix].copy_from_slice(core::slice::from_raw_parts(path.cast::<u8>(), prefix));
     len += prefix;
+    let file_node_start = len;
     let node = 4 + 2 * (manager_path.len() + 1);
     option[len..len + 4].copy_from_slice(&[node::MEDIA, node::FILE_PATH, node as u8, (node >> 8) as u8]);
     len += 4;
@@ -785,6 +788,8 @@ unsafe fn load_option(boot: &BootServices, runtime: &RuntimeServices, esp: Handl
     // Reuse the manager's earlier option, else the lowest free number.
     let mut chosen = None;
     let mut free = None;
+    let mut referenced = false;
+    let file_node = &option[file_node_start..len - END_NODE.len()];
     for number in 0..=0xffu16 {
         let mut name = [0u8; 8];
         let mut bytes = [0u8; 1024];
@@ -796,12 +801,15 @@ unsafe fn load_option(boot: &BootServices, runtime: &RuntimeServices, esp: Handl
                 if matches && chosen.is_none() {
                     chosen = Some(number);
                 }
+                referenced |= bytes[..size].windows(file_node.len()).any(|node| node == file_node);
             }
-            Err(_) if free.is_none() => free = Some(number),
-            _ => {}
+            Err(NOT_FOUND) if free.is_none() => free = Some(number),
+            Err(NOT_FOUND) => (),
+            _ => referenced = true,
         }
     }
     let number = chosen.or(free).ok_or(OUT_OF_RESOURCES)?;
+    prepare(referenced || chosen.is_some())?;
     let mut name = [0u8; 8];
     let option_name_text = option_name(number, &mut name);
     set_variable(runtime, option_name_text, &option[..len])?;
@@ -1250,9 +1258,6 @@ pub(super) unsafe fn run(boot: &BootServices, runtime: &RuntimeServices, volume:
         let http = recorded_http_option(&root).ok_or(VOLUME_CORRUPTED)?;
         // Keep the existing manager and its configuration bootable until the
         // new executable has been read back and the new option is published.
-        if root.size(PAIRED_MANAGER) != Err(NOT_FOUND) {
-            return Err(VOLUME_CORRUPTED);
-        }
         let mut signature = [0; 16];
         match root.read_bounded(LIVE_CONFIG, &mut signature) {
             Ok(16) if signature == system => (),
@@ -1261,10 +1266,17 @@ pub(super) unsafe fn run(boot: &BootServices, runtime: &RuntimeServices, volume:
             Err(status) => return Err(status),
         }
         slot_store::prepare_records(&root)?;
-        files::flush_volume(boot, esp)?;
-        write_esp_files(boot, &root, payload.handle(), text, "esp-file ", None)?;
-        files::flush_volume(boot, esp)?;
-        load_option(boot, runtime, esp, "Breenix paired boot manager", PAIRED_MANAGER, Some(http))?;
+        let line = text.lines().find_map(|line| line.strip_prefix("esp-file ")).ok_or(INVALID_PARAMETER)?;
+        let (name, offset, length) = esp_file_request(line)?;
+        let mut manager = ImagePages::allocate(boot, length)?;
+        data(payload.handle(), offset, &mut manager.page_bytes()[..length])?;
+        load_option(boot, runtime, esp, "Breenix paired boot manager", PAIRED_MANAGER, Some(http),
+            |referenced| {
+                files::publish_paired_manager(referenced,
+                    || root.matches_file(name, manager.as_ref()),
+                    || root.write(name, manager.as_ref()))?;
+                files::flush_volume(boot, esp)
+            })?;
         say!("paired live manager installed; prior boot options retained");
         say!("persistent install request complete");
         metal_efi::com1::halt();
@@ -1305,7 +1317,7 @@ pub(super) unsafe fn run(boot: &BootServices, runtime: &RuntimeServices, volume:
     if !request.migration_slots {
         write_config(boot, &root, &request, image, http_option)?;
         if let Some(description) = request.load_option {
-            load_option(boot, runtime, esp, description, MANAGER_FILE, http_option)?;
+            load_option(boot, runtime, esp, description, MANAGER_FILE, http_option, |_| Ok(()))?;
         }
     }
     // The host's disk.json is deliberately not an authority for reclamation.
