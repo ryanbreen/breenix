@@ -133,6 +133,16 @@ class BootInteractiveQmpTest(unittest.TestCase):
         path.write_text(text)
         path.chmod(0o755)
 
+    def copy_hosted_stage_scripts(self, *extra):
+        scripts = self.root / "scripts"
+        for name in ("write-boot-target.sh", "rust_host_stage.py", "lib/root-fs.sh",
+                     "metal/metal_root.py", "metal/metal_probe.py", "metal/transfer_fixture.py",
+                     *extra):
+            destination = scripts / name
+            destination.parent.mkdir(exist_ok=True)
+            shutil.copy2(ROOT / "scripts" / name, destination)
+        return scripts
+
     def launch(self, *args, boot_id=BOOT_ID, vigil_home="default", boot_home="default",
                mode=("--mode", "probe"), expected_code=0, build=False, timeout=10):
         """Boots with HOME and Vigil's home in different folders; vigil_home=None leaves VIGIL_TEST_HOME unset."""
@@ -310,14 +320,17 @@ fi
         args, _ = self.launch("--no-display", mode=("--mode", "suite", "--suite", "smoke,rust-std"))
         self.assertEqual([args[i + 1] for i, arg in enumerate(args) if arg == "-m"], ["2048"])
 
+    def test_hosted_stage_fixture_scripts_load_without_checkout_imports(self):
+        scripts = self.copy_hosted_stage_scripts("userspace-manifest.py")
+        for name in ("userspace-manifest.py", "rust_host_stage.py"):
+            with self.subTest(script=name):
+                result = subprocess.run(["python3", "-E", "-s", scripts / name, "--help"],
+                                        cwd=self.root, capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
     @unittest.skipUnless(ARM_K5_TWIN, "set BREENIX_ARM_K5_TWIN to the built ARM K5 twin cache")
     def test_arm_rustc_dynamic_stages_recorded_files(self):
-        scripts = self.root / "scripts"
-        for name in ("write-boot-target.sh", "rust_host_stage.py", "lib/root-fs.sh",
-                     "metal/metal_root.py", "metal/metal_probe.py", "metal/transfer_fixture.py"):
-            destination = scripts / name
-            destination.parent.mkdir(exist_ok=True)
-            shutil.copy2(ROOT / "scripts" / name, destination)
+        scripts = self.copy_hosted_stage_scripts()
         for name, script in (("cargo", "exit 0"), ("check-kernel-no-neon.sh", "exit 0"),
                              ("build-background.sh", 'exec "$@"')):
             self.executable(scripts / name, f"#!/bin/sh\n{script}\n")
@@ -451,13 +464,7 @@ mke2fs -q -t ext2 -b 4096 -F -d disk-root target/ext2-aarch64.img 16M
         self.assertEqual(minimum & (minimum - 1), 0, "guest size must be a power of two")
 
     def test_cxx_runtime_build_keeps_manifest_and_verifies_scratch_image(self):
-        scripts = self.root / "scripts"
-        for name in ("userspace-manifest.py", "write-boot-target.sh", "rust_host_stage.py",
-                     "lib/root-fs.sh", "metal/metal_root.py", "metal/metal_probe.py",
-                     "metal/transfer_fixture.py"):
-            destination = scripts / name
-            destination.parent.mkdir(exist_ok=True)
-            shutil.copy2(ROOT / "scripts" / name, destination)
+        scripts = self.copy_hosted_stage_scripts("userspace-manifest.py")
         programs = self.root / "userspace/programs"
         (programs / "aarch64").mkdir(parents=True)
         (programs / "aarch64/suite-smoke.elf").write_bytes(b"smoke suite")
@@ -506,13 +513,7 @@ mke2fs -q -t ext2 -F -d disk-root target/ext2-aarch64.img 8M
                         self.assertEqual(result, expected)
 
     def test_llvm_build_keeps_manifest_and_verifies_scratch_image(self):
-        scripts = self.root / "scripts"
-        for name in ("userspace-manifest.py", "write-boot-target.sh", "rust_host_stage.py",
-                     "lib/root-fs.sh", "metal/metal_root.py", "metal/metal_probe.py",
-                     "metal/transfer_fixture.py"):
-            destination = scripts / name
-            destination.parent.mkdir(exist_ok=True)
-            shutil.copy2(ROOT / "scripts" / name, destination)
+        scripts = self.copy_hosted_stage_scripts("userspace-manifest.py")
         corpus = self.root / "toolchain/rust-host/k4/corpus"
         shutil.copytree(ROOT / "toolchain/rust-host/k4/corpus", corpus)
         programs = self.root / "userspace/programs"
