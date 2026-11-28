@@ -278,6 +278,118 @@ fn every_classification_still_matches_a_site() {
     assert!(stale.is_empty(), "classifications that match nothing (remove them): {stale:?}");
 }
 
+// ------------------------------------------------- halting as current (E2.3)
+
+/// The calls that publish the current thread blocked.
+const PUBLISH_CALLS: [&str; 9] = [
+    "block_current(",
+    "block_current_for_timer(",
+    "block_current_for_io(",
+    "block_current_for_io_with_timeout(",
+    "block_current_for_signal(",
+    "block_current_for_signal_with_context(",
+    "block_current_for_child_exit(",
+    "prepare_to_wait(",
+    "prepare_to_wait_checked(",
+];
+
+/// The ways a thread halts or WFIs as the current thread: it keeps its CPU
+/// until the next interrupt.
+const HALTS: [&str; 3] = ["arch_halt_with_interrupts(", "enable_and_hlt(", "\"wfi\""];
+
+/// The byte offsets in `code` at which the body of the function spanning
+/// `open..=end` calls `call` itself, outside any function nested in it.
+fn own_calls(code: &str, fns: &[(String, usize, usize)], open: usize, end: usize, call: &str) -> Vec<usize> {
+    let body = &code[open..=end];
+    let nested: Vec<_> = fns.iter().filter(|(_, o, e)| *o > open && *e < end).collect();
+    let mut found = Vec::new();
+    let mut from = 0;
+    while let Some(i) = body[from..].find(call) {
+        let p = open + from + i;
+        let before = code.as_bytes()[p - 1];
+        let starts_call = !(before.is_ascii_alphanumeric() || before == b'_');
+        if starts_call && !nested.iter().any(|(_, o, e)| *o <= p && p <= *e) {
+            found.push(p);
+        }
+        from += i + call.len();
+    }
+    found
+}
+
+/// Whether the function spanning `open..=end` publishes the current thread
+/// blocked and halts after that publication.
+fn halts_after_publishing(code: &str, fns: &[(String, usize, usize)], open: usize, end: usize) -> bool {
+    let first_publish =
+        PUBLISH_CALLS.iter().flat_map(|call| own_calls(code, fns, open, end, call)).min();
+    first_publish.is_some_and(|published| {
+        HALTS.iter().flat_map(|halt| own_calls(code, fns, open, end, halt)).any(|halt| halt > published)
+    })
+}
+
+/// The task-context waits that halt as the current thread: functions that
+/// publish the current thread blocked and then halt or WFI themselves,
+/// rather than sleeping through `arch_halt_while_blocked`, which switches
+/// away whenever the thread may be switched (design §3.5). A halt before
+/// the publication (a fallback for a thread with no scheduler identity yet)
+/// is not a wait.
+fn halt_census(root: &Path) -> Vec<Site> {
+    let mut files = Vec::new();
+    rust_files(&root.join("kernel/src"), &mut files);
+    let mut sites = Vec::new();
+    for path in files {
+        let rel = path.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/");
+        if excluded(&rel) {
+            continue;
+        }
+        let code = strip_comments(&fs::read_to_string(&path).unwrap());
+        let fns = functions(&code);
+        for (name, open, end) in &fns {
+            if halts_after_publishing(&code, &fns, *open, *end) {
+                sites.push(Site { rule: "HALT", file: rel.clone(), function: name.clone() });
+            }
+        }
+    }
+    sites.sort();
+    sites.dedup();
+    sites
+}
+
+/// Halting as current survives only where it is the same as running idle
+/// (design §3.5): in the idle thread and early boot, which are not waits that
+/// publish a blocked state, and in `arch_halt_while_blocked`'s own branches.
+/// No task-context wait halts as current on its own.
+#[test]
+fn no_task_context_wait_halts_as_current() {
+    let sites = halt_census(&repo_root());
+    assert!(
+        sites.is_empty(),
+        "task-context waits that publish a blocked state and then halt as the current thread:\n{}",
+        sites.iter().map(|s| format!("  {}::{}", s.file, s.function)).collect::<Vec<_>>().join("\n")
+    );
+}
+
+#[test]
+fn the_halt_census_sees_each_shape() {
+    let code = "fn a() { s.block_current_for_timer(t); loop { crate::arch_halt_with_interrupts(); } }\n\
+                fn b() { s.block_current(); x86_64::instructions::interrupts::enable_and_hlt(); }\n\
+                fn c() { q.prepare_to_wait_checked(s, d, || true); asm!(\"wfi\"); }\n\
+                fn d() { s.block_current_for_timer(t); crate::arch_halt_while_blocked(); }\n\
+                fn e() { crate::arch_halt_with_interrupts(); }\n\
+                fn f() { s.block_current(); fn g() { crate::arch_halt_with_interrupts(); } }\n\
+                fn h() { let Some(t) = id() else { crate::arch_halt_with_interrupts(); return; }; s.block_current_for_timer(t); }\n";
+    let fns = functions(code);
+    let hits: Vec<_> = fns
+        .iter()
+        .filter(|(_, open, end)| halts_after_publishing(code, &fns, *open, *end))
+        .map(|(name, _, _)| name.as_str())
+        .collect();
+    assert_eq!(
+        hits,
+        ["a", "b", "c"],
+        "a publication followed by its own halt is found; a switch, a bare halt, a nested fn and a halt before publishing are not"
+    );
+}
+
 #[test]
 fn the_census_sees_each_shape() {
     let code = "fn a() { if preempt_count() <= 1 { } }\nfn b() { let x = cpu::preempt_count() & PREEMPT_MASK != 0; }\n\
