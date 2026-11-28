@@ -474,21 +474,45 @@ filters it in one place. No fixed array sits between the two.
 
 #### 4.5.4 Where the map is mapped, and when its memory is released
 
-- At kernel entry, the buffer is reachable the same way `HardwareConfig` is: through the loader's TTBR0
-  identity map, and at `HHDM_BASE + pa` in TTBR1.
-  - The loader's tables already map `[0, 4 GiB)` on both loader platforms, Parallels and VMware (`page_tables.rs:387-574`).
-  - For an address above that, the loader already identity-maps the 1 GiB slots that hold its own image
-    and page-table storage (`page_tables.rs:576-613`). The buffer's first and last slots join that list,
-    with the data attribute.
-  - A slot outside L0[0] (512 GiB and up) gets an L1 table from the page-table storage. The only limit
-    left is the output address width, which E1-2 takes from PARange (4.1).
+- The kernel sorts the map in place (4.5.5), so each page of the buffer must be mapped writable, as
+  normal write-back memory, at its own physical address. Mapped and readable is not enough:
+  - The loader reserves kernel segments in 4 KiB pages (`kernel_load.rs:224-231`), but it gives each
+    2 MiB block a segment touches that segment's permissions (`kernel_block_attr`,
+    `page_tables.rs:245-284`). Firmware can place the pool in free pages at the end of a text or rodata
+    block, which then translate read-only.
+  - On VMware the low window `0x4000_0000..0x6000_0000` translates to the IPA plus `ram_base_offset`
+    (`page_tables.rs:457-504`), so an address in that window that translates may still not be the buffer.
+- The loader maps the buffer when it builds its tables. `build_page_tables` runs inside
+  `jump_to_kernel` (`kernel_entry.rs:28`), after `ExitBootServices` has returned, so the buffer's
+  address is known by then. It takes `[map_phys, map_phys + map_size)` from `UefiMapHandoff`, rounded
+  out to pages, and maps it in TTBR0 only, the identity map the kernel reads it through:
+  - Inside `[0, 4 GiB)`, which the loader's tables already map on both loader platforms
+    (`page_tables.rs:387-574`): a 2 MiB block the buffer touches keeps its entry when the loader chose
+    `RAM_DATA_BLOCK` or `NORMAL_BLOCK` for it (normal memory, writable at EL1). Any other block (kernel
+    text or rodata, device, or the NC DMA block) is split into an L3 table in TTBR0. The buffer's pages
+    get page descriptors with `RAM_DATA_BLOCK`'s attributes: writable, with PXN and UXN set. The block's
+    other pages keep its own attributes, so the kernel image's W^X bits do not change.
+  - Above 4 GiB: in a 1 GiB slot the loader has already mapped for its own image or table storage
+    (`page_tables.rs:576-613`), the buffer is covered by that `NORMAL_BLOCK`. In any other slot the loader
+    installs L1 (outside L0[0], 512 GiB and up), L2 and L3 tables that map exactly the buffer's pages,
+    using 2 MiB blocks only for blocks the buffer fills. Pages beside the buffer stay unmapped.
+  - The tables come from the loader's static `PageTableStorage`. No allocation is needed after the
+    exit. If it runs out, `alloc_table`'s existing "out of page tables" assertion prints on the UART.
+  - TTBR1 gets no entry for the buffer. A 1 GiB block there would cover holes, and E1-2 writes TTBR1
+    entries only where the descriptor is invalid (4.4), so it could not later install the finer entries
+    it plans. The kernel does not read the buffer at `HHDM_BASE + pa`.
   - Secondary CPUs load CPU 0's TTBR values (`boot.S:1042-1065`), so the loader's tables stay in use
-    until the kernel replaces TTBR0 for the first user address space.
+    until the kernel replaces TTBR0 for the first user address space. The buffer entries are gone then.
+    By that point the kernel has finished with the buffer.
 - The kernel reads the map once, in `init_from_parallels`, where it reads the array today
   (`main_aarch64.rs:728-733`). That is before another CPU starts and before TTBR0 is replaced.
-  - First it probes each page of the buffer with `AT S1E1R` (Arm ARM, address translation instructions).
-    If a page does not translate, it refuses the map. A fault this early would end the boot with no
-    message.
+  - First it probes each page of the buffer with `AT S1E1W` (Arm ARM, address translation
+    instructions), and reads `PAR_EL1`. The page passes only when `F` is 0, `PA` equals the page's own
+    physical address, and `ATTR` is the normal write-back encoding the loader programs into MAIR
+    (index 1, `0xFF`). If a page does not pass, the kernel refuses the map with the page and the reason
+    (no translation, read-only, another PA, or not normal memory). A fault this early would end the boot
+    with no message.
+  - The sort, and each other access to the buffer, uses the identity address the probe checked.
 - Release.
   - The buffer's type is not conventional memory, so it is outside the usable set while the kernel reads
     it. The kernel treats it as reserved until it has consumed it.
@@ -518,7 +542,8 @@ Structural, in order:
 3. `descriptor_size` is at least 40 and a multiple of 8.
 4. `map_size` is at least one `descriptor_size` and a whole multiple of it. The count is the quotient,
    and there is no upper limit.
-5. Each page of `[map_phys, map_phys + map_size)` translates (4.5.4).
+5. Each page of `[map_phys, map_phys + map_size)` translates for a write, to its own physical address,
+   as normal write-back memory (4.5.4).
 6. A descriptor of type `BOOT_MAP_MEMORY_TYPE` covers `[map_phys, map_phys + map_size)`. It shows
    that the map was taken after its buffer was allocated.
 
@@ -1120,8 +1145,8 @@ or 52-bit VA (ARM64) question, outside E1.
 - Intel 64 and IA-32 Architectures Software Developer's Manual, vol. 3A, ch. 4 (paging; global pages and
   invalidation, §4.10).
 - Arm Architecture Reference Manual for A-profile (DDI 0487): VMSAv8-64 translation table descriptors,
-  translation table updates, TLB maintenance instructions, and the address translation instructions
-  (`AT S1E1R`).
+  translation table updates, TLB maintenance instructions, the address translation instructions
+  (`AT S1E1R`, `AT S1E1W`) and `PAR_EL1`.
 - Unified Extensible Firmware Interface Specification, version 2.10: §2.3.6 (AArch64 platforms), §7.2.1
   (`AllocatePages()` and the memory types reserved for OS loaders), §7.2.3 (`GetMemoryMap()` and
   `EFI_MEMORY_DESCRIPTOR`), §7.2.4 (`AllocatePool()`), §7.4.6 (`ExitBootServices()`).
@@ -1172,8 +1197,9 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
   - `boot_ranges::from_hardware_config` is the one function `init_from_parallels` calls for RAM. It
     accepts v7 and v8 (4.5.3). For v8 it validates, sorts and reads the map (4.5.5), builds the set in two
     passes, and releases the map's pages last (4.5.4).
-  - It reads physical memory only through a `BootMemory` trait (read, write and "does this page
-    translate"). The kernel implements the trait with the identity map and `AT S1E1R`.
+  - It reads physical memory only through a `BootMemory` trait (read, write, and "does this page
+    translate for a write, to itself, as normal memory"). The kernel implements the trait with the
+    identity map and `AT S1E1W` with the `PAR_EL1` checks of 4.5.4.
   - The kernel exports `BREENIX_HANDOFF_VERSIONS = [7, 8]` in `.rodata.breenix_handoff`, and the ARM64
     linker script keeps that section (4.5.3). For a version it does not accept, it prints the refusal on
     the UART and halts, instead of the `assert!` (4.5.3).
@@ -1188,7 +1214,8 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
 - Change, `parallels-loader`:
   - `exit_boot_services` with `BOOT_MAP_MEMORY_TYPE`;
   - `encode_uefi_map`, and `ram_region_count = 0`;
-  - the buffer's 1 GiB slots added to the identity and HHDM list;
+  - the buffer's pages mapped in TTBR0 only, writable with PXN and UXN set, splitting a block whose
+    attributes are not writable normal memory (4.5.4);
   - `handoff_decision` before exit;
   - the filter loop deleted, and `populate_ram_regions` writing a loader-local RAM base instead of
     `HardwareConfig.ram_regions` (4.5.2).
@@ -1244,13 +1271,29 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
   - Check first, validation (one fixture per rule, each a single change to the reference map):
     - Structural cases are each refused with their own reason: `descriptor_version` 2; `descriptor_size`
       36 and 44; a `map_size` that is not a multiple; `map_phys` not 8-byte aligned; a buffer page that
-      does not translate; and a buffer that no `BOOT_MAP_MEMORY_TYPE` descriptor covers, which is the map
+      does not translate, one that translates read-only, one that translates to another physical address,
+      and one that translates as device memory; and a buffer that no `BOOT_MAP_MEMORY_TYPE` descriptor covers, which is the map
       a `GetMemoryMap()` taken before the allocation would give.
     - Per-descriptor cases each lose exactly the stated bytes and no others, and the counts match: a
       conventional descriptor that overlaps an `EfiACPIMemoryNVS` descriptor by one page, an unaligned
       start, a page count of 0, a range past `0xffff_ffff_ffff_f000`, and a conventional descriptor with
       `EFI_MEMORY_SP`.
     - The overlap and SP fixtures are red through the old path, which keeps those bytes usable.
+  - Check first, the loader's buffer mapping (4.5.4). The test runs the loader's own table construction
+    on the host, over a `PageTableStorage` with the buffer's range as input. The `adr` read and the UART
+    output stay in the caller, so the construction is a function of its inputs. A walker in the test
+    crate then resolves each buffer page through the built TTBR0 tables, following the Arm ARM's
+    VMSAv8-64 descriptor formats, and checks four things: the output address is the page's own, AP allows
+    an EL1 write, PXN and UXN are set, and AttrIndx is 1. Cases:
+    - a buffer in the free pages at the end of a kernel rodata block;
+    - one in a 1 GiB slot above 4 GiB that the loader does not map today;
+    - one above 512 GiB;
+    - on the VMware layout (`ram_base_offset` of `0x4000_0000`), one just above the relocated kernel.
+    Today's construction leaves the rodata case read-only and the two high cases unmapped, which is red.
+    With the change, each case passes. Each kernel segment page, and each page outside the buffer,
+    resolves exactly as it did before, through both TTBR0 and TTBR1. That walk also confirms TTBR1 gains
+    no entry. In the boundary tests, `BootMemory`'s translation is that same walker over the
+    loader-built tables, so the kernel's probe sees the tables the loader built.
   - Check first, release: the simulated memory records each read and write. The
     `BOOT_MAP_MEMORY_TYPE` pages enter the set only after the last access to the buffer, and the first
     carve after the build may return them. The old code does not release them, which is red.
@@ -1266,7 +1309,8 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
   - The standard ARM64 QEMU boot script boots the kernel directly with a device tree (1.5). It does not run
     the loader or reaches the v7 and v8 paths, and its device tree path is settled by the host tests.
   - Two effects are left that no host test settles: that real firmware places the pool buffer and
-    describes it with its own type, and that the buffer's pages translate at kernel entry. They show on
+    describes it with its own type, and that the MMU walks the loader's buffer entries as the host walker
+    does. They show on
     Parallels and VMware, which the program's one final run covers (DEV-30(2)).
   - A failure there is a named refusal (rules 5 and 6 of 4.5.5), not missing RAM. Section 14 item 8 asks
     whether to check them earlier.
@@ -1801,8 +1845,8 @@ where metadata leaving the heap matters most (section 1.1).
    `src/llvm-project`.
 8. The UEFI handoff runs only on Parallels and VMware. E1-1's host tests settle the byte boundary: layout,
    stride, validation, versions and release order. They cannot settle two firmware effects: that real
-   firmware describes the pool buffer with its own type, and that the buffer's pages translate at kernel
-   entry.
+   firmware describes the pool buffer with its own type, and that the MMU walks the loader's buffer
+   entries as the host walker does.
    - Until the program's final run (DEV-30(2)), no check reaches those effects on real firmware. If either
      fails, each Parallels and VMware boot stops at a named refusal. RAM is not lost silently.
    - The operator also uses Parallels for interactive work, so such a failure would block that work
