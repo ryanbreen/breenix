@@ -428,8 +428,19 @@ fn writeback(&self, node: &VNode, batch: &WritebackBatch) -> Result<(), Errno>  
 - **`FillReport`** classifies each page as `Data` (the frame now holds verified file bytes, with the zero
   tail past EOF), `Hole` or `Error(errno)`. A page the backend did not reach is `Error(EIO)`. That keeps
   T8 out: there is no "did not fill" that looks like success. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
-- **Callers.** `fill` is called with no FileCache lock held and no VM lock held. The caller has a reference
-  to each frame and the `FILLING` claim. The backend may sleep and take its own locks.
+- **Callers.** `fill` is called with no FileCache `tree_lock` and no VM lock held. The caller has a
+  reference to each frame and the `FILLING` claim. The backend may sleep and take its own locks.
+- **One hold of the exclusion per fill.** A fill never takes the mount exclusion while its caller holds <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+  it, and no claim is visible to a thread that could wait on it while holding a lock the fill needs:
+  - **Before E2.5** a fill holds BreenFS's foreground exclusion from its claim to its publication. A <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+    caller that already holds it (population today, `read` before E3-7) passes its guard to `fill`, which
+    then takes the snapshot under that guard instead of locking again. The readahead worker claims a
+    window only when it starts it, under the exclusion, never at queue time (8.2). So a thread that holds
+    the exclusion never meets another thread's claim.
+  - **From E2.5** the fill claims, then takes `MountLock` once to pin its view and block lifetime
+    (E2's I7), releases it, and reads with no BreenFS lock held. It never takes `io`. A waiter may then
+    hold `io` (a sleeping lock from E3-7, 7.3) while it waits, but never `MountLock`, `PublishToken`, an
+    `as.*` lock, `tree_lock` or an LRU lock (section 15). <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
 - **Native backends do not implement `writeback`.** Dirty pages reach BreenFS through its commit (11.3).
 
 ### 6.1a Fill completion revalidates the file
@@ -454,8 +465,9 @@ every `Filling` claim:
 
 ### 6.2 BreenFS fill
 
-1. Take a read snapshot of the open view: today, under the foreground lock. After E2.5, pin the view and its
-   block lifetime under the lock, then release it (E2's I7).
+1. Take a read snapshot of the open view: before E2.5, under the foreground exclusion the fill holds to its
+   publication (or its caller's guard, 6.1). After E2.5, pin the view and its block lifetime under the
+   lock, then release it (E2's I7).
 2. For each page, find its extent through the in-core extent map (#3239's `ExtentMaps`, `ops.rs:125-215`),
    seeking to the first intersecting extent rather than scanning.
    - A page no extent covers, below the inode's size, is `Hole`.
@@ -508,10 +520,11 @@ The block device interface is synchronous on contiguous slices (`block/mod.rs`).
   by another fill between its verification and its copy, and publish another file's bytes as verified.
   Population today owns its staging buffer for the call (`memory/file_map.rs:1589-1648`), and E3 keeps that
   ownership: a fill takes a buffer from a mount-wide pool of frame-backed buffers as an owned token, and
-  returns it after its copies. A fill that finds the pool empty waits on the pool's channel (4.5) in a
-  sleepable context. A context that cannot sleep never claims a fill (9.2, step 3). The pool
-  holds one buffer per CPU at mount and grows on demand within the readahead budget (8.2). The drain's
-  write bounce (11.3) uses the same pool.
+  returns it after its copies. Before E2.5 a mount's fills are serialized by its exclusion (6.1), so a
+  pool of one buffer never runs dry. From E2.5 a fill that finds the pool empty waits on the pool's
+  channel (4.5) with E2.2's `park`, in a sleepable context. A context that cannot sleep never claims a fill
+  (9.2, step 3). The pool holds one buffer per CPU at mount and grows on demand within the readahead
+  budget (8.2). The drain's write bounce (11.3) uses the same pool.
 - The fill runs synchronously in the calling thread. An asynchronous readahead runs it in the readahead
   worker (8.2).
 
@@ -593,9 +606,14 @@ file to be atomic with respect to each other: each sees all or none of another's
 BreenFS mount lock provides that by serializing everything on the mount (audit R10). <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
 
 - E3 gives each FileCache an `io` lock. Readers take it shared, and writers and truncation take it exclusive.
-- Before E2.6 it is BreenFS's existing foreground exclusion, so E3-7 to E3-9 change no locking.
-- From E3-15 it is a `SleepRwLock` (E2.6), and a read of cached pages takes no mount-wide lock. That is the
-  page-cache half of R10. E5 does the rest.
+- Before E3-7, `read` and `write` keep BreenFS's existing path and its foreground exclusion, and nothing <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+  waits on a `Filling` page: population and the readahead worker fill under the exclusion (6.1), and
+  faults do not wait before E3-11.
+- From E3-7, `io` is its own `SleepRwLock` (E2.6), separate from `MountLock`. A reader waits on a
+  `Filling` page holding only `io`, and the filler, which needs `MountLock` only briefly and never `io`
+  (E2.5), cannot be waiting for it. A read of cached pages takes no mount-wide lock. That is the
+  page-cache half of R10. E5 does the rest. Holding the foreground exclusion as `io` would deadlock: the
+  reader would hold the lock its filler needs. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
 - `io` is the outermost lock on these paths (section 15).
 
 ### 7.4 Copying straight between user memory and frames (E3-15)
@@ -655,8 +673,10 @@ Each open file description, and each file VMA, carries a small readahead state:
   page clears the flag and queues the next window to the readahead worker, a kernel thread that runs fills.
   The reader then keeps consuming pages that are already uptodate while the next window is read, which
   overlaps the reader's copies with the device.
-- The worker claims its pages as `Filling` before queueing, so a reader that gets there first waits on the
-  page, not on the queue.
+- From E2.5 the worker claims its pages as `Filling` before queueing, so a reader that gets there first
+  waits on the page, not on the queue. Before E2.5 it claims a window when it starts it, under the
+  exclusion (6.1); a populate that reaches the window first fills those pages itself, and the worker then
+  finds them resident and skips them.
 - The worker's queue is bounded by what it may hold: at most `max` pages per stream, and a share of free
   memory overall. That budget counts everything a queued or running window holds: its claimed frames,
   its job record, the tree nodes reserved for its entries (4.3) and its bounce buffer (6.4). A window
@@ -1168,7 +1188,7 @@ E2 section 5.1 fixes the order for VM paths. E3 adds its locks at these position
 innermost:
 
 ```
-FileCache io (shared or exclusive; a SleepRwLock from E3-15, BreenFS foreground exclusion before)
+FileCache io (shared or exclusive; a SleepRwLock from E3-7; before E3-7 there is no io)
   -> filesystem locks (BreenFS MountLock; commit PublishToken)
   -> as.mapping (E2.8)
   -> as.pt (E2.8)
@@ -1188,9 +1208,10 @@ FileCache io (shared or exclusive; a SleepRwLock from E3-15, BreenFS foreground 
   and the reverse map's `as.pt` for 11.2's write-protect. It never takes `io` or `as.mapping`. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
 - **Reclaim** never holds the LRU lock while taking a `tree_lock` (12.3). It takes `tree_lock` and, in
   E3-13, `as.pt` only with `try_lock`. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
-- **Waits** on a page's channel happen with no lock held (4.5).
+- **Waits** on a page's channel hold at most `io` (4.5, 6.1). A filler never takes `io`, so a waiter that <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+  holds it cannot block its filler.
 
-The structure test of E3-15 pins the lines above: `io` is not taken under `as.mapping`, and fill is not
+The structure test of E3-7 pins the lines above: `io` is not taken under `as.mapping`, and fill is not
 called with `tree_lock`, `as.mapping` or the LRU lock held. Changing the order is an architecture change
 under DEV-39(2), which stops for the coordinator.
 
@@ -1298,10 +1319,10 @@ route file faults to `file_map` (expected: no edit).
 | E3-1 | Pure modules: radix tree with tags, page-state transitions, readahead window, LRU scan, dirty limits, OOM score; `tools/pagecache-host-tests` | E3-0 | No | No | M |
 | E3-2 | Explicit page states in today's mapping cache: no zero page for an absent bound index, explicit Hole entries, hole ranges reported by `read_verified` (R1 permanent, first half) | E3-1 | No | No | S <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. --> |
 | E3-3 | exec through the cache: shared read-only text and rodata, private COW data, tail page, demand-zero BSS, ETXTBSY, I-cache flag (eager population) | E3-2 | No | No | M <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. --> |
-| E3-4 | The `fill` interface: frame batches with per-page Data, Hole or Error; BreenFS fill seeks the extent map and reads runs straight into frames, bypassing the block cache; ext2 default | E3-2 | No | No | M |
+| E3-4 | The `fill` interface: frame batches with per-page Data, Hole or Error; the interim frame-vector type; BreenFS fill seeks the extent map and reads runs straight into frames, bypassing the block cache; ext2 default | E3-2 | No | No | M |
 | E3-5 | Readahead for population, fadvise and madvise: windows, sequential detection, the readahead worker | E3-1, E3-4 | No | No | S |
 | E3-6 | The FileCache: radix tree storage, FrameMeta page fields, the per-mount cache index, pages outlive close and munmap, zone LRU lists, the page-cache shrinker and the page daemon for clean unmapped pages | E3-1, E3-4; E1-9 | Yes | No | L |
-| E3-7 | `read` through the cache for Native files: one source per byte, readahead on read, block cache out of the clean read path | E3-5, E3-6 | Yes | No | M |
+| E3-7 | `read` through the cache for Native files: one source per byte, readahead on read, block cache out of the clean read path; `io` as a `SleepRwLock`; cached reads take no `MountLock` | E3-5, E3-6; E2.5, E2.6 | Yes | No | M |
 | E3-8 | Dirty as a page flag: BreenFS dirty pages become cache frames, COW under writeback, mapped write-protect at freeze, drain from frames, written pages stay cached, per-file fsync shortcut and writeback errors | E3-7 | Yes | No | L |
 | E3-9 | The RAM-relative dirty limit, background freezes, writer throttling, no inline commit, the pipelined drain | E3-8 | Yes | No | M |
 | E3-10 | The block cache keeps metadata only: RAM/32, frame-backed buffers, no data entries | E3-7, E3-8 | Yes | No | S |
@@ -1309,22 +1330,28 @@ route file faults to `file_map` (expected: no edit).
 | E3-12 | Lazy exec: exec bindings stop populating | E3-3, E3-11 | Yes | Yes | S |
 | E3-13 | Mapped-page reclaim: reverse-map unmapping, accessed-bit harvest, sleeping direct reclaim | E3-11 | Yes | Yes | M |
 | E3-14 | The OOM policy | E3-13 | Yes | Yes | S |
-| E3-15 | The `io` lock as a SleepRwLock; `read` and `write` copy straight between user memory and frames; cached reads take no mount lock | E3-8; E2.6, E2.9 | Yes | Yes | M |
+| E3-15 | `read` and `write` copy straight between user memory and frames | E3-8; E2.9 | Yes | Yes | M |
 
 **What lands before E1-9 and E2.9:** E3-1 to E3-5. Each keeps today's memory bounds: no structure grows
 with RAM on the fixed heap, and no cache is retained beyond today's rules. They are the ones the audit's
 "remove work, don't move it" test allows before the foundations (audit section 4, closing paragraph).
 
-**What waits for E1-9 only:** E3-6 to E3-10. Retaining file data, and raising the dirty limit, by RAM is
+**Other prerequisites.** E3-4 builds the frame-vector type that E1 section 8 names (an ordered list of <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+leased frames with offsets), over today's frame leases, because no E1 PR before E1-9 builds it; E1's
+allocator later backs it unchanged. E3-1 to E3-6 wait on no page channel, so none needs E2.2's `park`.
+E3-7 needs E2.5 (fills release `MountLock` before the device wait) and E2.6 (`io` as a sleeping lock),
+because it is the first PR whose readers wait on fills (7.3).
+
+**What waits for E1-9:** E3-6 to E3-10, with E3-7 to E3-10 also after E2.5 and E2.6. Retaining file data, and raising the dirty limit, by RAM is
 safe only once per-page metadata is in FrameMeta (E1-3), tree nodes come from slab caches (E1-6), the buddy
 has zones and watermarks (E1-8), reclaim hooks exist (E1-4), and the fixed heap is gone (E1-9). E1-9 is the
 last of those, so it is the gate.
 
-**What waits for E2.9:** E3-11 to E3-15. Each needs faults that sleep and restart. E3-15 also needs E2.6's
-sleeping locks.
+**What waits for E2.9:** E3-11 to E3-15. Each needs faults that sleep and restart.
 
 E3-1 to E3-5 have no order among themselves beyond the table, and can run in one lane in that order. E3-6
-can start as soon as E1-9 merges, and E3-11 as soon as E2.9 merges. If E2.9 lands before E1-9, E3-11 still
+can start as soon as E1-9 merges, E3-7 once E3-6, E2.5 and E2.6 have merged, and E3-11 as soon as
+E2.9 merges. If E2.9 lands before E1-9, E3-11 still
 waits for E3-6 (it needs pages retained by the cache to be worth anything), so the order is fixed.
 
 ### E3-1: pure modules
@@ -1431,9 +1458,9 @@ waits for E3-6 (it needs pages retained by the cache to be worth anything), so t
   - A sparse file's hole pages come back `Hole`, with no device read.
   - A CRC failure in one block makes exactly that run's pages `Error(EIO)`, and the others `Data`.
   - A device that returns a short run gives `Error(EIO)` for the pages it did not reach, never 00. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
-  - Two fills of different files share a bounce pool of one buffer, as a fixed interleaving: fill A
-    verifies its run and pauses before its copy, then fill B asks for a buffer. B waits for A's token, and
-    A's frames hold file A's bytes. Today's staging is per call, so this guards the ownership the PR keeps
+  - Two fills of different files on one mount share a bounce pool of one buffer, as a fixed interleaving:
+    fill A verifies its run and pauses before its copy, then fill B starts. B waits for A's exclusion
+    before E2.5, and for A's token from E2.5, and A's frames hold file A's bytes. Today's staging is per call, so this guards the ownership the PR keeps
     and is not red on the old tree; the PR says so.
   - DEV-29(3) 0.1's second interleaving, through the production fill: pause the fill after its device read
     of page 0, run a production BreenFS write of page 0, then complete the fill. A fault on page 0 and a
@@ -1511,7 +1538,8 @@ waits for E3-6 (it needs pages retained by the cache to be worth anything), so t
 ### E3-7: read through the cache (needs E1-9)
 
 - **Change.**
-  - Native `read` per 7.1, with readahead (8), under BreenFS's existing exclusion (7.3).
+  - Native `read` per 7.1, with readahead (8), under `io` as a `SleepRwLock` (7.3). A cached read takes no
+    `MountLock`.
   - The overlay (`file_map.rs:827-856`) and the zero prefill in BreenFS `read` go. Each byte comes from one <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
     source, which is R1's read side. The layered lookup moves into the fill (6.2) and stays there until
     E3-8, so a page whose newest bytes are in BreenFS's open or frozen dirty pages fills from them, not from
@@ -1519,7 +1547,16 @@ waits for E3-6 (it needs pages retained by the cache to be worth anything), so t
     (`file_map.rs:557-561`), so a page read into the cache before a write reads the write's bytes after
     it.
   - `DataReader`'s clean-data path goes (section 14).
+  - The lock-order structure test of section 15.
 - **Tests (host), check first.**
+  - A read of a fully cached file takes no `MountLock`: a counter in `tools/breenfs-host-tests`. The old <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+    code takes it once per call, which is red.
+  - Readers on one file run concurrently with a writer on another file, as a fixed interleaving.
+  - The structure test pins section 15's order.
+  - A reader waiting on the readahead worker's `Filling` page while it holds `io`, as a fixed
+    interleaving: the worker's fill takes `MountLock` for its snapshot and completes, and the reader
+    copies its bytes. A variant holds `MountLock` in a third thread until the reader is parked. Red if `io`
+    were the foreground exclusion, which is how the old tree's `read` serializes; the PR says which.
   - Dirty layers before E3-8, through the production fill: write page 0 (open generation), freeze, write
     page 1 (G+1), then, before the commit drains, `read` both pages and populate a mapping of them. Both
     return the written bytes. A variant reads page 0 first, writes it, and reads it again. Red if the fill
@@ -1535,7 +1572,8 @@ waits for E3-6 (it needs pages retained by the cache to be worth anything), so t
     overlay's job today, so this guards existing behaviour and is not red.
   - A read where one fill fails returns the prefix before the failed page, then EIO on the next call.
 - **Rows.** `disk.sequential-read` (partly: until E3-8 the written data is not cached, so this PR's gain is
-  readahead), `compile.cargo-noop`, `compile.yes-dev-box` and `compile.yes-release` (source and rlib reads).
+  readahead), `compile.cargo-noop`, `compile.yes-dev-box` and `compile.yes-release` (source and rlib reads,
+  and concurrent jobs no longer serialize on cached reads).
 - **Boot.** None. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
 
 ### E3-8: dirty as a page flag (needs E1-9)
@@ -1707,23 +1745,17 @@ waits for E3-6 (it needs pages retained by the cache to be worth anything), so t
 - **Rows.** None. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
 - **Boot.** None. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
 
-### E3-15: the I/O lock and direct copies (needs E2.6 and E2.9)
+### E3-15: direct copies (needs E2.9)
 
 - **Change.**
-  - 7.3 and 7.4: `io` becomes a `SleepRwLock`.
-  - `read` and `write` copy straight between user memory and frames under it, and the 64 KiB staging and
+  - 7.4: `read` and `write` copy straight between user memory and frames under it, and the 64 KiB staging and
     the write copy-in go.
-  - A cached read takes no `MountLock`.
-  - The lock-order structure test of section 15.
 - **Tests (host), check first.**
-  - A read of a fully cached file takes no `MountLock`: a counter in `tools/breenfs-host-tests`. The old
-    code takes it once per call, which is red. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+  - A 1 MiB read of a cached file allocates no staging: a staging-allocation counter reads 0. The old
+    code stages each 64 KiB chunk, which is red. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
   - A read whose user buffer is absent parks in the fault and completes with no deadlock against `io`.
   - A write whose source is a mapping of the same file and page completes.
-  - Readers on one file run concurrently with a writer on another file, as a fixed interleaving.
-  - The structure test pins section 15's order.
-- **Rows.** `disk.sequential-read` (one copy instead of two), `compile.cargo-noop` and
-  `compile.yes-dev-box` (concurrent jobs no longer serialize on cached reads).
+- **Rows.** `disk.sequential-read` (one copy instead of two).
 - **Boot.** None. E2.9's boot settled the sleeping user copy's exception return. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
 
 ## 19. Tests
@@ -2025,7 +2057,7 @@ foreground exclusion, and reaches page p. The readahead worker W claimed p when 
 fill needs the exclusion to take its snapshot. The model lists who waits for whom.
 
 ```pycon
->>> RULE = 'claim-at-queue'
+>>> RULE = 'one-hold-per-fill'
 >>> def waits():
 ...     if RULE == 'claim-at-queue':
 ...         return {'R': 'W', 'W': 'R'}
@@ -2043,6 +2075,11 @@ False
 
 ```
 
+Under the chosen rule, before E2.5 the worker claims p only while it holds the exclusion, from the claim <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+to the publication, so R does not meet W's claim. From E3-7, `io` is its own sleeping lock (E2.6), a fill
+needs only a brief `MountLock` hold for its snapshot (E2.5), and W does not take `io`: R may wait on W,
+and W waits for nothing R holds.
+
 ## 20. bbench rows (DEV-31)
 
 | Row | Ratio (28668b28) | Expected to move in | Parity reachable from E3 alone |
@@ -2053,8 +2090,8 @@ False
 | `compile.rustc-vv` | 70.9 | E3-3, E3-4, E3-6, E3-11 | No. The libc allocator (E7), spawn (E8) and the scheduler (E9) share it |
 | `process.rustc-first-output` | 83.4 | as `compile.rustc-vv` | No, as above |
 | `compile.hello-object` | 45.5 | E3-4, E3-6, E3-7, E3-11 | No, as above |
-| `compile.cargo-noop` | 67.6 | E3-3, E3-6, E3-11, E3-15 | No. Metadata (R24, E5) is a large part |
-| `compile.yes-dev-box` | 34.0 | E3-6, E3-7, E3-9, E3-11, E3-15 | No. Compile CPU and the allocator share it |
+| `compile.cargo-noop` | 67.6 | E3-3, E3-6, E3-7, E3-11 | No. Metadata (R24, E5) is a large part |
+| `compile.yes-dev-box` | 34.0 | E3-6, E3-7, E3-9, E3-11 | No. Compile CPU and the allocator share it |
 | `compile.yes-release` | 15.0 | as `compile.yes-dev-box` | No |
 | `disk.sequential-read` | 89.5 | E3-7, E3-8, E3-15 | Yes. The just-written GiB stays cached, and the row becomes a copy |
 | `disk.sequential-write` | 28.0 | E3-8, E3-9 | Partly. The rest is the device path (E4) and copies (E3-15) |
