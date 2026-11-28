@@ -1703,16 +1703,18 @@ fn revoke_entry(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MapError {
     NoMemory,
-    Io,
+    /// The backend refused the transfer or a read, with its errno; a read
+    /// shorter than the size it was sampled against is EIO.
+    Io(Errno),
 }
 
 impl MapError {
     /// The errno mmap reports for this population failure.
     pub(crate) fn errno(self) -> i32 {
-        use crate::syscall::errno::{EIO, ENOMEM};
+        use crate::syscall::errno::ENOMEM;
         match self {
             MapError::NoMemory => ENOMEM,
-            MapError::Io => EIO,
+            MapError::Io(errno) => errno.0,
         }
     }
 }
@@ -1768,7 +1770,7 @@ pub(crate) fn populate(
     static NEXT_CLAIM: AtomicU64 = AtomicU64::new(0);
     // The block cache's per-request limit, in pages.
     const POPULATE_RUN_PAGES: u64 = crate::block::cache::RUN_BYTES as u64 / PAGE_SIZE;
-    let file = handle.filesystem.mapping_io(handle).map_err(|_| MapError::Io)?;
+    let file = handle.filesystem.mapping_io(handle).map_err(MapError::Io)?;
     let map = &handle.map;
     let id = NEXT_CLAIM.fetch_add(1, Ordering::Relaxed);
     let end = first.saturating_add(count);
@@ -1832,7 +1834,7 @@ pub(crate) fn populate(
             let length = if pages == 1 {
                 // SAFETY: a fresh cache frame, reached only through `read`.
                 let frame = unsafe { core::slice::from_raw_parts_mut(read[start].1.ptr(), PAGE_SIZE as usize) };
-                file.read_into(low * PAGE_SIZE, frame).map_err(|_| MapError::Io)?
+                file.read_into(low * PAGE_SIZE, frame).map_err(MapError::Io)?
             } else {
                 // One staging buffer for the population's multi-page runs.
                 let bytes = pages * PAGE_SIZE as usize;
@@ -1842,7 +1844,7 @@ pub(crate) fn populate(
                 }
                 let length = file
                     .read_into(low * PAGE_SIZE, &mut staging[..bytes])
-                    .map_err(|_| MapError::Io)?;
+                    .map_err(MapError::Io)?;
                 for (n, (_, page)) in read[start..].iter().enumerate() {
                     let from = n * PAGE_SIZE as usize;
                     let take = length.saturating_sub(from).min(PAGE_SIZE as usize);
@@ -1868,7 +1870,7 @@ pub(crate) fn populate(
             .and_then(|claim| claim.stale.take());
         let marked = |index: u64| stale.is_some_and(|(low, high)| low <= index && index < high);
         if short.is_some_and(|index| !marked(index)) {
-            return Err(MapError::Io);
+            return Err(MapError::Io(Errno(crate::syscall::errno::EIO)));
         }
         let valid = pages(inner.mapped_size);
         // A page that became resident while this round read (a fault on a
