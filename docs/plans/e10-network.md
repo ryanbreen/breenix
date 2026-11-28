@@ -150,6 +150,14 @@ socket. Retransmissions and required control traffic have their own admission
 rules. Ensure orderly shutdown flushes queued data in sequence before the FIN.
 [RFC 9293 §3.7.4](https://www.rfc-editor.org/rfc/rfc9293.html#section-3.7.4).
 
+In PR 4, set `TCP_NODELAY` with an integer value of 1 on the connected
+[bssh](../../userspace/programs/src/bssh.rs) fd and on each accepted
+[bsshd](../../userland/bsshd/src/bsshd.rs) fd before the first SSH write.
+Report option failures through the respective connection error path. The choice
+applies to the transport for its lifetime so the handshake, short exec
+exchanges and interactive channels all get it, including on reused transports.
+Check `ssh.round-trip` for a regression in the matched before/after run.
+
 ## Packet ownership and socket concurrency
 
 ### Packet buffers and DMA
@@ -361,7 +369,7 @@ concurrency, loss or RTT named in the prediction.
 | 1 | NewReno policy interface, send admission and RTO. **No E1.** | Drive the production send/ACK path with a fixed clock and an eight-SMSS flight with two losses and no more application data. Check admission, the third duplicate ACK's first repair and `(cwnd, ssthresh) = (7, 4) SMSS`, another duplicate raising cwnd to 8 SMSS, a three-SMSS partial ACK lowering it to 6 SMSS and repairing the next hole while restarting the timer, and the full ACK lowering cwnd to 2 SMSS and exiting. In the timeout trace check one oldest-range repair, backoff, cwnd of one SMSS and the highest-sent recovery marker. Repeat the same segment's timeout and inject three qualifying duplicate ACKs within the marked flight. Check the unchanged first-timeout ssthresh and no fast retransmit, then allow a fresh recovery after ACK progress beyond the marker. | TX and SCP down benefit when sender loss or queue bursts dominate. A clean path can show slower startup. RX and SCP up are controls. |
 | 2 | Legacy and modern virtio-net rings, merged RX, checksum/TSO, EVENT_IDX, TX completion and multiqueue. **No E1.** | Run the production setup with fake version-1 MMIO advertising a 256-entry maximum and the PR's feature bits. Check 256 entries, more than four posted RX buffers, exact guest-page/PFN/used-ring offsets, the accepted low feature word and the 10-/12-byte legacy headers with merge disabled/enabled. Check modern VERSION_1 and FEATURES_OK separately. Drive merge and event-index wrap, malformed merges, offload header bytes, control-command rejection and TX full-to-available without RX traffic. | TX and RX are primary on the existing legacy rig. SCP up/down may improve if packet service limits either direction. Record which features were offered and enabled.
 | 3 | Hashed established, listener and bind indexes. **No E1.** | Collision fixture with unrelated connections drives production demux and bind. Check exact/wildcard selection, TIME_WAIT and reuse conflicts, and that a failed reservation preserves the established, listener and bind indexes. A fixed comparison counter shows lookup work stays within the affected bucket. | TX/RX and SCP up/down can gain with many active sockets. Little movement is expected on the standard single-flow rows. |
-| 4 | Nagle default and live `TCP_NODELAY`. **No E1.** | With an outstanding small write, verify that the next small write waits, an ACK or full MSS permits output, and enabling NODELAY flushes eligible data. Drive both SSH transport setup paths with a fixture that records NODELAY on the connected or accepted fd before the first protocol write. Withhold the first ACK and verify two short writes leave on the opted-out TCP connection. | SSH and SCP up/down are sensitive to small writes and delayed ACKs. TX/RX are bulk controls. |
+| 4 | Nagle default, live `TCP_NODELAY`, and SSH transport opt-outs. **No E1.** | With an outstanding small write, verify that the next small write waits, an ACK or full MSS permits output, and enabling NODELAY flushes eligible data. Drive both SSH transport setup paths with a fixture that records NODELAY on the connected or accepted fd before the first protocol write. Withhold the first ACK and verify two short writes leave on the opted-out TCP connection. | Use `ssh.round-trip` as an explicit regression guard against the matched pre-PR Breenix run. SCP up/down guard short control writes. TX/RX are bulk controls.
 | 5 | Frame-backed packet descriptors, receive ownership and virtio scatter-gather. **E1-8 and prerequisites**, with E1-16 coordination. | Force descriptor exhaustion and an ACK preceding DMA completion. Check reference retirement and exact bytes across odd fragment boundaries, software checksum and fallback. | TX/RX gain from fewer copies and allocations. SCP up/down can follow. |
 | 6 | Per-socket state, listener queues, backlog and ordered deferred output. Depends on 3 and 5 plus durable wakes. | Force RX between an owner's last drain and release, and close/reuse while queued RX and TX still hold the old reference. Verify one delivery, one retirement and progress on a different socket during the pause. | TX/RX and SCP up/down can gain from less lock hold time. Largest movement is expected with concurrent flows. |
 | 7 | Timer wheel. Depends on 6. | Arm an earlier deadline while the worker waits, then cancel and reuse a socket as a due batch dequeues. Verify the earlier event fires once and the stale event cannot fire on the new connection. | TX and SCP down can gain when many deadlines compete with real work. SSH and the single-flow rows act as latency and throughput controls. |
@@ -422,6 +430,8 @@ concurrency, loss or RTT named in the prediction.
   intersects the requested mask and net currently requests only MAC/STATUS.
 - Use the RFC 6298 one-second computed RTO floor in PR 1 because the existing
   200 ms floor predates this standards-based recovery design.
+- Opt out at SSH transport setup because both programs start the handshake on
+  the connected fd before they know which channels the transport will carry.
 - Use RFC 9438 and RFC 9937 for implementation details where they supersede
   RFC 8312 and RFC 6937 because those newer texts specify the current CUBIC and
   PRR behavior.
