@@ -226,6 +226,16 @@ impl RecordStore for Volume {
         Ok(())
     }
 
+    fn truncate_image(&self, name: &str) -> Result<bool, Status> {
+        if self.files.borrow()[name].is_empty() {
+            return Ok(false);
+        }
+        self.change(|files| {
+            *files.get_mut(name).unwrap() = [].into();
+        })?;
+        Ok(true)
+    }
+
     fn visit_images(&self, visit: &mut dyn FnMut(&str)) -> Result<(), Status> {
         self.files.borrow().keys().for_each(|name| visit(name));
         Ok(())
@@ -634,7 +644,10 @@ fn esp_capacity_allows_repeated_live_flashes_after_import() {
         ));
         let records = Records::read(&volume);
         for record in [records.latest(), records.older()].into_iter().flatten() {
-            for image in [record.current, record.previous, record.trial].into_iter().flatten() {
+            for image in [record.current, record.previous, record.trial]
+                .into_iter()
+                .flatten()
+            {
                 image.verified(&volume).unwrap();
             }
         }

@@ -795,9 +795,11 @@ CURRENT when the acknowledgement is missing. Version 1 manifests still arm kerne
 requires the named BreenFS root to exist with flags 0 and the candidate's `ramdisk` to name that same userland.
 
 The manager publishes each transition by overwriting the older record from the beginning and flushing it. The two
-records sit in separate directories. Startup ignores a record with a bad digest, and cleanup removes generated
-images only when neither valid record names them. An interrupted image creation can leave a higher image sequence
-on disk. The next transition skips that sequence and makes the stray eligible for cleanup.
+records sit in separate directories. Startup ignores a record with a bad digest. Cleanup retires generated and
+imported images once neither valid record names them, and removes the retired legacy notes. A failed or
+interrupted image write can leave a higher sequence on disk. Cleanup frees its image data and keeps the highest
+unpublished filename empty so the next transition skips that sequence. The previous pair stays available if the
+ESP runs out of space during a trial write.
 
 On first start, the manager checks and finishes a recoverable legacy `SLOT.TXN` and imports the existing slots by
 name. If legacy recovery detects a torn rename, it tries the first boot-shaped legacy image in CURRENT, PREVIOUS,

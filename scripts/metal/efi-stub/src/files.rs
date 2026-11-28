@@ -185,6 +185,31 @@ impl Root {
         self.create_and_check(path, data)
     }
 
+    /// Releases a file's data in place, preserving its directory name.
+    ///
+    /// # Safety
+    /// The root's directory handle must still be open.
+    pub unsafe fn truncate(&self, path: &str) -> Result<bool, Status> {
+        let file = self.open(path, FILE_MODE_READ | FILE_MODE_WRITE)?;
+        let mut info = file.info()?;
+        if info[1] == 0 {
+            return Ok(false);
+        }
+        let size = usize::try_from(info[0]).map_err(|_| VOLUME_CORRUPTED)?;
+        if !(FILE_INFO_FIXED + 2..=core::mem::size_of_val(&info)).contains(&size) {
+            return Err(VOLUME_CORRUPTED);
+        }
+        info[1] = 0;
+        ok(((*file.file).set_info)(
+            file.file,
+            &FILE_INFO,
+            size,
+            info.as_ptr().cast(),
+        ))?;
+        ok(((*file.file).flush)(file.file))?;
+        Ok(true)
+    }
+
     /// Opens or creates a directory.
     ///
     /// # Safety

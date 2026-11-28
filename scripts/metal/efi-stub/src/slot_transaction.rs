@@ -143,6 +143,11 @@ const LEGACY_BOOT: [&str; 5] = [
     "SWAP.IMG",
     "TRY.IMG",
 ];
+const IMPORTED_IMAGES: [(&str, Option<&str>); 3] = [
+    ("CURRENT.IMG", Some("CURRENT.TXT")),
+    ("PREVIOUS.IMG", Some("PREVIOUS.TXT")),
+    ("TRY.IMG", None),
+];
 
 /// Check the complete legacy replay before any of its FAT edits. In particular,
 /// deleting a name in a torn rename can free the other name's cluster chain.
@@ -209,6 +214,7 @@ pub trait RecordStore {
     fn prepare_records(&self) -> Result<(), Status>;
     fn overwrite(&self, name: &str, bytes: &[u8; RECORD_SIZE]) -> Result<(), Status>;
     fn write_new_image(&self, name: &str, bytes: &[u8]) -> Result<(), Status>;
+    fn truncate_image(&self, name: &str) -> Result<bool, Status>;
     fn visit_images(&self, visit: &mut dyn FnMut(&str)) -> Result<(), Status>;
     fn flush(&self) -> Result<(), Status>;
 }
@@ -218,7 +224,7 @@ pub struct ImageName([u8; 12]);
 
 impl ImageName {
     fn parse(name: &str) -> Option<Self> {
-        if !matches!(name, "CURRENT.IMG" | "PREVIOUS.IMG" | "TRY.IMG")
+        if !IMPORTED_IMAGES.iter().any(|&(image, _)| image == name)
             && image_sequence(name).is_none()
         {
             return None;
@@ -496,8 +502,15 @@ impl Records {
             0
         };
         record.sequence = sequence;
-        store.overwrite(RECORD_PATHS[side], &record.encode())?;
-        store.flush()?;
+        let result = store
+            .overwrite(RECORD_PATHS[side], &record.encode())
+            .and_then(|()| store.flush());
+        if let Err(status) = result {
+            // The target may already contain the new record. Stop writes
+            // through this snapshot until startup reloads the records.
+            self.unreadable = Some(status);
+            return Err(status);
+        }
         self.sides[side] = Some(record);
         self.newest = side;
         Ok(())
@@ -520,22 +533,43 @@ impl Records {
 
     pub fn collect(&self, store: &impl RecordStore) -> Result<(), Status> {
         self.check_readable()?;
-        let Some(record) = self.latest() else {
-            return Ok(());
-        };
+        let files = store.files();
+        let referenced = |name: &str| self.sides.iter().flatten().any(|record| record.names(name));
+        // A pending legacy rename can leave two names for the same FAT chain.
+        if self.latest().is_some() && !files.exists(JOURNAL) {
+            for (image, note) in IMPORTED_IMAGES {
+                if !referenced(image) {
+                    for name in [Some(image), note].into_iter().flatten() {
+                        if files.exists(name) {
+                            files.delete(name)?;
+                            store.flush()?;
+                        }
+                    }
+                }
+            }
+        }
+
+        let sequence = self.latest().map_or(0, |record| record.sequence);
+        let watermark = self.unused_sequence(store)? - 1;
+        if watermark > sequence {
+            // Keep the highest unclaimed name so the next write skips it,
+            // while releasing any image data left by the interrupted write.
+            let name = ImageName::new(watermark)?;
+            if store.truncate_image(name.as_str())? {
+                store.flush()?;
+            }
+        }
         loop {
             let mut orphan = None;
             store.visit_images(&mut |name| {
-                // A name from an interrupted creation is the allocation
-                // watermark until a subsequent record has passed its sequence.
-                if image_sequence(name).is_some_and(|n| n <= record.sequence)
-                    && !self.sides.iter().flatten().any(|record| record.names(name))
+                if image_sequence(name).is_some_and(|n| n <= sequence || n < watermark)
+                    && !referenced(name)
                 {
                     orphan = ImageName::parse(name);
                 }
             })?;
             let Some(name) = orphan else { return Ok(()) };
-            store.files().delete(name.as_str())?;
+            files.delete(name.as_str())?;
             store.flush()?;
         }
     }
@@ -547,11 +581,19 @@ impl Records {
         digest: [u8; 32],
         note: &[u8],
     ) -> Result<Image, Status> {
+        self.collect(store)?;
         let name = ImageName::new(self.unused_sequence(store)?)?;
         // The caller publishes the image and its sequence together.
         let entry = Image::new(name, bytes.len(), digest, note)?;
-        store.write_new_image(name.as_str(), bytes)?;
-        store.flush()?;
+        if let Err(status) = store
+            .write_new_image(name.as_str(), bytes)
+            .and_then(|()| store.flush())
+        {
+            // No record can name this image yet. Retry cleanup at startup if
+            // the volume is unavailable, and return the original write error.
+            let _ = self.collect(store);
+            return Err(status);
+        }
         Ok(entry)
     }
 

@@ -96,6 +96,11 @@ impl<'a> RecordStore for Esp<'a> {
         unsafe { self.files.0.write_new(path(name, &mut [0; 96]), bytes) }
     }
 
+    fn truncate_image(&self, name: &str) -> Result<bool, Status> {
+        // SAFETY: the ESP root stays open.
+        unsafe { self.files.0.truncate(path(name, &mut [0; 96])) }
+    }
+
     fn visit_images(&self, visit: &mut dyn FnMut(&str)) -> Result<(), Status> {
         // SAFETY: the ESP root stays open.
         unsafe { self.files.0.visit_names(r"\EFI\BREENIX", visit) }

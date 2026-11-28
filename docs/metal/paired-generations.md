@@ -566,9 +566,12 @@ rename by deleting a name.
   into the record that does not hold the newest valid sequence (with sequence + 1), and flush. A cut leaves the
   old record valid, or the new one valid, or the new one torn and ignored. The attempt record (`LIVE.ID` today)
   is the record's attempt field, so it changes in the same write.
-- **Old images are deleted last.** After a record write is durable, the manager deletes each `K*.IMG` that neither
-  valid record names. A cut during deletion leaves a stray image, which the next startup deletes. A file left
-  by an interrupted creation with a sequence above the newest record is kept until a record passes that sequence.
+- **Old images are deleted last.** After a record write is durable, the manager deletes images neither valid
+  record names, including imported CURRENT, PREVIOUS and TRY files and their legacy notes. A cut during
+  deletion leaves a stray file for the next startup. Before allocating another image, cleanup releases the
+  bytes of unpublished images and keeps only the highest unpublished name as an empty file so its sequence
+  is skipped. That name retires when the records pass it. A trial after promotion can need four slot images
+  while the older record still provides the pre-trial PREVIOUS.
 - **Startup returns to firmware only after the named images fail.** The manager reads both records and uses the
   newest valid one. It checks that record's CURRENT against its recorded size and SHA-256. If verification fails
   or the loader returns, it checks and tries PREVIOUS, then the older record's two images.
@@ -835,8 +838,13 @@ Review of PR #3273 (the same rule):
   because the host request and receipt still use the logical slot names CURRENT, PREVIOUS and NEXT.
 - A still-staged legacy NEXT remains eligible for manual commit after import because an older recovery installer
   can supply that pair while the new manager owns the slots.
-- The manager retains a higher-sequence orphan until a later record has passed its sequence because deleting it
-  sooner would permit sequence reuse and writing a watermark record would overwrite the older fallback.
+- Cleanup retires unreferenced imported images and notes because keeping their names for the life of the ESP
+  consumes space after both records have dropped the references.
+- Cleanup truncates the highest unpublished image in place and deletes the other orphans because the filename
+  alone prevents sequence reuse without consuming image space or overwriting the older fallback record.
+  [UEFI 2.10 file information](https://uefi.org/specs/UEFI/2.10/13_Protocols_Media_Access.html#efi-file-info)
+- A failed record write or flush blocks further slot writes through the current in-memory view because
+  the target record may already name an image that view would reclaim.
 - T-C3 extracts the v1 host formatter and gives it an optional root line so the host fixture uses the same
   encoder while PR B retains custody of version selection and publication.
 - T-C3 uses a 10,000,384-byte image for the 256-byte manifest because both trial images must be whole
