@@ -9,6 +9,8 @@ fake device over host memory, then drives interleavings in a fixed order:
 - shared_publish: writer W stages its chain; before W publishes, a reader
   on other sectors publishes its own chain, which makes W's visible too.
   W's write completes, so the next flush must reach the device.
+- flush_turn: a flush that finds a write in flight must not be overtaken by
+  a later request on other sectors.
 
 VIRTIO_BLK_ROOT points the harness at another tree (an older head) to show a
 check red on that code.
@@ -327,9 +329,59 @@ fn shared_publish() {
     assert_eq!(flushes, 2, "the flush after a completed write returned without sending FLUSH");
 }
 
+static HELD: AtomicUsize = AtomicUsize::new(usize::MAX);
+static OVERTAKER: AtomicUsize = AtomicUsize::new(usize::MAX);
+static PARKS: AtomicU32 = AtomicU32::new(0);
+
+/// While the flush is parked: a new request on other sectors tries to get
+/// in, then the write the flush waits for completes.
+fn flush_park() {
+    let gate = &dev().request_gate;
+    match PARKS.fetch_add(1, Ordering::SeqCst) {
+        0 => {
+            if let Some(entry) = gate.try_admit(100, 108, true) {
+                OVERTAKER.store(entry, Ordering::SeqCst);
+            }
+            gate.release(HELD.load(Ordering::SeqCst));
+        }
+        1 => {
+            // Only reached when the newcomer got in; it completes too.
+            gate.release(OVERTAKER.load(Ordering::SeqCst));
+        }
+        _ => panic!("the flush parked a third time"),
+    }
+}
+
+fn flush_turn() {
+    setup();
+    let device = dev();
+    let gate = &device.request_gate;
+    // A write on sectors 0..8 is in flight when the flush arrives.
+    HELD.store(gate.try_admit(0, 8, true).expect("the write"), Ordering::SeqCst);
+    *PARK_HOOK.lock().unwrap() = Some(flush_park);
+    assert_eq!(device.flush(), Ok(()));
+    *PARK_HOOK.lock().unwrap() = None;
+    assert_eq!(OVERTAKER.load(Ordering::SeqCst), usize::MAX,
+        "a request that arrived after the flush was admitted ahead of it");
+    assert_eq!(PARKS.load(Ordering::SeqCst), 1);
+    assert_eq!(device_log(), [(request_type::FLUSH, 0)]);
+    // The flush left no claim behind it.
+    let entry = gate.try_admit(100, 108, true).expect("a request after the flush");
+    gate.release(entry);
+    // A flush that cannot wait gives its turn back.
+    let held = gate.try_admit(0, 8, true).unwrap();
+    CAN_SLEEP.store(false, Ordering::SeqCst);
+    assert!(device.flush().is_err());
+    CAN_SLEEP.store(true, Ordering::SeqCst);
+    let entry = gate.try_admit(200, 208, true).expect("a refused flush kept its turn");
+    gate.release(entry);
+    gate.release(held);
+}
+
 fn main() {
     match std::env::args().nth(1).as_deref() {
         Some("shared_publish") => shared_publish(),
+        Some("flush_turn") => flush_turn(),
         other => panic!("unknown scenario {other:?}"),
     }
 }
@@ -363,6 +415,9 @@ class VirtioBlkPciDriver(unittest.TestCase):
 
     def test_fsync_after_a_write_another_caller_published(self):
         self.run_case('shared_publish')
+
+    def test_a_waiting_flush_is_not_overtaken(self):
+        self.run_case('flush_turn')
 
 
 if __name__ == '__main__':
