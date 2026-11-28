@@ -1588,6 +1588,39 @@ its frame, and G's CRC is computed from it. A shrink then zeroes the page's tail
 
 ```
 
+**A mapped store reaches exactly one commit (11.2).** A store fault on a shared writable page begins while
+G = 7 is open, the freeze of G runs, then the fault finishes. Two freezes follow; the store's page must be
+in one of their batches, with its space reserved and its inode in that generation's changed set.
+
+```pycon
+>>> RULE = 'fault-assigns-generation'
+>>> mount = {'open': 7, 'changed': set(), 'reserved': 0}
+>>> page = {'dirty_gen': 0, 'mapped_dirty': False}
+>>> def fault_begin():
+...     return mount['open'] if RULE == 'fault-assigns-generation' else None
+>>> def fault_end(seen):
+...     if seen is None:
+...         page['mapped_dirty'] = True
+...     else:
+...         page['dirty_gen'] = seen
+>>> def freeze():
+...     g = mount['open']
+...     if RULE == 'admit-before-freeze' and page['mapped_dirty']:
+...         mount['reserved'] += 1
+...         mount['changed'].add('ino')
+...         page.update(dirty_gen=g, mapped_dirty=False)
+...     batch = [page] if page['dirty_gen'] == g and 'ino' in mount['changed'] else []
+...     mount['open'] = g + 1
+...     return batch
+>>> seen = fault_begin()
+>>> first = freeze()
+>>> fault_end(seen)
+>>> second = freeze()
+>>> (len(first), len(second), mount['reserved'])
+(0, 1, 1)
+
+```
+
 ## 20. bbench rows (DEV-31)
 
 | Row | Ratio (28668b28) | Expected to move in | Parity reachable from E3 alone |
