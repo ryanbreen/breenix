@@ -7,9 +7,7 @@ use spin::Mutex;
 
 use super::kmem;
 
-#[path = "heap_index.rs"]
-mod index;
-use index::Heap;
+use super::heap_index::Heap;
 
 #[path = "heap_case.rs"]
 mod case;
@@ -207,6 +205,17 @@ impl kmem::Pool for IrqSafeLockedHeap {
             heap.deallocate(ptr);
             ((), 0)
         });
+    }
+
+    unsafe fn resize(&self, ptr: NonNull<u8>, new_size: usize) -> bool {
+        self.with_inner(|heap| unsafe {
+            let resized = heap.resize_in_place(ptr, new_size);
+            let used = heap.used();
+            if resized && used > HIGH_WATER.load(Ordering::Relaxed) {
+                HIGH_WATER.store(used, Ordering::Relaxed);
+            }
+            (resized, 0)
+        })
     }
 }
 

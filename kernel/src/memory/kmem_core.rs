@@ -144,6 +144,14 @@ pub trait Pool {
     ///
     /// `ptr` came from this pool's `take` and is not freed twice.
     unsafe fn give(&self, ptr: NonNull<u8>);
+    /// Resize a block `take` gave to hold `new_size` bytes without moving
+    /// it (`heap_index`'s `grow_in_place` and `shrink_in_place`). Returns
+    /// false, changing nothing, when it cannot.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` came from this pool's `take` and is live.
+    unsafe fn resize(&self, ptr: NonNull<u8>, new_size: usize) -> bool;
 }
 
 /// The CPU an allocation runs on.
@@ -637,6 +645,19 @@ impl<M: Pool, R: Pool, S: Small> Front<'_, M, R, S> {
     ) -> Result<NonNull<u8>, AllocError> {
         let new_layout = unsafe { Layout::from_size_align_unchecked(new_size, layout.align()) };
         if self.resizes_in_place(ptr, layout, new_layout) {
+            return Ok(ptr);
+        }
+        // A heap_index block grows into a free block after it, or gives its
+        // tail back, in place (6.4, 6.6). It stays in its pool, whose free
+        // takes any layout.
+        let resized = if self.main.contains(ptr) {
+            unsafe { self.main.resize(ptr, new_size) }
+        } else if self.reserve.contains(ptr) {
+            unsafe { self.reserve.resize(ptr, new_size) }
+        } else {
+            false
+        };
+        if resized {
             return Ok(ptr);
         }
         let new_ptr = self.allocate(new_layout, Ctx::Normal, cpu)?;

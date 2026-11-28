@@ -58,6 +58,10 @@ impl Pool for Arena {
     unsafe fn give(&self, ptr: NonNull<u8>) {
         unsafe { self.lock.lock().deallocate(ptr) }
     }
+
+    unsafe fn resize(&self, ptr: NonNull<u8>, new_size: usize) -> bool {
+        unsafe { self.lock.lock().resize_in_place(ptr, new_size) }
+    }
 }
 
 /// These tests drive the fixed-heap path, so their front has a small-object
