@@ -834,7 +834,7 @@ heap OOM (audit section 4).
 | 64 MiB x86 heap; 64-128 MiB ARM64 heap | The heap grows from frames until memory runs out, then fails with an error after reclaim |
 | `MAX_REGIONS` = 128 memory-map regions | A range set that grows as needed (4.1) |
 | ARM64 RAM above 4 GiB unused (`DIRECT_MAP_RAM_END`) | The direct map covers the described RAM (4.4) |
-| `MAX_TRACKED_FRAMES` = u32::MAX frames (16 TiB) through u32 ordinals | u64 pfns and a sparse two-level directory whose only address-sized part is 8 bytes per 64 GiB (4.2) |
+| ARM64 frame pool: 32 ranges (`MAX_RANGES`) and a 40-bit output address width (`TCR_IPS_40BIT`) | Ranges fed straight into the growable set; IPS from the CPU's PARange (4.1) || `MAX_TRACKED_FRAMES` = u32::MAX frames (16 TiB) through u32 ordinals | u64 pfns and a sparse two-level directory whose only address-sized part is 8 bytes per 64 GiB (4.2) |
 | Frame metadata inside the heap | Metadata from frames, 0.78% of RAM (4.2) |
 | Contiguous runs only at the frontier | Buddy runs up to 1 GiB at any time (5.1, 5.6) |
 | Kernel stacks: x86 fixed window (about 990), ARM64 32 MiB pool (about 480) | Stacks from the buddy in a stack window sized from RAM (E1-10) |
