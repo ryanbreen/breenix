@@ -351,6 +351,15 @@ Only the selection moves into the generation:
   selection. The devbox flow's `bput` of `CURRENT` and its separate `/lib` runtime sync are replaced by the
   paired deploy.
 - **One-time conversion**, by the first paired deploy, inside `paired begin` before it reads E1 and clones (4.1):
+  0. write the same file into each other retained root that lacks one, which is at least the physical PREVIOUS
+     (section 2). Without it, once step 2 makes shared `CURRENT` a symlink, a rollback to that root (`metal-run
+     install-persistent --rollback`, or the manager falling back to PREVIOUS) would leave `CURRENT` dangling. For
+     each such root: `attach_staging(name)` (3.1, which accepts any writable root other than the booted one and root
+     1), the walk in 4.0 from the staging root with the ID shared `CURRENT` names today, a sync, and
+     `detach_staging()`. That reproduces what the root sees today, since a rollback already keeps the shared
+     selection. A retained root that is read-only refuses the conversion with its name, for the operator to
+     decide. A cut part-way leaves some roots with the file and shared `CURRENT` still a regular file, which the
+     reader still uses, and the next deploy repeats this step for the roots still lacking it;
   1. write `usr/lib/breenix/rust-current` into the running root with the ID that shared `CURRENT` names today
      (a pet change, and the only write a deploy makes to the running root), by the walk in 4.0 from `/`. The final
      name may be absent or a regular file. A symlink or a directory there, or at `usr`, `usr/lib` or
@@ -360,12 +369,16 @@ Only the selection moves into the generation:
      whose target is already `/usr/lib/breenix/rust-current` (a repeated conversion).
 
   The rename is atomic. Before it, readers see the old file. After it, they see the same ID through the running
-  root's new file, so the running system's toolchain does not change. The clone then inherits the file, so both
-  possible rollback targets (the running root, and the new generation) have one. Doing this before E1 keeps the
+  root's new file, so the running system's toolchain does not change. The clone then inherits the file, so the
+  new generation, the running root and the other retained roots (step 0) each have one. Doing this before E1 keeps the
   conversion's own write out of the epoch check. Apply replaces the draft's copy only when the inventory carries a
   selection row (E6). A legacy inventory keeps the running selection.
 - Each version directory needs its own `<toolchain id>/MANIFEST.json`. `paired verify` checks that the version the
-  draft selects is present and complete before the deploy can publish. A version that no retained generation
+  draft selects is present and complete before the deploy can publish. It also checks the runtime: the
+  manifest's `runtime` map (written by `scripts/devbox/toolchain.py`, `{'fork_commit', 'files', 'runtime'}`) gives
+  each runtime file's size, mode and SHA-256, and the draft's `/lib/<name>` for each of them (today `ld-breenix.so`
+  and `libc.so`) must match. A selection whose runtime differs from the draft's `/lib` is a verify error, so a pair
+  cannot select a toolchain built against another runtime. The cold verify on the trial repeats the check. A version that no retained generation
   selects stays where it is. Removing it is an explicit operator action, not part of reclamation.
 
 ### 4.6 Publish
@@ -597,7 +610,7 @@ Scope: sections 4 to 6.
 
 | Test | Where | Checks | Red on the old code because |
 |---|---|---|---|
-| T-B1 apply over a fixture clone | `tests/persistent_install/` host test, beside `tests/metal_replace_usr_host.rs` | A fixture clone with a baseline, an inventory and objects. After apply and verify: the payload rows equal the inventory; a pet file at an unmanaged path is kept; a locally changed managed file is moved to `.breenix-carried/<prev>/` with set-ID cleared; a dropped, unchanged managed file is removed; a BusyBox hard-link group across `/bin` and `/sbin`, a symlink and set-ID `su` are exact; a symlink whose target the clone lacks is rebuilt from its object; two independent rows with one SHA-256 end as two inodes; a group whose members match on their own but are two inodes in the clone, and a group one of whose members is linked to a pet path, are each rebuilt as one inode with the group's link count; `paired have` reports neither group as satisfied; mount points are untouched; a rerun after a cut at each file is idempotent. Path safety (4.0): with a pet symlink at `usr/lib` pointing outside the tree, at `usr/lib/breenix/rust-current`, and at `opt/breenix/rust`, the conversion and apply refuse, and the symlinks' targets (a fixture file standing in for one in `/home`) are byte-for-byte unchanged. Deletions and baselines: a managed file deleted on the box and still in the inventory is restored and listed in `deletedOnBox`; with no baseline, a pet edit to a payload file is carried; a baseline with an unknown header refuses before the clone. Epoch custody: begin, apply and publish run in sequence, and publish compares the E1 that begin recorded after apply has removed `.breenix-incoming` and the unmount has run; a recorded boot ID that differs from the fixture's refuses publish. | The check commit's stub routes `apply` to today's only in-place path, `replace_usr`, which leaves `/bin`, `/sbin` and `/lib` unchanged |
+| T-B1 apply over a fixture clone | `tests/persistent_install/` host test, beside `tests/metal_replace_usr_host.rs` | A fixture clone with a baseline, an inventory and objects. After apply and verify: the payload rows equal the inventory; a pet file at an unmanaged path is kept; a locally changed managed file is moved to `.breenix-carried/<prev>/` with set-ID cleared; a dropped, unchanged managed file is removed; a BusyBox hard-link group across `/bin` and `/sbin`, a symlink and set-ID `su` are exact; a symlink whose target the clone lacks is rebuilt from its object; two independent rows with one SHA-256 end as two inodes; a group whose members match on their own but are two inodes in the clone, and a group one of whose members is linked to a pet path, are each rebuilt as one inode with the group's link count; `paired have` reports neither group as satisfied; mount points are untouched; a rerun after a cut at each file is idempotent. Path safety (4.0): with a pet symlink at `usr/lib` pointing outside the tree, at `usr/lib/breenix/rust-current`, and at `opt/breenix/rust`, the conversion and apply refuse, and the symlinks' targets (a fixture file standing in for one in `/home`) are byte-for-byte unchanged. Toolchain: the conversion leaves a fixture PREVIOUS root, which lacked the file, with `usr/lib/breenix/rust-current` naming the old ID before shared `CURRENT` becomes a symlink, and a read-only retained root refuses it; verify fails when the draft's `/lib/libc.so` differs from the selected version's `runtime` entry. Deletions and baselines: a managed file deleted on the box and still in the inventory is restored and listed in `deletedOnBox`; with no baseline, a pet edit to a payload file is carried; a baseline with an unknown header refuses before the clone. Epoch custody: begin, apply and publish run in sequence, and publish compares the E1 that begin recorded after apply has removed `.breenix-incoming` and the unmount has run; a recorded boot ID that differs from the fixture's refuses publish. | The check commit's stub routes `apply` to today's only in-place path, `replace_usr`, which leaves `/bin`, `/sbin` and `/lib` unchanged |
 | T-B2 manager version 2 | `scripts/metal/efi-stub/tests/live_sequence.rs` | The trial is refused for a missing root, a read-only root, or an image intent naming another userland. It is accepted when the three agree. Version 1 behaves exactly as today. | `Manifest::parse` rejects a seventh line |
 | T-B3 host flow | `tests/metal_live_flash_test.py` | `prepare --paired`: the slot intent names the new generation; the manifest carries the root line only for a version-2 manager. The retained set keeps the physical PREVIOUS's root when an acknowledged trial is not promoted (a stale base or a foreign NEXT), and drops a root only after a `promoted` line removes it from both physical slots. The commit check needs `/` to be `gen-<new>` `rw` plus the verify digest. A rollback receipt needs the old commit and `gen-<old>`. Staging order: the tool and the inventory are published, and `paired protocol` answers, before `paired begin`; the eight box subcommands and the cold verify invoke the staged tool path, not `/sbin/persistent-install`. | Today's `prepare` names CURRENT's userland (metal_live_flash.py:100) |
 
