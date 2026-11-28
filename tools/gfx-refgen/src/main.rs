@@ -16,6 +16,11 @@ mod sha256;
 
 use std::path::{Path, PathBuf};
 
+use gfx_refgen::{
+    icon::{Icon, IconMouse},
+    icons,
+    surface::Surface,
+};
 use libgfx_ref::ttf_font::{CachedFont, Font};
 use libgfx_ref::color::Color;
 use libgfx_ref::framebuf::{Format, FrameBuf};
@@ -106,21 +111,20 @@ fn raster_identical() -> String {
 }
 
 fn icons_assets() -> FrameBuf {
-    let mut fb = FrameBuf::new_filled(640, 512, Format::BGRX, Color::rgb(12, 19, 31)).unwrap();
-    draw_icon_reference(&mut fb);
-    fb
+    let frame = FrameBuf::new_filled(640, 512, Format::BGRX, Color::rgb(12, 19, 31)).unwrap();
+    let mut surface = Surface::from_frame(frame);
+    draw_icon_reference(&mut surface);
+    surface.into_frame()
 }
 
-fn draw_icon_reference(fb: &mut libgfx_ref::framebuf::FrameBuf) {
-    use std::boxed::Box;
-    use libicon::icon::{Icon, IconMouse};
+fn draw_icon_reference(fb: &mut Surface) {
     for row in 0..4 {
         for col in 0..5 {
             let mut icon: Box<dyn Icon> = match row {
-                0 => Box::new(libicon::icons::home::HomeIcon::new()),
-                1 => Box::new(libicon::icons::search::SearchIcon::new()),
-                2 => Box::new(libicon::icons::save::SaveIcon::new()),
-                _ => Box::new(libicon::icons::arrow::ArrowIcon::new(true)),
+                0 => Box::new(icons::home::HomeIcon::new()),
+                1 => Box::new(icons::search::SearchIcon::new()),
+                2 => Box::new(icons::save::SaveIcon::new()),
+                _ => Box::new(icons::arrow::ArrowIcon::new(true)),
             };
             let mut input = IconMouse::none(); input.hovering = true;
             if col == 1 { icon.update(101_000,input); }
