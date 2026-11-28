@@ -61,11 +61,11 @@ fn futex(op: u64, value: u32) {
 pub(crate) struct Guard;
 
 impl Guard {
-    /// A held lock is never taken over here. Every thread that shares this
-    /// memory, in this thread group or (with CLONE_VM) in another, can be
-    /// a live owner, and no check from this side tells a live owner in a
-    /// shared address space from one a fork left behind. The fork child
-    /// hook, where the memory is a private copy, repairs the second case.
+    /// Waits for a held lock rather than taking it over. A thread that shares
+    /// this memory, in this thread group or (with CLONE_VM) in another, can
+    /// be a live owner, and from this side such an owner looks the same as
+    /// one a fork left behind. The fork child hook, where the memory is a
+    /// private copy, repairs the second case.
     fn acquire() -> Option<Self> {
         let id = crate::malloc_thread_id();
         let Err(mut observed) = OWNER.compare_exchange(0, id, Acquire, Relaxed) else {
