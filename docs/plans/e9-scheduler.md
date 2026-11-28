@@ -198,8 +198,9 @@ Each is checked by a deterministic test named in §11.
   stopped peer cannot hold this CPU with interrupts masked. A peer holds another CPU's lock only for a
   bounded section: revalidate, one queue operation and the summary publish.
 - **S3, stack custody.** No CPU dispatches a thread while another CPU still stands on that thread's
-  kernel stack. Selection skips such a thread and records itself as a waiter. The CPU that leaves the
-  stack notifies the waiters. No CPU waits for a stack.
+  kernel stack. Selection skips such a thread, records itself as a waiter and then rechecks the mark.
+  The CPU that leaves the stack clears the mark, then notifies the waiters through a flag the idle
+  recheck reads. No CPU waits for a stack.
 - **S4, bounded work under the lock.** Enqueue, dequeue, membership and selection are O(1) or
   O(log n) in the CPU's runnable count. Balancing does a constant amount of work per pass.
 - **S5, every wake lands.** A wake either transitions the thread under its owner's lock or is published
@@ -282,6 +283,20 @@ the shared selection calls `RqArch::stack_owner_elsewhere`, and only the x86 imp
 moves x86 to the ARM64 rule: skip, record the waiter, and have the leaving CPU kick it (x86 already keeps
 `LEAVING_STACK_WAITERS`, `scheduler.rs:2189`). That change has its own check (§10, E9.2).
 
+**ARM64 registers, rechecks and is kicked durably (E9.1).** Today ARM64 skips a marked thread and relies
+on a later selection, "at the latest the next tick" (`switch_save.rs:11-14`). Tickless idle (E9.6b)
+removes that tick. So E9.1 gives `switch_save` a waiter set per marking CPU and this order:
+
+- *Selector*: on finding `tid` marked by CPU m, set its own bit in m's waiter set, then load m's mark
+  again. If the mark is clear or names another thread, it selects again at once rather than idling.
+- *Leaver*: clear the mark, then swap m's waiter set to empty, and kick each waiter. A kick sets the
+  waiter's `RESCHED_REQUESTED` flag before its SGI. The idle masked recheck reads that flag, so a waiter
+  that is entering WFI does not sleep through it.
+
+The waiter's set-then-load and the leaver's clear-then-swap are sequentially consistent operations.
+Either the selector's second load sees the clear, or the leaver's swap sees the selector's bit. That
+holds for every interleaving (model in §10, E9.1). This is the order x86 already uses (§1.2).
+
 ### 3.5 The ARM64 switch transaction
 
 - **Today:** lock `SCHEDULER` masked, decide, save the outgoing context, leak the guard, pivot to the
@@ -294,7 +309,7 @@ moves x86 to the ARM64 rule: skip, record the waiter, and have the leaving CPU k
   order `Held::drop` uses.
 - **The outgoing thread.** It is queued on this CPU, or on its pinned home through `retain_affine`,
   while the mark is set. A peer that finds it skips it (S3). `aarch64_complete_exception_switch` clears
-  the mark (`context_switch.rs:6093`) and kicks any recorded waiter.
+  the mark (`context_switch.rs:6093`), then takes the waiter set and kicks each waiter (§3.4).
 - **Identity.** The CPU index used for the lock comes from the same masked read the pivot already checks
   (`CpuId::current_checked`, `context_switch.rs:6972`). A disagreement retracts the transaction as it does
   today.
@@ -873,10 +888,11 @@ of their steps, keeping each CPU's program order. The steps are sequentially con
     marked in `switch_save` against the CPU that clears the mark. In no interleaving may the selector
     pass the thread over and then go unkicked without seeing the mark clear. A tickless idle CPU would
     otherwise leave the thread queued with nobody to pick it. Red on §3.4 and §3.5 as first written:
-    they skip, then register a waiter, with no recheck after the registration.
+    they skip, then register a waiter, with no recheck after the registration. Green on §3.4's
+    register-then-recheck order.
 
     ```pycon
-    >>> SELECTOR = ['see_mark', 'register_waiter']
+    >>> SELECTOR = ['see_mark', 'register_waiter', 'recheck_mark']
     >>> LEAVER = ['clear_mark', 'take_waiters']
     >>> def stranded(order):
     ...     mark, waiting, saw_set, kicked, saw_clear = True, False, None, False, False
