@@ -219,11 +219,13 @@ mod tcp_ident;
 mod blake2s;
 #[path = "../kernel/src/random/erase.rs"]
 mod erase;
+#[path = "../kernel/src/random/siphash.rs"]
+mod siphash;
 
 /// The hash, and a random pool whose `is_ready` returns true and whose `fill`
 /// writes a fixed byte pattern, so these checks are deterministic.
 mod random {
-    pub(crate) use super::blake2s;
+    pub(crate) use super::{blake2s, siphash};
 
     pub fn is_ready() -> bool {
         true

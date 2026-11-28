@@ -22,3 +22,6 @@ pub fn fill(out: &mut [u8]) {
         *byte = (z ^ (z >> 31)) as u8;
     }
 }
+
+#[path = "../../../kernel/src/random/siphash.rs"]
+pub mod siphash;

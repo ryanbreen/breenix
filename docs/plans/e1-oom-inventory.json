@@ -2603,14 +2603,18 @@
    "rollback": "none: before PID 1 runs a failed boot allocation stops the boot",
    "functions": [
     "blocking_recv_test_main",
+    "blocking_recv_test_program",
     "dns_test_only_main",
+    "dns_test_only_program",
     "kernel_main",
     "kernel_main_continue",
     "kernel_main_on_kernel_stack_checked",
     "launch_x86_production_init",
     "nonblock_eagain_test_main",
+    "nonblock_eagain_test_program",
     "read_default_x86_init",
     "read_x86_production_init",
+    "run_x86_boot_programs",
     "test_threading"
    ]
   },
@@ -2720,6 +2724,25 @@
    "rollback": "before the VMA or page-table change is published",
    "functions": [
     "release_batch"
+   ]
+  },
+  {
+   "file": "kernel/src/memory/kva.rs",
+   "owner": "E1-12",
+   "error": "ENOMEM",
+   "rollback": "before the VMA or page-table change is published",
+   "functions": [
+    "reserve"
+   ]
+  },
+  {
+   "file": "kernel/src/memory/kva_extent.rs",
+   "owner": "E1-12",
+   "error": "ENOMEM",
+   "rollback": "before the VMA or page-table change is published",
+   "functions": [
+    "Extents::allocate",
+    "Extents::link_free"
    ]
   },
   {
@@ -3550,6 +3573,15 @@
     "spawn",
     "steal_from",
     "steal_higher_ranked"
+   ]
+  },
+  {
+   "file": "kernel/src/task/scheduler/rq/index.rs",
+   "owner": "E1-13",
+   "error": "EAGAIN for fork, clone and thread creation; ENOMEM for exec and the rest; EAGAIN for sigqueue",
+   "rollback": "before the process, thread or signal is published",
+   "functions": [
+    "insert"
    ]
   },
   {

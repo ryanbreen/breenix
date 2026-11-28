@@ -77,5 +77,6 @@ pub fn write_stats(out: &mut impl core::fmt::Write) -> core::fmt::Result {
     writeln!(out, "reclaim_runs {}", load(&STATS.reclaim_runs))?;
     writeln!(out, "reclaim_frames {}", load(&STATS.reclaim_frames))?;
     writeln!(out, "reclaim_busy {}", load(&STATS.reclaim_busy))?;
-    writeln!(out, "fault_out_of_memory {}", load(&FAULT_OUT_OF_MEMORY))
+    writeln!(out, "fault_out_of_memory {}", load(&FAULT_OUT_OF_MEMORY))?;
+    super::kva::write_stats(out)
 }
