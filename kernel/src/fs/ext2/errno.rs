@@ -127,6 +127,7 @@ pub(crate) fn classified(error: &str) -> Option<Errno> {
         | "ext2 mount changed during accounting"
         | "ext2 mount changed during shrink wait"
         | "ext2 mount unavailable"
+        | "ext2 requires 512-byte device sectors"
         | "incomplete userland generation"
         | "inode is linked"
         | "invalid userland completion record"
