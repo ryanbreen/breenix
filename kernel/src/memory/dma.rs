@@ -21,7 +21,6 @@ fn image() -> [(u64, u64); 2] {
         static __kernel_writable_end: u8;
         static __dma_start: u8;
         static __dma_end: u8;
-        static _end: u8;
     }
     // Only the symbols' addresses are taken, which needs no `unsafe`.
     core_impl::image_ranges(core_impl::ImageLayout {
@@ -29,7 +28,6 @@ fn image() -> [(u64, u64); 2] {
         loaded_end: core::ptr::addr_of!(__kernel_writable_end) as u64,
         dma_start: core::ptr::addr_of!(__dma_start) as u64,
         dma_end: core::ptr::addr_of!(__dma_end) as u64,
-        end: core::ptr::addr_of!(_end) as u64,
     })
 }
 
@@ -47,7 +45,6 @@ fn image() -> [(u64, u64); 2] {
         loaded_end: end,
         dma_start: end,
         dma_end: end,
-        end,
     })
 }
 

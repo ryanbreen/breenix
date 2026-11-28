@@ -712,7 +712,6 @@ fn the_arm64_image_ranges_leave_out_the_gap_before_dma() {
         loaded_end: va(0x4280_0000),
         dma_start: va(0x5000_0000),
         dma_end: va(0x5000_4000),
-        end: va(0x5000_4000),
     };
     let ranges = dma_core::image_ranges(image);
     let image_at = |pa: u64| dma_core::in_ranges(&ranges, va(pa));

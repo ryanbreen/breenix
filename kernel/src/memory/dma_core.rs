@@ -46,16 +46,15 @@ pub enum DmaError {
 
 /// The kernel image's memory as its linker symbols bound it: the loaded
 /// image `[start, loaded_end)` and a section the linker places apart from
-/// it, `[dma_start, dma_end)`, with `end` (`_end`) past both. On ARM64 that
-/// section is `.dma`, at physical `0x5000_0000` past a gap (`linker.ld`);
-/// x86 has none, and passes an empty one at `end`.
+/// it, `[dma_start, dma_end)`. On ARM64 that section is `.dma`, at physical
+/// `0x5000_0000` past a gap (`linker.ld`), and `_end` follows it; x86 has
+/// none, and passes an empty one at `_end`.
 #[derive(Clone, Copy, Debug)]
 pub struct ImageLayout {
     pub start: u64,
     pub loaded_end: u64,
     pub dma_start: u64,
     pub dma_end: u64,
-    pub end: u64,
 }
 
 /// The VA ranges `[start, end)` the check counts as kernel-image memory:
