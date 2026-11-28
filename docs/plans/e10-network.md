@@ -2,8 +2,8 @@
 
 DEV-41(2) starts the network design under DEV-29 and covers audit R21, R22, R23
 and R28. The implementation order starts with **NewReno, legacy and modern
-virtio-net, and hashed TCP lookups**, independently of E1 and R240 delivery. The shared packet
-data path follows E1's frame-backed allocations. Protocol behavior comes from
+virtio-net, and hashed TCP lookups**, independently of E1 and R240 delivery.
+The shared packet data path follows E1's frame-backed allocations. Protocol behavior comes from
 the RFCs, device behavior from the hardware specifications, and current behavior
 from Breenix and saved benchmark receipts. Linux is a measured black-box peer.
 
@@ -243,8 +243,8 @@ clock and the platform's deadline facility. Drive expiry and retirement from
 due entries and deliver timer-generated notices from the affected sockets.
 The worker must do no connection-table sweep for reaping, notice collection
 or next-deadline selection. Use the wheel's populated buckets to find the next
-deadline. Measure pacing resolution before making it the default. [Varghese and Lauck, Hashed and Hierarchical Timing
-Wheels](https://www.cs.columbia.edu/~nahum/w6998/papers/sosp87-timing-wheels.pdf).
+deadline. Measure pacing resolution before making it the default.
+[Varghese and Lauck, Hashed and Hierarchical Timing Wheels](https://www.cs.columbia.edu/~nahum/w6998/papers/sosp87-timing-wheels.pdf).
 
 ### Socket memory, readiness and local delivery
 
@@ -307,8 +307,7 @@ with it. On MMIO version 2, require `VERSION_1`, negotiate features and verify
 `QueueReady`. Both paths set `DRIVER_OK` after queues are configured.
 [OASIS Virtio 1.2 §§2.7.2–2.7.4, 3.1, 4.2.3–4.2.4, 5.1.6.1](https://docs.oasis-open.org/virtio/virtio/v1.2/virtio-v1.2.html).
 
-Size
-queue pairs from online CPUs, device maximum and memory budget. Negotiate
+Size queue pairs from online CPUs, device maximum and memory budget. Negotiate
 `CTRL_VQ` with `MQ`, confirm the control command setting the active queue-pair
 count, and keep a one-pair configuration if the feature or activation is
 unavailable. Use a stable flow-to-queue selection and a per-queue lock around
@@ -377,10 +376,10 @@ concurrency, loss or RTT named in the prediction.
 
 | PR | Scope and dependency | Deterministic check | Expected ARM64 QEMU rows |
 | --- | --- | --- | --- |
-| 1 | NewReno policy interface, send admission and RTO. **No E1.** | Drive the production send/ACK path with a fixed clock and an eight-SMSS flight with two losses and no more application data. Check admission, the third duplicate ACK's first repair and `(cwnd, ssthresh) = (7, 4) SMSS`, another duplicate raising cwnd to 8 SMSS, a three-SMSS partial ACK lowering it to 6 SMSS and repairing the next hole while restarting the timer, and the full ACK lowering cwnd to 2 SMSS and exiting. In the timeout trace check one oldest-range repair, backoff, cwnd of one SMSS and the highest-sent recovery marker. Repeat the same segment's timeout and inject three qualifying duplicate ACKs within the marked flight. Check the unchanged first-timeout ssthresh and no fast retransmit, then allow a fresh recovery after ACK progress beyond the marker. | TX and SCP down benefit when sender loss or queue bursts dominate. A clean path can show slower startup. RX and SCP up are controls. |
-| 2 | Legacy and modern virtio-net rings, merged RX, checksum/TSO, EVENT_IDX, TX completion and multiqueue. **No E1.** | Run the production setup with fake version-1 MMIO advertising a 256-entry maximum and the PR's feature bits. Check 256 entries, more than four posted RX buffers, exact guest-page/PFN/used-ring offsets, the accepted low feature word and the 10-/12-byte legacy headers with merge disabled/enabled. Check modern VERSION_1 and FEATURES_OK separately. Drive merge and event-index wrap, malformed merges, offload header bytes, control-command rejection and TX full-to-available without RX traffic. | TX and RX are primary on the existing legacy rig. SCP up/down may improve if packet service limits either direction. Record which features were offered and enabled.
+| 1 | NewReno policy interface, send admission and RTO. **No E1.** | Drive the production send/ACK path with a fixed clock and an eight-SMSS flight after earlier data was acknowledged. Drop the first and fourth segments and queue no further application data. Check admission, the third duplicate ACK's first repair and `(cwnd, ssthresh) = (7, 4) SMSS`, another duplicate raising cwnd to 8 SMSS, a three-SMSS partial ACK lowering it to 6 SMSS and repairing the next hole while restarting the timer, and the full ACK lowering cwnd to 2 SMSS and exiting. In a separate 12-SMSS timeout trace check one oldest-segment repair, backoff, cwnd of one SMSS, ssthresh of 6 SMSS and the highest-sent recovery marker. Inject three qualifying duplicate ACKs within the marked flight and require no fast retransmit or threshold change. Expire the same segment again and require ssthresh to stay at 6 SMSS. Allow a fresh recovery after ACK progress beyond the marker. | TX and SCP down benefit when sender loss or queue bursts dominate. A clean path can show slower startup. RX and SCP up are controls. |
+| 2 | Legacy and modern virtio-net rings, merged RX, checksum/TSO, EVENT_IDX, TX completion and multiqueue. **No E1.** | Run the production setup with fake version-1 MMIO advertising a 256-entry maximum and the PR's feature bits. Check 256 entries, more than four posted RX buffers, exact guest-page/PFN/used-ring offsets, the accepted low feature word and the 10-/12-byte legacy headers with merge disabled/enabled. Check modern VERSION_1 and FEATURES_OK separately. Drive merge and event-index wrap, malformed merges, offload header bytes, control-command rejection and TX full-to-available without RX traffic. | TX and RX are primary on the existing legacy rig. SCP up/down may improve if packet service limits either direction. Record which features were offered and enabled. |
 | 3 | Hashed established, listener and bind indexes. **No E1.** | Collision fixture with unrelated connections drives production demux and bind. Check exact/wildcard selection, TIME_WAIT and reuse conflicts, and that a failed reservation preserves the established, listener and bind indexes. A fixed comparison counter shows lookup work stays within the affected bucket. | TX/RX and SCP up/down can gain with many active sockets. Little movement is expected on the standard single-flow rows. |
-| 4 | Nagle default, live `TCP_NODELAY`, and SSH transport opt-outs. **No E1.** | With an outstanding small write, verify that the next small write waits, an ACK or full MSS permits output, and enabling NODELAY flushes eligible data. Drive both SSH transport setup paths with a fixture that records NODELAY on the connected or accepted fd before the first protocol write. Withhold the first ACK and verify two short writes leave on the opted-out TCP connection. | Use `ssh.round-trip` as an explicit regression guard against the matched pre-PR Breenix run. SCP up/down guard short control writes. TX/RX are bulk controls.
+| 4 | Nagle default, live `TCP_NODELAY`, and SSH transport opt-outs. **No E1.** | With an outstanding small write, verify that the next small write waits, an ACK or full MSS permits output, and enabling NODELAY flushes eligible data. Drive both SSH transport setup paths with a fixture that records NODELAY on the connected or accepted fd before the first protocol write. Withhold the first ACK and verify two short writes leave on the opted-out TCP connection. | Use `ssh.round-trip` as an explicit regression guard against the matched pre-PR Breenix run. SCP up/down guard short control writes. TX/RX are bulk controls. |
 | 5 | Frame-backed packet descriptors, receive ownership and virtio scatter-gather. **E1-8 and prerequisites**, with E1-16 coordination. | Drive one MSS of TCP payload each way through production send/receive and a fake virtio DMA ring, with offloads disabled and ample preallocated capacity. Count payload bytes copied and fresh heap allocations for packet storage from syscall to TX submit and from RX completion to userspace. Require one payload's worth of copied bytes in each direction and zero fresh packet-storage heap allocations, with exact delivered bytes. Independently force descriptor exhaustion and ACK before DMA completion, checking reference retirement, odd fragment boundaries, software checksum and copy fallback. | TX/RX gain from fewer copies and allocations. SCP up/down can follow. |
 | 6 | Per-socket state, listener queues, backlog and ordered deferred output. Depends on 3 and 5 plus durable wakes. | Force RX between an owner's last drain and release, and close/reuse while queued RX and TX still hold the old reference. Verify one delivery, one retirement and progress on a different socket during the pause. | TX/RX and SCP up/down can gain from less lock hold time. Largest movement is expected with concurrent flows. |
 | 7 | Timer wheel. Depends on 6. | With fake time and one due timer, run the actual timer worker pass with 16 and then 4096 unrelated sockets, including sockets with later deadlines. Count connection visits across deadline selection, expiry/reaping and notification collection. In each run require one visit to the due socket, zero visits to unrelated sockets, and one event. Also arm an earlier deadline during the worker's wait and cancel an entry after dequeue before tuple reuse. Check the wake and stale-event rejection. | TX and SCP down can gain when many deadlines compete with real work. SSH and the single-flow rows act as latency and throughput controls. |
@@ -429,8 +428,8 @@ concurrency, loss or RTT named in the prediction.
 ## Design details resolved against the current tree
 
 - Snapshot the highest transmitted sequence independently of the resend cursor
-  because today's RTO rewinds `send_next` to `send_unack` and resends through
-  `push_output`, losing the boundary the post-timeout duplicate-ACK guard needs.
+  because today's RTO rewinds `send_next` to `send_unack`; the post-timeout
+  duplicate-ACK guard needs the high-water mark in `send_max`.
 - Keep the Phase 0 TX publication lock, TX-submit reap, ISN/port selection and
   existing timeout counter as the starting point because they have already
   landed since the audit.
