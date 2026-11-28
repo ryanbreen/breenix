@@ -379,7 +379,7 @@ class RunIds(unittest.TestCase):
     def refused(self, run):
         reached = mock.Mock(side_effect=AssertionError(f"{run!r} reached the run"))
         with mock.patch.object(rig, "git", lambda *args: ""), \
-                mock.patch.object(rig, "check_breenix_inputs", reached), \
+                mock.patch.object(rig, "Rig", reached), \
                 mock.patch.object(rig, "provision_linux", reached), \
                 mock.patch("sys.stderr"):
             with self.assertRaises(SystemExit) as stopped:
@@ -447,7 +447,7 @@ class BuildIdentity(unittest.TestCase):
             rig.verify_build_stamp(self.stamp, "c0ffee", self.artifacts)
 
     def test_the_run_keeps_the_build_it_verified(self):
-        """Another worktree's build-breenix can replace the shared stamp and artifacts
+        """A subsequent build-breenix can replace the worktree's stamp and artifacts
         while a run samples. The run boots, uploads and records the build it verified."""
         rig.write_build_stamp(self.stamp, "c0ffee", self.artifacts)
         record, inputs = rig.snapshot_inputs(self.stamp, "c0ffee", self.artifacts,
@@ -514,6 +514,7 @@ class RunStorage(unittest.TestCase):
         lanes = [self.worktree(name) for name in ("lane-a", "lane-b")]
         building = threading.Barrier(2)
         first_published = threading.Event()
+        key_generations = []
 
         def build(lane, index):
             commit = str(index) * 40
@@ -540,6 +541,7 @@ class RunStorage(unittest.TestCase):
                 elif Path(words[1]).name == "create-breenfs-root.sh":
                     Path(words[-1]).write_bytes(Path(words[-2]).read_bytes())
                 elif words[0] == "ssh-keygen":
+                    key_generations.append(index)
                     return rig.run_command(words, **kwargs)
 
             lane.run_command = command
@@ -554,6 +556,7 @@ class RunStorage(unittest.TestCase):
         self.assertNotEqual(lanes[0].BREENIX_IMAGE, lanes[1].BREENIX_IMAGE)
         self.assertNotEqual(lanes[0].BUILD_STAMP, lanes[1].BUILD_STAMP)
         self.assertEqual(lanes[0].BREENIX_KEY, lanes[1].BREENIX_KEY)
+        self.assertEqual(len(key_generations), 1)
         for index, lane in enumerate(lanes, 1):
             commit = str(index) * 40
             self.assertEqual(lane.BREENIX_IMAGE.read_bytes()[:40], commit.encode())
@@ -565,6 +568,7 @@ class RunStorage(unittest.TestCase):
             "breenix-disk.raw": b"breenix disk", "linux-disk.raw": b"linux disk",
             "breenix/sample.json": b'{"sample":"sample"}', "serial-breenix-1.txt": b"serial",
             "qemu-breenix-1.argv": b"argv", "qemu-linux-1.log": b"log",
+            "inputs/1-root.raw": b"legacy snapshot",
         }
         for name, data in files.items():
             path = run_dir / name

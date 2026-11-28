@@ -9,13 +9,16 @@ drift lands on both. Each run writes one schema-v1 series per system.
   rig.py provision-linux              first boot: account, compiler, rustup toolchain
   rig.py build-breenix                build the Breenix inputs at HEAD and stamp their commit
   rig.py run --run ID [--count N] [--cases a,b] [--headed]
+  rig.py prune                        remove guest disks from completed runs older than one hour
 
 Run it through scripts/bench-qemu-arm64.sh, which holds the host's QEMU slot.
 Linux is a black box here: the rig boots the distribution's own kernel unmodified,
 runs bbench built from this checkout and reads its timings and counters.
 """
 import argparse
+from contextlib import contextmanager
 from datetime import datetime, timezone
+import fcntl
 import hashlib
 import json
 import os
@@ -26,14 +29,16 @@ import shutil
 import signal
 import socket
 import socketserver
+import stat
 import subprocess
 import sys
+from tempfile import TemporaryDirectory
 import threading
 import time
 import tomllib
 import urllib.request
 
-from series import series_id_problems, write_series
+from series import atomic_write, series_id_problems, write_series
 from tables import collect_receipts
 import vigil_rules
 
@@ -98,7 +103,9 @@ LINUX_TOOLCHAIN = (f"{LINUX_HOME}/.rustup/toolchains/{FORK_BASE['channel']}"
 BREENIX_KERNEL = ROOT / "target/aarch64-breenix-kernel/release/kernel-aarch64"
 # The standard image, copied and given the hosted toolchain by build-breenix.
 STANDARD_IMAGE = ROOT / "target/ext2-aarch64.img"
-BREENIX_IMAGE = CACHE / "breenix-arm64/root.raw"
+BREENIX_CACHE = CACHE / "breenix-arm64"
+WORKTREE_CACHE = BREENIX_CACHE / hashlib.sha256(os.fsencode(ROOT)).hexdigest()
+BREENIX_IMAGE = WORKTREE_CACHE / "root.raw"
 # The hosted aarch64 toolchain, staged by scripts/rust_host_stage.py --suite rustc,cargo
 # (the rustc and cargo suite boots' staging): the fork's rustc and driver, its sysroot
 # and target specs, K7 Cargo, and bld with libc.a and linker.ld.
@@ -108,14 +115,14 @@ FORK = json.loads((ROOT / "toolchain/rust-host/k5/aarch64.json").read_text())["f
 FORK_AHEAD = 16  # commits of FORK past FORK_BASE (see FORK_BASE)
 BREENIX_RELEASE = ROOT / "userspace/programs/target/aarch64-breenix/release"
 BREENIX_O3 = ROOT / "userspace/programs/target/bench-o3/aarch64-breenix/release"
-BREENIX_KEY = CACHE / "breenix-arm64/test-ssh/id_ed25519"
+BREENIX_KEY = BREENIX_CACHE / "test-ssh/id_ed25519"
 # bbench with libbreenix (the crypto) at opt-level z, for the -oz crypto rows.
 BREENIX_OZ = ROOT / "userspace/programs/target/aarch64-breenix/bench-oz"
 BREENIX_ARTIFACTS = (BREENIX_KERNEL, BREENIX_IMAGE, BREENIX_RELEASE / "bbench",
                      BREENIX_RELEASE / "bbench-exit", BREENIX_OZ / "bbench",
                      BREENIX_O3 / "bbench")
 # build-breenix records the commit and each artifact's SHA-256; run refuses anything else.
-BUILD_STAMP = CACHE / "breenix-arm64/build.json"
+BUILD_STAMP = WORKTREE_CACHE / "build.json"
 # The rustc,cargo suite boot's builds (scripts/boot-interactive.sh) before the image.
 BREENIX_BUILD = (
     ["userspace/programs/build.sh", "--arch", "aarch64"],
@@ -587,15 +594,19 @@ class Rig:
     def boot(self):
         commit = self.commit
         disk = self.run_dir / "breenix-disk.raw"
-        # The build this run verified, cloned into the run before anything boots.
-        self.build, self.inputs = snapshot_inputs(BUILD_STAMP, commit, BREENIX_ARTIFACTS,
-                                                  self.run_dir / "inputs")
-        run_command(["cp", "-c", self.inputs[BREENIX_IMAGE], disk])
+        # Hold off writers while taking and verifying the run's private copies.
+        with cache_lock(WORKTREE_CACHE / ".lock"):
+            if not BREENIX_KEY.is_file():
+                raise ValueError(f"missing {BREENIX_KEY}: run build-breenix")
+            if BREENIX_IMAGE.exists() and BREENIX_IMAGE.stat().st_size != DISK_BYTES:
+                raise ValueError(f"{BREENIX_IMAGE} must be {DISK_BYTES // MIB} MiB: run build-breenix")
+            self.build, self.inputs = snapshot_inputs(BUILD_STAMP, commit, BREENIX_ARTIFACTS,
+                                                      self.run_dir / "inputs")
+            self.inputs.pop(BREENIX_IMAGE).rename(disk)
         self.guests["breenix"] = Guest("breenix", self.run_dir, disk, self.args.headed,
                                         kernel=self.inputs[BREENIX_KERNEL])
         linux_disk = self.run_dir / "linux-disk.raw"
-        run_command(["cp", "-c", LINUX_CACHE / f"provisioned-{PIN['sha256'][:12]}-{DISK_BYTES // MIB}.raw",
-                     linux_disk])
+        run_command(["cp", "-c", provision_linux(), linux_disk])
         self.guests["linux"] = Guest("linux", self.run_dir, linux_disk, self.args.headed)
         for system in SYSTEMS:
             self.guests[system].start()
@@ -920,8 +931,10 @@ class Rig:
         facts = {system: self.facts(system) for system in SYSTEMS}
         for guest in self.guests.values():
             guest.stop()
-        return [self.write(system, commit, before[system], after[system], facts[system])
-                for system in SYSTEMS]
+        series = [self.write(system, commit, before[system], after[system], facts[system])
+                  for system in SYSTEMS]
+        remove_run_disks(self.run_dir)
+        return series
 
     def facts(self, system):
         guest = self.guests[system]
@@ -982,8 +995,7 @@ class Rig:
         else:
             provenance["toolchain"] = {"fork": FORK, "commitsAhead": FORK_AHEAD, "base": FORK_BASE,
                                        "staged": BREENIX_TOOLCHAIN,
-                                       # The record snapshot_inputs verified, not the
-                                       # shared stamp as it reads now.
+                                       # The worktree stamp verified at snapshot time.
                                        "stamp": self.build}
         metadata = {
             "system": system, "target": "arm64-qemu", "hardware": hardware(profiles[0]),
@@ -1046,10 +1058,70 @@ def ratio_table(linux_path, breenix_path):
     return "\n".join(lines)
 
 
+def remove_run_disks(run_dir):
+    """Unlink the two VM disks and return the count and allocated bytes of those files."""
+    disks = allocated = 0
+    for system in SYSTEMS:
+        path = run_dir / f"{system}-disk.raw"
+        try:
+            info = path.lstat()
+            if not stat.S_ISREG(info.st_mode):
+                continue
+            path.unlink()
+        except FileNotFoundError:
+            continue
+        disks += 1
+        allocated += info.st_blocks * 512
+    return disks, allocated
+
+
+def prune_runs():
+    cutoff = time.time() - 3600
+    disks = allocated = runs = 0
+    for run_dir in (CACHE / "runs").glob("*"):
+        if (run_dir.is_symlink() or not run_dir.is_dir() or run_dir.stat().st_mtime >= cutoff
+                or not all((SERIES_DIR / f"{run_dir.name}-{system}.series.json").is_file()
+                           for system in SYSTEMS)):
+            continue
+        count, size = remove_run_disks(run_dir)
+        runs += bool(count)
+        disks += count
+        allocated += size
+    print(f"Pruned {disks} raw disks from {runs} runs ({allocated:,} allocated bytes, "
+          f"{allocated / GIB:.2f} GiB before shared filesystem blocks).")
+
+
+@contextmanager
+def cache_lock(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
+def ensure_breenix_key():
+    directory = BREENIX_KEY.parent
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    public = BREENIX_KEY.with_suffix(".pub")
+    with cache_lock(directory / ".lock"):
+        if BREENIX_KEY.is_file():
+            if not public.is_file():
+                result = run_command(["ssh-keygen", "-y", "-f", BREENIX_KEY],
+                                     capture_output=True, text=True)
+                atomic_write(directory, public, result.stdout)
+            return
+        with TemporaryDirectory(dir=directory) as temporary:
+            key = Path(temporary) / BREENIX_KEY.name
+            run_command(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "breenix-test-image",
+                         "-f", key])
+            key.with_suffix(".pub").replace(public)
+            key.replace(BREENIX_KEY)
+
+
 def write_build_stamp(stamp, commit, artifacts):
     stamp.parent.mkdir(parents=True, exist_ok=True)
     record = {"commit": commit, "artifacts": {str(path): sha256(path) for path in artifacts}}
-    stamp.write_text(json.dumps(record, indent=2) + "\n")
+    atomic_write(stamp.parent, stamp, json.dumps(record, indent=2) + "\n")
 
 
 def read_build_stamp(stamp, head):
@@ -1086,8 +1158,7 @@ def verify_build_stamp(stamp, head, artifacts):
 def snapshot_inputs(stamp, head, artifacts, into):
     """Clone each stamped artifact into the run (`into`) and verify the clones against
     the stamp, read once. Every boot of the run, restarts included, and its sidecar use
-    these, so a build-breenix elsewhere that replaces the shared stamp or artifacts
-    during the run changes nothing in it. Returns the record and each artifact's clone."""
+    these. Returns the record and each artifact's clone."""
     record = read_build_stamp(stamp, head)
     into.mkdir(parents=True)
     clones = {}
@@ -1103,26 +1174,30 @@ def snapshot_inputs(stamp, head, artifacts, into):
 
 def build_breenix():
     """Build the Breenix inputs (RIG.md) from a clean tree and stamp their commit."""
-    if git("status", "--porcelain", "--untracked-files=no"):
-        raise ValueError("commit the tree first: the build stamp records its commit")
-    commit = git("rev-parse", "HEAD")
-    env = toolchain_build_env()
-    for words in BREENIX_BUILD:
-        run_command(words, cwd=ROOT, env=env)
-    # As the suite boot does after --kd-loader: the pinned libc beside the loader.
-    kd = Path(env.get("BREENIX_KD_BUILD_DIR", ROOT / "userspace/programs/target/kd/aarch64"))
-    shutil.copyfile(env["BREENIX_KD_LIBC_INPUT"], kd / "libc.so")
-    stage_image(env)
-    if git("rev-parse", "HEAD") != commit or git("status", "--porcelain", "--untracked-files=no"):
-        raise ValueError(f"the tree moved from {commit} during the build; nothing was stamped")
-    write_build_stamp(BUILD_STAMP, commit, BREENIX_ARTIFACTS)
+    with cache_lock(WORKTREE_CACHE / ".lock"):
+        if git("status", "--porcelain", "--untracked-files=no"):
+            raise ValueError("commit the tree first: the build stamp records its commit")
+        commit = git("rev-parse", "HEAD")
+        env = toolchain_build_env()
+        ensure_breenix_key()
+        for words in BREENIX_BUILD:
+            run_command(words, cwd=ROOT, env=env)
+        # As the suite boot does after --kd-loader: the pinned libc beside the loader.
+        kd = Path(env.get("BREENIX_KD_BUILD_DIR", ROOT / "userspace/programs/target/kd/aarch64"))
+        shutil.copyfile(env["BREENIX_KD_LIBC_INPUT"], kd / "libc.so")
+        stage_image(env)
+        if (git("rev-parse", "HEAD") != commit
+                or git("status", "--porcelain", "--untracked-files=no")):
+            raise ValueError(f"the tree moved from {commit} during the build; nothing was stamped")
+        write_build_stamp(BUILD_STAMP, commit, BREENIX_ARTIFACTS)
     print(f"Breenix inputs built and stamped at {commit} ({BUILD_STAMP})")
 
 
 def toolchain_build_env():
     """The environment of the rustc and cargo suite boots' builds and staging. The hosted
     toolchain's inputs are the E25 build caches, named the way those boots name them."""
-    env = {key: value for key, value in os.environ.items() if key != "CARGO_TARGET_DIR"}
+    env = {key: value for key, value in os.environ.items()
+           if key not in ("CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR", "BREENIX_KD_BUILD_DIR")}
     missing = [name for name in ("BREENIX_RUSTC_PORT_BUILDS", "BREENIX_K7_STAGE") if not env.get(name)]
     if missing:
         raise ValueError(f"set {' and '.join(missing)} to the ARM K5 cache and the K7 stage "
@@ -1132,6 +1207,7 @@ def toolchain_build_env():
     env.setdefault("BREENIX_KD_LIBC_INPUT",
                    env.get("BREENIX_HOSTED_LIBC") or str(cache / "shared-libc/libc.so"))
     env["BREENIX_TEST_SSH_KEY_DIR"] = str(BREENIX_KEY.parent)
+    env["BREENIX_ROOT_BUILD_VOLUME"] = f"breenix-bbench-{WORKTREE_CACHE.name}"
     return env
 
 
@@ -1160,18 +1236,6 @@ def stage_image(env):
     partial.rename(BREENIX_IMAGE)
 
 
-def check_breenix_inputs():
-    """The commit the Breenix inputs were built from, once they are present and fit."""
-    missing = [path for path in (*BREENIX_ARTIFACTS, BREENIX_KEY) if not path.exists()]
-    if missing:
-        raise ValueError("missing Breenix inputs (run scripts/bench-qemu-arm64.sh "
-                         "build-breenix): " + ", ".join(map(str, missing)))
-    if BREENIX_IMAGE.stat().st_size != DISK_BYTES:
-        raise ValueError(f"{BREENIX_IMAGE} must be {DISK_BYTES // MIB} MiB, the rig's disk size "
-                         "(scripts/bench-qemu-arm64.sh build-breenix)")
-    return verify_build_stamp(BUILD_STAMP, git("rev-parse", "HEAD"), BREENIX_ARTIFACTS)
-
-
 def run_id_problems(run):
     """Why the run's series could not be written, decided before anything boots: each
     system's series ID and sidecar reference, and the run ID as the session field."""
@@ -1189,6 +1253,7 @@ def cli(argv):
     commands.add_parser("fetch-linux")
     commands.add_parser("provision-linux")
     commands.add_parser("build-breenix", help="build the Breenix inputs at HEAD and stamp them")
+    commands.add_parser("prune", help="discard old completed runs' VM disks")
     table = commands.add_parser("ratios", help="Markdown table of a run's two series")
     table.add_argument("linux", type=Path)
     table.add_argument("breenix", type=Path)
@@ -1205,6 +1270,9 @@ def cli(argv):
     if args.command == "build-breenix":
         build_breenix()
         return 0
+    if args.command == "prune":
+        prune_runs()
+        return 0
     if args.command == "ratios":
         print(ratio_table(args.linux, args.breenix))
         return 0
@@ -1218,8 +1286,7 @@ def cli(argv):
         parser.error(f"--run {args.run!r} cannot be published: {'; '.join(problems)}")
     if git("status", "--porcelain", "--untracked-files=no"):
         parser.error("commit the tree first: the series record its commit")
-    commit = check_breenix_inputs()
-    provision_linux()
+    commit = git("rev-parse", "HEAD")
     rig = Rig(args, commit)
     try:
         rig.run()

@@ -67,19 +67,24 @@ staging, which checks each file against the K5 and K7 build records), extends it
 to 8192 MiB, and converts it to a BreenFS root with `scripts/create-breenfs-root.sh`
 (the converter `scripts/lib/root-fs.sh` runs for `--root-fs breenfs`; it uses
 Docker on macOS). The result is
-`~/Library/Caches/breenix-bench/breenix-arm64/root.raw`. It writes
-`~/Library/Caches/breenix-bench/breenix-arm64/build.json` with the commit and the
-SHA-256 of the kernel, the BreenFS image and the four bbench binaries. `run`
-refuses to start unless that stamp names HEAD and each
-artifact still has its stamped digest; the series' kernel and userland commit is
-the stamped one. Before the first boot the run clones each artifact into
-`runs/<run>/inputs/` and checks the clones against the stamp, read once. The
-first boot and each restart use those clones, and the sidecar records
-that verified stamp, so a `build-breenix` in another worktree during the run
-leaves the run's inputs and record as verified (`test_rig.BuildIdentity`).
+`~/Library/Caches/breenix-bench/breenix-arm64/<worktree-hash>/root.raw`,
+where the directory name is the SHA-256 of the resolved absolute worktree path.
+The build holds that directory's lock from the first build command through
+publication of `build.json`, which records the commit and the SHA-256 of the
+kernel, the BreenFS image and the four bbench binaries. The macOS converter's
+Docker build volume uses the same worktree hash. Run `build-breenix` once per
+worktree to populate this cache.
+
+Before either guest boots, `run` takes the same lock, reads the stamp, checks that
+it names the measured HEAD, clones each artifact and checks the clones against
+the stamp. The verified image copy becomes `runs/<run>/breenix-disk.raw`, so no
+second image copy is needed in `inputs/`. The run releases the lock after the
+snapshot. The first boot and every restart use those private inputs, and the
+sidecar records the verified stamp (`test_rig.BuildIdentity`).
 Linux builds bbench from the same commit (`git archive` of the stamped commit).
 
-The key directory keeps the image's test-only SSH key, so the rig can log in as
+The shared `breenix-arm64/test-ssh/` directory keeps the image's test-only SSH
+key, which the rig creates once under its own lock. The rig logs in as
 `sshtest`. `--bbench` builds `bbench` and `bbench-exit` as shipped (opt-level z,
 with libbreenix at 3), and for the crypto rows `bbench` twice more: with
 libbreenix at opt-level z (profile `bench-oz`), and at opt-level 3 throughout.
@@ -110,6 +115,20 @@ samples per case (default 5), `--cases` selects a subset, and `--headed` shows
 the VMs in windows. Receipts, serial logs and QEMU command lines go to
 `~/Library/Caches/breenix-bench/runs/<run>/`. The rig stops only the QEMU
 processes it started, by the pid it recorded.
+
+After both guests stop and both series are written, the rig removes
+`breenix-disk.raw` and `linux-disk.raw`. Receipts, serials, QEMU argv, logs and
+series stay available. To remove those same disks from existing runs whose
+directories were last modified more than one hour ago and whose two series
+files are present, run:
+
+```sh
+scripts/bench-qemu-arm64.sh prune
+```
+
+The command reports the number of disks and filesystem blocks removed from the
+run directories. APFS clones can share blocks, so that count can exceed the
+increase in volume free space.
 
 The run ID must make two series IDs Vigil accepts (`<run>-linux` and
 `<run>-breenix`, each at most 120 characters), a note reference to each sidecar
