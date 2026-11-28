@@ -412,6 +412,26 @@ fn writeback(&self, node: &VNode, batch: &WritebackBatch) -> Result<(), Errno>  
   to each frame and the `FILLING` claim. The backend may sleep and take its own locks.
 - **Native backends do not implement `writeback`.** Dirty pages reach BreenFS through its commit (11.3).
 
+### 6.1a Fill completion revalidates the file
+
+E2.9's revalidation (9.2) covers the mapping: munmap, mprotect and a replaced VMA. A fill also needs the file <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+to be unchanged for the pages it read, or it publishes older bytes, or a hole, over a newer change. Today's
+population solves the same race with a mark (`memory/file_map.rs:557-561`, `:1555-1558`), and E3 keeps it on
+every `Filling` claim:
+
+- **Claim, then snapshot.** A fill claims its pages under `tree_lock` before it takes its read snapshot
+  (6.2, step 1). A change made between the two marks the claim, so the order is conservative.
+- **Changes mark claims.** Under `tree_lock`, each operation that changes the file's bytes or extents for a <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+  range without going through the cache's own pages marks the `Filling` claims it covers stale: before E3-8,
+  every BreenFS write (today's `mark_populating`); always, truncation, a hole punch, and an observer mount
+  adopting a newer generation (4.2). From E3-8, `write()` changes pages through the cache, and a `write()`
+  that reaches a `Filling` page waits for it (4.5) instead of racing it. It holds only `io`, which a filler
+  never takes (section 15).
+- **Completion rechecks.** Under `tree_lock`, the fill publishes a page only if the entry still holds its
+  claim's frame and the claim is unmarked. Otherwise it discards that page's result: the entry becomes
+  `Absent` (or goes, past EOF), the frame is marked `CANCELED` (9.2a), and the channel is woken. Waiters
+  retry, and the next fill reads a new snapshot.
+
 ### 6.2 BreenFS fill
 
 1. Take a read snapshot of the open view: today, under the foreground lock. After E2.5, pin the view and its
@@ -1342,6 +1362,12 @@ waits for E3-6 (it needs pages retained by the cache to be worth anything), so t
     verifies its run and pauses before its copy, then fill B asks for a buffer. B waits for A's token, and
     A's frames hold file A's bytes. Today's staging is per call, so this guards the ownership the PR keeps
     and is not red on the old tree; the PR says so.
+  - DEV-29(3) 0.1's second interleaving, through the production fill: pause the fill after its device read
+    of page 0, run a production BreenFS write of page 0, then complete the fill. A fault on page 0 and a
+    `read` both return the write's bytes, and the fill counts one discarded page. This check comes first in
+    the PR: it is red if the old tree's population still merges a stale page. If today's mark already
+    prevents that, it is not red on the old tree, and it guards that E3-4's fill keeps the mark; the PR
+    says which.
   - A population of a file with an uncommitted write, and with a frozen generation's page, maps the written
     bytes: write page 0, freeze, write page 1, then `mmap` and read both through the mapping before the
     drain. Today's `read_into` reads through the mount state's layers, so this guards that the new `fill`
@@ -1803,7 +1829,7 @@ generation, and its bytes live only in BreenFS's `DirtyPages` map. A population 
 Before it completes, a write changes page 0 (DEV-29(3) 0.1's second interleaving).
 
 ```pycon
->>> RULE = 'revalidate-vma-only'
+>>> RULE = 'revalidate-file-snapshot'
 >>> claim = {'stale': False}
 >>> def write_during_fill():
 ...     claim['stale'] = True
