@@ -887,8 +887,10 @@ fn init_device(device: &mut VirtioMmioDevice) -> Result<([u8; 6], Negotiated, us
     } else {
         0
     };
+    // Halve the depth until the wanted pairs fit the budget together: a pair
+    // per CPU comes before deeper queues on fewer of them.
     let mut depth = queue_depth(device, 0).max(queue_depth(device, 1));
-    while depth > MIN_DEPTH && pair_pages(depth, staging_pages) > DMA_BUDGET_PAGES {
+    while depth > MIN_DEPTH && want * pair_pages(depth, staging_pages) > DMA_BUDGET_PAGES {
         depth /= 2;
     }
     let mut pairs = want.min((DMA_BUDGET_PAGES / pair_pages(depth, staging_pages).max(1)).max(1));
