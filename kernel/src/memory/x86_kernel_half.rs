@@ -1,52 +1,48 @@
-#[cfg(not(target_arch = "x86_64"))]
-use super::{PageTable, PageTableFlags, PhysFrame, Size4KiB, VirtAddr};
-#[cfg(target_arch = "x86_64")]
 use x86_64::{
-    structures::paging::{PageTable, PageTableFlags, PhysFrame, Size4KiB},
+    structures::paging::{PageTable, PageTableFlags, PhysFrame},
     VirtAddr,
 };
 
+/// Install a boot-owned PDPT for every kernel PML4 slot.
+///
 /// The offset must map the boot tables and every frame returned by the allocator.
-/// Allocated frames must be disjoint from all the boot tables.
+/// Allocated frames must be disjoint from each other and from the boot tables.
 pub(super) unsafe fn migrate_kernel_half(
     pml4: &mut PageTable,
     phys_mem_offset: VirtAddr,
     mut allocate: impl FnMut() -> PhysFrame,
-) -> PhysFrame {
-    let kernel_pdpt_frame = allocate();
+) {
+    for root_entry in pml4.iter_mut().skip(256) {
+        let frame = allocate();
+        let new_pdpt = (phys_mem_offset + frame.start_address().as_u64()).as_mut_ptr::<PageTable>();
+        let mut flags = root_entry.flags();
 
-    let pdpt_virt = phys_mem_offset + kernel_pdpt_frame.start_address().as_u64();
-    let pdpt = &mut *pdpt_virt.as_mut_ptr::<PageTable>();
-    for i in 0..512 {
-        pdpt[i].set_unused();
-    }
+        if let Ok(old_frame) = root_entry.frame() {
+            let old_pdpt =
+                (phys_mem_offset + old_frame.start_address().as_u64()).as_ptr::<PageTable>();
+            core::ptr::copy_nonoverlapping(old_pdpt, new_pdpt, 1);
 
-    // Copy existing kernel mappings (256-511) to the new kernel PDPT
-    for i in 256..512 {
-        if !pml4[i].is_unused() {
-            // This PML4 entry has kernel mappings
-            let old_pdpt_frame: PhysFrame<Size4KiB> = pml4[i].frame().unwrap();
-            let old_pdpt_virt = phys_mem_offset + old_pdpt_frame.start_address().as_u64();
-            let old_pdpt = &*(old_pdpt_virt.as_ptr() as *const PageTable);
-
-            let new_pdpt_virt = phys_mem_offset + kernel_pdpt_frame.start_address().as_u64();
-            let new_pdpt = &mut *(new_pdpt_virt.as_mut_ptr() as *mut PageTable);
-
-            // Copy PDPT entries
-            let _pdpt_index = ((i - 256) * 512) % 512; // Map PML4 index to PDPT range
-            for j in 0..512 {
-                if !old_pdpt[j].is_unused() {
-                    new_pdpt[j] = old_pdpt[j].clone();
+            // Keep the root writable and executable for later mappings without
+            // changing the effective permissions of any of the boot mappings.
+            for entry in (*new_pdpt).iter_mut() {
+                let mut child_flags = entry.flags();
+                if child_flags.contains(PageTableFlags::PRESENT) {
+                    if !flags.contains(PageTableFlags::WRITABLE) {
+                        child_flags.remove(PageTableFlags::WRITABLE);
+                    }
+                    child_flags |= flags & PageTableFlags::NO_EXECUTE;
+                    if child_flags != entry.flags() {
+                        entry.set_flags(child_flags);
+                    }
                 }
             }
-
-            log::debug!("Migrated kernel mappings from PML4 entry {}", i);
+        } else {
+            (*new_pdpt).zero();
+            flags = PageTableFlags::empty();
         }
 
-        // Update PML4 entry to point to shared kernel PDPT
-        let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
-        pml4[i].set_frame(kernel_pdpt_frame, flags);
+        flags.insert(PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
+        flags.remove(PageTableFlags::NO_EXECUTE);
+        root_entry.set_frame(frame, flags);
     }
-
-    kernel_pdpt_frame
 }
