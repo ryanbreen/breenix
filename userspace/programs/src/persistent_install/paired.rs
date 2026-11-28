@@ -943,27 +943,44 @@ fn toolchain(root: &Dir, rust: &Dir) -> Result<(), String> {
     let runtime = manifest["runtime"]
         .as_object()
         .ok_or("missing toolchain runtime inventory")?;
-    for required in ["libc.so", "ld-breenix.so"] {
+    // scripts/devbox/toolchain.py keys each runtime row by its absolute path,
+    // `/lib/<name>`; the check reads it as `<name>` inside the draft's /lib.
+    for required in ["/lib/libc.so", "/lib/ld-breenix.so"] {
         if !runtime.contains_key(required) {
             return Err(format!("missing toolchain runtime {required}"));
         }
     }
+    let runtime = runtime
+        .iter()
+        .map(|(path, facts)| {
+            path.strip_prefix("/lib/")
+                .filter(|name| !name.is_empty() && !name.contains('/'))
+                .map(|name| (name, facts))
+                .ok_or_else(|| format!("unsafe toolchain runtime path {path:?}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let payload: Vec<_> = payload.iter().map(|(path, facts)| (path.as_str(), facts)).collect();
     let libraries = root
         .dir(OsStr::new("lib"), None)
         .map_err(|err| format!("/lib: {err}"))?;
     for (root, rows, hash) in [(&version, payload, false), (&libraries, runtime, true)] {
         for (path, facts) in rows {
             let path = Path::new(path);
+            let shown = if hash {
+                Path::new("/lib").join(path)
+            } else {
+                path.to_path_buf()
+            };
             if path.is_absolute()
                 || path
                     .components()
                     .any(|part| !matches!(part, std::path::Component::Normal(_)))
                 || hash && path.components().count() != 1
             {
-                return Err(format!("unsafe toolchain manifest path {path:?}"));
+                return Err(format!("unsafe toolchain manifest path {shown:?}"));
             }
             let Some((dir, info)) = root.lookup(path).map_err(io_error)? else {
-                return Err(format!("missing toolchain file {path:?}"));
+                return Err(format!("missing toolchain file {shown:?}"));
             };
             let mode = facts["mode"]
                 .as_str()
@@ -981,7 +998,7 @@ fn toolchain(root: &Dir, rust: &Dir) -> Result<(), String> {
                         != sha.unwrap()
             {
                 return Err(format!(
-                    "toolchain {id} metadata or runtime bytes differ at {path:?}"
+                    "toolchain {id} metadata or runtime bytes differ at {shown:?}"
                 ));
             }
         }
