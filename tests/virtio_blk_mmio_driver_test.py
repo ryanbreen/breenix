@@ -4,10 +4,12 @@
 Compiles the production MMIO driver pieces (request gate, slot completions,
 engine lock and drain, transfer, flush, the queue report and the interrupt
 handler) with the production blk_queue engine against a fake device over host
-memory, then drives interleavings in a fixed order:
+memory, then drives three interleavings in a fixed order:
 
 - report: an interrupt arrives while the slow-request report holds the
   engine lock; the completion must still reach its waiter.
+- flush_turn: a flush that finds a write in flight must not be overtaken by
+  a later request on other sectors.
 - late_clear: owner P takes its result on slot 0; owner X reserves slot 0
   before P's code has finished; P then finishes. X's chain completion must
   still wake X.
@@ -376,6 +378,55 @@ fn report() {
         "the report released the engine and left the completed chain's waiter stranded");
 }
 
+static HELD: AtomicUsize = AtomicUsize::new(usize::MAX);
+static OVERTAKER: AtomicUsize = AtomicUsize::new(usize::MAX);
+static PARKS: AtomicU32 = AtomicU32::new(0);
+
+/// While the flush is parked: a new request on other sectors tries to get
+/// in, then the write the flush waits for completes.
+fn flush_park() {
+    let gate = &REQUEST_GATES[0];
+    match PARKS.fetch_add(1, Ordering::SeqCst) {
+        0 => {
+            if let Some(entry) = gate.try_admit(100, 108, true) {
+                OVERTAKER.store(entry, Ordering::SeqCst);
+            }
+            gate.release(HELD.load(Ordering::SeqCst));
+        }
+        1 => {
+            // Only reached when the newcomer got in; it completes too.
+            gate.release(OVERTAKER.load(Ordering::SeqCst));
+        }
+        _ => panic!("the flush parked a third time"),
+    }
+}
+
+fn flush_turn() {
+    setup(features::FLUSH);
+    AUTO_DEVICE.store(true, Ordering::SeqCst);
+    let gate = &REQUEST_GATES[0];
+    // A write on sectors 0..8 is in flight when the flush arrives.
+    HELD.store(gate.try_admit(0, 8, true).expect("the write"), Ordering::SeqCst);
+    *PARK_HOOK.lock().unwrap() = Some(flush_park);
+    assert_eq!(flush(0), Ok(()));
+    *PARK_HOOK.lock().unwrap() = None;
+    assert_eq!(OVERTAKER.load(Ordering::SeqCst), usize::MAX,
+        "a request that arrived after the flush was admitted ahead of it");
+    assert_eq!(PARKS.load(Ordering::SeqCst), 1);
+    assert_eq!(device_log(), [(request_type::FLUSH, 0)]);
+    // The flush left no claim behind it.
+    let entry = gate.try_admit(100, 108, true).expect("a request after the flush");
+    gate.release(entry);
+    // A flush that cannot wait gives its turn back.
+    let held = gate.try_admit(0, 8, true).unwrap();
+    CAN_SLEEP.store(false, Ordering::SeqCst);
+    assert!(flush(0).is_err());
+    CAN_SLEEP.store(true, Ordering::SeqCst);
+    let entry = gate.try_admit(200, 208, true).expect("a refused flush kept its turn");
+    gate.release(entry);
+    gate.release(held);
+}
+
 fn late_clear() {
     setup(features::FLUSH);
     // Owner P writes sector 0 on slot 0.
@@ -414,6 +465,7 @@ fn late_clear() {
 fn main() {
     match std::env::args().nth(1).as_deref() {
         Some("report") => report(),
+        Some("flush_turn") => flush_turn(),
         Some("late_clear") => late_clear(),
         other => panic!("unknown scenario {other:?}"),
     }
@@ -453,6 +505,9 @@ class VirtioBlkMmioDriver(unittest.TestCase):
 
     def test_report_keeps_an_interrupt_completion(self):
         self.run_case('report')
+
+    def test_a_waiting_flush_is_not_overtaken(self):
+        self.run_case('flush_turn')
 
     def test_a_late_owner_does_not_clear_the_next_owner(self):
         self.run_case('late_clear')
