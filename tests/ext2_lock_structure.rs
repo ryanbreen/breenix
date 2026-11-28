@@ -77,6 +77,12 @@
 //!       reset silently reverting to whole-boot-first semantics, which
 //!       the other checks do not pin (the reset call lives outside
 //!       `mod.rs`).
+//!
+//! Added with E2.2's park contract:
+//!   12. `holder_fn()` and `contender_fn()` (`lock_race.rs`) hold a
+//!       `park::Braked` guard and take no bare `preempt_disable()` -- the
+//!       gate now admits only depth == baseline, so a bare brake turns the
+//!       oracle's park path into a poll and a spin.
 
 use std::fs;
 use std::path::PathBuf;
@@ -547,9 +553,46 @@ fn validate_run_one_resets_park_marker(body: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The #728 oracle's holder and contender must reach the park path. Since
+/// E2.2 the gate admits only a context whose depth equals its recorded
+/// baseline (`park::sleepable_braked`), so a worker that brakes with a bare
+/// `preempt_disable()` sits at depth 1 over baseline 0: the holder polls, the
+/// contenders spin, and `run_one` scores `no-park-observed`. The worker must
+/// hold a `park::Braked` guard, which raises depth and baseline together.
+fn validate_worker_holds_braked(body: &str) -> Result<(), String> {
+    let mask = code_mask(body);
+    if code_offsets(body, &mask, "park::Braked::new()").is_empty() {
+        return Err(
+            "does not hold a park::Braked guard -- the park contract refuses its level \
+             (depth 1 over baseline 0), so the lock gate spins instead of parking"
+                .to_string(),
+        );
+    }
+    if !identifier_offsets(body, &mask, "preempt_disable").is_empty() {
+        return Err(
+            "takes a bare preempt_disable() brake -- the park contract refuses that level, \
+             so the lock gate spins instead of parking"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Positive tests — the real source satisfies every property.
 // ---------------------------------------------------------------------------
+
+#[test]
+fn lock_race_holder_holds_a_braked_level() {
+    let source = repo_text("kernel/src/fs/ext2/lock_race.rs");
+    validate_worker_holds_braked(function_body(&source, "holder_fn")).unwrap();
+}
+
+#[test]
+fn lock_race_contender_holds_a_braked_level() {
+    let source = repo_text("kernel/src/fs/ext2/lock_race.rs");
+    validate_worker_holds_braked(function_body(&source, "contender_fn")).unwrap();
+}
 
 #[test]
 fn ext2_acquire_is_can_sleep_gated_with_a_spin_fallback() {
@@ -691,6 +734,16 @@ fn negative_missing_spin_fallback_is_rejected() {
     let err =
         validate_park_capable_with_spin_fallback(regressed, "ext2_spin_wait_upgrade").unwrap_err();
     assert!(err.contains("spin fallback"), "unexpected message: {err}");
+}
+
+#[test]
+fn negative_lock_race_worker_with_a_bare_brake_is_rejected() {
+    let bare = "{ preempt_disable(); let guard = root_fs_read(); drop(guard); preempt_enable(); }";
+    let err = validate_worker_holds_braked(bare).unwrap_err();
+    assert!(err.contains("park::Braked"), "unexpected message: {err}");
+    let both = "{ let _level = crate::task::park::Braked::new(); preempt_disable(); }";
+    let err = validate_worker_holds_braked(both).unwrap_err();
+    assert!(err.contains("bare preempt_disable"), "unexpected message: {err}");
 }
 
 #[test]
