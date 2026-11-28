@@ -487,3 +487,36 @@ concurrency, loss or RTT named in the prediction.
   PRR behavior.
 - Describe `COAL_NOW` as a forced send-consumer update because the guide makes
   the resulting interrupt conditional on the interrupt-avoidance state.
+
+### PR 1 details (DEV-39(2))
+
+- The congestion policy's events carry acknowledged bytes, flight size and
+  SMSS but no clock or RTT sample in PR 1, because NewReno reads neither; PR 10
+  adds them for CUBIC behind the same internal dispatch.
+- An ACK answering a zero-window probe is not counted as a duplicate, although
+  RFC 5681's definition would count it, because the design keeps persist
+  separate from loss recovery and a repair into a shut window cannot be taken.
+- Recovery entry takes the outstanding data as FlightSize because PR 1 sends no
+  Limited Transmit (RFC 3042) segments to exclude.
+- New data leaves only in whole segments of `min(SMSS, queued)` under the
+  congestion window, and one segment may leave whenever the flight from
+  `send_unack` is empty, because filling the window's remainder would send sub-MSS segments
+  and a window below one segment must not stall the flow.
+- When only the FIN is outstanding, a fast or partial-ACK repair resends the
+  FIN, because that is the first unacknowledged sequence space.
+- After a handshake timeout, data starts with an RTO of exactly three seconds,
+  the value RFC 6298 5.7 names, rather than keeping the SYN's backed-off value.
+- The first deterministic check delivers duplicates for segments 2, 3, 5 and 6
+  and loses the ACKs of segments 7 and 8, because the row's 8 SMSS before the
+  three-SMSS partial ACK and its 6 SMSS after it require exactly four
+  duplicates. It also adds a window update before the third duplicate and
+  refuses IP output for the first repair, covering the duplicate definition
+  and the retained-repair rule the bullets above state.
+- The checks compile the whole of `kernel/src/net/tcp.rs` in
+  `tools/tcp-host-tests` with stand-ins for its kernel services. They drive
+  `handle_tcp`, `drain_deferred_tx` and `run_timers`, the production receive,
+  deferred-output and timer-pass entry points, because the sender's decisions
+  span those three. `/proc/net/tcp_stats` names the new counters
+  `retransmitted_segments`, `fast_retransmits`, `partial_ack_retransmits`,
+  `timeout_retransmits` and `fast_recoveries` beside the existing
+  `retransmit_timeouts`.
