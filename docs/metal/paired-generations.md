@@ -234,6 +234,12 @@ a window, so the paired installer uses descriptors instead.
    not DEAD space still being reaped.
 2. `paired begin <id>`:
    - check statfs free blocks against twice the inventory's regular-file bytes plus the global reserve;
+   - refuse while `/var/lib/accounts/pending/` holds a file. Once `/home` is mounted, first-boot reconciliation
+     adds each pending key to that account's `~/.ssh/authorized_keys` and then removes the file (docs/metal/README.md,
+     the `var/lib/accounts/pending/<account>` row). `/var` is shared, so a trial would apply it to `/home` before
+     `committed`, and a rollback would keep the key. A pending file left on the running system means its own boot
+     did not apply it, which the operator settles first. Publish (4.6) checks again after the freeze. The pending
+     files are written by the installer's account setup (persistent_install.rs:406-411);
    - on the first paired deploy only, convert the toolchain selection (4.5);
    - read the epoch (E1);
    - write `/run/breenix/paired/<id>.epoch` (4.0's walk, mode 0600): E1 and the boot ID from
@@ -389,7 +395,8 @@ Only the selection moves into the generation:
 2. Unmount the staging mount (detach syncs the draft).
 3. `ROOT_FREEZE` the running root and take E2 from it (3.3). If E2 differs from E1, thaw, delete the draft and
    exit with `running root changed during the deploy (epoch E1 -> E2); rerun`.
-4. `SNAPSHOT_RENAME` `<id>.new` → `gen-<id>`, one committed transaction. A root named `gen-<id>` exists only after
+4. Refuse, thaw and keep the draft if `/var/lib/accounts/pending/` now holds a file (4.1).
+5. `SNAPSHOT_RENAME` `<id>.new` → `gen-<id>`, one committed transaction. A root named `gen-<id>` exists only after
    apply, verify and the toolchain check have passed.
 
 The running root stays frozen through the kernel and manifest publication and the reboot (4.7). If the host
@@ -416,7 +423,9 @@ manager commit that `--replace-manager` installed). Until then, the root is name
 A missing root then costs one failed trial, ended by the 600 s deadline, instead of a refusal before the trial.
 
 The host publishes `kernel.img` with `bput`, then the manifest, which arms the attempt. Then it reboots once
-(#3247's sequence, metal_live_flash.py:236-243). The manager writes TRY.IMG, publishes LIVE.ID and boots the trial.
+(#3247's sequence, metal_live_flash.py:236-243). The reboot command carries the pending-key check as its guard,
+beside the boot-ID guard (`test` that `/var/lib/accounts/pending/` is empty `&& sudo -n /sbin/reboot`), so a key
+staged after publish stops the reboot, and the host runs `paired abort`. The manager writes TRY.IMG, publishes LIVE.ID and boots the trial.
 The trial kernel mounts `gen-<id>` read-write with the default tree, the shared binds and `/home`, exactly as a
 persistent boot does today.
 
@@ -484,7 +493,7 @@ and `--inject paired-no-commit`.
 - Shared state is not generation content (design section 6, step 5), so it keeps whatever the trial session wrote:
   `/etc`, `/var`, `/opt`, `/srv`, `/root`, `/tmp`, `/run`, and `etc-reconcile`'s additions of missing defaults.
   Old credentials do not come back. Factory defaults therefore have to stay additive across a pair.
-- `/home` likewise keeps any writes made during the trial session.
+- `/home` likewise keeps any writes made during the trial session. The deploy keeps one automatic `/home` write out of the trial: no pending key exists when it reboots (4.1).
 - BreenFS's copy-on-write commits and checksums protect both pairs against crashes and torn writes. They do not
   protect against a kernel that commits wrong metadata to the shared volume. A pair whose kernel changes the
   on-disk format cannot roll back, so paired deploys refuse a kernel that sets an incompat bit the running kernel
