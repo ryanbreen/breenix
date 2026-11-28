@@ -130,6 +130,43 @@ fn arm_elf(kind: u16, base: u64, entry: u64, path: Option<&[u8]>) -> Vec<u8> {
 }
 
 #[test]
+fn e6_initial_stack_capability_suffix() {
+    for (machine, minimum) in [(62, 2048), (EM_AARCH64, 5120)] {
+        for interpreted in [false, true] {
+            let path = interpreted.then_some(PATH);
+            let mut program = elf(2, PROGRAM_BASE, PROGRAM_ENTRY, path);
+            let mut interpreter = elf(3, INTERP_BASE, INTERP_ENTRY, None);
+            put(&mut program, 18, &machine.to_le_bytes());
+            put(&mut interpreter, 18, &machine.to_le_bytes());
+            let program = read(&program, machine).unwrap();
+            let interpreter = read(&interpreter, machine).unwrap();
+            let region = PROGRAM_BASE..PROGRAM_BASE + 0x10000;
+            let plan = program
+                .exec_plan(interpreted.then_some((&interpreter, region)))
+                .unwrap();
+            let words: Vec<_> = plan.auxv(RANDOM, IDS).collect();
+            let bytes: Vec<_> = words
+                .iter()
+                .flat_map(|&(tag, value)| tag.to_le_bytes().into_iter().chain(value.to_le_bytes()))
+                .collect();
+            let suffix = [(16u64, 0u64), (26, 0), (51, minimum), (0, 0)];
+            let expected: Vec<_> = suffix
+                .into_iter()
+                .flat_map(|(tag, value)| tag.to_le_bytes().into_iter().chain(value.to_le_bytes()))
+                .collect();
+            assert_eq!(&bytes[bytes.len() - expected.len()..], expected);
+            assert_eq!(plan.auxv_size(), bytes.len());
+            for (tag, _) in suffix {
+                assert_eq!(words.iter().filter(|pair| pair.0 == tag).count(), 1);
+            }
+            // Controls for the existing credential and interpreter contracts.
+            assert_eq!(words.contains(&(7, plan.interpreter_bias().unwrap_or(0))), interpreted);
+            assert_eq!(words.iter().find(|pair| pair.0 == 12), Some(&(12, IDS[1])));
+        }
+    }
+}
+
+#[test]
 fn interp_handoff_auxv_aarch64() {
     let mut program = arm_elf(2, PROGRAM_BASE, PROGRAM_ENTRY, Some(PATH));
     program.resize(2 * PAGE as usize, 0);
