@@ -551,9 +551,10 @@ fn receive_path_uses_scaled_peer_window_only_after_active_handshake() {
     };
     let peer_window = || tcp::tcp_sender_info(&id).unwrap().send_window;
     assert_eq!(peer_window(), 60_000, "SYN+ACK window is unscaled");
-    // Below that window, the congestion window admits the initial window:
-    // three of the 1396-byte segments the SYN+ACK's MSS allows (RFC 5681 3.1).
-    assert_eq!(payload_len(take_output()), 3 * 1396);
+    // Below that window, the congestion window admits the initial window.
+    // The SYN above was sent again by its timer, so that is one of the
+    // 1396-byte segments the SYN+ACK's MSS allows (RFC 5681 3.1).
+    assert_eq!(payload_len(take_output()), 1396);
     receive(id, start, ack, TcpFlags::ack(), &[], &[]);
     tcp::drain_deferred_tx();
     assert_eq!(peer_window(), 120_000, "ordinary peer ACK scales the window");
