@@ -7,6 +7,14 @@ fn arch_interrupts_enabled() -> bool {
     true
 }
 fn arch_halt_with_interrupts() {}
+mod input {
+    pub mod host {
+        pub mod diagnostics {
+            pub fn report_failure() {}
+        }
+    }
+}
+
 mod time {
     pub fn get_ticks() -> u64 {
         0

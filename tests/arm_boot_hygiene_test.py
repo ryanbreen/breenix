@@ -82,7 +82,7 @@ mod console_mode {
         pub struct Supervisor(Scope, bool);
         impl Supervisor {
             pub fn load(scope: Scope, publish: bool) -> Self {
-                assert_eq!(RECONCILED.load(Ordering::Relaxed), publish,
+                assert_eq!(super::RECONCILED.load(super::Ordering::Relaxed), publish,
                            "only PID 1 reconciles machine state before loading services");
                 Self(scope, publish)
             }
