@@ -727,6 +727,16 @@ impl VirtioPciDevice {
         self.common.read_u8(COMMON_CFGGEN) as u32
     }
 
+    /// Size of the device-specific PCI capability.
+    pub(super) fn config_bytes(&self) -> usize {
+        self.device_cfg.length as usize
+    }
+
+    /// Read an aligned 16-bit device-specific field.
+    pub(super) fn read_config_u16(&self, offset: usize) -> u16 {
+        self.device_cfg.read_u16(offset)
+    }
+
     /// Read a u8 from device-specific configuration.
     pub fn read_config_u8(&self, offset: usize) -> u8 {
         if !self.device_cfg.is_valid() {

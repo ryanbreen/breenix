@@ -16,7 +16,12 @@ pub struct Partition {
 
 impl Partition {
     pub fn new(disk: Box<dyn BlockDevice>, first: u64, sectors: u64) -> Result<Self, &'static str> {
-        if sectors == 0 || first.checked_add(sectors).map_or(true, |end| end > disk.num_blocks()) {
+        let size = disk.block_size();
+        let capacity = disk.num_blocks();
+        if !matches!(size, 512 | 4096) || capacity.checked_mul(size as u64).is_none() {
+            return Err("the disk's logical geometry is not supported");
+        }
+        if sectors == 0 || first.checked_add(sectors).is_none_or(|end| end > capacity) {
             return Err("the partition does not fit its disk");
         }
         Ok(Self { disk: Arc::from(disk), first, sectors })
@@ -47,7 +52,8 @@ impl Partition {
     }
 
     fn span(&self, start: u64, count: usize) -> Result<u64, BlockError> {
-        let end = start.checked_add(count as u64).ok_or(BlockError::OutOfBounds)?;
+        let count = u64::try_from(count).map_err(|_| BlockError::OutOfBounds)?;
+        let end = start.checked_add(count).ok_or(BlockError::OutOfBounds)?;
         if end > self.sectors {
             return Err(BlockError::OutOfBounds);
         }
