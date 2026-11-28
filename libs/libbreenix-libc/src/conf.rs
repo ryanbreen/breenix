@@ -34,7 +34,22 @@ fn memory_pages(free: bool) -> i64 {
 
 fn minimum_signal_stack() -> i64 {
     let floor = libbreenix::signal::MINSIGSTKSZ_FLOOR as u64;
-    crate::crt::auxv_entry(libbreenix::auxv::AT_MINSIGSTKSZ).unwrap_or(floor).max(floor) as i64
+    crate::crt::auxv_entry(libbreenix::auxv::AT_MINSIGSTKSZ)
+        .unwrap_or(floor)
+        .clamp(floor, i64::MAX as u64) as i64
+}
+
+pub(crate) fn minimum_thread_stack() -> usize {
+    const FLOOR: usize = 16384;
+    #[cfg(feature = "e6")]
+    {
+        // Keep the existing space for ordinary thread and handler frames
+        // above the maximum kernel signal frame.
+        return minimum_signal_stack()
+            .saturating_add((FLOOR - libbreenix::signal::MINSIGSTKSZ_FLOOR) as i64) as usize;
+    }
+    #[cfg(not(feature = "e6"))]
+    FLOOR
 }
 
 /// sysconf's value for `name` (`crate::sysconf`): -1 with errno unchanged is a
@@ -80,7 +95,7 @@ pub fn system_value(name: i32) -> i64 {
         72 => 32,                             // TTY_NAME_MAX
         73 => 4,                              // PTHREAD_DESTRUCTOR_ITERATIONS
         74 => -1,                             // keys grow until allocation fails
-        75 => 16384,                          // PTHREAD_STACK_MIN
+        75 => minimum_thread_stack() as i64,   // PTHREAD_STACK_MIN
         76 => -1,                             // PTHREAD_THREADS_MAX: no fixed limit
         77 | 78 => VERSION,                   // thread stack address and size attributes
         79 => -1,                             // priority-ordered wakeups are not provided
@@ -98,8 +113,9 @@ pub fn system_value(name: i32) -> i64 {
         // The programming environments: only LP64 with a 64-bit off_t.
         // Runtime signal-stack sizing, with the legacy floor on older kernels.
         libbreenix::signal::SC_MINSIGSTKSZ => minimum_signal_stack(),
-        libbreenix::signal::SC_SIGSTKSZ => minimum_signal_stack()
-            + (libbreenix::signal::SIGSTKSZ_FLOOR - libbreenix::signal::MINSIGSTKSZ_FLOOR) as i64,
+        libbreenix::signal::SC_SIGSTKSZ => minimum_signal_stack().saturating_add(
+            (libbreenix::signal::SIGSTKSZ_FLOOR - libbreenix::signal::MINSIGSTKSZ_FLOOR) as i64,
+        ),
         239 | V8_LP64_OFF64 => 1,
         237 | 238 | 240 | V8_ILP32_OFF32 | V8_ILP32_OFFBIG | V8_LPBIG_OFFBIG => -1,
         // Valid names of options this implementation does not provide.

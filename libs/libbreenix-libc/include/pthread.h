@@ -37,10 +37,7 @@ typedef __breenix_pthread_barrierattr_t pthread_barrierattr_t;
 #define PTHREAD_EXPLICIT_SCHED 1
 #define PTHREAD_SCOPE_SYSTEM 0
 #define PTHREAD_SCOPE_PROCESS 1
-/* Four pages: the thread's ARM64 signal frame (ucontext_t of 4560 bytes plus
- * siginfo, the kernel's MINSIGSTKSZ of 5120) and the cancellation and
- * cleanup path's frames above it; equal to libs/libc's PTHREAD_STACK_MIN. */
-#define PTHREAD_STACK_MIN 16384
+#include <__breenix/thread_stack_min.h>
 #define PTHREAD_DESTRUCTOR_ITERATIONS 4
 #define PTHREAD_BARRIER_SERIAL_THREAD (-1)
 #define PTHREAD_CANCEL_ENABLE 0

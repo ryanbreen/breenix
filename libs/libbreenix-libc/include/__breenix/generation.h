@@ -1,0 +1,1 @@
+/* The staged sysroot selects its ABI here. */

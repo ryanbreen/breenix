@@ -1,0 +1,13 @@
+--- a/std/src/sys/pal/unix/thread.rs
++++ b/std/src/sys/pal/unix/thread.rs
+@@ -777,3 +777,10 @@
+ unsafe fn min_stack_size(_: *const libc::pthread_attr_t) -> usize {
++    #[cfg(target_os = "breenix")]
++    {
++        let minimum = unsafe { libc::sysconf(libc::_SC_THREAD_STACK_MIN) };
++        if minimum > 0 {
++            return minimum as usize;
++        }
++    }
+     libc::PTHREAD_STACK_MIN
+ }
