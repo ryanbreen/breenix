@@ -8,6 +8,11 @@ Rulings: DEV-37(2) orders this design before any E1 code. DEV-29 adopted the toy
 rule, and DEV-31 makes ARM64 QEMU the performance rig. The memory lane's full findings (F5, F6, F8, F11 and
 the keep list) are the evidence base for section 1.
 
+Amendment (2026-11-27, after E1-1's builder stopped at design fit, ledger line 124). The first version of
+this plan had the kernel consume each conventional range of the final UEFI map (40 on the reference fixture), but the ARM64 handoff
+carries at most 32 of them (section 1.5). Sections 1.5, 4.5 and 4.6 now specify how the complete map
+reaches the kernel, and sections 2.2, 3, 4.1, 9, 10, 11 (E1-1 and E1-2), 12 and 14 follow from them.
+
 Clean room. The designs below come from textbooks, published papers and hardware manuals, listed in
 section 10. The only code read for this document is Breenix's own. No other operating system's or C
 library's source was read, fetched or quoted.
@@ -109,6 +114,30 @@ capacity at least 16 MiB, 40-48 MiB of a 64 MiB heap (memory lane F6). On 16 GiB
   point repairs around it.
 - There is no reclaim path: no shrinkers, no watermarks and no OOM policy (memory lane F8).
 
+### 1.5 The ARM64 loader handoff carries at most 32 ranges
+
+Line numbers in this section, and in sections 4.5 and 4.6, are from main at 82b312d6.
+
+- `parallels-loader` boots Parallels and VMware. ARM64 QEMU does not use it: the kernel is booted directly
+  with a device tree, and `kernel_main` receives `hw_config_ptr == 0` (`main_aarch64.rs:728`).
+- At exit from boot services the loader calls the `uefi` crate's `exit_boot_services(LOADER_DATA)`
+  (`parallels-loader/src/main.rs:376`). It runs the final descriptors through
+  `final_uefi_conventional_ranges` into the contract's fixed `RangeSet` of `MAX_RANGES = 32`
+  (`phys_memory.rs:16-35`), then copies the survivors into `HardwareConfig.ram_regions`
+  (`main.rs:376-387`).
+- That array is a second cap of 32: `MAX_RAM_REGIONS = 32` in the loader (`hw_config.rs:7-8, 93-98`), and
+  `ram_regions: [RamRegion; 32]` in the kernel's copy of the layout (`platform_config.rs:799-801`).
+- The kernel builds its frame pool only from that array (`platform_config.rs:894-912`). The full
+  descriptor list itself does not cross the boundary.
+- The drop is silent. The `RangeSet`'s `truncated` flag has no field in `HardwareConfig`, so the kernel's
+  "firmware map truncated" note (`main_aarch64.rs:893-899`) cannot fire for ranges the loader dropped.
+- `HardwareConfig` is defined twice, once on each side, with a comment that the two must match
+  (`platform_config.rs:773-774`).
+- The kernel accepts exactly `HARDWARE_CONFIG_VERSION = 7` (`arm64-boot-contract/src/lib.rs:28`). Any
+  other version fails an `assert!` (`main_aarch64.rs:729-733`) before the kernel has configured its UART
+  from the config, so a mismatched loader stops the boot with no readable message.
+- The loader keeps the map buffer and itself in `LOADER_DATA`, which the kernel does not free.
+
 ## 2. Goals, non-goals and invariants kept
 
 ### 2.1 Goals (the six items DEV-37(2) and the brief name)
@@ -138,6 +167,10 @@ capacity at least 16 MiB, 40-48 MiB of a 64 MiB heap (memory lane F6). On 16 GiB
 - Swap: not now (DEV-29 Q4). Section 5.7 keeps room for it.
 - NUMA placement. The section layout of section 4.2 leaves room for per-node arrays, but E1 does not
   implement nodes.
+- Reclaiming ARM64 boot-services and loader memory (UEFI types 1 to 4) after devices are reset. These stay
+  reserved, because firmware DMA can still be in flight after ExitBootServices
+  (`phys_memory.rs:11-15`). The complete map of section 4.5 makes a later reclaim possible, but E1 keeps
+  today's policy, and no effort owns that reclaim yet (14.10).
 
 ### 2.3 Invariants kept (the audit's keep list)
 
@@ -159,7 +192,7 @@ capacity at least 16 MiB, 40-48 MiB of a 64 MiB heap (memory lane F6). On 16 GiB
 From the bottom up:
 
 ```
-memory map (x86 bootloader regions; ARM64 frame pool)        -- 4.1
+memory map (x86 bootloader regions; ARM64 UEFI map or DT)    -- 4.1, 4.5, 4.6
   -> boot carve (metadata arrays, direct-map tables)           -- 4.1, 4.2
   -> frame metadata sections (FrameMeta per 4 KiB frame)        -- 4.2, 4.3
   -> buddy allocator per zone, mobility-grouped pageblocks     -- 5
@@ -184,17 +217,21 @@ glue: locks, interrupt masking, the direct map and page tables.
 - Both architectures normalise their memory description into one sorted, disjoint, page-aligned set of
   usable RAM ranges.
   - x86: the bootloader's `MemoryRegions`, less the 1 MiB floor and the AP trampoline run.
-  - ARM64: the same inputs `platform_config::frame_pool()` reads today, with the clip to 4 GiB removed
-    (section 4.4). Removing the kernel's clip is not enough on its own, because two limits upstream of it
-    also drop RAM:
+  - ARM64: the same firmware descriptions the kernel reads today, with the clip to 4 GiB removed
+    (section 4.4). Removing the kernel's clip is not enough on its own, because three limits upstream of
+    it also drop RAM:
     - `arm64-boot-contract`'s `RangeSet` holds at most `MAX_RANGES = 32` ranges
       (`libs/arm64-boot-contract/src/phys_memory.rs:35`) and sets `truncated` when it drops one
-      (lines 122-127, 168-171). A UEFI map or device tree with more fragments loses RAM before the kernel
-      sees it. E1-1 feeds the kernel's growable range set straight from the firmware description: the
-      device tree through the contract's existing visitor (`fdt::walk`, line 488), and the UEFI map through
-      `final_uefi_conventional_ranges`'s descriptor filter (line 16), split out so it yields ranges instead
-      of building the fixed set. The fixed set is then no longer on the frame-pool path. The fixed set stays for the loader's own early use, where its
-      `truncated` flag becomes a boot error rather than a silent drop.
+      (lines 122-127, 168-171). On the device tree path, E1-1 feeds the kernel's growable range set
+      straight from the contract's existing visitor (`fdt::walk`, line 488), so the fixed set is no longer
+      on the frame-pool path.
+    - On the UEFI path, the loader filters the final map into that fixed set and copies the result into
+      `HardwareConfig`'s 32-entry `ram_regions` array, and the kernel sees only the array (section 1.5).
+      Splitting the filter in the kernel cannot recover ranges the loader did not pass. E1-1 changes the
+      handoff instead: the loader passes the final map itself, and the kernel filters it (section 4.5).
+    - Once neither path uses the fixed set for the frame pool, no RAM depends on it. It stays only where
+      a loader-side caller still needs a bounded set, and there its `truncated` flag becomes a boot error
+      rather than a silent drop.
     - The output address width is fixed at 40 bits (`TCR_IPS_40BIT`, `arch_impl/aarch64/boot.S:82`, and
       the same constant in `parallels-loader/src/page_tables.rs:112`), so RAM at or above 1 TiB cannot be
       mapped. E1-2 sets TCR_EL1.IPS from ID_AA64MMFR0_EL1.PARange (Arm ARM, the ID_AA64MMFR0_EL1 and TCR_EL1
@@ -312,6 +349,205 @@ Zone, order and per-CPU cache counts go in a new `/proc/breenix/kmem`.
 - x86-64 needs no change: the bootloader's dynamic physical-memory mapping covers it.
 - `PhysAddrWrapper::from_kernel_virt` already uses the CPU's own translation (`AT S1E1R` on ARM64, a table
   walk on x86), so it needs no change.
+
+### 4.5 The complete UEFI memory map reaches the kernel (ARM64)
+
+The loader stops filtering. It passes the final map itself, as the firmware returned it, and the kernel
+filters it in one place. No fixed array sits between the two.
+
+#### 4.5.1 What the UEFI specification defines (UEFI 2.10)
+
+- `GetMemoryMap()` (§7.2.3) fills a caller's buffer with `EFI_MEMORY_DESCRIPTOR`s and returns the map's
+  size, a `MapKey`, a `DescriptorSize` and a `DescriptorVersion`.
+  - The stride is `DescriptorSize`: "OS software must use the DescriptorSize to find the start of each
+    EFI_MEMORY_DESCRIPTOR in the MemoryMap array". A firmware may report more than the structure's size.
+  - `EFI_MEMORY_DESCRIPTOR_VERSION` is 1. Its fields are `Type` (u32 at offset 0), `PhysicalStart` (u64
+    at 8), `VirtualStart` (u64 at 16), `NumberOfPages` (u64 at 24) and `Attribute` (u64 at 32), so 40
+    bytes. Bytes past 40 in a longer stride are not interpreted.
+  - `PhysicalStart` is aligned to 4 KiB and is not above `0xffff_ffff_ffff_f000`. `NumberOfPages` is not
+    0 and describes no page that starts above that address.
+  - A buffer that is too small gets `EFI_BUFFER_TOO_SMALL`. The buffer for the next call "should be bigger
+    than the value returned in MemoryMapSize, since allocation of the new buffer may potentially increase
+    memory map size".
+  - Attribute bits used here: `EFI_MEMORY_RUNTIME` (bit 63), and `EFI_MEMORY_SP` (bit 18), which marks
+    specific-purpose memory set aside for particular drivers.
+- `ExitBootServices()` (§7.4.6) takes the `MapKey` of the latest `GetMemoryMap()`. A stale key returns
+  `EFI_INVALID_PARAMETER`, and the loader must call `GetMemoryMap()` and `ExitBootServices()` again. The
+  firmware may shut boot services down in part on the first call. After that first call, the loader may
+  call only the Memory Allocation Services.
+- `AllocatePages()` and `AllocatePool()` (§7.2.1, §7.2.4) take a memory type. The values
+  `0x8000_0000..=0xFFFF_FFFF` are reserved for OS loaders. Pool allocations are 8-byte aligned.
+- On AArch64, boot services run with an identity mapping (§2.3.6), so an address the loader holds before
+  exit is a physical address.
+
+#### 4.5.2 The loader: a buffer allocated before the final `GetMemoryMap()`
+
+- The loader keeps using the `uefi` crate's `exit_boot_services`, with a Breenix memory type instead of
+  `LOADER_DATA`: `MemoryType::custom(BOOT_MAP_MEMORY_TYPE)`, where `BOOT_MAP_MEMORY_TYPE = 0x8000_4252` is
+  in the OS-loader range and no other allocation uses it. The constant lives in `arm64-boot-contract`.
+- The crate's documented contract (version 0.33, the `exit_boot_services` and `MemoryMapMeta`
+  documentation) is:
+  - the returned map is backed by a pool allocation of the given type;
+  - exiting is retried at most once;
+  - the buffer is not freed, because boot services are gone.
+  The crate also shuts down its own logger and allocator, which the loader relies on today.
+- The ordering then follows from the specification, not from the crate's internals. Any allocation after
+  a `GetMemoryMap()` changes the map, and with it the key, so `ExitBootServices()` with that key fails.
+  So when the exit succeeds, the map whose key it used already contains each allocation made before it,
+  the buffer included. No allocation is possible after a successful exit.
+- The kernel does not trust that ordering blindly. The final map must describe its own buffer with a
+  `BOOT_MAP_MEMORY_TYPE` descriptor, or the kernel refuses the map (rule 6 of 4.5.5). A map taken before
+  the buffer existed cannot pass that check.
+- Rejected alternative: the loader's own `GetMemoryMap`/`AllocatePages`/`ExitBootServices` sequence on the
+  raw boot-services table. It would let the loader place the buffer below 4 GiB, but it duplicates the
+  crate's retry, and it would have to disable the crate's logger and allocator by hand. Because a pool
+  buffer can land anywhere, the loader maps it instead (4.5.4).
+- Rejected alternative: a fixed array in the loader's image. That needs no allocation, but it is a fixed
+  ceiling on the descriptor count, which section 9 rules out.
+- Then, in place of today's code:
+  - The loader's early map read, `populate_ram_regions` (`main.rs:127, 465`), keeps its own job. It finds
+    the RAM base that sets `ram_base_offset` for VMware's relocation (`main.rs:124-157`), and it feeds the
+    `[ram]` log lines (`main.rs:129-140, 198-203`). But it now keeps its result in a loader-local value
+    instead of `HardwareConfig.ram_regions`, which the final map overwrote anyway.
+    - The base it uses becomes the lowest one it found. Today the code takes the first entry
+      (`main.rs:148-149`). The two differ only if the firmware lists RAM out of address order.
+    - The filter loop (`main.rs:376-387`) goes, and `ram_region_count` is written as 0.
+  - The runtime-region loop (`main.rs:388-399`) keeps reading the same final map.
+  - From the returned map's `meta()` and `buffer()`, the loader records `map_phys`, `map_size`,
+    `descriptor_size` and `descriptor_version` in `HardwareConfig` (4.5.3), and leaks the owner with
+    `core::mem::forget`.
+  - The code between the exit and the jump does not allocate, as today.
+- Before exiting, while it can still print, the loader checks that the kernel accepts v8 (4.5.3).
+
+#### 4.5.3 `HardwareConfig` v8, and compatibility in both directions
+
+- One definition. `HardwareConfig` moves into `arm64-boot-contract`, and both copies go
+  (`hw_config.rs:49-148`, `platform_config.rs:777-823`). It is two `repr(C)` parts:
+  - `HardwareConfigV7`, today's fields exactly. Its layout does not change, so `magic`, `version` and
+    `uart_base_phys` stay at offsets 0, 4 and 8. The loader's handoff stub already reads
+    `uart_base_phys` at `[x3, #8]` (`kernel_entry.rs:74`).
+  - `UefiMapHandoff`, appended after `boot_seed`: `map_phys: u64`, `map_size: u64`,
+    `descriptor_size: u32` and `descriptor_version: u32`.
+- `HARDWARE_CONFIG_VERSION` becomes 8. A v8 loader writes both parts, with `ram_region_count = 0`. The
+  `ram_regions` array keeps its place in the layout, but v8 does not use it.
+- The kernel accepts versions 7 and 8 with the magic.
+  - It reads `HardwareConfigV7` by reference, and reads `UefiMapHandoff` only when the version is at
+    least 8. A v7 loader's static ends at `boot_seed`, so a reference to the v8 type over it would claim
+    bytes that loader did not write.
+  - Version 8: the pool comes from the map (4.5.5), source `UefiMemoryMap`.
+  - Version 7, from an older loader: today's path through `ram_regions`, at most 32 ranges, under a new
+    source, `UefiRegionListV7`. The boot line says so. When `ram_region_count` is 32 it also says RAM may
+    be missing, because a v7 loader drops ranges without saying (1.5). The older loader still boots the
+    newer kernel.
+- Newer loader, older kernel. Each kernel before E1-1 accepts only version 7, and fails the boot
+  unreadably on anything else (1.5). So the loader decides before it exits boot services.
+  - A kernel from E1-1 on exports `#[used] #[no_mangle] static BREENIX_HANDOFF_VERSIONS: [u32; 2] =
+    [7, 8]` (lowest and highest accepted) in `.rodata`.
+  - The loader finds the symbol with its existing `find_symbol` (`kernel_load.rs:329`). It reads the two
+    words from the ELF file image, at the file offset of the section that holds the symbol. So no
+    load-address translation is involved: `vaddr_to_paddr_offset` (`kernel_load.rs:251-254`) is the last
+    segment's offset, not each segment's.
+  - If the symbol is missing or 8 is outside the range, the loader prints "kernel accepts HardwareConfig v7
+    only; this loader writes v8" (or the range it found) on the UEFI console and the UART. Then it returns
+    `EFI_INCOMPATIBLE_VERSION` from its entry point without exiting boot services. The firmware's boot
+    manager has control again, and a kernel that cannot read the config has not run.
+  - A stripped kernel is refused the same way, loudly. The loader already needs the symbol table to find
+    `kernel_main`.
+- The kernel's own backstop. A version it does not accept (9 from a future loader, for example) no
+  longer fails an `assert!`. The kernel configures its UART from `uart_base_phys` and `uart_type`, which
+  stay at offsets 8 and 20 in each version. It prints "HardwareConfig v9 refused: this kernel accepts
+  v7..v8" and halts in a `wfe` loop.
+- v7 acceptance stays until the coordinator retires it. Retiring it raises the kernel's lowest accepted
+  version in its own PR.
+
+#### 4.5.4 Where the map is mapped, and when its memory is released
+
+- At kernel entry, the buffer is reachable the same way `HardwareConfig` is: through the loader's TTBR0
+  identity map, and at `HHDM_BASE + pa` in TTBR1.
+  - The loader's tables already map `[0, 4 GiB)` on both loader platforms, Parallels and VMware (`page_tables.rs:387-574`).
+  - For an address above that, the loader already identity-maps the 1 GiB slots that hold its own image
+    and page-table storage (`page_tables.rs:576-613`). The buffer's first and last slots join that list,
+    with the data attribute.
+  - A slot outside L0[0] (512 GiB and up) gets an L1 table from the page-table storage. The only limit
+    left is the output address width, which E1-2 takes from PARange (4.1).
+  - Secondary CPUs load CPU 0's TTBR values (`boot.S:1042-1065`), so the loader's tables stay in use
+    until the kernel replaces TTBR0 for the first user address space.
+- The kernel reads the map once, in `init_from_parallels`, where it reads the array today
+  (`main_aarch64.rs:728-733`). That is before another CPU starts and before TTBR0 is replaced.
+  - First it probes each page of the buffer with `AT S1E1R` (Arm ARM, address translation instructions).
+    If a page does not translate, it refuses the map. A fault this early would end the boot with no
+    message.
+- Release.
+  - The buffer's type is not conventional memory, so it is outside the usable set while the kernel reads
+    it. The kernel treats it as reserved until it has consumed it.
+  - The last step of the range-set build adds the pages of each `BOOT_MAP_MEMORY_TYPE` descriptor to the
+    set. That comes after the second pass (4.1) and before the first carve.
+  - Only the one map allocation has that type, so no other live data is in those pages. The
+    firmware's pool bookkeeping in them died at exit.
+  - No code reads the buffer after that. The runtime ranges the kernel keeps are in `HardwareConfig`'s
+    own array (`firmware_rtc::configure`), and the kernel takes each count it reports during the passes.
+  - `HardwareConfig` itself stays in loader data and is not released, as today.
+- When the kernel has the map, the range set no longer needs `HardwareConfig.runtime_regions` for RAM
+  safety: runtime descriptors are excluded by attribute (4.5.5). The 64-entry runtime array stays for
+  `GetTime`, and on overflow it still turns `GetTime` off (`main.rs:390-393`).
+
+#### 4.5.5 Validation
+
+There are two classes of check. A structural failure refuses the whole map: the pool becomes
+`FramePoolSource::Unavailable(reason)`, and the boot stops with that reason at the existing panic
+(`main_aarch64.rs:886`). A per-descriptor failure does not add RAM. It can only remove RAM, and each removal
+is counted.
+
+Structural, in order:
+
+1. `map_phys` is not 0 and is 8-byte aligned (the pool's alignment), and `map_phys + map_size` does not
+   overflow.
+2. `descriptor_version` is 1.
+3. `descriptor_size` is at least 40 and a multiple of 8.
+4. `map_size` is at least one `descriptor_size` and a whole multiple of it. The count is the quotient,
+   and there is no upper limit.
+5. Each page of `[map_phys, map_phys + map_size)` translates (4.5.4).
+6. A descriptor of type `BOOT_MAP_MEMORY_TYPE` covers `[map_phys, map_phys + map_size)`. It shows
+   that the map was taken after its buffer was allocated.
+
+Per descriptor:
+
+- The kernel reads `Type`, `PhysicalStart`, `NumberOfPages` and `Attribute` at offsets 0, 8, 24 and 32 of
+  each stride. It ignores `VirtualStart`, because the loader does not call `SetVirtualAddressMap`, and it ignores
+  any bytes past 40.
+- A descriptor is usable only when `Type` is 7 (`EfiConventionalMemory`) and neither `EFI_MEMORY_RUNTIME`
+  nor `EFI_MEMORY_SP` is set. The first two conditions are today's rule (`phys_memory.rs:16-27`). The SP
+  exclusion is new: the specification earmarks that memory for particular drivers.
+- Malformed: `PhysicalStart` not aligned to 4 KiB, `NumberOfPages` of 0, or a range reaching past
+  `0xffff_ffff_ffff_f000`. A malformed usable descriptor adds no RAM. A malformed other descriptor
+  still reserves its bytes, rounded outward to pages with saturation.
+- Overlap. The kernel sorts the descriptors in place by `PhysicalStart` with a heapsort over the stride
+  (Williams 1964; Knuth vol. 3 §5.2.3). That uses no allocation and is O(n log n), and it does not depend
+  on the firmware's order. The buffer is the kernel's to write until it is released. Then one sweep finds
+  overlaps: a byte that more than one descriptor describes is unusable, whatever the types.
+- RAM above the CPU's physical address width is excluded and counted (E1-2, 4.1).
+
+The counts are the descriptors and the stride, the usable ranges and bytes, the malformed descriptors,
+the overlapping bytes and the released bytes. They go on the boot line that already names the pool's
+source (`main_aarch64.rs:878-899`), and into `/proc/breenix/kmem` once it exists.
+
+### 4.6 x86-64: the bootloader already passes the whole map
+
+- The bootloader and `bootloader_api` are pinned to one revision, 707db112 (`Cargo.toml:105`,
+  `kernel/Cargo.toml:214, 226`), and are built into the same image as the kernel.
+- `BootInfo.memory_regions` is a `MemoryRegions`, which `bootloader_api` documents as an FFI slice
+  "semantically equivalent to `&'static mut [MemoryRegion]`". It is a pointer and a length, with no count
+  limit in the handoff.
+- Per the same documentation, the bootloader builds it from the firmware's map and marks the memory it
+  uses itself, and regions marked `Usable` may be used freely. The kernel takes `Usable` only
+  (`frame_allocator.rs:782-833`).
+- So x86 already delivers a full map. Its one cap is the kernel's: `MAX_REGIONS = 128`
+  (`frame_allocator.rs:20`, applied at lines 807-833). E1-1 removes it.
+- The slice lives in memory the bootloader reports as its own, so the frame allocator does not hand it out, and the range
+  set's carve cannot overlap it while the kernel is still reading it. E1 does not release it.
+- No versioning question arises on x86. E1 does not change the x86 handoff, and the bootloader ships with
+  the kernel from the same pinned revision. Which firmware types the bootloader reports as `Usable` is its
+  documented contract, and E1 leaves it alone.
 
 ## 5. The buddy allocator, zones and per-CPU page caches
 
@@ -834,7 +1070,9 @@ heap OOM (audit section 4).
 | 64 MiB x86 heap; 64-128 MiB ARM64 heap | The heap grows from frames until memory runs out, then fails with an error after reclaim |
 | `MAX_REGIONS` = 128 memory-map regions | A range set that grows as needed (4.1) |
 | ARM64 RAM above 4 GiB unused (`DIRECT_MAP_RAM_END`) | The direct map covers the described RAM (4.4) |
-| ARM64 frame pool: 32 ranges (`MAX_RANGES`) and a 40-bit output address width (`TCR_IPS_40BIT`) | Ranges fed straight into the growable set; IPS from the CPU's PARange (4.1) || `MAX_TRACKED_FRAMES` = u32::MAX frames (16 TiB) through u32 ordinals | u64 pfns and a sparse two-level directory whose only address-sized part is 8 bytes per 64 GiB (4.2) |
+| ARM64 frame pool: 32 ranges (`MAX_RANGES`), a 40-bit output address width (`TCR_IPS_40BIT`) | Ranges fed straight into the growable set; IPS from the CPU's PARange (4.1) |
+| ARM64 UEFI handoff: 32 entries in `HardwareConfig.ram_regions` (`MAX_RAM_REGIONS`) | The final UEFI map itself, of any length, passed by pointer and size (4.5) |
+| `MAX_TRACKED_FRAMES` = u32::MAX frames (16 TiB) through u32 ordinals | u64 pfns and a sparse two-level directory whose only address-sized part is 8 bytes per 64 GiB (4.2) |
 | Frame metadata inside the heap | Metadata from frames, 0.78% of RAM (4.2) |
 | Contiguous runs only at the frontier | Buddy runs up to 1 GiB at any time (5.1, 5.6) |
 | Kernel stacks: x86 fixed window (about 990), ARM64 32 MiB pool (about 480) | Stacks from the buddy in a stack window sized from RAM (E1-10) |
@@ -870,7 +1108,19 @@ or 52-bit VA (ARM64) question, outside E1.
 - Intel 64 and IA-32 Architectures Software Developer's Manual, vol. 3A, ch. 4 (paging; global pages and
   invalidation, §4.10).
 - Arm Architecture Reference Manual for A-profile (DDI 0487): VMSAv8-64 translation table descriptors,
-  translation table updates, and TLB maintenance instructions.
+  translation table updates, TLB maintenance instructions, and the address translation instructions
+  (`AT S1E1R`).
+- Unified Extensible Firmware Interface Specification, version 2.10: §2.3.6 (AArch64 platforms), §7.2.1
+  (`AllocatePages()` and the memory types reserved for OS loaders), §7.2.3 (`GetMemoryMap()` and
+  `EFI_MEMORY_DESCRIPTOR`), §7.2.4 (`AllocatePool()`), §7.4.6 (`ExitBootServices()`).
+- The API documentation of the loader's `uefi` crate, version 0.33 (`boot::exit_boot_services`,
+  `MemoryMapMeta`, `MemoryType::custom`), and of `bootloader_api` at the pinned revision
+  (`BootInfo::memory_regions`, `MemoryRegions`). These are interface documents; no bootloader or firmware
+  implementation was read.
+- System V Application Binary Interface, Generic ABI: the ELF section header and symbol table formats the
+  loader's `find_symbol` already reads.
+- J. W. J. Williams, "Algorithm 232: Heapsort", Communications of the ACM 7(6), 1964; Knuth, *TAOCP*
+  vol. 3, §5.2.3.
 - POSIX.1-2017 (The Open Group Base Specifications, Issue 7) and the Linux man pages, for errno values only.
 - The Rust `alloc` crate's documentation of its allocation APIs and of the `no_global_oom_handling`
   configuration.
@@ -888,7 +1138,7 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
 | PR | Title | Depends on | Size |
 |---|---|---|---|
 | E1-0 | This design | - | docs |
-| E1-1 | One usable-RAM range set and a boot carve; no 128-region limit | E1-0 | S |
+| E1-1 | One usable-RAM range set and a boot carve; the complete UEFI map handoff (`HardwareConfig` v8); no 128-region or 32-range limit | E1-0 | M |
 | E1-2 | ARM64 direct map over the described RAM | E1-1 | S |
 | E1-3 | Frame metadata sections replace the heap ledger; free list through metadata; drop the empty-span lock | E1-1, E1-2 | M |
 | E1-4 | `AllocError`, allocation contexts, the reclaim registry and the first shrinkers; OOM record on both architectures | E1-3 | S |
@@ -901,27 +1151,102 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
 | E1-11..E1-20 | OOM conversions, one subsystem per PR (list below) | E1-4 (E1-9 for vmap-backed staging) | S each |
 | E1-21 | Build `alloc` with `no_global_oom_handling`; replace infallible dependencies | E1-11..E1-20 | S |
 
-### E1-1: one usable-RAM range set and a boot carve
+### E1-1: one usable-RAM range set, the complete UEFI map handoff, and a boot carve
 
-- Change: a pure `memory/boot_ranges.rs` builds the normalised range set from either architecture's input,
-  and `carve(bytes, align, below)` takes the highest fitting run. `frame_allocator::init` and
-  `init_aarch64` consume it. `MAX_REGIONS` goes.
+- Change, kernel:
+  - a pure `memory/boot_ranges.rs` builds the normalised range set from either architecture's input, and
+    `carve(bytes, align, below)` takes the highest fitting run. `frame_allocator::init` and
+    `init_aarch64` consume it. `MAX_REGIONS` goes.
+  - `boot_ranges::from_hardware_config` is the one function `init_from_parallels` calls for RAM. It
+    accepts v7 and v8 (4.5.3). For v8 it validates, sorts and reads the map (4.5.5), builds the set in two
+    passes, and releases the map's pages last (4.5.4).
+  - It reads physical memory only through a `BootMemory` trait (read, write and "does this page
+    translate"). The kernel implements the trait with the identity map and `AT S1E1R`.
+  - The kernel exports `BREENIX_HANDOFF_VERSIONS = [7, 8]`. For a version it does not accept, it prints
+    the refusal on the UART and halts, instead of the `assert!` (4.5.3).
+- Change, `arm64-boot-contract`:
+  - one `HardwareConfig` (`HardwareConfigV7` plus `UefiMapHandoff`), `HARDWARE_CONFIG_VERSION = 8`, and
+    `BOOT_MAP_MEMORY_TYPE`;
+  - a stride-aware descriptor reader with the checks of 4.5.5, which the kernel uses;
+  - `encode_uefi_map`, which the loader uses to fill `UefiMapHandoff` from the final map's `meta()` and
+    buffer;
+  - `handoff_decision(elf)`, which the loader uses to proceed or refuse (4.5.3).
+- Change, `parallels-loader`:
+  - `exit_boot_services` with `BOOT_MAP_MEMORY_TYPE`;
+  - `encode_uefi_map`, and `ram_region_count = 0`;
+  - the buffer's 1 GiB slots added to the identity and HHDM list;
+  - `handoff_decision` before exit;
+  - the filter loop deleted, and `populate_ram_regions` writing a loader-local RAM base instead of
+    `HardwareConfig.ram_regions` (4.5.2).
 - x86-64: usable regions past the 128th are kept instead of dropped. Allocation behaviour is otherwise
-  unchanged.
-- ARM64: the frame pool's ranges go through the same type, fed from the device tree visitor and the
-  split-out UEFI descriptor filter instead of the contract's 32-range `RangeSet` (4.1). On a map with at
-  most 32 ranges the result is unchanged.
-- Tests (host, new crate `tools/kmem-host-tests`):
-  - Check first: the existing region-extraction logic, moved unchanged into the pure module, is given
+  unchanged, and the bootloader handoff does not change (4.6).
+- ARM64:
+  - The device tree path feeds the growable set from `fdt::walk` (4.1).
+  - The UEFI path takes the final map. Each conventional range the firmware describes reaches the pool,
+    up to the 4 GiB clip that E1-2 removes. Specific-purpose memory and bytes that two descriptors
+    describe are newly excluded (4.5.5), and the map buffer's pages are newly released.
+  - A v7 loader still boots this kernel, with at most 32 ranges. This loader refuses a kernel older than
+    E1-1 before it exits boot services.
+- Tests (host, new crate `tools/kmem-host-tests`). It depends on `arm64-boot-contract` as a crate and
+  includes `boot_ranges.rs` by `#[path]`.
+  - The boundary tests call the functions production calls on each side: the loader's `encode_uefi_map`,
+    and the kernel's `from_hardware_config`. They are joined only by bytes, a `HardwareConfig` and a map
+    buffer placed at fixed addresses in a simulated physical memory. The simulated memory implements
+    `BootMemory`, and its unmapped pages do not translate.
+  - The first commit holds the checks. It also moves today's code, unchanged, into callable form, and
+    switches the production callers to it, so each red result is the old code's:
+    - the loader's filter-and-copy (`main.rs:376-387`), as `encode_v7_ram_regions(config, descriptors)`;
+    - the kernel's array read (`platform_config.rs:894-912`), as the v7 arm of `from_hardware_config`;
+    - the kernel's version check (`platform_config.rs:858-863`), which accepts only 7;
+    - the loader's decision, which today proceeds with any kernel image.
+  - The reference fixture is one final map:
+    - 40 `EfiConventionalMemory` descriptors of 2 MiB, separated by 40 `EfiReservedMemoryType` descriptors
+      so that no two merge;
+    - loader, boot-services and runtime descriptors, and the buffer's own `BOOT_MAP_MEMORY_TYPE`
+      descriptor;
+    - shuffled with a fixed seed, at `DescriptorSize` 48 with nonzero bytes at offsets 40 to 47.
+  - Check first, the boundary:
+    - The old code gets the fixture's descriptors as tuples, as the `uefi` crate's iterator yields them.
+      It passes 32 ranges, the pool is 16 MiB short, and no truncation is reported, which is red.
+    - The new loader and kernel keep 40 of 40 with the exact byte total. The same fixture at
+      `DescriptorSize` 40 gives the identical set.
+  - Check first, versions:
+    - A v8 config is accepted, which is red on the old check.
+    - A v7 config from `encode_v7_ram_regions` is accepted with at most 32 ranges under source
+      `UefiRegionListV7`. This guards the older-loader direction.
+    - A v9 config is refused with its reason.
+    - On the loader side, `handoff_decision` gets two minimal ELF images the test builds: one exports
+      `BREENIX_HANDOFF_VERSIONS = [7, 8]` and one has no such symbol. It proceeds for the first and refuses
+      the second, which is red on the old decision. An image exporting `[7, 7]` is refused too.
+  - Check first, validation (one fixture per rule, each a single change to the reference map):
+    - Structural cases are each refused with their own reason: `descriptor_version` 2; `descriptor_size`
+      36 and 44; a `map_size` that is not a multiple; `map_phys` not 8-byte aligned; a buffer page that
+      does not translate; and a buffer that no `BOOT_MAP_MEMORY_TYPE` descriptor covers, which is the map
+      a `GetMemoryMap()` taken before the allocation would give.
+    - Per-descriptor cases each lose exactly the stated bytes and no others, and the counts match: a
+      conventional descriptor that overlaps an `EfiACPIMemoryNVS` descriptor by one page, an unaligned
+      start, a page count of 0, a range past `0xffff_ffff_ffff_f000`, and a conventional descriptor with
+      `EFI_MEMORY_SP`.
+    - The overlap and SP fixtures are red through the old path, which keeps those bytes usable.
+  - Check first, release: the simulated memory records each read and write. The
+    `BOOT_MAP_MEMORY_TYPE` pages enter the set only after the last access to the buffer, and the first
+    carve after the build may return them. The old code does not release them, which is red.
+  - Check first, x86: the existing region-extraction logic, moved unchanged into the pure module, is given
     200 usable regions. It keeps 128, which is red. After the change it keeps 200 of 200.
-  - Check first, ARM64: `frame_pool_from_fdt` on a device tree with 40 disjoint memory ranges keeps 32 and
-    sets `truncated`, which is red. The new path keeps 40 of 40. The same holds for a UEFI map of 40
-    conventional descriptors through `final_uefi_conventional_ranges`.
+  - Check first, device tree: `frame_pool_from_fdt` on a device tree with 40 disjoint memory ranges keeps
+    32 and sets `truncated`, which is red. The new path keeps 40 of 40.
   - Unsorted and overlapping firmware entries normalise to disjoint, page-aligned ranges, and the 1 MiB
     floor is applied.
   - A carve with alignment and a `below` limit returns the highest fitting run, or an error when no run fits;
     the range set loses exactly the carved bytes.
-- Boot: not needed. Boot memory order is unchanged.
+- Boot: not needed.
+  - The standard ARM64 QEMU boot script boots the kernel directly with a device tree (1.5). It does not run
+    the loader or reaches the v7 and v8 paths, and its device tree path is settled by the host tests.
+  - Two effects are left that no host test settles: that real firmware places the pool buffer and
+    describes it with its own type, and that the buffer's pages translate at kernel entry. They show on
+    Parallels and VMware, which the program's one final run covers (DEV-30(2)).
+  - A failure there is a named refusal (rules 5 and 6 of 4.5.5), not missing RAM. Section 14 item 8 asks
+    whether to check them earlier.
 - Rows: no row expected to move.
 
 ### E1-2: ARM64 direct map over the described RAM
@@ -934,14 +1259,29 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
   - `direct_map_ram_window`'s clip goes;
   - TCR_EL1.IPS comes from ID_AA64MMFR0_EL1.PARange instead of the fixed 40-bit constant, in `boot.S` and
     in `parallels-loader`'s `page_tables.rs`. RAM above the reported width is left out of the range set and
-    counted (4.1).
+    counted (4.1). The same width bounds where the loader can map E1-1's map buffer (4.5.4). The loader
+    computes the width once and uses it for both.
+  - The order at boot is fixed. First the range set is built from the firmware description (E1-1). That
+    includes reading the UEFI map through the loader's mappings and releasing its buffer. Then the table
+    pages are carved, and then the direct map is extended. So a table page may come from the released
+    buffer, and no code reads the map through the extended direct map.
 - x86-64: no change.
-- ARM64: RAM above 4 GiB joins the frame pool, up to the CPU's physical address width.
+- ARM64: RAM above 4 GiB joins the frame pool, up to the CPU's physical address width. That holds on both
+  paths: the device tree, and E1-1's UEFI map.
 - Tests (host):
   - Check first: the kernel's window choice (`direct_map_ram_window`) moves unchanged into
     `arm64-boot-contract` as a pure function, and `frame_pool_from_fdt` is called with it on a device tree
     describing 6 GiB at 0x4000_0000. The pool ends at 4 GiB, which is red. After the change it covers the
     6 GiB, less the fixed ranges and reservations.
+  - Check first, the UEFI boundary. This is E1-1's reference fixture with its conventional descriptors
+    moved to span 0x4000_0000 to 0x1_C000_0000 (6 GiB), and with the map buffer placed above 4 GiB. It goes
+    through `encode_uefi_map` and `from_hardware_config`, as in E1-1.
+    - On E1-1's code the pool ends at 4 GiB, which is red, and the buffer's released pages are clipped
+      away with the rest.
+    - After the change, the pool covers the 6 GiB less the fixed ranges, the non-conventional
+      descriptors and the overlaps, and the released buffer pages are in it.
+    - The buffer is read at its own address above 4 GiB, through `BootMemory`. Its readability does not
+      depends on the direct-map window.
   - Planner: each page of each range is covered exactly once; no descriptor covers a non-RAM address;
     blocks are used wherever alignment allows; the number of table pages is minimal for the input.
   - Table placement: on the 6 GiB fixture, the planner's table pages are carved with an unbounded carve
@@ -957,6 +1297,9 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
   cannot settle whether the MMU accepts the tables, which is a hardware effect. Cases: the boot-path
   milestone stages, and a census read showing frames above 4 GiB allocated. The prediction is written
   before the boot.
+  - That boot reaches the planner and the MMU through the device tree path only. The loader's
+    PARange-derived IPS and the UEFI path above 4 GiB run on Parallels and VMware, which the final run
+    covers (14.8).
 - Rows: no row moves on the 512 MiB rig, which has no RAM above 4 GiB.
 
 ### E1-3: frame metadata sections replace the heap ledger
@@ -1364,6 +1707,9 @@ The caller inventory comes first, in E1-4, so no runtime caller is left without 
 - Boots: E1-2, E1-3, E1-5, E1-8, E1-9 and E1-10 each need one ARM64 QEMU boot of the standard boot script,
   for the reason given in each PR, and only for the cases named. The other PRs need no boot. No PR runs an
   effort's suites (DEV-30).
+- The ARM64 QEMU boot script does not run `parallels-loader` (1.5). So the loader-to-kernel boundary is
+  tested on the host, by calling the production encoder and decoder on each side of a byte image (E1-1).
+  A QEMU boot is not evidence for it.
 - Kernel `boot_tests` that assume the old allocator are rewritten in the PR that removes what they test:
   `frame_allocator_tests.rs`, `retire_with_free_list_contended` and `free_list_len_for_gate`. They are
   not weakened to pass. Each rewrite tests the same property of the new structure, or is removed with the
@@ -1430,3 +1776,25 @@ where metadata leaving the heap matters most (section 1.1).
    64 bytes (5.7).
 7. No step in this plan changes BreenFS's on-disk format, or anything under `compiler/` or
    `src/llvm-project`.
+8. The UEFI handoff runs only on Parallels and VMware. E1-1's host tests settle the byte boundary: layout,
+   stride, validation, versions and release order. They cannot settle two firmware effects: that real
+   firmware describes the pool buffer with its own type, and that the buffer's pages translate at kernel
+   entry.
+   - Until the program's final run (DEV-30(2)), no check reaches those effects on real firmware. If either
+     fails, each Parallels and VMware boot stops at a named refusal. RAM is not lost silently.
+   - The operator also uses Parallels for interactive work, so such a failure would block that work
+     until a fix lands.
+   - Question for the coordinator: allow one `./run.sh --parallels` boot of E1-1's final head, which
+     reads the pool's boot line (source, descriptor count, released bytes), or accept the final run as the
+     only check. Recommendation: the one Parallels boot. No ARM64 QEMU boot can reach the loader, and the
+     cost of that boot is small next to an interactive target that no longer boots.
+9. Version skew. `scripts/parallels/build-efi.sh` builds the loader with the kernel from one tree, so a
+   fresh image pairs matching versions. Skew comes only from an older disk image, or a loader
+   built from another tree.
+   - A v7 loader with a newer kernel boots with at most 32 ranges, and the boot line says so (4.5.3).
+   - A v8 loader with an older kernel is refused by the loader, before it exits boot services.
+   - v7 acceptance in the kernel stays until the coordinator retires it.
+10. Reclaiming boot-services and loader memory after device reset (2.2) is not in E1, and no effort owns
+    it. The complete map makes it possible. On a VM whose firmware keeps large boot-services ranges, it is
+    RAM the kernel does not use. Recommendation: record it for E3's reclaim work rather than open anything
+    now.
