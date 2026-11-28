@@ -719,6 +719,10 @@ pub(crate) struct ThreadWake {
     pub(crate) index_next: core::sync::atomic::AtomicPtr<ThreadWake>,
     #[cfg(target_arch = "aarch64")]
     pub(crate) cpu: core::sync::atomic::AtomicUsize,
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) timer_group: core::sync::atomic::AtomicUsize,
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) terminated: core::sync::atomic::AtomicBool,
 }
 
 impl ThreadWake {
@@ -734,6 +738,10 @@ impl ThreadWake {
             index_next: core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
             #[cfg(target_arch = "aarch64")]
             cpu: core::sync::atomic::AtomicUsize::new(0),
+            #[cfg(target_arch = "aarch64")]
+            timer_group: core::sync::atomic::AtomicUsize::new(0),
+            #[cfg(target_arch = "aarch64")]
+            terminated: core::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -2015,7 +2023,12 @@ impl Thread {
             crate::task::scheduler::note_thread_terminated(self);
         }
         #[cfg(target_arch = "aarch64")]
-        self.wait_site.clear();
+        {
+            self.wait_site.clear();
+            if let Some(wake) = &self.wake {
+                wake.terminated.store(true, Ordering::Release);
+            }
+        }
         self.state = ThreadState::Terminated;
     }
 

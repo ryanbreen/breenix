@@ -55,11 +55,15 @@ pub(crate) fn is_saving(tid: u64) -> bool {
     saving_cpu(tid).is_some()
 }
 
+pub(crate) fn note_skip() {
+    SKIPPED.fetch_add(1, Ordering::Relaxed);
+}
+
 /// Whether selection must skip `tid` for now, counting the skip.
 pub(crate) fn skip_selection(tid: u64) -> bool {
     let saving = is_saving(tid);
     if saving {
-        SKIPPED.fetch_add(1, Ordering::Relaxed);
+        note_skip();
     }
     saving
 }

@@ -244,7 +244,7 @@ static EL0_INJECTED_PC: AtomicU64 = AtomicU64::new(0);
 static EL0_VICTIM_TID: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(all(target_arch = "aarch64", feature = "ret_zero_pc_oracle"))]
-pub(crate) fn inject_ret_zero_pc_if_armed(sched: &mut Scheduler, thread_id: u64) {
+pub(crate) fn inject_ret_zero_pc_if_armed(sched: &mut crate::task::scheduler::Dispatch, thread_id: u64) {
     let mut line = crate::serial_line::Line::new();
     let victim_tid = RET_VICTIM_TID.load(Ordering::Acquire);
     if victim_tid == 0 || thread_id != victim_tid {
@@ -274,7 +274,7 @@ pub(crate) fn inject_ret_zero_pc_if_armed(sched: &mut Scheduler, thread_id: u64)
 }
 
 #[cfg(all(target_arch = "aarch64", feature = "ret_stack_pc_oracle"))]
-pub(crate) fn inject_ret_stack_pc_if_armed(sched: &mut Scheduler, thread_id: u64) {
+pub(crate) fn inject_ret_stack_pc_if_armed(sched: &mut crate::task::scheduler::Dispatch, thread_id: u64) {
     let mut line = crate::serial_line::Line::new();
     let victim_tid = STACK_VICTIM_TID.load(Ordering::Acquire);
     if victim_tid == 0 || thread_id != victim_tid {
