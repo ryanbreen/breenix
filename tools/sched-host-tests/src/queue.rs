@@ -35,14 +35,25 @@ static WAKE_INBOX_CPUS: AtomicU64 = AtomicU64::new(0);
 static RESCHED_REQUESTED: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
 static NODE: WakeNode = WakeNode::new(TID);
 static ENQUEUE_SAME_LOCK_OK: AtomicU64 = AtomicU64::new(0);
+static ENQUEUE_DEFERRED: AtomicU64 = AtomicU64::new(0);
+static ENQUEUE_ALREADY_QUEUED_OK: AtomicU64 = AtomicU64::new(0);
+static ENQUEUE_TIMER_WAKE: AtomicU64 = AtomicU64::new(0);
+static WAKE_SITE_TIMER: AtomicU64 = AtomicU64::new(0);
+static PINNED_HOLD_PEN_MIGRATED: AtomicU64 = AtomicU64::new(0);
+const READY_SITE_TIMER: u8 = 0;
+const TRACE_SCHED_DIAG_WAKE_TIMER_CURRENT: u16 = 0;
+const TRACE_SCHED_DIAG_WAKE_TIMER_ALREADY_QUEUED: u16 = 1;
+const TRACE_SCHED_DIAG_WAKE_TIMER_ENQUEUE: u16 = 2;
+use crate::task::thread::TimerPop;
 
 thread_local! {
     static CPU: Cell<usize> = const { Cell::new(0) };
     static MIGRATE_ON_LOOKUP: Cell<Option<usize>> = const { Cell::new(None) };
     static KICKS: Cell<u64> = const { Cell::new(0) };
     static SGIS_TO_A: Cell<usize> = const { Cell::new(0) };
-    static TICK_DURING_STEAL: Cell<bool> = const { Cell::new(false) };
+    static DISPATCH_DURING_REMOTE_LOCK: Cell<bool> = const { Cell::new(false) };
     static DISPATCHES_OWED_ON_A: Cell<usize> = const { Cell::new(0) };
+    static NOW_NS: Cell<u64> = const { Cell::new(0) };
 }
 pub(super) use super::{PINNED_HOLDS_OUTSTANDING, SAVING_CPU};
 
@@ -63,6 +74,8 @@ struct TimerHeap {
 enum ThreadState {
     Ready,
     Terminated,
+    BlockedOnTimer,
+    BlockedOnIO,
 }
 
 #[derive(Clone, Copy)]
@@ -72,10 +85,19 @@ struct Pin {
     cpu: usize,
 }
 
-struct Thread {
+pub(super) struct Thread {
     state: ThreadState,
     cpu_affinity: Option<Pin>,
     owner_pid: Option<u64>,
+    wake_time_ns: Option<u64>,
+    blocked_in_syscall: bool,
+    timer_pop: Option<TimerPopRecord>,
+}
+
+struct TimerPopRecord {
+    deadline_ns: u64,
+    own_entry: TimerPop,
+    stale_entries: u64,
 }
 
 #[derive(Default)]
@@ -94,7 +116,7 @@ mod arm64 {
     use super::*;
 
     pub(super) fn note_lock_interval(acquired: bool, _: u64) {
-        if acquired && RQ_LOCKS[0].is_locked() && TICK_DURING_STEAL.replace(false) {
+        if acquired && RQ_LOCKS[0].is_locked() && DISPATCH_DURING_REMOTE_LOCK.replace(false) {
             // CPU A reaches its return-path dispatch while the idle peer
             // holds A's queue. Resume the peer after the acquisition attempt.
             let peer = CPU.replace(0);
@@ -115,7 +137,29 @@ fn is_live(sched: &Scheduler) -> bool {
     std::ptr::eq(LIVE.load(Ordering::Acquire), sched)
 }
 
-fn publish_next_check(_: usize, _: u64) {}
+fn now_ns() -> u64 {
+    NOW_NS.get()
+}
+
+fn record_ready_site(_: u64, _: u8) {}
+
+fn trace_sched_diag(_: u16, _: u64, _: u64, _: u64, _: u32) {}
+
+fn online() -> usize {
+    MAX_CPUS
+}
+
+fn accepts_wakeups(_: usize) -> bool {
+    true
+}
+
+fn least_loaded(prefer: usize) -> usize {
+    prefer
+}
+
+fn place(_: &mut Held, _: Option<&mut Held>, _: u64, _: usize, _: bool, _: bool) -> Option<usize> {
+    panic!("timer subject is still current on its owner");
+}
 
 fn request_resched(cpu: usize) {
     request_resched_arm64(cpu);
@@ -245,6 +289,9 @@ fn fixture(run: impl FnOnce()) {
             state: ThreadState::Ready,
             cpu_affinity: None,
             owner_pid: None,
+            wake_time_ns: None,
+            blocked_in_syscall: false,
+            timer_pop: None,
         }),
         per_cpu_queues: std::array::from_fn(|_| VecDeque::with_capacity(2)),
         ..Scheduler::default()
@@ -256,8 +303,12 @@ fn fixture(run: impl FnOnce()) {
     CPU.set(0);
     KICKS.set(0);
     SGIS_TO_A.set(0);
-    TICK_DURING_STEAL.set(false);
+    DISPATCH_DURING_REMOTE_LOCK.set(false);
     DISPATCHES_OWED_ON_A.set(0);
+    NOW_NS.set(0);
+    for cpu in 0..MAX_CPUS {
+        publish_next_check(cpu, u64::MAX);
+    }
     WAKE_INBOX_CPUS.store(0, Ordering::Relaxed);
     for requested in &RESCHED_REQUESTED {
         requested.store(false, Ordering::Relaxed);
@@ -291,9 +342,9 @@ fn idle_steal_leaves_lone_runner_alone_and_real_wake_kicks_once() {
             for peer in 1..MAX_CPUS {
                 CPU.set(peer);
                 let mut idle = Dispatch::try_local(peer).unwrap();
-                TICK_DURING_STEAL.set(true);
+                DISPATCH_DURING_REMOTE_LOCK.set(true);
                 let stolen = steal_from(&mut idle.0, 0, &mut 0, false, &mut |_| false);
-                TICK_DURING_STEAL.set(false);
+                DISPATCH_DURING_REMOTE_LOCK.set(false);
                 assert_eq!(stolen, None);
                 drop(idle);
 
@@ -314,6 +365,54 @@ fn idle_steal_leaves_lone_runner_alone_and_real_wake_kicks_once() {
         apply_isr_wakeups(&mut runner.0);
         assert_eq!(runner.0.queue().front(), Some(&TID));
         assert_eq!(idle_traffic, (0, 0), "(reschedule SGIs, owed dispatches) on CPU A");
+    });
+}
+
+#[test]
+fn peer_expiry_skips_future_timer_and_wakes_claimed_due_timer() {
+    fixture(|| {
+        const DEADLINE: u64 = 2_000_000;
+        let mut runner = Dispatch::try_local(0).unwrap();
+        runner.0.state().current_thread = Some(TID);
+        let thread = runner.0.thread(TID).unwrap();
+        thread.state = ThreadState::BlockedOnTimer;
+        thread.wake_time_ns = Some(DEADLINE);
+        thread.blocked_in_syscall = true;
+        runner.0.heap().push(Reverse((DEADLINE, TID)));
+        drop(runner);
+
+        CPU.set(1);
+        let mut idle = Dispatch::try_local(1).unwrap();
+        NOW_NS.set(DEADLINE - 1);
+        DISPATCH_DURING_REMOTE_LOCK.set(true);
+        expire_timers(&mut idle.0);
+        DISPATCH_DURING_REMOTE_LOCK.set(false);
+        drop(idle);
+        assert_eq!(
+            (SGIS_TO_A.get(), DISPATCHES_OWED_ON_A.get()),
+            (0, 0),
+            "(reschedule SGIs, owed dispatches) for a future timer"
+        );
+
+        CPU.set(0);
+        let mut runner = Dispatch::try_local(0).unwrap();
+        assert_eq!(runner.0.thread(TID).unwrap().wake_time_ns, Some(DEADLINE));
+        drop(runner);
+        NOW_NS.set(DEADLINE);
+        assert!(claim_due(0, DEADLINE, DEADLINE + 1_000_000));
+        CPU.set(1);
+        let mut idle = Dispatch::try_local(1).unwrap();
+        expire_timers(&mut idle.0);
+        drop(idle);
+        assert_eq!(SGIS_TO_A.get(), 1);
+
+        CPU.set(0);
+        let mut runner = Dispatch::try_local(0).unwrap();
+        assert!(runner.0.heap().is_empty());
+        let thread = runner.0.thread(TID).unwrap();
+        assert!(thread.state == ThreadState::Ready);
+        assert_eq!(thread.wake_time_ns, None);
+        assert!(!thread.blocked_in_syscall);
     });
 }
 

@@ -53,6 +53,9 @@ fn queue_operations(kernel: &Path, out: &Path) {
         code.push_str(item(&rq, signature, ";"));
         code.push('\n');
     }
+    let (_, liveness) = rq.split_once("liveness\n").unwrap();
+    let (timer_publication, _) = liveness.split_once("/// Claim a due deadline of a CPU other").unwrap();
+    code.push_str(timer_publication);
     for signature in [
         "pub(super) struct RqLock {",
         "impl RqLock {",
@@ -66,6 +69,15 @@ fn queue_operations(kernel: &Path, out: &Path) {
         "fn try_steal_lock(",
         "fn is_peer_candidate(",
         "fn has_peer_work(",
+        "fn send_reschedule(",
+        "enum Target {",
+        "fn wake_target(",
+        "fn place_woken(",
+        "fn kick(",
+        "fn note_timer_pop(",
+        "fn timer_entry_live(",
+        "fn expire_heap(",
+        "pub(super) fn expire_timers(",
         "pub(super) enum Wake {",
         "pub(super) enum Woken {",
         "pub(super) fn wake(",
@@ -122,7 +134,8 @@ fn queue_operations(kernel: &Path, out: &Path) {
         out.join("queue_operations.rs"),
         code.replace("#[cfg(target_arch = \"aarch64\")]", "")
             .replace("#[cfg(target_arch = \"x86_64\")]", "#[cfg(any())]")
-            .replace("super::post_resched_arm64", "post_resched_arm64"),
+            .replace("super::post_resched_arm64", "post_resched_arm64")
+            .replace("super::request_resched_arm64", "request_resched_arm64"),
     )
     .unwrap();
 }

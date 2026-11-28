@@ -22,8 +22,21 @@ mod arch_impl {
 
 #[cfg(test)]
 mod task {
+    pub mod park {
+        pub fn arrive_timeout(_: &mut crate::queue::Thread) {
+            panic!("fixture has no timed I/O wait");
+        }
+    }
+
     pub mod scheduler {
         pub fn expire_signal_timers_arm64() {}
+    }
+
+    pub mod thread {
+        pub enum TimerPop {
+            WakeTimeSet,
+            WakeTimeCleared,
+        }
     }
 }
 
@@ -61,6 +74,11 @@ thread_local! {
 
 #[cfg(test)]
 fn send_deferred_sgis(_: usize) {}
+
+#[cfg(test)]
+fn note_pinned_hold(_: u64, _: usize) {
+    panic!("fixture has no held timer wake");
+}
 
 #[cfg(test)]
 mod tracing {
