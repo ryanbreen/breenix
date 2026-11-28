@@ -1523,6 +1523,33 @@ Three PRs need one ARM64 QEMU boot each, for the hardware effect each names: E3-
 boots the repository's standard ARM64 boot script, once, at the PR's final head, for the boot-path stages
 only. No PR runs an effort's suites (DEV-30).
 
+### 19.4 Design models
+
+Each model below reduces one design rule to its interleaving or state, so a review can see it hold. `RULE`
+names the rule the design chooses. They run with `python3 -m doctest docs/plans/e3-page-cache.md`. They are
+not implementation tests: section 18 names the production check for each.
+
+**A failed write keeps earlier writes (7.2).** Page 0 holds an acknowledged write that is not yet durable.
+A later write changes page 0, then needs a frame for page 1, and that allocation fails.
+
+```pycon
+>>> RULE = 'invalidate-to-absent'
+>>> def write(cache, disk, data, frames_free):
+...     if RULE == 'prepare-then-publish' and frames_free < 1:
+...         return 'ENOMEM'
+...     cache[0] = data + cache.get(0, disk[0])[len(data):]
+...     if frames_free < 1:
+...         del cache[0]
+...         return 'ENOMEM'
+...     return 'ok'
+>>> cache, disk = {0: b'AAAA'}, {0: b'....'}
+>>> write(cache, disk, b'BB', frames_free=0)
+'ENOMEM'
+>>> cache.get(0, disk[0])
+b'AAAA'
+
+```
+
 ## 20. bbench rows (DEV-31)
 
 | Row | Ratio (28668b28) | Expected to move in | Parity reachable from E3 alone |
