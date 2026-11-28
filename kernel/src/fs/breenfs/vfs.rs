@@ -718,6 +718,11 @@ struct MountState<W: Wait + 'static> {
     // Metadata edits made on this mount (finish_metadata), so a readdir
     // reply that spans passes can tell an edit landed between them.
     metadata_edits: u64,
+    // Roots a queued delete or rename changes, with the generation that
+    // carries the change (design 7.3a). Each mark lives until that
+    // generation installs, or until the mount fails and nothing more
+    // publishes, whatever the syscall that made it returns (review M7).
+    marked: Vec<(u64, Selecting)>,
     // Changes the booted tree admitted since this mount (3.3).
     root_epoch: u64,
     signal: Arc<CommitSignal>,
@@ -2821,6 +2826,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                 pass_touches: None,
                 observing: None,
                 metadata_edits: 0,
+                marked: Vec::new(),
                 root_epoch: 0,
                 durable,
                 durable_pending,
@@ -4158,6 +4164,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                     committer.install(sb);
                 }
                 state.durable = sb.clone();
+                state.marked.retain(|&(generation, _)| generation > sb.generation);
                 state.durable_pending = Some(durable_pending);
                 // With the free count that excludes N's allocations, stop
                 // charging N's grants for them; each is released below (M3).
@@ -4286,6 +4293,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             let mut state = self.mutation_lock(CostOp::Commit);
             let _excluded = self.inner.costs.span(CostOp::Commit, CostPhase::MountExcluded);
             state.fail(branch, error);
+            state.marked.clear();
             if let Some(committer) = state.committer.as_mut() {
                 committer.abandon();
             }
@@ -4682,9 +4690,10 @@ impl<W: Wait + 'static> BreenFs<W> {
                 return self.sync_generation(None, false);
             }
         }
-        // Under the state lock the delete marks its root; it syncs with no
-        // lock held and clears the mark once the removal is durable (7.3a).
-        let _selecting = {
+        // Under the state lock the delete marks its root and hands the mark
+        // to the generation that carries the removal; it syncs with no lock
+        // held, and the install clears the mark (7.3a, review M7).
+        {
             let mut state = self.foreground_lock()?;
             state.writable()?;
             let id = state.roots.iter().find(|(_, (root, _))| root == name)
@@ -4692,13 +4701,15 @@ impl<W: Wait + 'static> BreenFs<W> {
             let selecting = self.inner.mounted_root.device.select(id)?;
             self.check_root_unmounted(id)?;
             state.protect_edit()?;
+            state.marked.try_reserve(1).map_err(|_| Errno(ENOMEM))?;
             let grant = state.reserve_metadata(&[2], 1, false, false, Operation::DeleteSnapshot)?;
             let result = state.files.delete_root(name);
             state.finish_metadata(&[], grant, result)?;
             state.roots.remove(&id);
             state.skip_reap = true;
-            selecting
-        };
+            let generation = state.open_generation();
+            state.marked.push((generation, selecting));
+        }
         self.sync_generation(None, false)
     }
     fn snapshot_rename(&self, request: &SnapshotRename) -> Result<(), Errno> {
@@ -4708,7 +4719,9 @@ impl<W: Wait + 'static> BreenFs<W> {
         }
         let from = snapshot_name(&request.from)?;
         let to = snapshot_name(&request.to)?;
-        let _selecting = {
+        // As a delete does: the mark lives until the rename's generation
+        // installs (review M7).
+        {
             let mut state = self.foreground_lock()?;
             state.writable()?;
             let (&id, (_, flags)) = state.roots.iter().find(|(_, (name, _))| name == from)
@@ -4717,12 +4730,14 @@ impl<W: Wait + 'static> BreenFs<W> {
             let selecting = self.inner.mounted_root.device.select(id)?;
             self.check_root_unmounted(id)?;
             state.protect_edit()?;
+            state.marked.try_reserve(1).map_err(|_| Errno(ENOMEM))?;
             let grant = state.reserve_metadata(&[2], 1, false, false, Operation::Allocate)?;
             let result = state.files.rename_root(from, to);
             state.finish_metadata(&[], grant, result)?;
             state.roots.insert(id, (to.to_vec(), flags));
-            selecting
-        };
+            let generation = state.open_generation();
+            state.marked.push((generation, selecting));
+        }
         self.sync_generation(None, false)
     }
 
