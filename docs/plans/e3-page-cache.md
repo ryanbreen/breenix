@@ -631,15 +631,22 @@ Each open file description, and each file VMA, carries a small readahead state:
 
 - **Sequential.** A miss at index i is sequential if i = prev + 1 or i lies in the current window. Then the
   window doubles, up to `max`.
-- **Otherwise** the window resets to the request's own pages, rounded up to 4.
-- **The first read at offset 0** starts with a window of twice the request. Files read from their start are
+- **Otherwise** the window resets to the request's own pages, rounded up to 4, and at most `max`.
+- **The first read at offset 0** starts with a window of twice the request, at most `max`. Files read from their start are
   usually read through (McKusick et al. 2014, ch. 9, read clustering; McVoy and Kleiman 1991).
 - **`max`** is the device's maximum transfer times its queue depth (E4 reports the depth; before E4 it is
   1), capped at 2 MiB. It halves while the pressure flag of any zone is set (E1 5.3). The 2 MiB cap is a
   tuning constant, not a RAM ceiling.
+- **One cap.** Every window, on every path (sequential growth, reset, the first read, the hints, a <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+  fault's read-around in 9.4 and `MAP_POPULATE`), is clipped to `max` by the one function in
+  `memory/readahead.rs`. A demanded request larger than `max` is filled in successive windows of at
+  most `max`, each completed before the next is claimed, so one call never holds more than `max` pages
+  in `Filling`.
 - **Hints.** `POSIX_FADV_SEQUENTIAL` and `MADV_SEQUENTIAL` start at `max`. `POSIX_FADV_RANDOM` and
   `MADV_RANDOM` disable growth (window = request). `POSIX_FADV_WILLNEED` and `MADV_WILLNEED` queue an
-  asynchronous fill of the range, replacing today's synchronous 16-page population. `POSIX_FADV_DONTNEED`
+  asynchronous fill of the range as windows of at most `max`, replacing today's synchronous 16-page
+  population. The queue holds at most one stream's share of such windows per call; the rest of the range
+  is dropped, as a hint may be. `POSIX_FADV_DONTNEED`
   drops clean unmapped pages of the range.
 
 ### 8.2 Asynchronous readahead
@@ -650,8 +657,10 @@ Each open file description, and each file VMA, carries a small readahead state:
   overlaps the reader's copies with the device.
 - The worker claims its pages as `Filling` before queueing, so a reader that gets there first waits on the
   page, not on the queue.
-- The worker's queue is bounded by the frames it may claim: at most `max` pages per stream, and a share of
-  free memory overall. When memory is short it drops queued windows, never demanded ones, and retires their claims (9.2a). Readahead is a
+- The worker's queue is bounded by what it may hold: at most `max` pages per stream, and a share of free
+  memory overall. That budget counts everything a queued or running window holds: its claimed frames,
+  its job record, the tree nodes reserved for its entries (4.3) and its bounce buffer (6.4). A window
+  that does not fit is not queued. When memory is short it drops queued windows, never demanded ones, and retires their claims (9.2a). Readahead is a
   hint (Patterson et al. 1995). <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
 
 ### 8.3 Scan resistance
@@ -1320,7 +1329,8 @@ waits for E3-6 (it needs pages retained by the cache to be worth anything), so t
   - Tree reservations: a failed node reservation changes nothing. An allocation-failure sweep fails the Nth
     node for each N. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
   - State table: every (state, event) pair, legal and refused. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
-  - Readahead: windows for a sequential stream, a random stream, two interleaved streams and a stream with
+  - Readahead: every path's window is at most `max`, including the first read and a reset for a 1 GiB <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+    request. Windows for a sequential stream, a random stream, two interleaved streams and a stream with
     a backward step, with fixed sequences.
   - LRU: a working set read twice survives a single pass over a stream 10 times the cache size, and a
     stream read once is evicted first. Fixed seeds.
@@ -1433,6 +1443,10 @@ waits for E3-6 (it needs pages retained by the cache to be worth anything), so t
   - `posix_fadvise(WILLNEED)` over 1,024 pages followed by a populate: 0 synchronous device reads in the
     populate. The old code fills at most 16 pages, then reads the rest synchronously, which is red.
   - The worker's queue under a frame budget drops queued windows and never a demanded one. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+  - One cap: `WILLNEED` over 262,144 pages and a populate of a 1 GiB mapping each hold
+    at most `max` pages in `Filling` at any step, and the budget counts the queued jobs and their node
+    reservations. Today's WILLNEED stops at 16 pages, so this guards the windows the PR adds and is not
+    red on the old tree; the PR says so. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
   - A reader reaching a page the worker claimed waits on it and gets its bytes.
   - A queued window dropped under the frame budget retires its claims: a populate that reached one of
     its pages wakes, fills the page itself and maps the file's bytes. The old tree has no worker, so this
@@ -1954,7 +1968,7 @@ queued window whose pages it had claimed.
 (262,144 pages), a random 1 GiB read and a 1 GiB `WILLNEED` each ask for a window.
 
 ```pycon
->>> RULE = 'per-path'
+>>> RULE = 'uniform-cap'
 >>> MAX = 512
 >>> def window(kind, request):
 ...     raw = {'first': 2 * request, 'reset': -(-request // 4) * 4, 'willneed': request}[kind]
