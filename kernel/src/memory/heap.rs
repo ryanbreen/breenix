@@ -102,6 +102,9 @@ pub fn heap_size() -> u64 {
 /// waiting masked.
 struct IrqSafeLockedHeap {
     inner: Mutex<Inner>,
+    /// The pool's address range, set once at `init`.
+    start: AtomicUsize,
+    end: AtomicUsize,
 }
 
 impl IrqSafeLockedHeap {
@@ -111,6 +114,8 @@ impl IrqSafeLockedHeap {
                 heap: Heap::empty(),
                 counts: case::Counts::new(),
             }),
+            start: AtomicUsize::new(0),
+            end: AtomicUsize::new(0),
         }
     }
 
@@ -164,6 +169,8 @@ impl IrqSafeLockedHeap {
             heap.init(heap_bottom, heap_size);
             ((), 0)
         });
+        self.start.store(heap_bottom as usize, Ordering::Relaxed);
+        self.end.store(heap_bottom as usize + heap_size, Ordering::Relaxed);
     }
 }
 
@@ -189,37 +196,40 @@ impl kmem::Pool for IrqSafeLockedHeap {
         };
         ptr.ok_or(kmem::Miss::Exhausted)
     }
+
+    fn contains(&self, ptr: NonNull<u8>) -> bool {
+        let address = ptr.as_ptr() as usize;
+        address >= self.start.load(Ordering::Relaxed) && address < self.end.load(Ordering::Relaxed)
+    }
+
+    unsafe fn give(&self, ptr: NonNull<u8>) {
+        self.with_inner(|heap| unsafe {
+            heap.deallocate(ptr);
+            ((), 0)
+        });
+    }
 }
 
-/// The fixed kernel heap and, at its top, the emergency reserve that only
-/// `Atomic` requests use (5.3). Each has its own mutex, so an interrupt
-/// handler that finds the heap's mutex held still has the reserve.
+/// The kernel's allocator: requests up to a page go to the slab caches and
+/// their per-CPU magazines (E1-6), larger ones to the fixed kernel heap
+/// until E1-9. At the heap's top is the emergency reserve that only `Atomic`
+/// requests use (5.3). The heap and the reserve each have their own mutex,
+/// so an interrupt handler that finds the heap's mutex held still has the
+/// reserve.
 struct KernelHeap {
     main: IrqSafeLockedHeap,
     reserve: IrqSafeLockedHeap,
-    reserve_start: AtomicUsize,
-    reserve_end: AtomicUsize,
 }
 
 impl KernelHeap {
-    fn front(&self) -> kmem::Front<'_, IrqSafeLockedHeap, IrqSafeLockedHeap> {
+    fn front(&self) -> kmem::Front<'_, IrqSafeLockedHeap, IrqSafeLockedHeap, kmem::KernelSmall> {
         kmem::Front {
             main: &self.main,
             reserve: &self.reserve,
+            small: &kmem::KernelSmall,
             shrinkers: &kmem::SHRINKERS,
             reclaim: &kmem::RECLAIM,
             stats: &kmem::STATS,
-        }
-    }
-
-    fn pool_of(&self, ptr: *mut u8) -> &IrqSafeLockedHeap {
-        let address = ptr as usize;
-        if address >= self.reserve_start.load(Ordering::Relaxed)
-            && address < self.reserve_end.load(Ordering::Relaxed)
-        {
-            &self.reserve
-        } else {
-            &self.main
         }
     }
 }
@@ -229,6 +239,12 @@ pub(super) fn allocate(layout: Layout, ctx: kmem::Ctx) -> Result<NonNull<u8>, km
     ALLOCATOR.front().allocate(layout, ctx, &kmem::KernelCpu)
 }
 
+/// The slow path for `frames` frames the frame allocator could not find
+/// (`kmem::Front::reclaim_frames`). Returns the frames given back.
+pub(super) fn reclaim_frames(frames: usize) -> usize {
+    ALLOCATOR.front().reclaim_frames(frames, &kmem::KernelCpu)
+}
+
 unsafe impl GlobalAlloc for KernelHeap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         self.front()
@@ -236,11 +252,8 @@ unsafe impl GlobalAlloc for KernelHeap {
             .map_or(core::ptr::null_mut(), NonNull::as_ptr)
     }
 
-    unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
-        self.pool_of(ptr).with_inner(|heap| unsafe {
-            heap.deallocate(NonNull::new_unchecked(ptr));
-            ((), 0)
-        });
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe { self.front().deallocate(NonNull::new_unchecked(ptr), layout) }
     }
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
@@ -257,6 +270,11 @@ unsafe impl GlobalAlloc for KernelHeap {
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         let new_layout = unsafe { Layout::from_size_align_unchecked(new_size, layout.align()) };
+        // A slab object whose class also serves the new size keeps its place
+        // (6.6), and its later free with the new layout finds the same class.
+        if self.front().resizes_in_place(unsafe { NonNull::new_unchecked(ptr) }, layout, new_layout) {
+            return ptr;
+        }
         let new_ptr = unsafe { self.alloc(new_layout) };
         if !new_ptr.is_null() {
             // The copy is private to the caller; it does not require the heap mutex.
@@ -274,8 +292,6 @@ unsafe impl GlobalAlloc for KernelHeap {
 static ALLOCATOR: KernelHeap = KernelHeap {
     main: IrqSafeLockedHeap::empty(),
     reserve: IrqSafeLockedHeap::empty(),
-    reserve_start: AtomicUsize::new(0),
-    reserve_end: AtomicUsize::new(0),
 };
 
 /// Initialize the heap allocator
@@ -348,12 +364,8 @@ pub fn init(mapper: &OffsetPageTable<'static>) -> Result<(), &'static str> {
             .reserve
             .init((heap_base + main_bytes) as *mut u8, reserve_bytes as usize);
     }
-    ALLOCATOR
-        .reserve_start
-        .store((heap_base + main_bytes) as usize, Ordering::Relaxed);
-    ALLOCATOR
-        .reserve_end
-        .store((heap_base + heap_size) as usize, Ordering::Relaxed);
+
+    kmem::init_slab_layer();
 
     log::info!(
         "Heap initialized at {:#x} with size {} KiB ({} KiB emergency reserve)",

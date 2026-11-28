@@ -372,6 +372,9 @@ extern "C" fn ap_entry(cpu: u64) -> ! {
             x86_64::instructions::hlt();
         }
     }
+    // This processor can name itself now: publish its slab magazines before
+    // it joins the scheduler (E1 plan, 5.4a).
+    crate::memory::kmem::register_cpu();
     if let Err(reason) = register_idle_thread(cpu) {
         log::warn!("[smp] CPU {} failed idle allocation: {}", cpu, reason);
         loop {

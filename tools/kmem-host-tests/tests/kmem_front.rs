@@ -19,7 +19,7 @@ mod kmem_core;
 mod sim;
 
 use heap_index::Heap;
-use kmem_core::{AllocError, Cpu, Ctx, Front, Miss, Pool, Reclaim, ReclaimCtx, Registry, Shrinker, Stats};
+use kmem_core::{AllocError, Cpu, Ctx, Front, Miss, Pool, Reclaim, ReclaimCtx, Registry, Shrinker, Small, Stats};
 use sim::SimLock;
 
 const ARENA_BYTES: usize = 64 * 1024;
@@ -31,7 +31,7 @@ const ATOMIC: usize = 2;
 
 /// A heap_index heap behind a simulated lock.
 struct Arena {
-    _backing: Vec<u64>,
+    backing: Vec<u64>,
     lock: SimLock<Heap>,
 }
 
@@ -40,7 +40,7 @@ impl Arena {
         let mut backing = vec![0u64; bytes / 8];
         let mut heap = Heap::empty();
         unsafe { heap.init(backing.as_mut_ptr().cast(), bytes) };
-        Self { _backing: backing, lock: SimLock::new(heap) }
+        Self { backing, lock: SimLock::new(heap) }
     }
 }
 
@@ -48,6 +48,51 @@ impl Pool for Arena {
     fn take(&self, layout: Layout, wait: bool) -> Result<NonNull<u8>, Miss> {
         let mut heap = if wait { self.lock.lock() } else { self.lock.try_lock().ok_or(Miss::Busy)? };
         heap.allocate(layout).0.ok_or(Miss::Exhausted)
+    }
+
+    fn contains(&self, ptr: NonNull<u8>) -> bool {
+        let start = self.backing.as_ptr() as usize;
+        (start..start + self.backing.len() * 8).contains(&(ptr.as_ptr() as usize))
+    }
+
+    unsafe fn give(&self, ptr: NonNull<u8>) {
+        unsafe { self.lock.lock().deallocate(ptr) }
+    }
+}
+
+/// These tests drive the fixed-heap path, so their front has a small-object
+/// layer that serves no request (`slab_magazine.rs` drives that layer).
+struct NoSmall;
+
+impl Small for NoSmall {
+    fn serves(&self, _: Layout) -> bool {
+        false
+    }
+
+    fn take(&self, _: Layout, _: bool) -> Result<NonNull<u8>, Miss> {
+        unreachable!("no request is routed to this layer")
+    }
+
+    unsafe fn give(&self, _: NonNull<u8>, _: Layout) {
+        unreachable!("no request is routed to this layer")
+    }
+
+    fn same_object(&self, _: Layout, _: Layout) -> bool {
+        false
+    }
+
+    fn drain_own(&self, _: bool) {}
+
+    fn drain(&self, _: usize) -> bool {
+        true
+    }
+
+    fn cpus(&self) -> usize {
+        0
+    }
+
+    fn release_freed(&self, _target: usize) -> usize {
+        0
     }
 }
 
@@ -163,6 +208,7 @@ fn allocate(world: &'static World, request: Request) -> Result<NonNull<u8>, Allo
     let front = Front {
         main: &world.main,
         reserve: &world.reserve,
+        small: &NoSmall,
         shrinkers: &world.shrinkers,
         reclaim: &world.reclaim,
         stats: &world.stats,

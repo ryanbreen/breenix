@@ -1879,6 +1879,66 @@ E1-5 review decisions (DEV-39(2)):
   population path now reads into frames and one staging buffer, so the driver rows are not expected to move
   here).
 
+E1-6 implementation decisions (DEV-39(2)):
+
+- `FrameMeta`'s slab record is a second word at bytes 24 to 31, beside the free-list link, so the entry stays
+  32 bytes and E1-8 can make the two words 4.3's `use` union.
+- The slot table and each CPU's magazine block come from the allocator's shared path, not the boot carve,
+  because both architectures learn the CPU count after the carve has handed its ranges to the frame pool.
+- ARM64 sizes the table from `smp::reported_cpus` (PSCI enumeration on QEMU, which passes the kernel no device
+  tree, and the loader's MADT count elsewhere), read right after `per_cpu_aarch64::init` instead of later.
+- The x86 boot CPU registers right after `smp::init`, because the MADT count it sizes the table from is read
+  there; until then it uses the shared path.
+- The shared path is the class's slabs under the slab lock, without the depot, because one object neither
+  fills nor empties a magazine.
+- One lock per CPU covers that CPU's magazine pairs for the 25 classes, so a remote drain takes one lock.
+- A depot keeps filled magazines, full or partly full, and empty ones, so a drained CPU's partial magazines
+  enter the depot without a flush to the slabs.
+- A depot miss fills the CPU's magazine from the slabs in one slab-lock hold.
+- No existing kernel worker runs periodically on both architectures, so the working-set trim runs at the
+  first depot exchange after each 15-second interval, returns at most 8 magazines of each kind per update,
+  and grows the magazine size (15, 31, 63, 127 rounds) when the depot lock saw more than 16 contended
+  acquisitions in the interval. The slab shrinker retires at most its target plus 8 magazines per call, 8
+  per depot lock hold, because it runs with interrupts masked and 7.2 bounds each shrinker's work by its
+  target plus a fixed batch; it counts the slabs that empty while the rounds go back.
+- An `Atomic` small request that misses uses E1-4's emergency reserve, and a small request that fails reports
+  `NoFrames`.
+- The free check reads the slab record before any lock is taken, so a corruption panic holds no allocator
+  lock.
+- The fd table's object is larger than a page, so its named cache takes objects from the larger-request layer
+  (the fixed heap until E1-9); named caches have no magazine layer, since their objects are made at fork and
+  exec.
+- Named caches have no constructor yet, because `SlabBox` drops each value before its free, so no object
+  returns to its cache constructed.
+- Slab pages bypass the testing build's simulated frame exhaustion (`sys_simulate_oom`), which models user
+  pages running out and did not reach the fixed heap.
+- The pressure test's first-draft variant is the same model with step 2 limited to the CPU's own magazines,
+  and `kmem_front.rs` keeps testing the fixed-heap path through a small-object layer that serves no request.
+
+Decisions from the #3302 review (DEV-39(2)):
+
+- On ARM64 a CPU names itself only when TPIDR_EL1 equals the address of an entry of the per-CPU array, and
+  the entry's index is its number. 5.4a's "TPIDR_EL1 is still 0" test is replaced because the register's
+  reset value is UNKNOWN, so firmware may leave any value there before `init_cpu`.
+- A CPU with no magazine for a class takes the request's object from the slabs first, then builds a
+  magazine if a page is left, so the request's page goes to the request before any magazine.
+- A new magazine's round slots are written null when it is built, because the refill fills them through a
+  typed slice, which must cover initialized values.
+- A refill that may not wait (6.6's `try_lock`-only row) waits for no lock below it either:
+  - the frame allocator pops its free list with one `try_lock`, then tries the lock-free sequential
+    allocator, and reports `Busy`;
+  - a new slab takes its descriptor first and keeps the descriptor cache locked until it has the page, so
+    a missing page returns the descriptor without another lock;
+  - the working set's surplus at an interval is left pending on the depot, for the next exchange that may
+    wait or the shrinker, because returning it takes the slab and magazine caches' locks.
+- After the registered shrinkers, the slow path drains the reclaiming CPU's magazines again and runs the
+  slab shrinker for the same target, because a shrinker that frees through the allocator (the block cache)
+  leaves its blocks in those magazines.
+- 7.2's slow path also serves frame requests from outside the allocator before E1-8's zones: a frame
+  allocation that finds no frame runs steps 1-4 once and retries once, except in an interrupt handler or a
+  shrinker. Without that, pages idle in the slab layer are out of reach of a page fault, which would get
+  SIGKILL.
+
 ### E1-7: span arenas and vmap allocations
 
 - Change:
