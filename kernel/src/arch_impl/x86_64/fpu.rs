@@ -94,7 +94,13 @@ impl FpuState {
             } else if let Some(parent) = unpublished {
                 layout.export(user, parent.saved.bytes());
             } else {
-                return Err("Cannot snapshot parent xstate without its CPU custody");
+                crate::task::scheduler::with_off_cpu_thread(tid, |thread| {
+                    let parent = thread.fpu.as_ref()?;
+                    layout.export(user, parent.saved.bytes());
+                    Some(())
+                })
+                .flatten()
+                .ok_or("Cannot snapshot parent xstate without its CPU custody")?;
             }
             let extended = layout.signal_size() > LEGACY_SIZE;
             assert!(layout.import(

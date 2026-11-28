@@ -137,6 +137,9 @@ pub fn init(cpu: usize) -> Result<Backend, &'static str> {
                 cr4.insert(Cr4Flags::OSXSAVE);
             }
         });
+        // The firmware may have left protection keys enabled. This contract
+        // defers PKRU until user-access ordering is implemented.
+        asm!("mov cr4, {}", in(reg) Cr4::read_raw() & !(1 << 22), options(nostack, preserves_flags));
     }
     if use_xsave {
         xsetbv(layout.user);
