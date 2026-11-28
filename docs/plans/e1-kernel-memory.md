@@ -1823,6 +1823,23 @@ E1-5 implementation decisions (DEV-39(2)):
 - The self-check maps 4 KiB pages. The 2 MiB leaf is covered by the host test in both encodings, because
   the boot has no 2 MiB-aligned contiguous allocator before E1-8.
 
+E1-5 review decisions (DEV-39(2)):
+
+- The `TLBI VAAE1IS` operand is `(va >> 12) & (2^44 - 1)` (`memory/tlbi.rs`): VA[55:12] with TTL 0 and the
+  RES0 bits clear, because a TTBR1 address's VA[59:56] otherwise lands in the TTL as 0b1111 (64 KiB
+  granule, level 3), which does not describe a 4 KiB entry (Arm ARM, TLBI VAAE1IS).
+- When the RAM-sized windows do not fit their slots, `place` halves the three together, 1 : 4 : 1, down to
+  1 GiB each, because with no RAM ceiling (DEV-29 Q5) smaller windows that run out of VA before RAM beat
+  no windows; x86 at 16 TiB (192 of 145 slots) and ARM64 at 32 TiB (384 of 383 entries) need it.
+- The free-extent search walks the size tree from the request's exact size and takes the smallest extent it
+  fits at its actual alignment, because the worst-case padded size refuses an aligned extent that fits.
+- Each allocation holds its retirement node from `allocate` until `retire` or `give_back`, because a shared
+  spare pool can be emptied by unflushed unmaps, and an unmap that then needs a node page has no error path.
+  `kva::reserve` is where a node page is added, and there a failure is an `AllocError`.
+- `Batch::flush` takes a `KernelTlb` instead of a closure, and x86's (`tlb_request::KernelUnmap`) chooses the
+  request and runs it here and then on each other CPU, because the host tests must drive the routing
+  production uses; `tlb.rs` supplies only the two deliveries.
+
 ### E1-6: slab caches with per-CPU magazines
 
 - Change:

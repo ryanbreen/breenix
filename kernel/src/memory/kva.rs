@@ -246,7 +246,7 @@ fn lowered(ctx: Ctx) -> Ctx {
 
 /// VA for `len` bytes aligned to `align` in window `id`. A window with no
 /// room flushes its pending unmaps and tries once more. The allocation holds
-/// the extent node its unmap will need, so `release` never allocates; a
+/// the extent node its unmap will need, so `release` does not allocate; a
 /// window short of nodes gets a node page here, where failing is an error.
 pub fn reserve(id: WindowId, len: u64, align: u64, ctx: Ctx) -> Result<Allocation, AllocError> {
     let ctx = lowered(ctx);

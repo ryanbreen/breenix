@@ -15,7 +15,7 @@
 //!
 //! Each allocation holds one spare node from `allocate` until its extent
 //! comes back through `retire` or `give_back`, which use that node, so
-//! returning an allocation never needs a node the caller would have to
+//! returning an allocation needs no node the caller would have to
 //! allocate memory for.
 
 use core::ptr::null_mut;

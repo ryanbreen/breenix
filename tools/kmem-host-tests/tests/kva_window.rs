@@ -166,7 +166,7 @@ impl tlb_request::TlbOps for FakeTlb {
 }
 
 /// The CPUs of a fixture as `tlb_request::Shootdown` reaches them: `here`
-/// runs a request on the initiator's TLB, and `others` on every other CPU's,
+/// runs a request on the initiator's TLB, and `others` on each other CPU's,
 /// as `tlb.rs` does through `execute_here` and the NMI request slots. Each
 /// CPU carries a request out with the kernel's own `tlb_request::execute`.
 struct FixtureCpus<'a> {
@@ -613,8 +613,8 @@ fn two_mib_leaves_map_and_reclaim_whole_on_arm64() {
 /// Check first (review of E1-5): an ARM64 window page's `TLBI VAAE1IS`
 /// operand. Per the Arm ARM (TLBI VAAE1IS), bits [43:0] carry VA[55:12],
 /// bits [47:44] are the TTL hint, and bits [63:48] are RES0. A TTL that
-/// does not describe the entry (4 KiB granule, level 3, 0b0111) or say
-/// nothing (0b0000) leaves the architecture no obligation to invalidate it.
+/// does not describe the entry (4 KiB granule, level 3, 0b0111) and is not
+/// the no-hint value 0b0000 leaves the CPU free to keep the entry.
 /// A TTBR1 address has VA[59:56] set, so `va >> 12` puts 0b1111 (64 KiB
 /// granule, level 3) in the TTL and ones in the RES0 bits: the CPU may keep
 /// the window's writable global translation after its frame is released.
@@ -641,7 +641,7 @@ fn arm64_window_page_flush_operand_names_the_page_with_no_wrong_ttl() {
 }
 
 /// Check first (review of E1-5): RAM that the RAM-sized windows outgrow
-/// still gets all three windows. x86 at 16 TiB wants 32 + 128 + 32 = 192
+/// still gets 3 of 3 windows. x86 at 16 TiB wants 32 + 128 + 32 = 192
 /// PML4 slots and has 145 (257 to 401); ARM64 at 32 TiB of dense RAM wants
 /// 64 + 256 + 64 = 384 L0 entries above the direct map's 64 and below the
 /// ECAM entry, 447, and has 383. Each window is placed, inside the range,

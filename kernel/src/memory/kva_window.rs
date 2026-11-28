@@ -92,7 +92,8 @@ pub enum PlaceError {
 /// When the RAM-sized windows do not fit, each window is halved, keeping
 /// their 1 : 4 : 1 proportion down to 1 GiB each, until they do: RAM larger
 /// than the kernel half holds leaves smaller windows, which run out of VA
-/// first, rather than none. `NoSlots` means not even 1 GiB windows fit.
+/// first, rather than losing the 3 windows. `NoSlots` means not even 1 GiB
+/// windows fit.
 pub fn place(
     ram_bytes: u64,
     first: usize,
