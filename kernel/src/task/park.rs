@@ -123,10 +123,12 @@ pub fn require_sleepable() -> Result<(), ParkError> {
     }
 }
 
-/// Whether the depth is 0, so that a waiter halting as the current thread
+/// Whether the preempt count is 0, so that a waiter halting as the current thread
 /// (`arch_halt_while_blocked`) may switch away rather than keep its CPU.
 pub(crate) fn may_switch_now() -> bool {
-    depth() == 0
+    // The whole count, interrupt-context fields included, as the halt tested
+    // before E2.2: a waiter inside hard or soft IRQ context keeps its CPU.
+    crate::per_cpu::preempt_count() == 0
 }
 
 // ------------------------------------------------------------------ receipts
