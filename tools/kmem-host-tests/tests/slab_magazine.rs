@@ -599,3 +599,17 @@ fn only_a_per_cpu_array_entry_names_a_cpu() {
         assert_eq!(cpu_of_base(first + cpu as u64 * stride, first, stride, count), Some(cpu));
     }
 }
+
+/// A cold CPU's first request when the page layer has 2 pages left: one for
+/// the 64-byte class's slab and one for the descriptor cache's slab, which
+/// holds that slab's descriptor. That meets the request. A magazine for the
+/// CPU needs a third page, so the request must not depend on one.
+#[test]
+fn a_cold_refill_with_two_pages_left_meets_the_request_before_building_a_magazine() {
+    let world = World::new(1, 2);
+    assert!(world.register(0));
+    world.on(0);
+    let layout = bytes(64);
+    let object = world.try_alloc(layout).expect("2 pages meet a cold 64-byte request");
+    world.free(object, layout);
+}
