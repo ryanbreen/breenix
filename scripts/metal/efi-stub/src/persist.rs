@@ -15,6 +15,7 @@ use core::ptr::{null, null_mut};
 
 use metal_efi::bootdisk::SECTOR;
 use metal_efi::files::{self, Root};
+use metal_efi::live_flash::decode_hex;
 use metal_efi::say;
 use metal_efi::slot_store::{self, Esp, ImagePages, SlotStore};
 use metal_efi::slot_transaction::{self, RecordStore, Records, Store, NOTE_MAX};
@@ -111,7 +112,7 @@ struct Request<'t> {
     breenfs_upgrade: Option<[[u8; 16]; 4]>,
     expected_userland: Option<&'t str>,
     keep_generations: Option<[&'t str; 2]>,
-    replace_manager: bool,
+    manager_digest: Option<(&'t str, [u8; 32])>,
 }
 
 fn parse<'t>(text: &'t str) -> Result<Request<'t>, Status> {
@@ -133,7 +134,7 @@ fn parse<'t>(text: &'t str) -> Result<Request<'t>, Status> {
         breenfs_upgrade: None,
         expected_userland: None,
         keep_generations: None,
-        replace_manager: false,
+        manager_digest: None,
     };
     let mut action = None;
     for line in lines {
@@ -214,7 +215,9 @@ fn parse<'t>(text: &'t str) -> Result<Request<'t>, Status> {
             {
                 request.expected_userland = Some(value);
             }
-            "manager-replacement" if !request.replace_manager && value == "yes" => request.replace_manager = true,
+            "manager-replacement" if request.manager_digest.is_none() => {
+                request.manager_digest = Some((value, decode_hex(value.as_bytes()).ok_or(INVALID_PARAMETER)?));
+            }
             "rescue-file" if !value.is_empty() => {}
             "extent" | "esp-file" if !value.is_empty() => {}
             _ => return Err(INVALID_PARAMETER),
@@ -257,7 +260,7 @@ fn parse<'t>(text: &'t str) -> Result<Request<'t>, Status> {
         let mut files = text.lines().filter_map(|line| line.strip_prefix("esp-file "));
         let valid_files = match request.action {
             Action::ReplaceUsr => files.next().is_none() && request.breenfs_upgrade.is_some(),
-            Action::Upgrade if request.replace_manager => request.breenfs_upgrade.is_some_and(|guids| guids[2..] == [[0; 16]; 2])
+            Action::Upgrade if request.manager_digest.is_some() => request.breenfs_upgrade.is_some_and(|guids| guids[2..] == [[0; 16]; 2])
                 && files.next().and_then(|line| line.split_once(' ')).is_some_and(|(path, _)| path == PAIRED_MANAGER)
                 && files.next().is_none(),
             Action::Upgrade => files.next().is_some_and(|line| line.starts_with(r"\EFI\BREENIX\NEXT.IMG "))
@@ -272,10 +275,10 @@ fn parse<'t>(text: &'t str) -> Result<Request<'t>, Status> {
         {
             return Err(INVALID_PARAMETER);
         }
-    } else if request.action == Action::ReplaceUsr || request.replace_manager {
+    } else if request.action == Action::ReplaceUsr || request.manager_digest.is_some() {
         return Err(INVALID_PARAMETER);
     }
-    if request.replace_manager && request.action != Action::Upgrade { return Err(INVALID_PARAMETER); }
+    if request.manager_digest.is_some() && request.action != Action::Upgrade { return Err(INVALID_PARAMETER); }
     let (original, additions) = request.parts.split_at(ORIGINAL_PARTS);
     match request.action {
         Action::Install => {
@@ -1174,6 +1177,16 @@ pub(super) unsafe fn run(boot: &BootServices, runtime: &RuntimeServices, volume:
     let request = parse(text)?;
     say!("persistent install request: {}", request.action.name());
     let payload = delivered.open("persist.dat", FILE_MODE_READ)?;
+    let verified_manager = if let Some((digest, expected)) = request.manager_digest {
+        let line = text.lines().find_map(|line| line.strip_prefix("esp-file ")).ok_or(INVALID_PARAMETER)?;
+        let (name, offset, length) = esp_file_request(line)?;
+        let mut manager = ImagePages::allocate(boot, length)?;
+        data(payload.handle(), offset, &mut manager.page_bytes()[..length])?;
+        files::verify_paired_manager(manager.as_ref(), expected)?;
+        Some((name, manager, digest))
+    } else {
+        None
+    };
     let (disk_handle, io) = the_disk(boot)?;
     let mut disk = Disk::new(boot, io)?;
     if request.action == Action::ReclaimExt2 {
@@ -1250,7 +1263,7 @@ pub(super) unsafe fn run(boot: &BootServices, runtime: &RuntimeServices, volume:
     if records.latest().is_none() {
         slot_transaction::recover(&SlotStore(&root))?;
     }
-    if request.replace_manager {
+    if let Some((name, manager, digest)) = verified_manager {
         ensure_idle_slots(&store, &records)?;
         report_slot(boot, &root, &store, &records, &request, "CURRENT")?;
         root.size(MANAGER_FILE)?;
@@ -1266,10 +1279,6 @@ pub(super) unsafe fn run(boot: &BootServices, runtime: &RuntimeServices, volume:
             Err(status) => return Err(status),
         }
         slot_store::prepare_records(&root)?;
-        let line = text.lines().find_map(|line| line.strip_prefix("esp-file ")).ok_or(INVALID_PARAMETER)?;
-        let (name, offset, length) = esp_file_request(line)?;
-        let mut manager = ImagePages::allocate(boot, length)?;
-        data(payload.handle(), offset, &mut manager.page_bytes()[..length])?;
         load_option(boot, runtime, esp, "Breenix paired boot manager", PAIRED_MANAGER, Some(http),
             |referenced| {
                 files::publish_paired_manager(referenced,
@@ -1277,7 +1286,7 @@ pub(super) unsafe fn run(boot: &BootServices, runtime: &RuntimeServices, volume:
                     || root.write(name, manager.as_ref()))?;
                 files::flush_volume(boot, esp)
             })?;
-        say!("paired live manager installed; prior boot options retained");
+        say!("paired live manager installed; sha256={}", digest);
         say!("persistent install request complete");
         metal_efi::com1::halt();
     }

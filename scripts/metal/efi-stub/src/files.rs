@@ -365,6 +365,14 @@ impl Root {
     }
 }
 
+/// Verify the delivered manager before publishing it or opening its target.
+pub fn verify_paired_manager(image: &[u8], expected: [u8; 32]) -> Result<(), Status> {
+    if image.is_empty() || crate::sha256::sha256(image) != expected {
+        return Err(VOLUME_CORRUPTED);
+    }
+    Ok(())
+}
+
 /// Publish a paired manager image, resuming an interrupted install when possible.
 pub fn publish_paired_manager(
     referenced: bool,
@@ -383,6 +391,15 @@ pub fn publish_paired_manager(
 mod paired_manager_tests {
     use super::*;
     use core::cell::Cell;
+
+    #[test]
+    fn paired_manager_requires_the_requested_digest() {
+        let expected = crate::live_flash::decode_hex(
+            b"a022640727af23fc3710016343690e82644da36a6b04972b1402a84fd0947d41",
+        ).unwrap();
+        assert_eq!(verify_paired_manager(b"paired manager", expected), Ok(()));
+        assert_eq!(verify_paired_manager(b"paired managEr", expected), Err(VOLUME_CORRUPTED));
+    }
 
     #[test]
     fn paired_manager_publication_resumes_without_replacing_a_referenced_image() {

@@ -290,14 +290,32 @@ class ManagerReplacementTest(existing.StateTest):
              patch.object(m, 'load_site', return_value={}):
             with self.assertRaises(boot.Finish):
                 driver.prepare_install(inputs, dict(manager=dict(sha256=digest)))
+            for wrong_receipt in (
+                'metal-stub: paired live manager installed; prior boot options retained',
+                'metal-stub: paired live manager installed; sha256=' + '0' * 64,
+            ):
+                with self.subTest(receipt=wrong_receipt):
+                    persist.update_disk(liveManager=legacy)
+                    driver.prepare_install(inputs, build)
+                    driver.seen = {'stub'}
+                    driver.slot_userlands.clear()
+                    driver.on_persist_line(f'metal-stub: slot userland: CURRENT {generation}', 1)
+                    with self.assertRaises(boot.Finish) as rejected:
+                        driver.on_persist_line(wrong_receipt, 2)
+                        driver.on_persist_line(boot.PERSIST_DONE, 3)
+                    self.assertEqual(rejected.exception.status, m.EXIT_SHORT)
+                    self.assertEqual(persist.read_disk()['liveManager'], legacy)
+
             files, _ = driver.prepare_install(inputs, build)
             self.assertIn(r'esp-file \EFI\BREENIX\PAIR.EFI ', files['persist.cfg'].read_text())
+            self.assertIn(f'manager-replacement {digest}\n', files['persist.cfg'].read_text())
             self.assertEqual(persist.read_disk()['liveManager'], legacy)
             self.assertEqual(metal_live_flash.site(m)['manifestVersion'], 1)
 
-            driver.seen.add('stub')
+            driver.seen = {'stub'}
+            driver.slot_userlands.clear()
             driver.on_persist_line(f'metal-stub: slot userland: CURRENT {generation}', 1)
-            driver.on_persist_line('metal-stub: paired live manager installed; prior boot options retained', 2)
+            driver.on_persist_line(f'metal-stub: paired live manager installed; sha256={digest}', 2)
             with self.assertRaises(boot.Finish) as completed:
                 driver.on_persist_line(boot.PERSIST_DONE, 3)
             self.assertEqual(completed.exception.status, m.EXIT_DONE)

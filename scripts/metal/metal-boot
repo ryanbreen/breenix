@@ -1156,7 +1156,8 @@ class Driver:
                 raise Finish(m.EXIT_CANCELLED, 'the paired live manager is already installed')
             if manager_build.get('manifestVersion') != 2 or manager_build['sha256'] == installed.get('sha256'):
                 raise Finish(m.EXIT_CANCELLED, 'manager replacement requires a different, version-2 manager build')
-            config, request = metal_persist.manager_replacement_request(scratch, the_layout, generation, manager)
+            config, request = metal_persist.manager_replacement_request(
+                scratch, the_layout, generation, manager, manager_build['sha256'])
             self.persist = {'managerReplacement': True, 'sha256': manager_build['sha256'], 'manifestVersion': 2,
                             'userland': generation}
             m.write_json(self.dir / 'persist.json', self.persist)
@@ -2089,7 +2090,7 @@ class Driver:
             if INSTALL_DONE in line and not {'replace-usr-verified', 'replace-usr-fence'} <= self.seen:
                 raise Finish(m.EXIT_SHORT, '/usr replacement lacks CURRENT or the system-only write fence receipt')
         if getattr(self.args, 'replace_manager', False) and self.persist:
-            if line == 'metal-stub: paired live manager installed; prior boot options retained':
+            if line == f"metal-stub: paired live manager installed; sha256={self.persist['sha256']}":
                 self.seen.add('live-manager-installed')
             if line == PERSIST_DONE:
                 if ('stub' not in self.seen or 'live-manager-installed' not in self.seen
