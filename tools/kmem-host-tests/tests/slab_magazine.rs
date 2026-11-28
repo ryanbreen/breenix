@@ -24,7 +24,7 @@ mod magazine;
 mod slab_cache;
 
 use heap_index::Heap;
-use kmem_core::{AllocError, Cpu, Ctx, Front, Miss, Pool, Reclaim, ReclaimCtx, Registry, Shrinker, Small, Stats};
+use kmem_core::{cpu_of_base, AllocError, Cpu, Ctx, Front, Miss, Pool, Reclaim, ReclaimCtx, Registry, Shrinker, Small, Stats};
 use magazine::{CpuCaches, Kmem};
 use slab_cache::{class_of, Backing, Short, Slab, CLASSES, CLASS_COUNT, PAGE};
 
@@ -581,4 +581,21 @@ fn each_class_matches_the_plans_page_arithmetic() {
         }
     }
     assert_eq!(CLASSES[..10], [16, 32, 48, 64, 80, 96, 112, 128, 144, 160]);
+}
+
+/// ARM64 leaves TPIDR_EL1's reset value UNKNOWN, and firmware runs before the
+/// kernel, so the register may hold any value until `per_cpu_aarch64::init_cpu`
+/// sets it. Only the address of an entry of the per-CPU array names a CPU;
+/// any other value must name none, so the slab layer never reads through it.
+#[test]
+fn only_a_per_cpu_array_entry_names_a_cpu() {
+    let (first, stride, count) = (0xffff_0000_4010_0000u64, 0x140u64, 8usize);
+    assert_eq!(cpu_of_base(0, first, stride, count), None, "0 before per-CPU init");
+    for leftover in [0x8000_0000u64, 0xdead_beef_0000, first - stride, first + 1, first + 2 * stride + 8] {
+        assert_eq!(cpu_of_base(leftover, first, stride, count), None, "{leftover:#x} is not an entry");
+    }
+    assert_eq!(cpu_of_base(first + 8 * stride, first, stride, count), None, "past the array's end");
+    for cpu in 0..count {
+        assert_eq!(cpu_of_base(first + cpu as u64 * stride, first, stride, count), Some(cpu));
+    }
 }

@@ -356,6 +356,15 @@ impl Default for Stats {
     }
 }
 
+/// The logical CPU that a per-CPU base register's value `base` names, for
+/// the slab layer's slot lookup (5.4a). The per-CPU array starts at `first`
+/// and holds `count` entries `stride` bytes apart.
+pub fn cpu_of_base(base: u64, first: u64, stride: u64, count: usize) -> Option<usize> {
+    // Today's rule: any nonzero value names the CPU recorded at that address.
+    let _ = count;
+    (base != 0).then(|| (base.wrapping_sub(first) / stride.max(1)) as usize)
+}
+
 /// The emergency reserve's size for a heap of `heap_frames` frames: half of
 /// 5.3's `min` for a zone of that size.
 pub fn reserve_frames(heap_frames: usize) -> usize {
