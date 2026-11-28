@@ -5602,6 +5602,11 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         )?;
         let _edit = self.inner.costs.span(CostOp::Writeback, CostPhase::Edit);
         let Some(grant) = grant else { return Ok(()); };
+        // A write may have completed since the caller's snapshot, or while a
+        // refused attempt staged its EOF page with the lock released. It
+        // copied its bytes into the mapped pages under this lock, so take
+        // those pages' bytes now (review C1 on #3310).
+        node.map.refresh_writeback(page, &mut bounce[..length]);
         let result = self.edit_pages(&mut state, node.ino, "writeback-read-metadata", &mut staged,
             |open, read| open.pages.write(offset, &bounce[..length], read));
         if staged.needs_io() {
