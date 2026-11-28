@@ -1,8 +1,15 @@
 """The ARM64 QEMU rig's sample order and its Linux image pin."""
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
+import importlib.util
 import json
+import os
 from pathlib import Path
+import shutil
 import tempfile
+import threading
+import time
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -478,6 +485,143 @@ class BuildIdentity(unittest.TestCase):
         rig.write_build_stamp(self.stamp, "c0ffee", self.artifacts[:1])
         with self.assertRaisesRegex(ValueError, "bbench"):
             rig.verify_build_stamp(self.stamp, "c0ffee", self.artifacts)
+
+
+class RunStorage(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.home = Path(temp.name)
+        self.cache = self.home / "Library/Caches/breenix-bench"
+        self.series = self.home / "series"
+
+    def worktree(self, name):
+        root = self.home / name
+        bench = root / "userland/bbench"
+        bench.mkdir(parents=True)
+        for relative in ("docs", "toolchain"):
+            (root / relative).symlink_to(rig.ROOT / relative)
+        shutil.copyfile(rig.BENCH / "linux-arm64.json", bench / "linux-arm64.json")
+        script = bench / "rig.py"
+        shutil.copyfile(rig.__file__, script)
+        spec = importlib.util.spec_from_file_location(name, script)
+        lane = importlib.util.module_from_spec(spec)
+        with mock.patch.object(Path, "home", return_value=self.home):
+            spec.loader.exec_module(lane)
+        return lane
+
+    def test_overlapping_worktrees_publish_their_own_image_and_stamp(self):
+        lanes = [self.worktree(name) for name in ("lane-a", "lane-b")]
+        building = threading.Barrier(2)
+        first_published = threading.Event()
+
+        def build(lane, index):
+            commit = str(index) * 40
+            payload = commit.encode()
+            libc = lane.ROOT / "libc-input"
+            libc.write_bytes(b"libc")
+            kd = lane.ROOT / "kd"
+            kd.mkdir()
+            env = {"BREENIX_KD_LIBC_INPUT": str(libc), "BREENIX_KD_BUILD_DIR": str(kd)}
+            lane.git = lambda *words: commit if words[0] == "rev-parse" else ""
+            lane.toolchain_build_env = lambda: env
+            lane.BREENIX_BUILD = (["fixture-build"],)
+            lane.DISK_BYTES = 4096
+
+            def command(words, **kwargs):
+                if words[0] == "fixture-build":
+                    building.wait(timeout=10)
+                    if index == 2 and not first_published.wait(timeout=10):
+                        raise TimeoutError("the first lane did not publish")
+                    for path in (*lane.BREENIX_ARTIFACTS, lane.STANDARD_IMAGE):
+                        if path != lane.BREENIX_IMAGE:
+                            path.parent.mkdir(parents=True, exist_ok=True)
+                            path.write_bytes(payload)
+                elif Path(words[1]).name == "create-breenfs-root.sh":
+                    Path(words[-1]).write_bytes(Path(words[-2]).read_bytes())
+                elif words[0] == "ssh-keygen":
+                    return rig.run_command(words, **kwargs)
+
+            lane.run_command = command
+            lane.build_breenix()
+            if index == 1:
+                first_published.set()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            builds = [pool.submit(build, lane, index) for index, lane in enumerate(lanes, 1)]
+            for result in builds:
+                result.result()
+        self.assertNotEqual(lanes[0].BREENIX_IMAGE, lanes[1].BREENIX_IMAGE)
+        self.assertNotEqual(lanes[0].BUILD_STAMP, lanes[1].BUILD_STAMP)
+        self.assertEqual(lanes[0].BREENIX_KEY, lanes[1].BREENIX_KEY)
+        for index, lane in enumerate(lanes, 1):
+            commit = str(index) * 40
+            self.assertEqual(lane.BREENIX_IMAGE.read_bytes()[:40], commit.encode())
+            self.assertEqual(lane.verify_build_stamp(lane.BUILD_STAMP, commit,
+                                                     lane.BREENIX_ARTIFACTS), commit)
+
+    def run_evidence(self, run_dir):
+        files = {
+            "breenix-disk.raw": b"breenix disk", "linux-disk.raw": b"linux disk",
+            "breenix/sample.json": b'{"sample":"sample"}', "serial-breenix-1.txt": b"serial",
+            "qemu-breenix-1.argv": b"argv", "qemu-linux-1.log": b"log",
+        }
+        for name, data in files.items():
+            path = run_dir / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+        return files
+
+    def assert_only_disks_removed(self, run_dir, files):
+        kept = {name: data for name, data in files.items()
+                if name not in ("breenix-disk.raw", "linux-disk.raw")}
+        self.assertEqual({str(path.relative_to(run_dir)): path.read_bytes()
+                          for path in run_dir.rglob("*") if path.is_file()}, kept)
+
+    def test_finished_run_discards_only_its_disks_after_both_series(self):
+        bench = rig.Rig.__new__(rig.Rig)
+        bench.run_dir = self.cache / "runs" / "finished"
+        files = self.run_evidence(bench.run_dir)
+        bench.args = SimpleNamespace(cases="getpid", count=1)
+        bench.boot = mock.Mock(return_value="commit")
+        bench.tcp_counters = bench.sample = bench.facts = mock.Mock()
+        bench.guests = {system: mock.Mock() for system in rig.SYSTEMS}
+        self.series.mkdir()
+
+        def write(system, *_):
+            for name in ("breenix-disk.raw", "linux-disk.raw"):
+                self.assertTrue((bench.run_dir / name).is_file())
+            for guest in bench.guests.values():
+                guest.stop.assert_called_once()
+            path = self.series / f"finished-{system}.series.json"
+            path.write_text("{}")
+            return path
+
+        bench.write = write
+        self.assertEqual(bench.run(), [self.series / f"finished-{system}.series.json"
+                                      for system in rig.SYSTEMS])
+        self.assert_only_disks_removed(bench.run_dir, files)
+
+    def test_prune_removes_only_disks_from_old_runs_with_both_series(self):
+        self.series.mkdir()
+        runs = self.cache / "runs"
+        for name in ("old", "recent", "incomplete"):
+            files = self.run_evidence(runs / name)
+            systems = rig.SYSTEMS[:1] if name == "incomplete" else rig.SYSTEMS
+            for system in systems:
+                (self.series / f"{name}-{system}.series.json").write_text("{}")
+            if name != "recent":
+                past = time.time() - 7200
+                os.utime(runs / name, (past, past))
+
+        with mock.patch.object(rig, "CACHE", self.cache), \
+                mock.patch.object(rig, "SERIES_DIR", self.series):
+            self.assertEqual(rig.cli(["prune"]), 0)
+        self.assert_only_disks_removed(runs / "old", files)
+        for name in ("recent", "incomplete"):
+            for filename, data in files.items():
+                self.assertEqual((runs / name / filename).read_bytes(), data)
+        self.assertEqual(len(list(self.series.glob("*.series.json"))), 5)
 
 
 class ImagePin(unittest.TestCase):
