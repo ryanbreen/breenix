@@ -213,10 +213,13 @@ a window, so the paired installer uses descriptors instead.
    - check statfs free blocks against twice the inventory's regular-file bytes plus the global reserve;
    - on the first paired deploy only, convert the toolchain selection (4.5);
    - read the epoch (E1);
+   - write `/run/breenix/paired/<id>.epoch` (4.0's walk, mode 0600): E1 and the boot ID from
+     `/run/breenix/boot-id`. The file is outside the draft, so apply's removal of `.breenix-incoming` and
+     publish's unmount leave it in place. The epoch restarts at 0 on each mount (3.3), so publish refuses when the
+     file's boot ID is not the running one, and a missing file refuses too;
    - `SNAPSHOT_CREATE` `<id>.new`, flags 0, on `/`;
    - mount it with `root-volume` at `/run/breenix/stage`, mode 0700. `/run` is emptied at boot, so a crashed
-     deploy leaves no stale mount point;
-   - write E1 to `/run/breenix/stage/.breenix-incoming/epoch`.
+     deploy leaves no stale mount point.
 
 ### 4.2 Upload, with checksums
 
@@ -311,10 +314,12 @@ Only the selection moves into the generation:
 ### 4.6 Publish
 
 `paired publish <id>`:
-1. Unmount the staging mount (detach syncs the draft).
-2. `ROOT_FREEZE` the running root and take E2 from it (3.3). If E2 differs from E1, thaw, delete the draft and
+1. Read E1 and its boot ID from `/run/breenix/paired/<id>.epoch` (4.1), before anything else changes. A missing
+   file, or a boot ID that is not the running one, refuses publish and leaves the draft for `paired abort`.
+2. Unmount the staging mount (detach syncs the draft).
+3. `ROOT_FREEZE` the running root and take E2 from it (3.3). If E2 differs from E1, thaw, delete the draft and
    exit with `running root changed during the deploy (epoch E1 -> E2); rerun`.
-3. `SNAPSHOT_RENAME` `<id>.new` → `gen-<id>`, one committed transaction. A root named `gen-<id>` exists only after
+4. `SNAPSHOT_RENAME` `<id>.new` → `gen-<id>`, one committed transaction. A root named `gen-<id>` exists only after
    apply, verify and the toolchain check have passed.
 
 The running root stays frozen through the kernel and manifest publication and the reboot (4.7). If the host
@@ -534,7 +539,7 @@ Scope: sections 4 to 6.
 
 | Test | Where | Checks | Red on the old code because |
 |---|---|---|---|
-| T-B1 apply over a fixture clone | `tests/persistent_install/` host test, beside `tests/metal_replace_usr_host.rs` | A fixture clone with a baseline, an inventory and objects. After apply and verify: the payload rows equal the inventory; a pet file at an unmanaged path is kept; a locally changed managed file is moved to `.breenix-carried/<prev>/` with set-ID cleared; a dropped, unchanged managed file is removed; a BusyBox hard-link group across `/bin` and `/sbin`, a symlink and set-ID `su` are exact; mount points are untouched; a rerun after a cut at each file is idempotent. Path safety (4.0): with a pet symlink at `usr/lib` pointing outside the tree, at `usr/lib/breenix/rust-current`, and at `opt/breenix/rust`, the conversion and apply refuse, and the symlinks' targets (a fixture file standing in for one in `/home`) are byte-for-byte unchanged. | The check commit's stub routes `apply` to today's only in-place path, `replace_usr`, which leaves `/bin`, `/sbin` and `/lib` unchanged |
+| T-B1 apply over a fixture clone | `tests/persistent_install/` host test, beside `tests/metal_replace_usr_host.rs` | A fixture clone with a baseline, an inventory and objects. After apply and verify: the payload rows equal the inventory; a pet file at an unmanaged path is kept; a locally changed managed file is moved to `.breenix-carried/<prev>/` with set-ID cleared; a dropped, unchanged managed file is removed; a BusyBox hard-link group across `/bin` and `/sbin`, a symlink and set-ID `su` are exact; mount points are untouched; a rerun after a cut at each file is idempotent. Path safety (4.0): with a pet symlink at `usr/lib` pointing outside the tree, at `usr/lib/breenix/rust-current`, and at `opt/breenix/rust`, the conversion and apply refuse, and the symlinks' targets (a fixture file standing in for one in `/home`) are byte-for-byte unchanged. Epoch custody: begin, apply and publish run in sequence, and publish compares the E1 that begin recorded after apply has removed `.breenix-incoming` and the unmount has run; a recorded boot ID that differs from the fixture's refuses publish. | The check commit's stub routes `apply` to today's only in-place path, `replace_usr`, which leaves `/bin`, `/sbin` and `/lib` unchanged |
 | T-B2 manager version 2 | `scripts/metal/efi-stub/tests/live_sequence.rs` | The trial is refused for a missing root, a read-only root, or an image intent naming another userland. It is accepted when the three agree. Version 1 behaves exactly as today. | `Manifest::parse` rejects a seventh line |
 | T-B3 host flow | `tests/metal_live_flash_test.py` | `prepare --paired`: the slot intent names the new generation; the manifest carries the root line only for a version-2 manager. The retained set keeps the physical PREVIOUS's root when an acknowledged trial is not promoted (a stale base or a foreign NEXT), and drops a root only after a `promoted` line removes it from both physical slots. The commit check needs `/` to be `gen-<new>` `rw` plus the verify digest. A rollback receipt needs the old commit and `gen-<old>`. Staging order: the tool and the inventory are published, and `paired protocol` answers, before `paired begin`; the eight box subcommands and the cold verify invoke the staged tool path, not `/sbin/persistent-install`. | Today's `prepare` names CURRENT's userland (metal_live_flash.py:100) |
 
