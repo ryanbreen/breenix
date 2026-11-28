@@ -83,7 +83,7 @@ fn indexed_demux_and_bind_consult_only_their_buckets() {
     let target = 15000;
     let bind_port = 15001;
     let listen_port = 15002;
-    // Unrelated entries stay outside the selected buckets at every size.
+    // Exclude the selected buckets by checking their low hash bits.
     for port in (16000..60000)
         .filter(|&port| {
             tuple_hash(port, PEER_PORT) & 7 != tuple_hash(target, PEER_PORT) & 7
@@ -110,8 +110,8 @@ fn indexed_demux_and_bind_consult_only_their_buckets() {
         .find(|&port| tuple_hash(target, port) & 255 == tuple_hash(target, PEER_PORT) & 255)
         .unwrap();
     let other = active(target, peer).unwrap();
-    // The bind index carries all three kinds of owner. The 96 unrelated
-    // endpoints of each kind grow it to 512 buckets in this fixture.
+    // The 96 unrelated endpoints of each kind grow the combined bind
+    // index to 512 buckets in this fixture.
     let bind_collision = (60001..u16::MAX)
         .find(|&port| port_hash(port) & 511 == port_hash(bind_port) & 511)
         .unwrap();
@@ -124,8 +124,8 @@ fn indexed_demux_and_bind_consult_only_their_buckets() {
         .unwrap();
     listen(LOCAL_IP, listener_collision).unwrap();
 
-    // A packet after the old sweep interval must inspect only its own bucket
-    // even when all 96 unrelated connections are still live.
+    // Cross the old sweep interval with 96 unrelated connections still live.
+    // The target tuple and its collision are the two receive candidates.
     harness::advance(1000);
     let demux = visits(Index::Established, || flow.send(9));
     assert_eq!(flow.read(9), 9);

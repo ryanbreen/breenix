@@ -89,8 +89,8 @@ impl<T> Buckets<T> {
         self.heads
             .try_reserve_exact(new - old)
             .map_err(|_| ENOMEM)?;
-        // Production seeds each index after the boot pool is initialized. The
-        // host fixture uses the initial zero key to choose exact collisions.
+        // Production seeds the index from the boot pool. The host fixture
+        // keeps the initial key to choose exact collisions.
         #[cfg(not(test))]
         if old == 0 {
             crate::random::fill(&mut self.key);

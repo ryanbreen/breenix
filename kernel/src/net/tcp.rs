@@ -2320,7 +2320,7 @@ impl ConnTable {
     }
 }
 
-/// Every TCP table: connections, listeners and bind owners.
+/// The TCP connection, listener and bind indexes.
 pub(crate) struct TcpTables {
     conns: ConnTable,
     listeners: Buckets<ListenSocket>,
