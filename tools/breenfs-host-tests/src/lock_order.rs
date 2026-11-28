@@ -804,3 +804,44 @@ fn i7_exception_list_names_exactly_the_sites() {
     let stale: Vec<_> = listed.difference(&sites).collect();
     assert!(stale.is_empty(), "I7 exceptions that match no site (remove them): {stale:?}");
 }
+
+/// Review C1 (#3310): a mapped writeback whose EOF page waits on a cold read
+/// retries with the mapped bytes as they stand when it retakes the lock. A
+/// write that completed while the read was out copied its bytes into those
+/// pages, so the retry does not put the snapshot's older bytes over it.
+#[test]
+fn a_mapped_writeback_retry_keeps_a_write_that_landed_meanwhile() {
+    let (disk, inos) = image();
+    {
+        // b's second page becomes its EOF page, 100 bytes long.
+        let fs = mount(&disk, 141);
+        let node = fs.open(inos.b).unwrap();
+        fs.resize(&node, BLOCK_SIZE as u64 + 100, false, &|_| Ok(())).unwrap();
+        fs.fsync(&node, false).unwrap();
+        fs.shutdown("e2-5-eof", u64::MAX).unwrap();
+    }
+    let fs = mount(&disk, 142);
+    let node = fs.open(inos.b).unwrap();
+    // Warm b's inode and extent path; its second page stays cold.
+    let mut first = vec![0; BLOCK_SIZE];
+    assert_eq!(fs.read(&node, 0, &mut first), Ok(BLOCK_SIZE));
+    node.map.shared_stores(&pattern(110, BLOCK_SIZE + 100), false);
+    disk.stop("writeback", true, false);
+    let writeback = {
+        let (fs, node) = (fs.clone(), node.clone());
+        spawn("writeback", move || fs.fsync(&node, false))
+    };
+    disk.entered(1, "the writeback never reached the device");
+    let fresh = pattern(120, BLOCK_SIZE);
+    let written = {
+        let (fs, node, fresh) = (fs.clone(), node.clone(), fresh.clone());
+        bounded("writer", move || fs.write(&node, at(BLOCK_SIZE as u64), &fresh).map(|w| w.bytes))
+    };
+    assert_eq!(written, Ok(BLOCK_SIZE));
+    disk.release();
+    assert_eq!(join(writeback, "the writeback did not finish"), Ok(()));
+    fs.fsync(&node, false).unwrap();
+    let observer = Fs::mount(disk.clone(), Arc::new(BufferCache::new(YieldWait)), 143, 1).unwrap();
+    let read = read_all(&observer, inos.b, 2 * BLOCK_SIZE).unwrap();
+    assert!(read[BLOCK_SIZE..] == fresh[..], "the writeback's retry put older mapped bytes over a completed write");
+}
