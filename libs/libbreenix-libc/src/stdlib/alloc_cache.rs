@@ -664,7 +664,7 @@ mod tests {
     }
 
     #[test]
-    fn raw_fork_recovers_a_lock_held_by_a_parent_thread() {
+    fn fork_hook_recovers_a_lock_held_by_a_parent_thread() {
         let _test = TEST_LOCK.lock().unwrap();
         let (live, tag) = unsafe { take(0, map) }.unwrap();
         unsafe { live.write(0xa5) };
@@ -673,8 +673,10 @@ mod tests {
         let (holder, entered) = hold_on_another_thread(held, move || wait.recv().is_err());
         entered.recv().unwrap();
         // The child's only thread did not hold the lock; its owner is gone.
+        // libbreenix's fork, like libc's, runs the child hook first.
         let pid = unsafe { fork() };
         if pid == 0 {
+            unsafe { after_fork(crate::getpid() as u32) };
             let valid = unsafe { take(0, no_mapping) }.is_some_and(|(other, other_tag)| {
                 other != live && other_tag == tag && unsafe { live.read() } == 0xa5
             });
@@ -739,12 +741,12 @@ mod tests {
     }
 
     #[test]
-    fn stale_pid_contention_waits_for_a_live_owner() {
+    fn shared_memory_contention_waits_for_a_live_owner() {
         let _test = TEST_LOCK.lock().unwrap();
-        initialize_process();
-        let current = PROCESS.load(Relaxed);
-        // A raw fork child records its parent's pid until it meets contention.
-        PROCESS.store(current ^ 0x4000_0000, Relaxed);
+        // A CLONE_VM child outside the thread group shares the allocator and
+        // has its own process ID, in which the owner thread does not exist.
+        let current = std::process::id() as i32;
+        crate::OWN_PROCESS.with(|own| own.set(Some(current ^ 0x4000_0000)));
         let (notify, event) = std::sync::mpsc::sync_channel(0);
         let held = class(2048).unwrap();
         let (holder, entered) = hold_on_another_thread(held, move || event.recv().unwrap());
@@ -758,7 +760,8 @@ mod tests {
         }
         .unwrap();
         let (first, first_tag, waited) = holder.join().unwrap();
-        PROCESS.store(current, Relaxed);
+        crate::OWN_PROCESS.with(|own| own.set(None));
+        PROCESS.store(current as u32, Relaxed);
         assert!(waited, "contender entered while a live thread held the lock");
         assert_eq!(tag, first_tag);
         unsafe {

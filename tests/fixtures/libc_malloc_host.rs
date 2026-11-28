@@ -80,9 +80,14 @@ fn set_errno(e: i32) {
 fn errno() -> i32 {
     ERRNO.with(|v| v.get())
 }
+thread_local! {
+    // A thread created with CLONE_VM and without CLONE_THREAD shares this
+    // memory but reports its own process ID.
+    static OWN_PROCESS: std::cell::Cell<Option<i32>> = const { std::cell::Cell::new(None) };
+}
 fn getpid() -> i32 {
     SYSCALLS.fetch_add(1, Relaxed);
-    std::process::id() as i32
+    OWN_PROCESS.with(|own| own.get()).unwrap_or(std::process::id() as i32)
 }
 #[allow(dead_code)] // Also drives the old allocator in the check-first run.
 fn malloc_thread_id() -> u32 {
