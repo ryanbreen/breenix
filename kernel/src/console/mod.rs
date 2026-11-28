@@ -476,24 +476,13 @@ fn end_pass() {
     }
 }
 
-/// Wait until the render thread has no row of the console's on its way to
-/// the screen and no fenced GPU command of its own outstanding: a timed-out
-/// fenced command still belongs to the device, and a new owner may not draw
-/// until that DMA has stopped. A syscall or kernel thread blocks as an I/O
-/// waiter, woken at the end of each pass and
-/// after at most a millisecond to look at the GPU again. A signal cannot
-/// finish the hand-over while a presentation is outstanding. The render
-/// thread's own `sleep_ms` blocks a kernel thread on the timer, which a
-/// process's system call must not do.
+/// Wait for the render thread to finish presenting the current pass before
+/// transferring display ownership. Waiters wake at the end of each pass or
+/// after at most a millisecond to recheck. A signal cannot finish the handover
+/// while the render thread is presenting.
 fn wait_until_not_presenting() {
     use crate::task::waitqueue::PrepareOutcome;
-    let busy = || {
-        #[cfg(target_arch = "aarch64")]
-        if crate::drivers::virtio::gpu_pci::presentation_pending() {
-            return true;
-        }
-        PRESENTING.load(Ordering::SeqCst)
-    };
+    let busy = || PRESENTING.load(Ordering::SeqCst);
     while busy() {
         let (seconds, nanos) = crate::time::get_monotonic_time_ns();
         let recheck = seconds * 1_000_000_000 + nanos + 1_000_000;
@@ -778,8 +767,6 @@ pub fn attach() {
         gpu
     } else if arm64_fb::is_gop_active() {
         gop_display()
-    } else if crate::drivers::virtio::gpu_pci::is_initialized() {
-        display::virgl_backing::VirglBacking::new().map(Display::VirglBacking)
     } else {
         display::virtio_2d::Virtio2d::new().map(Display::Virtio2d)
     };

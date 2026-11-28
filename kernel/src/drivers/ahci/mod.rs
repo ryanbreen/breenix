@@ -2854,12 +2854,10 @@ fn finish_read_sectors(
 
 /// Set up PCI MSI-X or MSI for the AHCI controller through GICv2m.
 ///
-/// Follows the same pattern as `setup_gpu_msi` in `gpu_pci.rs`.  Tries
-/// MSI-X first (capability 0x11), falls back to plain MSI (capability 0x05).
+/// Tries MSI-X first (capability 0x11), then MSI (capability 0x05).
 ///
 /// The allocated SPI is stored in `AHCI_IRQ` and the GIC is configured, but
-/// the SPI is **enabled** here immediately (unlike the GPU driver, which
-/// defers that to `enable_gpu_yield`).  AHCI commands are serialised by the
+/// the SPI is enabled here immediately. AHCI commands are serialised by the
 /// `AHCI_CONTROLLER` mutex, so there is no risk of an interrupt storm during
 /// subsequent port initialisation.
 ///
