@@ -715,6 +715,9 @@ struct MountState<W: Wait + 'static> {
     // from memory (design 7.3a): that view's superblock. The pass's misses
     // are that view's reads, so its pin is of that generation.
     observing: Option<Superblock>,
+    // Metadata edits made on this mount (finish_metadata), so a readdir
+    // reply that spans passes can tell an edit landed between them.
+    metadata_edits: u64,
     // Changes the booted tree admitted since this mount (3.3).
     root_epoch: u64,
     signal: Arc<CommitSignal>,
@@ -1964,6 +1967,7 @@ impl<W: Wait> MountState<W> {
     fn finish_metadata<T>(&mut self, objects: &[u64], reservation: impl Into<MetadataGrant>, result: Result<T, ops::Error>) -> Result<T, Errno> {
         let MetadataGrant { mut grant, replay_space } = reservation.into();
         if result.is_ok() {
+            self.metadata_edits = self.metadata_edits.wrapping_add(1);
             // durable.free_blocks still includes private allocations. Keep
             // those and the work publication still owes, once per transaction;
             // return unused worst-case paths (E24 ledger 509(n)).
@@ -2816,6 +2820,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                 staging: None,
                 pass_touches: None,
                 observing: None,
+                metadata_edits: 0,
                 root_epoch: 0,
                 durable,
                 durable_pending,
@@ -3018,7 +3023,9 @@ impl<W: Wait + 'static> BreenFs<W> {
     /// only once the pass completes: a pass that ends in NeedsIo discards its
     /// batch, so a reply repeats no entry and each batch is one generation's.
     /// A sink that takes a whole batch gets the next one, which continues
-    /// from the batch's last cookie.
+    /// from the batch's last cookie, if no metadata edit landed since the
+    /// reply's first batch; otherwise the call returns at the batch
+    /// boundary, so one reply is one generation's (review M6 on #3310).
     fn readdir_in_passes(
         &self,
         mut cookie: u64,
@@ -3026,9 +3033,10 @@ impl<W: Wait + 'static> BreenFs<W> {
         mut walk: impl FnMut(&mut MountState<W>, u64, &mut dyn FnMut(DirEnt, u64) -> Result<bool, Errno>)
             -> Result<u64, Errno>,
     ) -> Result<u64, Errno> {
+        let mut first = None;
         loop {
             let start = cookie;
-            let (batch, end, more) = self.passes(&mut metadata(|_: &Self, state: &mut MountState<W>| {
+            let (batch, end, more, edits) = self.passes(&mut metadata(|_: &Self, state: &mut MountState<W>| {
                 let mut batch = Vec::new();
                 let mut bytes = 0;
                 let mut more = false;
@@ -3043,8 +3051,12 @@ impl<W: Wait + 'static> BreenFs<W> {
                     batch.push((entry, next));
                     Ok(true)
                 })?;
-                Ok((batch, end, more))
+                Ok((batch, end, more, state.metadata_edits))
             }))?;
+            if first.is_some_and(|first| first != edits) {
+                return Ok(cookie);
+            }
+            first = Some(edits);
             for (entry, next) in batch {
                 if !sink(entry, next)? {
                     return Ok(cookie);
