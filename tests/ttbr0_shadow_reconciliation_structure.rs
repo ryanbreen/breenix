@@ -883,13 +883,15 @@ fn install_block_is_nomem(body: &str) -> bool {
     ttbr0_install_asm_block(body).is_some_and(|block| block.contains("nomem"))
 }
 
-/// The six steps a TTBR0 install performs in this kernel, in order.
-const INSTALL_SEQUENCE: [&str; 6] = [
+/// The three steps a TTBR0 install performs in this kernel, in order: page-table
+/// stores complete before the new root can be walked, then the write, then the
+/// context synchronisation that makes the new root and ASID current. Process
+/// roots carry their own ASID (`kernel/src/arch_impl/aarch64/asid.rs`), so a
+/// switch needs no TLB invalidation; `tests/arm64_asid_structure.rs` checks that
+/// the 5 switch-side install places issue no `tlbi`.
+const INSTALL_SEQUENCE: [&str; 3] = [
     "dsb ishst",
     "msr ttbr0_el1",
-    "isb",
-    "tlbi vmalle1is",
-    "dsb ish",
     "isb",
 ];
 
@@ -949,7 +951,7 @@ fn the_discipline_installs_in_order_and_orders_the_shadow_stores() {
         assert!(
             performs_install_sequence(block),
             "{name}: the install must run {INSTALL_SEQUENCE:?} in order, so the root is visible \
-             before the register takes it and no stale translation survives it"
+             before the register takes it and is the context of what follows"
         );
         assert!(
             !install_block_is_nomem(body),
@@ -1203,8 +1205,8 @@ fn every_non_primitive_ttbr0_install_performs_the_install_sequence() {
     // docs/planning/green-program/aarch64-testing/serials/slice1b/anti-vacuity/04-post-fix-green.txt
     assert!(
         out_of_order.is_empty(),
-        "these TTBR0 installs do not run {INSTALL_SEQUENCE:?} in order, so a stale translation \
-         can survive the install or the root can be taken before it is visible: {out_of_order:?}"
+        "these TTBR0 installs do not run {INSTALL_SEQUENCE:?} in order, so the root can be \
+         taken before it is visible or before the install is synchronised: {out_of_order:?}"
     );
 }
 
@@ -1213,7 +1215,7 @@ fn the_sequence_census_catches_an_install_outside_the_discipline_module() {
     let truncated = "fn install_a_process_root() {\n\
         let root = page_table.level_4_frame().start_address().as_u64();\n\
         unsafe {\n\
-            core::arch::asm!(\"dsb ishst\", \"msr ttbr0_el1, {0}\", \"isb\", in(reg) root);\n\
+            core::arch::asm!(\"msr ttbr0_el1, {0}\", \"isb\", in(reg) root);\n\
             Aarch64PerCpu::set_saved_process_cr3(root);\n\
             Aarch64PerCpu::set_next_cr3(0);\n\
         }\n\
@@ -1225,13 +1227,13 @@ fn the_sequence_census_catches_an_install_outside_the_discipline_module() {
     assert_eq!(
         install_sequence_census(&sources).1,
         vec!["kernel/src/arch_impl/aarch64/invented.rs::install_a_process_root".to_string()],
-        "an install that stops after the `isb` leaves stale user translations behind and has to \
+        "an install with no `dsb ishst` can be walked before its tables are written and has to \
          be caught outside the discipline module too"
     );
 
     let repaired = truncated.replace(
-        "\"isb\", in(reg) root",
-        "\"isb\", \"tlbi vmalle1is\", \"dsb ish\", \"isb\", in(reg) root",
+        "\"msr ttbr0_el1, {0}\", \"isb\", in(reg) root",
+        "\"dsb ishst\", \"msr ttbr0_el1, {0}\", \"isb\", in(reg) root",
     );
     let sources = vec![(
         "kernel/src/arch_impl/aarch64/invented.rs".to_string(),
@@ -1492,7 +1494,7 @@ fn the_discipline_publishes_the_dispatch_asid() {
     // it. R157/ASID-05: this check used to parse a `1u64 << 48` out of
     // `set_next_ttbr0_for_thread` and compare it to the constant, which two
     // spellings of the same number both satisfy -- so the or-only form, the
-    // one `process_root_ttbr0`'s doc comment says is refused, passed it. The
+    // one `bind_process_root`'s doc comment says is refused, passed it. The
     // published value is read off the publish itself, so a renamed binding
     // does not silently drop the check.
     let dispatch_body = function_body(&context_switch, "set_next_ttbr0_for_thread");
@@ -1502,30 +1504,25 @@ fn the_discipline_publishes_the_dispatch_asid() {
         panic!("the published value {published:?} must be bound in the dispatch body")
     });
     assert!(
-        dispatch_rhs.contains("process_root_ttbr0("),
+        dispatch_rhs.contains("bind_process_root("),
         "the dispatch path publishes {published:?} without routing it through the \
          discipline's normalisation, so whatever ASID the operand already carried \
          survives into the word the corridor installs verbatim: {dispatch_rhs:?}"
     );
 
-    let discipline_line = ttbr0
-        .lines()
-        .find(|line| line.contains("const USER_ASID_TTBR0"))
-        .expect("the discipline must name the userspace ASID as a constant");
-    asid_tag(discipline_line)
-        .unwrap_or_else(|| panic!("parse the discipline ASID tag from {discipline_line:?}"));
+    let _ = discipline_asid_tag(&ttbr0);
 
     // The normalisation REPLACES the field. An or-only tag leaves a foreign
     // ASID a caller happened to hand over in place, which is the shape this
     // check exists to reject.
-    let normalise = function_body(&ttbr0, "process_root_ttbr0");
+    let normalise = function_body(&ttbr0, "bind_process_root");
     assert!(
         normalise.contains("& TTBR0_ROOT_MASK"),
         "normalising a process root must mask the ASID field before setting it, or a caller's own ASID bits survive"
     );
     assert!(
-        normalise.contains("| USER_ASID_TTBR0"),
-        "normalising a process root must set the userspace ASID"
+        normalise.contains("<< TTBR0_ASID_SHIFT") && normalise.contains(".bind("),
+        "normalising a process root must set the ASID the allocator bound it to"
     );
 
     // The value the register takes and the value the corridor is handed are the
@@ -1540,7 +1537,7 @@ fn the_discipline_publishes_the_dispatch_asid() {
         panic!("the installed value {operand:?} must be bound in the discipline body")
     });
     assert!(
-        normalised.contains("process_root_ttbr0("),
+        normalised.contains("bind_process_root("),
         "the discipline installs {operand:?} without normalising the ASID, so an untagged root reaches both the register and the corridor: {normalised:?}"
     );
     assert_eq!(
@@ -1762,7 +1759,7 @@ fn the_blocking_resume_census_catches_an_unguarded_restore() {
 // This census is the value ratchet. It walks every call to the two per-CPU
 // shadow accessors in aarch64-scoped code under `kernel/src` and requires
 // every operand to have an ACCOUNTED provenance: a literal 0, a value
-// normalised through `process_root_ttbr0`, a value carrying the dispatch tag,
+// normalised through `bind_process_root`, a value carrying the dispatch tag,
 // this CPU's kernel root, or a value read back out of the register or out of a
 // shadow word. A raw `level_4_frame().start_address()` reaching a shadow store
 // is exactly what has no provenance here.
@@ -1793,10 +1790,10 @@ enum Provenance {
     /// A literal 0. The corridor arm for that word is disarmed, and 0 is the
     /// one value `syscall_entry.S` tests for before installing.
     Cleared,
-    /// Normalised through `process_root_ttbr0` in this function.
+    /// Normalised through `bind_process_root` in this function.
     Normalised,
     /// The ASID tag is spelled here, by hand, rather than reached through
-    /// `process_root_ttbr0`. This is NOT accounted (R157/ASID-05): the
+    /// `bind_process_root`. This is NOT accounted (R157/ASID-05): the
     /// discipline's normalisation REPLACES bits [63:48], and its own doc
     /// comment refuses the or-only form because that preserves a foreign ASID
     /// the operand already carried. A ratchet that accepts both spellings
@@ -1905,7 +1902,7 @@ fn expression_provenance(
     register_readers: &[String],
     dispatch_tag: (u64, u32),
 ) -> Option<Provenance> {
-    if expression.contains("process_root_ttbr0(") {
+    if expression.contains("bind_process_root(") {
         return Some(Provenance::Normalised);
     }
     // R157/ASID-05. Reaching the discipline's tag WITHOUT going through the
@@ -1913,7 +1910,7 @@ fn expression_provenance(
     // disposition rather than accepted. Before this round the same predicate
     // returned an ACCOUNTED `DispatchTagged` here, which is why the census
     // read `ttbr0 | (1u64 << 48)` in `set_next_ttbr0_for_thread` as fine.
-    if expression.contains("USER_ASID_TTBR0") || asid_tag(expression) == Some(dispatch_tag) {
+    if spells_asid_field(expression, dispatch_tag) {
         return Some(Provenance::HandTagged);
     }
     if expression.contains("kernel_cr3()") || expression.contains("kernel_ttbr0()") {
@@ -2128,13 +2125,28 @@ fn unresolved_caller_borne(
     out
 }
 
-/// The ASID tag the discipline names, parsed out of its own constant.
+/// The shape of a hand-built ASID field: `(1, shift)`, with the shift parsed
+/// out of the discipline's own constant. Each process root's ASID is chosen by
+/// the allocator (`bind_process_root`); any other site that shifts a value by
+/// that amount into a root is spelling the field by hand.
 fn discipline_asid_tag(ttbr0: &str) -> (u64, u32) {
     let line = ttbr0
         .lines()
-        .find(|line| line.contains("const USER_ASID_TTBR0"))
-        .expect("the discipline must name the userspace ASID as a constant");
-    asid_tag(line).unwrap_or_else(|| panic!("parse the discipline ASID tag from {line:?}"))
+        .find(|line| line.contains("const TTBR0_ASID_SHIFT: u32 ="))
+        .expect("the discipline must name the ASID field's position as a constant");
+    let shift = line
+        .split('=')
+        .nth(1)
+        .and_then(|value| value.trim().trim_end_matches(';').parse().ok())
+        .unwrap_or_else(|| panic!("parse the ASID shift from {line:?}"));
+    (1, shift)
+}
+
+/// Whether `expression` spells an ASID field by hand: the discipline's shift
+/// constant, or a literal shift by the same amount, whatever the ASID.
+fn spells_asid_field(expression: &str, tag: (u64, u32)) -> bool {
+    expression.contains("<< TTBR0_ASID_SHIFT")
+        || asid_tag(expression).is_some_and(|(_, shift)| shift == tag.1)
 }
 
 #[test]
@@ -2238,7 +2250,7 @@ fn the_publication_census_catches_an_untagged_root() {
     // docs/planning/green-program/aarch64-testing/serials/asid-ratchet/01-structural-anti-vacuity-raw-adopt.txt
     let normalised = raw.replace(
         "Aarch64PerCpu::set_next_cr3(root)",
-        "Aarch64PerCpu::set_next_cr3(process_root_ttbr0(root))",
+        "Aarch64PerCpu::set_next_cr3(bind_process_root(root))",
     );
     assert!(
         shadow_publish_census(&with(&normalised), tag)
@@ -2340,8 +2352,9 @@ fn the_shadow_setters_feed_the_runtime_census() {
     let ttbr0 = repo_text("kernel/src/arch_impl/aarch64/ttbr0.rs");
     let counter = function_body(&ttbr0, "note_shadow_publish");
     assert!(
-        counter.contains("USER_ASID_TTBR0"),
-        "the runtime census must score the ASID field against the discipline's own constant"
+        counter.contains("KERNEL_ASID"),
+        "the runtime census must score the ASID field against the kernel ASID, which no \
+         process root may carry"
     );
     assert!(
         counter.contains("kernel_ttbr0()"),
@@ -2520,7 +2533,7 @@ fn both_aarch64_gates_fail_on_an_untagged_publish() {
 // One place constructs the ASID tag (R157 / ASID-05)
 // ---------------------------------------------------------------------------
 //
-// `process_root_ttbr0`'s doc comment states the rule: the ASID field is
+// `bind_process_root`'s doc comment states the rule: the ASID field is
 // REPLACED rather than or-ed into, because an or-only tag preserves a foreign
 // ASID a caller happened to hand over. Until this round three sites spelled the
 // tag themselves anyway -- `set_next_ttbr0_for_thread` with
@@ -2553,7 +2566,7 @@ fn asid_tag_constructions(source: &str, discipline_tag: (u64, u32)) -> Vec<Strin
         if !line.contains('|') {
             continue;
         }
-        if line.contains("USER_ASID_TTBR0") || asid_tag(line) == Some(discipline_tag) {
+        if spells_asid_field(line, discipline_tag) {
             let mut record = String::new();
             record.push_str(&(index + 1).to_string());
             record.push_str(": ");
@@ -2583,9 +2596,9 @@ fn the_asid_tag_is_constructed_in_one_place() {
     }
     assert!(
         elsewhere.is_empty(),
-        "these sites build the userspace ASID tag themselves instead of calling \
-         `process_root_ttbr0`, which is the or-only form the discipline's own doc comment \
-         refuses -- a foreign ASID in the operand survives it: {elsewhere:#?}"
+        "these sites build an ASID field themselves instead of calling \
+         `bind_process_root`, so the ASID they install is not one the allocator gave \
+         that address space: {elsewhere:#?}"
     );
 
     // Anti-vacuity on the real tree: the discipline's file DOES construct the
@@ -2610,25 +2623,31 @@ fn the_tag_census_reads_the_or_and_not_the_comparison() {
         "the shift spelling of the tag, or-ed in, is what this catches"
     );
     assert_eq!(
-        asid_tag_constructions("let value = root | USER_ASID_TTBR0;\n", tag).len(),
+        asid_tag_constructions("let value = root | (asid << TTBR0_ASID_SHIFT);\n", tag).len(),
         1,
         "the constant spelling, or-ed in, is the same finding"
     );
     assert!(
-        asid_tag_constructions("let value = process_root_ttbr0(root);\n", tag).is_empty(),
+        asid_tag_constructions("let value = bind_process_root(root);\n", tag).is_empty(),
         "routing through the normaliser is the accepted spelling, not a finding"
     );
     assert!(
-        asid_tag_constructions("if value & MASK == USER_ASID_TTBR0 {}\n", tag).is_empty(),
+        asid_tag_constructions("if value & MASK == (1u64 << 48) {}\n", tag).is_empty(),
         "comparing against the tag is not constructing it"
     );
     assert!(
         asid_tag_constructions("// let value = root | (1u64 << 48);\n", tag).is_empty(),
         "prose naming the old spelling is not a finding"
     );
+    assert_eq!(
+        asid_tag_constructions("let value = root | (2u64 << 48);\n", tag).len(),
+        1,
+        "each address space has its own ASID, so a hand-built field is a finding whatever \
+         its value"
+    );
     assert!(
-        asid_tag_constructions("let value = root | (2u64 << 48);\n", tag).is_empty(),
-        "a different ASID is a different question; this census is about THIS tag"
+        asid_tag_constructions("let value = root | (2u64 << 12);\n", tag).is_empty(),
+        "a shift that does not reach the ASID field is not one"
     );
 }
 
@@ -2667,7 +2686,7 @@ fn the_publish_census_tells_a_replaced_tag_from_an_or_ed_one() {
 
     let replaced = or_ed.replace(
         "set_next_cr3(root | (1u64 << 48))",
-        "set_next_cr3(process_root_ttbr0(root))",
+        "set_next_cr3(bind_process_root(root))",
     );
     let census = shadow_publish_census(&with(&replaced), tag);
     assert!(

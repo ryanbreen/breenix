@@ -431,6 +431,16 @@ impl PreparedCommit {
     pub fn node(&self, addr: u64) -> Option<&[u8]> {
         self.nodes.get(&addr).map(Vec::as_slice)
     }
+    /// Whether this publication writes any block of a cached four-block node.
+    /// Preparation has already checked that the write ranges are disjoint.
+    pub fn overwrites_node(&self, addr: u64) -> bool {
+        let node_blocks = (NODE_SIZE / BLOCK_SIZE) as u64;
+        let end = addr.saturating_add(node_blocks);
+        self.nodes.range(..end).next_back().is_some_and(|(&start, _)| start + node_blocks > addr)
+            || self.data.range(..end).next_back().is_some_and(|(&start, bytes)| {
+                start + (bytes.len() / BLOCK_SIZE) as u64 > addr
+            })
+    }
     fn write_direct(
         &self,
         device: &dyn BlockDevice,
@@ -652,8 +662,21 @@ pub(crate) fn partition_blocks(device: &dyn BlockDevice) -> Result<u64, Error> {
         .ok_or(Error::EIO)
 }
 pub(crate) fn read(device: &dyn BlockDevice, addr: u64, len: usize) -> Result<Vec<u8>, Error> {
+    if len % BLOCK_SIZE != 0 {
+        return Err(Error::EIO);
+    }
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(len).map_err(|_| Error::BlockRead(BlockError::OutOfMemory))?;
+    bytes.resize(len, 0);
+    read_into(device, addr, &mut bytes)?;
+    Ok(bytes)
+}
+/// Read whole blocks starting at block `addr` into `bytes`, in one device
+/// request (E24 ledger 372, #3040).
+pub(crate) fn read_into(device: &dyn BlockDevice, addr: u64, bytes: &mut [u8]) -> Result<(), Error> {
     let total = partition_blocks(device)?;
     let sector = device.block_size();
+    let len = bytes.len();
     if len % BLOCK_SIZE != 0
         || addr
             .checked_add((len / BLOCK_SIZE) as u64)
@@ -664,14 +687,9 @@ pub(crate) fn read(device: &dyn BlockDevice, addr: u64, len: usize) -> Result<Ve
     let start = addr
         .checked_mul((BLOCK_SIZE / sector) as u64)
         .ok_or(Error::EIO)?;
-    let mut bytes = Vec::new();
-    bytes.try_reserve_exact(len).map_err(|_| Error::BlockRead(BlockError::OutOfMemory))?;
-    bytes.resize(len, 0);
-    // One device request per read (E24 ledger 372, #3040).
     device
-        .read_blocks(start, len / sector, &mut bytes)
-        .map_err(Error::BlockRead)?;
-    Ok(bytes)
+        .read_blocks(start, len / sector, bytes)
+        .map_err(Error::BlockRead)
 }
 pub(crate) fn write(device: &dyn BlockDevice, addr: u64, bytes: &[u8]) -> Result<(), Error> {
     let total = partition_blocks(device)?;

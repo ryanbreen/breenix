@@ -200,13 +200,20 @@ pub fn init() {
 
     // Print physical address for QMP extraction.
     let virt_addr = table_ptr() as usize;
-    let phys_addr = virt_to_phys(virt_addr);
-
-    crate::serial_println!(
-        "[btrt] Boot Test Result Table at phys {:#018x} ({} bytes)",
-        phys_addr,
-        table_size,
-    );
+    match virt_to_phys(virt_addr) {
+        Ok(phys_addr) => crate::serial_println!(
+            "[btrt] Boot Test Result Table at phys {:#018x} ({} bytes)",
+            phys_addr,
+            table_size,
+        ),
+        // QMP extraction cannot find the table; say so instead of printing a
+        // virtual address as a physical one.
+        Err(error) => crate::serial_println!(
+            "[btrt] Boot Test Result Table at virt {:#018x} has no physical address: {:?}",
+            virt_addr,
+            error,
+        ),
+    }
 
     // Emit KTAP header
     ktap::emit_header(catalog::CATALOG.len() as u32);
@@ -460,17 +467,17 @@ fn boot_timestamp_ns() -> u64 {
     crate::arch_read_timestamp()
 }
 
-/// Convert a virtual address to a physical address.
-fn virt_to_phys(virt: usize) -> usize {
+/// Convert a virtual address to a physical address, or give the reason it has no translation.
+fn virt_to_phys(virt: usize) -> Result<usize, crate::memory::WalkError> {
     #[cfg(target_arch = "x86_64")]
     {
         // On x86_64, the kernel is loaded at a separate virtual offset from the HHDM,
         // so simple subtraction doesn't work for BSS addresses. Walk the page tables.
-        crate::memory::PhysAddrWrapper::from_kernel_virt(virt) as usize
+        crate::memory::PhysAddrWrapper::from_kernel_virt(virt).map(|phys| phys as usize)
     }
     #[cfg(target_arch = "aarch64")]
     {
-        crate::platform_config::kernel_va_to_ipa(virt as u64) as usize
+        Ok(crate::platform_config::kernel_va_to_ipa(virt as u64) as usize)
     }
 }
 

@@ -1242,3 +1242,63 @@ fn live_check_reads_metadata_and_propagates_device_errors() {
         adapter.check_live().unwrap();
     }
 }
+
+/// ext2's mapping transfer (ext2::mapped_io::DataFile, which host builds do
+/// not compile) with its `read` body: file::read_file_range on the mount's
+/// device, inode and superblock. read_into is the MappingIo default.
+struct Ext2Transfer {
+    pin: crate::host_mounts::MountPin,
+    ino: u32,
+}
+impl crate::vfs::MappingIo for Ext2Transfer {
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+    fn size(&self) -> u64 {
+        let guard = crate::host_mounts::read_mount(self.pin).unwrap();
+        guard.as_ref().unwrap().read_inode(self.ino).unwrap().size()
+    }
+    fn read(&self, offset: u64, length: usize) -> Result<Vec<u8>, Errno> {
+        let guard = crate::host_mounts::read_mount(self.pin).unwrap();
+        let fs = guard.as_ref().unwrap();
+        let inode = fs.read_inode(self.ino).unwrap();
+        crate::storage::file::read_file_range(fs.device.as_ref(), &inode, &fs.superblock, offset, length)
+            .map_err(|_| Errno(EIO))
+    }
+    fn needs_flush(&self) -> bool {
+        false
+    }
+    fn sync(&self, _: u64, _: u64) -> Result<(), Errno> {
+        Ok(())
+    }
+    fn publish(&self, _: &mut dyn FnMut(bool) -> Result<(), Errno>) -> Result<(), Errno> {
+        Ok(())
+    }
+}
+
+/// mmap population hands MappingIo::read_into up to 16 pages at once. ext2's
+/// read refuses any request larger than the volume, so the default read_into
+/// must ask for at most one page per read: on a 60 KiB volume a 64 KiB run of
+/// a sparse file still reads its data and holes, as single-page reads did.
+#[test]
+fn ext2_mapping_reads_a_population_run_on_a_volume_smaller_than_the_run() {
+    use crate::vfs::MappingIo;
+    let disk = Fixture::small();
+    let fs = Ext2Adapter::new(disk.pin());
+    let ino = regular(&fs, fs.root().unwrap(), b"sparse");
+    let node = fs.open(ino).unwrap();
+    let data_at = 3 * 4096 + 100;
+    fs.write(&node, WriteReq { at: WriteAt::Offset(data_at as u64), limit: u64::MAX, clear_setid: false }, b"data")
+        .unwrap();
+    fs.resize(&node, 1 << 20, false, &|_| Ok(())).unwrap();
+    let mapping = Ext2Transfer { pin: disk.pin(), ino: ino as u32 };
+    assert_eq!(mapping.size(), 1 << 20);
+    let mut run = vec![0xa5; 16 * 4096];
+    assert_eq!(mapping.read_into(0, &mut run), Ok(run.len()), "a 64 KiB run of a sparse file");
+    let mut expected = vec![0; run.len()];
+    expected[data_at..data_at + 4].copy_from_slice(b"data");
+    assert!(run == expected, "run bytes differ from the file");
+    let tail = (1 << 20) - 4096 - 10;
+    assert_eq!(mapping.read_into(tail, &mut run), Ok(4096 + 10), "a run that crosses EOF");
+    assert!(run.iter().all(|&byte| byte == 0), "holes and the bytes past EOF read as 00");
+}

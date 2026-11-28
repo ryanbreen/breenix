@@ -41,7 +41,8 @@ median was 1.171 s with 7,931–7,986 device reads.
 | Driver mmap | 23.895 [20.443, 24.696] | 0.0006 [0.0002, 0.0007] | 5/5 | Device reads on eager map / lazy map, no eviction |
 | Driver first touch | 0.068 [0.067, 0.068] | 0.0073 [0.0069, 0.2449] | 5/5 | Resident after map / first and warm touches |
 | Driver map + touch | 23.962 [20.511, 24.764] | 0.0079 [0.0074, 0.2451] | 5/5 | Device reads on map / first and warm touches |
-| Copy 1 GiB total | 0.773 [0.767, 0.774] | 0.073 [0.068, 0.078] | 5/5 | Resident buffers on both |
+| Copy 4 GiB total (i32 buffers) | 0.773 [0.767, 0.774] | 0.073 [0.068, 0.078] | 5/5 | Resident buffers on both |
+| Copy 1 GiB of bytes | — | — | — | Resident buffers on both |
 | Write 1 GiB and fsync | Deferred to #3226 | 0.110 [0.100, 0.360] | — | Deferred / new file, buffered write followed by fsync |
 | Read 1 GiB immediately after fsync | Deferred to #3226 | 0.042 [0.041, 0.044] | — | Deferred / warm from preceding write |
 | Create 10,000 files | 2.392 [1.919, 2.462] | 0.392 [0.374, 0.404] | 5/5 | Fresh files in newly made directories on both |
@@ -50,10 +51,29 @@ median was 1.171 s with 7,931–7,986 device reads.
 | Walk target tree | Deferred to #3226 | 0.0047 [0.0046, 0.0051] | — | Deferred / warm from fixture creation |
 | Fsync 4 KiB append, per call (ms) | Deferred to #3226 | 3.764 [3.464, 4.181] | — | Deferred / recently dirtied file |
 | 8 MB upload, bsync | 8.947 [8.670, 9.421] | — | 5/5 | Warm source, empty destination / — |
-| 100 MB upload, loopback SCP | — | 0.280 [0.274, 0.308] | — | — / warm source, empty destination |
-| SCP download (R240 8 MB, Mac 100 MB) | 2.628 [2.307, 2.859] | 0.284 [0.262, 0.294] | 5/5 | Recently uploaded and checked, file cache uncontrolled / warm loopback cache |
+| SCP upload (Mac 100 MB, QEMU 8 MB) | — | 0.280 [0.274, 0.308] | — | — / warm source, empty destination |
+| SCP download (R240 and QEMU 8 MB, Mac 100 MB) | 2.628 [2.307, 2.859] | 0.284 [0.262, 0.294] | 5/5 | Recently uploaded and checked, file cache uncontrolled / warm loopback cache |
 | SSH round trip | 0.337 [0.286, 0.360] | 0.104 [0.103, 0.108] | 5/5 | Fresh SSH connection on both |
+| getpid ×1M (ms) | — | — | — | One process, 1,000,000 calls |
+| malloc/free 64 B ×1M, 1 thread (ms) | — | — | — | One allocate-free pair at a time |
+| malloc/free 64 B ×1M per thread, 4 threads (ms) | — | — | — | Four threads started together |
+| Raw TCP 32 MB, guest to host (MB/s) | — | — | — | Fresh connection, delivery acknowledged by the host |
+| Raw TCP 32 MB, host to guest (MB/s) | — | — | — | Fresh connection, until the last byte is read |
+| AES-256-GCM seal, opt-level z (MB/s) | — | — | — | 8 MiB in 32 KiB SSH packets |
+| AES-256-GCM seal, opt-level 3 (MB/s) | — | — | — | 8 MiB in 32 KiB SSH packets |
+| HMAC-SHA256, opt-level z (MB/s) | — | — | — | 8 MiB in 32 KiB SSH packets |
+| HMAC-SHA256, opt-level 3 (MB/s) | — | — | — | 8 MiB in 32 KiB SSH packets |
 <!-- bbench results end -->
+
+The R240 and Mac copy medians above copied 4 GiB: until the QEMU rig's
+branch, the probe's buffers held `i32` values, not bytes. That row,
+`memory.copy`, keeps those historical receipts and is retired. The probe
+now copies 1 GiB of bytes, recorded as a separate row, `memory.copy-bytes`
+(workload and case `copy-bytes`), so no trend joins the two.
+
+The attribution rows from getpid down were added for the ARM64 QEMU rig
+(`rig.py`, DEV-31). Neither column above has run them yet; their
+Breenix and Linux medians live in the arm64-qemu series files.
 
 On the R240, `rustc -vV` had a faster, lower-I/O mode at 4.63–7.31 s
 (12,704–20,324 device reads) and a slower, device-backed mode at
@@ -68,7 +88,8 @@ The R240 median for driver map plus touch was 23.962 s, about 98×
 the Mac's first pass (0.245 s) and 3,091× its warm-repeat median
 (0.00775 s). The R240's eager population reads the driver during
 `mmap`. The Mac's lazy mapping leaves most of that work until touch.
-Copy bandwidth was 1.29 GiB/s on the R240 and 13.76 GiB/s on the Mac.
+Copy bandwidth was 5.17 GiB/s on the R240 and 55.0 GiB/s on the Mac
+(4 GiB copied per sample, over the medians 0.773 s and 0.0727 s).
 The anonymous workload took 1.39 µs per native page on the R240 and
 0.74 µs on the Mac, including map and teardown.
 
@@ -88,9 +109,9 @@ of the allocation that failed in that boot remains under investigation.
   offline and frozen. Cold builds use fresh target directories. The
   no-op uses the same warmed `yes` target for each timed invocation.
   `yes` uses `dev-box` and `release`. The other packages use `selfhost`.
-  The R240 wrapper reads four bytes from the expanded driver RUNPATH
-  before compiler exec. Timings include that work and the launcher.
-  The intermittent loader failure is tracked in [#3208](https://github.com/ryanbreen/breenix/issues/3208).
+  The recorded R240 runs used a wrapper that read four bytes from the
+  expanded driver RUNPATH before compiler exec. Those timings include
+  the read and the launcher. The workaround was for [#3208](https://github.com/ryanbreen/breenix/issues/3208).
 - First output from `rustc -vV` includes fork and exec, dynamic loading,
   constructors and early compiler work. The static control runs 100
   fork/exec/wait cycles per sample using an empty Rust main.
@@ -98,8 +119,9 @@ of the allocation that failed in that boot remains under investigation.
   mapping. Native page size is 4 KiB on the R240 and 16 KiB on the Mac.
   The DSO test maps the same 262,549,112-byte ELF, then reads one byte
   per 4 KiB on both machines. Map plus touch sums those phases within
-  each sample. The copy workload times eight copies of 128 MiB after
-  buffer setup.
+  each sample. The retired copy row timed eight copies of 512 MiB
+  (128 Mi `i32` values) after buffer setup; `copy-bytes` times eight
+  copies of 128 MiB of bytes.
 - The metadata workload creates, stats and unlinks 10,000 known 128-byte
   file paths across 100 freshly created directories. The test stats
   paths directly. The Mac-only disk references use a generated
@@ -226,19 +248,12 @@ a fresh receipt directory. The remote defaults exclude `sequential`,
 ```sh
 python3 userland/bbench/run.py --run "$RUN_ID" --out "$BOX_RECEIPTS" \
     --host "$BOX_LOGIN" --source "$BOX_SOURCE" --data "$BOX_DATA" \
-    --bcargo "$BOX_BCARGO" --probe "$BOX_PROBE" --wrap-rustc
+    --bcargo "$BOX_BCARGO" --probe "$BOX_PROBE"
 ```
 
-The historical no-op retry reused the artifacts from the second
-`yes` dev-box attempt.
-
-```sh
-python3 userland/bbench/run.py --run r240-20261127-wrapped-retry1 \
-    --out "$RETRY_RECEIPTS" --host "$BOX_LOGIN" --source "$BOX_SOURCE" \
-    --data "$BOX_DATA" --bcargo "$BOX_BCARGO" --probe "$BOX_PROBE" --wrap-rustc \
-    --cases cargo-noop --count 5 \
-    --noop-target "$BOX_DATA/r240-20261127-wrapped/r240-20261127-wrapped-yes-dev-box-2-artifacts"
-```
+The historical no-op retry reused the second `yes` dev-box attempt's
+target directory,
+`$BOX_DATA/r240-20261127-wrapped/r240-20261127-wrapped-yes-dev-box-2-artifacts`.
 
 For the Mac reference, set `MAC_FIXTURE` to the E25 Mac twin fixture,
 `MAC_BLD` to its native linker and `DRIVER_ELF` to a local copy of the
@@ -262,3 +277,39 @@ python3 userland/bbench/tables.py --box "$RUN_ID" "$BOX_RECEIPTS" \
 python3 userland/bbench/render.py --box "$RUN_ID" "$BOX_RECEIPTS" \
     --mac "$MAC_RUN_ID" "$MAC_RECEIPTS" > target/bbench-baseline.md
 ```
+
+## Benchmark series (schema v1)
+
+The Mac-side driver writes `<run>.series.json` alongside the receipts, including
+when a workload fails. Use a unique `--run` for each system and commit pair.
+Pass `--hardware`, `--kernel-commit`, `--userland-commit` and `--session` when
+recording a run for comparison. The driver timestamps the run in UTC and
+reads the toolchain from CURRENT on Breenix or `rustc -vV` on the Mac.
+
+```sh
+python3 userland/bbench/run.py series-from-receipts "$RECEIPTS" \
+    --run "$RUN_ID" --out "$SERIES_DIR" --at "$RUN_STARTED_UTC" \
+    --system breenix --target x86-metal --hardware "Dell PowerEdge R240" \
+    --kernel-commit "$KERNEL_COMMIT" --userland-commit "$USERLAND_COMMIT" \
+    --session "$SESSION"
+```
+
+Repeat `--run` to include a continuation of the same run from the receipt
+directory. Use `--id` to give the combined series its own stable ID.
+
+- Each file contains `version: 1`, `id`, UTC ISO 8601 `at`, `system`
+  (`breenix`, `linux`, `mac`), `target` (`x86-metal`, `arm64-qemu`, `mac`),
+  `hardware`, `kernelCommit`, `userlandCommit`, `toolchain`, `session`,
+  `pr`, `note` and `rows`. Unknown commit, toolchain, session, PR and
+  note values are `null`.
+- Each row has a stable `id`, `title`, `area` (`compile`, `process`,
+  `memory`, `disk`, `network`, `ssh`), `unit` (`s`, `ms`, `MB/s`),
+  `better` (`lower`, `higher`), `state` (`measured`, `deferred`,
+  `failed`), `median`, `min`, `max`, `completed`, `attempts`, `cache`
+  and nullable `reason`. Statistics use successful timed receipts.
+  `attempts` counts published timed receipts, including failures.
+  Deferred and failed rows have null statistics and are omitted from plots.
+  Disk cases deferred on the R240 carry reason `#3226`.
+- For matching measured rows on the same hardware, divide Breenix by Linux
+  when lower is better and Linux by Breenix when higher is better. A ratio
+  above 1 means Breenix is slower.

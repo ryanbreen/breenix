@@ -662,16 +662,23 @@ fn run_piped_program(
     }
 }
 
+/// Program output read per channel packet: up to 32 KiB, still capped by
+/// the peer's window and maximum packet size.
+const RELAY_CHUNK: usize = 32 * 1024;
+
 /// RFC 4254 section 5.3: input EOF closes only stdin; output keeps flowing.
 fn exec_shuttle(session: &mut ServerSession, outputs: [Fd; 2], input: Fd) -> Result<(), String> {
     use io::poll_events::{POLLERR, POLLHUP, POLLIN, POLLOUT};
+    let mut buf = vec![0u8; RELAY_CHUNK];
     let mut pending = Vec::new();
     let mut offset = 0;
     let mut input_open = true;
     let mut output_open = [true; 2];
     let result = (|| {
         loop {
-            let capacity = session.send_capacity().min(4096);
+            let capacity = session.send_capacity().min(RELAY_CHUNK);
+            // A packet already taken off the socket will not wake poll.
+            let buffered = session.io().packet_ready();
             let mut fds = [
                 io::PollFd::new(if capacity > 0 && output_open[0] { outputs[0] } else { Fd::from_raw(u64::MAX) }, POLLIN),
                 io::PollFd::new(session.io().fd(), POLLIN),
@@ -679,15 +686,17 @@ fn exec_shuttle(session: &mut ServerSession, outputs: [Fd; 2], input: Fd) -> Res
                                if pending.is_empty() { 0 } else { POLLOUT }),
                 io::PollFd::new(if capacity > 0 && output_open[1] { outputs[1] } else { Fd::from_raw(u64::MAX) }, POLLIN),
             ];
-            match io::poll(&mut fds, 100) {
+            match io::poll(&mut fds, if buffered { 0 } else { 100 }) {
                 Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::EINTR)) => continue,
                 Err(e) => return Err(format!("poll: {:?}", e)),
                 Ok(_) => {}
             }
+            if buffered {
+                fds[1].revents |= POLLIN;
+            }
             for (index, slot) in [(0, 0), (1, 3)] {
-                let capacity = session.send_capacity().min(4096);
+                let capacity = session.send_capacity().min(RELAY_CHUNK);
                 if capacity == 0 || fds[slot].revents & (POLLIN | POLLHUP) == 0 { continue; }
-                let mut buf = [0u8; 4096];
                 match io::read(outputs[index], &mut buf[..capacity]) {
                     Ok(0) => output_open[index] = false,
                     Ok(n) => {
@@ -786,12 +795,15 @@ fn data_shuttle(session: &mut ServerSession, master_fd: Fd, input_fd: Fd, has_pt
         let mut eof_sent = false;
         let mut pending_eof = false;
         let mut output_done = false;
+        let mut bytes = vec![0u8; RELAY_CHUNK];
 
         loop {
             let queue_ready = session.io().relay_can_queue();
             let output_pending = session.io().relay_output_pending();
             if output_done && !output_pending { break; }
-            let capacity = if queue_ready { session.send_capacity().min(4096) } else { 0 };
+            let capacity = if queue_ready { session.send_capacity().min(RELAY_CHUNK) } else { 0 };
+            // A packet already taken off the socket will not wake poll.
+            let buffered = queue_ready && !session.channel_closed() && session.io().packet_ready();
             let output = if capacity > 0 && !output_done { master_fd } else { unused };
             let input = if !session.channel_closed() && !input_closed && !pending.is_empty() { input_fd } else { unused };
             let socket_events = (if queue_ready && !session.channel_closed() { POLLIN } else { POLLRDHUP })
@@ -801,13 +813,13 @@ fn data_shuttle(session: &mut ServerSession, master_fd: Fd, input_fd: Fd, has_pt
                 io::PollFd::new(ssh_fd, socket_events),
                 io::PollFd::new(input, POLLOUT),
             ];
-            match io::poll(&mut fds, 100) {
+            match io::poll(&mut fds, if buffered { 0 } else { 100 }) {
                 Err(Error::Os(Errno::EINTR)) => continue,
                 Err(_) => return Err(SshError::Io),
                 Ok(_) => {}
             }
 
-            let ssh_events = fds[1].revents;
+            let ssh_events = fds[1].revents | if buffered { POLLIN } else { 0 };
             if ssh_events & (POLLERR | POLLHUP | POLLNVAL | POLLRDHUP) != 0 {
                 return Err(SshError::Disconnected);
             }
@@ -877,7 +889,6 @@ fn data_shuttle(session: &mut ServerSession, master_fd: Fd, input_fd: Fd, has_pt
             }
 
             if fds[0].revents & POLLIN != 0 {
-                let mut bytes = [0; 4096];
                 match io::read(master_fd, &mut bytes[..capacity]) {
                     Ok(0) | Err(Error::Os(Errno::EIO)) => output_done = true,
                     Ok(n) => session.send_data(&bytes[..n])?,
@@ -938,15 +949,17 @@ fn wait_for_shell(session: &mut ServerSession, pid: i32) -> Result<i32, SshError
                 }
             }
         }
-        let events = (if !closed && session.io().relay_can_queue() { POLLIN } else { POLLRDHUP })
+        let readable = !closed && session.io().relay_can_queue();
+        let buffered = readable && session.io().packet_ready();
+        let events = (if readable { POLLIN } else { POLLRDHUP })
             | (if pending { POLLOUT } else { 0 });
         let mut fds = [io::PollFd::new(session.io().fd(), events)];
-        match io::poll(&mut fds, 100) {
+        match io::poll(&mut fds, if buffered { 0 } else { 100 }) {
             Err(Error::Os(Errno::EINTR)) => continue,
             Err(_) => return Err(SshError::Io),
             Ok(_) => {}
         }
-        let events = fds[0].revents;
+        let events = fds[0].revents | if buffered { POLLIN } else { 0 };
         if events & (POLLERR | POLLHUP | POLLNVAL | POLLRDHUP) != 0 {
             return Err(SshError::Disconnected);
         }

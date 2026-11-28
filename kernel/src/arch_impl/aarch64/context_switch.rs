@@ -2621,13 +2621,13 @@ const _: () = assert!(
 #[inline(always)]
 fn reusable_kstack_slot_for_address(address: u64) -> Option<usize> {
     use crate::memory::kernel_stack::{
-        ARM64_KERNEL_STACK_BASE, ARM64_KERNEL_STACK_END, ARM64_STACK_SLOT_SIZE,
+        arm64_kernel_stack_base, arm64_kernel_stack_end, ARM64_STACK_SLOT_SIZE,
     };
 
-    if address < ARM64_KERNEL_STACK_BASE || address >= ARM64_KERNEL_STACK_END {
+    if address < arm64_kernel_stack_base() || address >= arm64_kernel_stack_end() {
         return None;
     }
-    Some(((address - ARM64_KERNEL_STACK_BASE) / ARM64_STACK_SLOT_SIZE) as usize)
+    Some(((address - arm64_kernel_stack_base()) / ARM64_STACK_SLOT_SIZE) as usize)
 }
 
 #[inline(always)]
@@ -7114,6 +7114,10 @@ fn setup_idle_return_arm64(frame: &mut Aarch64ExceptionFrame) {
 
 /// Switch TTBR0_EL1 if the thread requires a different address space.
 ///
+/// `next_cr3` was bound to its space's ASID on this CPU by
+/// `set_next_ttbr0_for_thread`, which also took any rollover flush, so the
+/// install needs no TLB invalidation (`ttbr0::adopt_process_ttbr0` explains why).
+///
 /// The install block below carries `nostack` and deliberately not `nomem`: the
 /// `saved_process_cr3` publication and the `next_cr3` clear that follow it have
 /// to stay on this side of the barriers, and `nomem` would tell the compiler the
@@ -7136,9 +7140,6 @@ fn switch_ttbr0_if_needed(_thread_id: u64) {
             core::arch::asm!(
                 "dsb ishst",
                 "msr ttbr0_el1, {}",
-                "isb",
-                "tlbi vmalle1is",
-                "dsb ish",
                 "isb",
                 in(reg) next_ttbr0,
                 options(nostack)
@@ -7227,27 +7228,21 @@ fn set_next_ttbr0_for_thread(thread_id: u64) -> TtbrResult {
     drop(manager_guard);
 
     if let Some(ttbr0) = next_ttbr0 {
-        // Tag TTBR0 with ASID=1 so stale boot identity map TLB entries
-        // (ASID=0) don't match user VA accesses. Combined with nG bits on
-        // process page table entries, this ensures ASID-based separation.
-        //
-        // R157/ASID-05: the tag is APPLIED BY `process_root_ttbr0`, which
-        // clears bits [63:48] before setting the userspace ASID, rather than
-        // by the `ttbr0 | (1u64 << 48)` this line used to spell. The or-only
-        // form preserves whatever ASID the operand already carried, which is
-        // the shape `process_root_ttbr0`'s own doc comment says is refused.
+        // Bind the root to its address space's ASID on THIS CPU. The
+        // dispatch path runs with interrupts masked, so the value is
+        // published into this CPU's `next_cr3` and installed by this CPU's
+        // `switch_ttbr0_if_needed` or return corridor. The ASID field is the
+        // allocator's choice: `bind_process_root` ignores the operand's.
         // Both operands this site can be handed -- the row's own
         // `level_4_frame().start_address()` and `process.inherited_cr3`, which
-        // `sys_clone` copies from the parent's frame address -- carry an empty
-        // ASID field TODAY, so the or-only form was not producing a wrong word.
-        // What it was doing is making that a property of its callers rather
-        // than of the discipline, which is the arrangement #786 came out of.
+        // `sys_clone` copies from the parent's frame address -- name the same
+        // root for every thread of one address space, so CLONE_VM threads
+        // share its ASID.
         // claim-lint:ok: 2 of 2 operands reachable here are traced above; the
-        // 1 remaining construction of the userspace ASID tag in `kernel/src`
-        // is `process_root_ttbr0` itself, censused by
+        // ASID tag is constructed only by `bind_process_root`, censused by
         // `the_asid_tag_is_constructed_in_one_place` in
         // `tests/ttbr0_shadow_reconciliation_structure.rs`
-        let tagged_ttbr0 = super::ttbr0::process_root_ttbr0(ttbr0);
+        let tagged_ttbr0 = super::ttbr0::bind_process_root(ttbr0);
         unsafe {
             Aarch64PerCpu::set_next_cr3(tagged_ttbr0);
         }

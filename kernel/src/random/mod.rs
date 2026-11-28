@@ -25,7 +25,7 @@
 //! assessed. Passing health diagnostics (`health.rs`) does not establish it.
 //! Without any credited source the pool stays unready.
 
-mod blake2s;
+pub(crate) mod blake2s;
 mod chacha20;
 pub(crate) mod erase;
 mod generator;

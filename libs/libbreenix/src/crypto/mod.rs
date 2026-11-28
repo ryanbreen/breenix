@@ -8,6 +8,7 @@ pub mod aes;
 pub mod bignum;
 #[cfg(feature = "std")]
 pub mod ccm;
+pub mod chacha20;
 #[cfg(feature = "std")]
 pub mod cmac;
 pub mod ct;
@@ -25,6 +26,7 @@ pub mod md4;
 pub mod md5;
 #[cfg(feature = "std")]
 pub mod mlkem;
+pub mod poly1305;
 #[cfg(feature = "std")]
 pub mod rand;
 #[cfg(feature = "std")]

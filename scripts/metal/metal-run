@@ -6,7 +6,7 @@
                  [--ramdisk] [--mode default|shell|probe|suite|console|tests] [--disk install|root] [--session [--idle-minutes N]]
                  [--suite ID | --suite ID,ID,... | --suite all] [--catchup]
   metal-run boot --persistent [--entry previous|rescue] [--run CMD ...] [--verify]
-  metal-run install-persistent [--sha SHA | --branch NAME] [--replace-usr | --add-breenfs] | --rollback
+  metal-run install-persistent [--sha SHA | --branch NAME] [--replace-usr | --add-breenfs] [--recovery [--replace-manager]] | --rollback
   metal-run migrate-persistent migrate|readback|cutover|rescue|return --sha SHA --branch NAME
   metal-run close-migration RETURN_BOOT
   metal-run record-breenfs-upgrades FIRST SECOND --sha SHA
@@ -45,6 +45,7 @@ import threading
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import metal_prebuilt
 import metal_power_cut
+from metal_live_flash import run as run_live_flash
 import transfer_fixture
 from metal_root import smb_gui_selection
 
@@ -254,6 +255,10 @@ def catchup_from_env():
     raise SystemExit('BREENIX_CATCHUP must be 1, true or yes for the catch-up, or 0, false, no or unset')
 
 
+def live_flash(args):
+    return run_live_flash(globals(), args)
+
+
 def install_persistent(args):
     """An install or upgrade boot of a commit, verified by a persistent boot under the same lease; or a rollback."""
     common = dict(sha=None, branch=None, no_wait=False, inject=None, nmi=False, ramdisk=True, disk=None, suite=None,
@@ -270,6 +275,10 @@ def install_persistent(args):
             or args.inject == 'upgrade-service-down' and not migration_image
             or args.inject and replace_usr):
         raise SystemExit('invalid persistent flash options')
+    replace_manager = getattr(args, 'replace_manager', False)
+    if replace_manager and (not getattr(args, 'recovery', False) or not kernel_only
+                            or args.rollback or args.inject or getattr(args, 'add_breenfs', False)):
+        raise SystemExit('--replace-manager requires --kernel-only --recovery without another action')
     if getattr(args, 'add_breenfs', False):
         if args.rollback or args.inject or not args.branch or not args.sha:
             raise SystemExit('--add-breenfs needs a pinned branch and commit, without other install actions')
@@ -279,12 +288,15 @@ def install_persistent(args):
             raise SystemExit('--rollback boots the installed slots; it takes no commit')
         return boot(argparse.Namespace(**dict(common, payload='persistent', mode='persistent', persistent=True,
                                               slot_action='rollback', verify=True)))
+    if kernel_only and not getattr(args, 'recovery', False):
+        return live_flash(args)
     options = argparse.Namespace(**dict(common, payload='image', mode='persistent-install', sha=args.sha,
                                             branch=args.branch, disk=None if kernel_only else 'root',
                                             inject=getattr(args, 'inject', None), kernel_only=kernel_only,
-                                            replace_usr=replace_usr, migration_image=migration_image, carry_local=carry_local))
+                                            replace_usr=replace_usr, migration_image=migration_image, carry_local=carry_local,
+                                            replace_manager=replace_manager))
     status = boot(options)
-    if status == 0 and not replace_usr:
+    if status == 0 and not replace_usr and not replace_manager:
         logs = Path.home() / '.local/state/breenix-metal'
         logs.mkdir(parents=True, exist_ok=True)
         with (logs / (options.boot_id + '-upgrade.log')).open('w') as log:
@@ -450,7 +462,7 @@ def boot(args):
     boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
     command = ['python3', f'{TOOLS}/metal-boot', 'launch', '--id', boot_id, '--payload', payload]
     command += ['--mode', args.mode, '--wait', str(wait)]
-    for flag in ('kernel_only', 'replace_usr', 'migration_image', 'carry_local'):
+    for flag in ('kernel_only', 'replace_usr', 'migration_image', 'carry_local', 'replace_manager'):
         if getattr(args, flag, False):
             command.append('--' + flag.replace('_', '-'))
     if transfer_input:
@@ -681,7 +693,7 @@ def stub_sources(stub):
 
 
 def build(boot_id, sha, features=None, suite=None, tools_profile=None, catchup=False, smb_helper=False,
-          migration=False, milestone=None, kernel_only=False):
+          migration=False, milestone=None, kernel_only=False, live=False):
     """Detached: build in the metal build container, stream the inputs into the boot's stage folder, signal the driver."""
     validate_id(boot_id)
     env = host_env()
@@ -692,7 +704,8 @@ def build(boot_id, sha, features=None, suite=None, tools_profile=None, catchup=F
 
     def failed(why):
         print(f'[metal-run] build failed: {why}', flush=True)
-        in_metal(env, 'python3', f'{TOOLS}/metal-boot', 'inputs-failed', boot_id, why)
+        if not live:
+            in_metal(env, 'python3', f'{TOOLS}/metal-boot', 'inputs-failed', boot_id, why)
         in_build(env, 'rm', '-rf', tools, out)
         return 1
     preemption_errors = []
@@ -702,7 +715,7 @@ def build(boot_id, sha, features=None, suite=None, tools_profile=None, catchup=F
         except Exception as error:
             preemption_errors.append(type(error).__name__ + ': ' + str(error))
     preemption = None
-    if not migration and tools_profile not in ('persistent-export', RECLAIM_PAYLOAD):
+    if not live and not migration and tools_profile not in ('persistent-export', RECLAIM_PAYLOAD):
         preemption = threading.Thread(target=preempt, daemon=True)
         preemption.start()
     in_build(env, 'rm', '-rf', tools, check=True)
@@ -750,6 +763,8 @@ def build(boot_id, sha, features=None, suite=None, tools_profile=None, catchup=F
     if sender.wait() != 0 or receiver.returncode != 0:
         return failed('the inputs could not be copied into the service container')
     in_build(env, 'rm', '-rf', tools, out)
+    if live:
+        return 0
     if preemption is not None:
         preemption.join()
     if preemption_errors:
@@ -837,6 +852,8 @@ def argument_parser(automatic=False):
     options.add_argument('--kernel-only', action='store_true', help='replace the kernel (default)')
     options.add_argument('--replace-usr', action='store_true', help='replace /usr on the selected writable root')
     options.add_argument('--migration-image', action='store_true', help=argparse.SUPPRESS)
+    p.add_argument('--recovery', action='store_true', help='use the powered-off network installer')
+    p.add_argument('--replace-manager', action='store_true', help='bootstrap the new manager once via --recovery')
     p.add_argument('--carry-local', action='store_true', help=argparse.SUPPRESS)
     p = sub.add_parser('migrate-persistent', help='run one phase of the E24 persistent migration')
     p.add_argument('phase', choices=('migrate', 'readback', 'cutover', 'rescue', 'return'))

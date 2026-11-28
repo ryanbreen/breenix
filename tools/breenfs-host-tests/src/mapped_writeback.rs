@@ -382,12 +382,14 @@ fn population_does_not_publish_a_page_read_while_the_file_was_truncated() {
     let req = WriteReq { at: WriteAt::Offset(0), limit: u64::MAX, clear_setid: false };
     assert_eq!(fs.write(&node, req, &bytes).unwrap().bytes, bytes.len());
     fs.fsync(&node, false).unwrap();
-    // Population allocates a frame before each page read: the first
-    // allocation precedes page 0's read and the second follows it.
+    // Population allocates the frames of each run of pages before the run's one
+    // read: the first allocation precedes run 0's read and the first of run 1
+    // (frame RUN + 1, RUN pages per run) follows it.
+    const RUN: usize = crate::block::cache::RUN_BYTES / 4096;
     let (writer, file, restored) = (fs.clone(), node.clone(), bytes.clone());
     on_cache_allocation(Some(Box::new(move |count| match count {
         1 => writer.resize(&file, 0, false, &|_| Ok(())).unwrap(),
-        2 => {
+        n if n == RUN + 1 => {
             let req = WriteReq { at: WriteAt::Offset(0), limit: u64::MAX, clear_setid: false };
             assert_eq!(writer.write(&file, req, &restored).unwrap().bytes, restored.len());
         }

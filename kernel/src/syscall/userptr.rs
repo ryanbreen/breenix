@@ -635,7 +635,7 @@ mod tests {
     #[test]
     fn test_kernel_heap_rejected() {
         assert!(
-            validate_user_ptr_read(crate::memory::heap::HEAP_START as *const u64).is_err()
+            validate_user_ptr_read(crate::memory::heap::heap_start() as *const u64).is_err()
         );
     }
 

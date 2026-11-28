@@ -99,7 +99,7 @@ fn namespace_churn_before_periodic_commit_must_not_refuse_admission() {
             let s = fs.inner.state.lock();
             // Refusal diagnostic only. Since 597/601 no prepared view exists
             // before install; admission reads the published view (durable).
-            let store = fs.inner.cache.store(fs.inner.device.clone(), &s.durable);
+            let store = fs.inner.cache.store(fs.inner.device.clone(), &s.durable, &fs.inner.decoded);
             let promotion =
                 super::super::space::pending_promotion_generation(&store, s.durable.space_root);
             std::eprintln!("REFUSAL i={i} error={error:?} generation={} free={} reserve={} outstanding={} available={} pending_promotion={promotion:?} failed={}",s.durable.generation,s.durable.free_blocks,s.durable.global_reserve,s.reservations.outstanding(),s.reservations.available(s.durable.free_blocks),s.failed);
@@ -178,7 +178,7 @@ fn retained_grants_publish_before_admission_refuses_without_pending_ranges() {
     let store = fs
         .inner
         .cache
-        .store(fs.inner.device.clone(), &state.durable);
+        .store(fs.inner.device.clone(), &state.durable, &fs.inner.decoded);
     assert_eq!(
         super::super::space::pending_promotion_generation(&store, state.durable.space_root)
             .unwrap(),

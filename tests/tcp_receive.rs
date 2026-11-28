@@ -53,7 +53,7 @@ pub mod task {
     pub mod scheduler {
         #[derive(PartialEq)]
         pub enum WakeOutcome {
-            Rejected,
+            NoTarget,
             Woken,
         }
         pub fn wake_thread_any_context(_: u64) -> WakeOutcome {
@@ -189,6 +189,36 @@ pub mod icmp {
     impl TcpMtuQuote {
         pub(crate) fn smaller_mss(&self, _: u16, _: u32, _: usize) -> Option<u16> {
             None
+        }
+    }
+}
+
+/// The ISN key and ephemeral-port search tcp.rs uses since #3240's RFC 6528 /
+/// RFC 6056 change, at the path tcp.rs names it by.
+#[allow(dead_code)]
+#[path = "../kernel/src/net/tcp_ident.rs"]
+mod tcp_ident;
+
+/// The kernel's keyed hash, which `tcp_ident` names as `crate::random::blake2s`
+/// and which wipes its state through its sibling `erase`.
+#[allow(dead_code)]
+#[path = "../kernel/src/random/blake2s.rs"]
+mod blake2s;
+#[path = "../kernel/src/random/erase.rs"]
+mod erase;
+
+/// The hash, and a random pool whose `is_ready` returns true and whose `fill`
+/// writes a fixed byte pattern, so these checks are deterministic.
+mod random {
+    pub(crate) use super::blake2s;
+
+    pub fn is_ready() -> bool {
+        true
+    }
+
+    pub fn fill(out: &mut [u8]) {
+        for (index, byte) in out.iter_mut().enumerate() {
+            *byte = index as u8;
         }
     }
 }
@@ -433,6 +463,47 @@ fn receive_path_retries_refused_immediate_ack_with_current_sack() {
     assert_eq!(&options[..10], &[5, 10, 0, 0, 1, 247, 0, 0, 1, 250]);
 }
 
+fn retransmit_timeouts() -> u64 {
+    let text = tcp::proc_net_tcp_stats().unwrap();
+    let value = text.strip_prefix("retransmit_timeouts: ").unwrap();
+    value.trim_end().parse().unwrap()
+}
+
+#[test]
+fn retransmission_timeouts_count_each_resend_and_nothing_else() {
+    let _serial = serial();
+    let before = retransmit_timeouts();
+    let id = tcp::tcp_connect(LOCAL, 40012, PEER, 44012, 1, 64, 212_992).unwrap();
+    let syn = take_output().remove(0);
+    let syn_seq = TcpHeader::parse(&syn).unwrap().0.seq_num;
+
+    // The SYN's timer runs out: it is sent again and counted.
+    CLOCK.set(CLOCK.get() + 1000);
+    step_timer();
+    assert!(take_output().contains(&syn));
+    assert_eq!(retransmit_timeouts(), before + 1);
+
+    let ack = syn_seq.wrapping_add(1);
+    receive(id, 7000 - 1, ack, TcpFlags::syn_ack(), &MSS, &[]);
+    take_output();
+    assert_eq!(tcp::tcp_sendmsg(&id, &[7; 100], false), Ok(100));
+    assert_eq!(take_output().len(), 1);
+
+    // Unacknowledged data: the timeout sends it again and counts once.
+    CLOCK.set(CLOCK.get() + 10_000);
+    step_timer();
+    let resent = take_output();
+    assert!(resent.iter().any(|packet| TcpHeader::parse(packet).unwrap().1 == [7; 100]));
+    assert_eq!(retransmit_timeouts(), before + 2);
+
+    // With the data acknowledged, a later timer pass leaves the count at two.
+    receive(id, 7000, ack.wrapping_add(100), TcpFlags::ack(), &[], &[]);
+    take_output();
+    CLOCK.set(CLOCK.get() + 200_000);
+    step_timer();
+    assert_eq!(retransmit_timeouts(), before + 2);
+}
+
 #[test]
 fn receive_path_uses_scaled_peer_window_only_after_active_handshake() {
     let _serial = serial();
@@ -487,4 +558,27 @@ fn receive_path_uses_scaled_peer_window_only_after_active_handshake() {
         25_000,
         "ordinary peer ACK scales the window"
     );
+}
+
+/// A SYN+ACK leaves with the processing of the SYN that asked for it, as the
+/// ACKs and resets TCP sends from the receive path do. A device that cannot
+/// take a transmission while its RX ring is being consumed holds it in its own
+/// driver (`drivers/virtio/tx_hold.rs`); TCP does not queue for one device.
+#[test]
+fn syn_ack_leaves_while_the_syn_is_processed() {
+    let _serial = serial();
+    let id = ConnectionId {
+        local_ip: LOCAL,
+        local_port: 40100,
+        remote_ip: PEER,
+        remote_port: 44100,
+    };
+    tcp::tcp_listen(LOCAL, 40100, 4, 1, false, ipv4::DEFAULT_TTL, 212_992, None).unwrap();
+    take_output();
+    receive(id, 9, 0, TcpFlags::syn(), &MSS, &[]);
+    let output = take_output();
+    assert_eq!(output.len(), 1, "the SYN must be answered before anything drains a queue");
+    let header = TcpHeader::parse(&output[0]).unwrap().0;
+    assert!(header.flags.syn && header.flags.ack);
+    assert_eq!(header.ack_num, 10);
 }

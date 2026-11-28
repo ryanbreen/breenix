@@ -781,18 +781,30 @@ mod aarch64 {
     use crate::irq_safe_mutex::IrqSafeMutex;
     use core::sync::atomic::Ordering;
 
-    /// ARM64 kernel stack base (in high-half direct map)
-    /// Physical range: 0x5820_0000 .. 0x5A20_0000 (32MB for kernel stacks)
-    ///
-    /// IMPORTANT: This must be AFTER the heap region to avoid collision!
-    /// - Heap: 0x5020_0000 to 0x581F_FFFF (128 MB)
-    /// - Kernel stacks: 0x5820_0000 to 0x5A1F_FFFF (32 MB)
-    const ARM64_KERNEL_STACK_PHYS_BASE: u64 = 0x5820_0000;
-    const ARM64_KERNEL_STACK_PHYS_END: u64 = 0x5A20_0000;
-    pub(crate) const ARM64_KERNEL_STACK_BASE: u64 =
-        crate::arch_impl::aarch64::constants::HHDM_BASE + ARM64_KERNEL_STACK_PHYS_BASE;
-    pub(crate) const ARM64_KERNEL_STACK_END: u64 =
-        crate::arch_impl::aarch64::constants::HHDM_BASE + ARM64_KERNEL_STACK_PHYS_END;
+    /// Size of the ARM64 kernel-stack pool (in the high-half direct map). Where
+    /// it lives comes from the memory map: the frame pool carves it out of the
+    /// RAM the firmware describes (`platform_config::kernel_pools`), and
+    /// `init` records the address.
+    pub(crate) const ARM64_KERNEL_STACK_POOL_SIZE: u64 = 32 * 1024 * 1024;
+
+    /// The pool's first virtual address, 0 until `init`.
+    static ARM64_KERNEL_STACK_POOL: core::sync::atomic::AtomicU64 =
+        core::sync::atomic::AtomicU64::new(0);
+
+    /// First address of the kernel-stack pool, or 0 before `init`.
+    #[inline(always)]
+    pub(crate) fn arm64_kernel_stack_base() -> u64 {
+        ARM64_KERNEL_STACK_POOL.load(Ordering::Relaxed)
+    }
+
+    /// End of the kernel-stack pool, or 0 before `init` (an empty range).
+    #[inline(always)]
+    pub(crate) fn arm64_kernel_stack_end() -> u64 {
+        match arm64_kernel_stack_base() {
+            0 => 0,
+            base => base + ARM64_KERNEL_STACK_POOL_SIZE,
+        }
+    }
 
     /// Stack size for ARM64 (64KB per stack)
     const ARM64_KERNEL_STACK_SIZE: u64 = 64 * 1024;
@@ -805,7 +817,7 @@ mod aarch64 {
 
     /// Bitmap to track allocated ARM64 stacks.
     pub(crate) const ARM64_MAX_KERNEL_STACKS: usize =
-        ((ARM64_KERNEL_STACK_END - ARM64_KERNEL_STACK_BASE) / ARM64_STACK_SLOT_SIZE) as usize;
+        (ARM64_KERNEL_STACK_POOL_SIZE / ARM64_STACK_SLOT_SIZE) as usize;
     const ARM64_BITMAP_SIZE: usize = (ARM64_MAX_KERNEL_STACKS + 63) / 64;
 
     // CORE-PROOF MUTATION LEG `coreproof_mut_masked_lock_bare` (M7, #609,
@@ -873,7 +885,7 @@ mod aarch64 {
     /// Top of the reusable pool slot with this index, i.e. the value the per-CPU
     /// custody words hold for a thread running on that slot.
     pub(crate) fn kernel_stack_slot_top(index: usize) -> u64 {
-        ARM64_KERNEL_STACK_BASE + (index as u64 + 1) * ARM64_STACK_SLOT_SIZE
+        arm64_kernel_stack_base() + (index as u64 + 1) * ARM64_STACK_SLOT_SIZE
     }
 
     /// Allocate a kernel stack for ARM64
@@ -914,7 +926,7 @@ mod aarch64 {
         #[cfg(feature = "boot_tests")]
         super::cohort_note_allocation(index);
 
-        let slot_base = ARM64_KERNEL_STACK_BASE + (index as u64 * ARM64_STACK_SLOT_SIZE);
+        let slot_base = arm64_kernel_stack_base() + (index as u64 * ARM64_STACK_SLOT_SIZE);
         let stack_bottom = VirtAddr::new(slot_base + ARM64_GUARD_PAGE_SIZE);
         let stack_top = VirtAddr::new(slot_base + ARM64_STACK_SLOT_SIZE);
 
@@ -943,8 +955,8 @@ mod aarch64 {
         //
         // SAFETY: `stack_bottom..stack_top` is HHDM-mapped, present, writable
         // physical memory for the entire lifetime of the bitmap pool (see
-        // ARM64_KERNEL_STACK_BASE/END above) -- true whether this slot is
-        // brand new or reused, so writing zeros here is always valid.
+        // `init`, which places the pool in RAM the memory map describes), whether
+        // this slot is brand new or reused, so writing zeros here is valid.
         unsafe {
             core::ptr::write_bytes(
                 stack_bottom.as_mut_ptr::<u8>(),
@@ -985,26 +997,32 @@ mod aarch64 {
     /// kernel stack (commit 04c9655a), one of the two candidate upstream writers
     /// of the launcher-spawn context-corruption crash.
     pub fn is_in_reused_kstack_region(addr: u64) -> bool {
-        addr >= ARM64_KERNEL_STACK_BASE && addr < ARM64_KERNEL_STACK_END
+        addr >= arm64_kernel_stack_base() && addr < arm64_kernel_stack_end()
     }
 
     /// Initialize the ARM64 kernel stack allocator
     pub fn init() {
-        let total_slots =
-            (ARM64_KERNEL_STACK_END - ARM64_KERNEL_STACK_BASE) / ARM64_STACK_SLOT_SIZE;
+        let pools = crate::platform_config::kernel_pools()
+            .expect("the frame pool places the kernel-stack pool before the stacks start");
+        assert_eq!(pools.stacks.len(), ARM64_KERNEL_STACK_POOL_SIZE);
+        ARM64_KERNEL_STACK_POOL.store(
+            crate::arch_impl::aarch64::constants::HHDM_BASE + pools.stacks.start,
+            Ordering::Relaxed,
+        );
+        let total_slots = ARM64_KERNEL_STACK_POOL_SIZE / ARM64_STACK_SLOT_SIZE;
         log::info!(
             "ARM64 kernel stack allocator initialized: {} slots available",
             total_slots
         );
         log::info!(
             "  Stack range (virt): {:#x} - {:#x}",
-            ARM64_KERNEL_STACK_BASE,
-            ARM64_KERNEL_STACK_END
+            arm64_kernel_stack_base(),
+            arm64_kernel_stack_end()
         );
         log::info!(
             "  Stack range (phys): {:#x} - {:#x}",
-            ARM64_KERNEL_STACK_PHYS_BASE,
-            ARM64_KERNEL_STACK_PHYS_END
+            pools.stacks.start,
+            pools.stacks.end
         );
         log::info!(
             "  Stack size: {} KiB + {} KiB guard",
@@ -1023,14 +1041,15 @@ pub use aarch64::{
 #[cfg(target_arch = "aarch64")]
 pub(crate) use aarch64::{
     is_kernel_stack_slot_live, kernel_stack_slot_top, sp_within_kernel_stack,
-    ARM64_KERNEL_STACK_BASE, ARM64_KERNEL_STACK_END, ARM64_MAX_KERNEL_STACKS,
-    ARM64_STACK_SLOT_SIZE,
+    arm64_kernel_stack_base, arm64_kernel_stack_end, ARM64_MAX_KERNEL_STACKS,
+    ARM64_STACK_SLOT_SIZE, ARM64_KERNEL_STACK_POOL_SIZE,
 };
 
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 pub(crate) fn addr_in_kernel_stack_pool(addr: u64) -> bool {
-    addr >= ARM64_KERNEL_STACK_BASE && addr <= ARM64_KERNEL_STACK_END
+    let base = arm64_kernel_stack_base();
+    base != 0 && addr >= base && addr <= arm64_kernel_stack_end()
 }
 
 pub(crate) fn is_kernel_stack_va(addr: u64) -> bool {
@@ -1040,7 +1059,7 @@ pub(crate) fn is_kernel_stack_va(addr: u64) -> bool {
     }
     #[cfg(target_arch = "aarch64")]
     {
-        addr >= ARM64_KERNEL_STACK_BASE && addr < ARM64_KERNEL_STACK_END
+        addr >= arm64_kernel_stack_base() && addr < arm64_kernel_stack_end()
     }
 }
 

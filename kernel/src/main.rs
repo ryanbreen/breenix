@@ -619,6 +619,8 @@ extern "C" fn kernel_main_on_kernel_stack_checked(
     task::softirqd::init_softirq();
     crate::net::init_loopback_pump();
     crate::net::tcp::init_timer_thread();
+    // The e1000's DHCP client, when it is the interface and takes DHCP.
+    crate::net::init_rx_poll();
     // #775 round 4, R3-5/N14: the third census emission context, spawned
     // beside kloopbackd on the unconditional init path so it exists in the
     // zero-feature production profile. idle_loop and the pump both emit only

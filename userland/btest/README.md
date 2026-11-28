@@ -58,8 +58,8 @@ group. The build, fixture setup and report writer run outside the case caps.
 
 Sync the source roots and tree stamp using the Mac driver documented in
 [tools/bdev](../../tools/bdev/README.md). Then run the following on the box.
-The fallback launcher uses the PR 2 Cargo recipe with the PR 3 workaround
-for the loader's first RUNPATH open. Once the image carries `/usr/bin/bcargo`,
+The fallback launcher selects Cargo, rustc, bld and the target from
+`/opt/breenix/rust/CURRENT`. Once the image carries `/usr/bin/bcargo`,
 use it directly and skip the fallback launcher.
 
 ```sh

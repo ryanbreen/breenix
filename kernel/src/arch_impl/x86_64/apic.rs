@@ -367,6 +367,31 @@ pub fn send_ipi(destination: u32, ipi: Ipi) -> Result<(), &'static str> {
     })
 }
 
+/// Ring the scheduler without waiting for an xAPIC delivery. A busy ICR
+/// can skip this notification: the target's periodic tick sees the inbox.
+/// The caller keeps local interrupts masked from the status read to the write.
+pub(crate) fn try_send_reschedule(destination: u32, vector: u8) {
+    if !active() {
+        return;
+    }
+    let x2 = MODE.load(Ordering::Relaxed) == 2;
+    if !x2 && (destination >= 255 || read(0x300) & (1 << 12) != 0) {
+        return;
+    }
+    // Same ICR ordering as send_ipi: the inbox link precedes the interrupt.
+    unsafe {
+        core::arch::asm!("mfence", "lfence", options(nostack, preserves_flags));
+    }
+    if x2 {
+        unsafe {
+            Msr::new(0x830).write((u64::from(destination) << 32) | u64::from(vector));
+        }
+    } else {
+        write(0x310, destination << 24);
+        write(0x300, u32::from(vector));
+    }
+}
+
 fn wait_delivery() -> Result<(), &'static str> {
     let deadline = super::timer::rdtsc() + super::timer::frequency_hz() / 10;
     while read(0x300) & (1 << 12) != 0 {

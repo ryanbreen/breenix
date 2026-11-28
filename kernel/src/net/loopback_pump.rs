@@ -38,7 +38,7 @@ pub(crate) fn wake_loopback_pump() {
 
     LOOPBACK_PUMP_WAKES.fetch_add(1, Ordering::Relaxed);
     match scheduler::wake_thread_any_context(tid) {
-        scheduler::WakeOutcome::Rejected => {
+        scheduler::WakeOutcome::NoTarget => {
             LOOPBACK_PUMP_WAKE_REJECTED.fetch_add(1, Ordering::Relaxed);
         }
         scheduler::WakeOutcome::AlreadyRunnable => {

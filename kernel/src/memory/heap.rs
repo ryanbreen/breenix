@@ -38,30 +38,43 @@ use x86_64::VirtAddr;
 
 #[cfg(target_arch = "x86_64")]
 pub const HEAP_START: u64 = 0x_4444_4444_0000;
-#[cfg(target_arch = "aarch64")]
-// ARM64 heap uses the direct-mapped region from boot.S (TTBR1 high-half).
-// The heap MUST be in TTBR1 because TTBR0 gets switched to process page tables.
-//
-// Memory layout (physical):
-//   Frame allocator: firmware RAM outside the fixed kernel reservations
-//   .dma (NC) block: 0x5000_0000 - 0x501F_FFFF  (2 MB, Non-Cacheable for xHCI DMA)
-//   Heap:            0x5020_0000 - 0x581F_FFFF  (128 MB on native VMs, 64 MB on QEMU)
-//   Kernel stacks:   0x5820_0000 - 0x5A1F_FFFF  (32 MB)
-//
-// The heap MUST start AFTER the 2 MB NC DMA block to avoid overlapping
-// with xHCI DMA buffers placed in the .dma linker section.
-pub const HEAP_START: u64 = crate::arch_impl::aarch64::constants::HHDM_BASE + 0x5020_0000;
 
 /// x86 retains its existing heap reservation.
 #[cfg(target_arch = "x86_64")]
 pub const HEAP_SIZE: u64 = 64 * 1024 * 1024;
-/// ARM64 legacy VirGL startup holds about 52 MiB at 1280x960 before the
-/// console and other kernel allocations (#1914). Reserve space for both.
+
+/// The lowest address the kernel heap can start at: on ARM64 it is somewhere
+/// in the high-half direct map, which no user address reaches.
+#[cfg(target_arch = "x86_64")]
+pub const HEAP_REGION_START: u64 = HEAP_START;
 #[cfg(target_arch = "aarch64")]
-pub const HEAP_SIZE: u64 = 128 * 1024 * 1024;
-/// QEMU's GPU core uses frames for backing; retain its frame-pool capacity.
+pub const HEAP_REGION_START: u64 = crate::arch_impl::aarch64::constants::HHDM_BASE;
+
+// ARM64: the heap lives in the high-half direct map (TTBR1), because TTBR0 is
+// switched to process page tables. Where, and how large, comes from the
+// memory map: the frame pool carves it out of the RAM the firmware describes
+// (`platform_config::kernel_pools`, sized by `phys_memory::kernel_heap_size`),
+// so its pages are not in the pool the frame allocator hands out.
 #[cfg(target_arch = "aarch64")]
-pub const QEMU_HEAP_SIZE: u64 = 64 * 1024 * 1024;
+static HEAP_BASE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+#[cfg(target_arch = "aarch64")]
+static HEAP_BYTES: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// The kernel heap's first address (0 on ARM64 before `init`).
+pub fn heap_start() -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    return HEAP_START;
+    #[cfg(target_arch = "aarch64")]
+    return HEAP_BASE.load(Ordering::Relaxed);
+}
+
+/// The kernel heap's size in bytes (0 on ARM64 before `init`).
+pub fn heap_size() -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    return HEAP_SIZE;
+    #[cfg(target_arch = "aarch64")]
+    return HEAP_BYTES.load(Ordering::Relaxed);
+}
 
 /// IRQ-safe wrapper around the kernel's size-indexed allocator.
 ///
@@ -198,14 +211,16 @@ static ALLOCATOR: IrqSafeLockedHeap = IrqSafeLockedHeap::empty();
 /// Initialize the heap allocator
 pub fn init(mapper: &OffsetPageTable<'static>) -> Result<(), &'static str> {
     #[cfg(target_arch = "x86_64")]
-    let heap_size = HEAP_SIZE;
+    let (heap_base, heap_size) = (HEAP_START, HEAP_SIZE);
     #[cfg(target_arch = "aarch64")]
-    let heap_size = if crate::platform_config::is_qemu() {
-        QEMU_HEAP_SIZE
-    } else {
-        HEAP_SIZE
+    let (heap_base, heap_size) = {
+        let pools = crate::platform_config::kernel_pools().ok_or("no heap placed in RAM")?;
+        let base = crate::arch_impl::aarch64::constants::HHDM_BASE + pools.heap.start;
+        HEAP_BASE.store(base, Ordering::Relaxed);
+        HEAP_BYTES.store(pools.heap.len(), Ordering::Relaxed);
+        (base, pools.heap.len())
     };
-    let heap_start = VirtAddr::new(HEAP_START);
+    let heap_start = VirtAddr::new(heap_base);
     let heap_end = heap_start + heap_size;
 
     // On x86_64, we need to map heap pages. On ARM64, boot.S sets up a direct map
@@ -248,19 +263,19 @@ pub fn init(mapper: &OffsetPageTable<'static>) -> Result<(), &'static str> {
 
     #[cfg(target_arch = "aarch64")]
     {
-        // ARM64: Direct map from boot.S covers heap region, no page mapping needed
-        let _ = (mapper, heap_end); // suppress unused warnings
-        log::info!("ARM64 heap using direct-mapped region at {:#x}", HEAP_START);
+        // ARM64: the direct map covers the heap's RAM; no page mapping needed.
+        let _ = (mapper, heap_end);
+        log::info!("ARM64 heap using direct-mapped region at {:#x}", heap_base);
     }
 
     // Initialize the allocator
     unsafe {
-        ALLOCATOR.init(HEAP_START as *mut u8, heap_size as usize);
+        ALLOCATOR.init(heap_base as *mut u8, heap_size as usize);
     }
 
     log::info!(
         "Heap initialized at {:#x} with size {} KiB",
-        HEAP_START,
+        heap_base,
         heap_size / 1024
     );
 

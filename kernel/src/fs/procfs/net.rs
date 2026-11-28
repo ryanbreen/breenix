@@ -4,8 +4,8 @@ use alloc::vec::Vec;
 
 pub(super) fn list_entries() -> Result<Vec<String>, i32> {
     let mut entries = Vec::new();
-    entries.try_reserve_exact(2).map_err(|_| -12)?;
-    for listed in ["pnp", "tcp"] {
+    entries.try_reserve_exact(3).map_err(|_| -12)?;
+    for listed in ["pnp", "tcp", "tcp_stats"] {
         let mut name = String::new();
         name.try_reserve_exact(listed.len()).map_err(|_| -12)?;
         name.push_str(listed);

@@ -1,5 +1,6 @@
 //! Progress lines on the COM1 UART, which the firmware's console redirection and the remote console share. Each
 //! application names itself with a prefix ("metal-stub: ", "breenix-manager: ") that the boot loop reads.
+#[cfg(target_arch = "x86_64")]
 use core::arch::asm;
 use core::fmt::{self, Write};
 use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
@@ -28,6 +29,7 @@ impl Write for Com1 {
 }
 
 /// One byte to COM1 once its transmit holding register is empty, or after a bounded wait if no UART answers.
+#[cfg(target_arch = "x86_64")]
 pub fn put(byte: u8) {
     for _ in 0..100_000 {
         let status: u8;
@@ -40,6 +42,27 @@ pub fn put(byte: u8) {
     // SAFETY: COM1's transmit holding register.
     unsafe { asm!("out dx, al", in("al") byte, in("dx") 0x3f8u16, options(nomem, nostack)) };
 }
+
+#[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
+static CONSOLE: AtomicPtr<crate::uefi::SimpleTextOutput> = AtomicPtr::new(core::ptr::null_mut());
+
+/// Set the ARM firmware text console used for manager progress lines.
+#[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
+pub fn set_console(console: *mut crate::uefi::SimpleTextOutput) {
+    CONSOLE.store(console, Ordering::Relaxed);
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
+pub fn put(byte: u8) {
+    let console = CONSOLE.load(Ordering::Relaxed);
+    if !console.is_null() {
+        let text = [u16::from(byte), 0];
+        unsafe { ((*console).output_string)(console, text.as_ptr()) };
+    }
+}
+
+#[cfg(all(target_arch = "aarch64", not(target_os = "uefi")))]
+pub fn put(_: u8) {}
 
 /// One whole line: the prefix, the text and a line end.
 pub fn line(arguments: fmt::Arguments) {
@@ -86,6 +109,9 @@ impl fmt::Display for Vendor {
 pub fn halt() -> ! {
     loop {
         // SAFETY: masks interrupts and halts the processor for good.
+        #[cfg(target_arch = "x86_64")]
         unsafe { asm!("cli", "hlt", options(nomem, nostack)) };
+        #[cfg(target_arch = "aarch64")]
+        core::hint::spin_loop();
     }
 }

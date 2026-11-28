@@ -27,6 +27,7 @@ pub mod thread;
 pub mod user_dispatch;
 pub mod userspace_completion;
 pub mod waitqueue;
+pub(crate) mod wake_inbox;
 pub(crate) mod waitqueue_alloc;
 
 // Architecture-specific context switching

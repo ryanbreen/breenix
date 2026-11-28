@@ -1,39 +1,214 @@
-//! Shared TTBR0 transition helpers for AArch64 teardown paths.
+//! Shared TTBR0 transition helpers for AArch64, and the per-address-space
+//! ASIDs those transitions install.
+//!
+//! Each user address space runs under its own ASID (`super::asid`), so an
+//! install that changes address space needs no TLB invalidation: the new
+//! ASID cannot match the old space's non-global entries. User leaves are
+//! non-global (`memory::arch_stub`), and so are the kernel root's TTBR0
+//! identity blocks, which run under `asid::KERNEL_ASID` (boot.S and the UEFI
+//! loader both build them with nG). The only invalidation left on a switch is
+//! the local one a CPU takes once after a generation rollover.
 
 use core::sync::atomic::{AtomicU64, Ordering};
+
+use super::asid::{AsidSpace, Binding, KERNEL_ASID};
 
 const TTBR0_ROOT_MASK: u64 = !0xFFFF_0000_0000_0FFF;
 
 /// Bits [63:48] of a TTBR0 value: the ASID field the corridor installs verbatim.
 const TTBR0_ASID_MASK: u64 = 0xFFFF_0000_0000_0000;
+const TTBR0_ASID_SHIFT: u32 = 48;
 
-/// The ASID userspace runs under, positioned in TTBR0 bits [63:48].
+/// TCR_EL1.AS: use the 16-bit TTBR ASID field rather than its low 8 bits.
+const TCR_AS: u64 = 1 << 36;
+/// TCR_EL1.A1: take the ASID from TTBR1 instead of TTBR0. Must stay clear.
+const TCR_A1: u64 = 1 << 22;
+
+/// The ASID allocator and the registry of live process roots. It is an
+/// `IrqSafeMutex`, so a holder has local interrupts masked, and it is a leaf:
+/// its holders take no other lock.
+/// claim-lint:ok: 7 of 7 `ASIDS.lock()` sites are in this file and call only `AsidSpace` methods under it
+static ASIDS: crate::irq_safe_mutex::IrqSafeMutex<Option<AsidSpace>> =
+    crate::irq_safe_mutex::IrqSafeMutex::new(None);
+
+/// ASID width in use, for diagnostics: 0 until `init_asids` runs.
+static ASID_BITS: AtomicU64 = AtomicU64::new(0);
+/// Local TLB flushes taken because a generation rolled over.
+static ASID_ROLLOVER_FLUSHES: AtomicU64 = AtomicU64::new(0);
+/// Process roots left unregistered because the registry could not grow.
+static ASID_REGISTRY_REFUSED: AtomicU64 = AtomicU64::new(0);
+
+#[inline(always)]
+fn asid_field(value: u64) -> u16 {
+    (value >> TTBR0_ASID_SHIFT) as u16
+}
+
+/// Choose the ASID width and create the allocator. CPU 0 calls this once,
+/// after the heap and before any process exists or any secondary CPU copies
+/// TCR_EL1 (`smp::set_smp_ttbrs`).
 ///
-/// `set_next_ttbr0_for_thread` in
-/// `kernel/src/arch_impl/aarch64/context_switch.rs` tags the root it hands the
-/// dispatch path with ASID 1, for the reason stated there: the boot identity
-/// map's TLB entries are ASID 0, and combined with the nG bits on process
-/// page-table entries a non-zero ASID is what keeps a user VA from matching one
-/// of them.
-/// claim-lint:ok: 1 of 1 site in the kernel tags a root before publishing it
-/// into `next_cr3` -- `set_next_ttbr0_for_thread`, which since R157/ASID-05
-/// applies the tag by calling `process_root_ttbr0` rather than by or-ing a
-/// literal; that routing is pinned by
-/// `the_discipline_publishes_the_dispatch_asid` in
-/// `tests/ttbr0_shadow_reconciliation_structure.rs`.
+/// ID_AA64MMFR0_EL1.ASIDBits (bits [7:4]) is 0b0010 when 16-bit ASIDs are
+/// implemented and 0b0000 for 8 bits. 16-bit ASIDs are used only with
+/// TCR_EL1.AS set; until then the upper byte of the field is ignored. The
+/// ASID is taken from TTBR0 (TCR_EL1.A1 clear).
+pub fn init_asids() {
+    let mmfr0: u64;
+    let tcr: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, id_aa64mmfr0_el1", out(reg) mmfr0, options(nomem, nostack));
+        core::arch::asm!("mrs {}, tcr_el1", out(reg) tcr, options(nomem, nostack));
+    }
+    let bits = if (mmfr0 >> 4) & 0xF == 0b0010 { 16 } else { 8 };
+    let wanted = if bits == 16 { (tcr & !TCR_A1) | TCR_AS } else { tcr & !(TCR_A1 | TCR_AS) };
+    if wanted != tcr {
+        // A change to how TLB entries are tagged: drop this CPU's TLB after
+        // it. No other CPU is online and no user ASID has run.
+        unsafe {
+            core::arch::asm!(
+                "msr tcr_el1, {}",
+                "isb",
+                "tlbi vmalle1",
+                "dsb nsh",
+                "isb",
+                in(reg) wanted,
+                options(nostack)
+            );
+        }
+    }
+    let space = AsidSpace::new(bits, super::constants::MAX_CPUS);
+    *ASIDS.lock() = Some(space);
+    ASID_BITS.store(bits as u64, Ordering::Relaxed);
+}
+
+/// Run `step` on the allocator until it stops asking for registry storage,
+/// growing the registry outside the lock in between: the lock is taken on
+/// the switch path, so the allocation happens with it released.
+fn with_registry_room(
+    step: impl Fn(&mut AsidSpace) -> Result<(), super::asid::NeedsCapacity>,
+) -> Result<(), &'static str> {
+    loop {
+        let needed = match ASIDS.lock().as_mut() {
+            None => return Ok(()),
+            Some(space) => match step(space) {
+                Ok(()) => return Ok(()),
+                Err(need) => need.capacity,
+            },
+        };
+        let mut storage = alloc::vec::Vec::new();
+        storage
+            .try_reserve_exact(needed)
+            .map_err(|_| "no memory for the ASID registry")?;
+        let unused = ASIDS.lock().as_mut().map(|space| space.grow(storage));
+        drop(unused);
+    }
+}
+
+/// Make room to register one more process root. Called before the root frame
+/// is allocated, so a failure here has no frame to give back.
+pub fn reserve_address_space() -> Result<(), &'static str> {
+    with_registry_room(|space| space.has_room())
+}
+
+/// Record a new process root. It gets an ASID when it is first installed.
 ///
-/// It is not only the register that has to carry it. `switch_ttbr0_if_needed`
-/// publishes the tagged value into `saved_process_cr3`, and the
-/// `.Lrestore_saved_ttbr` arm of `syscall_entry.S` installs that word verbatim,
-/// ASID bits included -- so a site that publishes an untagged root decides that
-/// the next return to EL0 runs on ASID 0.
-/// claim-lint:ok: the dispatch tag is now this constant, reached through
-/// `process_root_ttbr0`, and the corridor install is `syscall_entry.S`'s
-/// `.Lrestore_saved_ttbr`; the routing is pinned by
-/// `the_discipline_publishes_the_dispatch_asid` and the count of places that
-/// construct the tag by `the_asid_tag_is_constructed_in_one_place`, both in
-/// `tests/ttbr0_shadow_reconciliation_structure.rs`.
-pub(crate) const USER_ASID_TTBR0: u64 = 1 << 48;
+/// After `reserve_address_space` this fails only if other registrations took
+/// the room in between and growing again found no memory. The root then
+/// stays unregistered, which is slower but still correct: each bind gives it
+/// a one-off ASID, and its invalidations are not narrowed to one ASID. The
+/// count is in the `[ASID:...]` line.
+pub fn register_address_space(root: u64) {
+    let root = root & TTBR0_ROOT_MASK;
+    if with_registry_room(|space| space.register(root)).is_err() {
+        ASID_REGISTRY_REFUSED.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Forget a process root before its frame can be reissued. A CPU no longer
+/// names it (`is_ttbr0_root_live`), and its ASID stays out of use until the
+/// generation ends, so no TLB maintenance is needed here.
+pub fn retire_address_space(root: u64) {
+    if let Some(space) = ASIDS.lock().as_mut() {
+        space.unregister(root & TTBR0_ROOT_MASK);
+    }
+}
+
+/// The ASID `root` runs under now, for invalidation targeted at that space.
+/// A space with no ASID in the current generation gets no target, and the
+/// caller invalidates across ASIDs instead.
+///
+/// Ordering: the caller has already written the descriptors it is about to
+/// invalidate. The full `dsb ish` makes those writes complete before the
+/// context is read, so a CPU that binds this space a new ASID afterwards (it
+/// does so under the same lock) walks the new descriptors.
+pub fn user_asid(root: u64) -> Option<u16> {
+    unsafe {
+        core::arch::asm!("dsb ish", options(nostack));
+    }
+    ASIDS.lock().as_ref()?.current_asid(root & TTBR0_ROOT_MASK)
+}
+
+/// The ASIDs `cpu`'s two TTBR0 shadow words carry: the return corridor may
+/// install either without binding again.
+fn shadow_asids(cpu: usize) -> [u16; 2] {
+    crate::per_cpu_aarch64::ttbr0_shadow_snapshot(cpu)
+        .map_or([KERNEL_ASID; 2], |(saved, next)| [asid_field(saved), asid_field(next)])
+}
+
+/// Bind `root` to an ASID for THIS CPU and return the TTBR0 value to install.
+///
+/// The caller has local interrupts masked from this call until the value is
+/// installed or published in this CPU's shadow words, so the ASID is used on
+/// the CPU it was bound for. When the allocator asks for it (a generation
+/// rolled over since this CPU last bound), this CPU's TLB is invalidated
+/// locally -- `tlbi vmalle1`, not the inner-shareable broadcast -- before the
+/// value can be installed.
+#[inline(always)]
+pub(crate) fn bind_process_root(root: u64) -> u64 {
+    let root = root & TTBR0_ROOT_MASK;
+    let cpu = super::percpu::Aarch64PerCpu::cpu_id() as usize;
+    let binding = ASIDS.lock().as_mut().map(|space| space.bind(cpu, root, &shadow_asids));
+    let Binding { asid, flush_local } = match binding {
+        Some(binding) => binding,
+        None => {
+            // Before `init_asids` no process exists; keep the shared tag and
+            // the broadcast invalidation the kernel used before ASIDs.
+            unsafe {
+                core::arch::asm!("dsb ishst", "tlbi vmalle1is", "dsb ish", "isb", options(nostack));
+            }
+            return root | (1 << TTBR0_ASID_SHIFT);
+        }
+    };
+    if flush_local {
+        ASID_ROLLOVER_FLUSHES.fetch_add(1, Ordering::Relaxed);
+        unsafe {
+            core::arch::asm!("tlbi vmalle1", "dsb nsh", "isb", options(nostack));
+        }
+    }
+    root | ((asid as u64) << TTBR0_ASID_SHIFT)
+}
+
+/// Emit the ASID allocator's state from normal context.
+pub fn emit_asid_state() {
+    let (generation, rollovers, registered, unregistered) = match ASIDS.lock().as_ref() {
+        Some(space) => (
+            space.generation(),
+            space.rollovers(),
+            space.registered() as u64,
+            space.unregistered_binds(),
+        ),
+        None => (0, 0, 0, 0),
+    };
+    crate::diag_println!(
+        "[ASID:bits={}:generation={}:rollovers={}:local_flushes={}:spaces={}:refused={}:unregistered_binds={}]",
+        ASID_BITS.load(Ordering::Relaxed),
+        generation,
+        rollovers,
+        ASID_ROLLOVER_FLUSHES.load(Ordering::Relaxed),
+        registered,
+        ASID_REGISTRY_REFUSED.load(Ordering::Relaxed),
+        unregistered,
+    );
+}
 
 // ---------------------------------------------------------------------------
 // Runtime census of what the corridor shadow words are handed (#786 follow-on)
@@ -101,12 +276,13 @@ pub(crate) const USER_ASID_TTBR0: u64 = 1 << 48;
 static ASID_PUBLISH_CLEARED: AtomicU64 = AtomicU64::new(0);
 /// A publish of this CPU's kernel root. The kernel root runs under ASID 0 by
 /// construction -- it is the boot identity map -- so it is not a process root
-/// and the userspace ASID does not apply to it.
+/// and no user ASID applies to it.
 static ASID_PUBLISH_KERNEL: AtomicU64 = AtomicU64::new(0);
-/// A publish of a process root carrying the userspace ASID.
+/// A publish of a process root carrying a user ASID (any but `KERNEL_ASID`).
 static ASID_PUBLISH_TAGGED: AtomicU64 = AtomicU64::new(0);
-/// A publish of a process root whose ASID field is NOT the userspace ASID.
-/// This is the defect class: the corridor installs the word verbatim.
+/// A publish of a process root under the kernel ASID. This is the defect
+/// class: the corridor installs the word verbatim, and the kernel root's
+/// identity blocks are tagged with that ASID.
 static ASID_PUBLISH_UNTAGGED: AtomicU64 = AtomicU64::new(0);
 
 /// Count one publish into `saved_process_cr3` or `next_cr3`.
@@ -127,7 +303,7 @@ pub(crate) fn note_shadow_publish(value: u64) {
         ASID_PUBLISH_KERNEL.fetch_add(1, Ordering::Relaxed);
         return;
     }
-    if value & TTBR0_ASID_MASK == USER_ASID_TTBR0 {
+    if value & TTBR0_ASID_MASK != (KERNEL_ASID as u64) << TTBR0_ASID_SHIFT {
         ASID_PUBLISH_TAGGED.fetch_add(1, Ordering::Relaxed);
     } else {
         ASID_PUBLISH_UNTAGGED.fetch_add(1, Ordering::Relaxed);
@@ -153,17 +329,6 @@ pub fn emit_asid_census() {
         ASID_PUBLISH_KERNEL.load(Ordering::Relaxed),
         ASID_PUBLISH_CLEARED.load(Ordering::Relaxed),
     );
-}
-
-/// Normalise a process page-table root to the ASID userspace runs under.
-///
-/// The ASID field is REPLACED rather than or-ed into: an or-only tag would
-/// preserve a foreign ASID a caller happened to hand over, and this kernel has
-/// exactly one userspace ASID. `TTBR0_ROOT_MASK` clears bits [63:48] and
-/// [11:0], so what survives is the root physical address the caller chose.
-#[inline(always)]
-pub(crate) fn process_root_ttbr0(root: u64) -> u64 {
-    (root & TTBR0_ROOT_MASK) | USER_ASID_TTBR0
 }
 
 #[inline(always)]
@@ -200,10 +365,17 @@ pub fn kernel_ttbr0() -> u64 {
     }
 }
 
-/// Switch TTBR0 to the kernel page table and invalidate stale translations.
+/// Switch TTBR0 to the kernel page table.
 ///
 /// Exit, exec, and fault cleanup all use this implementation so none of them
 /// can retire a process page-table root while the CPU still has it installed.
+///
+/// No TLB invalidation: the kernel root runs under `KERNEL_ASID`, and the
+/// process root this CPU leaves keeps its own ASID, which no other address
+/// space is given until a generation rollover, after which each CPU drops its
+/// TLB before running a new-generation ASID. Its entries therefore cannot
+/// translate for another space, and a root is retired only once no CPU's
+/// shadow words name it (`is_ttbr0_root_live_in_mask`).
 ///
 /// The block carries `nostack` and deliberately not `nomem`. `nomem` tells the
 /// compiler the asm reads and writes no memory, which is a licence to move
@@ -212,9 +384,9 @@ pub fn kernel_ttbr0() -> u64 {
 /// words immediately after it. Without `nomem` the compiler must assume the
 /// block may read or write that same memory, so it keeps those accesses on the
 /// side of the block the source puts them on. That constrains the compiler
-/// only. No instruction is added, and no claim is made about what another CPU
-/// observes: the hardware ordering is still the `dsb ishst` before the `msr`
-/// and the `dsb ish; isb` after.
+/// only: the hardware ordering is the `dsb ishst` before the `msr` (page-table
+/// stores complete before the new root can be walked) and the `isb` after,
+/// which makes the new root and ASID the context of later instructions.
 #[inline(always)]
 pub fn switch_ttbr0_to_kernel() {
     let ttbr0 = kernel_ttbr0();
@@ -224,26 +396,44 @@ pub fn switch_ttbr0_to_kernel() {
             "dsb ishst",
             "msr ttbr0_el1, {ttbr0}",
             "isb",
-            "tlbi vmalle1is",
-            "dsb ish",
-            "isb",
             ttbr0 = in(reg) ttbr0,
             options(nostack)
         );
     }
 }
 
-/// Install `ttbr0_value` as this CPU's running process root and leave the
-/// per-CPU TTBR0 shadows describing what the register now holds.
+/// Mask IRQ and FIQ on this CPU, returning the DAIF to restore. A bind is
+/// valid only on the CPU that made it, so a bind and the install or publish
+/// of its result happen with no chance to migrate in between.
+#[inline(always)]
+fn mask_local_interrupts() -> u64 {
+    let daif: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, daif", "msr daifset, #3", out(reg) daif, options(nomem, nostack));
+    }
+    daif
+}
+
+#[inline(always)]
+fn restore_local_interrupts(daif: u64) {
+    unsafe {
+        core::arch::asm!("msr daif, {}", in(reg) daif, options(nomem, nostack));
+    }
+}
+
+/// Install `ttbr0_value`'s root as this CPU's running process root, under the
+/// ASID the allocator binds it to, and leave the per-CPU TTBR0 shadows
+/// describing what the register now holds.
 ///
 /// The shadows are not bookkeeping: `saved_process_cr3` (per-CPU offset 80) and
 /// `next_cr3` (offset 64) are both read by the syscall return corridor in
 /// `syscall_entry.S`, which installs `next_cr3` when it is non-zero and
 /// otherwise restores `saved_process_cr3`, and both are read by
 /// `is_ttbr0_root_live_in_mask` when a page-table root is considered for
-/// reclamation. A site that writes the register with a raw `msr` and leaves the
-/// shadows alone is therefore not "just" out of sync -- it lets the next return
-/// to EL0 install whatever root the shadows still name.
+/// reclamation, and by an ASID rollover, which keeps the ASIDs they carry.
+/// A site that writes the register with a raw `msr` and leaves the shadows
+/// alone is therefore not "just" out of sync -- it lets the next return to
+/// EL0 install whatever root the shadows still name.
 /// claim-lint:ok: the corridor reads are cited in
 /// docs/planning/green-program/aarch64-testing/TTBR0-SHADOW-SLICE-2026-09-04.md
 ///
@@ -261,42 +451,28 @@ pub fn switch_ttbr0_to_kernel() {
 /// to some other root on the way out" request is either the same root or a
 /// stale one, and applying either on the return path is wrong.
 ///
+/// The ASID field of `ttbr0_value` is ignored: the allocator chooses it
+/// (`bind_process_root`). Interrupts stay masked from the bind to the shadow
+/// stores, so the ASID is installed on the CPU it was bound for. The install
+/// issues no TLB invalidation: the new ASID cannot match another space's
+/// entries, and a pending rollover flush was taken by the bind.
+///
 /// The asm block carries `nostack` and deliberately not `nomem`. The two
 /// shadow stores below are the memory this install has to stay ordered
 /// against, and a caller's page-table stores are the memory that has to be
 /// settled before it; `nomem` would tell the compiler the block reads and
 /// writes no memory, leaving it free to move either across the barriers.
-/// Without `nomem` the compiler must assume the block may read or write that
-/// same memory, so it keeps those accesses on the side of the block the source
-/// puts them on. The change constrains the compiler only. No instruction is
-/// added, and no claim is made about what another CPU observes: the hardware
-/// ordering is still the `dsb ishst` before the `msr` and the `dsb ish; isb`
+/// The hardware ordering is the `dsb ishst` before the `msr` and the `isb`
 /// after.
 #[inline(always)]
 pub fn adopt_process_ttbr0(ttbr0_value: u64) {
-    // Both the register and the shadow published below carry the ASID
-    // userspace is dispatched under. Normalising here rather than at each
-    // routed call site makes the ASID a property of the discipline instead of
-    // one each caller has to remember, and the field is not the caller's to
-    // choose in any case.
-    // claim-lint:ok: of the 10 routed process-root install decision sites, all
-    // 10 hand over a root with an empty ASID field since R157/ASID-05; the
-    // 2 that did not -- `launch_init_from_elf`, which or-ed ASID 1 in, and
-    // `switch_to_process_page_table`, which or-ed back whatever ASID the
-    // register held -- were changed in that round to hand over the root alone.
-    // The sites are enumerated in
-    // docs/planning/green-program/aarch64-testing/TTBR0-SLICE1B-2026-09-04.md
-    // and the change is recorded in
-    // docs/planning/green-program/aarch64-testing/TTBR0-ASID-RATCHET-2026-09-05.md
-    let ttbr0_value = process_root_ttbr0(ttbr0_value);
+    let daif = mask_local_interrupts();
+    let ttbr0_value = bind_process_root(ttbr0_value);
 
     unsafe {
         core::arch::asm!(
             "dsb ishst",
             "msr ttbr0_el1, {ttbr0}",
-            "isb",
-            "tlbi vmalle1is",
-            "dsb ish",
             "isb",
             ttbr0 = in(reg) ttbr0_value,
             options(nostack)
@@ -304,6 +480,7 @@ pub fn adopt_process_ttbr0(ttbr0_value: u64) {
         super::percpu::Aarch64PerCpu::set_saved_process_cr3(ttbr0_value);
         super::percpu::Aarch64PerCpu::set_next_cr3(0);
     }
+    restore_local_interrupts(daif);
 }
 
 /// Re-install the root the CALLING thread's own process already owns, on the
@@ -313,10 +490,10 @@ pub fn adopt_process_ttbr0(ttbr0_value: u64) {
 /// adopting a root. The caller has changed no mapping and chosen no new
 /// address space: it blocked, something else may have run on this CPU, and it
 /// needs the register and the two shadow words to name its own root again
-/// before the return to EL0. So the register write -- and with it the
-/// inner-shareable broadcast invalidation -- is skipped when TTBR0 already
-/// holds exactly this root under this ASID, the same guard the dispatch path's
-/// `switch_ttbr0_if_needed` and `switch_to_process_page_table` already apply.
+/// before the return to EL0. So the register write is skipped when TTBR0
+/// already holds exactly this root under the ASID it is bound to now, the
+/// same guard the dispatch path's `switch_ttbr0_if_needed` and
+/// `switch_to_process_page_table` already apply.
 ///
 /// The shadow publication is NOT guarded, and that asymmetry is the point.
 /// The register can be right while `next_cr3` still holds a pending redirect
@@ -324,32 +501,27 @@ pub fn adopt_process_ttbr0(ttbr0_value: u64) {
 /// only thing that can be stale on the skip arm, so both are written on both
 /// arms.
 ///
-/// Why skipping the invalidation is safe HERE and is not offered to the adopt
-/// path: a root can only be reclaimed once no CPU shadow names it
-/// (`is_ttbr0_root_live_in_mask`), and every transition off a root on any CPU
-/// runs a broadcast `tlbi vmalle1is`. For this CPU's register to still hold
-/// the resuming thread's root, this CPU installed it and installed nothing
-/// since, so its shadow still names it and the frame cannot have been
-/// reclaimed and re-issued underneath. That argument is about root REUSE. It
-/// is not an argument that a concurrent unmap under the same root is covered
-/// -- TLB maintenance for a mapping change belongs to the code that changes
-/// the mapping. The syscall return corridor also skips reinstalling and
-/// invalidating when the installed tagged root matches its saved root.
+/// The bind runs on the skip arm too: it is what records that this CPU runs
+/// the space now, and what takes a pending rollover flush. TLB maintenance
+/// for a mapping change belongs to the code that changes the mapping.
 /// claim-lint:ok: 2 of 2 sibling guards are cited by path --
 /// `switch_ttbr0_if_needed` in
 /// `kernel/src/arch_impl/aarch64/context_switch.rs` and
 /// `switch_to_process_page_table` in `kernel/src/memory/process_memory.rs`.
 #[inline(always)]
 pub fn restore_process_ttbr0(root: u64) {
-    let root = process_root_ttbr0(root);
+    let daif = mask_local_interrupts();
+    let bound = bind_process_root(root);
 
-    if local_ttbr0() == root {
+    if local_ttbr0() == bound {
         unsafe {
-            super::percpu::Aarch64PerCpu::set_saved_process_cr3(root);
+            super::percpu::Aarch64PerCpu::set_saved_process_cr3(bound);
             super::percpu::Aarch64PerCpu::set_next_cr3(0);
         }
+        restore_local_interrupts(daif);
         return;
     }
+    restore_local_interrupts(daif);
 
     adopt_process_ttbr0(root);
 }

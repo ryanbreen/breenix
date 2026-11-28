@@ -26,6 +26,8 @@ std::thread_local! {
     static LIVE: Cell<isize> = const { Cell::new(0) };
     static PEAK: Cell<isize> = const { Cell::new(0) };
     static LARGEST: Cell<usize> = const { Cell::new(0) };
+    // Refuse this thread's nth next extent-map cache allocation (0 turns it off).
+    static FAIL_NTH: Cell<usize> = const { Cell::new(0) };
 }
 fn note_size(size: usize) {
     let _ = LARGEST.try_with(|largest| largest.set(largest.get().max(size)));
@@ -42,6 +44,28 @@ fn reject(size: usize) -> bool {
         Some((target, nth)) if target == size => { fail.set(Some((target, nth - 1))); false }
         _ => false,
     }).unwrap_or(false)
+}
+fn reject_nth() -> bool {
+    if !super::super::ops::cache_allocations::active() {
+        return false;
+    }
+    FAIL_NTH.try_with(|fail| match fail.get() {
+        0 => false,
+        1 => { fail.set(0); true }
+        nth => { fail.set(nth - 1); false }
+    }).unwrap_or(false)
+}
+/// Run `run` with this thread's `nth` next allocation inside an extent-map
+/// cache scope (ops.rs cache_allocations) refused; also whether `run`
+/// reached it.
+pub(super) fn fail_nth_cache_allocation<T>(nth: usize, run: impl FnOnce() -> T) -> (T, bool) {
+    struct Reset;
+    impl Drop for Reset { fn drop(&mut self) { FAIL_NTH.with(|fail| fail.set(0)); } }
+    assert!(nth > 0);
+    FAIL_NTH.with(|fail| { assert_eq!(fail.get(), 0); fail.set(nth); });
+    let _reset = Reset;
+    let result = run();
+    (result, FAIL_NTH.with(Cell::get) == 0)
 }
 pub(super) fn fail_allocation<T>(size: usize, nth: usize, run: impl FnOnce() -> T) -> T {
     struct Reset;
@@ -66,12 +90,12 @@ fn charge(delta: isize) {
 pub(super) fn live() -> isize {
     LIVE.with(Cell::get)
 }
-fn reset_peak() -> isize {
+pub(super) fn reset_peak() -> isize {
     let now = live();
     PEAK.with(|peak| peak.set(now));
     now
 }
-fn peak() -> isize {
+pub(super) fn peak() -> isize {
     PEAK.with(Cell::get)
 }
 struct Counting;
@@ -80,7 +104,7 @@ struct Counting;
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         note_size(layout.size());
-        if reject(layout.size()) { return core::ptr::null_mut(); }
+        if reject(layout.size()) || reject_nth() { return core::ptr::null_mut(); }
         let ptr = unsafe { System.alloc(layout) };
         if !ptr.is_null() {
             charge(layout.size() as isize);
@@ -89,7 +113,7 @@ unsafe impl GlobalAlloc for Counting {
     }
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         note_size(layout.size());
-        if reject(layout.size()) { return core::ptr::null_mut(); }
+        if reject(layout.size()) || reject_nth() { return core::ptr::null_mut(); }
         let ptr = unsafe { System.alloc_zeroed(layout) };
         if !ptr.is_null() {
             charge(layout.size() as isize);
@@ -102,7 +126,7 @@ unsafe impl GlobalAlloc for Counting {
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, size: usize) -> *mut u8 {
         note_size(size);
-        if reject(size) { return core::ptr::null_mut(); }
+        if reject(size) || reject_nth() { return core::ptr::null_mut(); }
         let new = unsafe { System.realloc(ptr, layout, size) };
         if !new.is_null() {
             charge(size as isize - layout.size() as isize);

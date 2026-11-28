@@ -48,32 +48,14 @@ use crate::syscall::errno::{
     EPIPE, ETIMEDOUT,
 };
 
-// ============================================================================
-// Deferred TX queue: packets queued during RX processing for later sending.
-// Parallels' VirtIO silently drops TX packets submitted while the RX ring
-// is being consumed. We queue them and drain after process_rx() completes.
-// ============================================================================
-
-struct DeferredTx {
-    src_ip: [u8; 4],
-    dst_ip: [u8; 4],
-    dst_mac: Option<[u8; 6]>,
-    ttl: u8,
-    tcp_segment: Vec<u8>,
-}
-
-impl Drop for DeferredTx {
-    fn drop(&mut self) {
-        super::loopback_work_done();
-    }
-}
-
-static DEFERRED_TX_QUEUE: Mutex<Vec<DeferredTx>> = Mutex::new(Vec::new());
 static TCP_WAKE_REJECTED: AtomicU64 = AtomicU64::new(0);
 static RX_CHECKSUM_REJECTED: AtomicU64 = AtomicU64::new(0);
 static RX_OUTSIDE_WINDOW: AtomicU64 = AtomicU64::new(0);
 static RX_GAP_SEGMENTS: AtomicU64 = AtomicU64::new(0);
 static RX_ACK_OUTPUT_FAILED: AtomicU64 = AtomicU64::new(0);
+/// Retransmission timeouts that sent again: a SYN, a SYN+ACK or unacknowledged data.
+/// Zero-window probes and retries of output IP refused are not retransmissions.
+static TX_RETRANSMIT_TIMEOUTS: AtomicU64 = AtomicU64::new(0);
 
 pub struct ReceiveCounters {
     pub checksum_rejected: u64,
@@ -93,101 +75,42 @@ pub fn receive_counters() -> ReceiveCounters {
 
 /// Set when some connection holds output it could not send: data or a FIN that IP
 /// output refused, or data a newly opened peer window lets out. `drain_deferred_tx`
-/// takes it and runs every connection's output again.
+/// takes it and runs each such connection's output again.
 static TX_RETRY: AtomicBool = AtomicBool::new(false);
 
 pub fn tcp_wake_rejected() -> u64 {
     TCP_WAKE_REJECTED.load(Ordering::Relaxed)
 }
 
-/// Thread-context and NetRx TCP paths both enqueue, so exclude softirq re-entry.
-/// A segment there is no memory to queue is dropped: it is a SYN+ACK, which the
-/// peer's SYN retransmission or the child's own timer sends again.
-fn queue_deferred_tx_with_mac(
+/// Send a segment TCP builds while handling a received one: a SYN+ACK. A
+/// loopback destination goes through IP output, which queues it for loopback
+/// delivery. Otherwise it goes straight to the MAC the segment it answers came
+/// from, which needs no ARP lookup from inside RX processing. A device that
+/// cannot take a transmission during RX processing holds it in its driver
+/// (`drivers/virtio/tx_hold.rs`). A failed send is not retried here: the
+/// SYN+ACK's own retransmission timer, or the peer's SYN, sends it again.
+fn send_reply_segment(
     src_ip: [u8; 4],
     dst_ip: [u8; 4],
-    dst_mac: Option<[u8; 6]>,
+    dst_mac: [u8; 6],
     ttl: u8,
-    tcp_segment: Vec<u8>,
+    tcp_segment: &[u8],
 ) {
-    let _guard = super::net_lock_guard();
-    let mut queue = DEFERRED_TX_QUEUE.lock();
-    if queue.try_reserve(1).is_ok() {
-        super::loopback_work_queued();
-        queue.push(DeferredTx {
-            src_ip,
-            dst_ip,
-            dst_mac,
-            ttl,
-            tcp_segment,
-        });
-    }
-    drop(queue);
-}
-
-/// Thread context and the NetRx softirq inspect this queue, so exclude re-entry.
-pub fn deferred_tx_queue_len() -> usize {
-    let _guard = super::net_lock_guard();
-    let queue = DEFERRED_TX_QUEUE.lock();
-    let len = queue.len();
-    drop(queue);
-    len
-}
-
-/// Drain the deferred TX queue, sending all queued packets, then run the output of
-/// every connection that holds unsent data or an unsent FIN.
-/// Called after process_rx() completes and after each round of loopback delivery.
-/// The queue is filled from thread context and NetRx, so guard only the queue take.
-/// Preemption stays off from the take until the last segment is sent: taken
-/// segments are counted as loopback work in flight, and a syscall drain waits
-/// for that count, so their holder must not be switched out.
-pub fn drain_deferred_tx() {
-    crate::per_cpu::preempt_disable();
-    let packets: Vec<DeferredTx> = {
-        let _guard = super::net_lock_guard();
-        let mut queue = DEFERRED_TX_QUEUE.lock();
-        let packets = core::mem::take(&mut *queue);
-        drop(queue);
-        packets
+    let config = super::config();
+    let is_loopback = dst_ip == config.ip_addr || dst_ip[0] == 127;
+    let _ = if is_loopback {
+        super::send_ipv4_from(src_ip, dst_ip, PROTOCOL_TCP, ttl, tcp_segment)
+    } else {
+        let ip_packet =
+            super::ipv4::Ipv4Packet::try_build(src_ip, dst_ip, PROTOCOL_TCP, ttl, tcp_segment)
+                .unwrap_or_default();
+        super::send_ethernet(&dst_mac, super::ethernet::ETHERTYPE_IPV4, &ip_packet)
     };
+}
 
-    for pkt in packets {
-        let config = super::config();
-        let is_loopback = pkt.dst_ip == config.ip_addr || pkt.dst_ip[0] == 127;
-        // A segment that fails here was a SYN+ACK; the child's retransmission
-        // timer sends it again.
-        let _ = if is_loopback {
-            super::send_ipv4_from(
-                pkt.src_ip,
-                pkt.dst_ip,
-                PROTOCOL_TCP,
-                pkt.ttl,
-                &pkt.tcp_segment,
-            )
-        } else if let Some(mac) = pkt.dst_mac {
-            // Send directly to the known MAC (bypasses ARP, which can't work
-            // during process_rx since the re-entrancy guard is held).
-            let ip_packet = super::ipv4::Ipv4Packet::try_build(
-                pkt.src_ip,
-                pkt.dst_ip,
-                PROTOCOL_TCP,
-                pkt.ttl,
-                &pkt.tcp_segment,
-            )
-            .unwrap_or_default();
-            super::send_ethernet(&mac, super::ethernet::ETHERTYPE_IPV4, &ip_packet)
-        } else {
-            super::send_ipv4_from(
-                pkt.src_ip,
-                pkt.dst_ip,
-                PROTOCOL_TCP,
-                pkt.ttl,
-                &pkt.tcp_segment,
-            )
-        };
-    }
-    crate::per_cpu::preempt_enable();
-
+/// Run the output of each connection that holds unsent data or an unsent FIN.
+/// Called after process_rx() completes and after each round of loopback delivery.
+pub fn drain_deferred_tx() {
     if TX_RETRY.swap(false, Ordering::AcqRel) {
         let stalled = with_tcp_connections(|connections| {
             let mut stalled = false;
@@ -1630,6 +1553,11 @@ impl TcpConnection {
         self.rto_ms = (self.rto_ms * 2).min(RTO_MAX_MS);
         self.rtx_deadline_ms = now + self.rto_ms;
         note_timer_deadline(self.rtx_deadline_ms);
+        if matches!(self.state, TcpState::SynSent | TcpState::SynReceived)
+            || self.send_unack != self.send_max
+        {
+            TX_RETRANSMIT_TIMEOUTS.fetch_add(1, Ordering::Relaxed);
+        }
         match self.state {
             TcpState::SynSent => {
                 let seg = self.segment(self.send_initial, TcpFlags::syn());
@@ -2029,8 +1957,19 @@ fn overlaps(a: [u8; 4], b: [u8; 4]) -> bool {
 /// Every TCP table, under one lock.
 static TCP_CONNECTIONS: Mutex<TcpTables> = Mutex::new(TcpTables::new());
 
-/// Sequence number generator (simple counter, should be more random in production)
-static SEQ_COUNTER: Mutex<u32> = Mutex::new(0x12345678);
+/// The RFC 6528 key for initial sequence numbers (`tcp_ident::IsnKey`).
+static ISN_KEY: super::tcp_ident::IsnKey = super::tcp_ident::IsnKey::new();
+
+/// The kernel's random pool, as `tcp_ident` draws from it.
+struct KernelPool;
+
+impl super::tcp_ident::Pool for KernelPool {
+    fn fill(&self, out: &mut [u8]) -> bool {
+        let ready = crate::random::is_ready();
+        crate::random::fill(out);
+        ready
+    }
+}
 
 fn with_tcp<R>(f: impl FnOnce(&mut TcpTables) -> R) -> R {
     let _guard = super::net_lock_guard();
@@ -2053,6 +1992,19 @@ fn reap_expired(connections: &mut ConnTable, force: bool) {
     }
     LAST_REAP_MS.store(now, Ordering::Relaxed);
     connections.retain(|conn| !conn.expired(now));
+}
+
+/// `/proc/net/tcp_stats`: transmit-side counters since boot, one `name: value` line each.
+pub fn proc_net_tcp_stats() -> Result<alloc::string::String, i32> {
+    use core::fmt::Write;
+    let mut text = alloc::string::String::new();
+    text.try_reserve_exact(64).map_err(|_| ENOMEM)?;
+    let _ = writeln!(
+        text,
+        "retransmit_timeouts: {}",
+        TX_RETRANSMIT_TIMEOUTS.load(Ordering::Relaxed)
+    );
+    Ok(text)
 }
 
 /// `/proc/net/tcp`: the first four columns of Linux's format, one line per listener and
@@ -2103,13 +2055,6 @@ pub fn proc_net_tcp() -> Result<alloc::string::String, i32> {
     })
 }
 
-/// The first port an unbound socket is given: the bottom of Linux's default
-/// `ip_local_port_range`, 32768-60999.
-const EPHEMERAL_FIRST: u16 = 32768;
-const EPHEMERAL_LAST: u16 = 60999;
-static NEXT_EPHEMERAL: core::sync::atomic::AtomicU16 =
-    core::sync::atomic::AtomicU16::new(EPHEMERAL_FIRST);
-
 /// Take `addr`:`port` for a socket that binds it: EADDRINUSE when another
 /// socket holds it (`TcpTables::bind_conflict`), ENOMEM when there is no
 /// memory to record it.
@@ -2132,24 +2077,19 @@ pub fn tcp_unbind_port(addr: [u8; 4], port: u16) {
 }
 
 /// Bind an unbound socket at `addr` to a free port from the ephemeral range,
-/// as connect and listen do for a socket that was never bound. EADDRINUSE
-/// when every port in the range is taken; connect reports that as Linux does,
+/// as connect and listen do for a socket that has not been bound. The search
+/// starts at a random port (RFC 6056 Algorithm 1, `tcp_ident`). EADDRINUSE
+/// when the search finds the range's 28,232 ports taken; connect reports that as Linux does,
 /// with EADDRNOTAVAIL.
 pub fn tcp_bind_ephemeral(addr: [u8; 4]) -> Result<u16, i32> {
-    let span = (EPHEMERAL_LAST - EPHEMERAL_FIRST) as u32 + 1;
-    for _ in 0..span {
-        let candidate = NEXT_EPHEMERAL
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |port| {
-                Some(if port >= EPHEMERAL_LAST { EPHEMERAL_FIRST } else { port + 1 })
-            })
-            .unwrap_or(EPHEMERAL_FIRST);
+    let bound = super::tcp_ident::bind_ephemeral(&KernelPool, |candidate| {
         match tcp_bind_port(addr, candidate, false) {
-            Ok(()) => return Ok(candidate),
-            Err(EADDRINUSE) => {}
-            Err(error) => return Err(error),
+            Ok(()) => Ok(true),
+            Err(EADDRINUSE) => Ok(false),
+            Err(error) => Err(error),
         }
-    }
-    Err(EADDRINUSE)
+    })?;
+    bound.ok_or(EADDRINUSE)
 }
 
 /// What a socket's options mean for its connection.
@@ -2259,14 +2199,12 @@ pub fn tcp_port_in_use(port: u16, reuse: bool) -> bool {
     })
 }
 
-/// Generate a new initial sequence number
-pub fn generate_isn() -> u32 {
-    let _guard = super::net_lock_guard();
-    let mut counter = SEQ_COUNTER.lock();
-    let isn = *counter;
-    *counter = counter.wrapping_add(64000); // Increment by a large amount
-    drop(counter);
-    isn
+/// The initial sequence number for a connection on `id` (RFC 6528): the keyed
+/// hash of its 4-tuple plus the 4-microsecond clock (`tcp_ident::IsnKey`).
+pub fn generate_isn(id: &ConnectionId) -> u32 {
+    let (secs, nanos) = crate::time::get_monotonic_time_ns();
+    let now_us = secs.saturating_mul(1_000_000).saturating_add(nanos / 1_000);
+    ISN_KEY.isn(&KernelPool, id.local_ip, id.local_port, id.remote_ip, id.remote_port, now_us)
 }
 
 /// A socket to wake once the TCP tables are released. A reset's errno is
@@ -2721,7 +2659,7 @@ fn handle_syn_for_listener(
         remote_ip: src_ip,
         remote_port: header.src_port,
     };
-    let isn = generate_isn();
+    let isn = generate_isn(&conn_id);
     let mut child = TcpConnection::new(conn_id, TcpState::SynReceived, isn, listener.owner_pid);
     child.rcv_cap = listener.rcv_cap;
     child.recv_shift = header.window_shift.map(|_| window_shift(child.rcv_cap));
@@ -2744,12 +2682,8 @@ fn handle_syn_for_listener(
     child.arm_retransmit();
     tables.conns.push_reserved(child);
 
-    // Queue the SYN+ACK for deferred sending AFTER RX processing completes.
-    // Sending TX packets during RX processing on Parallels' VirtIO causes the
-    // TX packet to be silently dropped (the device doesn't process the TX ring
-    // while the RX ring is being consumed).
     let src_mac = super::current_packet_src_mac();
-    queue_deferred_tx_with_mac(local_ip, src_ip, Some(src_mac), seg.ttl, syn_ack);
+    send_reply_segment(local_ip, src_ip, src_mac, seg.ttl, &syn_ack);
 }
 
 /// Answer a segment no connection or listener takes with a reset
@@ -2837,7 +2771,7 @@ pub fn tcp_connect(
         remote_port,
     };
 
-    let isn = generate_isn();
+    let isn = generate_isn(&conn_id);
     let mut conn = TcpConnection::new(conn_id, TcpState::SynSent, isn, owner_pid);
     conn.mss = local_mss(remote_ip);
     conn.ttl = ttl;
@@ -3412,15 +3346,13 @@ fn wake_connection(conn: &mut TcpConnection, changed: u8) {
     wake_waiting_threads(&mut waiting);
 }
 
-/// Wake every thread in `waiting`, keeping only those the scheduler refused,
-/// for the next wake. Allocates nothing: it runs in the NetRx softirq.
+/// Hand each waiter to the scheduler. A retired waiter can be discarded.
 fn wake_waiting_threads(waiting: &mut Vec<u64>) {
-    waiting.retain(|&thread_id| {
-        let rejected = crate::task::scheduler::wake_thread_any_context(thread_id)
-            == crate::task::scheduler::WakeOutcome::Rejected;
-        if rejected {
+    for tid in waiting.drain(..) {
+        if crate::task::scheduler::wake_thread_any_context(tid)
+            == crate::task::scheduler::WakeOutcome::NoTarget
+        {
             TCP_WAKE_REJECTED.fetch_add(1, Ordering::Relaxed);
         }
-        rejected
-    });
+    }
 }

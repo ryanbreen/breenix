@@ -13,6 +13,20 @@ struct Fixture {
     dest: Vec<u8>,
     temp: Option<Vec<u8>>,
     stdin: &'static [u8],
+    /// A file an SFTP upload left in the staging directory, and how much of
+    /// it has been read.
+    staged: Option<Vec<u8>>,
+    staged_read: usize,
+    /// After this step, someone renames the staging directory away and puts
+    /// a directory of their own, holding these bytes, at the same path.
+    replace_staging_after: Option<(&'static str, Vec<u8>)>,
+    /// The payload of the directory now at the staging path, once replaced.
+    replacement: Option<Vec<u8>>,
+    /// Whether the open staged file is the original directory's payload.
+    reading_original: bool,
+    /// Whether the staging directory belongs to the caller and nobody else
+    /// may write in it.
+    staging_private: bool,
     fault: Option<&'static str>,
     calls: Vec<&'static str>,
 }
@@ -23,13 +37,30 @@ impl Fixture {
             dest: OLD.to_vec(),
             temp: None,
             stdin,
+            staged: None,
+            staged_read: 0,
+            replace_staging_after: None,
+            replacement: None,
+            reading_original: true,
+            staging_private: true,
             fault,
             calls: Vec::new(),
         }
     }
 
+    fn staged(bytes: &[u8], fault: Option<&'static str>) -> Self {
+        Self {
+            staged: Some(bytes.to_vec()),
+            ..Self::new(b"", fault)
+        }
+    }
+
     fn step(&mut self, name: &'static str) -> io::Result<()> {
         self.calls.push(name);
+        if self.replace_staging_after.as_ref().is_some_and(|(after, _)| *after == name) {
+            let (_, bytes) = self.replace_staging_after.take().unwrap();
+            self.replacement = Some(bytes);
+        }
         if self.fault == Some(name) {
             let kind = match name {
                 "stdin" => io::ErrorKind::Interrupted,
@@ -44,6 +75,9 @@ impl Fixture {
 
 impl PublishIo for Fixture {
     type File = ();
+    /// Whether the handle is the original staging directory, rather than
+    /// the one now at its path.
+    type Dir = bool;
 
     fn open_dir(&mut self) -> io::Result<()> {
         self.step("open directory")
@@ -93,6 +127,39 @@ impl PublishIo for Fixture {
     fn unlink_temp(&mut self) -> io::Result<()> {
         self.step("unlink")?;
         assert!(self.temp.take().is_some());
+        Ok(())
+    }
+
+    fn open_staging_dir(&mut self) -> io::Result<bool> {
+        self.step("open staging directory")?;
+        Ok(self.replacement.is_none())
+    }
+
+    fn staging_is_private(&mut self, _: &bool) -> io::Result<bool> {
+        Ok(self.staging_private)
+    }
+
+    fn open_staged(&mut self, original: &bool) -> io::Result<()> {
+        self.step("open staged file")?;
+        self.reading_original = *original;
+        assert!(self.staged.is_some());
+        Ok(())
+    }
+
+    fn read_staged(&mut self, _: &mut (), buf: &mut [u8]) -> io::Result<usize> {
+        self.step("read staged file")?;
+        let staged = if self.reading_original { &self.staged } else { &self.replacement };
+        let staged = staged.as_ref().unwrap();
+        let n = buf.len().min(staged.len() - self.staged_read).min(2);
+        buf[..n].copy_from_slice(&staged[self.staged_read..self.staged_read + n]);
+        self.staged_read += n;
+        Ok(n)
+    }
+
+    fn rename_staged(&mut self, original: &bool) -> io::Result<()> {
+        self.step("rename staged file")?;
+        let staged = if *original { &mut self.staged } else { &mut self.replacement };
+        self.dest = staged.take().unwrap();
         Ok(())
     }
 }
@@ -176,4 +243,66 @@ fn empty_artifact_replaces_destination() {
     publish(&mut fs, 0, digest, 0o755).unwrap();
     assert!(fs.dest.is_empty());
     assert!(fs.temp.is_none());
+}
+
+#[test]
+fn adopting_a_staged_upload_publishes_it_without_writing_it_again() {
+    let mut fs = Fixture::staged(NEW, None);
+    adopt(&mut fs, 3, DIGEST, 0o755).unwrap();
+    assert_eq!(fs.dest, NEW);
+    assert!(fs.staged.is_none());
+    assert!(!fs.calls.contains(&"write"), "{:?}", fs.calls);
+    assert!(!fs.calls.contains(&"open temporary file"), "{:?}", fs.calls);
+    assert!(fs.calls.ends_with(&["chmod", "file fsync", "rename staged file", "directory sync"]));
+}
+
+#[test]
+fn a_staged_upload_that_does_not_verify_is_not_published() {
+    for (staged, reason) in [(&b"ab"[..], "short"), (&b"abcd"[..], "long"), (&b"xyz"[..], "SHA-256")] {
+        let mut fs = Fixture::staged(staged, None);
+        let error = adopt(&mut fs, 3, DIGEST, 0o755).unwrap_err();
+        assert_eq!(error.status, 1);
+        assert!(error.reason.contains(reason), "{error:?}");
+        assert_eq!(fs.dest, OLD);
+        // The staging directory's owner removes the file; bput leaves it.
+        assert_eq!(fs.staged.as_deref(), Some(staged));
+        assert!(!fs.calls.contains(&"rename staged file"));
+    }
+    for step in ["open directory", "open staged file", "read staged file", "chmod", "file fsync", "rename staged file"] {
+        let mut fs = Fixture::staged(NEW, Some(step));
+        let error = adopt(&mut fs, 3, DIGEST, 0o755).unwrap_err();
+        assert_eq!(error.status, 1, "{step}: {error:?}");
+        assert_eq!(fs.dest, OLD, "{step}");
+    }
+}
+
+#[test]
+fn a_staging_directory_replaced_after_verification_does_not_get_published() {
+    // The staging directory sits in the destination directory, which others
+    // may be able to write. Replacing it after bput read and verified the
+    // payload must not publish the replacement's bytes.
+    for step in ["read staged file", "chmod", "file fsync"] {
+        let mut fs = Fixture::staged(NEW, None);
+        fs.replace_staging_after = Some((step, b"bad".to_vec()));
+        let result = adopt(&mut fs, 3, DIGEST, 0o755);
+        assert_ne!(fs.dest, b"bad", "{step}: published the replacement");
+        assert!(
+            (result.is_ok() && fs.dest == NEW) || (result.is_err() && fs.dest == OLD),
+            "{step}: {result:?}, {:?}",
+            fs.dest
+        );
+    }
+}
+
+#[test]
+fn a_staging_directory_others_control_is_refused() {
+    // Whoever can write in the staging directory can swap the payload's
+    // name after verification, so bput adopts only from a directory that
+    // is its caller's alone.
+    let mut fs = Fixture::staged(NEW, None);
+    fs.staging_private = false;
+    let error = adopt(&mut fs, 3, DIGEST, 0o755).unwrap_err();
+    assert_eq!(error.status, 1);
+    assert_eq!(fs.dest, OLD);
+    assert!(!fs.calls.contains(&"read staged file"), "{:?}", fs.calls);
 }

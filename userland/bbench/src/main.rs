@@ -1,3 +1,4 @@
+mod attr_work;
 mod io_work;
 
 use bu_sys::bench;
@@ -8,8 +9,6 @@ use std::hint::black_box;
 use std::io::{self, Read, Write};
 use std::path::Path;
 use std::process::{Command, ExitCode, Stdio};
-use std::sync::mpsc;
-use std::thread;
 use std::time::Instant;
 
 type Metrics = BTreeMap<&'static str, u64>;
@@ -44,6 +43,9 @@ fn counters() -> BTreeMap<&'static str, String> {
         "/proc/block/cache",
         "/proc/trace/rx_counters",
         "/proc/uptime",
+        "/proc/net/snmp",
+        "/proc/net/netstat",
+        "/proc/net/tcp_stats",
     ]
     .into_iter()
     .filter_map(|path| fs::read_to_string(path).ok().map(|value| (path, value)))
@@ -97,51 +99,6 @@ fn count(value: &str, max: usize) -> io::Result<usize> {
         .ok_or_else(|| invalid("count outside allowed range"))
 }
 
-fn malloc_workload(threads: usize, metrics: &mut Metrics) -> io::Result<()> {
-    const PAIRS: usize = 1_000_000;
-    const BLOCK_BYTES: usize = 64;
-    let elapsed = thread::scope(|scope| -> io::Result<u64> {
-        let (ready, ready_count) = mpsc::channel();
-        let mut workers = Vec::with_capacity(threads);
-        for _ in 0..threads {
-            let (start, wait) = mpsc::channel();
-            let ready = ready.clone();
-            let worker = thread::Builder::new().spawn_scoped(scope, move || {
-                let warm = bench::malloc_free_pairs(1, BLOCK_BYTES);
-                ready.send(()).map_err(io::Error::other)?;
-                wait.recv().map_err(io::Error::other)?;
-                warm?;
-                bench::malloc_free_pairs(PAIRS / threads, BLOCK_BYTES)?;
-                Ok::<_, io::Error>(Instant::now())
-            })?;
-            workers.push((start, worker));
-        }
-        drop(ready);
-        for _ in 0..threads {
-            ready_count.recv().map_err(io::Error::other)?;
-        }
-        let start_time = Instant::now();
-        for (start, _) in &workers {
-            start.send(()).map_err(io::Error::other)?;
-        }
-        let mut finished = start_time;
-        for (_, worker) in workers {
-            let end = worker
-                .join()
-                .map_err(|_| io::Error::other("malloc worker panicked"))??;
-            finished = finished.max(end);
-        }
-        Ok(finished.duration_since(start_time).as_nanos() as u64)
-    })?;
-    metrics.extend([
-        ("malloc_free_ns", elapsed),
-        ("pairs", PAIRS as u64),
-        ("threads", threads as u64),
-        ("block_bytes", BLOCK_BYTES as u64),
-    ]);
-    Ok(())
-}
-
 fn workload(dir: &Path, args: &[String], metrics: &mut Metrics) -> io::Result<()> {
     let words = args.iter().map(String::as_str).collect::<Vec<_>>();
     match words.as_slice() {
@@ -183,9 +140,9 @@ fn workload(dir: &Path, args: &[String], metrics: &mut Metrics) -> io::Result<()
             ]);
             Ok(())
         }
-        ["copy"] => {
-            let mut source = vec![0x55; 128 * MIB];
-            let mut target = vec![0xaa; source.len()];
+        ["copy-bytes"] => {
+            let mut source = vec![0x55u8; 128 * MIB];
+            let mut target = vec![0xaau8; source.len()];
             black_box(&mut source);
             black_box(&mut target);
             let start = Instant::now();
@@ -199,15 +156,20 @@ fn workload(dir: &Path, args: &[String], metrics: &mut Metrics) -> io::Result<()
             ]);
             Ok(())
         }
-        ["malloc-free", threads] => match *threads {
-            "1" => malloc_workload(1, metrics),
-            "4" => malloc_workload(4, metrics),
-            _ => Err(invalid("malloc-free expects 1 or 4 threads")),
-        },
         ["sequential", bytes] => io_work::sequential(dir, count(bytes, 1024 * MIB)?, metrics),
         ["small-files", files] => io_work::small_files(dir, count(files, 10_000)?, metrics),
         ["walk", files] => io_work::walk(dir, count(files, 10_000)?, metrics),
         ["fsync", calls] => io_work::sync_latency(dir, count(calls, 1000)?, metrics),
+        ["getpid", loops] => attr_work::getpid(count(loops, 100_000_000)?, metrics),
+        ["malloc", threads, loops] => {
+            attr_work::malloc(count(threads, 64)?, count(loops, 100_000_000)?, metrics)
+        }
+        ["tcp", direction, address, bytes] => {
+            attr_work::tcp(direction, address, count(bytes, 1024 * MIB)?, metrics)
+        }
+        ["aes-gcm", bytes] => attr_work::aes_gcm(count(bytes, 1024 * MIB)?, metrics),
+        ["hmac-sha256", bytes] => attr_work::hmac_sha256(count(bytes, 1024 * MIB)?, metrics),
+        ["fixture", path, bytes] => attr_work::fixture(path, count(bytes, 1024 * MIB)?),
         _ => Err(invalid("unknown workload or argument count")),
     }
 }

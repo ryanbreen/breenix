@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 HARNESS = r'''
 use std::cell::Cell;
-use std::sync::{Mutex, MutexGuard, atomic::{AtomicU64, Ordering}};
+use std::sync::{Mutex, MutexGuard, atomic::{AtomicU8, AtomicU64, Ordering}};
 #[allow(unused_imports)]
 use per_cpu as io_cpu;
 use read_failure::AhciReadError;
@@ -18,6 +18,11 @@ use read_failure::AhciReadError;
 
 const AHCI_TIMEOUT_SECS: u64 = 5;
 const OWNER_WITHOUT_TID: u64 = u64::MAX;
+const PORT_READY: u8 = 0;
+static PORT_RECOVERY: [AtomicU8; 1] = [AtomicU8::new(PORT_READY)];
+static AHCI_ABAR: AtomicU64 = AtomicU64::new(0);
+fn ensure_port_ready(_: u64, _: usize) -> Result<(), &'static str> { panic!("unexpected recovery") }
+fn end_port_io(_: usize, _: MutexGuard<'static, ()>) { panic!("unexpected release") }
 static PORT_IO_OWNER: [AtomicU64; 1] = [AtomicU64::new(21)];
 static PORT_IO_LOCK: [PortLock; 1] = [PortLock(Mutex::new(()))];
 static PORT_IO_WAITERS: [task::waitqueue::Queue; 1] = [task::waitqueue::Queue];

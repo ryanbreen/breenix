@@ -121,6 +121,7 @@ pub mod ssh {
         pub fn flush_relay(&mut self) -> Result<(), ()> { Ok(()) }
         pub fn relay_output_pending(&self) -> bool { false }
         pub fn relay_can_queue(&self) -> bool { true }
+        pub fn packet_ready(&mut self) -> bool { false }
     }
     pub mod channel {
         use super::*;
@@ -165,6 +166,8 @@ pub mod ssh {
             // @WAIT_FOR_CHANNEL@
             // @CHANNEL_CLOSED@
             pub fn io(&mut self) -> &mut PacketIo { &mut self.io }
+            // The scripted packets hold no KEXINIT, so the message comes back.
+            fn rekey_if_kexinit(&mut self, msg: Vec<u8>) -> Result<Option<Vec<u8>>, SshError> { Ok(Some(msg)) }
             pub fn input_eof(&self) -> bool { self.channel.as_ref().unwrap().eof_received }
             pub fn pty_size(&self) -> (u32, u32) { self.channel.as_ref().unwrap().pty_size }
             pub fn send_capacity(&self) -> usize { self.channel.as_ref().unwrap().send_window as usize }

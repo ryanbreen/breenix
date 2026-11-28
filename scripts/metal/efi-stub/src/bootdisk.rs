@@ -14,7 +14,10 @@ use crate::say;
 use crate::uefi::*;
 
 pub const SECTOR: usize = 512;
+#[cfg(target_arch = "x86_64")]
 pub const BOOTLOADER: &str = "\\EFI\\BOOT\\BOOTX64.EFI";
+#[cfg(target_arch = "aarch64")]
+pub const BOOTLOADER: &str = "\\EFI\\BOOT\\BOOTAA64.EFI";
 
 #[repr(C)]
 struct RamDiskProtocol {

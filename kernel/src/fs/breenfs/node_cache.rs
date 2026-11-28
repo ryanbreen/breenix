@@ -10,22 +10,212 @@ use crate::block::{
 };
 use alloc::{
     boxed::Box,
-    collections::VecDeque,
     sync::{Arc, Weak},
     vec::Vec,
 };
-use core::ops::Deref;
+use core::{
+    mem::size_of,
+    ops::Deref,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 use spin::Mutex;
 
-const DECODED_NODES: usize = 64;
+// Until E1, retained metadata shares the kernel heap. Each class has a
+// system-wide ceiling as well as a budget derived from usable physical RAM.
+const DECODED_HEAP_CAP: usize = 4 * 1024 * 1024;
+const MIN_NODE_CHARGE: usize = NODE_SIZE / 4;
+static DECODED_HEAP: CacheBudget = CacheBudget::new();
 
-/// A generation's node reads. Exact parent-pointer checks remain in btree.
-///
-/// The private device view makes a whole node one cache entry and verifies it
-/// before publishing it Clean.
-/// Its boxed address is a stable, mount-private cache identity, distinct from
-/// raw sector readers and mounts with different UUID/generation limits. Dropping
-/// the store discards its entries before that identity can be reused.
+pub(super) fn metadata_ram_bytes() -> usize {
+    #[cfg(any(target_os = "none", target_os = "breenix"))]
+    {
+        let bytes = crate::memory::frame_allocator::memory_stats().total_bytes;
+        usize::try_from(bytes).unwrap_or(usize::MAX)
+    }
+    #[cfg(not(any(target_os = "none", target_os = "breenix")))]
+    {
+        // Keep host measurements independent of the runner's memory.
+        512 * 1024 * 1024
+    }
+}
+
+pub(super) struct CacheBudget(AtomicUsize);
+
+impl CacheBudget {
+    pub(super) const fn new() -> Self {
+        Self(AtomicUsize::new(0))
+    }
+
+    pub(super) fn charge(&'static self, bytes: usize, limit: usize) -> Option<CacheCharge> {
+        self.0
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+                used.checked_add(bytes).filter(|&total| total <= limit)
+            })
+            .ok()?;
+        Some(CacheCharge {
+            budget: self,
+            bytes,
+        })
+    }
+}
+
+pub(super) struct CacheCharge {
+    budget: &'static CacheBudget,
+    bytes: usize,
+}
+
+impl Drop for CacheCharge {
+    fn drop(&mut self) {
+        self.budget.0.fetch_sub(self.bytes, Ordering::Relaxed);
+    }
+}
+
+/// A cache of verified durable decodings scoped to one mount.
+pub struct DecodedNodes {
+    limit: usize,
+    state: Mutex<DecodedState>,
+}
+
+#[derive(Default)]
+struct DecodedState {
+    entries: Vec<DecodedEntry>,
+    table: Option<CacheCharge>,
+    bytes: usize,
+    clock: u64,
+}
+
+struct DecodedEntry {
+    ptr: BlockPtr,
+    node: Arc<Node>,
+    used: u64,
+    charge: CacheCharge,
+}
+
+impl DecodedEntry {
+    fn key(&self) -> (u64, u64) {
+        (self.ptr.addr, self.ptr.generation)
+    }
+}
+
+fn decoded_bytes(node: &Node) -> usize {
+    // Include Vec capacity, Arc headers and alignment as well as the payloads.
+    let bytes = size_of::<Node>()
+        + 128
+        + node.children.capacity() * size_of::<super::format::InternalEntry>()
+        + node.items.capacity() * size_of::<(super::format::Key, Arc<[u8]>)>()
+        + node
+            .items
+            .iter()
+            .map(|(_, bytes)| bytes.len().next_multiple_of(16) + 32)
+            .sum::<usize>();
+    bytes.max(MIN_NODE_CHARGE)
+}
+
+impl DecodedNodes {
+    pub fn new(ram: usize) -> Self {
+        Self {
+            limit: (ram / 128).min(DECODED_HEAP_CAP),
+            state: Mutex::default(),
+        }
+    }
+
+    fn get(&self, ptr: BlockPtr) -> Option<Result<Arc<Node>, Error>> {
+        let mut state = self.state.lock();
+        let index = state
+            .entries
+            .binary_search_by_key(&(ptr.addr, ptr.generation), DecodedEntry::key)
+            .ok()?;
+        state.clock = state.clock.wrapping_add(1);
+        let clock = state.clock;
+        let entry = &mut state.entries[index];
+        entry.used = clock;
+        // The cache key names the incarnation. An exact pointer still has to
+        // match the checksum and level that were verified on admission.
+        Some(if entry.ptr == ptr {
+            Ok(entry.node.clone())
+        } else {
+            Err(Error::InvalidNode.at_node(ptr.addr))
+        })
+    }
+
+    fn insert(&self, ptr: BlockPtr, node: &Arc<Node>) {
+        let bytes = decoded_bytes(node);
+        let slots = self.limit / (MIN_NODE_CHARGE + size_of::<DecodedEntry>());
+        let table_bytes = slots * size_of::<DecodedEntry>();
+        if bytes > self.limit - table_bytes || slots == 0 {
+            return;
+        }
+        let mut state = self.state.lock();
+        if state.table.is_none() {
+            let Some(charge) = DECODED_HEAP.charge(table_bytes, self.limit) else {
+                return;
+            };
+            if state.entries.try_reserve_exact(slots).is_err() {
+                return;
+            }
+            state.table = Some(charge);
+        }
+        let key = (ptr.addr, ptr.generation);
+        if state
+            .entries
+            .binary_search_by_key(&key, DecodedEntry::key)
+            .is_ok()
+        {
+            return;
+        }
+        while state.bytes + bytes + table_bytes > self.limit {
+            let Some((index, _)) = state
+                .entries
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, entry)| entry.used)
+            else {
+                return;
+            };
+            state.bytes -= state.entries.remove(index).charge.bytes;
+        }
+        let Some(charge) = DECODED_HEAP.charge(bytes, self.limit) else {
+            return;
+        };
+        let Err(index) = state.entries.binary_search_by_key(&key, DecodedEntry::key) else {
+            return;
+        };
+        state.clock = state.clock.wrapping_add(1);
+        let used = state.clock;
+        state.entries.insert(
+            index,
+            DecodedEntry {
+                ptr,
+                node: node.clone(),
+                used,
+                charge,
+            },
+        );
+        state.bytes += bytes;
+    }
+
+    pub fn retire_overwritten(&self, prepared: &commit::PreparedCommit) {
+        let mut state = self.state.lock();
+        let mut released = 0;
+        state.entries.retain(|entry| {
+            if prepared.overwrites_node(entry.ptr.addr) {
+                released += entry.charge.bytes;
+                false
+            } else {
+                true
+            }
+        });
+        state.bytes -= released;
+    }
+
+    pub fn clear(&self) {
+        *self.state.lock() = DecodedState::default();
+    }
+}
+
+/// A view with a generation ceiling and optional unpublished buffers.
+/// The raw buffer cache remains view-private because its key only records an
+/// address. Decoded entries belong to the mount and carry the node generation.
 pub struct CachedNodeStore<'a, W: Wait> {
     cache: Retained<'a, BufferCache<W>>,
     device: Box<NodeDevice<'a>>,
@@ -35,9 +225,7 @@ pub struct CachedNodeStore<'a, W: Wait> {
     // mount drops it, its buffers are freed and its nodes are read from the
     // device (E24 coordinator ledger line 309, C3).
     pending: Option<Weak<commit::PreparedCommit>>,
-    // Entries belong to this immutable generation view. Bound decoded-node
-    // allocations independently of disk size.
-    decoded: Mutex<VecDeque<(BlockPtr, Arc<Node>)>>,
+    decoded: Arc<DecodedNodes>,
 }
 
 impl<'a, W: Wait> CachedNodeStore<'a, W> {
@@ -61,7 +249,7 @@ impl<'a, W: Wait> CachedNodeStore<'a, W> {
             fs_uuid: durable.fs_uuid,
             generation: durable.generation,
             pending: None,
-            decoded: Mutex::new(VecDeque::new()),
+            decoded: Arc::new(DecodedNodes::new(metadata_ram_bytes())),
         }
     }
     /// Borrow the system-wide cache while retaining the mount's device.
@@ -69,6 +257,7 @@ impl<'a, W: Wait> CachedNodeStore<'a, W> {
         cache: &'a BufferCache<W>,
         device: Arc<dyn BlockDevice>,
         durable: &Superblock,
+        decoded: Arc<DecodedNodes>,
     ) -> Self {
         Self {
             cache: Retained::Borrowed(cache),
@@ -79,7 +268,7 @@ impl<'a, W: Wait> CachedNodeStore<'a, W> {
             fs_uuid: durable.fs_uuid,
             generation: durable.generation,
             pending: None,
-            decoded: Mutex::new(VecDeque::new()),
+            decoded,
         }
     }
     /// Retain the mount's device and shared cache without self-references.
@@ -87,6 +276,7 @@ impl<'a, W: Wait> CachedNodeStore<'a, W> {
         cache: Arc<BufferCache<W>>,
         device: Arc<dyn BlockDevice>,
         durable: &Superblock,
+        decoded: Arc<DecodedNodes>,
     ) -> Self {
         Self {
             cache: Retained::Shared(cache),
@@ -97,43 +287,46 @@ impl<'a, W: Wait> CachedNodeStore<'a, W> {
             fs_uuid: durable.fs_uuid,
             generation: durable.generation,
             pending: None,
-            decoded: Mutex::new(VecDeque::new()),
+            decoded,
         }
     }
 }
 
 impl<W: Wait> NodeStore for CachedNodeStore<'_, W> {
     fn read_node(&self, ptr: BlockPtr) -> Result<Arc<Node>, Error> {
-        {
-            let mut cache = self.decoded.lock();
-            if let Some(at) = cache.iter().position(|(key, _)| *key == ptr) {
-                let entry = cache.remove(at).ok_or(Error::Store)?;
-                let node = entry.1.clone();
-                cache.push_back(entry);
-                return Ok(node);
+        if ptr.generation == 0 || ptr.generation > self.generation {
+            return Err(Error::InvalidNode.at_node(ptr.addr));
+        }
+        if let Some(pending) = self.pending.as_ref().and_then(Weak::upgrade) {
+            if let Some(bytes) = pending.node(ptr.addr) {
+                // A failed publication can leave these bytes off disk.
+                return btree::decode_verified_node(bytes, ptr)
+                    .map_err(|error| error.at_node(ptr.addr));
+            }
+            if pending.overwrites_node(ptr.addr) {
+                return Err(Error::InvalidNode.at_node(ptr.addr));
             }
         }
-        // I/O and decoding run outside the decoded-cache lock. get verifies
-        // UUID/address/generation through the shared buffer cache; decode_node
-        // verifies the exact pointer, CRC and complete node layout.
+        if let Some(node) = self.decoded.get(ptr) {
+            return node;
+        }
+        // The view's buffer cache verifies UUID/address/generation and CRC.
+        // Decode verifies the exact pointer and the complete node layout.
         let node = btree::decode_verified_node(&self.get(ptr.addr)?, ptr)
             .map_err(|error| error.at_node(ptr.addr))?;
-        let mut cache = self.decoded.lock();
-        if cache.len() == DECODED_NODES {
-            cache.pop_front();
-        }
-        cache.try_reserve(1).map_err(|_| Error::Read(ReadFailure {
-            cause: ReadCause::Allocation, addr: ptr.addr,
-        }))?;
-        cache.push_back((ptr, node.clone()));
+        self.decoded.insert(ptr, &node);
         Ok(node)
     }
     fn get(&self, addr: u64) -> Result<Vec<u8>, Error> {
-        #[cfg(test)] btree::measurement::edit_cost(|c| c.copies += 1);
+        #[cfg(test)]
+        btree::measurement::edit_cost(|c| c.copies += 1);
         let mut bytes = Vec::new();
-        bytes
-            .try_reserve_exact(NODE_SIZE)
-            .map_err(|_| Error::Read(ReadFailure { cause: ReadCause::Allocation, addr }))?;
+        bytes.try_reserve_exact(NODE_SIZE).map_err(|_| {
+            Error::Read(ReadFailure {
+                cause: ReadCause::Allocation,
+                addr,
+            })
+        })?;
         bytes.resize(NODE_SIZE, 0);
         if let Some(pending) = self.pending.as_ref().and_then(Weak::upgrade) {
             if let Some(node) = pending.node(addr) {
@@ -154,14 +347,16 @@ impl<W: Wait> NodeStore for CachedNodeStore<'_, W> {
                 verification_failed.set(!valid);
                 valid
             })
-            .map_err(|error| Error::Read(ReadFailure {
-                cause: if verification_failed.get() {
-                    ReadCause::Verification
-                } else {
-                    error.into()
-                },
-                addr,
-            }))?;
+            .map_err(|error| {
+                Error::Read(ReadFailure {
+                    cause: if verification_failed.get() {
+                        ReadCause::Verification
+                    } else {
+                        error.into()
+                    },
+                    addr,
+                })
+            })?;
         Ok(bytes)
     }
     fn put(&mut self, _: u64, _: Vec<u8>) -> Result<(), Error> {

@@ -341,12 +341,11 @@ syscall_entry_from_el0:
     /* Clear next_cr3 BEFORE switching (avoid accessing after switch) */
     str xzr, [x0, #64]
 
-    /* Perform TTBR0 switch with full TLB invalidation */
+    /* Perform the TTBR0 switch. Both shadow words hold roots bound to their
+     * address space's ASID on this CPU (ttbr0.rs, bind_process_root), which
+     * took any rollover flush, so a switch needs no TLB invalidation. */
     dsb ishst
     msr ttbr0_el1, x1
-    isb
-    tlbi vmalle1is
-    dsb ish
     isb
     b .Lafter_ttbr_check
 
@@ -354,16 +353,13 @@ syscall_entry_from_el0:
     /* No context switch - restore original process TTBR0 */
     ldr x1, [x0, #80]           /* saved_process_cr3 offset = 80 */
     cbz x1, .Lafter_ttbr_check
-    /* An unchanged root needs neither an install nor a broadcast TLB flush.
-     * PTE mutations invalidate their translations at the mutation site. */
+    /* An unchanged root needs no install. PTE mutations invalidate their
+     * translations at the mutation site. */
     mrs x0, ttbr0_el1
     cmp x0, x1
     b.eq .Lafter_ttbr_check
     dsb ishst
     msr ttbr0_el1, x1
-    isb
-    tlbi vmalle1is
-    dsb ish
     isb
 
 .Lafter_ttbr_check:

@@ -997,8 +997,36 @@ incomplete, preserve the evidence and stop the acceptance for diagnosis.
 
 ### Kernel flash and /usr replacement
 
-`metal-run install-persistent --sha <commit>` builds the production kernel without a userland image.
-Use `--branch` for a pinned commit on a pushed branch. The machine must be powered off before the flash.
+On a writable format-3 persistent session, `metal-run install-persistent --kernel-only --sha <commit>`
+builds a production kernel without a userland image. Use `--branch` for a pinned commit on a pushed branch.
+Without either option it builds the current tip of main.
+
+The boot host uses the operator's SSH key and the trusted host-key pin from persistent verification.
+Through `sudo -n /bin/bput` it publishes `kernel.img` and then `manifest` in `/root/.breenix-flash`
+on the BreenFS system partition. Publication includes a file and directory sync. The manifest
+arms a unique attempt and contains the kernel commit, image size and SHA-256. It also binds the
+attempt to the physical CURRENT note.
+The running kernel uses the existing format-3 write fence.
+
+The guest reboots under its existing lease. The manager checks the on-disk ownership, lengths and
+SHA-256, reads back the trial copy on the ESP, and flushes its attempt record before launching it.
+`metal-run` matches the manager's trial to init's boot ID over strict SSH and verifies `/proc/1/exe`
+is `/sbin/init` before publishing the durable confirmation on BreenFS. That boot continues under
+the same lease. A later firmware boot promotes the confirmed image into CURRENT and retains
+the previous image. Without confirmation, a reset or power cycle uses the existing CURRENT.
+A loader that returns to firmware triggers a cold reset. `--inject upgrade-no-ssh` exercises
+that path with an invalid loader. The live command reports the outcome and SSH timings in
+`live-flash.json` under the persistent boot record.
+
+The first deployment requires a powered-off network installer boot with
+`metal-run install-persistent --kernel-only --recovery --replace-manager`. Confirm the network
+test loop and power control before running it. The firmware verifies CURRENT, adds `LIVE.EFI`
+and the BreenFS system partition reference on the ESP, and makes the new boot option first.
+`Breenix boot manager` remains selectable in firmware setup and loads the original manager.
+After the installation shuts down, start the persistent session with the new manager.
+
+**Network recovery.** Use `metal-run install-persistent --kernel-only --recovery --sha <commit>`
+when the persistent system cannot stage its own kernel. Start with the machine powered off.
 
 1. The manager takes the network boot path under the flash lease. The delivery stub recovers any pending
    slot transaction, checks physical CURRENT and stages only `NEXT.IMG` and `NEXT.TXT` on the EFI system
@@ -1022,11 +1050,11 @@ Use `--branch` for a pinned commit on a pushed branch. The machine must be power
    only confirms the handoff. A `rolled-back` result confirms recovery to the old kernel.
 
 If staging closed with a successful firmware receipt and confirmed power-off before any verification boot
-was requested, repeat `metal-run install-persistent --sha <same-commit>` once the failure is understood.
+was requested, repeat `metal-run install-persistent --kernel-only --recovery --sha <same-commit>` once the failure is understood.
 For BreenFS the driver checks the earlier request and the CURRENT root ID against the recorded NEXT
 before allowing the retry. The stub rechecks physical CURRENT and writes and reads back NEXT again.
 A pending slot from another commit or an attempt that already requested promotion requires diagnosis.
-A plain `metal-run boot --persistent` selects CURRENT and leaves any staged NEXT in place.
+The network installer and acknowledged live promotions share the existing NEXT journal. A plain `metal-run boot --persistent` leaves it in place.
 
 Ordinary runtime activity resumes when the verification kernel boots. It includes filesystem recovery,
 service startup and clearing `/tmp` and `/run`. The flash operates on kernel slots. The writable boot
@@ -1074,9 +1102,16 @@ The persistent install runs bsshd on port 22 and no telnetd: x86 images start no
   than being replaced.
 
 bsshd sends its SSH identification before reading the client's (RFC 4253 section
-4.2), including for `ssh-keyscan`. It offers `aes256-gcm@openssh.com` (RFC 5647's
-packet format with the negotiation in draft-miller-sshm-aes-gcm) and `aes128-ctr`
-with HMAC-SHA256. A PTY session creates a session, acquires the slave as its
+4.2), including for `ssh-keyscan`. It offers, in this order,
+`chacha20-poly1305@openssh.com` (draft-ietf-sshm-chacha20-poly1305),
+`aes256-gcm@openssh.com` (RFC 5647's packet format with the negotiation in
+draft-miller-sshm-aes-gcm) and `aes128-ctr` with HMAC-SHA256, and it applies
+strict KEX (draft-ietf-sshm-strict-kex) when the client offers it. chacha20 is
+negotiated only under strict KEX, so a client without it gets AES. bsshd
+answers a key re-exchange the client starts after login (OpenSSH does once a
+connection reaches its RekeyLimit), and a connection ends rather than reuse a
+sequence number under one set of keys. Its AES is
+bitsliced, with no table indexed by key or data. A PTY session creates a session, acquires the slave as its
 controlling terminal, sets its foreground group and gives the slave to the
 account with mode 0620; the server restores ownership when the session ends.
 The [server suite](../suites/README.md#server-host-driven-persistent-categories)

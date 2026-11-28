@@ -161,10 +161,15 @@ fn main() {
             io::PollFd::new(ssh_fd, io::poll_events::POLLIN),
         ];
 
-        match io::poll(&mut fds, 100) {
-            Ok(0) => continue,
+        // A packet already taken off the socket will not wake poll.
+        let buffered = session.io().packet_ready();
+        match io::poll(&mut fds, if buffered { 0 } else { 100 }) {
+            Ok(0) if !buffered => continue,
             Err(_) => break,
             _ => {}
+        }
+        if buffered {
+            fds[1].revents |= io::poll_events::POLLIN;
         }
 
         // Check stdin for user input
@@ -525,7 +530,12 @@ fn drain_exec_output(session: &mut ClientSession) -> i32 {
 
     loop {
         let mut fds = [io::PollFd::new(ssh_fd, io::poll_events::POLLIN)];
-        match io::poll(&mut fds, 100) {
+        // A packet already taken off the socket will not wake poll.
+        let buffered = session.io().packet_ready();
+        if buffered {
+            fds[0].revents = io::poll_events::POLLIN;
+        }
+        match if buffered { Ok(1) } else { io::poll(&mut fds, 100) } {
             Ok(0) => {
                 idle_ticks += 1;
                 if idle_ticks >= 300 {

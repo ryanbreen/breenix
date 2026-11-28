@@ -553,7 +553,7 @@ const _: () = assert!(
 // pointer can never reach it through TTBR0 at all; this assertion still
 // documents and locks the invariant at the shared-predicate level.)
 const _: () = assert!(
-    !is_valid_user_range(crate::memory::heap::HEAP_START, 1),
+    !is_valid_user_range(crate::memory::heap::HEAP_REGION_START, 1),
     "kernel heap start must be refused"
 );
 

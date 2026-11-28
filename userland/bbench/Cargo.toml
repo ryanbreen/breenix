@@ -6,6 +6,8 @@ publish.workspace = true
 
 [dependencies]
 bu-sys = { path = "../crates/bu-sys" }
+# The SSH crypto primitives the ssh.aes256-gcm and ssh.hmac-sha256 rows time.
+libbreenix = { path = "../../libs/libbreenix", features = ["std"] }
 
 [lints]
 workspace = true

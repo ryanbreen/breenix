@@ -270,7 +270,7 @@ fn size_terminals(layout: &Layout) {
         calculated / 1024,
         grid::HISTORY_LINES,
         crate::memory::heap::high_water_bytes() / 1024,
-        crate::memory::heap::HEAP_SIZE / 1024
+        crate::memory::heap::heap_size() / 1024
     );
 }
 

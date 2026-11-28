@@ -441,6 +441,7 @@ pub fn sys_clone_thread(
     // admission-interlock question.
     let mut child_thread = Thread {
         id: child_thread_id,
+        wake: None,
         name: alloc::format!("clone-child-{}", child_thread_id),
         state: crate::task::thread::ThreadState::Blocked,
         #[cfg(target_arch = "aarch64")]

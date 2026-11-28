@@ -1,0 +1,10 @@
+{
+  "distribution": "Ubuntu 24.04 LTS server cloud image, arm64",
+  "release": "release-20261017",
+  "url": "https://cloud-images.ubuntu.com/releases/noble/release-20261017/ubuntu-24.04-server-cloudimg-arm64.img",
+  "file": "ubuntu-24.04-server-cloudimg-arm64.img",
+  "format": "qcow2",
+  "bytes": 616522752,
+  "sha256": "50e24e1fb79e89116e939d90aa7738f7af48c442fa1bc2510131e0b39c50348e",
+  "sha256_source": "https://cloud-images.ubuntu.com/releases/noble/release-20261017/SHA256SUMS"
+}

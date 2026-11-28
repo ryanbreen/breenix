@@ -80,17 +80,13 @@ pub fn init() -> usize {
         Ok(()) => {
             log::info!("E1000 network driver initialized successfully");
 
-            // MSI where the function has it; otherwise IRQ 10, the line
-            // QEMU's PCI configuration gives the E1000.
+            // MSI where the function has it; otherwise the INTx line its
+            // Interrupt Line register names.
             match e1000::interrupt_by_msi() {
                 Ok(vector) => log::info!("E1000: interrupts by MSI vector {vector:#x}"),
                 Err(reason) => {
-                    if crate::arch_impl::x86_64::irq::pci_intx_routing_known() {
-                        log::info!("E1000: interrupts on IRQ 10 ({reason})");
-                        crate::interrupts::enable_irq10();
-                    } else {
-                        log::info!("E1000: INTx remains masked: routing unknown ({reason})");
-                    }
+                    log::info!("E1000: no MSI ({reason}); INTx line {:?}", e1000::irq_line());
+                    enable_network_intx(e1000::irq_line());
                 }
             }
         }
@@ -147,6 +143,14 @@ fn init_other_network_device() {
             }
         },
     };
+    enable_network_intx(line);
+}
+
+/// Unmask the shared PCI line a network function's Interrupt Line register
+/// names, where that register is known to name the line its INTx drives. IRQ
+/// 10 and 11 are the shared lines with handlers that poll the network drivers.
+#[cfg(target_arch = "x86_64")]
+fn enable_network_intx(line: Option<u8>) {
     if !crate::arch_impl::x86_64::irq::pci_intx_routing_known() {
         log::info!("Network INTx remains masked: routing unknown");
         return;
@@ -154,7 +158,8 @@ fn init_other_network_device() {
     match line {
         Some(10) => crate::interrupts::enable_irq10(),
         Some(11) => crate::interrupts::enable_irq11(),
-        _ => {}
+        Some(other) => log::warn!("Network INTx line {other} has no shared handler; masked"),
+        None => {}
     }
 }
 

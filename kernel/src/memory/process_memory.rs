@@ -764,6 +764,10 @@ impl ProcessPageTable {
     pub fn new() -> Result<Self, &'static str> {
         log::debug!("ProcessPageTable::new() [ARM64] - Creating userspace page table");
 
+        // Room for the root in the ASID registry, reserved before the root is
+        // allocated so a failure has no frame to give back.
+        crate::arch_impl::aarch64::ttbr0::reserve_address_space()?;
+
         // Allocate a frame for the L0 page table (TTBR0)
         let root_lease = match allocate_frame_leased() {
             Some(lease) => {
@@ -779,6 +783,10 @@ impl ProcessPageTable {
             }
         };
         let l0_frame = root_lease.frame();
+
+        // The root's address space gets its own ASID when it is first
+        // installed; the registry entry is what it is bound through.
+        crate::arch_impl::aarch64::ttbr0::register_address_space(l0_frame.start_address().as_u64());
 
         // Get physical memory offset
         let phys_offset = crate::memory::physical_memory_offset();
@@ -3028,6 +3036,12 @@ impl ProcessPageTable {
             let outcome = match self.tables.leases.pop() {
                 Some(lease) => return_lease(lease),
                 None => {
+                    // Forget the root's ASID binding before the frame can be
+                    // reissued as another address space's root.
+                    #[cfg(target_arch = "aarch64")]
+                    crate::arch_impl::aarch64::ttbr0::retire_address_space(
+                        self.level_4_frame.start_address().as_u64(),
+                    );
                     let outcome = return_lease(self.root_lease);
                     match outcome {
                         ReturnOutcome::Returned => {
@@ -3080,6 +3094,16 @@ impl ProcessPageTable {
 impl Drop for ProcessPageTable {
     fn drop(&mut self) {
         self.assert_unclaimed();
+        // A retired root was unregistered before its frame went back, and the
+        // address may already be a new space's root. Any other disposition
+        // keeps the frame, so the address cannot be reissued and the entry
+        // can go.
+        #[cfg(target_arch = "aarch64")]
+        if !matches!(self.tables.disposition, Disposition::Retired) {
+            crate::arch_impl::aarch64::ttbr0::retire_address_space(
+                self.level_4_frame.start_address().as_u64(),
+            );
+        }
         match self.tables.disposition {
             Disposition::Undecided => {
                 crate::trace_count!(crate::tracing::providers::teardown::PT_ROOT_DROPPED_UNDECIDED);
