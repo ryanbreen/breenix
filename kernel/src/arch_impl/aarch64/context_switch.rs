@@ -6778,43 +6778,17 @@ fn lock_dispatch_from_task() -> Option<Dispatch> {
 }
 
 pub fn schedule_from_kernel() {
-    // CORE-PROOF MUTATION LEG `coreproof_mut_cpu_identity` (#645, fixed by PR
-    // #645's own campaign): the identity read moves back above the mask, into
-    // the preemptible window the comment below explains. Test profiles only —
-    // `coreproof_mut_*` implies `coreproof`, which implies `boot_tests`.
-    //
-    // ROUND 3: still not re-found. The detector is right here in this file —
-    // `CpuId::current_checked` at the pivot records the carried-versus-fresh
-    // disagreement — so the gap is production of the state, not detection of
-    // it: the window is a few instructions no seam may ever label, and the
-    // damage needs the preempted thread to come back on ANOTHER CPU.
+    // Test-profile mutation for the checked pivot: carry an identity from
+    // before IRQ masking, where preemption can migrate this task (#645).
     #[cfg(feature = "coreproof_mut_cpu_identity")]
     let premask_cpu = CpuId::current();
     let saved_daif = read_daif();
     unsafe {
         crate::arch_impl::aarch64::cpu::disable_interrupts();
     }
-    // THE IDENTITY IS READ HERE, NOT ABOVE.
-    //
-    // Every caller of this function runs with interrupts ENABLED — that is why
-    // the DAIF save and the mask above exist. An identity read before the mask
-    // is a value from a preemptible window: a timer IRQ in it requeues this
-    // thread, any CPU may resume it, and the index then names the CPU the thread
-    // USED to be on. Spent afterwards on `scheduler_stack_top`,
-    // `INLINE_SCHEDULE_STATE[]`, `cpu_state[]` and `DEFERRED_REQUEUE[]`, that
-    // stale index put CPU 3 on CPU 0's scheduler stack with CPU 0's published
-    // state — the round-3 `PERCPU_STACK_ALIEN` specimens
-    // (`docs/planning/t3g-prb/PRB-R4-RCA-IDENTITY.md`).
-    //
-    // Below the mask this thread cannot be preempted, so the identity cannot go
-    // stale before the pivot; the pivot re-checks it anyway.
-    #[cfg(not(feature = "coreproof_mut_cpu_identity"))]
-    let cpu = CpuId::current();
-    #[cfg(feature = "coreproof_mut_cpu_identity")]
-    let cpu = premask_cpu;
-    let cpu_id = cpu.index();
-    cpu0_breadcrumb(cpu_id, 1); // entry
-    cpu0_breadcrumb(cpu_id, 2); // after disable_interrupts
+    let entry_cpu = CpuId::current().index();
+    cpu0_breadcrumb(entry_cpu, 1); // entry
+    cpu0_breadcrumb(entry_cpu, 2); // after disable_interrupts
 
     crate::task::scheduler::expire_signal_timers_arm64();
     let mut guard = match lock_dispatch_from_task() {
@@ -6827,8 +6801,12 @@ pub fn schedule_from_kernel() {
             return;
         }
     };
-    let cpu_id = CpuId::current_checked(cpu_id).index();
-    debug_assert_eq!(cpu_id, guard.cpu());
+    // A busy acquisition can enable IRQs and resume this task on another CPU.
+    // The guard names the queue acquired after the last such window.
+    #[cfg(not(feature = "coreproof_mut_cpu_identity"))]
+    let cpu_id = guard.cpu();
+    #[cfg(feature = "coreproof_mut_cpu_identity")]
+    let cpu_id = CpuId::current_checked(premask_cpu.index()).index();
     let sched = &mut guard;
     cpu0_breadcrumb(cpu_id, 3); // after lock acquisition
 
