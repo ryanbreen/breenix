@@ -310,3 +310,49 @@ fn publication_keeps_epoch_outside_the_draft_and_refuses_changed_or_stale_boot()
     assert!(result.unwrap_err().contains("another boot"));
     assert!(steps.is_empty());
 }
+
+#[test]
+fn reclaim_restarts_after_each_durable_delete_and_each_draft_publication_state() {
+    let booted = format!("gen-{OLD}");
+    let previous = "gen-20261127T224742Z-metal".to_string();
+    let unpromoted = "gen-20261127T234000Z-metal".to_string();
+    let draft = format!("{ID}.new");
+    let published = format!("gen-{ID}");
+    let retained = vec![previous.clone(), unpromoted.clone()];
+
+    for snapshot in [None, Some(&draft), Some(&published)] {
+        let mut initial = std::collections::BTreeMap::from([
+            ("default".to_string(), 1),
+            (booted.clone(), 2),
+            (previous.clone(), 3),
+            (unpromoted.clone(), 4),
+            ("gen-keep-by-hand".to_string(), 5),
+            ("gen-20261127T220000Z-metal".to_string(), 6),
+        ]);
+        if let Some(name) = snapshot {
+            initial.insert(name.clone(), 7);
+        }
+        let expected = initial.len() - 5;
+        for cut in 0..=expected {
+            let mut roots = initial.clone();
+            let candidates = installer::paired::reclaim_fixture(&roots, &retained, &booted);
+            assert_eq!(candidates.len(), expected);
+            for name in candidates.into_iter().take(cut) {
+                roots.remove(&name).unwrap();
+            }
+            for name in installer::paired::reclaim_fixture(&roots, &retained, &booted) {
+                roots.remove(&name).unwrap();
+            }
+            assert_eq!(roots.len(), 5);
+            for kept in [
+                "default",
+                &booted,
+                &previous,
+                &unpromoted,
+                "gen-keep-by-hand",
+            ] {
+                assert!(roots.contains_key(kept));
+            }
+        }
+    }
+}
