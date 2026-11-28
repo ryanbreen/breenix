@@ -666,9 +666,10 @@ pub fn init() -> Result<(), &'static str> {
 }
 
 /// A little-endian u16 of the device configuration (legacy: guest-endian,
-/// which is little-endian on this kernel).
+/// which is little-endian on this kernel), read with one aligned 16-bit
+/// access as section 4.2.2.2 requires for a 16-bit field.
 fn config_u16(device: &VirtioMmioDevice, offset: usize) -> u16 {
-    u16::from_le_bytes([device.read_config_u8(offset), device.read_config_u8(offset + 1)])
+    u16::from_le(device.read_config_u16(offset))
 }
 
 /// A queue's size: the device's maximum, at most `MAX_DEPTH`, as a power of two.
