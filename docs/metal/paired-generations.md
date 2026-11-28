@@ -721,6 +721,13 @@ That is three reboots in total (one in step 1, two in step 2), plus the step-0 f
 - **The live run's forced rollback uses a new inject, `paired-no-commit`**, instead of `upgrade-no-ssh`. A broken
   loader stops before the new root is mounted.
 - **No home snapshot**, unlike the netbooted BreenFS upgrade, because DEV-40 leaves `/home` untouched.
+- **The forced rollback's trial is built from `<main>^1`, not from main**, because two pairs built from one kernel
+  commit cannot show that the kernel rolled back separately from the root (section 9, live run step 2).
+- **A root without a baseline carries its differing payload paths** instead of following `LocalFiles::inspect`'s
+  `legacy_image` rule, because that rule would replace a pet edit on such a root without keeping a copy (4.3).
+- **The boot manager's ESP slot layout changes (PR C)**. This is an on-disk format change, so it is listed for the
+  coordinator's decision in section 11 rather than settled here: today's rename-based layout returns to firmware
+  after a torn rename (5.1), and the power-loss table (section 8) depends on recovering from one.
 - **The README section the brief calls 'Flash and rollback contract'** is "Kernel flash and /usr replacement" in
   `docs/metal/README.md`. Its rollback paragraph is the one #3263 links.
 
