@@ -632,6 +632,9 @@ def inner(args):
             build['kernelOnly'] = True
         else:
             build['ext2'] = {'size': (out / 'ext2.img').stat().st_size, 'sha256': sha256(out / 'ext2.img')}
+            installer = clone / 'userspace/programs/src/persistent_install.rs'
+            build['replaceUsrPreservesRustSelection'] = (
+                installer.is_file() and 'const REPLACE_USR_RESERVED_RUST_SELECTION:' in installer.read_text())
             build['localUserlandGuard'] = (clone / 'userspace/programs/src/persistent_install/local.rs').is_file()
         if toolchain_build is not None:
             build['toolchain'] = toolchain_build

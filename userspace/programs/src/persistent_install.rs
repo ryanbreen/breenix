@@ -848,6 +848,20 @@ fn recovered_slots(source: &Path) -> Result<([String; 3], bool), String> {
     Ok(([words[1].into(), words[2].into(), words[3].into()], carry))
 }
 
+const REPLACE_USR_RESERVED_RUST_SELECTION: &str = "rust-current";
+
+fn has_rust_selection(usr: &Path) -> Result<bool, String> {
+    for dir in [usr.join("lib"), usr.join("lib/breenix")] {
+        match fs::symlink_metadata(&dir) {
+            Ok(meta) if meta.is_dir() => {}
+            Ok(_) => return Ok(false),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(fail("stat", &dir, error)),
+        }
+    }
+    present(&usr.join("lib/breenix").join(REPLACE_USR_RESERVED_RUST_SELECTION))
+}
+
 /// The installer boots from the test image, with the persistent OS offline.
 pub(crate) fn replace_usr(source: &Path, target: &Path) -> Result<Totals, String> {
     const STAGING: &str = ".breenix-replace-usr";
@@ -878,6 +892,18 @@ pub(crate) fn replace_usr(source: &Path, target: &Path) -> Result<Totals, String
     copier.copy_tree(&source, &new)?;
     layout::check_setid(&staging, false)?;
     copier.sync(&staging)?;
+
+    let keep_selection = has_rust_selection(&usr)?;
+    let staged_lib = new.join("lib");
+    let staged_breenix = staged_lib.join("breenix");
+    if has_rust_selection(&new)? {
+        return Err("the image uses the reserved /usr/lib/breenix/rust-current path".into());
+    }
+    if keep_selection {
+        for dir in [&staged_lib, &staged_breenix] {
+            if present(dir)? { require_directory(dir)?; }
+        }
+    }
 
     // Finish the staged copy before removing any files from the old /usr.
     // All names changed by this operation are inside /usr.
@@ -917,6 +943,22 @@ pub(crate) fn replace_usr(source: &Path, target: &Path) -> Result<Totals, String
         copier.sync(&share)?;
         if has_incoming { remove(&staged_share)?; }
         keep.push("share");
+    }
+    if keep_selection {
+        // Shared CURRENT resolves through this inode even on a retry after a
+        // partial publication. Replace its siblings while keeping it in place.
+        let lib = usr.join("lib");
+        let breenix = lib.join("breenix");
+        let has_breenix = present(&staged_breenix)?;
+        publish(has_breenix.then_some(staged_breenix.as_path()), &breenix, &[REPLACE_USR_RESERVED_RUST_SELECTION])?;
+        copier.sync(&breenix)?;
+        if has_breenix { remove(&staged_breenix)?; }
+
+        let has_lib = present(&staged_lib)?;
+        publish(has_lib.then_some(staged_lib.as_path()), &lib, &["breenix"])?;
+        copier.sync(&lib)?;
+        if has_lib { remove(&staged_lib)?; }
+        keep.push("lib");
     }
     publish(Some(&new), &usr, &keep)?;
     remove(&staging)?;

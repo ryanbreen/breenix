@@ -852,6 +852,8 @@ Review of PR #3273 (the same rule):
   manager record because the candidate build's manager may differ from the one installed on the ESP; PR C's
   replacement receipt supplies that field after the firmware confirms installation.
 - The host test places set-ID `su` under `/bin` because `layout.tsv` names that installed path.
+- Legacy `--replace-usr` keeps the existing selector in place and requires an installer that supports it because
+  shared `CURRENT` resolves through the selected root even after a rollback or an interrupted replacement.
 
 ### 10.3 PR C detail deviations (DEV-39(2))
 

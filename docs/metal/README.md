@@ -1088,8 +1088,9 @@ and the machine Off. The kernel mounts the test
 image read-only and grants writes only to the system partition. The installer opens the same named tree and
 copies the replacement under `/usr` before removing the old contents. It preserves the image's ownership,
 modes, symlinks and hard links within `/usr`. The installed `/usr/share/factory` tree and its generation marker
-stay in place so older init binaries continue to see the same factory defaults. The installer reports
-completion after a directory barrier. The ESP slots, `/bin`, `/sbin`, the rest of the system tree and the
+stay in place so older init binaries continue to see the same factory defaults. The selected root keeps its
+`/usr/lib/breenix/rust-current` file in place. Use a build whose installer supports that preservation.
+The installer reports completion after a directory barrier. The ESP slots, `/bin`, `/sbin`, the rest of the system tree and the
 home partition are outside the replacement.
 An interruption during publication can leave a partially replaced `/usr`. Repeat the same explicit
 replacement from the test image before starting a persistent session.

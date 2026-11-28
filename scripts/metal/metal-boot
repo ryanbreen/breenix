@@ -1105,6 +1105,8 @@ class Driver:
             if not (the_layout and current.get('writableRoot') and generation
                     and build.get('writablePersistentRoot') is True and not slots.get('next')):
                 raise Finish(m.EXIT_CANCELLED, '/usr replacement requires a writable CURRENT, a supported build and no NEXT')
+            if build.get('replaceUsrPreservesRustSelection') is not True:
+                raise Finish(m.EXIT_CANCELLED, '/usr replacement requires a build that preserves rust-current')
             return self.prepare_replace_usr(inputs, build, the_layout, generation)
         writable_install = any(slot.get('writableRoot') for name, slot in slots.items()
                                if name in ('current', 'previous') and slot)
