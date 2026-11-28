@@ -922,6 +922,18 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             panic!("No safe physical frame pool: {:?}", reason)
         }
     }
+    serial_println!(
+        "[boot] RAM excluded by translation limits: pa_bytes={} va_bytes={}",
+        frame_pool.stats.excluded_pa_bytes, frame_pool.stats.excluded_va_bytes,
+    );
+    match frame_pool.direct_map {
+        Ok(extension) if extension.high_bytes != 0 => serial_println!(
+            "[boot] Direct map extended: high_bytes={} table_pages={}",
+            extension.high_bytes, extension.table_pages,
+        ),
+        Ok(_) => {}
+        Err(error) => serial_println!("[boot] Direct map kept below 4 GiB: {}", error),
+    }
     for range in frame_pool.ranges.iter() {
         serial_println!("[boot]   {:#x}-{:#x}", range.start, range.end);
     }
@@ -1012,7 +1024,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     }
 
     // On QEMU, enable PCI ECAM so AHCI controllers can be discovered.
-    // QEMU's virt machine always has a PCI host bridge at ECAM 0x40_1000_0000;
+    // QEMU describes its PCI host bridge in the device tree;
     // this is a no-op if no PCI devices are attached (scan returns quickly).
     if kernel::platform_config::is_qemu() {
         kernel::platform_config::init_qemu_pci();

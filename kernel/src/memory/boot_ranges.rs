@@ -236,6 +236,41 @@ impl RangeSet {
         Err(RangeError::NoFit)
     }
 
+    #[cfg(any(target_arch = "aarch64", test))]
+    pub(super) fn carve_mapped_page(
+        &mut self,
+        below: u64,
+        storage: &impl RangeStorage,
+    ) -> Result<u64, RangeError> {
+        for index in (0..self.len).rev() {
+            let range = intersect(self.entry(index).range, PhysRange::new(0, below));
+            if let Some((phys, _)) = writable_page(range, storage) {
+                return self.carve(PAGE_SIZE, PAGE_SIZE, phys + PAGE_SIZE).map(|cut| cut.start);
+            }
+        }
+        Err(RangeError::NoFit)
+    }
+
+    #[cfg(any(target_arch = "aarch64", test))]
+    pub(super) fn restore_carved_page(&mut self, phys: u64) {
+        self.insert_raw(Entry { range: PhysRange::new(phys, phys + PAGE_SIZE), pending: false });
+    }
+
+    #[cfg(any(target_arch = "aarch64", test))]
+    pub(super) fn retain_below(&mut self, below: u64) {
+        while self.len != 0 {
+            let index = self.len - 1;
+            let mut entry = self.entry(index);
+            if entry.range.start >= below {
+                self.len -= 1;
+            } else {
+                entry.range.end = entry.range.end.min(below);
+                unsafe { self.slot(index).write(entry) };
+                break;
+            }
+        }
+    }
+
     fn insert(
         &mut self,
         mut range: PhysRange,

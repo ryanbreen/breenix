@@ -127,6 +127,8 @@ pub enum ProcEntryType {
     Ext2,
     /// /proc/breenix/frames - allocated physical frames by allocation site
     Frames,
+    #[cfg(target_arch = "aarch64")]
+    Kmem,
     WindowPipeline,
     WindowPipelineFull,
     InputLedger,
@@ -248,6 +250,8 @@ impl ProcEntryType {
             ProcEntryType::FsMutationCosts => "fs-mutation-costs",
             ProcEntryType::MappingCache => "mapping-cache",
             ProcEntryType::Frames => "frames",
+            #[cfg(target_arch = "aarch64")]
+            ProcEntryType::Kmem => "kmem",
             ProcEntryType::WindowPipeline => "window-pipeline",
             ProcEntryType::WindowPipelineFull => "window-pipeline-full",
             ProcEntryType::InputLedger => "input-ledger",
@@ -340,6 +344,8 @@ impl ProcEntryType {
             ProcEntryType::FsMutationCosts => "/proc/breenix/fs-mutation-costs",
             ProcEntryType::MappingCache => "/proc/breenix/mapping-cache",
             ProcEntryType::Frames => "/proc/breenix/frames",
+            #[cfg(target_arch = "aarch64")]
+            ProcEntryType::Kmem => "/proc/breenix/kmem",
             ProcEntryType::WindowPipeline => "/proc/breenix/window-pipeline",
             ProcEntryType::WindowPipelineFull => "/proc/breenix/window-pipeline-full",
             ProcEntryType::InputLedger => "/proc/breenix/input-ledger",
@@ -433,6 +439,8 @@ impl ProcEntryType {
             ProcEntryType::FsMutationCosts => 223,
             ProcEntryType::MappingCache => 225,
             ProcEntryType::Frames => 203,
+            #[cfg(target_arch = "aarch64")]
+            ProcEntryType::Kmem => 226,
             ProcEntryType::WindowPipeline => 220,
             ProcEntryType::WindowPipelineFull => 221,
             ProcEntryType::InputLedger => 218,
@@ -599,6 +607,8 @@ pub fn init() {
     procfs.entries.push(ProcEntry::new(ProcEntryType::Composites));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Ext2));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Frames));
+    #[cfg(target_arch = "aarch64")]
+    procfs.entries.push(ProcEntry::new(ProcEntryType::Kmem));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Filesystems));
     procfs.entries.push(ProcEntry::new(ProcEntryType::FsMutationCosts));
     procfs.entries.push(ProcEntry::new(ProcEntryType::MappingCache));
@@ -759,6 +769,10 @@ pub fn list_entries() -> Result<Vec<String>, i32> {
     {
         let procfs = PROCFS.lock();
         for e in procfs.entries.iter().filter(|e| {
+            #[cfg(target_arch = "aarch64")]
+            if e.entry_type == ProcEntryType::Kmem {
+                return false;
+            }
             !matches!(
                 e.entry_type,
                 ProcEntryType::TraceEnable
@@ -933,7 +947,13 @@ pub fn list_breenix_entries() -> Vec<String> {
     procfs
         .entries
         .iter()
-        .filter(|e| matches!(e.entry_type, ProcEntryType::BreenixTesting|ProcEntryType::DisplayCrc|ProcEntryType::ScreenProof|ProcEntryType::ScreenCheckpoints|ProcEntryType::ShowcasePace|ProcEntryType::StageControl|ProcEntryType::BootRibbon|ProcEntryType::BootSerial|ProcEntryType::BootSerialTimed|ProcEntryType::StageComposites|ProcEntryType::CompositorStatus|ProcEntryType::Composites|ProcEntryType::WindowPipeline|ProcEntryType::WindowPipelineFull|ProcEntryType::InputLedger|ProcEntryType::InputReplay))
+        .filter(|e| {
+            #[cfg(target_arch = "aarch64")]
+            if e.entry_type == ProcEntryType::Kmem {
+                return true;
+            }
+            matches!(e.entry_type, ProcEntryType::BreenixTesting|ProcEntryType::DisplayCrc|ProcEntryType::ScreenProof|ProcEntryType::ScreenCheckpoints|ProcEntryType::ShowcasePace|ProcEntryType::StageControl|ProcEntryType::BootRibbon|ProcEntryType::BootSerial|ProcEntryType::BootSerialTimed|ProcEntryType::StageComposites|ProcEntryType::CompositorStatus|ProcEntryType::Composites|ProcEntryType::WindowPipeline|ProcEntryType::WindowPipelineFull|ProcEntryType::InputLedger|ProcEntryType::InputReplay)
+        })
         .map(|e| String::from(e.entry_type.name()))
         .collect()
 }
@@ -1079,6 +1099,18 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
             text(report)
         }
         ProcEntryType::Frames => generate_frames().map(String::into_bytes),
+        #[cfg(target_arch = "aarch64")]
+        ProcEntryType::Kmem => {
+            use core::fmt::Write;
+
+            let pool = crate::platform_config::frame_pool();
+            let mut report = String::new();
+            report.try_reserve_exact(192).map_err(|_| -12)?;
+            let _ = writeln!(report, "excluded_pa_bytes {}", pool.stats.excluded_pa_bytes);
+            let _ = writeln!(report, "excluded_va_bytes {}", pool.stats.excluded_va_bytes);
+            let _ = writeln!(report, "allocated_high_frames {}", crate::memory::frame_allocator::allocated_high_frames());
+            text(report)
+        }
         ProcEntryType::InputLedger => text(crate::input::stream::ledger()),
         // syscall/fs.rs opens the live input::control descriptor for I/O.
         ProcEntryType::InputReplay => Err(-38),
@@ -1117,7 +1149,11 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         ProcEntryType::FbconCheck => crate::console::proc_fbcon_check().map(String::into_bytes),
         ProcEntryType::BreenixDir => {
             // Directory listing
-            text(String::from("testing\next2\nframes\nfilesystems\nfs-mutation-costs\nmapping-cache\n"))
+            let mut listing = String::from("testing\next2\nframes\nfilesystems\nfs-mutation-costs\nmapping-cache\n");
+            if cfg!(target_arch = "aarch64") {
+                listing.push_str("kmem\n");
+            }
+            text(listing)
         }
         ProcEntryType::BreenixTesting => {
             #[cfg(feature = "testing")]

@@ -1270,6 +1270,24 @@ pub fn allocate_frame_for(owner: FrameOwner) -> Option<PhysFrame> {
     allocate_frame()
 }
 
+/// Live allocator frames above the bootstrap direct-map window.
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn allocated_high_frames() -> usize {
+    use arm64_boot_contract::phys_memory::{DIRECT_MAP_RAM_END, PAGE_SIZE};
+
+    let (Some(info), Some(ledger)) = (MEMORY_INFO.get(), FRAME_LEDGER.get()) else {
+        return 0;
+    };
+    let low_frames = info.iter().map(|range| {
+        (range.end.min(DIRECT_MAP_RAM_END).saturating_sub(range.start) / PAGE_SIZE) as usize
+    }).sum();
+    let frontier = NEXT_FREE_FRAME.load(Ordering::Acquire);
+    (low_frames..frontier)
+        .filter_map(|index| ledger.get(index))
+        .filter(|slot| slot.load(Ordering::Relaxed) & STATE_MASK == ST_ALLOCATED)
+        .count()
+}
+
 /// Allocated frames by the code that allocated them and by owner, and frames
 /// lost to the allocator, read from the ledger (`/proc/breenix/frames`).
 ///

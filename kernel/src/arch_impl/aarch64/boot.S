@@ -77,10 +77,7 @@
 .equ TCR_IRGN0_WBWA,     (0b01 << 8)
 .equ TCR_ORGN1_WBWA,     (0b01 << 26)
 .equ TCR_IRGN1_WBWA,     (0b01 << 24)
-// IPS = 0b010 (40-bit PA, 1 TB) — needed for PCI ECAM at 0x40_1000_0000 on QEMU virt.
-// Default IPS=0 gives only 32-bit PA (4 GB), causing address-size faults on ECAM access.
-.equ TCR_IPS_40BIT,      (0b010 << 32)
-.equ TCR_VALUE,          (TCR_T0SZ | TCR_T1SZ | TCR_TG0_4K | TCR_TG1_4K | TCR_SH0_INNER | TCR_SH1_INNER | TCR_ORGN0_WBWA | TCR_IRGN0_WBWA | TCR_ORGN1_WBWA | TCR_IRGN1_WBWA | TCR_IPS_40BIT)
+.equ TCR_VALUE,          (TCR_T0SZ | TCR_T1SZ | TCR_TG0_4K | TCR_TG1_4K | TCR_SH0_INNER | TCR_SH1_INNER | TCR_ORGN0_WBWA | TCR_IRGN0_WBWA | TCR_ORGN1_WBWA | TCR_IRGN1_WBWA)
 
 _start:
     // Disable interrupts (should already be disabled)
@@ -380,18 +377,18 @@ setup_mmu:
     orr x1, x1, x2
     str x1, [x0, #24]
 
-    // TTBR1 L1[256] = device (PCI ECAM at 0x40_1000_0000 on QEMU virt)
-    // Maps physical 0x40_0000_0000 - 0x40_3FFF_FFFF as device memory.
-    // Offset 256 * 8 = 2048 = 0x800 in the L1 table.
-    ldr x1, =0x4000000000       // Physical base of 1GB block
-    ldr x2, =BLOCK_FLAGS_DEVICE
-    orr x1, x1, x2
-    str x1, [x0, #0x800]
-
-    // MAIR / TCR
+    // PCI ECAM gets its own Device mapping from the DTB later.
     ldr x0, =MAIR_EL1_VALUE
     msr mair_el1, x0
     ldr x0, =TCR_VALUE
+    // PARange encodings 0..5 match IPS. The current 4 KiB format
+    // has 48 output bits (DS=0), so cap at encoding 5.
+    mrs x1, id_aa64mmfr0_el1
+    and x1, x1, #0xf
+    mov x2, #5
+    cmp x1, x2
+    csel x1, x1, x2, ls
+    orr x0, x0, x1, lsl #32
     msr tcr_el1, x0
     isb
 
