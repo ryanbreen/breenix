@@ -577,6 +577,21 @@ fn map_file(
                     return Err(abandon(ErrorCode::OutOfMemory as u64));
                 }
                 let (start, end) = (vma.start.as_u64(), vma.end.as_u64());
+                let bind_errno = |error: &'static str| if error == file_map::ROOT_FROZEN {
+                    crate::syscall::errno::EBUSY as u64
+                } else {
+                    ErrorCode::OutOfMemory as u64
+                };
+                // Claimed before the range is cleared, so a frozen root's
+                // refusal leaves the mapping a MAP_FIXED request would replace.
+                let claim = if vma.flags.bits() & 3 != 2 && vma.prot.contains(Protection::WRITE) {
+                    match file_map::claim_shared_write(&handle) {
+                        Ok(claim) => Some(claim),
+                        Err(error) => return Err(abandon(bind_errno(error))),
+                    }
+                } else {
+                    None
+                };
                 if let Err(errno) = clear_for_mapping(process, start, end, vma.prot, vma.flags) {
                     return Err(abandon(errno));
                 }
@@ -590,13 +605,10 @@ fn map_file(
                     &vma,
                     pgoff,
                     may_write && !append_only,
+                    claim,
                 ) {
                     Ok(binding) => vma.backing = Some(binding),
-                    Err(error) => return Err(abandon(if error == file_map::ROOT_FROZEN {
-                        crate::syscall::errno::EBUSY as u64
-                    } else {
-                        ErrorCode::OutOfMemory as u64
-                    })),
+                    Err(error) => return Err(abandon(bind_errno(error))),
                 }
                 process.push_vma(vma);
                 super::memory_advice::record_future(process, start, end);

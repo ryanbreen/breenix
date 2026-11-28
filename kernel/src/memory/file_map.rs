@@ -1712,10 +1712,38 @@ pub(crate) fn populate(
     }
 }
 
+/// Shared write authority for a binding not yet registered, counted in the
+/// file's `writable_shared` (DEV-44). mmap claims it before it clears the
+/// target range, so a frozen root refuses a MAP_FIXED request before the
+/// mapping it would replace is removed. The binding adopts the count; a claim
+/// dropped unadopted returns it. Nonblocking; PROCESS_MANAGER may be held.
+pub(crate) struct SharedWriteClaim(Option<Arc<VNode>>);
+
+impl SharedWriteClaim {
+    fn adopt(mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for SharedWriteClaim {
+    fn drop(&mut self) {
+        if let Some(handle) = self.0.take() {
+            handle.map.state.inner.lock().writable_shared -= 1;
+        }
+    }
+}
+
+/// Claim shared write authority over `handle`, or the filesystem's refusal
+/// (`ROOT_FROZEN` while the root freeze holds).
+pub(crate) fn claim_shared_write(handle: &Arc<VNode>) -> Result<SharedWriteClaim, &'static str> {
+    handle.map.state.inner.lock().gain_writable_shared(handle)?;
+    Ok(SharedWriteClaim(Some(handle.clone())))
+}
+
 /// Register a binding for a new file VMA. PROCESS_MANAGER held, and the
 /// population (its lease and its claim on the range) and the mount read guard
 /// held through publication, so no content mutation or eviction has removed
-/// the populated pages.
+/// the populated pages. A shared writable VMA brings its `SharedWriteClaim`.
 pub(crate) fn bind(
     handle: Arc<VNode>,
     pid: ProcessId,
@@ -1723,17 +1751,24 @@ pub(crate) fn bind(
     vma: &Vma,
     pgoff: u64,
     may_write: bool,
+    claim: Option<SharedWriteClaim>,
 ) -> Result<Binding, &'static str> {
+    let shared = vma.flags.bits() & 3 != 2;
+    let claim = if shared && vma.prot.contains(Protection::WRITE) {
+        Some(claim.ok_or("Shared write mapping without its claim")?)
+    } else {
+        None
+    };
     let id = {
         let mut inner = handle.map.state.inner.lock();
+        // On an error return, `claim` drops after this guard and returns its count.
         inner
             .bindings
             .try_reserve(1)
             .map_err(|_| "Out of memory for file binding")?;
         let id = next_binding();
-        let shared = vma.flags.bits() & 3 != 2;
-        if shared && vma.prot.contains(Protection::WRITE) {
-            inner.gain_writable_shared(&handle)?;
+        if let Some(claim) = claim {
+            claim.adopt();
         }
         inner.bindings.push(BindingRec {
             id,
