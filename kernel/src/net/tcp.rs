@@ -1573,11 +1573,13 @@ impl TcpConnection {
     }
 
     /// The handshake's SYN was acknowledged. If its timer expired on the way,
-    /// data starts with a three-second timeout (RFC 6298 5.7); no round trip
-    /// was timed, since a retransmitted SYN is not (Karn's rule).
+    /// data starts with a three-second timeout (RFC 6298 5.7) and a
+    /// one-segment congestion window (RFC 5681 3.1); no round trip was timed,
+    /// since a retransmitted SYN is not (Karn's rule).
     fn handshake_done(&mut self) {
         if self.retries > 0 {
             self.rto_ms = RTO_AFTER_HANDSHAKE_TIMEOUT_MS;
+            self.cc.on_handshake_loss(u32::from(self.mss));
         }
         self.retries = 0;
     }

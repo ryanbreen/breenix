@@ -5,7 +5,7 @@
 //! timer and the choice of which range to repair. It reports events here: bytes
 //! newly acknowledged, the flight size, the sender's maximum segment size
 //! (SMSS), the start, progress and end of a loss recovery, a retransmission
-//! timeout and an idle restart. The policy answers with the congestion window and the
+//! timeout, a handshake that needed a retransmission and an idle restart. The policy answers with the congestion window and the
 //! slow-start threshold, the loss target recovery reduces to. Dispatch stays
 //! inside the TCP module: a connection selects its policy when it is created,
 //! and each policy answers the same events, so a later one (CUBIC) slots in
@@ -46,6 +46,14 @@ impl Controller {
     pub fn start(&mut self, smss: u32) {
         match self {
             Controller::NewReno(p) => p.start(smss),
+        }
+    }
+
+    /// The SYN or SYN+ACK was retransmitted by the timer: data starts from a
+    /// one-segment window (RFC 5681 section 3.1).
+    pub fn on_handshake_loss(&mut self, smss: u32) {
+        match self {
+            Controller::NewReno(p) => p.on_handshake_loss(smss),
         }
     }
 
@@ -139,6 +147,11 @@ impl NewReno {
 
     fn start(&mut self, smss: u32) {
         self.cwnd = initial_window(smss);
+        self.bytes_acked = 0;
+    }
+
+    fn on_handshake_loss(&mut self, smss: u32) {
+        self.cwnd = smss.max(1);
         self.bytes_acked = 0;
     }
 
