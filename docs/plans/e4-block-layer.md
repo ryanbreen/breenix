@@ -444,6 +444,24 @@ FUA write path.
   stable. Fail a batch child, then model power loss at the two publication
   points on flush and FUA paths. Require W1–W3, both durable slots before fsync
   success, and unchanged recovery selection.
+- **Shared-mapping check-first.** Pause the recording backend after G's CRC
+  is computed and before it reads the submitted frame. Store through an
+  already writable `MAP_SHARED` binding to that page, then complete G. Verify
+  G's persisted block and stored CRC through a cold read of the image, and
+  verify a subsequent commit persists the store from the live mapping.
+
+  The host model compares the DMA source with the bytes used for the CRC.
+  Run it with `python3 -m doctest docs/plans/e4-block-layer.md`.
+
+  ```pycon
+  >>> live_frame = bytearray(b'before')
+  >>> frozen_source = live_frame
+  >>> checksummed = bytes(frozen_source)
+  >>> live_frame[:] = b'after!'
+  >>> (bytes(frozen_source) == checksummed, bytes(live_frame))
+  (True, b'after!')
+
+  ```
 - **QEMU rows.** `disk.sequential-write` and `disk.fsync` on virtio's
   write-plus-flush path. `disk.create` and `disk.unlink` can move where they
   wait on generation writeback. `disk.sequential-read` may gain from E3
