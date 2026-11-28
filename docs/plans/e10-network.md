@@ -496,6 +496,11 @@ concurrency, loss or RTT named in the prediction.
 - An ACK answering a zero-window probe is not counted as a duplicate, although
   RFC 5681's definition would count it, because the design keeps persist
   separate from loss recovery and a repair into a shut window cannot be taken.
+- `recover` starts unset rather than at the initial send sequence, and is
+  cleared once a cumulative ACK outside fast recovery passes it, because the
+  ISN start makes `ACK - 1 > recover` false for a lost first data segment
+  while no retransmission exists to guard against, and a marker kept through
+  2^31 bytes of progress compares as ahead of the ACK (RFC 6582 section 6).
 - Recovery entry takes the outstanding data as FlightSize because PR 1 sends no
   Limited Transmit (RFC 3042) segments to exclude.
 - New data leaves only in whole segments of `min(SMSS, queued)` under the

@@ -1135,7 +1135,7 @@ impl TcpConnection {
             max_send_window: 0,
             tx_blocked: false,
             cc: congestion::Controller::new_reno(),
-            recovery: recovery::Recovery::new(initial_seq),
+            recovery: recovery::Recovery::new(),
             repair: None,
             resend: None,
             last_send_ms: now_ms(),
@@ -2246,8 +2246,8 @@ pub struct SenderInfo {
     pub ssthresh: u32,
     /// In fast recovery.
     pub in_recovery: bool,
-    /// RFC 6582's `recover`.
-    pub recover: u32,
+    /// RFC 6582's `recover`, while it guards recovery entry.
+    pub recover: Option<u32>,
     /// Duplicate ACKs counted since the cumulative ACK last moved.
     pub dupacks: u32,
     pub send_unack: u32,

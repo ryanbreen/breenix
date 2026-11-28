@@ -25,9 +25,12 @@ pub(super) struct Response {
 
 pub(super) struct Recovery {
     /// RFC 6582's `recover`: the highest sequence number sent when the last
-    /// fast retransmit or retransmission timeout began. It starts at the
-    /// initial send sequence number.
-    recover: u32,
+    /// fast retransmit or retransmission timeout began, while it still guards
+    /// recovery entry. Unset before the first retransmission, and once the
+    /// cumulative ACK has passed the marker outside fast recovery (RFC 6582
+    /// section 6): an ACK beyond it would pass the guard anyway, and a marker
+    /// kept after 2^31 bytes of progress would compare as ahead of the ACK.
+    recover: Option<u32>,
     /// Qualifying duplicate acknowledgements since the cumulative ACK last moved.
     dupacks: u32,
     /// In fast recovery.
@@ -37,16 +40,16 @@ pub(super) struct Recovery {
 }
 
 impl Recovery {
-    pub fn new(initial_seq: u32) -> Self {
+    pub fn new() -> Self {
         Recovery {
-            recover: initial_seq,
+            recover: None,
             dupacks: 0,
             active: false,
             partial_seen: false,
         }
     }
 
-    pub fn recover(&self) -> u32 {
+    pub fn recover(&self) -> Option<u32> {
         self.recover
     }
 
@@ -79,10 +82,10 @@ impl Recovery {
         // Only an acknowledgement beyond `recover` may start recovery, so the
         // duplicates a timeout's resends draw cannot (RFC 6582 section 3.2
         // step 1, section 4).
-        if self.dupacks != DUPACK_THRESHOLD || !seq_lt(self.recover, ack.wrapping_sub(1)) {
+        if self.dupacks != DUPACK_THRESHOLD || !self.beyond_recover(ack) {
             return false;
         }
-        self.recover = highest_sent;
+        self.recover = Some(highest_sent);
         self.active = true;
         self.partial_seen = false;
         cc.on_enter_recovery(flight, smss);
@@ -101,10 +104,15 @@ impl Recovery {
     ) -> Response {
         self.dupacks = 0;
         if !self.active {
+            if self.beyond_recover(ack) {
+                // Past the marker: it no longer guards anything, and kept it
+                // would go stale (RFC 6582 section 6).
+                self.recover = None;
+            }
             cc.on_ack(acked, smss);
             return Response { repair: false, restart_timer: true };
         }
-        if !seq_lt(ack.wrapping_sub(1), self.recover) {
+        if !self.recover.is_some_and(|recover| seq_lt(ack.wrapping_sub(1), recover)) {
             // A full acknowledgement: everything through `recover`.
             self.active = false;
             cc.on_exit_recovery(flight, smss);
@@ -131,10 +139,17 @@ impl Recovery {
         first: bool,
     ) {
         cc.on_timeout(flight, smss, first);
-        self.recover = highest_sent;
+        self.recover = Some(highest_sent);
         self.dupacks = 0;
         self.active = false;
         self.partial_seen = false;
+    }
+
+    /// The acknowledgement `ack` covers more than `recover` (RFC 6582
+    /// section 4: `ack - 1 > recover`), or no marker guards entry.
+    fn beyond_recover(&self, ack: u32) -> bool {
+        self.recover
+            .is_none_or(|recover| seq_lt(recover, ack.wrapping_sub(1)))
     }
 }
 
@@ -152,7 +167,7 @@ mod tests {
     fn a_marker_left_behind_by_two_gib_of_progress_does_not_block_recovery() {
         let mut cc = Controller::new_reno();
         cc.start(SMSS);
-        let mut recovery = Recovery::new(0);
+        let mut recovery = Recovery::new();
         let marked = 10 * SMSS - 1;
         recovery.timeout(&mut cc, marked, 10 * SMSS, SMSS, true);
 

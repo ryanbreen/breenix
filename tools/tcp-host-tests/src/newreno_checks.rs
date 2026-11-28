@@ -75,7 +75,7 @@ fn three_duplicates_repair_the_first_loss_and_partial_acks_the_next() {
     let info = flow.info();
     assert!(info.in_recovery, "the third duplicate did not start fast recovery");
     assert_eq!((info.cwnd, info.ssthresh), (7 * SMSS, 4 * SMSS), "(cwnd, ssthresh) on entry");
-    assert_eq!(info.recover, base + 8 * SMSS - 1, "recover is the highest byte sent");
+    assert_eq!(info.recover, Some(base + 8 * SMSS - 1), "recover is the highest byte sent");
     assert_eq!((info.send_next, info.send_max), (base + 8 * SMSS, base + 8 * SMSS));
     harness::refuse_output(false);
     tcp::drain_deferred_tx();
@@ -131,7 +131,7 @@ fn a_timeout_repairs_the_oldest_segment_and_marks_recover() {
     let info = flow.info();
     assert_eq!(data(&flow.sent()), vec![(base, SMSS as usize)], "only the oldest segment goes again");
     assert_eq!((info.cwnd, info.ssthresh), (SMSS, 6 * SMSS), "(cwnd, ssthresh) after the timeout");
-    assert_eq!(info.recover, base + 12 * SMSS - 1, "recover marks the highest byte sent");
+    assert_eq!(info.recover, Some(base + 12 * SMSS - 1), "recover marks the highest byte sent");
     assert!(!info.in_recovery);
     assert_eq!(info.rto_ms, 2_000, "the timeout backs off");
     assert_eq!(info.rtx_deadline_ms, deadline + 2_000);
@@ -182,7 +182,7 @@ fn a_timeout_repairs_the_oldest_segment_and_marks_recover() {
     let info = flow.info();
     assert!(info.in_recovery, "duplicates beyond recover did not start fast recovery");
     assert_eq!((info.cwnd, info.ssthresh), (5 * SMSS, 2 * SMSS));
-    assert_eq!(info.recover, next + 6 * SMSS - 1);
+    assert_eq!(info.recover, Some(next + 6 * SMSS - 1));
     assert_eq!(data(&flow.sent()), vec![(next + 2 * SMSS, SMSS as usize)], "the fresh fast retransmit");
     assert_eq!(stat("fast_retransmits") - fast_before, 1);
 
