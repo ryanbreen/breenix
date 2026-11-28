@@ -673,9 +673,15 @@ for the head: <!-- claim-lint:ok: normative requirement of docs/plans/e9-schedul
 
 - **ARM64.** It writes the absolute compare value (`CNTV_CVAL_EL0`, or `CNTP_CVAL_EL0` where the platform
   uses the physical timer) and enables it in `CNT*_CTL_EL0` (Arm ARM, "The Generic Timer in AArch64
-  state"). The counter (`CNTVCT_EL0`) is the clock. No interval is rearmed. The VMware path that arms both
-  timers (`timer_interrupt.rs:1279-1308`) becomes "arm the timer the platform delivers", chosen once at
-  init.
+  state"). No interval is rearmed. The VMware path that arms both timers
+  (`timer_interrupt.rs:1279-1308`) becomes "arm the timer the platform delivers", chosen once at init.
+- **ARM64 counter domain.** `CNTP_CVAL_EL0` compares against `CNTPCT_EL0`, and `CNTV_CVAL_EL0` against
+  `CNTVCT_EL0`, which reads the physical count minus the hypervisor's `CNTVOFF_EL2` (Arm ARM, same
+  chapter). EL1 cannot read that offset. So the deadline queue keeps its values in the domain of the
+  timer chosen at init, and every "now" it computes from reads that timer's own counter. That is
+  `CNTPCT_EL0` for the physical timer and `CNTVCT_EL0` for the virtual one. Today's arm paths already
+  pair them this way (`timer_interrupt.rs:544-559`). A path that arms both timers computes each compare
+  from its own counter. A virtual count is never written to the physical compare.
 - **x86.** It uses TSC-deadline mode when CPUID.01H:ECX[24] reports it: the deadline goes into the
   IA32_TSC_DEADLINE MSR (SDM Vol. 3A, "APIC Timer", TSC-deadline mode). Otherwise it uses one-shot mode with
   an initial count computed from the calibrated rate. The invariant TSC (CPUID.80000007H:EDX[8]) is the
@@ -1134,14 +1140,14 @@ of their steps, keeping each CPU's program order. The steps are sequentially con
     virtual timer. Each must fire 24,000 counts later in its own counter's time. `CNTVCT_EL0` reads
     `CNTPCT_EL0` minus the offset, `CNTP_CVAL_EL0` compares against `CNTPCT_EL0`, and `CNTV_CVAL_EL0`
     against `CNTVCT_EL0` (Arm ARM, "The Generic Timer in AArch64 state"). Red on §8.2 as first written,
-    which makes `CNTVCT_EL0` the clock for both compares.
+    which makes `CNTVCT_EL0` the clock for both compares. Green on §8.2's per-timer counter domain.
 
     ```pycon
     >>> CNTVOFF = 5_000_000
     >>> def counter(name, physical_now):
     ...     return physical_now if name == 'CNTPCT' else physical_now - CNTVOFF
     >>> def compare_for(timer, physical_now, delta):
-    ...     return counter('CNTVCT', physical_now) + delta
+    ...     return counter('CNTPCT' if timer == 'CNTP' else 'CNTVCT', physical_now) + delta
     >>> def fires_at(timer, cval):
     ...     return cval if timer == 'CNTP' else cval + CNTVOFF
     >>> fires_at('CNTP', compare_for('CNTP', 10_000_000, 24_000)) - 10_000_000
