@@ -216,17 +216,13 @@ fn pause() -> Result<(), &'static str> {
         .saturating_mul(1_000_000_000)
         .saturating_add(n)
         .saturating_add(10_000_000);
-    // Prepared waits hold one PREEMPT level through publication and cleanup.
-    // The recovery kthread has no syscall-entry bracket to supply that level.
-    let unheld = crate::per_cpu::preempt_count() == 0;
-    if unheld {
-        crate::per_cpu::preempt_disable();
-    }
+    // Prepared waits hold one braked level through publication and cleanup.
+    // The recovery kthread has no syscall-entry bracket to supply it, so it
+    // takes a syscall's shape (`task::park::braked_for_prepared_wait`).
+    let braked = crate::task::park::braked_for_prepared_wait();
     let outcome = POLL.prepare_to_wait_checked(ThreadState::BlockedOnIO, Some(wake), || true);
     let result = crate::syscall::blocking_io::wait_prepared(&POLL, outcome);
-    if unheld {
-        crate::per_cpu::preempt_enable();
-    }
+    drop(braked);
     result.map_err(|_| "native recovery worker wait failed")
 }
 

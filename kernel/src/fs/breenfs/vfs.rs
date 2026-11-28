@@ -5340,9 +5340,10 @@ fn teardown_result(name: &str, result: Result<(), Errno>) -> Result<(), Errno> {
 }
 
 fn latches_on_read(error: ops::Error) -> bool {
+    use super::btree::ReadCause;
     errno(error) == Errno(EIO) && !matches!(error, ops::Error::Metadata(super::btree::ReadFailure {
         cause, ..
-    }) if cause.pre_issue())
+    }) if cause.pre_issue() || matches!(cause, ReadCause::Driver(failure) if failure.pre_issue()))
 }
 
 fn read_cause_errno(cause: super::btree::ReadCause) -> Errno {
@@ -5351,7 +5352,7 @@ fn read_cause_errno(cause: super::btree::ReadCause) -> Errno {
     Errno(match cause {
         ReadCause::Allocation | ReadCause::Ahci(AhciReadError::WaiterAllocation) => ENOMEM,
         ReadCause::Ahci(AhciReadError::Interrupted) => EINTR,
-        ReadCause::Ahci(AhciReadError::CannotPark | AhciReadError::WaitPublication) => EAGAIN,
+        ReadCause::Ahci(AhciReadError::WaitPublication) => EAGAIN,
         ReadCause::Ahci(AhciReadError::AdmissionTimeout) => ETIMEDOUT,
         ReadCause::Driver(failure) if failure.context_refused() => EAGAIN,
         _ => EIO,

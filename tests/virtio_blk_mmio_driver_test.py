@@ -52,7 +52,7 @@ def item(source, head, optional=False):
 ITEMS = [
     'struct BlockMmioRequestGate', "struct BlockMmioRequestGuard<'a>", 'impl BlockMmioRequestGate',
     "impl BlockMmioRequestGuard<'_>", "impl Drop for BlockMmioRequestGuard<'_>",
-    'fn block_mmio_request_gate_can_sleep(',
+    'fn completion_ready(',
     'struct SlotCompletion', 'impl SlotCompletion', 'struct BlockMmioCompletion', 'impl BlockMmioCompletion',
     'mod features', 'struct BlockDeviceState', 'struct VirtqDesc', 'struct MmioRing', 'unsafe impl Send for MmioRing',
     'impl RingMemory for MmioRing',
@@ -63,7 +63,7 @@ ITEMS = [
 ]
 # Present on some heads only.
 OPTIONAL = ['fn owner_tags(', 'fn drain_after_release(', 'fn complete_token(', 'fn wake_all_slots(']
-CONSTANTS = r'^(?:pub )?const (?:BLOCK_MMIO_WEDGED_ERROR|BLOCK_MMIO_WAIT_SLICE_NS|BLOCK_MMIO_BOOTSTRAP_WAIT_LIMIT_NS|MAX_ADMITTED|CHAIN_FRAMES|SECTOR_SIZE):[^;]+;'
+CONSTANTS = r'^(?:pub )?const (?:BLOCK_MMIO_WEDGED_ERROR|BLOCK_MMIO_WAIT_SLICE_NS|BLOCK_MMIO_BOOTSTRAP_WAIT_LIMIT_NS|MAX_ADMITTED|CHAIN_FRAMES|SECTOR_SIZE|NOT_SLEEPABLE_ERROR|EARLY_BOOT_BUSY_ERROR|PUBLICATION_REFUSED_ERROR|COMPLETION_NOT_READY_ERROR):[^;]+;'
 
 HARNESS = r'''
 #![allow(dead_code, unused_imports, unused_variables, unused_mut, unused_unsafe, static_mut_refs)]
@@ -114,17 +114,18 @@ mod memory {
     pub fn physical_memory_offset() -> Offset { Offset }
 }
 
+// Since E2.4 one context decides both admission and the command wait
+// (design §6): a context that may park, or early boot, which tries once.
 static CAN_SLEEP: AtomicBool = AtomicBool::new(true);
-static WAIT_SLEEPS: AtomicBool = AtomicBool::new(true);
 static AUTO_DEVICE: AtomicBool = AtomicBool::new(false);
 static ABORT: AtomicBool = AtomicBool::new(false);
 static IRQ_IN_BARRIER: AtomicBool = AtomicBool::new(false);
 static WAITING: AtomicUsize = AtomicUsize::new(0);
 static CLOCK: AtomicU64 = AtomicU64::new(1);
 
-mod per_cpu_aarch64 {
-    pub fn preempt_count() -> u32 { if crate::CAN_SLEEP.load(crate::Ordering::SeqCst) { 1 } else { 0 } }
-}
+use task::park::IoContext;
+struct Aarch64Cpu;
+impl Aarch64Cpu { fn interrupts_enabled() -> bool { true } }
 mod arch_impl { pub mod aarch64 {
     pub mod timer_interrupt { pub fn is_initialized() -> bool { true } }
     pub mod mmio {
@@ -139,8 +140,36 @@ mod task {
         #[derive(PartialEq, Eq, Clone, Copy)] pub enum ThreadState { BlockedOnIO }
     }
     pub mod scheduler { pub fn current_thread_id() -> Option<u64> { Some(73) } }
-    pub mod waitqueue { pub fn schedule_current_wait() { crate::park() } }
-    pub mod completion { pub fn wait_sleeps() -> bool { crate::WAIT_SLEEPS.load(crate::Ordering::SeqCst) } }
+    // The park contract as the gate relies on it (task::park, E2.2-E2.4;
+    // its own rules are checked in tools/park-host-tests): the condition is
+    // checked after the waiter is registered, so a release after the check
+    // wakes it.
+    pub mod park {
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)] pub enum IoContext { Sleepable, EarlyBoot }
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)] pub enum ParkContext { Sleepable, EarlyBoot }
+        #[derive(Debug)] pub struct ParkError;
+        pub enum WaitEnd { Condition, Woken, Timeout, Interrupted(i32), Killed, NoMemory }
+        pub enum WaitMode { Uninterruptible }
+        pub enum BlockSource { VirtioBlkMmio }
+        pub fn io_context() -> Result<IoContext, ParkError> {
+            Ok(if crate::CAN_SLEEP.load(crate::Ordering::SeqCst) { IoContext::Sleepable } else { IoContext::EarlyBoot })
+        }
+        pub fn completion_source_ready(_: BlockSource, _: u32) -> bool { true }
+        pub fn wait(
+            _: &crate::WaitQueueHead,
+            mut done: impl FnMut() -> bool,
+            _: Option<u64>,
+            _: WaitMode,
+        ) -> Result<WaitEnd, ParkError> {
+            let generation = *crate::WAIT_GEN.lock().unwrap();
+            crate::SEEN.with(|seen| seen.set(generation));
+            if done() {
+                return Ok(WaitEnd::Condition);
+            }
+            crate::park();
+            Ok(WaitEnd::Woken)
+        }
+    }
 }
 
 fn dsb_sy() {
@@ -194,12 +223,6 @@ static PARK_HOOK: StdMutex<Option<fn()>> = StdMutex::new(None);
 pub struct WaitQueueHead;
 impl WaitQueueHead {
     pub const fn new() -> Self { Self }
-    pub fn prepare_to_wait(&self, _: task::thread::ThreadState) -> Option<u64> {
-        let generation = *WAIT_GEN.lock().unwrap();
-        SEEN.with(|seen| seen.set(generation));
-        Some(73)
-    }
-    pub fn finish_wait(&self) {}
     pub fn wake_up(&self) {
         *WAIT_GEN.lock().unwrap() += 1;
         WAIT_CV.notify_all();
@@ -208,7 +231,7 @@ impl WaitQueueHead {
 }
 
 /// A parked caller: a scenario's hook stands in for the rest of the system,
-/// or the thread sleeps until a wake after its prepare_to_wait.
+/// or the thread sleeps until a wake after its registration.
 fn park() {
     let hook = *PARK_HOOK.lock().unwrap();
     if let Some(hook) = hook {

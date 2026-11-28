@@ -155,7 +155,7 @@ class CommitPreemption(unittest.TestCase):
         # for the switch and takes it back.
         for file, name in [('mount_lock.rs', 'park'), ('commit_signal.rs', 'wait')]:
             code = function(strip_comments((BREENFS / file).read_text()), name)
-            self.assertIn('park::wait_allowing_boot_idle(', code)
+            self.assertIn('park::wait(', code)
             self.assertNotRegex(code, r'\bpreempt_(?:enable|disable)\(')
         waitqueue = (ROOT / 'kernel/src/task/waitqueue.rs').read_text()
         source = strip_comments(waitqueue)

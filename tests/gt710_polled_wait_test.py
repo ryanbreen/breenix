@@ -71,7 +71,14 @@ mod arch {
  pub fn with_interrupts<R>(f:impl FnOnce()->R)->R{f()}
  // NATIVE_PAUSE
 }
-mod per_cpu {pub fn preempt_count()->u32{1} pub fn preempt_disable(){} pub fn preempt_enable(){}}
+// The park contract's guard types the waits use since E2.4 (task::park): a
+// syscall caller, whose braked baseline the pause releases and the prepared
+// wait already holds.
+mod task {pub mod park {
+ pub fn with_baseline_released<R>(f:impl FnOnce()->R)->R{f()}
+ pub struct Braked;
+ pub fn braked_for_prepared_wait()->Option<Braked>{None}
+}}
 #[derive(Debug,PartialEq)]enum Stop{Timeout,Interrupted}
 struct Device;impl Device{fn outstanding(&self)->usize{1}}
 struct Sub{published:bool,sent_ns:Option<u64>,progress_ns:Option<u64>}struct Sync{failed:bool,sent_ns:Option<u64>}
