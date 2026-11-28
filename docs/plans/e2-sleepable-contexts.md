@@ -916,6 +916,45 @@ The builder resolved these details against the code. Each has one sentence of re
   decides.
 - **Boot.** One ARM64 QEMU boot: the interrupt-exit switch path is the hardware exception return.
 
+#### E2.3 as built: deviations (ruling DEV-39(2))
+
+The builder resolved these details against the code. Each has one sentence of reason.
+
+- **The seam's inputs.** `park_core::exit_switch` decides from the thread's state, its wait word's phase and
+  whether a reschedule is pending. Each exit calls it once its own depth gate has admitted a switch, and
+  those gates stay where they are, because ARM64's runs before the deferred-requeue drain and the scheduler
+  lock and x86's before its PREEMPT_ACTIVE check.
+- **"Voluntary" is the word's phase.** A thread on `park::wait` switches by its own choice only once it has
+  committed (`Parked`), so the phase carries what a voluntary flag would. A word that is `Idle` belongs to
+  a wait not on `park::wait` and keeps the rule from before E2.3, and so does an ended word, whose
+  scheduler wake follows its arrival.
+- **How the requeue works.** The exit's new `ExitSwitch::Requeue` returns the thread to running, as ending
+  a wait does (no live deadline, `blocked_in_syscall` clear), under the lock that owns it
+  (`park::apply_exit_switch`). It keeps the queue entry and the word, so a wake still ends the wait.
+  E2.2's commit is a compare-and-swap on the word, not the scheduler transaction §3.3 describes, so
+  the commit cannot see the requeue. Instead the commit's switch finds the thread running and returns at
+  once, and the wait publishes again and redoes its signal and deadline checks. A preempted wait pays one
+  extra pass.
+- **x86's `can_schedule` is unchanged.** It admits a thread published blocked on I/O only when a
+  reschedule is pending, which is the runnable rule for an uncommitted wait. The gap its comment records
+  (#666, #508) is closed by the mandatory check's decision and by the halt rule below. Admitting
+  `BlockedOnIO` there would also have changed the switch of the x86 waits not on `park::wait`, which no
+  ARM64 boot can show.
+- **Violations without an error channel.** `arch_halt_while_blocked` returns `()`, and its callers loop
+  on their own state. A caller that may not switch away gets a receipt (`park::halt_as_current`), naming
+  the levels it holds, and keeps its halt. This is the same treatment E2.2 gave its refusals in such
+  callers. E2.4 and E2.10 move those waits onto `park::wait`, where the refusal is an error.
+- **Which "yield before parking" steps went.** The park's own x86 switch (`halt_blocked_current`) no
+  longer sets a reschedule first. The 8 waits the new HALT census found also drop theirs: each published
+  a blocked state and halted as the current thread itself, and each now sleeps through
+  `arch_halt_while_blocked`. The 17 `yield_current(); arch_halt_while_blocked()` pairs in syscall and
+  driver waits not on `park::wait` stay. Those waits have no committed park yet, and their classes move
+  in E2.4 and E2.10.
+- **The kernel test's feature.** It is a `boot_tests` case, because the test registry is built under that
+  feature.
+- **E2.2's publication check.** Its host check that a baseline-0 publication reads depth 1 or more is
+  replaced by the I4 check, because this PR removes that level.
+
 ### E2.4: block I/O caller rule
 
 - **Scope.** §6.
