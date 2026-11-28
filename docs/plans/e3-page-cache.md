@@ -1694,6 +1694,22 @@ Reclaim runs on page 5 in that interval, and a read refills it from the open vie
 
 ```
 
+**Reverse-map reclaim clears only the cache frame's PTEs (12.5).** Two private bindings cover page i of
+cache frame 100. Process B stored to the page, so its PTE now maps B's private copy, frame 200.
+
+```pycon
+>>> RULE = 'clear-covering-pte'
+>>> ptes = {'A': 100, 'B': 200}
+>>> def reclaim(ptes, pfn):
+...     for vma, frame in list(ptes.items()):
+...         if RULE == 'clear-covering-pte' or frame == pfn:
+...             del ptes[vma]
+>>> reclaim(ptes, 100)
+>>> ptes
+{'B': 200}
+
+```
+
 ## 20. bbench rows (DEV-31)
 
 | Row | Ratio (28668b28) | Expected to move in | Parity reachable from E3 alone |
