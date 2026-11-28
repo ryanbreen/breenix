@@ -79,9 +79,7 @@ fn take_free_frame(frame: PhysFrame) -> Option<FrameLease> {
 /// lookup to reject the address rather than merely indexing past the ledger.
 fn above_top_of_ram_frame() -> Option<PhysFrame> {
     let info = MEMORY_INFO.get()?;
-    let top = info.regions[..info.region_count]
-        .iter()
-        .flatten()
+    let top = info.iter()
         .map(|region| region.end)
         .max()?;
     let aligned = top.checked_add(0xfff)? & !0xfff;

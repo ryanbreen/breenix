@@ -6,12 +6,20 @@
 ///
 /// Uses 1GB block mappings (L1) where possible, 2MB blocks (L2) for
 /// device regions and for VMware's split kernel/device address space.
+use arm64_boot_contract::phys_memory::{PhysRange, PAGE_SIZE};
 use core::ptr;
 
-use crate::kernel_load::{KernelLoadSegment, PF_W, PF_X};
+/// Physical extent and ELF permissions for one loaded kernel segment.
+#[derive(Clone, Copy)]
+pub struct KernelLoadSegment {
+    pub phys_start: u64,
+    pub phys_end: u64,
+    pub flags: u32,
+}
 
-/// HHDM base address matching the kernel's expectation.
-const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
+pub const PF_X: u32 = 1 << 0;
+pub const PF_W: u32 = 1 << 1;
+
 
 /// Page table attributes for AArch64 (stage 1, EL1).
 mod attr {
@@ -47,7 +55,6 @@ mod attr {
 
     /// Access permissions
     pub const AP_RW_EL1: u64 = 0 << 6; // EL1 read/write
-    pub const AP_RW_ALL: u64 = 1 << 6; // EL1+EL0 read/write
     pub const AP_RO_EL1: u64 = 0b10 << 6; // EL1 read-only
 
     /// Execute-never bits
@@ -87,6 +94,7 @@ mod attr {
 ///   Index 0: Device-nGnRnE (0x00)
 ///   Index 1: Normal WB cacheable (0xFF = Inner WB RA WA, Outer WB RA WA)
 ///   Index 2: Normal Non-Cacheable (0x44 = Inner NC, Outer NC) — for DMA buffers
+#[cfg(target_os = "uefi")]
 pub const MAIR_VALUE: u64 = 0x00_00_00_00_0044_FF00;
 
 /// TCR (Translation Control Register) value for 4K granule, 48-bit VA.
@@ -99,6 +107,7 @@ pub const MAIR_VALUE: u64 = 0x00_00_00_00_0044_FF00;
 /// ORGN0/IRGN0 = 0b01 (Write-Back, Write-Allocate for TTBR0)
 /// ORGN1/IRGN1 = 0b01 (Write-Back, Write-Allocate for TTBR1)
 /// IPS = 0b010 (40-bit PA, 1TB - sufficient for Parallels)
+#[cfg(target_os = "uefi")]
 pub const TCR_VALUE: u64 = (16 << 0)  // T0SZ
     | (0b01 << 8)   // IRGN0 = WB WA
     | (0b01 << 10)  // ORGN0 = WB WA
@@ -111,9 +120,6 @@ pub const TCR_VALUE: u64 = (16 << 0)  // T0SZ
     | (0b10 << 30)  // TG1 = 4KB
     | (0b010 << 32); // IPS = 40-bit
 
-/// Size of a single page table (4KB, 512 entries of 8 bytes each).
-const PAGE_TABLE_SIZE: usize = 4096;
-
 /// AArch64 L2 block mapping granularity (2 MiB with a 4 KiB translation granule).
 const L2_BLOCK_SIZE: u64 = 0x20_0000;
 
@@ -123,9 +129,6 @@ const L2_BLOCK_SIZE: u64 = 0x20_0000;
 /// Placed above the kernel heap range (0x42000000-0x50000000) so the
 /// general-purpose allocator never touches this memory.
 pub const NC_DMA_BASE: u64 = 0x5000_0000;
-
-/// Size of the NC DMA region. It intentionally occupies exactly one L2 block.
-pub const NC_DMA_SIZE: u64 = L2_BLOCK_SIZE;
 
 /// VA where ECAM is remapped when it conflicts with kernel code.
 /// On VMware, ECAM is at IPA 0x40000000 (overlapping kernel load range).
@@ -140,11 +143,13 @@ pub const ECAM_REMAP_VA: u64 = 0x2000_0000;
 /// L2 (for device regions): 2 (for 0x00000000-0x3FFFFFFF)
 /// L2 (for L1[1] RAM): 2 (for 0x40000000-0x7FFFFFFF)
 /// L2 (for L1[2] RAM): 2 (for 0x80000000-0xBFFFFFFF)
-const MAX_PAGE_TABLES: usize = 12;
+// Additional tables split existing leaves or build a TTBR0-only mapping
+// for the final UEFI map buffer after ExitBootServices.
+const MAX_PAGE_TABLES: usize = 24;
 
 /// Fixed loader boot stack region (no overflow protection).
-pub const BOOT_STACK_BOTTOM_PHYS: u64 = arm64_boot_contract::LOADER_BOOT_STACK_BOTTOM_PHYS;
-pub const BOOT_STACK_TOP_PHYS: u64 = arm64_boot_contract::LOADER_BOOT_STACK_TOP_PHYS;
+const BOOT_STACK_BOTTOM_PHYS: u64 = arm64_boot_contract::LOADER_BOOT_STACK_BOTTOM_PHYS;
+const BOOT_STACK_TOP_PHYS: u64 = arm64_boot_contract::LOADER_BOOT_STACK_TOP_PHYS;
 
 /// Configuration for platform-specific page table setup.
 pub struct PageTableConfig<'a> {
@@ -336,6 +341,14 @@ fn non_kernel_ram_attr(
     }
 }
 
+#[derive(Clone, Copy)]
+pub struct LoaderExecution {
+    pub here: u64,
+    pub handoff: u64,
+    pub vectors: u64,
+    pub image: PhysRange,
+}
+
 /// Build page tables for the kernel.
 ///
 /// Returns (ttbr0_phys, ttbr1_phys) - the physical addresses of the
@@ -353,22 +366,12 @@ fn non_kernel_ram_attr(
 pub fn build_page_tables(
     storage: &mut PageTableStorage,
     config: &PageTableConfig<'_>,
+    execution: LoaderExecution,
+    map: Option<PhysRange>,
 ) -> (u64, u64) {
     let ram_base_offset = config.ram_base_offset;
     let relocated_nc_dma_base = NC_DMA_BASE + ram_base_offset;
-    let loader_phys: u64;
-    unsafe {
-        core::arch::asm!(
-            "adr {}, .",
-            out(reg) loader_phys,
-            options(nomem, nostack, preserves_flags),
-        );
-    }
-    let handoff_phys = crate::kernel_entry::switch_and_jump as *const () as u64;
-    extern "C" {
-        static loader_exception_vectors: u8;
-    }
-    let vectors_phys = core::ptr::addr_of!(loader_exception_vectors) as u64;
+    let LoaderExecution { here: loader_phys, handoff: handoff_phys, vectors: vectors_phys, .. } = execution;
 
     // Allocate L0 tables
     let ttbr0_l0 = storage.alloc_table(config);
@@ -612,10 +615,109 @@ pub fn build_page_tables(
         }
     }
 
+    if let Some(map) = map {
+        let end = map.end.checked_next_multiple_of(PAGE_SIZE);
+        // E1-2 will derive IPS from PARange. A buffer outside today's
+        // translation width is left for the kernel's named rule-5 refusal.
+        if let Some(end) = end.filter(|end| *end <= 1 << 40) {
+            map_buffer(
+                storage, config, ttbr0_l0,
+                PhysRange::new(map.start & !(PAGE_SIZE - 1), end), execution.image,
+            );
+        }
+    }
+
     // Ensure all page table writes are committed to memory
     flush_page_tables();
 
     (ttbr0_l0, ttbr1_l0)
+}
+
+const OUTPUT_ADDRESS: u64 = 0x000f_ffff_ffff_f000;
+
+fn read_entry(table: u64, index: usize) -> u64 {
+    unsafe { (table as *const u64).add(index).read_volatile() }
+}
+
+/// Install a child table, preserving every translation of a split block.
+fn child_table(
+    storage: &mut PageTableStorage,
+    config: &PageTableConfig<'_>,
+    parent: u64,
+    index: usize,
+    child_size: u64,
+) -> u64 {
+    let old = read_entry(parent, index);
+    if old & 3 == attr::TABLE_DESC {
+        return old & OUTPUT_ADDRESS;
+    }
+    let child = storage.alloc_table(config);
+    if old & attr::VALID != 0 {
+        let base = old & OUTPUT_ADDRESS;
+        let flags = old & !OUTPUT_ADDRESS;
+        let page_bit = if child_size == PAGE_SIZE { attr::TABLE } else { 0 };
+        for i in 0..512 {
+            write_entry(child, i, (base + i as u64 * child_size) | flags | page_bit);
+        }
+    }
+    write_entry(parent, index, child | attr::TABLE_DESC);
+    child
+}
+
+fn overlaps(a: PhysRange, b: PhysRange) -> bool {
+    a.start < b.end && b.start < a.end
+}
+
+fn existing_buffer_block(entry: u64, base: u64, len: u64, image: PhysRange) -> bool {
+    if entry == (base | attr::NG | attr::RAM_DATA_BLOCK) {
+        return true;
+    }
+    entry == (base | attr::NG | attr::NORMAL_BLOCK)
+        && overlaps(PhysRange::new(base, base + len), image)
+}
+
+fn map_buffer(
+    storage: &mut PageTableStorage,
+    config: &PageTableConfig<'_>,
+    root: u64,
+    range: PhysRange,
+    loader_image: PhysRange,
+) {
+    const L1_SIZE: u64 = 1 << 30;
+    let mut address = range.start;
+    while address < range.end {
+        let l1 = child_table(storage, config, root, (address >> 39) as usize, 0);
+        let i1 = ((address >> 30) & 511) as usize;
+        let base1 = address & !(L1_SIZE - 1);
+        if existing_buffer_block(read_entry(l1, i1), base1, L1_SIZE, loader_image) {
+            address = base1 + L1_SIZE;
+            continue;
+        }
+        let l2 = child_table(storage, config, l1, i1, L2_BLOCK_SIZE);
+        let i2 = ((address >> 21) & 511) as usize;
+        let base2 = address & !(L2_BLOCK_SIZE - 1);
+        let end2 = base2 + L2_BLOCK_SIZE;
+        if existing_buffer_block(read_entry(l2, i2), base2, L2_BLOCK_SIZE, loader_image) {
+            address = end2;
+            continue;
+        }
+        if address == base2 && end2 <= range.end &&
+            !overlaps(PhysRange::new(base2, end2), loader_image) {
+            write_identity_block(l2, i2, base2 | attr::RAM_DATA_BLOCK);
+            address = end2;
+            continue;
+        }
+        let l3 = child_table(storage, config, l2, i2, PAGE_SIZE);
+        while address < end2.min(range.end) {
+            let flags = if overlaps(PhysRange::new(address, address + PAGE_SIZE), loader_image) {
+                attr::NORMAL_BLOCK
+            } else {
+                attr::RAM_DATA_BLOCK
+            };
+            write_identity_block(l3, ((address >> 12) & 511) as usize, address | flags | attr::TABLE);
+            address += PAGE_SIZE;
+        }
+    }
 }
 
 /// Write a TTBR0 identity-map block: the same as `write_entry`, with nG set
@@ -635,6 +737,7 @@ fn write_entry(table_phys: u64, index: usize, value: u64) {
         ptr::write_volatile(entry_ptr, value);
         // Clean data cache by VA to Point of Coherency
         // This ensures the page table entry is visible to the hardware table walker
+        #[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
         core::arch::asm!(
             "dc cvac, {addr}",
             addr = in(reg) entry_ptr,
@@ -645,6 +748,7 @@ fn write_entry(table_phys: u64, index: usize, value: u64) {
 
 /// Flush data cache and issue barrier after all page table entries are written.
 fn flush_page_tables() {
+    #[cfg(all(target_arch = "aarch64", target_os = "uefi"))]
     unsafe {
         core::arch::asm!("dsb sy", "isb", options(nostack, preserves_flags),);
     }

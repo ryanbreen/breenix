@@ -50,6 +50,8 @@ if [ "$INCLUDE_KERNEL" = true ]; then
         echo "ERROR: Kernel ELF not found at $KERNEL_ELF"
         exit 1
     fi
+    cargo run --quiet --manifest-path "$PROJECT_ROOT/tools/kmem-host-tests/Cargo.toml" \
+        --bin check-handoff-elf -- "$KERNEL_ELF"
     echo "Kernel built: $KERNEL_ELF ($(stat -f%z "$KERNEL_ELF" 2>/dev/null || stat -c%s "$KERNEL_ELF") bytes)"
 fi
 

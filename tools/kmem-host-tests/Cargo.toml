@@ -1,0 +1,14 @@
+[package]
+name = "kmem-host-tests"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+arm64-boot-contract = { path = "../../libs/arm64-boot-contract" }
+
+[dev-dependencies]
+log = "0.4"
+uefi = "0.33"
+uefi-raw = "0.9"

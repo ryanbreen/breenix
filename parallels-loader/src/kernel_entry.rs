@@ -24,8 +24,25 @@ pub fn jump_to_kernel(
     hw_config: &HardwareConfig,
     page_table_storage: &mut PageTableStorage,
     pt_config: &PageTableConfig<'_>,
+    loader_image: arm64_boot_contract::phys_memory::PhysRange,
 ) -> ! {
-    let (ttbr0, ttbr1) = page_tables::build_page_tables(page_table_storage, pt_config);
+    let here: u64;
+    extern "C" {
+        static loader_exception_vectors: u8;
+    }
+    unsafe {
+        core::arch::asm!("adr {}, .", out(reg) here, options(nomem, nostack, preserves_flags));
+    }
+    let execution = page_tables::LoaderExecution {
+        here,
+        handoff: switch_and_jump as *const () as u64,
+        vectors: core::ptr::addr_of!(loader_exception_vectors) as u64,
+        image: loader_image,
+    };
+    let map = (hw_config.uefi_map.loader_check == 0)
+        .then(|| arm64_boot_contract::uefi_map::check_address(hw_config.uefi_map).ok())
+        .flatten();
+    let (ttbr0, ttbr1) = page_tables::build_page_tables(page_table_storage, pt_config, execution, map);
     let hw_config_ptr = hw_config as *const HardwareConfig as u64;
 
     log::info!(
