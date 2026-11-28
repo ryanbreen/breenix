@@ -118,3 +118,5 @@ pub fn arch_halt_with_interrupts() {}
 mod newreno_checks;
 mod offload_checks;
 mod window_checks;
+
+mod lookup_checks;

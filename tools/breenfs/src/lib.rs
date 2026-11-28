@@ -13,7 +13,7 @@ pub mod format;
 
 #[path = "../../../kernel/src/fs/breenfs/crc32c.rs"]
 pub mod crc32c;
-#[path = "../../../kernel/src/fs/breenfs/siphash.rs"]
+#[path = "../../../kernel/src/random/siphash.rs"]
 pub mod siphash;
 
 #[path = "../../../kernel/src/fs/breenfs/commit.rs"]
