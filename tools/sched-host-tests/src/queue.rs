@@ -170,8 +170,8 @@ fn notify(_: &mut Held, _: u64, _: Notice) -> bool {
 fn publish_wake(tid: u64, bits: u64, home: Option<usize>) -> Option<u64> {
     assert_eq!(tid, NODE.tid());
     let cpu = home.unwrap_or_else(|| owner(tid).unwrap());
-    // SAFETY: NODE and the inboxes have static storage. The fixture serializes
-    // all operations and drains each publication before the case ends.
+    // SAFETY: NODE and the inboxes have static storage. fixture() holds
+    // SERIAL through publication and drain.
     unsafe { INBOXES[cpu].publish(&NODE, bits, WAKE_HOME_MASK | WAKE_PLACE) }
 }
 
@@ -371,8 +371,8 @@ fn pinned_placement_touches_only_home_and_owner_and_refreshes_ownership() {
         assert_eq!(unrelated.queue().front(), Some(&OTHER_TID));
         drop(unrelated);
         assert!(try_lock_all());
-        // SAFETY: refresh runs with every queue locked. These stale owners
-        // model a whole-scheduler caller moving queue and current rows.
+        // SAFETY: try_lock_all succeeded. These stale owners model a
+        // whole-scheduler caller moving queue and current rows.
         unsafe {
             let sched = &mut *LIVE.load(Ordering::Acquire);
             sched.cpu_state[2].current_thread = Some(OTHER_TID);
