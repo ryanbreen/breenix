@@ -49,6 +49,9 @@ mod congestion;
 mod receive;
 #[path = "tcp/recovery.rs"]
 mod recovery;
+#[cfg(test)]
+#[path = "tcp/lookup_probe.rs"]
+pub(crate) mod lookup_probe;
 
 use super::icmp::TcpMtuQuote;
 use super::ipv4::{Ipv4Packet, PROTOCOL_TCP};
@@ -2171,15 +2174,20 @@ impl ConnTable {
     }
 
     fn position(&self, id: &ConnectionId) -> Option<usize> {
-        self.conns.iter().position(|conn| conn.id == *id)
+        self.conns.iter().position(|conn| {
+            #[cfg(test)]
+            lookup_probe::visit(lookup_probe::Index::Established);
+            conn.id == *id
+        })
     }
 
     pub fn get(&self, id: &ConnectionId) -> Option<&TcpConnection> {
-        self.conns.iter().find(|conn| conn.id == *id)
+        self.position(id).map(|index| &self.conns[index])
     }
 
     pub fn get_mut(&mut self, id: &ConnectionId) -> Option<&mut TcpConnection> {
-        self.conns.iter_mut().find(|conn| conn.id == *id)
+        let index = self.position(id)?;
+        Some(&mut self.conns[index])
     }
 
     pub fn contains_key(&self, id: &ConnectionId) -> bool {
@@ -2196,6 +2204,8 @@ impl ConnTable {
 
     /// Room for one more connection: ENOMEM when there is no memory for it.
     fn reserve_one(&mut self) -> Result<(), i32> {
+        #[cfg(test)]
+        lookup_probe::reserve(lookup_probe::Index::Established)?;
         self.conns.try_reserve(1).map_err(|_| ENOMEM)
     }
 
@@ -2237,7 +2247,11 @@ impl TcpTables {
     /// The listener an inbound segment to `local_ip`:`port` reaches: one bound
     /// to that address, else one bound to INADDR_ANY.
     fn listener_for(&self, local_ip: [u8; 4], port: u16) -> Option<usize> {
-        let on_port = |listener: &&ListenSocket| listener.local_port == port;
+        let on_port = |listener: &&ListenSocket| {
+            #[cfg(test)]
+            lookup_probe::visit(lookup_probe::Index::Listener);
+            listener.local_port == port
+        };
         self.listeners
             .iter()
             .position(|listener| on_port(&listener) && listener.local_ip == local_ip)
@@ -2257,11 +2271,19 @@ impl TcpTables {
         let shared = |other: bool| reuse && other;
         self.listeners
             .iter()
-            .any(|listener| listener.local_port == port && overlaps(listener.local_ip, addr))
+            .any(|listener| {
+                #[cfg(test)]
+                lookup_probe::visit(lookup_probe::Index::Bind);
+                listener.local_port == port && overlaps(listener.local_ip, addr)
+            })
             || self.bound.iter().any(|bound| {
+                #[cfg(test)]
+                lookup_probe::visit(lookup_probe::Index::Bind);
                 bound.port == port && overlaps(bound.addr, addr) && !shared(bound.reuse)
             })
             || self.conns.values().any(|conn| {
+                #[cfg(test)]
+                lookup_probe::visit(lookup_probe::Index::Bind);
                 conn.id.local_port == port
                     && overlaps(conn.id.local_ip, addr)
                     && !(conn.state == TcpState::Closed && conn.orphaned)
@@ -2453,6 +2475,8 @@ pub fn tcp_bind_port(addr: [u8; 4], port: u16, reuse: bool) -> Result<(), i32> {
         if tables.bind_conflict(addr, port, reuse) {
             return Err(EADDRINUSE);
         }
+        #[cfg(test)]
+        lookup_probe::reserve(lookup_probe::Index::Bind)?;
         tables.bound.try_reserve(1).map_err(|_| ENOMEM)?;
         tables.bound.push(BoundPort { addr, port, reuse });
         Ok(())
@@ -3222,6 +3246,8 @@ pub fn tcp_listen(
         {
             return Err(EADDRINUSE);
         }
+        #[cfg(test)]
+        lookup_probe::reserve(lookup_probe::Index::Listener)?;
         tables.listeners.try_reserve(1).map_err(|_| ENOMEM)?;
         tables.unbind(addr, port);
         tables.listeners.push(ListenSocket {
