@@ -424,11 +424,7 @@ fn report_oom(layout: Layout) {
     }
     writer.kv_dec("reclaim_runs", kmem::STATS.reclaim_runs.load(Relaxed));
     writer.kv_dec("reclaim_frames", kmem::STATS.reclaim_frames.load(Relaxed));
-    let (frontier, free_list) = super::frame_allocator::frame_counts_without_waiting();
-    writer.kv_dec("frames_frontier", frontier as u64);
-    if let Some(free_list) = free_list {
-        writer.kv_dec("frames_free_list", free_list as u64);
-    }
+    writer.kv_dec("frames_frontier", super::frame_allocator::frontier_frames() as u64);
     if !per_cpu::is_initialized() {
         let _ = writer.close();
         return;
