@@ -956,8 +956,7 @@ The builder resolved these details against the code. Each has one sentence of re
   before the lockup, so the conversion was taken back out. The 8 are listed in
   `tests/park_contract_structure.rs` (`HALT_CLASSIFIED`), the list may only shrink, and each moves in a
   later PR with its own boot. In main's baseline boot its own `test_deferral` probe did not run on CPU 1
-  (verdict
-  `starved` after 15 s), which that later PR has to account for.
+  (verdict `starved` after 15 s), which that later PR has to account for.
 - **The kernel test's feature.** It is a `boot_tests` case, because the test registry is built under that
   feature.
 - **E2.2's publication check.** Its host check that a baseline-0 publication reads depth 1 or more is
