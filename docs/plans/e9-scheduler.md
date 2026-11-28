@@ -932,6 +932,22 @@ of their steps, keeping each CPU's program order. The steps are sequentially con
     - admission fails cleanly, with nothing published, when a leaf allocation fails. <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
   - A quiescent-state model: a retired thread is not freed while any CPU holds a pin taken before the
     unlink, and is freed after every CPU reports. <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
+  - **Grace with a tickless idle CPU.** The same model keeps CPU 3 in tickless idle from before the
+    unlink to the end of the case, while CPUs 0 to 2 enter the scheduler. The grace period must
+    complete. A second case has CPU 3 leave idle for an interrupt whose handler holds a pin, and there
+    the grace must wait. Red on §6.2 as first written, which counts a quiescent state only at an entry
+    to the scheduler or the idle loop. An idle CPU makes neither, so retired threads pile up until
+    admission hits backpressure.
+
+    ```pycon
+    >>> def grace_completes(after_unlink):
+    ...     return all({'enter_scheduler', 'enter_idle'} & set(events) for events in after_unlink.values())
+    >>> grace_completes({0: ['enter_scheduler'], 1: ['enter_scheduler'], 2: ['enter_scheduler'], 3: ['stay_idle']})
+    True
+    >>> grace_completes({0: ['enter_scheduler'], 3: ['irq_from_idle_holding_pin']})
+    False
+
+    ```
   - A churn fixture through the admission seam: 10,000 create-and-exit cycles with a reclamation batch
     of one per pass never fail admission and never panic. Red on the old tree: fork and clone get EAGAIN
     once 3,840 slots are indexed or reserved (`rq.rs:127-133`), and an insert that finds no slot panics
