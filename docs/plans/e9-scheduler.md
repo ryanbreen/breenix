@@ -8,7 +8,8 @@ coding only after it merges (DEV-41(2)).
 E9's finish line:
 
 - both architectures dispatch under CPU-local run-queue locks, with thread ownership as the serialisation
-  boundary, and no dispatch waits on another CPU;
+  boundary. No dispatch waits with interrupts masked for another CPU: a peer's lock is only tried, and a
+  peer holding this CPU's lock defers this CPU's dispatch rather than stalling it;
 - ready threads sit in bitmap-and-FIFO queues for the real-time ranks and in a fair class accounted by
   runtime for the rest, so selection and enqueue do bounded work;
 - every CPU arms one-shot deadlines, and an idle CPU takes no periodic tick; <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
@@ -191,9 +192,11 @@ Each is checked by a deterministic test named in §11.
 
 - **S1, one owner.** Every live thread has exactly one owner CPU. Its scheduling state changes only under
   its owner's run-queue lock. A change of owner holds both CPUs' locks. <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
-- **S2, no dispatch waits on a peer.** A dispatch pass takes its own CPU's run-queue lock and at most
-  try-locks a peer's. A busy peer is passed over, and a wake for one of its threads is published to its
-  inbox.
+- **S2, no dispatch waits on a peer.** A dispatch pass try-locks its own CPU's run-queue lock and at
+  most try-locks a peer's. A busy peer is passed over, and a wake for one of its threads is published to
+  its inbox. When a peer holds this CPU's lock, the dispatch is owed rather than waited for (§3.5), so a
+  stopped peer cannot hold this CPU with interrupts masked. A peer holds another CPU's lock only for a
+  bounded section: revalidate, one queue operation and the summary publish.
 - **S3, stack custody.** No CPU dispatches a thread while another CPU still stands on that thread's
   kernel stack. Selection skips such a thread and records itself as a waiter. The CPU that leaves the
   stack notifies the waiters. No CPU waits for a stack.
@@ -283,7 +286,7 @@ moves x86 to the ARM64 rule: skip, record the waiter, and have the leaving CPU k
 
 - **Today:** lock `SCHEDULER` masked, decide, save the outgoing context, leak the guard, pivot to the
   scheduler stack, force-unlock there (§1.1).
-- **Under E9.1:** lock this CPU's run-queue lock masked (`rq::local`), decide, save the outgoing context,
+- **Under E9.1:** take this CPU's run-queue lock masked (`rq::try_local`, below), decide, save the outgoing context,
   mark the outgoing thread in `switch_save`, forget the `Held` guard before the pivot (as the global
   guard is leaked today) in exchange for a `PivotToken`, and release the lock on the scheduler stack with
   a new `rq::release_after_pivot(token)`. That function publishes the summaries
@@ -304,6 +307,25 @@ moves x86 to the ARM64 rule: skip, record the waiter, and have the leaving CPU k
   release `token.cpu`'s lock. Neither re-reads the CPU identity to choose it. A token whose CPU differs
   from the fresh identity at release is recorded as a receipt, alongside the existing retraction
   counters.
+
+- **Own lock busy.** A peer may hold this CPU's lock for a remote section (a wake, a steal or a
+  placement), and its vCPU may be stopped there by the host. So dispatch takes its own lock with
+  `rq::try_local`, not the waiting `rq::local` (`rq.rs:602-615`). When the try fails:
+  - *interrupt-return dispatch* sets this CPU's `DISPATCH_OWED` flag, tries the lock once more, and
+    returns to the interrupted thread if that also fails, with interrupts enabled as they were. Nothing
+    has been dequeued, so the thread is still the CPU's current thread;
+  - *the inline and exit switches* set the flag and retry with interrupts enabled between attempts. A
+    thread that has not committed its park is still running (E2 §3.3), so it keeps its CPU and services
+    interrupts while it retries;
+  - every release of a run-queue lock by a CPU other than its owner reads the owner's `DISPATCH_OWED`
+    after the unlock and kicks the owner if the flag is set. The kick is deferred past the unlock, like
+    the other SGIs.
+
+  The flag store and the retry on one side, and the unlock and the flag read on the other, are
+  sequentially consistent. So either the retry finds the lock free or the releaser sees the flag. That
+  holds for every interleaving (model in §10, E9.1). E9.1 moves ARM64 to `try_local` for all three entry
+  points. x86 keeps `rq::local` in E9.1, which leaves x86 unchanged, and moves to `try_local` in E9.2a
+  under the same kernel check.
 
 The lock is now this CPU's alone, so a peer's dispatch, wake or steal is held up only on try-locks of
 this CPU, and those do not wait (S2).
@@ -795,14 +817,28 @@ of their steps, keeping each CPU's program order. The steps are sequentially con
     stopped CPU's own lock, so it does not reach this case. Red on the old tree: CPU 1's next
     interrupt-return dispatch waits for `SCHEDULER` with interrupts masked. It is also red on §3.5 as
     first written, where `rq::local` waits for its own lock with interrupts masked (`rq.rs:602-615`).
+    Green on §3.5's `try_local` with an owed dispatch. The second model guards the owed flag, a mechanism
+    this PR adds, so it cannot be red on the old tree.
 
     ```pycon
     >>> def local_dispatch(own_lock_holder, me):
     ...     if own_lock_holder not in (None, me):
-    ...         return 'wait with interrupts masked'
+    ...         return 'keep the current thread, interrupts enabled, dispatch owed'
     ...     return 'dispatch'
     >>> local_dispatch(own_lock_holder=2, me=1)
     'keep the current thread, interrupts enabled, dispatch owed'
+    >>> LOCAL = ['set_owed', 'retry_lock']
+    >>> HOLDER = ['unlock', 'read_owed']
+    >>> def owed_dispatch_lost(order):
+    ...     held, owed, retried_ok, kicked = True, False, False, False
+    ...     for step in order:
+    ...         if step == 'set_owed': owed = True
+    ...         if step == 'retry_lock': retried_ok = not held
+    ...         if step == 'unlock': held = False
+    ...         if step == 'read_owed': kicked = owed
+    ...     return not retried_ok and not kicked
+    >>> sum(owed_dispatch_lost(order) for order in interleavings(LOCAL, HOLDER))
+    0
 
     ```
   - **The ownership protocol, host tests** in a new `tools/sched-host-tests` that `#[path]`-includes the
@@ -883,7 +919,9 @@ of their steps, keeping each CPU's program order. The steps are sequentially con
 ### E9.2a: fixed and background classes
 
 - **Scope.** §4.1 for ranks 0 and 2 to 101, intrusive links, `queued_on`; fair threads stay in a FIFO list
-  for this PR. x86 stack custody moves to skip-and-kick (§3.4).
+  for this PR. x86 stack custody moves to skip-and-kick (§3.4). x86 dispatch moves from `rq::local` to
+  `rq::try_local` with an owed dispatch (§3.5), under E9.1's stopped-peer kernel check, which it reaches
+  through the shared module; its x86 evidence comes at the flash.
 - **Tests.**
   - Host tests of the queue structures: insert, remove by handle, highest-rank selection, FIFO order within
     a rank, SCHED_RR rotation at quantum end, and a boosted thread moving between ranks.
