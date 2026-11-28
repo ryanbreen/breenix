@@ -845,6 +845,8 @@ Review of PR #3273 (the same rule):
   [UEFI 2.10 file information](https://uefi.org/specs/UEFI/2.10/13_Protocols_Media_Access.html#efi-file-info)
 - A failed record write or flush blocks further slot writes through the current in-memory view because
   the target record may already name an image that view would reclaim.
+- The imported host fixture runs collection before simulating the live flash because the manager does the
+  same at startup, before it reads any manifest.
 - T-C3 extracts the v1 host formatter and gives it an optional root line so the host fixture uses the same
   encoder while PR B retains custody of version selection and publication.
 - T-C3 uses a 10,000,384-byte image for the 256-byte manifest because both trial images must be whole

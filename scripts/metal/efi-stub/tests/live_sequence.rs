@@ -331,7 +331,9 @@ fn initial() -> Files {
 
 fn imported() -> Files {
     let legacy = Volume::new(initial(), None);
-    Records::read(&legacy).import(&legacy).unwrap();
+    let mut records = Records::read(&legacy);
+    records.import(&legacy).unwrap();
+    records.collect(&legacy).unwrap();
     legacy.snapshot()
 }
 
