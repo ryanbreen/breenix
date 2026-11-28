@@ -3,14 +3,17 @@
 //! These guard a mechanism this PR adds, so they cannot be red on the tree
 //! before it: `park_core` does not exist there. The census that is red on the
 //! old tree is `tests/park_contract_structure.rs`.
+//!
+//! E2.3's checks (design §8, "E2.3: parking and parked") are at the end: the
+//! interrupt exit's decision, `exit_switch`, which both exits call.
 
 use crate::budget::with_budget;
 use std::cell::Cell;
 use crate::event_queue::EventQueue;
 use crate::model::{Action, At, Event, Model, State, EINTR, TID};
 use crate::park_core::{
-    classify, wait, wait_any, Arrival, AtomicReason, Braked, ContextInputs, ParkContext, ParkError, Phase, Point,
-    Receipt, ReceiptRing, WaitEnd, WaitMode, WaitWord,
+    classify, exit_switch, wait, wait_any, Arrival, AtomicReason, Braked, ContextInputs, ExitSwitch, ExitThread,
+    ParkContext, ParkError, Phase, Point, Receipt, ReceiptRing, WaitEnd, WaitMode, WaitWord,
 };
 
 const SITE: u64 = 0x5173;
@@ -476,4 +479,88 @@ fn receipts_keep_the_newest_and_never_block() {
     assert_eq!(out[..4].iter().map(|r| r.site).collect::<Vec<_>>(), [5, 4, 3, 2]);
     assert_eq!(out[0].context, ParkContext::Atomic(AtomicReason::LocksHeld(5)));
     assert_eq!(out[0].depth, 5);
+}
+
+// ---------------------------------------------------- E2.3: the interrupt exit
+
+/// I4 (design §3.5): a wait that is published but not committed is
+/// runnable at an involuntary switch. An exit with a reschedule pending
+/// switches away from it without switching it out as blocked, and an exit
+/// without one returns to it, so it runs on to its own commit.
+#[test]
+fn an_interrupt_exit_leaves_a_published_uncommitted_wait_runnable() {
+    let parking = ExitThread::BlockedOnIo(Phase::Parking);
+    assert_ne!(
+        exit_switch(parking, true),
+        ExitSwitch::SwitchOut,
+        "preempted after publishing and before committing, the waiter was switched out as blocked"
+    );
+    assert_eq!(exit_switch(parking, false), ExitSwitch::Resume, "with no reschedule pending, the waiter runs on");
+}
+
+/// The rest of the decision: a committed wait, a wait not on `park::wait`
+/// (its word idle), a wait whose word has ended (its scheduler wake follows),
+/// another blocked state and an exited thread are switched out; a running
+/// thread is preempted only on a reschedule.
+#[test]
+fn an_interrupt_exit_switches_out_what_may_not_run() {
+    use ExitThread::*;
+    for need_resched in [false, true] {
+        for thread in [BlockedOnIo(Phase::Parked), BlockedOnIo(Phase::Idle), BlockedOnIo(Phase::Runnable(Arrival::Woken)), Blocked, Terminated] {
+            assert_eq!(exit_switch(thread, need_resched), ExitSwitch::SwitchOut, "{thread:?}, need_resched {need_resched}");
+        }
+    }
+    assert_eq!(exit_switch(Runnable, true), ExitSwitch::Preempt);
+    assert_eq!(exit_switch(Runnable, false), ExitSwitch::Resume);
+}
+
+/// I4 through production `wait`: an interrupt exit at each of the four
+/// points between publication and the commit, in each of the four caller
+/// shapes, does not switch the waiter out while its wait is uncommitted.
+/// (E2.2 publishes at depth 1, so those exits did not switch at all; E2.3
+/// publishes at the baseline.)
+#[test]
+fn an_interrupt_exit_before_the_commit_does_not_switch_the_wait_out() {
+    for setup in [Setup::KernelThread, Setup::Arm64Syscall, Setup::X86Syscall, Setup::Braked] {
+        let model = model_for(setup, 1);
+        for point in [Point::Published, Point::SignalChecked, Point::DeadlineChecked, Point::Republished] {
+            model.at(At::Point(point), Action::InterruptExit);
+        }
+        model.at(At::Asleep(1), Action::StaleInbox);
+        model.at(At::Asleep(2), Action::Wake(0));
+        let _braked = matches!(setup, Setup::Braked).then(|| Braked::new(&model));
+        assert_eq!(run_wait(&model, WaitMode::Uninterruptible, || false), Ok(WaitEnd::Woken), "{setup:?}");
+        let switched: Vec<Phase> = model
+            .events()
+            .into_iter()
+            .filter_map(|event| match event {
+                Event::SwitchedOut(phase) => Some(phase),
+                _ => None,
+            })
+            .collect();
+        assert!(!switched.contains(&Phase::Parking), "{setup:?}: switched out before its commit: {switched:?}");
+    }
+}
+
+/// Publish, an involuntary switch, a wake, then the commit: the wait ends
+/// woken without sleeping.
+#[test]
+fn a_wake_after_an_involuntary_switch_ends_the_wait_at_its_commit() {
+    let model = Model::new(1, 0);
+    model.at(At::Point(Point::Published), Action::InterruptExit);
+    model.at(At::Point(Point::SignalChecked), Action::Wake(0));
+    assert_eq!(run_wait(&model, WaitMode::Uninterruptible, || false), Ok(WaitEnd::Woken));
+    assert_eq!(model.sleeps(), 0, "the wait ended at its commit");
+}
+
+/// Publish, an involuntary switch, the commit, then a wake: the wait ends
+/// woken, once.
+#[test]
+fn a_wake_after_the_commit_ends_a_wait_switched_before_it_once() {
+    let model = Model::new(1, 0);
+    model.at(At::Point(Point::Published), Action::InterruptExit);
+    model.at(At::Point(Point::Committed), Action::Wake(0));
+    model.at(At::Point(Point::Committed), Action::Wake(0));
+    assert_eq!(run_wait(&model, WaitMode::Uninterruptible, || false), Ok(WaitEnd::Woken));
+    assert_eq!(model.sleeps(), 1);
 }

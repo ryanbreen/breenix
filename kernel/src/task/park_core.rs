@@ -708,6 +708,44 @@ pub fn wait_any<H: ParkHooks>(
     Ok(end)
 }
 
+// ------------------------------------------------------ the interrupt exit
+
+/// The interrupted thread, as an interrupt exit that may switch sees it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExitThread {
+    /// Running or ready.
+    Runnable,
+    /// Published blocked on I/O, the state a wait on the event queue
+    /// publishes, with the phase of the thread's wait word.
+    BlockedOnIo(Phase),
+    /// Blocked in another state: on a timer, a signal, a child, or plain.
+    Blocked,
+    Terminated,
+}
+
+/// What an interrupt exit does with the thread it interrupted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExitSwitch {
+    /// Return to it.
+    Resume,
+    /// Switch away and requeue it: it is runnable.
+    Preempt,
+    /// Switch away and leave it off the run queues until something makes it
+    /// runnable.
+    SwitchOut,
+}
+
+/// The interrupt exit's decision about the interrupted thread, once the
+/// exit's depth gate has admitted a switch (depth 0, or a return to user
+/// mode). The ARM64 and the x86 exits both decide here (design §3.5).
+pub const fn exit_switch(thread: ExitThread, need_resched: bool) -> ExitSwitch {
+    match thread {
+        ExitThread::Runnable if need_resched => ExitSwitch::Preempt,
+        ExitThread::Runnable => ExitSwitch::Resume,
+        ExitThread::BlockedOnIo(_) | ExitThread::Blocked | ExitThread::Terminated => ExitSwitch::SwitchOut,
+    }
+}
+
 /// Raise the depth and the baseline together by one, for a kernel thread
 /// that keeps its CPU except while it sleeps, as a braked syscall does
 /// (design §3.2). A park inside releases the level like a syscall's.

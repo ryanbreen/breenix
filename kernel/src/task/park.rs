@@ -29,7 +29,8 @@ use super::waitqueue::{KernelHooks, WaitQueueHead};
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 pub use super::park_core::{
-    announce, should_wake, withdraw, Arrival, AtomicReason, ParkContext, ParkError, Receipt, WaitEnd, WaitMode,
+    announce, exit_switch, should_wake, withdraw, Arrival, AtomicReason, ExitSwitch, ExitThread, ParkContext, ParkError,
+    Receipt, WaitEnd, WaitMode,
 };
 
 /// A thread's park state: its wait word and its baseline.
@@ -315,6 +316,26 @@ pub(crate) fn arrive_woken_task(tid: u64) {
 /// The timer expired a live deadline of a thread published blocked on I/O.
 pub(crate) fn arrive_timeout(thread: &super::thread::Thread) {
     thread.park.word.arrive_current(Arrival::Timeout);
+}
+
+// ------------------------------------------------------ the interrupt exit
+
+/// How an interrupt exit sees `thread` (design §3.5).
+pub(crate) fn exit_thread(thread: &super::thread::Thread) -> ExitThread {
+    use super::thread::ThreadState;
+    match thread.state {
+        ThreadState::Terminated => ExitThread::Terminated,
+        ThreadState::BlockedOnIO => ExitThread::BlockedOnIo(thread.park.word.state().1),
+        state if state.is_blocked() => ExitThread::Blocked,
+        _ => ExitThread::Runnable,
+    }
+}
+
+/// The interrupt exit's decision for `thread`, the thread it interrupted
+/// (`park_core::exit_switch`). The caller holds the lock that owns the
+/// thread's scheduler state.
+pub(crate) fn exit_switch_for(thread: &super::thread::Thread, need_resched: bool) -> ExitSwitch {
+    park_core::exit_switch(exit_thread(thread), need_resched)
 }
 
 // -------------------------------------------- sleeps not yet on park::wait
