@@ -209,6 +209,38 @@ struct State {
     breach: Option<&'static str>,
 }
 impl State {
+    fn write_sector(&mut self, sector: u64, bytes: [u8; SECTOR_SIZE]) {
+        self.events.push(Event::Write { sector, bytes });
+        let block = sector / (BLOCK_SIZE / SECTOR_SIZE) as u64;
+        if self.commits.values().any(|c| c.live.contains(&block)) {
+            self.fail("W1");
+        }
+        if self.slot(block).is_some() {
+            if !self.dirty.is_empty() {
+                self.fail("W2");
+            }
+        } else if self.pending.values().any(|c| c.live.contains(&block)) {
+            self.fail("W2");
+        }
+        let lo = sector as usize * SECTOR_SIZE;
+        self.image[lo..lo + SECTOR_SIZE].copy_from_slice(&bytes);
+        if self.slot(block).is_some() {
+            self.touched_slots.insert(block);
+            self.pending.remove(&block);
+            if let Some(sb) = self.superblock(block) {
+                if sb.fs_uuid != self.commits.last_key_value().unwrap().1.sb.fs_uuid {
+                    self.fail("W2");
+                }
+                // Trees and data must already exist in the pre-superblock
+                // durable image, not just in the volatile device cache.
+                let commit = Commit::read(&self.durable, sb).unwrap_or_else(|_| self.fail("W2"));
+                self.pending.insert(block, commit);
+            }
+        } else {
+            self.dirty.insert(sector);
+        }
+    }
+
     fn healthy(&self) {
         if let Some(rule) = self.breach {
             panic!("{rule}: recording run already failed");
@@ -326,45 +358,27 @@ impl BlockDevice for RecordingDevice {
         Ok(())
     }
     fn write_block(&self, sector: u64, buf: &[u8]) -> Result<(), BlockError> {
+        self.write_blocks(sector, 1, buf)
+    }
+    fn write_blocks(&self, start: u64, count: usize, buf: &[u8]) -> Result<(), BlockError> {
         let mut s = self.state.lock();
         s.healthy();
-        if sector >= s.image.len() as u64 / SECTOR_SIZE as u64 {
+        if start
+            .checked_add(count as u64)
+            .is_none_or(|end| end > s.image.len() as u64 / SECTOR_SIZE as u64)
+        {
             return Err(BlockError::OutOfBounds);
         }
-        if buf.len() < SECTOR_SIZE {
-            return Err(BlockError::IoError);
-        }
-        let bytes: [u8; SECTOR_SIZE] = buf[..SECTOR_SIZE].try_into().unwrap();
-        s.events.push(Event::Write { sector, bytes });
-        let block = sector / (BLOCK_SIZE / SECTOR_SIZE) as u64;
-        if s.commits.values().any(|c| c.live.contains(&block)) {
-            s.fail("W1");
-        }
-        if s.slot(block).is_some() {
-            if !s.dirty.is_empty() {
-                s.fail("W2");
-            }
-        } else if s.pending.values().any(|c| c.live.contains(&block)) {
-            s.fail("W2");
-        }
-        let lo = sector as usize * SECTOR_SIZE;
-        s.image[lo..lo + SECTOR_SIZE].copy_from_slice(&bytes);
-        if s.slot(block).is_some() {
-            s.touched_slots.insert(block);
-            s.pending.remove(&block);
-            if let Some(sb) = s.superblock(block) {
-                if sb.fs_uuid != s.commits.last_key_value().unwrap().1.sb.fs_uuid {
-                    s.fail("W2");
-                }
-                // Trees and data must already exist in the pre-superblock
-                // durable image, not just in the volatile device cache.
-                let commit = Commit::read(&s.durable, sb).unwrap_or_else(|_| s.fail("W2"));
-                s.pending.insert(block, commit);
-            }
-        } else {
-            s.dirty.insert(sector);
+        let len = count.checked_mul(SECTOR_SIZE).ok_or(BlockError::IoError)?;
+        let buf = buf.get(..len).ok_or(BlockError::IoError)?;
+        // One command can still leave any subset of its sectors on the media.
+        for (i, bytes) in buf.chunks_exact(SECTOR_SIZE).enumerate() {
+            s.write_sector(start + i as u64, bytes.try_into().unwrap());
         }
         Ok(())
+    }
+    fn max_single_write_bytes(&self) -> usize {
+        BLOCK_SIZE
     }
     fn block_size(&self) -> usize {
         SECTOR_SIZE

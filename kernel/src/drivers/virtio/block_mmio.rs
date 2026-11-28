@@ -1305,6 +1305,10 @@ pub fn write_sector(
     write_sectors(device_index, sector, buffer)
 }
 
+pub fn max_single_write_bytes(device_index: usize) -> usize {
+    block_device_state(device_index).map_or(0, |state| state.chain_bytes)
+}
+
 /// Write consecutive sectors from `buffer`, a nonzero multiple of the sector
 /// size, in a window of chains. The first failed chain fails the call once
 /// each chain issued has returned; a flush waits for them.

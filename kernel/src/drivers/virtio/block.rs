@@ -767,6 +767,10 @@ impl VirtioBlockDevice {
         self.transfer(guard, start_sector, Data::Read(buffer))
     }
 
+    pub fn max_single_write_bytes(&self) -> usize {
+        self.chain_bytes
+    }
+
     /// Write consecutive sectors in a window of chains.
     pub fn write_sectors(&self, start_sector: u64, buffer: &[u8]) -> Result<(), &'static str> {
         let end = self.validate_transfer(start_sector, buffer.len())?;

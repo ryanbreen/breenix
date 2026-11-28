@@ -75,6 +75,8 @@ pub trait BlockDevice: Send + Sync {
         Ok(())
     }
 
+    fn max_single_write_bytes(&self) -> usize { 0 }
+
     /// Get the block size in bytes
     ///
     /// This is the native block size for this device. For raw sector devices,
