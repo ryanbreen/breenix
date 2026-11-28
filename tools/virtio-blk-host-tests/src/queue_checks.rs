@@ -396,3 +396,17 @@ fn a_used_entry_naming_a_staged_chain_stops_the_queue_and_keeps_the_chain() {
     assert_eq!(queue.finish(&mut dma, a, Some(&mut [0; 512])), Err(RequestError::Lost));
 }
 
+#[test]
+fn a_stopped_queue_publishes_no_staged_chain() {
+    // Caller W stages a write; before W publishes, another caller's wait is
+    // abandoned and the queue stops, so W's chain is lost and W gets an
+    // error. The device must then never see that write.
+    let (mem, mut dev, mut queue, mut dma) = setup(MODERN);
+    let w = queue.reserve(0x77).unwrap();
+    queue.submit(&mut dma, w, request_type::OUT, 16, Some(&[0xc3; 1024]), 1024).unwrap();
+    queue.stop();
+    assert_eq!(queue.finish(&mut dma, w, None), Err(RequestError::Lost));
+    assert!(!queue.publish(), "publish reported a notification for a stopped queue");
+    assert!(mem.borrow().idx_stores.is_empty(), "the stopped queue stored avail.idx");
+    assert!(dev.take().is_empty(), "the device was given a write its caller saw fail");
+}
