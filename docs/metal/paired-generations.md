@@ -116,8 +116,8 @@ to the default tree. PR A adds a third slot:
   `MountState::nodes` and the `touches` set. `memory::file_map`'s mapping state for those nodes is the fourth; how
   it is keyed was not traced for this design, so PR A's builder records its key in the plan and purges it the same
   way. After the sync, detach removes each entry whose tag is `STAGING_TREE` from those four, walking `InodeCache`'s
-  slots once (bounded by its RAM budget, at most 2 MiB). Attach then checks those four for a staging-tagged entry, and
-  refuses with `EBUSY` otherwise. The decoded-node cache is keyed by block address and node generation (#3245) and
+  slots once (bounded by its RAM budget, at most 2 MiB). Attach then checks those four for a staging-tagged entry and
+  refuses with `EBUSY` if it finds one. The decoded-node cache is keyed by block address and node generation (#3245) and
   the block cache by block address, so these two do not alias across roots.
 - The staging attachment has no on-disk record. After a crash or reboot, no tree is attached, and the draft is
   just a root.
