@@ -61,3 +61,20 @@ fn a_charge_never_passes_the_limit_except_a_mount_with_nothing_charged() {
     // After that, a mount that holds dirty pages waits.
     assert!(count.try_charge(1, 100, 40).is_err());
 }
+
+#[test]
+fn two_writers_on_one_empty_mount_take_the_lone_part_exception_once() {
+    // limit 120, with 100 charged by another mount; this mount holds nothing.
+    let count = DirtyCount::new();
+    count.charge_unchecked(100);
+    // Two writers to different files on the mount overlap (their io locks
+    // are per file), and each finds the mount holding nothing before either
+    // has charged.
+    let mount_seen_by_both = 0;
+    assert_eq!(count.try_charge(40, 120, mount_seen_by_both), Ok(()));
+    assert_eq!(
+        count.try_charge(40, 120, mount_seen_by_both),
+        Err(Throttle { charged: 140, limit: 120 })
+    );
+    assert_eq!(count.charged(), 140);
+}
