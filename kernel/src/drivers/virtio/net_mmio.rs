@@ -6,9 +6,11 @@
 //! each behind its own lock (`RXQ`, `TXQ`). Their rings and copy buffers are
 //! frames allocated at `init`, held for the device's lifetime. With
 //! VIRTIO_NET_F_CTRL_VQ and VIRTIO_NET_F_MQ the driver asks for one pair per
-//! CPU through the control queue, and keeps one pair if the device refuses.
-//! A transmitted frame goes to the queue its IPv4 flow hashes to, so a flow
-//! keeps its order; receive drains the active queues in turn.
+//! CPU through the control queue, and transmits on one pair if the device
+//! refuses or does not answer in time. A transmitted frame goes to the queue
+//! its IPv4 flow hashes to, so a flow keeps its order; receive drains the
+//! receive queues of every pair set up in turn, since a late answer may still
+//! take effect.
 //!
 //! Negotiated when offered: MRG_RXBUF (a frame over several receive buffers),
 //! EVENT_IDX (notification suppression by index), CSUM and HOST_TSO4
@@ -321,8 +323,13 @@ struct DeviceInfo {
     slot: usize,
     mac: [u8; 6],
     neg: Negotiated,
-    /// Queue pairs in use: queue `2k` receives and `2k + 1` transmits.
-    pairs: usize,
+    /// Queue pair `k` is queue `2k`, which receives, and `2k + 1`, which
+    /// transmits. The receive queues of the pairs set up are all drained: a
+    /// VQ_PAIRS_SET whose answer `init` stopped waiting for may still take
+    /// effect, and the device then steers frames to them.
+    rx_pairs: usize,
+    /// The pairs transmitted on: those the device confirmed, or the first.
+    tx_pairs: usize,
 }
 
 static DEVICE: spin::Once<DeviceInfo> = spin::Once::new();
@@ -646,7 +653,7 @@ pub fn init() -> Result<(), &'static str> {
         if let Some(mut device) = VirtioMmioDevice::probe(base) {
             if device.device_id() == device_id::NETWORK {
                 crate::serial_println!("[virtio-net] Found network device at {:#x} (slot {})", base, i);
-                let (mac, neg, pairs) = init_device(&mut device)?;
+                let (mac, neg, rx_pairs, tx_pairs) = init_device(&mut device)?;
                 let irq = VIRTIO_IRQ_BASE + i as u32;
                 crate::serial_println!("[virtio-net] Network device IRQ {} (will enable after net init)", irq);
                 DEVICE.call_once(|| DeviceInfo {
@@ -655,7 +662,8 @@ pub fn init() -> Result<(), &'static str> {
                     slot: i,
                     mac,
                     neg,
-                    pairs,
+                    rx_pairs,
+                    tx_pairs,
                 });
                 return Ok(());
             }
@@ -764,7 +772,10 @@ fn fill_rx(k: usize) -> bool {
 /// Send one control command and wait for the device's answer (section
 /// 5.1.6.5): the class and command, then the data, both device-readable, then
 /// the ack byte, device-writable, each in its own descriptor as the legacy
-/// framing rules require. True when the device answered VIRTIO_NET_OK.
+/// framing rules require. True when the device answered VIRTIO_NET_OK; false
+/// on VIRTIO_NET_ERR or when no answer came in time. An unanswered command
+/// stays the device's and may still take effect; its buffers are kept for the
+/// device's lifetime, so a late answer writes only to them.
 fn control(device: &VirtioMmioDevice, queue: u32, ctrl: &mut CtrlState, class: u8, command: u8, data: &[u8]) -> bool {
     let (cmd, payload, ack) = (ctrl.buf, ctrl.buf + 64, ctrl.buf + 128);
     unsafe {
@@ -793,9 +804,9 @@ fn control(device: &VirtioMmioDevice, queue: u32, ctrl: &mut CtrlState, class: u
     false
 }
 
-/// Bring the device up: returns its MAC address, what was negotiated, and the
-/// queue pairs in use.
-fn init_device(device: &mut VirtioMmioDevice) -> Result<([u8; 6], Negotiated, usize), &'static str> {
+/// Bring the device up: returns its MAC address, what was negotiated, the
+/// queue pairs set up, and the pairs the device confirmed for transmission.
+fn init_device(device: &mut VirtioMmioDevice) -> Result<([u8; 6], Negotiated, usize, usize), &'static str> {
     use super::mmio::status;
     let version = device.version();
     crate::serial_println!("[virtio-net] Device version: {}", version);
@@ -918,7 +929,9 @@ fn init_device(device: &mut VirtioMmioDevice) -> Result<([u8; 6], Negotiated, us
     }
 
     // Section 5.1.6.5.6: only the first pair is used until the device accepts
-    // VQ_PAIRS_SET; a refusal or no control queue keeps it at one.
+    // VQ_PAIRS_SET; a refusal or no control queue keeps transmission on it.
+    // Every pair set up is still drained, since an answer that came too late
+    // may still have taken effect.
     let mut active = 1;
     if pairs > 1 {
         if let Some((index, ctrl)) = ctrl.as_mut() {
@@ -935,7 +948,7 @@ fn init_device(device: &mut VirtioMmioDevice) -> Result<([u8; 6], Negotiated, us
         active, pairs, device_pairs, want, rx_depth, tx_depth
     );
     crate::serial_println!("[virtio-net] Network device initialized successfully");
-    Ok((mac, neg, active))
+    Ok((mac, neg, pairs, active))
 }
 
 /// The transmit queue for `frame`: its IPv4 flow's hash over the queue pairs,
@@ -1060,7 +1073,7 @@ pub fn transmit(data: &[u8]) -> Result<(), &'static str> {
 /// them as one chain, the header in a descriptor of its own when the device
 /// needs that, then notify the device if it asked.
 fn submit(info: &DeviceInfo, frame: &[u8], header: &[u8; 12]) -> Result<(), TxError> {
-    let k = tx_queue_for(frame, info.pairs);
+    let k = tx_queue_for(frame, info.tx_pairs);
     let hdr = &header[..info.neg.hdr_len];
     let separate = info.neg.separate_header;
     let count = if separate {
@@ -1102,7 +1115,7 @@ fn submit(info: &DeviceInfo, frame: &[u8], header: &[u8; 12]) -> Result<(), TxEr
 /// Take back completed transmissions on the active queues; returns how many.
 pub fn reclaim_tx_completed() -> usize {
     let Some(info) = DEVICE.get() else { return 0 };
-    TXQ[..info.pairs].iter().map(|q| q.lock().queue.reclaim()).sum()
+    TXQ[..info.tx_pairs].iter().map(|q| q.lock().queue.reclaim()).sum()
 }
 
 /// The next received frame on any active queue (non-blocking). It stays valid
@@ -1114,11 +1127,11 @@ pub fn reclaim_tx_completed() -> usize {
 pub fn receive() -> Option<&'static [u8]> {
     let info = DEVICE.get()?;
     let start = RX_NEXT.load(Ordering::Relaxed);
-    for i in 0..info.pairs {
-        let k = (start + i) % info.pairs;
+    for i in 0..info.rx_pairs {
+        let k = (start + i) % info.rx_pairs;
         let mut rx = RXQ[k].lock();
         if let Some(frame) = rx.next_frame() {
-            RX_NEXT.store((k + 1) % info.pairs, Ordering::Relaxed);
+            RX_NEXT.store((k + 1) % info.rx_pairs, Ordering::Relaxed);
             return Some(frame);
         }
         if rx.recycle() {
@@ -1132,7 +1145,7 @@ pub fn receive() -> Option<&'static [u8]> {
 /// Call after processing a batch of received frames.
 pub fn recycle_rx_buffers() {
     let Some(info) = DEVICE.get() else { return };
-    for (k, queue) in RXQ[..info.pairs].iter().enumerate() {
+    for (k, queue) in RXQ[..info.rx_pairs].iter().enumerate() {
         // VirtIO 1.2 section 2.7: only a used buffer has returned to the
         // driver, so only those are offered again.
         let kick = queue.lock().recycle();
@@ -1145,7 +1158,7 @@ pub fn recycle_rx_buffers() {
 /// Completions dropped as malformed, over the receive queues.
 pub fn rx_dropped() -> u64 {
     let Some(info) = DEVICE.get() else { return 0 };
-    RXQ[..info.pairs].iter().map(|q| q.lock().dropped).sum()
+    RXQ[..info.rx_pairs].iter().map(|q| q.lock().dropped).sum()
 }
 
 /// The accepted feature bits.
