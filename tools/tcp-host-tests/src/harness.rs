@@ -118,10 +118,13 @@ pub struct Sent {
     pub ack: u32,
     pub flags: u8,
     pub len: usize,
+    /// The window field, unscaled.
+    pub window: u16,
 }
 
 const SYN: u8 = 0x02;
 const ACK: u8 = 0x10;
+const PSH: u8 = 0x08;
 
 pub fn ip_output(src: [u8; 4], dst: [u8; 4], segment: &[u8]) -> Result<(), &'static str> {
     if REFUSE.load(Ordering::SeqCst) {
@@ -137,6 +140,7 @@ pub fn ip_output(src: [u8; 4], dst: [u8; 4], segment: &[u8]) -> Result<(), &'sta
         ack: header.ack_num,
         flags: header.flags.to_byte(),
         len: payload.len(),
+        window: header.window_size,
     });
     Ok(())
 }
@@ -215,6 +219,25 @@ impl Flow {
         self.deliver(self.peer_seq, ack, ACK, &[]);
     }
 
+    /// The peer sends `len` bytes of data, in order, acknowledging our
+    /// initial sequence number: the checks here send it no data first.
+    pub fn send(&mut self, len: usize) {
+        let payload = vec![0xa5; len];
+        self.deliver_payload(self.peer_seq, self.data_start, ACK | PSH, &[], &payload);
+        self.peer_seq = self.peer_seq.wrapping_add(len as u32);
+    }
+
+    /// The peer's next sequence number.
+    pub fn peer_next(&self) -> u32 {
+        self.peer_seq
+    }
+
+    /// The application reads up to `len` bytes; returns how many it got.
+    pub fn read(&self, len: usize) -> usize {
+        let mut buf = vec![0u8; len];
+        tcp::tcp_recv(&self.id, &mut buf).expect("the connection is in the table")
+    }
+
     /// Our data's sequence number `n` SMSS in.
     pub fn at(&self, n: u32) -> u32 {
         self.data_start.wrapping_add(n * SMSS)
@@ -232,6 +255,10 @@ impl Flow {
     /// Hand the segment to TCP as the receive path does, then run deferred
     /// output as the receive path does once it has processed its batch.
     fn deliver(&self, seq: u32, ack: u32, flags: u8, options: &[u8]) {
+        self.deliver_payload(seq, ack, flags, options, &[]);
+    }
+
+    fn deliver_payload(&self, seq: u32, ack: u32, flags: u8, options: &[u8], payload: &[u8]) {
         let mut segment = Vec::new();
         segment.extend_from_slice(&PEER_PORT.to_be_bytes());
         segment.extend_from_slice(&self.id.local_port.to_be_bytes());
@@ -242,6 +269,7 @@ impl Flow {
         segment.extend_from_slice(&self.window.to_be_bytes());
         segment.extend_from_slice(&[0, 0, 0, 0]);
         segment.extend_from_slice(options);
+        segment.extend_from_slice(payload);
         let checksum = tcp::tcp_checksum(PEER_IP, LOCAL_IP, &segment);
         segment[16..18].copy_from_slice(&checksum.to_be_bytes());
         let ip = crate::net::ipv4::Ipv4Packet {
