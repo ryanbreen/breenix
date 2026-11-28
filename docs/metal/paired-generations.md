@@ -418,7 +418,16 @@ name, `gen-<id>`. Before writing the trial image, a manager that reads version 2
   line to name the same `<id>`.
 
 Any mismatch is `live flash refused` and the manager boots CURRENT. Version 1 manifests (kernel-only flashes) keep
-today's behavior. The host writes version 2 only when the installed manager supports it (`disk.json` records the
+today's behavior.
+
+**Size.** A version 1 manifest is at most 230 bytes: the 16-byte header, a 33-byte token line, a 41-byte commit
+line, a size line of at most 10 bytes (`MAX_IMAGE` is 536,870,912, nine digits), and two 65-byte digest lines. The
+root line adds 27 bytes (`gen-` plus the 22-character ID plus a newline), so version 2 is 256 bytes for an image
+of eight digits and 257 for nine; today's 262 MB kernel images have nine. The manager reads the staged manifest
+into a 255-byte buffer (live_sequence.rs, `let mut text = [0; 255]`), so `read_record` returns `VOLUME_CORRUPTED`
+for both sizes. It reads `LIVE.ID` into 256 bytes, which cannot hold the 257-byte form. PR C therefore sizes both
+buffers, and the record's attempt field (5.1), from one constant `MANIFEST_MAX = 512`, and each read fails rather
+than truncating when a file is longer than its buffer. The host writes version 2 only when the installed manager supports it (`disk.json` records the
 manager commit that `--replace-manager` installed). Until then, the root is named only through the image's intent.
 A missing root then costs one failed trial, ended by the 600 s deadline, instead of a refusal before the trial.
 
@@ -637,7 +646,7 @@ Scope: sections 4 to 6.
 | Test | Where | Checks | Red on the old code because |
 |---|---|---|---|
 | T-B1 apply over a fixture clone | `tests/persistent_install/` host test, beside `tests/metal_replace_usr_host.rs` | A fixture clone with a baseline, an inventory and objects. After apply and verify: the payload rows equal the inventory; a pet file at an unmanaged path is kept; a locally changed managed file is moved to `.breenix-carried/<prev>/` with set-ID cleared; a dropped, unchanged managed file is removed; a BusyBox hard-link group across `/bin` and `/sbin`, a symlink and set-ID `su` are exact; a symlink whose target the clone lacks is rebuilt from its object; two independent rows with one SHA-256 end as two inodes; a group whose members match on their own but are two inodes in the clone, and a group one of whose members is linked to a pet path, are each rebuilt as one inode with the group's link count; `paired have` reports neither group as satisfied; mount points are untouched; a rerun after a cut at each file is idempotent. Path safety (4.0): with a pet symlink at `usr/lib` pointing outside the tree, at `usr/lib/breenix/rust-current`, and at `opt/breenix/rust`, the conversion and apply refuse, and the symlinks' targets (a fixture file standing in for one in `/home`) are byte-for-byte unchanged. Toolchain: the conversion leaves a fixture PREVIOUS root, which lacked the file, with `usr/lib/breenix/rust-current` naming the old ID before shared `CURRENT` becomes a symlink, and a read-only retained root refuses it; verify fails when the draft's `/lib/libc.so` differs from the selected version's `runtime` entry. Deletions and baselines: a managed file deleted on the box and still in the inventory is restored and listed in `deletedOnBox`; with no baseline, a pet edit to a payload file is carried; a baseline with an unknown header refuses before the clone. Epoch custody: begin, apply and publish run in sequence, and publish compares the E1 that begin recorded after apply has removed `.breenix-incoming` and the unmount has run; a recorded boot ID that differs from the fixture's refuses publish. | The check commit's stub routes `apply` to today's only in-place path, `replace_usr`, which leaves `/bin`, `/sbin` and `/lib` unchanged |
-| T-B2 manager version 2 | `scripts/metal/efi-stub/tests/live_sequence.rs` | The trial is refused for a missing root, a read-only root, or an image intent naming another userland. It is accepted when the three agree. Version 1 behaves exactly as today. | `Manifest::parse` rejects a seventh line |
+| T-B2 manager version 2 | `scripts/metal/efi-stub/tests/live_sequence.rs` | The trial is refused for a missing root, a read-only root, or an image intent naming another userland. It is accepted when the three agree. Version 1 behaves exactly as today. Size: the manifests come from the host's own writer, not hand-written text. The host test emits a version-2 manifest for a 536,870,912-byte image and a 22-character ID (257 bytes) and one for an eight-digit size (256 bytes) into fixture files, and the Rust test reads those files. Each is accepted from the staged record, stored as the attempt, read back byte for byte and promoted. A 513-byte record is refused rather than truncated. | `Manifest::parse` rejects a seventh line, and the 255-byte staging buffer rejects the 256- and 257-byte manifests |
 | T-B3 host flow | `tests/metal_live_flash_test.py` | `prepare --paired`: the slot intent names the new generation; the manifest carries the root line only for a version-2 manager. The retained set keeps the physical PREVIOUS's root when an acknowledged trial is not promoted (a stale base or a foreign NEXT), and drops a root only after a `promoted` line removes it from both physical slots. The commit check needs `/` to be `gen-<new>` `rw` plus the verify digest. A rollback receipt needs the old commit and `gen-<old>`. Pending keys: begin and publish refuse while `var/lib/accounts/pending/` holds a file, and the reboot command's guard does too. Forced rollback: a fixture trial that does not answer SSH reaches the deadline and `force_rollback` requests the lease reset; one that answers but fails the commit check gets the guarded reboot; neither returns before reading the rollback lines and SSH on the old pair, and neither writes `committed`. Staging order: the tool and the inventory are published, and `paired protocol` answers, before `paired begin`; the eight box subcommands and the cold verify invoke the staged tool path, not `/sbin/persistent-install`. | Today's `prepare` names CURRENT's userland (metal_live_flash.py:100) |
 
 **The live run on the R240** is the only box activity. It goes through the one-reboot path, under the
@@ -686,9 +695,12 @@ That is three reboots in total (one in step 1, two in step 2), plus the step-0 f
 - **`/opt/breenix/rust/CURRENT`**: only the selection moves into the generation, and the version directories stay
   in shared `/opt`. That gives an exact rollback without copying toolchains between trees: `Files` refuses an
   edit whose inodes span two trees (ops.rs:855), so a toolchain cannot be renamed from `/opt` into a generation.
-- **The live run does not replace the manager.** Version 2's checks are covered by T-B2, and the live run uses the
-  installed manager's version. Replacing the manager needs a recovery netboot (README "Kernel flash"), which
-  DEV-40(3c) does not name.
+- **The live run itself does not replace the manager**, because a replacement needs a recovery netboot (README
+  "Kernel flash"), which DEV-40(3c) does not name. A live run on today's manager would use version 1 and would not
+  reach the version-2 size limits (4.7) or PR C's records, so section 11 asks the coordinator to install PR C's
+  manager first. When it is installed, the live run writes version 2, and its evidence adds the manifest's byte
+  length and version line beside the manager's `live flash: trial` line. Without the replacement, T-B2 and T-C1
+  are the only checks of those two, and the receipt says the live run used version 1.
 - **The live run's forced rollback uses a new inject, `paired-no-commit`**, instead of `upgrade-no-ssh`. A broken
   loader stops before the new root is mounted.
 - **No home snapshot**, unlike the netbooted BreenFS upgrade, because DEV-40 leaves `/home` untouched.
