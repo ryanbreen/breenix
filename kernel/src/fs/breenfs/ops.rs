@@ -626,8 +626,8 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
     /// Freeze generation N (E24 coordinator 597/601(1)) and return N+1's
     /// scratch Files view over frozen N and `store`, the published N-1 store.
     /// Constant work: the transaction's private maps move into one shared
-    /// immutable layer, and the open/orphan/ROOT indexes are shared
-    /// copy-on-write. This view keeps preparing N; the fork only describes N+1
+    /// immutable layer, the open and ROOT indexes are shared copy-on-write,
+    /// and the fork's orphan sets start empty. This view keeps preparing N; the fork only describes N+1
     /// for foreground callers until N+1's changes are replayed onto N's
     /// published view. Its data map starts empty: N's private data is written
     /// only by preparation.
@@ -648,9 +648,14 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             space_root: self.space_root,
             data: BTreeMap::new(),
             open_inodes: self.open_inodes.clone(),
-            orphans: self.orphans.clone(),
-            orphan_work: self.orphan_work.clone(),
-            unvalidated_orphans: self.unvalidated_orphans.clone(),
+            // The orphan sets decide which orphans preparation reclaims.
+            // The publication loop replays N+1 into N's view before it
+            // freezes again, so the scratch view is not prepared, and N+1's
+            // unlinks, opens and closes reach these sets in N's view by
+            // replay. Shared here, N's reclaim would copy each set it edits.
+            orphans: Inodes::default(),
+            orphan_work: Inodes::default(),
+            unvalidated_orphans: Inodes::default(),
             orphan_count: 0,
             // Built on first read of the scratch tree, as cookies are.
             extent_maps: RefCell::default(),
@@ -676,9 +681,8 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             if id == 1 && self.default.is_some() { self.default = Some(root.clone()); }
             Arc::make_mut(&mut self.roots).insert(id, root);
         }
-        let space_nodes = self.txn.space_node_count();
-        self.txn = Transaction::new_owned_with_dead(store, sb.space_root, generation,
-            self.txn.take_dead_nodes(), space_nodes)?;
+        let state = self.txn.take_space_state()?;
+        self.txn = Transaction::new_owned_continuing(store, sb.space_root, generation, state)?;
         self.space_root = sb.space_root;
         self.next_root_id = sb.next_root_id;
         self.changed_roots.clear();
@@ -1354,8 +1358,11 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         self.put_inode(ino, inode)
     }
     fn reclaim_orphans(&mut self) -> Result<(), Error> {
-        let candidates: Vec<_> = self.orphan_work.iter().copied().collect();
-        for ino in candidates {
+        // Walk the work set by cursor: a copy of it would be one allocation
+        // proportional to the unlinked inodes, at commit.
+        let mut cursor = 0;
+        while let Some(&ino) = self.orphan_work.range(cursor..).next() {
+            cursor = ino.checked_add(1).ok_or(Error::EIO)?;
             preemption_point();
             #[cfg(test)] btree::measurement::orphan_visit();
             let k = key(ORPHAN_OBJECT, format::ORPHAN, ino ^ self.tag(ino));
@@ -1583,6 +1590,25 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         runs.finish()?;
         Ok(n)
     }
+    /// The allocation goal for file data at `off`: the physical block the
+    /// nearest preceding EXTENT would map `off` to, so a file grows in place
+    /// and a sparse file keeps its spacing; without a preceding extent there is no goal.
+    fn data_goal(&self, ino: u64, off: u64) -> Result<Option<u64>, Error> {
+        let Some(before) = off.checked_sub(1) else {
+            return Ok(None);
+        };
+        let mut goal = None;
+        btree::visit_range_reverse(&self.txn.view(), self.tree(ino).root,
+            self.inode_key(ino, format::EXTENT, 0), self.inode_key(ino, format::EXTENT, before),
+            &mut |key, bytes| {
+                let e = Extent::decode(bytes)?;
+                let blocks = (off - key.offset) / BLOCK_SIZE as u64;
+                goal = e.phys_start.checked_add(u64::from(e.extent_offset))
+                    .and_then(|block| block.checked_add(blocks));
+                Ok::<_, Error>(false)
+            })?;
+        Ok(goal)
+    }
     // Logical runs are bounded to 1 MiB (design 1.2); fragmented FREE space
     // can require several physical extents for one such run.
     fn replace_extent(&mut self, ino: u64, off: u64, bytes: &[u8]) -> Result<(), Error> {
@@ -1591,9 +1617,11 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             .map(|bytes| { preemption_point(); crc32c::checksum(bytes) })
             .collect();
         let mut done = 0;
+        let mut goal = self.data_goal(ino, off)?;
         while done < crcs.len() {
             preemption_point();
-            let (addr, blocks) = self.txn.allocate_data_run(&crcs[done..])?;
+            let (addr, blocks) = self.txn.allocate_data_run(&crcs[done..], goal)?;
+            goal = addr.checked_add(blocks);
             let next = done + blocks as usize;
             self.data
                 .insert(addr, bytes[done * BLOCK_SIZE..next * BLOCK_SIZE].to_vec());

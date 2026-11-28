@@ -2,18 +2,38 @@
 //!
 //! The caller supplies a private transaction store/root. As with `btree`, a
 //! fallible store must roll back a failed edit; this layer does not publish roots
-//! or perform I/O. The transaction layer owns space-tree node allocation and the
-//! deferred refcount fixpoint. Ranges supplied to `add_free` must be unowned and
-//! outside reserved blocks. FS child references are managed by txn/the reaper.
+//! or perform I/O. The transaction layer owns allocation policy, the delayed
+//! reference heads and space-tree node allocation; this layer edits items.
+//!
+//! Free space is chosen from `FreeIndex`, an in-memory mirror of the FREE items
+//! ordered by start and by length (the pair of by-block and by-size trees of
+//! XFS's free-space design), so allocation does not walk FREE on disk. The
+//! transaction later removes the chosen range from FREE with `claim`.
+//!
+//! Released space waits in PENDING until G+2 (design 2.5). `Quarantine` keeps
+//! the runs each generation wrote, coalesced, so promotion deletes known keys
+//! instead of reading PENDING. PENDING that a mount found on disk is promoted
+//! by a streaming scan in batches of `PROMOTE_BATCH` records.
 use super::preempt::preemption_point;
 use super::{
     btree::{self, NodeStore},
     format::{self, BlockPtr, Free, Key, Pending, Ref},
 };
-use alloc::{collections::BTreeSet, vec::Vec};
+use alloc::{
+    collections::{BTreeMap, BTreeSet},
+    vec::Vec,
+};
 
 const FREE_OBJECT: u64 = 0xffff_ffff_ffff_ff20;
 const PENDING_OBJECT: u64 = 0xffff_ffff_ffff_ff30;
+
+/// PENDING records a streaming promotion holds at once.
+pub const PROMOTE_BATCH: usize = 64;
+/// Free ranges examined on each side of an allocation goal before falling
+/// back to the best fit by length.
+const GOAL_PROBE: usize = 16;
+/// Blocks in one FS or SPACE node allocation (design 2.4).
+const NODE_BLOCKS: u64 = 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
@@ -55,14 +75,16 @@ fn end(start: u64, length: u64) -> Result<u64, Error> {
     start.checked_add(length).ok_or(Error::Invalid)
 }
 fn valid_ref(length: u64, r: &Ref) -> bool {
-    r.refcount != 0
-        && r.alloc_generation != 0
-        && match r.kind {
-            1 => length == 4 && r.crcs.is_empty(),
-            2 => length == 4 && r.crcs.is_empty() && r.refcount == 1,
-            3 => (1..=256).contains(&length) && r.crcs.len() as u64 == length,
-            _ => false,
-        }
+    r.refcount != 0 && r.alloc_generation != 0 && valid_shape(length, r.kind, r.refcount, r.crcs.len())
+}
+/// The lengths, counts and checksum counts a REF of `kind` may have (2.4).
+pub(super) fn valid_shape(length: u64, kind: u8, refcount: u32, crcs: usize) -> bool {
+    match kind {
+        1 => length == 4 && crcs == 0,
+        2 => length == 4 && crcs == 0 && refcount == 1,
+        3 => (1..=256).contains(&length) && crcs as u64 == length,
+        _ => false,
+    }
 }
 
 /// Read one exact physical allocation, including its per-block data checksums.
@@ -83,47 +105,98 @@ pub fn reference<S: NodeStore>(
     Ok(Some(r))
 }
 
-fn range<S: NodeStore>(
-    store: &S,
-    root: BlockPtr,
-    object: u64,
-    ty: u8,
-) -> Result<Vec<(Key, Vec<u8>)>, Error> {
-    if store.read_node(root)?.header.tree != 2 { return Err(Error::Invalid); }
-    Ok(btree::range(store, root, key(object, ty, 0), key(object, ty, u64::MAX))?)
+/// Store a REF for an allocation whose count changed in this transaction.
+pub fn put_reference<S: NodeStore>(
+    store: &mut S,
+    root: &mut BlockPtr,
+    start: u64,
+    length: u64,
+    r: &Ref,
+) -> Result<(), Error> {
+    if !valid_ref(length, r) {
+        return Err(Error::Invalid);
+    }
+    btree::insert(store, root, key(start, format::REF, length), &r.encode())?;
+    Ok(())
 }
+
+/// Remove a REF whose count reached 0. `dead` keeps an FS node's outgoing
+/// references for the reaper (design 2.6); otherwise the caller quarantines it.
+pub fn drop_reference<S: NodeStore>(
+    store: &mut S,
+    root: &mut BlockPtr,
+    start: u64,
+    length: u64,
+    dead: bool,
+) -> Result<(), Error> {
+    if btree::delete(store, root, key(start, format::REF, length))?.is_none() {
+        return Err(Error::Invalid);
+    }
+    if dead {
+        mark_dead(store, root, start)?;
+    }
+    Ok(())
+}
+
+/// Mark an unreferenced FS node whose children still count as referenced.
+pub fn mark_dead<S: NodeStore>(store: &mut S, root: &mut BlockPtr, addr: u64) -> Result<(), Error> {
+    btree::insert(store, root, key(addr, format::DEAD, 4), &[])?;
+    Ok(())
+}
+
+/// Add `[start, start + length)` to disjoint runs keyed by start, merging it
+/// with the run that ends at `start` and the run that begins at its end.
+pub fn insert_run(runs: &mut BTreeMap<u64, u64>, start: u64, length: u64) -> Result<(), Error> {
+    let mut first = start;
+    let mut stop = end(start, length)?;
+    if let Some((&s, &l)) = runs.range(..=start).next_back() {
+        let e = end(s, l)?;
+        if e > start {
+            return Err(Error::Invalid);
+        }
+        if e == start {
+            runs.remove(&s);
+            first = s;
+        }
+    }
+    if let Some((&s, &l)) = runs.range(start + 1..).next() {
+        if s < stop {
+            return Err(Error::Invalid);
+        }
+        if s == stop {
+            runs.remove(&s);
+            stop = end(s, l)?;
+        }
+    }
+    runs.insert(first, stop - first);
+    Ok(())
+}
+
 fn free_record(key: Key, bytes: &[u8]) -> Result<(u64, u64), Error> {
-    if bytes.len() != 8 {
+    if key.object != FREE_OBJECT || key.item_type != format::FREE || bytes.len() != 8 {
         return Err(Error::Invalid);
     }
     let length = Free::decode(bytes)?.length;
     end(key.offset, length)?;
     Ok((key.offset, length))
 }
+fn pending_record(key: Key, bytes: &[u8]) -> Result<(u64, u64, u64), Error> {
+    if key.object != PENDING_OBJECT || key.item_type != format::PENDING || bytes.len() != 16 {
+        return Err(Error::Invalid);
+    }
+    let p = Pending::decode(bytes)?;
+    end(key.offset, p.length)?;
+    if p.released_generation == 0 {
+        return Err(Error::Invalid);
+    }
+    Ok((key.offset, p.length, p.released_generation))
+}
 
 fn free_key(start: u64) -> Key {
     key(FREE_OBJECT, format::FREE, start)
 }
-
-fn merged(mut ranges: Vec<(u64, u64)>) -> Result<Vec<(u64, u64)>, Error> {
-    ranges.sort_unstable_by(|a, b| { preemption_point(); a.cmp(b) });
-    let mut out: Vec<(u64, u64)> = Vec::new();
-    for (start, length) in ranges {
-        preemption_point();
-        end(start, length)?;
-        if let Some((prev, len)) = out.last_mut() {
-            let prev_end = end(*prev, *len)?;
-            if prev_end > start {
-                return Err(Error::Invalid);
-            }
-            if prev_end == start {
-                *len = end(start, length)? - *prev;
-                continue;
-            }
-        }
-        out.push((start, length));
-    }
-    Ok(out)
+fn pending_key(start: u64) -> Key {
+    key(PENDING_OBJECT, format::PENDING, start)
 }
 
 /// Add unowned space and coalesce adjacent FREE items (design invariant A2).
@@ -164,29 +237,159 @@ pub fn add_free<S: NodeStore>(
     Ok(())
 }
 
-/// Last publication needed to include the current PENDING ranges in FREE.
-/// This observes the quarantine; promotion still goes through promote_pending.
-/// Admission snapshots this bound once, rather than chasing later releases.
-#[cfg(test)]
-pub fn pending_promotion_generation<S: NodeStore>(
-    store: &S,
-    root: BlockPtr,
-) -> Result<Option<u64>, Error> {
-    let mut generation = None;
-    for (key, bytes) in range(store, root, PENDING_OBJECT, format::PENDING)? {
-        preemption_point();
-        let pending = Pending::decode(&bytes)?;
-        end(key.offset, pending.length)?;
-        if pending.released_generation == 0 {
+/// Remove `[start, start + length)` from the one FREE item that contains it,
+/// keeping the remainders on either side. The range was chosen from the
+/// transaction's FreeIndex, which mirrors FREE item for item.
+pub fn claim<S: NodeStore>(
+    store: &mut S,
+    root: &mut BlockPtr,
+    start: u64,
+    length: u64,
+) -> Result<(), Error> {
+    let stop = end(start, length)?;
+    let mut found = None;
+    btree::visit_range_reverse(store, *root, free_key(0), free_key(start), &mut |key, bytes| {
+        found = Some(free_record(key, bytes)?);
+        Ok::<_, Error>(false)
+    })?;
+    let (addr, available) = found.ok_or(Error::Invalid)?;
+    let item_end = end(addr, available)?;
+    if item_end < stop {
+        return Err(Error::Invalid);
+    }
+    if addr < start {
+        btree::insert(store, root, free_key(addr), &Free { length: start - addr }.encode())?;
+    } else {
+        btree::delete(store, root, free_key(addr))?;
+    }
+    if stop < item_end {
+        btree::insert(store, root, free_key(stop), &Free { length: item_end - stop }.encode())?;
+    }
+    Ok(())
+}
+
+/// The FREE items of a space tree, by start and by length. Insertion coalesces
+/// with the immediate neighbors only, exactly as `add_free` does on disk, and
+/// removal splits one range as `claim` does, so the index and the FREE items
+/// stay equal item for item.
+#[derive(Clone, Default)]
+pub struct FreeIndex {
+    by_start: BTreeMap<u64, u64>,
+    by_length: BTreeSet<(u64, u64)>,
+}
+impl FreeIndex {
+    fn put(&mut self, start: u64, length: u64) {
+        self.by_start.insert(start, length);
+        self.by_length.insert((length, start));
+    }
+    fn take(&mut self, start: u64) -> Option<u64> {
+        let length = self.by_start.remove(&start)?;
+        self.by_length.remove(&(length, start));
+        Some(length)
+    }
+    /// Append a FREE item read in key order at mount. Items must not overlap.
+    fn push(&mut self, start: u64, length: u64) -> Result<(), Error> {
+        end(start, length)?;
+        if let Some((&s, &l)) = self.by_start.last_key_value() {
+            if end(s, l)? > start {
+                return Err(Error::Invalid);
+            }
+        }
+        self.put(start, length);
+        Ok(())
+    }
+    /// Return unowned space (promotion), coalescing as `add_free` does.
+    pub fn insert(&mut self, start: u64, length: u64) -> Result<(), Error> {
+        let mut first = start;
+        let mut stop = end(start, length)?;
+        if let Some((&s, &l)) = self.by_start.range(..=start).next_back() {
+            let e = end(s, l)?;
+            if e > start {
+                return Err(Error::Invalid);
+            }
+            if e == start {
+                self.take(s);
+                first = s;
+            }
+        }
+        if let Some((&s, &l)) = self.by_start.range(start + 1..).next() {
+            if s < stop {
+                return Err(Error::Invalid);
+            }
+            if s == stop {
+                self.take(s);
+                stop = end(s, l)?;
+            }
+        }
+        self.put(first, stop - first);
+        Ok(())
+    }
+    /// Remove an allocation from the one range that contains it.
+    pub fn remove(&mut self, start: u64, length: u64) -> Result<(), Error> {
+        let stop = end(start, length)?;
+        let (&s, &l) = self.by_start.range(..=start).next_back().ok_or(Error::Invalid)?;
+        let range_end = end(s, l)?;
+        if range_end < stop {
             return Err(Error::Invalid);
         }
-        let promoted = pending
-            .released_generation
-            .checked_add(2)
-            .ok_or(Error::Invalid)?;
-        generation = Some(generation.map_or(promoted, |old: u64| old.max(promoted)));
+        self.take(s);
+        if s < start {
+            self.put(s, start - s);
+        }
+        if stop < range_end {
+            self.put(stop, range_end - stop);
+        }
+        Ok(())
     }
-    Ok(generation)
+    /// Choose `length` blocks. With a goal, the run starting at the goal, else
+    /// the nearest range after it that fits, else the nearest before it, each
+    /// within GOAL_PROBE ranges. Otherwise the smallest range that fits, lowest
+    /// address first. `short` falls back to the largest range.
+    ///
+    /// A goal inside a range would split it in two. It is taken only when
+    /// both pieces left free can still hold a node: otherwise sparse writes
+    /// could turn the node-sized ranges into smaller holes while most of the
+    /// space is free, and settlement could not copy a node
+    /// (tests/space.rs goal_inside_a_free_range_leaves_room_for_nodes).
+    pub fn choose(&self, length: u64, goal: Option<u64>, short: bool) -> Option<(u64, u64)> {
+        if length == 0 {
+            return None;
+        }
+        if let Some(goal) = goal {
+            if let Some((&s, &l)) = self.by_start.range(..=goal).next_back() {
+                let room = s.checked_add(l).and_then(|e| e.checked_sub(goal));
+                let node_sized = |piece: u64| piece == 0 || piece >= NODE_BLOCKS;
+                if room.is_some_and(|room| room >= length
+                    && (goal == s || (node_sized(goal - s) && node_sized(room - length))))
+                {
+                    return Some((goal, length));
+                }
+            }
+            let after = self.by_start.range(goal.saturating_add(1)..).take(GOAL_PROBE)
+                .find(|&(_, &l)| { preemption_point(); l >= length });
+            if let Some((&s, _)) = after {
+                return Some((s, length));
+            }
+            let before = self.by_start.range(..goal).rev().take(GOAL_PROBE)
+                .find(|&(_, &l)| { preemption_point(); l >= length });
+            if let Some((&s, &l)) = before {
+                return Some((s + l - length, length));
+            }
+        }
+        if let Some(&(_, s)) = self.by_length.range((length, 0)..).next() {
+            return Some((s, length));
+        }
+        if short {
+            let &(largest, _) = self.by_length.last()?;
+            let &(l, s) = self.by_length.range((largest, 0)..).next()?;
+            return Some((s, l));
+        }
+        None
+    }
+    /// The ranges in address order (host oracles).
+    pub fn ranges(&self) -> impl Iterator<Item = (u64, u64)> + '_ {
+        self.by_start.iter().map(|(&s, &l)| (s, l))
+    }
 }
 
 /// A fixed-size account of an installed generation's quarantine.
@@ -205,12 +408,8 @@ impl PendingSummary {
             if key.object != PENDING_OBJECT || key.item_type != format::PENDING {
                 continue;
             }
-            let pending = Pending::decode(bytes)?;
-            end(key.offset, pending.length)?;
-            if pending.released_generation == 0 {
-                return Err(Error::Invalid);
-            }
-            summary.include(pending.length, pending.released_generation);
+            let (_, length, generation) = pending_record(*key, bytes)?;
+            summary.include(length, generation);
         }
         Ok(summary)
     }
@@ -230,207 +429,222 @@ impl PendingSummary {
     }
 }
 
-/// Commit-time conversion of quarantined space, even with ample FREE space.
-/// Allocation still prefers FREE within a transaction (design 2.5 reuse rule).
-pub fn promote_pending<S: NodeStore>(
-    store: &mut S,
-    root: &mut BlockPtr,
-    generation: u64,
-) -> Result<PendingSummary, Error> {
-    let mut pending_summary = PendingSummary::default();
-    for (k, bytes) in range(store, *root, PENDING_OBJECT, format::PENDING)? {
+/// Last publication needed to include the current PENDING ranges in FREE.
+/// This observes the quarantine; promotion still goes through the transaction.
+/// Admission snapshots this bound once, rather than chasing later releases.
+#[cfg(test)]
+pub fn pending_promotion_generation<S: NodeStore>(
+    store: &S,
+    root: BlockPtr,
+) -> Result<Option<u64>, Error> {
+    let mut summary = PendingSummary::default();
+    btree::visit_range(store, root, pending_key(0), pending_key(u64::MAX), &mut |key, bytes| {
         preemption_point();
-        let pending = Pending::decode(&bytes)?;
-        end(k.offset, pending.length)?;
-        if pending.released_generation == 0 {
-            return Err(Error::Invalid);
-        }
-        if generation
-            .checked_sub(2)
-            .is_some_and(|limit| pending.released_generation <= limit)
-        {
-            btree::delete(store, root, k)?;
-            add_free(store, root, k.offset, pending.length)?;
-        } else {
-            pending_summary.include(pending.length, pending.released_generation);
-        }
-    }
-    Ok(pending_summary)
-}
-
-/// Allocate a whole REF. Prefer existing FREE space; only if that cannot fit,
-/// convert eligible PENDING items to FREE, coalescing before selecting a range.
-/// CRCs are supplied from the final data-block bytes by the transaction writer.
-pub fn allocate<S: NodeStore>(
-    store: &mut S,
-    root: &mut BlockPtr,
-    length: u64,
-    kind: Kind,
-    crcs: &[u32],
-    generation: u64,
-) -> Result<u64, Error> {
-    allocate_extent(store, root, length, kind, crcs, generation, false).map(|(start, _)| start)
-}
-
-/// Allocate a data prefix, falling back to the largest eligible run when the
-/// requested run cannot fit. The returned length owns only that CRC prefix.
-pub fn allocate_data_run<S: NodeStore>(
-    store: &mut S,
-    root: &mut BlockPtr,
-    crcs: &[u32],
-    generation: u64,
-) -> Result<(u64, u64), Error> {
-    allocate_extent(
-        store,
-        root,
-        crcs.len() as u64,
-        Kind::Data,
-        crcs,
-        generation,
-        true,
-    )
-}
-
-fn allocate_extent<S: NodeStore>(
-    store: &mut S,
-    root: &mut BlockPtr,
-    length: u64,
-    kind: Kind,
-    crcs: &[u32],
-    generation: u64,
-    short_data: bool,
-) -> Result<(u64, u64), Error> {
-    let mut r = Ref {
-        refcount: 1,
-        kind: kind as u8,
-        alloc_generation: generation,
-        crcs: crcs.to_vec(),
-    };
-    if !valid_ref(length, &r) {
-        return Err(Error::Invalid);
-    }
-    let mut free = Vec::new();
-    let mut candidate = None;
-    btree::visit_range(store, *root, free_key(0), free_key(u64::MAX), &mut |key, bytes| {
-        let range = free_record(key, bytes)?;
-        if range.1 >= length {
-            candidate = Some(range);
-            return Ok::<_, Error>(false);
-        }
-        free.push(range);
-        Ok(true)
+        let (_, length, generation) = pending_record(key, bytes)?;
+        summary.include(length, generation);
+        Ok::<_, Error>(true)
     })?;
-    if candidate.is_none() {
-        let mut pending = Vec::new();
-        for (k, bytes) in range(store, *root, PENDING_OBJECT, format::PENDING)? {
+    summary.promotion_generation()
+}
+
+/// Read FREE into an index and summarize PENDING, streaming, when a mount opens
+/// its first transaction, retaining a fixed-size summary of PENDING.
+pub fn open<S: NodeStore>(store: &S, root: BlockPtr) -> Result<(FreeIndex, Quarantine), Error> {
+    let mut free = FreeIndex::default();
+    let mut found = PendingSummary::default();
+    btree::visit_range(store, root, free_key(0), pending_key(u64::MAX), &mut |key, bytes| {
+        preemption_point();
+        if key.object == FREE_OBJECT {
+            let (start, length) = free_record(key, bytes)?;
+            free.push(start, length)?;
+        } else {
+            let (_, length, generation) = pending_record(key, bytes)?;
+            found.include(length, generation);
+        }
+        Ok::<_, Error>(true)
+    })?;
+    let quarantine = Quarantine {
+        released: BTreeMap::new(),
+        found: (found.newest != 0).then_some(found),
+    };
+    Ok((free, quarantine))
+}
+
+/// One generation's stored PENDING runs and their total length.
+#[derive(Clone, Default)]
+pub struct Released {
+    blocks: u64,
+    runs: BTreeMap<u64, u64>,
+}
+impl Released {
+    /// Write staged releases of `generation` as PENDING runs, each merged
+    /// with the stored run it adjoins: at most two item edits per staged run.
+    pub fn write<S: NodeStore>(
+        &mut self,
+        store: &mut S,
+        root: &mut BlockPtr,
+        generation: u64,
+        staged: &mut BTreeMap<u64, u64>,
+    ) -> Result<(), Error> {
+        while let Some((start, length)) = staged.pop_first() {
             preemption_point();
-            if bytes.len() != 16 {
+            let stop = end(start, length)?;
+            let left = self.runs.range(..start).next_back().map(|(&s, &l)| (s, l));
+            if let Some((s, l)) = left {
+                if end(s, l)? > start {
+                    return Err(Error::Invalid);
+                }
+            }
+            if let Some((&s, _)) = self.runs.range(start..).next() {
+                if s < stop {
+                    return Err(Error::Invalid);
+                }
+            }
+            let mut first = start;
+            let mut last = stop;
+            if let Some(right) = self.runs.remove(&stop) {
+                if btree::delete(store, root, pending_key(stop))?.is_none() {
+                    return Err(Error::Invalid);
+                }
+                last = end(stop, right)?;
+            }
+            if let Some((s, _)) = left.filter(|&(s, l)| s + l == start) {
+                self.runs.remove(&s);
+                first = s;
+            }
+            let run = Pending { length: last - first, released_generation: generation };
+            btree::insert(store, root, pending_key(first), &run.encode())?;
+            self.runs.insert(first, last - first);
+            self.blocks = self.blocks.checked_add(length).ok_or(Error::Invalid)?;
+        }
+        Ok(())
+    }
+}
+
+/// PENDING as this mount wrote it, by released generation: each generation's
+/// runs exactly as stored, coalesced. `found` summarizes PENDING that was on
+/// disk when the mount opened; those records are not held in memory.
+#[derive(Clone, Default)]
+pub struct Quarantine {
+    released: BTreeMap<u64, Released>,
+    found: Option<PendingSummary>,
+}
+impl Quarantine {
+    pub fn summary(&self) -> PendingSummary {
+        let mut summary = self.found.unwrap_or_default();
+        for (&generation, released) in &self.released {
+            summary.include(released.blocks, generation);
+        }
+        summary
+    }
+    /// Stored PENDING runs written by this mount, as (start, length, released).
+    pub fn runs(&self) -> impl Iterator<Item = (u64, u64, u64)> + '_ {
+        self.released.iter().flat_map(|(&g, r)| r.runs.iter().map(move |(&s, &l)| (s, l, g)))
+    }
+    /// Make the PENDING released at or before `generation - 2` allocatable:
+    /// add it to `free` now and return the SPACE edits for settlement.
+    /// `base` is the transaction's starting space tree; found records are
+    /// streamed from it, and the ones not yet eligible are summarized.
+    pub fn promote<S: NodeStore>(
+        &mut self,
+        base: &S,
+        root: BlockPtr,
+        generation: u64,
+        free: &mut FreeIndex,
+    ) -> Result<Promotion, Error> {
+        let mut promotion = Promotion::default();
+        let Some(limit) = generation.checked_sub(2) else {
+            return Ok(promotion);
+        };
+        // The eligible generations' runs move to the promotion whole: a
+        // copy would be one buffer in proportion to the runs.
+        let later = self.released.split_off(&limit.saturating_add(1));
+        promotion.released = core::mem::replace(&mut self.released, later);
+        for released in promotion.released.values() {
+            for (&start, &length) in &released.runs {
+                preemption_point();
+                free.insert(start, length)?;
+            }
+        }
+        if let Some(found) = self.found {
+            if found.oldest <= limit {
+                // Records this mount wrote are newer than the found ones (mount generation).
+                let found_limit = limit.min(found.newest);
+                let mut waiting = PendingSummary::default();
+                btree::visit_range(base, root, pending_key(0), pending_key(u64::MAX), &mut |key, bytes| {
+                    preemption_point();
+                    let (start, length, released) = pending_record(key, bytes)?;
+                    if released <= found_limit {
+                        free.insert(start, length)?;
+                    } else if released <= found.newest {
+                        waiting.include(length, released);
+                    }
+                    Ok::<_, Error>(true)
+                })?;
+                promotion.found_limit = Some(found_limit);
+                self.found = (waiting.newest != 0).then_some(waiting);
+            }
+        }
+        Ok(promotion)
+    }
+    /// Detach one generation's runs while the transaction writes to them.
+    pub fn take_generation(&mut self, generation: u64) -> Released {
+        self.released.remove(&generation).unwrap_or_default()
+    }
+    pub fn put_generation(&mut self, generation: u64, released: Released) {
+        if !released.runs.is_empty() {
+            self.released.insert(generation, released);
+        }
+    }
+}
+
+/// SPACE edits of one transaction's promotion: known runs to move from
+/// PENDING to FREE, and the bound up to which found records are promoted.
+#[derive(Default)]
+pub struct Promotion {
+    released: BTreeMap<u64, Released>,
+    found_limit: Option<u64>,
+}
+impl Promotion {
+    pub fn is_empty(&self) -> bool {
+        self.released.is_empty() && self.found_limit.is_none()
+    }
+    /// Apply to the transaction's space tree. Found records are visited in
+    /// batches of PROMOTE_BATCH, so the heap holds a bounded number of them.
+    pub fn apply<S: NodeStore>(self, store: &mut S, root: &mut BlockPtr) -> Result<(), Error> {
+        for (start, length) in self.released.into_values().flat_map(|released| released.runs) {
+            preemption_point();
+            let old = btree::delete(store, root, pending_key(start))?.ok_or(Error::Invalid)?;
+            if pending_record(pending_key(start), &old)?.1 != length {
                 return Err(Error::Invalid);
             }
-            let p = Pending::decode(&bytes)?;
-            end(k.offset, p.length)?;
-            if p.released_generation == 0 {
-                return Err(Error::Invalid);
-            }
-            if generation
-                .checked_sub(2)
-                .is_some_and(|limit| p.released_generation <= limit)
-            {
-                pending.push((k.offset, p.length));
-            }
-        }
-        free.extend(pending.iter().map(|&range| { preemption_point(); range }));
-        free = merged(free)?;
-        candidate = free.iter().find(|(_, len)| { preemption_point(); *len >= length }).copied();
-        if candidate.is_none() && short_data {
-            // Break ties by address so replaying this exact shorter allocation
-            // in the real SPACE tree makes the same first-fit choice.
-            candidate = free
-                .iter()
-                .copied()
-                .max_by_key(|(start, len)| { preemption_point(); (*len, core::cmp::Reverse(*start)) });
-        }
-        if candidate.is_none() {
-            return Err(Error::ENOSPC);
-        }
-        for (start, length) in pending {
-            preemption_point();
-            btree::delete(store, root, key(PENDING_OBJECT, format::PENDING, start))?;
             add_free(store, root, start, length)?;
         }
-    }
-    let (start, available) = candidate.ok_or(Error::ENOSPC)?;
-    let length = length.min(available);
-    r.crcs.truncate(length as usize);
-    btree::delete(store, root, key(FREE_OBJECT, format::FREE, start))?;
-    if available > length {
-        btree::insert(
-            store,
-            root,
-            key(FREE_OBJECT, format::FREE, start + length),
-            &Free {
-                length: available - length,
+        let Some(limit) = self.found_limit else {
+            return Ok(());
+        };
+        let mut cursor = 0;
+        loop {
+            let mut batch = Vec::new();
+            btree::visit_range(store, *root, pending_key(cursor), pending_key(u64::MAX), &mut |key, bytes| {
+                preemption_point();
+                let (start, length, released) = pending_record(key, bytes)?;
+                if released <= limit {
+                    batch.push((start, length));
+                }
+                Ok::<_, Error>(batch.len() < PROMOTE_BATCH)
+            })?;
+            let Some(&(last, _)) = batch.last() else {
+                return Ok(());
+            };
+            for (start, length) in batch {
+                preemption_point();
+                btree::delete(store, root, pending_key(start))?;
+                add_free(store, root, start, length)?;
             }
-            .encode(),
-        )?;
+            cursor = last.checked_add(1).ok_or(Error::Invalid)?;
+        }
     }
-    btree::insert(store, root, key(start, format::REF, length), &r.encode())?;
-    Ok((start, length))
-}
-
-/// Add an incoming reference. Keep space nodes uniquely owned (design A5).
-pub fn increment<S: NodeStore>(
-    store: &mut S,
-    root: &mut BlockPtr,
-    start: u64,
-    length: u64,
-) -> Result<(), Error> {
-    let mut r = reference(store, *root, start, length)?.ok_or(Error::Invalid)?;
-    if r.kind == Kind::SpaceNode as u8 {
-        return Err(Error::Invalid);
-    }
-    r.refcount = r.refcount.checked_add(1).ok_or(Error::EMLINK)?;
-    btree::insert(store, root, key(start, format::REF, length), &r.encode())?;
-    Ok(())
-}
-
-/// Drop an incoming reference in commit G. `referenced_children` means an FS
-/// node still owns internal children or data extents. DEAD retains those outgoing
-/// references until the reaper processes them. Return whether this release
-/// put a range in PENDING.
-pub fn release<S: NodeStore>(
-    store: &mut S,
-    root: &mut BlockPtr,
-    start: u64,
-    length: u64,
-    generation: u64,
-    referenced_children: bool,
-) -> Result<bool, Error> {
-    let mut r = reference(store, *root, start, length)?.ok_or(Error::Invalid)?;
-    if generation < r.alloc_generation || (referenced_children && r.kind != Kind::FsNode as u8) {
-        return Err(Error::Invalid);
-    }
-    r.refcount -= 1;
-    if r.refcount > 0 {
-        btree::insert(store, root, key(start, format::REF, length), &r.encode())?;
-        return Ok(false);
-    }
-    btree::delete(store, root, key(start, format::REF, length))?;
-    if referenced_children {
-        btree::insert(store, root, key(start, format::DEAD, 4), &[])?;
-    } else {
-        btree::insert(
-            store,
-            root,
-            key(PENDING_OBJECT, format::PENDING, start),
-            &Pending {
-                length,
-                released_generation: generation,
-            }
-            .encode(),
-        )?;
-    }
-    Ok(!referenced_children)
 }
 
 /// Collect the DEAD address index once when opening a mount. REF and DEAD keys
@@ -455,27 +669,17 @@ pub fn dead_nodes<S: NodeStore>(store: &S, root: BlockPtr) -> Result<BTreeSet<u6
 }
 
 /// Retire a DEAD node after its outgoing references have been released. The
-/// caller's transaction makes both changes atomic; reuse still waits for G+2.
+/// caller's transaction makes both changes atomic and quarantines the node's
+/// four blocks; reuse still waits for G+2.
 pub fn reap<S: NodeStore>(
     store: &mut S,
     root: &mut BlockPtr,
     addr: u64,
-    generation: u64,
 ) -> Result<(), Error> {
     let dead = key(addr, format::DEAD, 4);
-    if btree::search(store, *root, dead)?.as_deref() != Some(&[]) || generation == 0 {
+    if btree::search(store, *root, dead)?.as_deref() != Some(&[]) {
         return Err(Error::Invalid);
     }
     btree::delete(store, root, dead)?;
-    btree::insert(
-        store,
-        root,
-        key(PENDING_OBJECT, format::PENDING, addr),
-        &Pending {
-            length: 4,
-            released_generation: generation,
-        }
-        .encode(),
-    )?;
     Ok(())
 }

@@ -7,7 +7,7 @@
 use super::preempt::preemption_point;
 use super::{
     btree::{self, Node, NodeStore},
-    format::{self, BlockPtr, Extent, Free, Key, NodeHeader, Root},
+    format::{self, BlockPtr, Extent, Free, Key, NodeHeader, Ref, Root},
     reserve::Estimate,
     space::{self, Kind},
 };
@@ -84,30 +84,43 @@ impl DeadNodes {
     }
 }
 
-enum Change {
-    PromotePending,
-    Allocate {
-        start: u64,
-        length: u64,
-        kind: Kind,
-        crcs: Vec<u32>,
-    },
-    Increment {
-        start: u64,
-        length: u64,
-    },
-    Release {
-        start: u64,
-        length: u64,
-        children: bool,
-    },
-    DeleteRoot {
-        id: u64,
-    },
-    Root {
-        id: u64,
-        value: Root,
-    },
+/// Mount-owned space state carried from a settled transaction into the next
+/// one, so no transaction walks FREE or PENDING on disk: the DEAD index, the
+/// space-tree node count, the FREE index, the quarantine this mount wrote and
+/// the end of the last data allocation (the goal for a file with no extent).
+#[derive(Clone, Default)]
+pub struct SpaceState {
+    dead: DeadNodes,
+    space_nodes: u64,
+    free: space::FreeIndex,
+    quarantine: space::Quarantine,
+    data_goal: u64,
+}
+impl SpaceState {
+    pub fn free(&self) -> &space::FreeIndex {
+        &self.free
+    }
+    pub fn quarantine(&self) -> &space::Quarantine {
+        &self.quarantine
+    }
+}
+
+/// A delayed reference head (after the delayed-reference design Btrfs
+/// publishes): the count changes to one allocation in this transaction fold
+/// into one head, applied to its REF once at settlement. Matching increments
+/// and releases cancel, leaving the REF unedited.
+struct Head {
+    /// The count stored in the space tree when the head opened.
+    before: u32,
+    /// The release that reaches 0 keeps the node's outgoing references.
+    children: bool,
+    /// Allocated by this transaction: claim FREE and create the REF.
+    new: Option<(Kind, Vec<u32>)>,
+}
+
+enum RootChange {
+    Delete { id: u64 },
+    Put { id: u64, value: Root },
 }
 
 /// Read-only node view accepted by the B-tree and space readers.
@@ -150,44 +163,6 @@ impl<S: NodeStore> NodeStore for View<'_, S> {
     }
 }
 
-// Reservation-only SPACE view. Use the same first-fit/reuse policy without
-// recursively editing the real SPACE tree while allocating its own path.
-struct Reservations<'a, S> {
-    view: View<'a, S>,
-    changes: &'a mut Nodes,
-    next: &'a mut u64,
-}
-impl<S: NodeStore> NodeStore for Reservations<'_, S> {
-    fn read_node(&self, ptr: BlockPtr) -> Result<Arc<Node>, btree::Error> {
-        match self.changes.get(&ptr.addr) {
-            Some(node) => read_private(node, ptr),
-            None => self.view.read_node(ptr),
-        }
-    }
-    fn get(&self, _: u64) -> Result<Vec<u8>, btree::Error> {
-        Err(btree::Error::Store)
-    }
-    fn put(&mut self, _: u64, _: Vec<u8>) -> Result<(), btree::Error> {
-        Err(btree::Error::Store)
-    }
-    fn stages_decoded(&self) -> bool { true }
-    fn take_decoded(&mut self, ptr: BlockPtr) -> Result<Arc<Node>, btree::Error> {
-        if let Some(node) = self.changes.remove(&ptr.addr) {
-            read_private(&node, ptr)?;
-            return Ok(node);
-        }
-        self.view.read_node(ptr)
-    }
-    fn put_decoded(&mut self, node: Node) -> Result<(), btree::Error> {
-        self.changes.insert(node.header.addr, Arc::new(node));
-        Ok(())
-    }
-    fn alloc(&mut self) -> Result<u64, btree::Error> {
-        *self.next = self.next.checked_sub(4).ok_or(btree::Error::Store)?;
-        Ok(*self.next)
-    }
-}
-
 enum Backing<'a, S> {
     Borrowed(&'a S),
     Owned(S),
@@ -213,19 +188,25 @@ pub struct Transaction<'a, S> {
     reads: PublicationReads,
     free_delta: i64,
     nodes: Nodes,
-    reserved_nodes: Nodes,
-    reservation_root: BlockPtr,
-    scratch_next: u64,
     allocated: BTreeSet<u64>,
     allocated_blocks: u64,
     data_allocations: BTreeMap<u64, u64>,
     counts: BTreeMap<(u64, u64), u32>,
-    deferred: VecDeque<Change>,
+    heads: BTreeMap<(u64, u64), Head>,
+    // Heads allocated by this transaction whose count is back to 0: their
+    // settlement claims FREE and quarantines (metadata_estimate).
+    released_new: u64,
+    root_changes: VecDeque<RootChange>,
+    // This generation's releases not yet written to PENDING, coalesced.
+    staged: BTreeMap<u64, u64>,
+    // PENDING made allocatable in this transaction (the FREE index already
+    // has it); settlement applies the SPACE edits.
+    promotion: Option<space::Promotion>,
+    promoted: bool,
     failure: Option<Error>,
     next_root_id: u64,
-    dead: DeadNodes,
+    state: SpaceState,
     reaped: usize,
-    pending_summary: space::PendingSummary,
     // Freeze (601(1)) moves the four private maps above into this shared,
     // immutable layer; the maps above then hold only later private changes.
     frozen: Option<Arc<Frozen>>,
@@ -242,9 +223,38 @@ pub struct ReservationPaths {
     pub space_nodes: u64,
 }
 impl<'a, S: NodeStore> Transaction<'a, S> {
+    fn blank(base: Backing<'a, S>, generation: u64, space_root: BlockPtr, state: SpaceState) -> Self {
+        Self {
+            base,
+            generation,
+            original_space: space_root,
+            space_root,
+            space_nodes: state.space_nodes,
+            original_space_nodes: state.space_nodes,
+            reads: RefCell::new(None),
+            free_delta: 0,
+            nodes: BTreeMap::new(),
+            allocated: BTreeSet::new(),
+            allocated_blocks: 0,
+            data_allocations: BTreeMap::new(),
+            counts: BTreeMap::new(),
+            heads: BTreeMap::new(),
+            released_new: 0,
+            root_changes: VecDeque::new(),
+            staged: BTreeMap::new(),
+            promotion: None,
+            promoted: false,
+            failure: None,
+            next_root_id: 0,
+            state,
+            reaped: 0,
+            frozen: None,
+            scratch: None,
+        }
+    }
     /// Start the first transaction without inventing a durable generation 0.
     /// Block 20 is already private to generation 1; its REF and the remaining
-    /// FREE range seed both the real SPACE tree and its reservation view.
+    /// FREE range seed the SPACE tree and the FREE index.
     pub fn format(base: S, uuid: [u8; 16], total: u64) -> Result<Self, Error> {
         if !(16384..=1 << 48).contains(&total) {
             return Err(Error::Invalid);
@@ -280,32 +290,14 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
             children: Vec::new(),
         });
         let root = node.private_ptr();
-        Ok(Self {
-            base: Backing::Owned(base),
-            generation: 1,
-            original_space: root,
-            space_root: root,
-            space_nodes: 1,
-            original_space_nodes: 1,
-            reads: RefCell::new(None),
-            free_delta: 0,
-            reservation_root: root,
-            nodes: BTreeMap::from([(20, node.clone())]),
-            reserved_nodes: BTreeMap::from([(20, node)]),
-            scratch_next: u64::MAX - 3,
-            allocated: BTreeSet::from([20]),
-            allocated_blocks: 4,
-            data_allocations: BTreeMap::new(),
-            counts: BTreeMap::from([((20, 4), 1)]),
-            deferred: VecDeque::new(),
-            failure: None,
-            next_root_id: 0,
-            dead: DeadNodes::default(),
-            reaped: 0,
-            pending_summary: space::PendingSummary::default(),
-            frozen: None,
-            scratch: None,
-        })
+        let mut state = SpaceState { space_nodes: 1, ..SpaceState::default() };
+        state.free.insert(24, total - 28)?;
+        let mut txn = Self::blank(Backing::Owned(base), 1, root, state);
+        txn.nodes.insert(20, node);
+        txn.allocated.insert(20);
+        txn.allocated_blocks = 4;
+        txn.counts.insert((20, 4), 1);
+        Ok(txn)
     }
     pub fn new(base: &'a S, space_root: BlockPtr, generation: u64) -> Result<Self, Error> {
         Self::with_backing(Backing::Borrowed(base), space_root, generation, None)
@@ -314,22 +306,21 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
     pub fn new_owned(base: S, space_root: BlockPtr, generation: u64) -> Result<Self, Error> {
         Self::with_backing(Backing::Owned(base), space_root, generation, None)
     }
-    /// Continue a mount using the index from its preceding transaction at this
-    /// space root. This constructor performs no DEAD range walk.
-    pub fn new_owned_with_dead(
+    /// Continue a mount from its preceding transaction's settled space state
+    /// at this space root. This constructor walks no part of SPACE.
+    pub fn new_owned_continuing(
         base: S,
         space_root: BlockPtr,
         generation: u64,
-        dead: DeadNodes,
-        space_nodes: u64,
+        state: SpaceState,
     ) -> Result<Self, Error> {
-        Self::with_backing(Backing::Owned(base), space_root, generation, Some((dead, space_nodes)))
+        Self::with_backing(Backing::Owned(base), space_root, generation, Some(state))
     }
     fn with_backing(
         base: Backing<'a, S>,
         space_root: BlockPtr,
         generation: u64,
-        continuation: Option<(DeadNodes, u64)>,
+        continuation: Option<SpaceState>,
     ) -> Result<Self, Error> {
         let h = base.get().read_node(space_root)?.header;
         if h.tree != 2
@@ -340,39 +331,20 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
         {
             return Err(Error::Invalid);
         }
-        let (dead, space_nodes) = match continuation {
-            Some(continuation) => continuation,
-            None => (
-                DeadNodes { addresses: space::dead_nodes(base.get(), space_root)? },
-                btree::reservation_nodes(base.get(), space_root, None, 0)?,
-            ),
+        let state = match continuation {
+            Some(state) => state,
+            None => {
+                let (free, quarantine) = space::open(base.get(), space_root)?;
+                SpaceState {
+                    dead: DeadNodes { addresses: space::dead_nodes(base.get(), space_root)? },
+                    space_nodes: btree::reservation_nodes(base.get(), space_root, None, 0)?,
+                    free,
+                    quarantine,
+                    data_goal: 0,
+                }
+            }
         };
-        Ok(Self {
-            base,
-            generation,
-            original_space: space_root,
-            space_root,
-            space_nodes,
-            original_space_nodes: space_nodes,
-            reads: RefCell::new(None),
-            free_delta: 0,
-            nodes: BTreeMap::new(),
-            reserved_nodes: BTreeMap::new(),
-            reservation_root: space_root,
-            scratch_next: u64::MAX - 3,
-            allocated: BTreeSet::new(),
-            allocated_blocks: 0,
-            data_allocations: BTreeMap::new(),
-            counts: BTreeMap::new(),
-            deferred: VecDeque::new(),
-            failure: None,
-            next_root_id: 0,
-            dead,
-            reaped: 0,
-            pending_summary: space::PendingSummary::default(),
-            frozen: None,
-            scratch: None,
-        })
+        Ok(Self::blank(base, generation, space_root, state))
     }
     pub fn view(&self) -> View<'_, S> {
         View {
@@ -391,7 +363,7 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
     /// transaction over that layer and `base`, the published N-1 store. This
     /// transaction keeps preparing N above the same layer; neither side can
     /// change what the other reads. The scratch fork allocates fake addresses
-    /// only and refuses publication work.
+    /// only, has no FREE index and refuses publication work.
     pub fn fork(&mut self, base: S) -> Result<Transaction<'a, S>, Error> {
         self.healthy()?;
         if self.frozen.is_some() || self.scratch.is_some() {
@@ -406,32 +378,12 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
             data_allocations: core::mem::take(&mut self.data_allocations),
         });
         self.frozen = Some(frozen.clone());
-        Ok(Transaction {
-            base: Backing::Owned(base),
-            generation,
-            original_space: self.original_space,
-            space_root: self.original_space,
-            space_nodes: self.original_space_nodes,
-            original_space_nodes: self.original_space_nodes,
-            reads: RefCell::new(None),
-            free_delta: 0,
-            nodes: BTreeMap::new(),
-            reserved_nodes: BTreeMap::new(),
-            reservation_root: self.original_space,
-            scratch_next: u64::MAX - 3,
-            allocated: BTreeSet::new(),
-            allocated_blocks: 0,
-            data_allocations: BTreeMap::new(),
-            counts: BTreeMap::new(),
-            deferred: VecDeque::new(),
-            failure: None,
-            next_root_id: self.next_root_id,
-            dead: DeadNodes::default(),
-            reaped: 0,
-            pending_summary: space::PendingSummary::default(),
-            frozen: Some(frozen),
-            scratch: Some(SCRATCH_BASE),
-        })
+        let state = SpaceState { space_nodes: self.original_space_nodes, ..SpaceState::default() };
+        let mut scratch = Transaction::blank(Backing::Owned(base), generation, self.original_space, state);
+        scratch.next_root_id = self.next_root_id;
+        scratch.frozen = Some(frozen);
+        scratch.scratch = Some(SCRATCH_BASE);
+        Ok(scratch)
     }
     fn private_node(&self, addr: u64) -> Option<&Arc<Node>> {
         self.nodes.get(&addr)
@@ -478,10 +430,19 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
     /// Blocks already allocated plus the unchanged design-2.8 bound for work
     /// still deferred to publication. Include the mounted ROOT's final update
     /// and FS edits for orphan cleanup; no unused split paths are retained.
+    /// A head settles in at most three SPACE item changes (a FREE split and
+    /// its REF, or the REF and its PENDING run); one this transaction
+    /// allocated and released again settles in a FREE split and a PENDING run,
+    /// so it counts twice.
     pub(super) fn metadata_estimate(&self, root: BlockPtr, orphan_count: u64) -> Result<Estimate, Error> {
         let fs_levels = orphan_count.checked_mul(3 * 4 * (u64::from(root.level) + 2))
             .ok_or(space::Error::ENOSPC)?;
-        let changes = (self.deferred.len() as u64).checked_add(1)
+        let deferred = (self.heads.len() as u64)
+            .checked_add(self.released_new)
+            .and_then(|n| n.checked_add(self.root_changes.len() as u64))
+            .and_then(|n| n.checked_add(u64::from(self.promotion.is_some())))
+            .ok_or(space::Error::ENOSPC)?;
+        let changes = deferred.checked_add(1)
             .and_then(|n| n.checked_add(fs_levels))
             .and_then(|n| n.checked_mul(3)).ok_or(space::Error::ENOSPC)?;
         Ok(Estimate {
@@ -532,102 +493,95 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
         Ok(r.refcount)
     }
     fn reserve(&mut self, length: u64, kind: Kind, crcs: &[u32]) -> Result<u64, Error> {
-        self.reserve_extent(length, kind, crcs, false)
+        self.reserve_extent(length, kind, crcs, None, false)
             .map(|(start, _)| start)
     }
+    /// Choose blocks from the FREE index, near `goal` when one is given. FREE
+    /// is preferred: the eligible quarantine becomes allocatable only when FREE
+    /// cannot hold the request (design 2.5 reuse rule). A short data run then takes
+    /// the largest range. Settlement claims the chosen range from FREE.
     fn reserve_extent(
         &mut self,
         length: u64,
         kind: Kind,
         crcs: &[u32],
+        goal: Option<u64>,
         short_data: bool,
     ) -> Result<(u64, u64), Error> {
-        if let Some(next) = self.scratch.as_mut() {
+        if !space::valid_shape(length, kind as u8, 1, crcs.len()) {
+            return Err(Error::Space(space::Error::Invalid));
+        }
+        let (start, length) = if let Some(next) = self.scratch.as_mut() {
             // N+1 while N is in flight: a view-only address. Record the same
-            // custody and deferred change as a real allocation, so reservation
-            // debt still counts it; replay onto N's published view allocates.
+            // custody and head as a real allocation, so reservation debt still
+            // counts it; replay onto N's published view allocates.
             let start = *next;
             *next = next.checked_add(length).ok_or(Error::Invalid)?;
-            self.counts.insert((start, length), 1);
-            if kind == Kind::Data { self.data_allocations.insert(start, length); }
-            self.allocated_blocks = self.allocated_blocks.checked_add(length).ok_or(Error::Invalid)?;
-            self.allocated.insert(start);
-            self.deferred.push_back(Change::Allocate { start, length, kind, crcs: crcs.to_vec() });
-            return Ok((start, length));
-        }
-        let mut reservations = Reservations {
-            view: View {
-                base: self.base.get(),
-                nodes: &BTreeMap::new(),
-                frozen: None,
-                reads: &self.reads,
-            },
-            changes: &mut self.reserved_nodes,
-            next: &mut self.scratch_next,
-        };
-        let requested = length;
-        let (start, length) = if short_data {
-            space::allocate_data_run(
-                &mut reservations,
-                &mut self.reservation_root,
-                crcs,
-                self.generation,
-            )?
+            (start, length)
         } else {
-            (
-                space::allocate(
-                    &mut reservations,
-                    &mut self.reservation_root,
-                    length,
-                    kind,
-                    crcs,
-                    self.generation,
-                )?,
-                length,
-            )
+            let mut choice = self.state.free.choose(length, goal, false);
+            if choice.is_none() {
+                self.promote_eligible()?;
+                choice = self.state.free.choose(length, goal, short_data);
+            }
+            let (start, chosen) = choice.ok_or(space::Error::ENOSPC)?;
+            self.state.free.remove(start, chosen)?;
+            if kind == Kind::Data {
+                self.state.data_goal = start.checked_add(chosen).ok_or(Error::Invalid)?;
+            }
+            (start, chosen)
         };
         let crcs = &crcs[..crcs.len().min(length as usize)];
-        if length < requested {
-            // A short result promoted eligible PENDING ranges before choosing
-            // its largest run. Exact-length replay could fit FREE without
-            // promotion, so mirror that conversion before replaying the REF.
-            self.deferred.push_back(Change::PromotePending);
-        }
         self.counts.insert((start, length), 1);
         if kind == Kind::Data { self.data_allocations.insert(start, length); }
         self.allocated_blocks = self.allocated_blocks.checked_add(length).ok_or(Error::Invalid)?;
         self.allocated.insert(start);
-        self.deferred.push_back(Change::Allocate {
-            start,
-            length,
-            kind,
-            crcs: crcs.to_vec(),
-        });
+        let head = Head { before: 0, children: false, new: Some((kind, crcs.to_vec())) };
+        if self.heads.insert((start, length), head).is_some() {
+            return Err(Error::Invalid);
+        }
         Ok((start, length))
+    }
+    /// Make PENDING released at or before G-2 allocatable, once per
+    /// transaction: the FREE index gains it now, SPACE at settlement.
+    fn promote_eligible(&mut self) -> Result<(), Error> {
+        if self.promoted || self.scratch.is_some() {
+            return Ok(());
+        }
+        self.promoted = true;
+        let original = View { base: self.base.get(), nodes: &BTreeMap::new(),
+            frozen: None, reads: &self.reads };
+        let promotion = self.state.quarantine.promote(&original, self.original_space,
+            self.generation, &mut self.state.free)?;
+        if !promotion.is_empty() {
+            self.promotion = Some(promotion);
+        }
+        Ok(())
     }
     /// The initial reference belongs to the caller and is transferred to its
     /// new EXTENT item. Additional items naming that REF need `increment` first.
     pub fn allocate_data(&mut self, crcs: &[u32]) -> Result<u64, Error> {
-        self.healthy()?;
-        let result = self.reserve(crcs.len() as u64, Kind::Data, crcs);
-        self.result(result)
+        self.allocate_data_run(crcs, None).and_then(|(start, length)| {
+            if length == crcs.len() as u64 { Ok(start) } else { Err(Error::Invalid) }
+        })
     }
     /// Reserve one physical data run, which may cover only a prefix. Record
-    /// its actual length so deferred replay and EXTENT ownership agree.
-    pub fn allocate_data_run(&mut self, crcs: &[u32]) -> Result<(u64, u64), Error> {
+    /// its actual length so settlement and EXTENT ownership agree. `goal` is
+    /// the block that would continue the file's existing data; without one the
+    /// run follows this mount's last data allocation.
+    pub fn allocate_data_run(&mut self, crcs: &[u32], goal: Option<u64>) -> Result<(u64, u64), Error> {
         self.healthy()?;
-        let result = self.reserve_extent(crcs.len() as u64, Kind::Data, crcs, true);
+        let goal = goal.or((self.state.data_goal != 0).then_some(self.state.data_goal));
+        let result = self.reserve_extent(crcs.len() as u64, Kind::Data, crcs, goal, true);
         self.result(result)
     }
     pub fn increment(&mut self, start: u64, length: u64) -> Result<(), Error> {
         self.healthy()?;
         let result = (|| {
-            let count = self
-                .count(start, length)?
-                .checked_add(1)
-                .ok_or(space::Error::EMLINK)?;
+            let before = self.count(start, length)?;
+            let count = before.checked_add(1).ok_or(space::Error::EMLINK)?;
             self.counts.insert((start, length), count);
-            self.deferred.push_back(Change::Increment { start, length });
+            self.heads.entry((start, length)).or_insert(Head { before, children: false, new: None });
             Ok(())
         })();
         self.result(result)
@@ -637,28 +591,44 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
     pub fn release(&mut self, start: u64, length: u64, children: bool) -> Result<(), Error> {
         self.healthy()?;
         let result = (|| {
-            let count = self
-                .count(start, length)?
-                .checked_sub(1)
-                .ok_or(Error::Invalid)?;
+            let before = self.count(start, length)?;
+            let count = before.checked_sub(1).ok_or(Error::Invalid)?;
             self.counts.insert((start, length), count);
             if count == 0 && children {
-                self.dead.addresses.insert(start);
+                self.state.dead.addresses.insert(start);
             }
-            self.deferred.push_back(Change::Release {
-                start,
-                length,
-                children,
-            });
+            let head = self.heads.entry((start, length))
+                .or_insert(Head { before, children: false, new: None });
+            head.children = children;
+            if count == 0 && head.new.is_some() {
+                self.released_new += 1;
+            }
             Ok(())
         })();
         self.result(result)
     }
     pub fn dead_nodes(&self) -> &DeadNodes {
-        &self.dead
+        &self.state.dead
     }
-    pub(crate) fn take_dead_nodes(&mut self) -> DeadNodes {
-        core::mem::take(&mut self.dead)
+    fn settled(&self) -> Result<(), Error> {
+        self.publishable()?;
+        if !self.heads.is_empty() || !self.root_changes.is_empty() || !self.staged.is_empty()
+            || self.promotion.is_some()
+        {
+            return Err(Error::Invalid);
+        }
+        Ok(())
+    }
+    /// A copy of the settled space state, to continue the mount from it.
+    pub fn space_state(&self) -> Result<SpaceState, Error> {
+        self.settled()?;
+        Ok(SpaceState { space_nodes: self.space_nodes, ..self.state.clone() })
+    }
+    pub(crate) fn take_space_state(&mut self) -> Result<SpaceState, Error> {
+        self.settled()?;
+        let mut state = core::mem::take(&mut self.state);
+        state.space_nodes = self.space_nodes;
+        Ok(state)
     }
     pub(crate) fn data_is_live(&self, start: u64) -> bool {
         self.data_length(start).is_some_and(|length|
@@ -676,7 +646,7 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
             })
     }
     pub fn dead_count(&self) -> u64 {
-        self.dead.count()
+        self.state.dead.count()
     }
     /// Reserve SPACE COW/split work for the remaining node budget. Reaping is
     /// snapshot deletion work and may draw on the global reserve (design 2.8).
@@ -705,7 +675,7 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
         }
         let result = (|| {
             self.settle()?;
-            let Some(&addr) = self.dead.addresses.first() else {
+            let Some(&addr) = self.state.dead.addresses.first() else {
                 return Ok(None);
             };
             let node = if let Some(node) = self.private_node(addr) {
@@ -728,16 +698,10 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
                 self.release(start, length, h.level != 0)?;
             }
             let mut root = self.space_root;
-            let generation = self.generation;
-            space::reap(
-                &mut EditStore { txn: self, tree: 2 },
-                &mut root,
-                addr,
-                generation,
-            )?;
+            space::reap(&mut EditStore { txn: self, tree: 2 }, &mut root, addr)?;
             self.space_root = root;
-            self.pending_summary.include(4, generation);
-            self.dead.addresses.remove(&addr);
+            self.stage(addr, 4)?;
+            self.state.dead.addresses.remove(&addr);
             self.reaped += 1;
             Ok(Some(addr))
         })();
@@ -853,119 +817,155 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
         self.result(result)?;
         let next = id.checked_add(1).ok_or(Error::Invalid);
         self.next_root_id = self.next_root_id.max(self.result(next)?);
-        self.deferred.push_back(Change::Root { id, value });
+        self.root_changes.push_back(RootChange::Put { id, value });
         Ok(())
     }
     pub fn delete_root(&mut self, id: u64) -> Result<(), Error> {
         self.healthy()?;
-        self.deferred.push_back(Change::DeleteRoot { id });
+        self.root_changes.push_back(RootChange::Delete { id });
         Ok(())
     }
     pub fn next_root_id(&self) -> u64 {
         self.next_root_id
     }
-    /// Stage the same PENDING conversions in the reservation and real trees.
+    /// Make PENDING released at or before G-2 FREE in this transaction
+    /// (design 2.5 reuse rule): the FREE index at once, SPACE at settlement.
     pub fn promote_pending(&mut self) -> Result<(), Error> {
         self.publishable()?;
-        let mut reservations = Reservations {
-            view: View {
-                base: self.base.get(),
-                nodes: &BTreeMap::new(),
-                frozen: None,
-                reads: &self.reads,
-            },
-            changes: &mut self.reserved_nodes,
-            next: &mut self.scratch_next,
-        };
-        let result = space::promote_pending(
-            &mut reservations,
-            &mut self.reservation_root,
-            self.generation,
-        )
-        .map_err(Error::from);
-        self.result(result)?;
-        self.deferred.push_back(Change::PromotePending);
-        Ok(())
+        let result = self.promote_eligible();
+        self.result(result)
     }
     /// Read after prepare_commit has staged PENDING promotion and settled
     /// the remaining releases into the real SPACE tree.
     pub(super) fn pending_summary(&self) -> space::PendingSummary {
-        self.pending_summary
+        self.state.quarantine.summary()
     }
-    /// Apply deferred changes to the real COW SPACE tree. Its copies/splits add
-    /// more allocation/release work to this queue. Edited paths remain in T,
-    /// so revisiting them does not recursively copy them again (design 2.5).
+    /// Quarantine a range released in this generation; settlement writes the
+    /// coalesced runs to PENDING.
+    fn stage(&mut self, start: u64, length: u64) -> Result<(), Error> {
+        Ok(space::insert_run(&mut self.staged, start, length)?)
+    }
+    /// Apply deferred changes to the real COW SPACE tree: the promotion, ROOT
+    /// changes, one edit per delayed reference head and the quarantine runs.
+    /// Its copies/splits add heads; edited paths remain in T, so revisiting them
+    /// does not recursively copy them again (design 2.5).
     pub fn settle(&mut self) -> Result<BlockPtr, Error> {
         self.publishable()?;
-        while let Some(change) = self.deferred.pop_front() {
+        let result = self.settle_changes();
+        self.result(result)?;
+        #[cfg(test)]
+        self.check_space_state();
+        Ok(self.space_root)
+    }
+    fn settle_changes(&mut self) -> Result<(), Error> {
+        const ROOT_OBJECT: u64 = 0xffff_ffff_ffff_ff10;
+        let generation = self.generation;
+        loop {
             preemption_point();
             let mut root = self.space_root;
-            let generation = self.generation;
-            let mut store = EditStore { txn: self, tree: 2 };
-            let result = match change {
-                Change::PromotePending => {
-                    // This scan already visits the surviving quarantine.
-                    // Later allocations cannot promote more in this generation.
-                    space::promote_pending(&mut store, &mut root, generation)
-                        .map(|summary| self.pending_summary = summary)
-                        .map_err(Error::from)
+            if let Some(promotion) = self.promotion.take() {
+                // First, so a range chosen from promoted space is FREE
+                // in SPACE before a head claims it.
+                promotion.apply(&mut EditStore { txn: self, tree: 2 }, &mut root)?;
+            } else if let Some(change) = self.root_changes.pop_front() {
+                let key = |id| Key { object: ROOT_OBJECT, item_type: format::ROOT, offset: id };
+                let mut store = EditStore { txn: self, tree: 2 };
+                match change {
+                    RootChange::Delete { id } => { btree::delete(&mut store, &mut root, key(id))?; }
+                    RootChange::Put { id, value } => {
+                        btree::insert(&mut store, &mut root, key(id), &value.encode())?;
+                    }
                 }
-                Change::Allocate {
-                    start,
-                    length,
-                    kind,
-                    crcs,
-                } => space::allocate(&mut store, &mut root, length, kind, &crcs, generation)
-                    .map_err(Error::from)
-                    .and_then(|actual| {
-                        if actual == start {
-                            Ok(())
-                        } else {
-                            Err(Error::Invalid)
-                        }
-                    }),
-                Change::Increment { start, length } => {
-                    space::increment(&mut store, &mut root, start, length).map_err(Error::from)
-                }
-                Change::Release {
-                    start,
-                    length,
-                    children,
-                } => space::release(&mut store, &mut root, start, length, generation, children)
-                    .map(|quarantined| {
-                        if quarantined {
-                            self.pending_summary.include(length, generation);
-                        }
-                    })
-                    .map_err(Error::from),
-                Change::DeleteRoot { id } => btree::delete(
-                    &mut store,
-                    &mut root,
-                    Key {
-                        object: 0xffff_ffff_ffff_ff10,
-                        item_type: format::ROOT,
-                        offset: id,
-                    },
-                )
-                .map(|_| ())
-                .map_err(Error::from),
-                Change::Root { id, value } => btree::insert(
-                    &mut store,
-                    &mut root,
-                    Key {
-                        object: 0xffff_ffff_ffff_ff10,
-                        item_type: format::ROOT,
-                        offset: id,
-                    },
-                    &value.encode(),
-                )
-                .map(|_| ())
-                .map_err(Error::from),
-            };
-            self.result(result)?;
+            } else if let Some((extent, head)) = self.heads.pop_first() {
+                self.apply_head(&mut root, extent, head)?;
+            } else if !self.staged.is_empty() {
+                // Promotion during these edits only touches older generations.
+                let mut staged = core::mem::take(&mut self.staged);
+                let mut runs = self.state.quarantine.take_generation(generation);
+                let result = runs.write(&mut EditStore { txn: self, tree: 2 }, &mut root, generation,
+                    &mut staged);
+                self.state.quarantine.put_generation(generation, runs);
+                result?;
+            } else {
+                return Ok(());
+            }
             self.space_root = root;
         }
-        Ok(self.space_root)
+    }
+    /// One REF edit for the count changes this transaction made to an
+    /// allocation, skipped when they cancel; a FREE claim for a new allocation;
+    /// at 0, DEAD for a node with children, else the quarantine.
+    fn apply_head(&mut self, root: &mut BlockPtr, (start, length): (u64, u64), head: Head) -> Result<(), Error> {
+        let count = self.known_count(start, length).ok_or(Error::Invalid)?;
+        let generation = self.generation;
+        let mut store = EditStore { txn: self, tree: 2 };
+        let quarantine = match head.new {
+            Some((kind, crcs)) => {
+                space::claim(&mut store, root, start, length)?;
+                if count > 0 {
+                    let r = Ref { refcount: count, kind: kind as u8, alloc_generation: generation, crcs };
+                    space::put_reference(&mut store, root, start, length, &r)?;
+                    false
+                } else if head.children {
+                    if kind != Kind::FsNode {
+                        return Err(Error::Invalid);
+                    }
+                    space::mark_dead(&mut store, root, start)?;
+                    false
+                } else {
+                    true
+                }
+            }
+            None => {
+                if count == head.before {
+                    return Ok(());
+                }
+                let mut r = space::reference(&store, *root, start, length)?.ok_or(Error::Invalid)?;
+                if r.refcount != head.before
+                    || (count > r.refcount && r.kind == Kind::SpaceNode as u8)
+                    || (count < r.refcount && generation < r.alloc_generation)
+                    || (head.children && r.kind != Kind::FsNode as u8)
+                {
+                    return Err(Error::Invalid);
+                }
+                if count == 0 {
+                    space::drop_reference(&mut store, root, start, length, head.children)?;
+                    !head.children
+                } else {
+                    r.refcount = count;
+                    space::put_reference(&mut store, root, start, length, &r)?;
+                    false
+                }
+            }
+        };
+        if quarantine {
+            self.stage(start, length)?;
+        }
+        Ok(())
+    }
+    /// Host oracle after each settlement: the FREE index equals the FREE
+    /// items, and each quarantine run this mount wrote is stored as such.
+    /// It compares in step, with no vector, so host heap measurements are
+    /// not charged for the oracle's own copies.
+    #[cfg(test)]
+    fn check_space_state(&self) {
+        let view = self.view();
+        let generation = self.generation;
+        let mut indexed = self.state.free.ranges();
+        let free = |offset| Key { object: 0xffff_ffff_ffff_ff20, item_type: format::FREE, offset };
+        btree::visit_range(&view, self.space_root, free(0), free(u64::MAX), &mut |key, bytes| {
+            let stored = (key.offset, Free::decode(bytes)?.length);
+            assert_eq!(indexed.next(), Some(stored), "FREE index diverged from SPACE at generation {generation}");
+            Ok::<_, Error>(true)
+        }).unwrap();
+        assert_eq!(indexed.next(), None, "FREE index has ranges SPACE lacks at generation {generation}");
+        for (start, length, released) in self.state.quarantine.runs() {
+            let key = Key { object: 0xffff_ffff_ffff_ff30, item_type: format::PENDING, offset: start };
+            let bytes = btree::search(&view, self.space_root, key).unwrap()
+                .unwrap_or_else(|| panic!("quarantine run {start}+{length} is not in PENDING"));
+            assert_eq!(format::Pending::decode(&bytes).unwrap(),
+                format::Pending { length, released_generation: released });
+        }
     }
 }
 fn node_kind(tree: u8) -> Result<Kind, Error> {

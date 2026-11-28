@@ -56,6 +56,69 @@ fn write(fs: &dyn FileSystem, node: &VNode, offset: u64, bytes: &[u8]) {
     }, bytes).unwrap().bytes, bytes.len());
 }
 
+/// Durable generation and the oldest PENDING `released_generation`.
+pub(crate) fn quarantine(disk: &Disk) -> (u64, Option<u64>) {
+    use crate::breenfs::{commit::DeviceStore, format::{self, Pending}, recover};
+    let sb = recover::recover(disk, false).unwrap();
+    let oldest = recover::space_items(&DeviceStore(disk), &sb).unwrap().into_iter()
+        .filter(|(key, _)| key.item_type == format::PENDING)
+        .map(|(_, bytes)| Pending::decode(&bytes).unwrap().released_generation)
+        .min();
+    (sb.generation, oldest)
+}
+
+/// `blocks` released by the commit after durable generation `released_after`
+/// left allocation: FREE + PENDING gained at least that much, the measure
+/// the guest RootMarker::reclaim uses (E24 583(y2), 646(b4)), since FREE
+/// alone also moves with how many nodes each marker commit copies. And they
+/// are FREE: no PENDING released by that commit or earlier remains.
+pub(crate) fn returned(disk: &Disk, before: (u64, u64), released_after: u64, blocks: u64) {
+    let after = raw(disk);
+    assert!(after.0 + after.1 >= before.0 + before.1 + blocks,
+        "FREE+PENDING {before:?}->{after:?}, expected a gain of {blocks}");
+    let (generation, oldest) = quarantine(disk);
+    assert!(generation >= released_after + 3);
+    assert!(oldest.is_none_or(|g| g > released_after + 1),
+        "PENDING released at {oldest:?} remains at generation {generation}");
+}
+
+/// The blocks of each physical allocation `ino`'s EXTENT items name in the
+/// durable root 1.
+pub(crate) fn allocated(disk: &Disk, ino: u64) -> std::collections::BTreeSet<u64> {
+    use crate::breenfs::{btree, commit::DeviceStore, format::{self, Extent, Key, Root}, recover};
+    let sb = recover::recover(disk, false).unwrap();
+    let (_, root) = recover::space_items(&DeviceStore(disk), &sb).unwrap().into_iter()
+        .find(|(key, _)| key.item_type == format::ROOT && key.offset == 1).unwrap();
+    let root = Root::decode(&root).unwrap().root;
+    btree::range(&DeviceStore(disk), root,
+        Key { object: ino, item_type: format::EXTENT, offset: 0 },
+        Key { object: ino, item_type: format::EXTENT, offset: u64::MAX }).unwrap()
+        .into_iter()
+        .flat_map(|(_, bytes)| {
+            let e = Extent::decode(&bytes).unwrap();
+            e.phys_start..e.phys_start + u64::from(e.phys_len)
+        })
+        .collect()
+}
+
+/// Each block of the allocations `ino` named in `before` and no longer
+/// names is in a durable FREE item and in no PENDING item, and there are at
+/// least `blocks` of them.
+pub(crate) fn truncated_free(disk: &Disk, ino: u64, before: &std::collections::BTreeSet<u64>, blocks: u64) {
+    use crate::breenfs::{commit::DeviceStore, format::{self, Free, Pending}, recover};
+    let truncated: Vec<u64> = before.difference(&allocated(disk, ino)).copied().collect();
+    assert!(truncated.len() as u64 >= blocks, "{} blocks left the file, expected {blocks}", truncated.len());
+    let sb = recover::recover(disk, false).unwrap();
+    let (mut free, mut pending) = (Vec::new(), Vec::new());
+    for (key, bytes) in recover::space_items(&DeviceStore(disk), &sb).unwrap() {
+        if key.item_type == format::FREE { free.push((key.offset, Free::decode(&bytes).unwrap().length)); }
+        if key.item_type == format::PENDING { pending.push((key.offset, Pending::decode(&bytes).unwrap().length)); }
+    }
+    let within = |ranges: &[(u64, u64)], block: u64| ranges.iter().any(|&(s, l)| (s..s + l).contains(&block));
+    let missing: Vec<_> = truncated.iter().filter(|&&b| !within(&free, b) || within(&pending, b)).collect();
+    assert!(missing.is_empty(), "truncated blocks not FREE: {missing:?}");
+}
+
 fn commits(fs: &dyn FileSystem, marker: &VNode, disk: &Disk) {
     for byte in 0..3 {
         let before = raw(disk);
@@ -103,12 +166,14 @@ fn large_shrink_and_regrowth_return_truncated_data_blocks() {
     with_root(true, |fs, file, marker, disk| {
         write(fs, file, 0, &vec![0x5a; 129 * 4096]);
         commits(fs, marker, disk);
-        let before = fs.statfs().unwrap().free_blocks;
+        let before = raw(disk);
+        let (released_after, _) = quarantine(disk);
+        let owned = allocated(disk, file.ino);
         fs.resize(file, 3, false, &|_| Ok(())).unwrap();
         commits(fs, marker, disk);
-        let after = fs.statfs().unwrap().free_blocks;
-        println!("large shrink FREE {before}->{after}");
-        assert!(after >= before + 128);
+        println!("large shrink FREE_PENDING {before:?}->{:?}", raw(disk));
+        returned(disk, before, released_after, 128);
+        truncated_free(disk, file.ino, &owned, 128);
         bytes(fs, file, &[0x5a; 3]);
         fs.resize(file, 129 * 4096, false, &|_| Ok(())).unwrap();
         let mut expected = vec![0; 129 * 4096];
@@ -118,12 +183,14 @@ fn large_shrink_and_regrowth_return_truncated_data_blocks() {
         *expected.last_mut().unwrap() = b'Z';
         bytes(fs, file, &expected);
         commits(fs, marker, disk);
-        let before = fs.statfs().unwrap().free_blocks;
+        let before = raw(disk);
+        let (released_after, _) = quarantine(disk);
+        let owned = allocated(disk, file.ino);
         fs.resize(file, 0, false, &|_| Ok(())).unwrap();
         commits(fs, marker, disk);
-        let after = fs.statfs().unwrap().free_blocks;
-        println!("regrowth zero FREE {before}->{after}");
-        assert!(after >= before + 2);
+        println!("regrowth zero FREE_PENDING {before:?}->{:?}", raw(disk));
+        returned(disk, before, released_after, 2);
+        truncated_free(disk, file.ino, &owned, 2);
         bytes(fs, file, b"");
     });
 }
@@ -133,14 +200,16 @@ fn open_truncate_returns_129_data_blocks() {
     with_root(true, |fs, file, marker, disk| {
         write(fs, file, 0, &vec![0x5a; 129 * 4096]);
         commits(fs, marker, disk);
-        let before = fs.statfs().unwrap().free_blocks;
+        let before = raw(disk);
+        let (released_after, _) = quarantine(disk);
+        let owned = allocated(disk, file.ino);
         let opened = fs.open(file.ino).unwrap();
         // O_TRUNC dispatches resize through this VFS boundary.
         fs.resize(&opened, 0, false, &|_| Ok(())).unwrap();
         commits(fs, marker, disk);
-        let after = fs.statfs().unwrap().free_blocks;
-        println!("open truncate FREE {before}->{after}");
-        assert!(after >= before + 129);
+        println!("open truncate FREE_PENDING {before:?}->{:?}", raw(disk));
+        returned(disk, before, released_after, 129);
+        truncated_free(disk, file.ino, &owned, 129);
         bytes(fs, &opened, b"");
         write(fs, &opened, 0, b"fresh");
         bytes(fs, &opened, b"fresh");
