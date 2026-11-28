@@ -767,9 +767,13 @@ for the head: <!-- claim-lint:ok: normative requirement of docs/plans/e9-schedul
 
 ### 9.2 Shootdowns as IPIs
 
-- **Who may hold translations.** Each address space keeps a `CpuSet` of the CPUs that may hold its
-  translations: those that have it loaded, plus those that cache its PCID at some generation. A CPU
-  leaves the set when it evicts the PCID from its cache.
+- **Who can use translations.** A CPU that caches A's PCID but does not have A loaded may still hold
+  TLB entries tagged with that PCID. It does not use them. With CR4.PCIDE set, a logical processor uses
+  only the TLB and paging-structure-cache entries of its current PCID, plus global entries, and user
+  mappings are never global (SDM Vol. 3A, "Process-Context Identifiers (PCIDs)"). It can use them again
+  only by loading A. A load at a stale generation clears the no-flush bit, which invalidates that PCID's
+  entries (SDM, "MOV to CR3" with CR4.PCIDE=1). So the CPUs that can translate through A's old entries
+  are exactly those in `A.loaded`.
 - **Ordering between activation and target selection.** Each address space A keeps a `loaded` `CpuSet`
   beside its generation. Both sides use locked read-modify-writes. Locked instructions have one total
   order, and loads are not reordered with them (SDM Vol. 3A, "Memory Ordering in P6 and More Recent
@@ -803,10 +807,12 @@ for the head: <!-- claim-lint:ok: normative requirement of docs/plans/e9-schedul
   it, so two initiators cannot wait for each other.
 - **Kernel-root flushes.** A flush that names no address space (`flush_page`, `flush_all`) goes to every
   online CPU. A tickless idle CPU on the kernel root takes it as an ordinary interrupt. <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
-- **Lifetime (S9).** A frame or page-table page is freed only after every CPU in the set at the time of
-  the change has acknowledged, or has flushed that address space's PCID since the change. Since E9 keeps
-  idle CPUs on the kernel root (`load_kernel_root`, `tlb.rs:229`), a halted CPU still holds up no user
-  shootdown. <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
+- **Lifetime (S9).** A frame or page-table page is freed only after every CPU in the target set has
+  acknowledged. The target set is the read of `A.loaded` that followed the generation increment. Nothing
+  waits for a CPU that only caches A's PCID. Such a CPU gets no IPI and owes no acknowledgement,
+  because it cannot translate through those entries until a load at the new generation flushes them.
+  E9 keeps idle CPUs on the kernel root (`load_kernel_root`, `tlb.rs:229`), out of every user
+  `loaded` set, so a CPU that idles for any length of time holds up no user unmap. <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
 
 ## 10. PR sequence
 
@@ -1257,8 +1263,8 @@ of their steps, keeping each CPU's program order. The steps are sequentially con
 - **Tests.**
   - Host tests of the PCID cache: hit, miss, LRU eviction, and a stale generation forcing a flush on the
     next switch.
-  - A host model of the shootdown protocol over the address space's `CpuSet`: no frame is freed while a
-    CPU in the set can hold a translation (S9). Two simultaneous initiators complete. A target in an
+  - A host model of the shootdown protocol over the address space's `loaded` set: no frame is freed
+    while a CPU can still translate to it (S9). Two simultaneous initiators complete. A target in an
     `IrqSpinLock` section acknowledges after its section ends.
   - A structure test that no shootdown wait is reachable under an `IrqSpinLock`, which E2.6's validator
     also checks at run time.
@@ -1290,11 +1296,11 @@ of their steps, keeping each CPU's program order. The steps are sequentially con
     loaded and CPUs 2 and 3 sit idle on the kernel root, caching A's PCID. The frame must be freed once
     CPU 1 acknowledges. No wait may depend on CPUs 2 and 3 ever running A again. Red on §9.2 as first
     written. Its lifetime rule waits for every CPU in the set to acknowledge or flush, yet it sends no
-    IPI to the CPUs that only cache the PCID.
+    IPI to the CPUs that only cache the PCID. Green on §9.2's lifetime rule over the target set.
 
     ```pycon
     >>> def free_waits_for(loaded_at_selection, cached_only):
-    ...     return loaded_at_selection | cached_only
+    ...     return set(loaded_at_selection)
     >>> sorted(free_waits_for({1}, cached_only={2, 3}))
     [1]
 
