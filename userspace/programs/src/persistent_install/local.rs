@@ -97,17 +97,21 @@ fn entries(root: &Path, scratch: Option<&Path>, legacy_shared: bool) -> Result<B
 }
 
 pub(super) fn record(copier: &mut Copier, staged: &Path, scratch: Option<&Path>) -> Result<(), String> {
-    let text = baseline_text(entries(staged, scratch, false)?)?;
+    let text = baseline_text(entries(staged, scratch, false)?);
     copier.write_file(&staged.join(BASELINE), &text, 0o600)
 }
 
-pub(super) fn baseline_text(entries: impl IntoIterator<Item = (PathBuf, String)>) -> Result<String, String> {
-    let mut text = format!("{VERSION}\0");
+/// The baseline is `VERSION NUL` then `digest TAB path NUL` per file. A path is its raw bytes: the
+/// image carries a name that is not UTF-8, and a path holds no NUL.
+pub(super) fn baseline_text(entries: impl IntoIterator<Item = (PathBuf, String)>) -> Vec<u8> {
+    let mut text = format!("{VERSION}\0").into_bytes();
     for (path, digest) in entries {
-        let path = path.to_str().ok_or("image contains a non-UTF-8 path")?;
-        write!(text, "{digest}\t{path}\0").expect("formatting into a string cannot fail");
+        text.extend_from_slice(digest.as_bytes());
+        text.push(b'\t');
+        text.extend_from_slice(path.as_os_str().as_bytes());
+        text.push(0);
     }
-    Ok(text)
+    text
 }
 
 fn read_baseline(current: &Path) -> Result<Option<BTreeMap<PathBuf, String>>, String> {
@@ -119,19 +123,21 @@ fn read_baseline(current: &Path) -> Result<Option<BTreeMap<PathBuf, String>>, St
     if !meta.is_file() {
         return Err("image baseline is not a regular file".into());
     }
-    let text = fs::read_to_string(&path).map_err(|error| fail("read image baseline", &path, error))?;
+    let text = fs::read(&path).map_err(|error| fail("read image baseline", &path, error))?;
     parse_baseline(&text).map(Some)
 }
 
-pub(super) fn parse_baseline(text: &str) -> Result<BTreeMap<PathBuf, String>, String> {
-    let text = text.strip_prefix(&format!("{VERSION}\0")).ok_or("invalid image baseline header")?;
+pub(super) fn parse_baseline(text: &[u8]) -> Result<BTreeMap<PathBuf, String>, String> {
+    let text = text.strip_prefix(format!("{VERSION}\0").as_bytes()).ok_or("invalid image baseline header")?;
     let mut files = BTreeMap::new();
-    if !text.is_empty() && !text.ends_with('\0') {
+    if !text.is_empty() && !text.ends_with(b"\0") {
         return Err("truncated image baseline".into());
     }
-    for row in text.split_terminator('\0') {
-        let (digest, path) = row.split_once('\t').ok_or("invalid image baseline entry")?;
-        let path = PathBuf::from(path);
+    for row in text.split_inclusive(|&byte| byte == 0) {
+        let row = &row[..row.len() - 1];
+        let tab = row.iter().position(|&byte| byte == b'\t').ok_or("invalid image baseline entry")?;
+        let digest = std::str::from_utf8(&row[..tab]).map_err(|_| "invalid image baseline entry")?;
+        let path = PathBuf::from(std::ffi::OsStr::from_bytes(&row[tab + 1..]));
         if path.as_os_str().is_empty() || !path.components().all(|part| matches!(part, Component::Normal(_)))
             || files.insert(path, digest.to_owned()).is_some()
         {

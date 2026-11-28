@@ -309,7 +309,7 @@ fn baseline(root: &Dir) -> Result<Option<BTreeMap<PathBuf, String>>, String> {
         return Ok(None);
     }
     let bytes = root.read(name).map_err(io_error)?;
-    local::parse_baseline(std::str::from_utf8(&bytes).map_err(|err| err.to_string())?).map(Some)
+    local::parse_baseline(&bytes).map(Some)
 }
 
 fn list_payload(root: &Dir, path: &Path, out: &mut BTreeSet<PathBuf>) -> io::Result<()> {
@@ -689,8 +689,8 @@ fn apply(
             fingerprint(&dir, row.leaf(), info).map_err(io_error)?,
         );
     }
-    let image = local::baseline_text(managed)?;
-    write_path(root, BASELINE, image.as_bytes(), 0o600).map_err(io_error)?;
+    let image = local::baseline_text(managed);
+    write_path(root, BASELINE, &image, 0o600).map_err(io_error)?;
     write_path(root, ".complete", layout::record(id).as_bytes(), 0o644).map_err(io_error)?;
     root.remove_tree(incoming_name).map_err(io_error)?;
     root.file.sync_all().map_err(io_error)?;
@@ -698,7 +698,7 @@ fn apply(
 }
 
 #[cfg(feature = "paired-host-test")]
-pub(crate) fn record_fixture(path: &Path) -> Result<String, String> {
+pub(crate) fn record_fixture(path: &Path) -> Result<Vec<u8>, String> {
     let root = Dir::open(path).map_err(io_error)?;
     let mut paths = BTreeSet::new();
     for dir in ["bin", "sbin", "lib", "usr"] {
@@ -715,7 +715,7 @@ pub(crate) fn record_fixture(path: &Path) -> Result<String, String> {
             fingerprint(&dir, path.file_name().unwrap(), info).map_err(io_error)?,
         );
     }
-    local::baseline_text(files)
+    Ok(local::baseline_text(files))
 }
 
 #[cfg(feature = "paired-host-test")]

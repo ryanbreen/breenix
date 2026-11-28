@@ -279,6 +279,7 @@ impl BlockDevice for PublicationDevice<'_> {
     fn hardware_disk(&self) -> Option<HardwareDisk> { self.device.hardware_disk() }
     fn identity(&self) -> usize { self.device.identity() }
     fn block_size(&self) -> usize { self.device.block_size() }
+    fn max_single_write_bytes(&self) -> usize { self.device.max_single_write_bytes() }
     fn num_blocks(&self) -> u64 { self.device.num_blocks() }
     fn read_block(&self, block: u64, out: &mut [u8]) -> Result<(), BlockError> {
         self.device.read_block(block, out)
