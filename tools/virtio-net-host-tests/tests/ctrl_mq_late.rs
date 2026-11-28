@@ -2,8 +2,8 @@
 //! section 5.1.6.5.6). The device takes the command and answers
 //! VIRTIO_NET_OK only once `init` has given up on it. From then on the device
 //! may steer received frames to the second receive queue, so the driver must
-//! still drain it; it transmits on the first pair, since it never saw the
-//! device accept more.
+//! still drain it; it transmits on the first pair, since it did not see the
+//! device accept more before it stopped waiting.
 use virtio_net_host_tests::device::{self, f, Config};
 use virtio_net_host_tests::drivers::virtio::net_mmio;
 use virtio_net_host_tests::support::{drain, tcp_frame};

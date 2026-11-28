@@ -2,10 +2,10 @@
 //! sections 2.7.7 and 2.7.14). The queue of 16 descriptors holds eight
 //! two-descriptor chains when a three-descriptor chain is submitted. As the
 //! driver stores its request for an interrupt, the device returns the first
-//! chain without seeing the request, so it raises none. The re-check takes
-//! that chain back, two descriptors are still too few, and the submission is
-//! refused as full. The device's next completion must then interrupt, or the
-//! sender waits for traffic that may never come.
+//! chain without seeing the request, so it raises no interrupt. The re-check
+//! takes that chain back, two descriptors are still too few, and the
+//! submission is refused as full. The device's next completion must then
+//! interrupt, or the sender waits on receive traffic to reclaim the queue.
 use virtio_net_host_tests::drivers::virtio::net_tx_queue::{need_event, TxError, TxQueue, TxRing};
 
 const SIZE: u16 = 16;

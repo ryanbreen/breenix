@@ -8,8 +8,8 @@
 //! VIRTIO_NET_F_CTRL_VQ and VIRTIO_NET_F_MQ the driver asks for one pair per
 //! CPU through the control queue, and transmits on one pair if the device
 //! refuses or does not answer in time. A transmitted frame goes to the queue
-//! its IPv4 flow hashes to, so a flow keeps its order; receive drains the
-//! receive queues of every pair set up in turn, since a late answer may still
+//! its IPv4 flow hashes to, so a flow keeps its order; receive drains, in
+//! turn, the receive queues of the pairs set up, since a late answer may still
 //! take effect.
 //!
 //! Negotiated when offered: MRG_RXBUF (a frame over several receive buffers),
@@ -329,7 +329,7 @@ struct DeviceInfo {
     mac: [u8; 6],
     neg: Negotiated,
     /// Queue pair `k` is queue `2k`, which receives, and `2k + 1`, which
-    /// transmits. The receive queues of the pairs set up are all drained: a
+    /// transmits. The receive queues of the pairs set up are drained: a
     /// VQ_PAIRS_SET whose answer `init` stopped waiting for may still take
     /// effect, and the device then steers frames to them.
     rx_pairs: usize,
@@ -937,7 +937,7 @@ fn init_device(device: &mut VirtioMmioDevice) -> Result<([u8; 6], Negotiated, us
 
     // Section 5.1.6.5.6: only the first pair is used until the device accepts
     // VQ_PAIRS_SET; a refusal or no control queue keeps transmission on it.
-    // Every pair set up is still drained, since an answer that came too late
+    // The pairs set up are still drained, since an answer that came too late
     // may still have taken effect.
     let mut active = 1;
     if pairs > 1 {
@@ -1129,8 +1129,8 @@ pub fn reclaim_tx_completed() -> usize {
 /// until the next `receive` that looks at its queue, or `recycle_rx_buffers`.
 ///
 /// A queue with no further frame gives back the buffers it holds: its earlier
-/// frames are no longer valid, and a drain whose completions were all dropped
-/// hands nothing up, so its caller has no batch to recycle.
+/// frames are no longer valid, and a drain that drops each completion it finds
+/// hands up no frame, so its caller has no batch to recycle.
 pub fn receive() -> Option<&'static [u8]> {
     let info = DEVICE.get()?;
     let start = RX_NEXT.load(Ordering::Relaxed);
