@@ -465,8 +465,11 @@ fn receive_path_retries_refused_immediate_ack_with_current_sack() {
 
 fn retransmit_timeouts() -> u64 {
     let text = tcp::proc_net_tcp_stats().unwrap();
-    let value = text.strip_prefix("retransmit_timeouts: ").unwrap();
-    value.trim_end().parse().unwrap()
+    text.lines()
+        .find_map(|line| line.strip_prefix("retransmit_timeouts: "))
+        .unwrap()
+        .parse()
+        .unwrap()
 }
 
 #[test]
@@ -546,18 +549,18 @@ fn receive_path_uses_scaled_peer_window_only_after_active_handshake() {
             .map(|p| TcpHeader::parse(p).unwrap().1.len())
             .sum()
     };
-    assert_eq!(
-        payload_len(take_output()),
-        60_000,
-        "SYN+ACK window is unscaled"
-    );
+    let peer_window = || tcp::tcp_sender_info(&id).unwrap().send_window;
+    assert_eq!(peer_window(), 60_000, "SYN+ACK window is unscaled");
+    // Below that window, the congestion window admits the initial window:
+    // three of the 1396-byte segments the SYN+ACK's MSS allows (RFC 5681 3.1).
+    assert_eq!(payload_len(take_output()), 3 * 1396);
     receive(id, start, ack, TcpFlags::ack(), &[], &[]);
     tcp::drain_deferred_tx();
-    assert_eq!(
-        payload_len(take_output()),
-        25_000,
-        "ordinary peer ACK scales the window"
-    );
+    assert_eq!(peer_window(), 120_000, "ordinary peer ACK scales the window");
+    // The peer resets: the connection's unacknowledged data and its timer
+    // leave the shared table, so no later check's clock fires them.
+    receive(id, start, ack, TcpFlags::rst(), &[], &[]);
+    assert_eq!(tcp::tcp_get_state(&id), Some(tcp::TcpState::Closed));
 }
 
 /// A SYN+ACK leaves with the processing of the SYN that asked for it, as the
@@ -581,4 +584,8 @@ fn syn_ack_leaves_while_the_syn_is_processed() {
     let header = TcpHeader::parse(&output[0]).unwrap().0;
     assert!(header.flags.syn && header.flags.ack);
     assert_eq!(header.ack_num, 10);
+    // The peer resets the half-open child, so its SYN+ACK timer leaves the
+    // shared table before a later check moves the clock past it.
+    receive(id, 10, 0, TcpFlags::rst(), &[], &[]);
+    assert_ne!(tcp::tcp_get_state(&id), Some(tcp::TcpState::SynReceived));
 }

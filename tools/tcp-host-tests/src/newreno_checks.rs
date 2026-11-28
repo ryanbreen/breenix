@@ -185,4 +185,12 @@ fn a_timeout_repairs_the_oldest_segment_and_marks_recover() {
     assert_eq!(info.recover, next + 6 * SMSS - 1);
     assert_eq!(data(&flow.sent()), vec![(next + 2 * SMSS, SMSS as usize)], "the fresh fast retransmit");
     assert_eq!(stat("fast_retransmits") - fast_before, 1);
+
+    // The repair lands and the peer acknowledges the rest: nothing is left
+    // outstanding, so no timer of this connection runs into another check.
+    harness::advance(RTT_MS);
+    flow.ack(next + 6 * SMSS);
+    let info = flow.info();
+    assert!(!info.in_recovery);
+    assert_eq!(info.rtx_deadline_ms, 0);
 }

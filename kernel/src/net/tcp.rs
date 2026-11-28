@@ -2254,6 +2254,8 @@ pub struct SenderInfo {
     pub send_next: u32,
     /// The highest sequence number sent, plus one.
     pub send_max: u32,
+    /// The peer's window in bytes, scaled as negotiated.
+    pub send_window: u32,
     /// The retransmission timeout, and when its timer fires (0 when stopped).
     pub rto_ms: u64,
     pub rtx_deadline_ms: u64,
@@ -2272,6 +2274,7 @@ pub fn tcp_sender_info(conn_id: &ConnectionId) -> Option<SenderInfo> {
             send_unack: conn.send_unack,
             send_next: conn.send_next,
             send_max: conn.send_max,
+            send_window: conn.send_window,
             rto_ms: conn.rto_ms,
             rtx_deadline_ms: conn.rtx_deadline_ms,
         })
