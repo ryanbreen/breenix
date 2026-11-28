@@ -1,10 +1,11 @@
 //! The manager's files on the EFI system partition (docs/metal/README.md, "Disk layout" and "Slot actions"):
-//! `MANAGER.CFG`, the kernel slots `CURRENT.IMG` and `PREVIOUS.IMG` with their `.TXT` notes, and `NEXT.*` while an
-//! upgrade is staged.
+//! `MANAGER.CFG`, the redundant slot records and the kernel images they name.
 use core::ptr::{null, null_mut};
 
 use metal_efi::bootdisk;
-use metal_efi::files::Root;
+use metal_efi::files::{self, Root};
+use metal_efi::slot_store::{Esp, ImagePages};
+use metal_efi::slot_transaction::{self, Image, Records};
 use metal_efi::say;
 use metal_efi::uefi::*;
 
@@ -174,8 +175,16 @@ pub unsafe fn note(root: &Root, name: &str) -> Note {
     let Ok(size) = root.read(core::str::from_utf8(&text_path[..len]).unwrap_or(""), &mut text) else {
         return Note { commit: [b'?'; 40], present: true };
     };
+    parse_note(&text[..size])
+}
+
+pub fn record_note(image: Option<Image>) -> Note {
+    image.map_or(Note::ABSENT, |entry| parse_note(entry.note()))
+}
+
+fn parse_note(text: &[u8]) -> Note {
     let mut note = Note { commit: [b'?'; 40], present: true };
-    if let Ok(text) = core::str::from_utf8(&text[..size]) {
+    if let Ok(text) = core::str::from_utf8(text) {
         for line in text.lines() {
             if let Some(commit) = line.strip_prefix("commit ") {
                 if commit.len() == 40 && commit.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -229,70 +238,89 @@ pub unsafe fn boot(boot: &BootServices, image: Handle, root: &Root, entry: Entry
         }
     };
     say!("read the {} slot: {} bytes", slot_name(entry), size);
-    boot_image(boot, image, base, size)
-}
-
-/// The verified image must remain readable for UEFI's disk protocols.
-pub unsafe fn boot_image(boot: &BootServices, image: Handle, base: *mut u8, size: usize) -> Status {
     if !bootdisk::looks_like_disk(base, size) {
-        say!("the slot is not a boot disk");
         return LOAD_ERROR;
     }
     let disk = match bootdisk::attach(boot, base, size, "kernel slot") {
         Ok(path) => path,
         Err(status) => return status,
     };
-    let volume = match bootdisk::connect(boot, disk, "kernel slot") {
-        Ok(path) => path,
+    bootdisk::connect(boot, disk, "kernel slot").map_or_else(|status| status, |volume| {
+        bootdisk::start_bootloader(boot, image, volume, "kernel slot")
+    })
+}
+
+/// Attaches the verified bytes and lets firmware bind its FAT driver.
+pub unsafe fn mount(boot: &BootServices, pages: &mut ImagePages<'_>) -> Result<*const u8, Status> {
+    let bytes = pages.as_ref();
+    if !slot_transaction::looks_like_disk(bytes) {
+        return Err(LOAD_ERROR);
+    }
+    let disk = bootdisk::attach(boot, bytes.as_ptr(), bytes.len(), "kernel slot")?;
+    pages.retain_for_firmware();
+    bootdisk::connect(boot, disk, "kernel slot")
+}
+
+unsafe fn launch(boot: &BootServices, image: Handle, mut pages: ImagePages<'_>) -> Status {
+    mount(boot, &mut pages).map_or_else(|status| status, |volume| {
+        bootdisk::start_bootloader(boot, image, volume, "kernel slot")
+    })
+}
+
+pub unsafe fn open<'a>(boot: &'a BootServices, image: Handle, root: &'a Root) -> Result<Esp<'a>, Status> {
+    Ok(Esp::new(root, boot, files::own_device(boot, image)?))
+}
+
+pub unsafe fn boot_named(boot: &BootServices, image: Handle, root: &Root, records: &Records, entry: Entry) -> Status {
+    if entry == Entry::Rescue {
+        return self::boot(boot, image, root, entry);
+    }
+    let esp = match open(boot, image, root) {
+        Ok(esp) => esp,
         Err(status) => return status,
     };
-    bootdisk::start_bootloader(boot, image, volume, "kernel slot")
+    records.boot(&esp, entry == Entry::Previous, |named, previous, pages| {
+        let entry = if previous { Entry::Previous } else { Entry::Current };
+        say!("booting {} {}", entry.as_str(), parse_note(named.note()).full());
+        say!("read the {} slot: {} bytes", named.name.as_str(), named.size);
+        launch(boot, image, pages)
+    })
 }
 
-use metal_efi::slot_store::SlotStore;
-
-/// Recover an interrupted slot action before reading or booting a slot.
-///
-/// # Safety
-/// `root` must be the EFI system partition's open root.
-pub unsafe fn recover(root: &Root) -> Result<(), Status> {
-    metal_efi::slot_transaction::recover(&SlotStore(root))
+pub unsafe fn boot_legacy(boot: &BootServices, image: Handle, esp: &Esp<'_>) -> Status {
+    slot_transaction::boot_legacy(esp, |name, pages| {
+        say!("slot recovery failed; booting {} read-only", name);
+        launch(boot, image, pages)
+    })
 }
 
-/// `NEXT` becomes `CURRENT` and the old current `PREVIOUS`. Repeating a commit with no staged slot leaves the slots as they are.
-///
-/// # Safety
-/// `root` must be the EFI system partition's open root.
-pub unsafe fn commit(root: &Root) -> Result<(), Status> {
-    recover(root)?;
-    if !note(root, "NEXT").present {
-        say!("slot commit: nothing is staged; current {}", note(root, "CURRENT").full());
+pub fn collect(esp: &Esp<'_>, records: &Records) {
+    if let Err(status) = records.collect(esp) {
+        say!("slot image cleanup deferred ({:#x})", status);
+    }
+}
+
+pub fn commit(esp: &Esp<'_>, records: &mut Records) -> Result<(), Status> {
+    let changed = records.commit_install(esp)?;
+    let record = records.latest().ok_or(NOT_FOUND)?;
+    if !changed {
+        say!("slot commit: nothing is staged; current {}", record_note(record.current).full());
         return Ok(());
     }
-    metal_efi::slot_transaction::begin(&SlotStore(root), false)?;
-    say!(
-        "slot commit: current {}, previous {}",
-        note(root, "CURRENT").full(),
-        note(root, "PREVIOUS").full()
-    );
+    collect(esp, records);
+    say!("slot commit: current {}, previous {}", record_note(record.current).full(), record_note(record.previous).full());
     Ok(())
 }
 
-/// `CURRENT` and `PREVIOUS` change places.
-///
-/// # Safety
-/// `root` must be the EFI system partition's open root.
-pub unsafe fn rollback(root: &Root) -> Result<(), Status> {
-    recover(root)?;
-    if !note(root, "PREVIOUS").present || !note(root, "CURRENT").present {
-        say!("slot rollback refused: there is no previous slot to return to");
-        return Err(NOT_FOUND);
+pub fn rollback(esp: &Esp<'_>, records: &mut Records) -> Result<(), Status> {
+    if let Err(status) = records.rollback(esp) {
+        if status == NOT_FOUND {
+            say!("slot rollback refused: there is no previous slot to return to");
+        }
+        return Err(status);
     }
-    metal_efi::slot_transaction::begin(&SlotStore(root), true)?;
-    say!(
-        "slot rollback: current {}, previous {}",
-        note(root, "CURRENT").full(),
-        note(root, "PREVIOUS").full()
-    );
+    collect(esp, records);
+    let record = records.latest().ok_or(NOT_FOUND)?;
+    say!("slot rollback: current {}, previous {}", record_note(record.current).full(), record_note(record.previous).full());
     Ok(())
 }

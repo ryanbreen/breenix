@@ -21,9 +21,11 @@ fn idle_worker() {
     let sleeper = crate::task::completion::Completion::new();
     let mut next_alive = 0;
     loop {
-        crate::per_cpu::preempt_disable();
+        // A braked level selects the completion's sleeping wait (park::Braked);
+        // a bare preempt_disable() would make it spin this CPU for the second.
+        let braked = crate::task::park::Braked::new();
         let _ = sleeper.wait_timeout_uninterruptible(1, 1_000_000_000);
-        crate::per_cpu::preempt_enable();
+        drop(braked);
         let now = crate::time::get_monotonic_time();
         if CLOCK.expire(now) {
             // Thread context only: the input path stores a timestamp, never logs.

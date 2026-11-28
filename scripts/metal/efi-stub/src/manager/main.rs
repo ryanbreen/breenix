@@ -25,6 +25,7 @@ use core::ptr::null_mut;
 use metal_efi::com1::{self, Vendor};
 use metal_efi::files::{self, Root};
 use metal_efi::say;
+use metal_efi::slot_transaction::Records;
 use metal_efi::uefi::*;
 
 use clock::Clock;
@@ -75,6 +76,7 @@ struct Manager<'a> {
     image: Handle,
     screen: Option<Screen<'a>>,
     esp: Option<Root>,
+    records: Option<Records>,
     current: Note,
     previous: Note,
     rescue: Note,
@@ -227,20 +229,20 @@ impl<'a> Manager<'a> {
     /// Starts the selected item; returns only when it could not be started, or returned.
     unsafe fn start(&mut self) -> Status {
         let item = ITEMS[self.selected];
-        if !self.available(item) {
+        if !self.available(item) && item != Item::Slot(Entry::Current) {
             return NOT_FOUND;
         }
         // A boot manager arms the five-minute watchdog before it starts a boot option (section 3.1.2).
         (self.boot.set_watchdog_timer)(300, 0, 0, core::ptr::null());
         let status = match item {
             Item::Slot(entry) => {
-                let note = self.note(entry);
-                // The screen as it is at the start, read back once more, so a console capture that began late (an
-                // operator's power-on, adopted by the lab) still holds it.
+                // Read back the screen for console captures that began late.
                 self.show(true);
-                say!("booting {} {}", entry.as_str(), note.full());
-                match self.esp.as_ref() {
-                    Some(root) => slots::boot(self.boot, self.image, root, entry),
+                if entry == Entry::Rescue {
+                    say!("booting {} {}", entry.as_str(), self.rescue.full());
+                }
+                match self.esp.as_ref().zip(self.records.as_ref()) {
+                    Some((root, records)) => slots::boot_named(self.boot, self.image, root, records, entry),
                     None => NOT_FOUND,
                 }
             }
@@ -313,12 +315,21 @@ unsafe fn run(image: Handle, system: *const SystemTable) -> Status {
         ((*con_out).enable_cursor)(con_out, 0);
     }
     let esp = files::own_root(boot, image).ok();
+    let mut records = None;
     if let Some(root) = esp.as_ref() {
-        if let Err(status) = slots::recover(root).and_then(|()| live::reconcile(boot, image, root)) {
-            say!("slot recovery failed ({:#x}); returning to firmware", status);
+        let store = match slots::open(boot, image, root) {
+            Ok(store) => store,
+            Err(status) => return status,
+        };
+        let mut loaded = Records::read(&store);
+        if let Err(status) = loaded.import(&store) {
+            say!("slot recovery failed ({:#x})", status);
             (boot.set_watchdog_timer)(300, 0, 0, core::ptr::null());
-            return status;
+            return slots::boot_legacy(boot, image, &store);
         }
+        slots::collect(&store, &loaded);
+        live::reconcile(boot, image, root, &mut loaded);
+        records = Some(loaded);
     }
     let mut config_text = [0u8; 2 * slots::PATH_MAX + slots::URL_MAX + 256];
     let config: Option<Config> = esp
@@ -330,33 +341,27 @@ unsafe fn run(image: Handle, system: *const SystemTable) -> Status {
     if config.is_none() && !network_probe {
         say!("installed configuration unavailable; trying existing slots before returning to firmware");
         (boot.set_watchdog_timer)(300, 0, 0, core::ptr::null());
-        if let Some(root) = esp.as_ref() {
-            for entry in [Entry::Current, Entry::Previous] {
-                let note = slots::note(root, slots::slot_name(entry));
-                if note.present {
-                    if entry == Entry::Current {
-                        live::start(boot, runtime, image, root);
-                    }
-                    say!("booting {} {}", entry.as_str(), note.full());
-                    slots::boot(boot, image, root, entry);
-                }
-            }
+        if let Some((root, records)) = esp.as_ref().zip(records.as_mut()) {
+            live::start(boot, runtime, image, root, records);
+            return slots::boot_named(boot, image, root, records, Entry::Current);
         }
         return LOAD_ERROR;
     }
     let probe = config.is_none() && network_probe;
+    let latest = records.as_ref().and_then(Records::latest);
     let mut manager = Manager {
         boot,
         runtime,
         system,
         image,
         screen: Screen::open(boot, system),
-        current: esp.as_ref().map_or(Note::ABSENT, |root| slots::note(root, "CURRENT")),
-        previous: esp.as_ref().map_or(Note::ABSENT, |root| slots::note(root, "PREVIOUS")),
+        current: slots::record_note(latest.and_then(|record| record.current)),
+        previous: slots::record_note(latest.and_then(|record| record.previous)),
         rescue: esp.as_ref().zip(config.as_ref()).map_or(Note::ABSENT, |(root, config)| {
             slots::rescue_note(boot, root, config)
         }),
         esp,
+        records,
         selected: 0,
         status: line(format_args!("Asking the lab whether a test boot is pending.")),
         detail: Line::new(),
@@ -493,15 +498,22 @@ unsafe fn run(image: Handle, system: *const SystemTable) -> Status {
             manager.menu(0)
         }
         Answer::Persistent(_, entry, action) => {
-            let applied = match (action, manager.esp.as_ref()) {
-                (SlotAction::None, _) => Ok(()),
-                (_, None) => Err(NOT_FOUND),
-                (SlotAction::Commit, Some(root)) => slots::commit(root),
-                (SlotAction::Rollback, Some(root)) => slots::rollback(root),
-            };
-            if let Some(root) = manager.esp.as_ref() {
-                manager.current = slots::note(root, "CURRENT");
-                manager.previous = slots::note(root, "PREVIOUS");
+            let applied = (|| {
+                if action == SlotAction::None {
+                    return Ok(());
+                }
+                let root = manager.esp.as_ref().ok_or(NOT_FOUND)?;
+                let records = manager.records.as_mut().ok_or(NOT_FOUND)?;
+                let store = slots::open(boot, image, root)?;
+                match action {
+                    SlotAction::None => Ok(()),
+                    SlotAction::Commit => slots::commit(&store, records),
+                    SlotAction::Rollback => slots::rollback(&store, records),
+                }
+            })();
+            if let Some(record) = manager.records.as_ref().and_then(Records::latest) {
+                manager.current = slots::record_note(record.current);
+                manager.previous = slots::record_note(record.previous);
             }
             if let Err(status) = applied {
                 say!("the slot action failed ({:#x})", status);
@@ -510,8 +522,8 @@ unsafe fn run(image: Handle, system: *const SystemTable) -> Status {
                 manager.menu(0)
             }
             if entry == Entry::Current && action == SlotAction::None && manager.current.present {
-                if let Some(root) = manager.esp.as_ref() {
-                    live::start(boot, runtime, image, root);
+                if let Some((root, records)) = manager.esp.as_ref().zip(manager.records.as_mut()) {
+                    live::start(boot, runtime, image, root, records);
                 }
             }
             manager.show(false);

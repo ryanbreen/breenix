@@ -466,7 +466,7 @@ A missing root then costs one failed trial, ended by the 600 s deadline, instead
 The host publishes `kernel.img` with `bput`, then the manifest, which arms the attempt. Then it reboots once
 (#3247's sequence, metal_live_flash.py:236-243). The reboot command carries the pending-key check as its guard,
 beside the boot-ID guard (`test` that `/var/lib/accounts/pending/` is empty `&& sudo -n /sbin/reboot`), so a key
-staged after publish stops the reboot, and the host runs `paired abort`. The manager writes TRY.IMG, publishes LIVE.ID and boots the trial.
+staged after publish stops the reboot, and the host runs `paired abort`. The manager writes the immutable trial image, publishes the slot record (5.1), and boots the trial.
 The trial kernel mounts `gen-<id>` read-write with the default tree, the shared binds and `/home`, exactly as a
 persistent boot does today.
 
@@ -566,12 +566,15 @@ rename by deleting a name.
   into the record that does not hold the newest valid sequence (with sequence + 1), and flush. A cut leaves the
   old record valid, or the new one valid, or the new one torn and ignored. The attempt record (`LIVE.ID` today)
   is the record's attempt field, so it changes in the same write.
-- **Old images are deleted last.** After a record write is durable, the manager deletes each `K*.IMG` that neither
-  valid record names. A cut there leaves a stray image, which the next startup deletes.
+- **Old images are deleted last.** After a record write is durable, the manager deletes images neither valid
+  record names, including imported CURRENT, PREVIOUS and TRY files and their legacy notes. A cut during
+  deletion leaves a stray file for the next startup. Before allocating another image, cleanup releases the
+  bytes of unpublished images and keeps only the highest unpublished name as an empty file so its sequence
+  is skipped. That name retires when the records pass it. A trial after promotion can need four slot images
+  while the older record still provides the pre-trial PREVIOUS.
 - **Startup returns to firmware only after the named images fail.** The manager reads both records and uses the
-  newest valid one. It boots that record's CURRENT, and if CURRENT is missing, has the wrong size or its bootloader
-  returns, it checks the image's SHA-256 against PREVIOUS's entry and boots PREVIOUS, then the older record's two
-  images. It returns to firmware only when no named image verifies.
+  newest valid one. It checks that record's CURRENT against its recorded size and SHA-256. If verification fails
+  or the loader returns, it checks and tries PREVIOUS, then the older record's two images.
 - **Import from today's layout.** A manager that finds no valid record runs today's `slot_transaction::recover`.
   If that succeeds, it writes record A naming the existing `CURRENT.IMG` and `PREVIOUS.IMG` in place (the record
   holds names, so no file is renamed). If it fails, the manager does not return to firmware. It boots, with no ESP
@@ -825,6 +828,57 @@ Review of PR #3273 (the same rule):
 - **Attach reads the draft's root directory**, past `observed`, and refuses a damaged one with its error. A
   metadata `EIO` through `observed` latches the mount failed, and that mount is the booted writer.
 
+### 10.2 PR B detail deviations (DEV-39(2))
+
+- The installer uses `f_bavail` for the size preflight because BreenFS already deducts the global reserve and
+  outstanding reservations before reporting it.
+- A directory `fsync` on the opened BreenFS staging tree supplies the 32 MiB barrier because BreenFS commits the
+  shared writer through that operation and Breenix has no `syncfs` syscall.
+- A private inode anchor in the draft's incoming directory holds an adopted object through publication of the
+  final hard-link member, so a retry can finish a partially published group without requesting its bytes again.
+- The fresh baseline uses the existing `BREENIX-IMAGE-1` encoder for inventory-owned paths because listing pet
+  additions in that baseline would classify them as removable image files on the next deploy.
+- Verification compares each material inventory field and uses the inventory mtime for its digest because an
+  unchanged cloned inode can legally retain its existing mtime.
+- The rollback evidence combines the manager's commit and init boot-ID serial lines with the matching SSH boot ID
+  and root source because Breenix's `/proc/version` has no kernel commit field.
+- The upload builds bsync from the tools commit and supplies it with a private OpenSSH configuration because
+  the boot host's uploader must use the same strict host-key and identity checks as the other SSH commands.
+- The static installer uses Breenix's descriptor-relative syscalls for four calls whose C symbols are exported
+  only by the hosted archive.
+- A carried set-ID file with links outside its path is copied to an independent archive inode before unlinking
+  the managed path because clearing the old inode's set-ID bits would alter the other links.
+- The host treats an absent `liveManager.manifestVersion` as version 1 and reads version 2 from the installed
+  manager record because the candidate build's manager may differ from the one installed on the ESP; PR C's
+  replacement receipt supplies that field after the firmware confirms installation.
+- The host test places set-ID `su` under `/bin` because `layout.tsv` names that installed path.
+- Legacy `--replace-usr` keeps the existing selector in place and requires an installer that supports it because
+  shared `CURRENT` resolves through the selected root even after a rollback or an interrupted replacement.
+
+### 10.3 PR C detail deviations (DEV-39(2))
+
+- The manager checks the legacy journal replay before executing it so a detected torn rename takes the read-only
+  fallback before it can delete an ambiguous directory entry.
+- The replacement installer allocates A and B and the manager also provisions missing record files on first start
+  because an ESP may predate the allocation or have lost power during it.
+- The installer maps its existing NEXT payload pair to a staged record on a fresh install or a record-backed ESP,
+  because the host request and receipt still use the logical slot names CURRENT, PREVIOUS and NEXT.
+- A still-staged legacy NEXT remains eligible for manual commit after import because an older recovery installer
+  can supply that pair while the new manager owns the slots.
+- Cleanup retires unreferenced imported images and notes because keeping their names for the life of the ESP
+  consumes space after both records have dropped the references.
+- Cleanup truncates the highest unpublished image in place and deletes the other orphans because the filename
+  alone prevents sequence reuse without consuming image space or overwriting the older fallback record.
+  [UEFI 2.10 file information](https://uefi.org/specs/UEFI/2.10/13_Protocols_Media_Access.html#efi-file-info)
+- A failed record write or flush blocks further slot writes through the current in-memory view because
+  the target record may already name an image that view would reclaim.
+- The imported host fixture runs collection before simulating the live flash because the manager does the
+  same at startup, before it reads any manifest.
+- T-C3 extracts the v1 host formatter and gives it an optional root line so the host fixture uses the same
+  encoder while PR B retains custody of version selection and publication.
+- T-C3 uses a 10,000,384-byte image for the 256-byte manifest because both trial images must be whole
+  512-byte sectors to pass the boot-disk check at promotion.
+
 ## 11. For the coordinator
 
 - PR B's step 0 needs the box's kernel to contain PR A. Either the batched flash carries it, or PR B's brief names
@@ -832,9 +886,5 @@ Review of PR #3273 (the same rule):
 - #3226 is open. The upload is bounded (4.2), and the host stops before uploading more than 1 GiB.
 - The manager's version-2 check reaches the box at the next manager replacement, which the coordinator schedules.
   Until then, a missing root costs one failed trial, ended by `force_rollback` (section 5) at the 600 s deadline.
-- **Decision needed: PR C changes the ESP's slot layout** (an on-disk format of the boot manager). It replaces
-  today's renamed `CURRENT/PREVIOUS/NEXT/TRY` files and `LIVE.ID` with write-once images and two in-place
-  records, and imports today's layout on first start. Today's manager, which the live kernel flash already uses,
-  returns to firmware after a torn rename. PR C reaches the box only through a manager replacement by the netbooted
-  installer, as DEV-33(3) authorized once before. The recommendation is to schedule that replacement before PR B's
-  live run, so the live run exercises PR C's records and the version-2 manifest.
+- **DEV-47 approves the ESP slot layout change.** The coordinator schedules the manager replacement after
+  PR B, PR C and the DEV-45 fix merge. The ordering in DEV-47(4) governs the live run.

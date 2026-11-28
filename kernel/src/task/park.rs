@@ -21,7 +21,7 @@
 //! `schedule_current_wait`, `Completion`, the syscall prepared waits and the
 //! retry pause. Their level handling is [`release_for_sleep`] and
 //! [`retake_after_sleep`], here, and [`sleepable_braked`] names the contexts
-//! their sleep paths serve. E2.3 and E2.4 remove those callers.
+//! their sleep paths serve. E2.4 and E2.10 move those callers onto [`wait`].
 
 use super::event_queue::EventQueue;
 use super::park_core::{self, ContextInputs, ParkHooks, SignalEnd, WaitWord};
@@ -29,7 +29,8 @@ use super::waitqueue::{KernelHooks, WaitQueueHead};
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 pub use super::park_core::{
-    announce, should_wake, withdraw, Arrival, AtomicReason, ParkContext, ParkError, Receipt, WaitEnd, WaitMode,
+    announce, exit_switch, should_wake, withdraw, Arrival, AtomicReason, ExitSwitch, ExitThread, ParkContext, ParkError,
+    Receipt, WaitEnd, WaitMode,
 };
 
 /// A thread's park state: its wait word and its baseline.
@@ -129,6 +130,26 @@ pub(crate) fn may_switch_now() -> bool {
     // The whole count, interrupt-context fields included, as the halt tested
     // before E2.2: a waiter inside hard or soft IRQ context keeps its CPU.
     crate::per_cpu::preempt_count() == 0
+}
+
+/// A waiter published blocked that may not switch away is about to halt as
+/// the current thread (`arch_halt_while_blocked`, design §3.5). That is the
+/// same as running idle in the idle thread and before the scheduler
+/// dispatches. Anywhere else the caller holds a preemption level the halt
+/// does not release, and the halt is a contract violation: a receipt naming
+/// the levels held. A caller at its baseline (a braked syscall or a
+/// `Braked` kernel thread) is recorded as holding those levels too, because
+/// the halt, unlike [`wait`], does not release the baseline.
+#[track_caller]
+pub(crate) fn halt_as_current() {
+    let refused = match context() {
+        ParkContext::EarlyBoot | ParkContext::Atomic(AtomicReason::Idle) => return,
+        ParkContext::Sleepable => {
+            ParkContext::Atomic(AtomicReason::LocksHeld(depth().min(u8::MAX as u32) as u8))
+        }
+        refused => refused,
+    };
+    record(refused, site());
 }
 
 // ------------------------------------------------------------------ receipts
@@ -317,6 +338,146 @@ pub(crate) fn arrive_timeout(thread: &super::thread::Thread) {
     thread.park.word.arrive_current(Arrival::Timeout);
 }
 
+// ------------------------------------------------------ the interrupt exit
+
+/// How an interrupt exit sees `thread` (design §3.5).
+pub(crate) fn exit_thread(thread: &super::thread::Thread) -> ExitThread {
+    use super::thread::ThreadState;
+    match thread.state {
+        ThreadState::Terminated => ExitThread::Terminated,
+        ThreadState::BlockedOnIO => ExitThread::BlockedOnIo(thread.park.word.state().1),
+        state if state.is_blocked() => ExitThread::Blocked,
+        _ => ExitThread::Runnable,
+    }
+}
+
+/// The interrupt exit's decision for `thread`, the thread it interrupted
+/// (`park_core::exit_switch`), without acting on it: for the ARM64 exit's
+/// lock-free check, which asks only whether the thread must be switched out.
+pub(crate) fn exit_switch_for(thread: &super::thread::Thread, need_resched: bool) -> ExitSwitch {
+    let seen = exit_thread(thread);
+    let exit = park_core::exit_switch(seen, need_resched);
+    #[cfg(feature = "boot_tests")]
+    exit_probe::saw_exit(thread.id, seen, exit);
+    exit
+}
+
+/// The interrupt exit's decision for `thread`, the thread it interrupted,
+/// made under the lock that owns the thread's scheduler state. A
+/// [`ExitSwitch::Requeue`] is applied here: the thread's wait is published
+/// but not committed, so it is returned to running and the switch requeues
+/// it (design §3.5). Its wait stays linked on its queues and its word stays
+/// `Parking`, so a wake still ends the wait; when the wait's switch finds it
+/// running, it returns at once and the wait publishes again
+/// (`park_core::wait`).
+pub(crate) fn apply_exit_switch(thread: &mut super::thread::Thread, need_resched: bool) -> ExitSwitch {
+    let exit = exit_switch_for(thread, need_resched);
+    if exit == ExitSwitch::Requeue {
+        // What ending a wait does to the scheduler state (`end_wait`); the
+        // deadline's timer entry is no longer live without `wake_time_ns`.
+        thread.blocked_in_syscall = false;
+        thread.wake_time_ns = None;
+        thread.set_running();
+    }
+    exit
+}
+
+/// The E2.3 kernel test's fixed point (design §8, "E2.3: parking and
+/// parked"). An armed thread's next wait, once published and past its
+/// signal check, takes an interrupt with a reschedule pending, before its
+/// commit; the probe records each exit decision made about that thread while
+/// its wait is uncommitted, and whether the thread ran again.
+#[cfg(feature = "boot_tests")]
+pub(crate) mod exit_probe {
+    use super::park_core::{ExitSwitch, ExitThread, Phase, Point};
+    use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+
+    static ARMED: AtomicU64 = AtomicU64::new(0);
+    static WATCHED: AtomicU64 = AtomicU64::new(0);
+    static EXITS: AtomicU32 = AtomicU32::new(0);
+    static SWITCHED_OUT: AtomicU32 = AtomicU32::new(0);
+    static RAN_AGAIN: AtomicBool = AtomicBool::new(false);
+
+    /// Arm the probe for thread `tid`'s next wait.
+    pub(crate) fn arm(tid: u64) {
+        EXITS.store(0, Ordering::SeqCst);
+        SWITCHED_OUT.store(0, Ordering::SeqCst);
+        RAN_AGAIN.store(false, Ordering::SeqCst);
+        WATCHED.store(tid, Ordering::SeqCst);
+        ARMED.store(tid, Ordering::SeqCst);
+    }
+
+    /// Stop recording exits.
+    pub(crate) fn disarm() {
+        ARMED.store(0, Ordering::SeqCst);
+        WATCHED.store(0, Ordering::SeqCst);
+    }
+
+    /// Whether the thread ran again after the forced interrupt.
+    pub(crate) fn ran_again() -> bool {
+        RAN_AGAIN.load(Ordering::SeqCst)
+    }
+
+    /// Exit decisions made about the watched thread while its wait was
+    /// published and uncommitted, and how many of them switched it out.
+    pub(crate) fn exits() -> (u32, u32) {
+        (EXITS.load(Ordering::SeqCst), SWITCHED_OUT.load(Ordering::SeqCst))
+    }
+
+    pub(super) fn saw_exit(tid: u64, seen: ExitThread, exit: ExitSwitch) {
+        if tid != WATCHED.load(Ordering::Relaxed) || seen != ExitThread::BlockedOnIo(Phase::Parking) {
+            return;
+        }
+        EXITS.fetch_add(1, Ordering::SeqCst);
+        if exit == ExitSwitch::SwitchOut {
+            SWITCHED_OUT.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    pub(super) fn at(point: Point) {
+        if point != Point::SignalChecked {
+            return;
+        }
+        let Some(tid) = crate::task::scheduler::current_thread_id() else {
+            return;
+        };
+        if ARMED.compare_exchange(tid, 0, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+            return;
+        }
+        force_interrupt_exit();
+        RAN_AGAIN.store(true, Ordering::SeqCst);
+    }
+
+    /// Take an interrupt now, with a reschedule pending, and return once the
+    /// thread runs again: on ARM64 a reschedule SGI to this CPU, whose
+    /// handler sets the reschedule; on x86 the reschedule vector, entered by
+    /// a software interrupt as `arch_halt_while_blocked` does.
+    fn force_interrupt_exit() {
+        #[cfg(target_arch = "aarch64")]
+        {
+            let cpu = crate::arch_impl::aarch64::cpu::cpu_id() as u8;
+            crate::arch_impl::aarch64::gic::send_sgi(crate::arch_impl::aarch64::constants::SGI_RESCHEDULE as u8, cpu);
+            // The SGI is taken at an instruction boundary shortly after the
+            // write; wait, boundedly, for its exit to decide about us.
+            let start = crate::arch_read_timestamp();
+            while EXITS.load(Ordering::SeqCst) == 0
+                && crate::arch_ticks_to_nanos(crate::arch_read_timestamp().wrapping_sub(start)) < 100_000_000
+            {
+                core::hint::spin_loop();
+            }
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            crate::task::scheduler::set_need_resched();
+            // SAFETY: the reschedule vector's gate saves and restores the
+            // general-purpose registers, as for `arch_halt_while_blocked`.
+            unsafe {
+                core::arch::asm!("int {vector}", vector = const crate::interrupts::RESCHEDULE_VECTOR);
+            }
+        }
+    }
+}
+
 // -------------------------------------------- sleeps not yet on park::wait
 
 /// What [`release_for_sleep`] released.
@@ -326,7 +487,7 @@ pub(crate) struct SleepRelease(bool);
 
 /// For the sleeps not yet on [`wait`]: release the one level such a sleep
 /// releases today, if a level is held (B1 requirement 9). Callers do no
-/// arithmetic of their own; E2.3 and E2.4 move them onto [`wait`].
+/// arithmetic of their own; E2.4 and E2.10 move them onto [`wait`].
 pub(crate) fn release_for_sleep() -> SleepRelease {
     let held = depth() != 0;
     if held {
@@ -344,10 +505,16 @@ pub(crate) fn retake_after_sleep(released: SleepRelease) {
 
 /// Back off when no waiter could be published (no memory for the entry):
 /// let another thread run here until the next interrupt, then return with
-/// the caller's depth.
+/// the caller's depth. A caller holding more than the one level this
+/// releases still keeps its CPU for the halt, which records a receipt at the
+/// caller's site (design §3.5).
+#[track_caller]
 pub(crate) fn retry_pause() {
     crate::task::scheduler::set_need_resched();
     let released = release_for_sleep();
+    if !may_switch_now() {
+        halt_as_current();
+    }
     crate::arch_halt_with_interrupts();
     retake_after_sleep(released);
 }
@@ -431,5 +598,10 @@ impl ParkHooks for KernelHooks {
 
     fn sleep(&self) {
         super::waitqueue::sleep_released();
+    }
+
+    #[cfg(feature = "boot_tests")]
+    fn point(&self, point: park_core::Point) {
+        exit_probe::at(point);
     }
 }

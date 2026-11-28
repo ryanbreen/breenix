@@ -10,6 +10,8 @@ pub const BLOCK: usize = 4096;
 pub const NODE: usize = 4 * BLOCK;
 type Ptr = [u8; 24];
 type Key = (u64, u8, u64);
+const ROOT_OBJECT: u64 = 0xffff_ffff_ffff_ff10;
+const ROOT_ITEM: u8 = 0x90;
 
 fn short(bytes: &[u8]) -> usize { u16::from_le_bytes(bytes.try_into().unwrap()) as usize }
 fn word(bytes: &[u8]) -> u32 { u32::from_le_bytes(bytes.try_into().unwrap()) }
@@ -67,8 +69,13 @@ impl<'a, Read: FnMut(u64, &mut [u8]) -> Result<(), ()>> Reader<'a, Read> {
         Ok(Self { total, uuid, generation, space, hash_key, scratch, read })
     }
 
-    fn item(&mut self, mut ptr: Ptr, tree: u8, target: Key) -> Result<(Key, &[u8]), ()> {
+    fn item(&mut self, ptr: Ptr, tree: u8, target: Key) -> Result<(Key, &[u8]), ()> {
+        self.find(ptr, tree, target, false)?.ok_or(())
+    }
+
+    fn find(&mut self, mut ptr: Ptr, tree: u8, target: Key, ceiling: bool) -> Result<Option<(Key, &[u8])>, ()> {
         let mut upper = self.generation;
+        let mut sibling = None;
         loop {
             let address = wide(&ptr[..8]);
             let generation = wide(&ptr[8..16]);
@@ -88,21 +95,47 @@ impl<'a, Read: FnMut(u64, &mut [u8]) -> Result<(), ()>> Reader<'a, Read> {
             let headers = node.get(48..end).ok_or(())?;
             let mut previous = None;
             let mut selected = None;
+            let mut successor = None;
             for header in headers.chunks_exact(stride) {
                 let here = key(header);
                 if previous.is_some_and(|old| old >= here) { return Err(()); }
                 previous = Some(here);
                 if here <= target { selected = Some((here, header)); }
+                if successor.is_none() && here >= target {
+                    successor = Some((here, header));
+                }
             }
-            let (found, entry) = selected.ok_or(())?;
             if level == 0 {
-                let offset = short(&entry[17..19]);
-                let len = short(&entry[19..21]);
-                if offset < end || len > 6144 { return Err(()); }
-                return Ok((found, self.scratch.get(offset..offset + len).ok_or(())?));
+                let candidate = if ceiling { successor } else { selected };
+                if let Some((found, entry)) = candidate {
+                    let offset = short(&entry[17..19]);
+                    let len = short(&entry[19..21]);
+                    if offset < end || len > 6144 { return Err(()); }
+                    return Ok(Some((found, self.scratch.get(offset..offset + len).ok_or(())?)));
+                }
+                let Some(next) = sibling.take() else { return Ok(None) };
+                (ptr, upper) = next;
+                continue;
             }
-            ptr[..20].copy_from_slice(&entry[17..37]);
-            ptr[20] = level - 1;
+            let pointer = |entry: &[u8]| {
+                let mut child = [0; 24];
+                child[..20].copy_from_slice(&entry[17..37]);
+                child[20] = level - 1;
+                child
+            };
+            let entry = if let Some((here, entry)) = selected {
+                if ceiling && here < target {
+                    if let Some((_, next)) = successor {
+                        sibling = Some((pointer(next), generation));
+                    }
+                }
+                entry
+            } else if ceiling {
+                successor.ok_or(())?.1
+            } else {
+                return Err(());
+            };
+            ptr = pointer(entry);
             upper = generation;
         }
     }
@@ -137,8 +170,32 @@ impl<'a, Read: FnMut(u64, &mut [u8]) -> Result<(), ()>> Reader<'a, Read> {
         Ok(bytes)
     }
 
+    /// Searches the ROOT key range without assuming root IDs are dense.
+    pub fn root_flags(&mut self, name: &[u8]) -> Result<Option<u32>, ()> {
+        // The persistent default ROOT (id 1) exists. Scan from it up to the
+        // first item outside the ROOT key range.
+        let mut id = 1;
+        loop {
+            let Some((key, root)) = self.find(self.space, 2, (ROOT_OBJECT, ROOT_ITEM, id), true)? else {
+                return Ok(None);
+            };
+            if (key.0, key.1) != (ROOT_OBJECT, ROOT_ITEM) {
+                return Ok(None);
+            }
+            let (&length, root_name) = root.get(64..).and_then(|tail| tail.split_first()).ok_or(())?;
+            if length == 0 || root_name.len() != usize::from(length) {
+                return Err(());
+            }
+            if root_name == name {
+                return Ok(Some(word(&root[60..64])));
+            }
+            let Some(next) = key.2.checked_add(1) else { return Ok(None) };
+            id = next;
+        }
+    }
+
     pub fn file(&mut self, name: &[u8]) -> Result<File, ()> {
-        let root = self.exact(self.space, 2, (0xffff_ffff_ffff_ff10, 0x90, 1))?;
+        let root = self.exact(self.space, 2, (ROOT_OBJECT, ROOT_ITEM, 1))?;
         let tree = root.get(..24).ok_or(())?.try_into().unwrap();
         self.inode(tree, 2, 0o040000)?;
         let home = self.child(tree, 2, b"root", 2)?;

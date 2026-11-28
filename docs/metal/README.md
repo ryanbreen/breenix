@@ -696,7 +696,7 @@ partition starts on a 1 MiB boundary.
 
 | # | Partition | Type GUID | Size | Holds | Written by |
 |---|---|---|---|---|---|
-| 1 | EFI system partition | `C12A7328-F81F-11D2-BA4B-00A0C93EC93B` | 2 GiB, FAT32 | `\EFI\BREENIX\BOOTMGR.EFI` (the manager), `MANAGER.CFG`, the kernel slots `CURRENT.IMG` and `PREVIOUS.IMG` with their `.TXT` notes, `NEXT.IMG` while an upgrade is staged, and `\EFI\BOOT\BOOTX64.EFI` (a copy of the manager on the removable-media path) | the install's delivery stub; the manager when it commits or rolls back a slot |
+| 1 | EFI system partition | `C12A7328-F81F-11D2-BA4B-00A0C93EC93B` | 2 GiB, FAT32 | `\EFI\BREENIX\BOOTMGR.EFI` (the manager), `MANAGER.CFG`, `A\SLOTS.REC` and `B\SLOTS.REC`, the kernel images they name, and `\EFI\BOOT\BOOTX64.EFI` (a copy of the manager on the removable-media path) | the install's delivery stub; the manager when it commits or rolls back a slot |
 | 2 | Breenix test root | `DAC951C3-27DF-4E3D-8B9E-487906AC2C81` | 4 GiB, ext2 | the root test boots get | the delivery stub, before each test boot |
 | 3 | Breenix system | `2EF14A34-ABBD-48F8-83D6-F2A8C7B4A9FE` | 8 GiB, ext2 | the persistent install's root: userland, `/etc`, `/root` | persistent boots; the install boot's migration |
 | 4 | Breenix home | `9BFEAEF9-4F51-45DE-8BCF-5CEC1603B862` | 16 GiB, ext2 | `/home` of the persistent install | persistent boots |
@@ -714,7 +714,12 @@ A kernel slot is a boot disk in the delivery stub's format ("Delivery"): a GPT d
 holding the pinned bootloader, `kernel-x86_64`, `boot.json` and a `ramdisk` that carries the slot's boot intent.
 The bootloader loads its files from the root of the volume it was itself loaded from, so two kernels cannot share one
 FAT volume; each slot is a whole boot disk that the manager attaches as a RAM disk, exactly as the stub attaches the
-disk appended to it. `CURRENT.TXT` and `PREVIOUS.TXT` hold the slot's commit and the boot that installed it.
+disk appended to it. New images have names of the form `K0000001.IMG`, drawn from a rising sequence. The installer
+or manager writes each new image to a fresh file and flushes it before publishing a reference. Each 4096-byte
+`SLOTS.REC` holds its sequence, the raw live-flash attempt manifest (up to 512 bytes), and the names, sizes,
+SHA-256 digests and original note bytes of CURRENT, PREVIOUS and the trial or staged installer image. A digest
+covers the record body. Older installations may have `CURRENT.IMG` and `PREVIOUS.IMG` referenced by their original
+names after import.
 
 ### The boot manager
 
@@ -730,8 +735,9 @@ manager leaves the test loop working.
 On start the manager:
 
 1. Writes `breenix-manager: started: firmware <vendor> revision <n>` to COM1 and reads `MANAGER.CFG` and the slot
-   notes from its own volume, recovering a pending slot transaction first. An installed manager with missing or
-   unreadable configuration tries existing slots, then returns to firmware with its watchdog armed. Network probe
+   records from its own volume. It verifies named images by size and SHA-256, trying CURRENT and PREVIOUS in the
+   newest valid record and then in the older record if their loaders fail. Missing configuration uses the same
+   boot order before returning to firmware with the watchdog armed. Network probe
    mode requires a URI in the image's own device path. `MANAGER.CFG` holds `query <url>` (the lab's question), `countdown <seconds>`,
    `test-path load-file`, and two lines the install's stub adds: `port <hex>` (the device path the firmware's HTTP
    boot loaded the stub from: the network port, its address and the boot URL) and `http-option <hex>` (the HTTP boot
@@ -746,7 +752,7 @@ On start the manager:
    (`breenix-manager: lab answered: ...`).
 
 The standard menu offers **Breenix** (the current slot, the default), **Breenix (previous kernel)** (marked
-unavailable until `PREVIOUS.IMG` exists), **Test loop (network)** and **Firmware setup**. The up and down arrow keys move the
+unavailable until the record names a PREVIOUS image), **Test loop (network)** and **Firmware setup**. The up and down arrow keys move the
 selection, Enter starts it, and a countdown of 5 seconds starts the default; any key stops the countdown. Keys come
 from the firmware's console input, which joins the USB keyboard and the serial console redirection.
 On the migrated layout, the BreenFS upgrade also enables **Breenix (read-only ext2 rescue)** while the
@@ -782,15 +788,28 @@ Starting an entry:
 
 A failure returns to the menu with its reason and no countdown.
 
-Slot actions. `commit` renames `CURRENT.*` to `PREVIOUS.*` (replacing the old previous slot) and `NEXT.*` to
-`CURRENT.*`; `rollback` swaps `CURRENT.*` and `PREVIOUS.*`. The manager does them through the firmware's FAT
-driver (the file protocol, section 13.5: `SetInfo` with the new name), flushing each rename. `SLOT.TXN` and
-phase markers record the action; startup completes a pending action before reading the slot notes. Image and note
-moves resume independently, so interruption between those renames does not skip the note. Each prints one line, `breenix-manager: slot commit: current <commit>, previous <commit>` or `slot rollback: ...`
-(`previous empty` when no previous kernel is kept), which the driver records in `disk.json` (`slots`). A successful
-observed action is removed from the lease before later manager queries. The `booting current|previous <commit>`
-line selects the run's commit and saved definition; a missing or mismatched slot record refuses evidence.
-A commit with no staged `NEXT` leaves the slots as they are.
+**Slot actions.** `commit` selects the staged installer image as CURRENT and makes the old CURRENT PREVIOUS.
+`rollback` swaps CURRENT and PREVIOUS. A live flash records its attempted manifest and the trial image together
+before starting that image. The next start promotes a verified trial on a matching acknowledgement or selects
+CURRENT when the acknowledgement is missing. Version 1 manifests still arm kernel-only trials. Version 2 also
+requires the named BreenFS root to exist with flags 0 and the candidate's `ramdisk` to name that same userland.
+
+The manager publishes each transition by overwriting the older record from the beginning and flushing it. The two
+records sit in separate directories. Startup ignores a record with a bad digest. Cleanup retires generated and
+imported images once neither valid record names them, and removes the retired legacy notes. A failed or
+interrupted image write can leave a higher sequence on disk. Cleanup frees its image data and keeps the highest
+unpublished filename empty so the next transition skips that sequence. The previous pair stays available if the
+ESP runs out of space during a trial write.
+
+On first start, the manager checks and finishes a recoverable legacy `SLOT.TXN` and imports the existing slots by
+name. If legacy recovery detects a torn rename, it tries the first boot-shaped legacy image in CURRENT, PREVIOUS,
+NEXT, SWAP, TRY order, without modifying the ESP. The serial line `slot recovery failed; booting <name> read-only`
+identifies this path. The recovery installer repairs the ESP separately.
+
+The manager still prints `breenix-manager: slot commit: current <commit>, previous <commit>` or
+`slot rollback: ...`, with `previous empty` when applicable. The driver records those lines in `disk.json`
+and consumes the observed lease action before subsequent queries. `booting current|previous <commit>` identifies
+the selected run's commit and saved definition. A commit with no staged image leaves the slot records as they are.
 
 **The screen.** The manager draws its own text with the console font the kernel's screen console uses
 (`noto-sans-mono-bitmap`, size 20, regular), in white and black, through the graphics output protocol's `Blt`
@@ -1069,15 +1088,21 @@ and the machine Off. The kernel mounts the test
 image read-only and grants writes only to the system partition. The installer opens the same named tree and
 copies the replacement under `/usr` before removing the old contents. It preserves the image's ownership,
 modes, symlinks and hard links within `/usr`. The installed `/usr/share/factory` tree and its generation marker
-stay in place so older init binaries continue to see the same factory defaults. The installer reports
-completion after a directory barrier. The ESP slots, `/bin`, `/sbin`, the rest of the system tree and the
+stay in place so older init binaries continue to see the same factory defaults. The selected root keeps its
+`/usr/lib/breenix/rust-current` file in place. Use a build whose installer supports that preservation.
+The installer reports completion after a directory barrier. The ESP slots, `/bin`, `/sbin`, the rest of the system tree and the
 home partition are outside the replacement.
 An interruption during publication can leave a partially replaced `/usr`. Repeat the same explicit
 replacement from the test image before starting a persistent session.
 
-`metal-run install-persistent --rollback` swaps CURRENT and PREVIOUS. `metal-run boot --persistent --entry
-previous` selects the previous kernel once. After the cutover both normal slots point to the same root.
-Rollback leaves live file edits and any explicit `/usr` replacement in place.
+`metal-run install-persistent --paired [--sha SHA | --branch BRANCH]` clones the running BreenFS root and
+stages the kernel with the new generation's `/bin`, `/sbin`, `/lib` and `/usr`. The trial stays up after SSH
+confirms the generation and the installer reads back the staged inventory. `--inject paired-no-commit`
+exercises the automatic rollback. `metal-run install-persistent --rollback` swaps CURRENT and PREVIOUS with
+their respective roots. `metal-run boot --persistent --entry previous` selects the previous pair once.
+Kernel-only flashes reuse the selected root. Run paired deployments under the operator's R240 deploy lock.
+The command also holds the boot host's live-flash lock. Paired deployment and rollback keep `/home` and shared
+state outside the generation. See [paired generations](paired-generations.md) for staging and recovery.
 
 The old image installer remains available to bootstrap a legacy layout and produce the archived migration
 and rescue evidence. Its completion records, generation reclamation and carry-local handling apply to

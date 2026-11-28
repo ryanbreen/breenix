@@ -147,10 +147,18 @@ class Ext2:
                 raise ValueError(f"no subtree directory {subtree!r}")
             root = children[component]
 
+        return self.tree_rows([(b"/", root)])
+
+    def payload_rows(self):
+        """Return canonical payload rows and the ext2 inode providing each object."""
+        top = self.children(2)
+        paths = [(b"/" + name, top[name]) for name in (b"bin", b"sbin", b"lib", b"usr") if name in top]
+        return self.tree_rows(paths, with_inode=True)
+
+    def tree_rows(self, pending, with_inode=False):
         data = {}
         paths = []
         directories = set()
-        pending = [(b"/", root)]
         while pending:
             path, inode = pending.pop()
             if inode not in data:
@@ -178,7 +186,10 @@ class Ext2:
         for path, inode in paths:
             kind, mode, uid, gid, size, mtime, digest = data[inode]
             group = groups.get(inode, "-")
-            yield f"{path.hex()}\t{kind}\t{mode}\t{uid}\t{gid}\t{group}\t{size}\t{mtime}\t{digest}\n"
+            if with_inode and path == b"/usr/share/factory/generation":
+                continue
+            row = f"{path.hex()}\t{kind}\t{mode}\t{uid}\t{gid}\t{group}\t{size}\t{mtime}\t{digest}\n"
+            yield (row, inode) if with_inode else row
 
 
 def shared_manifest(body):

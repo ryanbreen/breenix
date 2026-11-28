@@ -218,7 +218,7 @@ const CLASSIFIED: &[(&str, &str, &str, &str)] = &[
     ("DEPTH", "kernel/src/task/scheduler.rs", "note_x86_interrupt_return", "diagnostic: records a dispatchable return tick"),
     ("DEPTH", "kernel/src/task/softirqd.rs", "init_online_daemons", "boot order: CPU 0 is still pinned by kernel_main"),
     ("DEPTH", "kernel/src/drivers/ahci/mod.rs", "start_completion_pollers", "boot order: CPU 0 is still pinned by kernel_main"),
-    ("DEPTH", "kernel/src/arch_impl/aarch64/context_switch.rs", "can_dispatch_here", "the scheduler's own switch decision; E2.3 factors it into a seam"),
+    ("DEPTH", "kernel/src/arch_impl/aarch64/context_switch.rs", "can_dispatch_here", "the scheduler's own dispatch gate on depth; the exit's decision about the thread is park_core::exit_switch (E2.3)"),
     // E2.4 moves the other drivers' waits to the contract (design §6, "Other drivers").
     ("DEPTH", "kernel/src/drivers/nvme/mod.rs", "request_gate_can_sleep", "E2.4: NVMe request gate"),
     ("DEPTH", "kernel/src/drivers/virtio/block.rs", "block_request_gate_can_sleep", "E2.4: virtio-blk PCI request gate"),
@@ -276,6 +276,308 @@ fn every_classification_still_matches_a_site() {
         .filter(|(rule, file, function, _)| !sites.iter().any(|s| s.rule == *rule && s.file == *file && s.function == *function))
         .collect();
     assert!(stale.is_empty(), "classifications that match nothing (remove them): {stale:?}");
+}
+
+// ------------------------------------------------- halting as current (E2.3)
+
+/// The calls that publish the current thread blocked.
+const PUBLISH_CALLS: [&str; 9] = [
+    "block_current(",
+    "block_current_for_timer(",
+    "block_current_for_io(",
+    "block_current_for_io_with_timeout(",
+    "block_current_for_signal(",
+    "block_current_for_signal_with_context(",
+    "block_current_for_child_exit(",
+    "prepare_to_wait(",
+    "prepare_to_wait_checked(",
+];
+
+/// The ways a thread halts or WFIs as the current thread: it keeps its CPU
+/// until the next interrupt.
+const HALTS: [&str; 3] = ["arch_halt_with_interrupts(", "enable_and_hlt(", "\"wfi\""];
+
+/// The byte offsets in `code` at which the body of the function spanning
+/// `open..=end` calls `call` itself, outside any function nested in it.
+fn own_calls(code: &str, fns: &[(String, usize, usize)], open: usize, end: usize, call: &str) -> Vec<usize> {
+    let body = &code[open..=end];
+    let nested: Vec<_> = fns.iter().filter(|(_, o, e)| *o > open && *e < end).collect();
+    let mut found = Vec::new();
+    let mut from = 0;
+    while let Some(i) = body[from..].find(call) {
+        let p = open + from + i;
+        let before = code.as_bytes()[p - 1];
+        let starts_call = !(before.is_ascii_alphanumeric() || before == b'_');
+        if starts_call && !nested.iter().any(|(_, o, e)| *o <= p && p <= *e) {
+            found.push(p);
+        }
+        from += i + call.len();
+    }
+    found
+}
+
+/// Whether the function spanning `open..=end` publishes the current thread
+/// blocked and halts after that publication.
+fn halts_after_publishing(code: &str, fns: &[(String, usize, usize)], open: usize, end: usize) -> bool {
+    let first_publish =
+        PUBLISH_CALLS.iter().flat_map(|call| own_calls(code, fns, open, end, call)).min();
+    first_publish.is_some_and(|published| {
+        HALTS.iter().flat_map(|halt| own_calls(code, fns, open, end, halt)).any(|halt| halt > published)
+    })
+}
+
+/// The task-context waits that halt as the current thread: functions that
+/// publish the current thread blocked and then halt or WFI themselves,
+/// rather than sleeping through `arch_halt_while_blocked`, which switches
+/// away whenever the thread may be switched (design §3.5). A halt before
+/// the publication (a fallback for a thread with no scheduler identity yet)
+/// is not a wait.
+fn halt_census(root: &Path) -> Vec<Site> {
+    let mut files = Vec::new();
+    rust_files(&root.join("kernel/src"), &mut files);
+    let mut sites = Vec::new();
+    for path in files {
+        let rel = path.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/");
+        if excluded(&rel) {
+            continue;
+        }
+        let code = strip_comments(&fs::read_to_string(&path).unwrap());
+        let fns = functions(&code);
+        for (name, open, end) in &fns {
+            if halts_after_publishing(&code, &fns, *open, *end) {
+                sites.push(Site { rule: "HALT", file: rel.clone(), function: name.clone() });
+            }
+        }
+    }
+    sites.sort();
+    sites.dedup();
+    sites
+}
+
+/// Kernel threads that still publish a timer or plain block, set a
+/// reschedule, and halt as the current thread until the next interrupt's exit
+/// switches them out. (file, function, why). E2.3 converted these 8 to sleep
+/// through `arch_halt_while_blocked`; when that tree's ARM64 boot soft-locked
+/// they were the suspect and came back out, and the next boot showed the cause
+/// was elsewhere (the pty hangup daemon's bare brake). No tree with the
+/// conversion and that fix was booted, so each moves in a later PR that gets
+/// its own boot (docs/plans/e2-sleepable-contexts.md, "E2.3 as built"). The
+/// list only shrinks: an entry that matches no site fails
+/// `every_halt_classification_still_matches_a_site`.
+const HALT_CLASSIFIED: &[(&str, &str, &str)] = &[
+    ("kernel/src/console/mod.rs", "sleep_ms", "x86 render-thread timer sleep"),
+    ("kernel/src/drivers/watchdog_round.rs", "wait", "x86 watchdog round wait"),
+    ("kernel/src/gpu/gk208/production.rs", "guard_thread", "GT 710 clock-guard poll"),
+    ("kernel/src/net/loopback_pump.rs", "loopback_pump_fn", "kloopbackd plain block"),
+    ("kernel/src/net/rx_poll.rs", "sleep_one_tick", "ARM64 receive-poll one-tick sleep"),
+    ("kernel/src/net/tcp.rs", "tcp_timer_thread", "ktcptimerd timer or plain block"),
+    ("kernel/src/task/dispatch_strand_census.rs", "sleep_one_interval", "kstrandd interval sleep"),
+    ("kernel/src/task/userspace_completion.rs", "report_when_finished", "testing completion reporter poll"),
+];
+
+/// Halting as current survives only where it is the same as running idle
+/// (design §3.5): in the idle thread and early boot, which are not waits that
+/// publish a blocked state, and in `arch_halt_while_blocked`'s own branches.
+/// No task-context wait outside `HALT_CLASSIFIED` halts as current on its own.
+#[test]
+fn no_task_context_wait_halts_as_current() {
+    let sites = halt_census(&repo_root());
+    let unclassified: Vec<_> = sites
+        .iter()
+        .filter(|s| !HALT_CLASSIFIED.iter().any(|(file, function, _)| s.file == *file && s.function == *function))
+        .collect();
+    assert!(
+        unclassified.is_empty(),
+        "task-context waits that publish a blocked state and then halt as the current thread:\n{}",
+        unclassified.iter().map(|s| format!("  {}::{}", s.file, s.function)).collect::<Vec<_>>().join("\n")
+    );
+}
+
+#[test]
+fn every_halt_classification_still_matches_a_site() {
+    let sites = halt_census(&repo_root());
+    let stale: Vec<_> = HALT_CLASSIFIED
+        .iter()
+        .filter(|(file, function, _)| !sites.iter().any(|s| s.file == *file && s.function == *function))
+        .collect();
+    assert!(stale.is_empty(), "halt classifications that match nothing (remove them): {stale:?}");
+}
+
+/// The `Completion` waits, which sleep only at a braked baseline
+/// (`park::sleepable_braked`) and otherwise poll the CPU until their deadline.
+const COMPLETION_WAITS: [&str; 3] = [".wait_timeout(", ".wait_timeout_uninterruptible(", ".wait_for_completion("];
+
+/// Functions that take a bare `preempt_disable()` and then wait on a
+/// `Completion`: a kernel thread faking a syscall's brake to select the
+/// sleeping wait. Since E2.2 that level is `LocksHeld(1)` at baseline 0, so the
+/// wait polls its CPU for its whole timeout instead of sleeping; a kernel
+/// thread that keeps its CPU except while it sleeps holds `park::Braked`
+/// (design §3.2).
+fn bare_brake_census(root: &Path) -> Vec<Site> {
+    let mut files = Vec::new();
+    rust_files(&root.join("kernel/src"), &mut files);
+    let mut sites = Vec::new();
+    for path in files {
+        let rel = path.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/");
+        if excluded(&rel) || rel == "kernel/src/task/completion.rs" {
+            continue;
+        }
+        let code = strip_comments(&fs::read_to_string(&path).unwrap());
+        let fns = functions(&code);
+        for (name, open, end) in &fns {
+            let brakes = own_calls(&code, &fns, *open, *end, "preempt_disable()");
+            let first_brake = brakes.iter().min();
+            let waits_after = COMPLETION_WAITS
+                .iter()
+                .flat_map(|wait| own_calls(&code, &fns, *open, *end, &wait[1..]))
+                .filter(|w| code.as_bytes()[w - 1] == b'.')
+                .any(|w| first_brake.is_some_and(|b| w > *b));
+            if waits_after {
+                sites.push(Site { rule: "BRAKE", file: rel.clone(), function: name.clone() });
+            }
+        }
+    }
+    sites.sort();
+    sites.dedup();
+    sites
+}
+
+/// A kernel thread that waits on a `Completion` as a syscall does holds a
+/// `park::Braked` guard, not a bare `preempt_disable()`.
+#[test]
+fn no_kernel_thread_fakes_a_brake_for_a_completion_wait() {
+    let sites = bare_brake_census(&repo_root());
+    assert!(
+        sites.is_empty(),
+        "bare preempt_disable() before a Completion wait (hold park::Braked instead):\n{}",
+        sites.iter().map(|s| format!("  {}::{}", s.file, s.function)).collect::<Vec<_>>().join("\n")
+    );
+}
+
+/// A syscall runs at its braked baseline. A halt as the current thread does
+/// not release that level, so the interrupt that ends it cannot switch the
+/// thread away, and no receipt records it. A syscall that backs off uses
+/// `task::park::retry_pause`, which releases the level for the halt and
+/// records a caller it still cannot switch from; one that waits uses
+/// `park::wait`.
+#[test]
+fn no_syscall_halts_as_current_itself() {
+    let root = repo_root();
+    let mut files = Vec::new();
+    rust_files(&root.join("kernel/src/syscall"), &mut files);
+    let mut sites = Vec::new();
+    for path in files {
+        let rel = path.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
+        let code = strip_comments(&fs::read_to_string(&path).unwrap());
+        let fns = functions(&code);
+        for (name, open, end) in &fns {
+            if HALTS.iter().any(|halt| !own_calls(&code, &fns, *open, *end, halt).is_empty()) {
+                sites.push(format!("  {rel}::{name}"));
+            }
+        }
+    }
+    sites.sort();
+    sites.dedup();
+    assert!(
+        sites.is_empty(),
+        "syscall paths that halt as the current thread at their braked baseline (use park::retry_pause):\n{}",
+        sites.join("\n")
+    );
+}
+
+/// `park::retry_pause` releases one level for its halt. A caller that holds
+/// more is still not preemptible there, and keeps its CPU until the
+/// interrupt: that halt records a receipt at the caller's site, as
+/// `arch_halt_while_blocked`'s do (design §3.5).
+#[test]
+fn retry_pause_records_a_caller_it_cannot_switch_from() {
+    let code = strip_comments(&fs::read_to_string(repo_root().join("kernel/src/task/park.rs")).unwrap());
+    let fns = functions(&code);
+    let (_, open, end) = fns.iter().find(|(name, _, _)| name == "retry_pause").expect("retry_pause");
+    let halt = own_calls(&code, &fns, *open, *end, "arch_halt_with_interrupts(");
+    assert_eq!(halt.len(), 1, "one halt");
+    let gated = own_calls(&code, &fns, *open, *end, "may_switch_now(");
+    let receipts = own_calls(&code, &fns, *open, *end, "halt_as_current(");
+    assert!(
+        receipts.iter().any(|r| gated.iter().any(|g| g < r) && *r < halt[0]),
+        "retry_pause halts with no halt_as_current() receipt, gated on may_switch_now(), before it"
+    );
+    let head = &code[..*open];
+    let signature = head.rfind("fn retry_pause").expect("retry_pause signature");
+    assert!(
+        head[..signature].trim_end().trim_end_matches("pub(crate)").trim_end().ends_with("#[track_caller]"),
+        "retry_pause is #[track_caller], so its receipt names the caller's site"
+    );
+}
+
+#[test]
+fn the_brake_census_sees_each_shape() {
+    let code = "fn a() { crate::per_cpu::preempt_disable(); let _ = k.wait_timeout_uninterruptible(1, 2); }\n\
+                fn b() { let _g = crate::task::park::Braked::new(); let _ = k.wait_timeout_uninterruptible(1, 2); }\n\
+                fn c() { let _ = k.wait_timeout(1, 2); preempt_disable(); }\n\
+                fn d() { preempt_disable(); c.wait_for_completion(); }\n";
+    let fns = functions(code);
+    let hits: Vec<_> = fns
+        .iter()
+        .filter(|(_, open, end)| {
+            let first_brake = own_calls(code, &fns, *open, *end, "preempt_disable()").into_iter().min();
+            COMPLETION_WAITS
+                .iter()
+                .flat_map(|wait| own_calls(code, &fns, *open, *end, &wait[1..]))
+                .filter(|w| code.as_bytes()[w - 1] == b'.')
+                .any(|w| first_brake.is_some_and(|b| w > b))
+        })
+        .map(|(name, _, _)| name.as_str())
+        .collect();
+    assert_eq!(hits, ["a", "d"], "a bare brake before a Completion wait is found; a Braked guard or a wait before the brake is not");
+}
+
+/// `arch_halt_while_blocked` is where halting as current survives. Each of
+/// its halts (x86's HLT, ARM64's WFI) is preceded, after the previous halt,
+/// by `task::park::halt_as_current`, which records a non-preemptible
+/// caller's halt as a contract violation and lets the idle thread and early
+/// boot through (design §3.5).
+#[test]
+fn each_halt_as_current_records_a_non_preemptible_caller() {
+    let path = repo_root().join("kernel/src/lib.rs");
+    let code = strip_comments(&fs::read_to_string(path).unwrap());
+    let fns = functions(&code);
+    let (_, open, end) = fns.iter().find(|(name, _, _)| name == "arch_halt_while_blocked").expect("arch_halt_while_blocked");
+    let mut halts: Vec<usize> =
+        ["enable_and_hlt(", "\"wfi\""].iter().flat_map(|halt| own_calls(&code, &fns, *open, *end, halt)).collect();
+    halts.sort();
+    assert_eq!(halts.len(), 2, "one HLT and one WFI");
+    let receipts = own_calls(&code, &fns, *open, *end, "halt_as_current(");
+    let mut previous = *open;
+    for halt in halts {
+        assert!(
+            receipts.iter().any(|r| previous < *r && *r < halt),
+            "a halt as the current thread at byte {halt} has no halt_as_current() receipt before it"
+        );
+        previous = halt;
+    }
+}
+
+#[test]
+fn the_halt_census_sees_each_shape() {
+    let code = "fn a() { s.block_current_for_timer(t); loop { crate::arch_halt_with_interrupts(); } }\n\
+                fn b() { s.block_current(); x86_64::instructions::interrupts::enable_and_hlt(); }\n\
+                fn c() { q.prepare_to_wait_checked(s, d, || true); asm!(\"wfi\"); }\n\
+                fn d() { s.block_current_for_timer(t); crate::arch_halt_while_blocked(); }\n\
+                fn e() { crate::arch_halt_with_interrupts(); }\n\
+                fn f() { s.block_current(); fn g() { crate::arch_halt_with_interrupts(); } }\n\
+                fn h() { let Some(t) = id() else { crate::arch_halt_with_interrupts(); return; }; s.block_current_for_timer(t); }\n";
+    let fns = functions(code);
+    let hits: Vec<_> = fns
+        .iter()
+        .filter(|(_, open, end)| halts_after_publishing(code, &fns, *open, *end))
+        .map(|(name, _, _)| name.as_str())
+        .collect();
+    assert_eq!(
+        hits,
+        ["a", "b", "c"],
+        "a publication followed by its own halt is found; a switch, a bare halt, a nested fn and a halt before publishing are not"
+    );
 }
 
 #[test]

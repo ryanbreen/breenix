@@ -629,6 +629,16 @@ pub fn arch_halt_with_interrupts() {
 /// CPU finds it. An x86 thread pinned to this CPU is placed back here by its
 /// wake wherever the wake is found, so it gains nothing by leaving and halts in
 /// place unless another thread is queued here.
+///
+/// Halting as the current thread survives only where it is the same as
+/// running idle (E2.3, design §3.5): in the idle thread, before the scheduler
+/// dispatches, and in that x86 pinned case. A caller that may not switch away
+/// holds a preemption level it does not release for the halt; that is a park
+/// contract violation, and it leaves a receipt (`task::park::halt_as_current`).
+/// It still halts, as before: these callers have no error channel and loop
+/// on their own state, and their waits move onto `task::park::wait`, whose
+/// refusal is an error, in E2.4 and E2.10.
+#[track_caller]
 pub fn arch_halt_while_blocked() {
     // SAFETY: interrupts are masked only for the state read, and every path
     // below unmasks them before returning.
@@ -691,8 +701,13 @@ pub fn arch_halt_while_blocked() {
                 return;
             }
         }
+        if !task::park::may_switch_now() {
+            task::park::halt_as_current();
+        }
         x86_64::instructions::interrupts::enable_and_hlt();
     }
+    #[cfg(target_arch = "aarch64")]
+    task::park::halt_as_current();
     #[cfg(target_arch = "aarch64")]
     // SAFETY: a non-preemptible caller keeps its CPU. A pending IRQ wakes
     // the masked WFI and is taken by the following unmask.

@@ -1370,33 +1370,140 @@ fn process_packet(data: &[u8]) {
     }
 }
 
+/// Why a batch of TCP segments did not leave as one request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BatchError {
+    /// This route or device cannot take it; send the segments one by one.
+    Unavailable,
+    /// The device refused it for now; send it again later.
+    Refused,
+}
+
+/// The largest TCP payload one segmentation-offload batch to `dst` carries,
+/// when the route to it leaves through a device that segments TCPv4: the
+/// virtio-net MMIO device with HOST_TSO4. Loopback and broadcast
+/// destinations and the other devices get no batch.
+pub fn tcp_batch_limit(dst: [u8; 4]) -> Option<usize> {
+    // The device first: TCP asks once per full segment, and without the
+    // offload this answers without taking the configuration lock.
+    let frame = device_tso_max_frame()?;
+    let cfg = config();
+    if is_local_addr_in(&cfg, dst) || is_broadcast_addr_in(&cfg, dst) {
+        return None;
+    }
+    Some(frame - ethernet::ETHERNET_HEADER_SIZE - ipv4::IPV4_HEADER_MIN_SIZE - tcp::TCP_HEADER_MIN_SIZE)
+}
+
+/// The largest frame the transmitting device segments in one request.
+#[cfg(target_arch = "aarch64")]
+fn device_tso_max_frame() -> Option<usize> {
+    if net_pci::is_initialized() || e1000::is_initialized() {
+        return None;
+    }
+    net_mmio::tso_max_frame()
+}
+
+/// No x86-64 driver here segments TCP.
+#[cfg(target_arch = "x86_64")]
+fn device_tso_max_frame() -> Option<usize> {
+    None
+}
+
+/// Send `segment`, a TCP header without options and the payload of several
+/// segments, whose checksum field holds the pseudo-header sum, as one IPv4
+/// packet the device cuts into segments of `mss` payload bytes. Only to a
+/// next hop whose link address is known: a batch is not queued behind ARP.
+pub fn send_tcp_batch(
+    src: [u8; 4],
+    dst: [u8; 4],
+    ttl: u8,
+    segment: &[u8],
+    mss: u16,
+) -> Result<(), BatchError> {
+    if tcp_batch_limit(dst).is_none_or(|limit| segment.len() > limit + tcp::TCP_HEADER_MIN_SIZE) {
+        return Err(BatchError::Unavailable);
+    }
+    let cfg = config();
+    let same_subnet =
+        (0..4).all(|i| dst[i] & cfg.subnet_mask[i] == cfg.ip_addr[i] & cfg.subnet_mask[i]);
+    let next_hop = if same_subnet { dst } else { cfg.gateway };
+    let mac = arp::lookup(&next_hop).ok_or(BatchError::Unavailable)?;
+    let packet = ipv4::Ipv4Packet::try_build(src, dst, ipv4::PROTOCOL_TCP, ttl, segment)
+        .map_err(|_| BatchError::Refused)?;
+    send_ethernet_checked(&mac, ethernet::ETHERTYPE_IPV4, &packet, Some(mss)).map_err(|e| match e {
+        SendError::Invalid(_) => BatchError::Unavailable,
+        SendError::Device(_) => BatchError::Refused,
+    })
+}
+
 /// Send an Ethernet frame
 pub fn send_ethernet(
     dst_mac: &[u8; 6],
     ethertype: u16,
     payload: &[u8],
 ) -> Result<(), &'static str> {
+    send_ethernet_checked(dst_mac, ethertype, payload, None).map_err(|e| match e {
+        SendError::Invalid(why) | SendError::Device(why) => why,
+    })
+}
+
+/// Why `send_ethernet_checked` did not send the frame.
+enum SendError {
+    /// The packet may not be sent as it is.
+    Invalid(&'static str),
+    /// The device did not take it.
+    Device(&'static str),
+}
+
+/// Send an Ethernet frame after the checks an IPv4 packet passes, as one
+/// TCPv4 segmentation request of `tso_mss` payload bytes per segment when
+/// that is given.
+fn send_ethernet_checked(
+    dst_mac: &[u8; 6],
+    ethertype: u16,
+    payload: &[u8],
+    tso_mss: Option<u16>,
+) -> Result<(), SendError> {
+    use SendError::Invalid;
     if ethertype == ethernet::ETHERTYPE_IPV4 && ipv4::Ipv4Packet::parse(payload).is_none() {
-        return Err("Invalid IPv4 packet");
+        return Err(Invalid("Invalid IPv4 packet"));
     }
     if uses_dhcp() && ethertype == ethernet::ETHERTYPE_IPV4 {
-        let ip = ipv4::Ipv4Packet::parse(payload).ok_or("Invalid IPv4 packet")?;
+        let ip = ipv4::Ipv4Packet::parse(payload).ok_or(Invalid("Invalid IPv4 packet"))?;
         // Queued packets and established sockets cannot retain an expired or
         // replaced source address. Discovery/DECLINE alone use 0.0.0.0.
         let discovery = ip.src_ip == [0; 4] && ip.dst_ip == [255; 4]
             && ip.protocol == ipv4::PROTOCOL_UDP
             && udp::UdpHeader::parse(ip.payload).is_some_and(|(h, _)| h.src_port == 68 && h.dst_port == 67);
         if !discovery && !dhcp::lease().is_some_and(|l| l.ip_addr == ip.src_ip) {
-            return Err("No DHCP address");
+            return Err(Invalid("No DHCP address"));
         }
     }
-    if payload.len() > ethernet::ETHERNET_MTU {
-        return Err("Message too large");
+    if tso_mss.is_none() && payload.len() > ethernet::ETHERNET_MTU {
+        return Err(Invalid("Message too large"));
     }
-    let src_mac = get_mac_address().ok_or("Network device not initialized")?;
+    let src_mac = get_mac_address().ok_or(Invalid("Network device not initialized"))?;
 
-    let frame = ethernet::EthernetFrame::build(&src_mac, dst_mac, ethertype, payload)?;
-    driver_transmit(&frame)
+    let frame = ethernet::EthernetFrame::build(&src_mac, dst_mac, ethertype, payload)
+        .map_err(SendError::Device)?;
+    match tso_mss {
+        None => driver_transmit(&frame).map_err(SendError::Device),
+        #[cfg(target_arch = "aarch64")]
+        Some(mss) => driver_transmit_tcp4_batch(&frame, mss),
+        #[cfg(target_arch = "x86_64")]
+        Some(_) => Err(Invalid("No device segments TCP")),
+    }
+}
+
+/// Give `frame`, an IPv4 TCP batch, to the device that segments it.
+#[cfg(target_arch = "aarch64")]
+fn driver_transmit_tcp4_batch(frame: &[u8], mss: u16) -> Result<(), SendError> {
+    use net_mmio::{OffloadError, TxOffload};
+    match net_mmio::transmit_offload(frame, TxOffload::Tcp4 { mss }) {
+        Ok(()) => Ok(()),
+        Err(OffloadError::Unsupported(why)) => Err(SendError::Invalid(why)),
+        Err(OffloadError::Device(why)) => Err(SendError::Device(why)),
+    }
 }
 
 /// The local address a new flow to `dst` is sent from under `config`:
