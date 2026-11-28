@@ -51,7 +51,10 @@ against the extracted pre-E1-3 ledger). The same crate holds the allocator's fro
 lock schedule), the OOM caller inventory scan (`tests/oom_inventory.rs`, which checks
 `docs/plans/e1-oom-inventory.json`) and the kernel VA windows (`tests/kva_window.rs`: racing
 table installs, flush before free against a TLB that follows SDM vol. 3A §4.10.4.1 on 4 CPUs,
-the pending list, the free-extent trees and the windows' placement on E1-2x's PDPTs). Run them with
+the pending list, the free-extent trees and the windows' placement on E1-2x's PDPTs), and the span arenas,
+vmap allocations, DMA bus-address check and layout routing (`tests/span_vmap.rs`: span lifecycle and
+flush before free, the slow path's step-2 span drain, vmap growth in place and PTE moves with no copy,
+`bus_address` refusals, and one layer per layout over E1-9's grid). Run them with
 `cargo test --manifest-path tools/kmem-host-tests/Cargo.toml`. The block-cache shrinker's
 test is in `block-host-tests`.
 

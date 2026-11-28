@@ -192,6 +192,51 @@ impl Window {
         Ok(leaves)
     }
 
+    /// Grow `allocation`'s mapped part by `extra` bytes in place, from the
+    /// free VA after it; its guard moves past them (vmap `realloc`, 6.5).
+    /// `NoVa`, with the window unchanged, when that VA is not free. The
+    /// caller ends the growth with `settle` once it has mapped the new
+    /// pages, or with `retract` if it could not.
+    pub fn extend(&mut self, allocation: &Allocation, extra: u64) -> Result<Allocation, ExtentError> {
+        let extent = self.extents.extend(allocation.extent, extra)?;
+        Ok(Allocation { extent, start: allocation.start, len: allocation.len + extra })
+    }
+
+    /// Keep the growth `extend` made.
+    pub fn settle(&mut self) {
+        self.extents.settle();
+    }
+
+    /// Undo the growth of `allocation` by `extra` bytes that `extend` made:
+    /// the VA goes back to the window with no flush, so no page of it may
+    /// have been mapped. Returns the allocation as it was.
+    pub fn retract(&mut self, allocation: &Allocation, extra: u64) -> Result<Allocation, ExtentError> {
+        if extra > allocation.len {
+            return Err(ExtentError::BadRequest);
+        }
+        let extent = self.extents.retract(allocation.extent, extra)?;
+        Ok(Allocation { extent, start: allocation.start, len: allocation.len - extra })
+    }
+
+    /// Unmap `allocation` after its pages have moved to another range
+    /// (`remap`): each leaf is forwarded rather than invalidated, so it waits
+    /// for the flush like an unmap's and gives no frame back. Returns the
+    /// leaves forwarded.
+    pub fn forward<F: Format, M: TableMemory>(
+        &mut self,
+        mem: &M,
+        root: u64,
+        allocation: &Allocation,
+    ) -> Result<usize, ExtentError> {
+        let leaves = kva_map::forward_range::<F, M>(mem, root, allocation.start, allocation.len);
+        if leaves == 0 {
+            self.extents.give_back(allocation.extent)?;
+        } else {
+            self.extents.retire(allocation.extent)?;
+        }
+        Ok(leaves)
+    }
+
     /// Take the extents awaiting a flush.
     pub fn take_pending(&mut self) -> Batch {
         Batch { retired: self.extents.take_retired() }
@@ -284,4 +329,38 @@ impl Flushed {
             .map(|extent| kva_map::reclaim_range::<F, M>(mem, root, extent.start, extent.len, &mut frames))
             .sum()
     }
+}
+
+/// Map `to` with 4 KiB leaves: the page at offset `o`
+/// below `moved` to the frame `from` maps at the same offset, and each page
+/// above to `frame_at(o)`. This moves a vmap allocation's pages to a new
+/// range without copying their bytes (6.5); the caller then `forward`s
+/// `from`. Each table page the range can need is taken first, as
+/// `map_range` does, so a shortfall leaves both ranges as they were.
+pub fn remap<F: Format, M: TableMemory>(
+    mem: &M,
+    root: u64,
+    from: &Allocation,
+    to: &Allocation,
+    moved: u64,
+    mut frame_at: impl FnMut(u64) -> u64,
+    pages: &mut impl kva_map::TablePages,
+) -> Result<usize, kva_map::MapError> {
+    assert!(moved <= from.len && moved <= to.len, "a remap past its allocations");
+    kva_map::map_range::<F, M>(
+        mem,
+        root,
+        to.start,
+        to.len,
+        3,
+        |offset| {
+            if offset < moved {
+                kva_map::leaf_frame::<F, M>(mem, root, from.start + offset)
+                    .expect("a moved page is mapped in its old range")
+            } else {
+                frame_at(offset)
+            }
+        },
+        pages,
+    )
 }

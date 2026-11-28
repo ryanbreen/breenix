@@ -7,9 +7,7 @@ use spin::Mutex;
 
 use super::kmem;
 
-#[path = "heap_index.rs"]
-mod index;
-use index::Heap;
+use super::heap_index::Heap;
 
 #[path = "heap_case.rs"]
 mod case;
@@ -208,6 +206,17 @@ impl kmem::Pool for IrqSafeLockedHeap {
             ((), 0)
         });
     }
+
+    unsafe fn resize(&self, ptr: NonNull<u8>, new_size: usize) -> bool {
+        self.with_inner(|heap| unsafe {
+            let resized = heap.resize_in_place(ptr, new_size);
+            let used = heap.used();
+            if resized && used > HIGH_WATER.load(Ordering::Relaxed) {
+                HIGH_WATER.store(used, Ordering::Relaxed);
+            }
+            (resized, 0)
+        })
+    }
 }
 
 /// The kernel's allocator: requests up to a page go to the slab caches and
@@ -269,21 +278,13 @@ unsafe impl GlobalAlloc for KernelHeap {
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        let new_layout = unsafe { Layout::from_size_align_unchecked(new_size, layout.align()) };
-        // A slab object whose class also serves the new size keeps its place
-        // (6.6), and its later free with the new layout finds the same class.
-        if self.front().resizes_in_place(unsafe { NonNull::new_unchecked(ptr) }, layout, new_layout) {
-            return ptr;
+        // A block that keeps its place (6.6) is freed later with the new
+        // layout by the layer that holds it.
+        unsafe {
+            self.front()
+                .reallocate(NonNull::new_unchecked(ptr), layout, new_size, &kmem::KernelCpu)
+                .map_or(core::ptr::null_mut(), NonNull::as_ptr)
         }
-        let new_ptr = unsafe { self.alloc(new_layout) };
-        if !new_ptr.is_null() {
-            // The copy is private to the caller; it does not require the heap mutex.
-            unsafe {
-                core::ptr::copy_nonoverlapping(ptr, new_ptr, layout.size().min(new_size));
-                self.dealloc(ptr, layout);
-            }
-        }
-        new_ptr
     }
 }
 

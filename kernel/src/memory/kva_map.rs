@@ -47,6 +47,13 @@ pub trait Format {
     /// descriptor), so the address stays readable to software, and the
     /// result is not 0.
     fn invalidate(descriptor: u64) -> u64;
+    /// `invalidate`, with a software bit set to say that the frame the
+    /// descriptor holds now belongs to another mapping: a moved range's old
+    /// leaves (6.5, vmap `realloc`). The flush still covers it, and reclaim
+    /// clears it without giving the frame back.
+    fn forward(descriptor: u64) -> u64;
+    /// Whether an invalid descriptor was made by `forward`.
+    fn is_forwarded(descriptor: u64) -> bool;
 }
 
 /// x86-64 four-level paging (Intel SDM vol. 3A §4.5).
@@ -57,6 +64,9 @@ const X86_WRITABLE: u64 = 1 << 1;
 const X86_PAGE_SIZE: u64 = 1 << 7;
 const X86_GLOBAL: u64 = 1 << 8;
 const X86_NO_EXECUTE: u64 = 1 << 63;
+/// Bit 9 is ignored by the processor in a paging entry (Intel SDM vol. 3A
+/// §4.5, "Ignored"), and with P = 0 each bit but P is.
+const X86_FORWARDED: u64 = 1 << 9;
 const X86_ADDRESS: u64 = 0x000f_ffff_ffff_f000;
 
 impl Format for X86 {
@@ -79,6 +89,12 @@ impl Format for X86 {
     fn invalidate(descriptor: u64) -> u64 {
         descriptor & !X86_PRESENT
     }
+    fn forward(descriptor: u64) -> u64 {
+        Self::invalidate(descriptor) | X86_FORWARDED
+    }
+    fn is_forwarded(descriptor: u64) -> bool {
+        !Self::is_valid(descriptor) && descriptor & X86_FORWARDED != 0
+    }
 }
 
 /// AArch64 VMSAv8-64 with a 4 KiB granule, for TTBR1 (Arm ARM, translation
@@ -92,6 +108,10 @@ const ARM64_TABLE_OR_PAGE: u64 = 1 << 1;
 const ARM64_NORMAL_RW: u64 = (1 << 10) | (3 << 8) | (1 << 2);
 const ARM64_EXECUTE_NEVER: u64 = (1 << 53) | (1 << 54);
 const ARM64_ADDRESS: u64 = 0x0000_ffff_ffff_f000;
+/// Bit 55 is reserved for software use in a page descriptor, and an invalid
+/// descriptor's bits other than bit 0 are ignored (Arm ARM, VMSAv8-64
+/// translation table descriptor formats).
+const ARM64_FORWARDED: u64 = 1 << 55;
 
 impl Format for Arm64 {
     fn table(page: u64) -> u64 {
@@ -112,6 +132,12 @@ impl Format for Arm64 {
     }
     fn invalidate(descriptor: u64) -> u64 {
         descriptor & !ARM64_VALID
+    }
+    fn forward(descriptor: u64) -> u64 {
+        Self::invalidate(descriptor) | ARM64_FORWARDED
+    }
+    fn is_forwarded(descriptor: u64) -> bool {
+        !Self::is_valid(descriptor) && descriptor & ARM64_FORWARDED != 0
     }
 }
 
@@ -448,6 +474,31 @@ pub fn invalidate_range<F: Format, M: TableMemory>(
     count
 }
 
+/// Invalidate each valid leaf of `[va, va + len)` as `forward` does: its
+/// frame now belongs to another mapping. Returns the leaves invalidated.
+/// They await a flush like `invalidate_range`'s, and reclaim gives no frame
+/// back for them.
+pub fn forward_range<F: Format, M: TableMemory>(mem: &M, root: u64, va: u64, len: u64) -> usize {
+    let mut count = 0;
+    for_each_leaf::<F, M>(mem, root, va, len, &mut |table, index, _, _, descriptor| {
+        if F::is_valid(descriptor) {
+            mem.store(table, index, F::forward(descriptor));
+            count += 1;
+        }
+    });
+    mem.publish_table();
+    count
+}
+
+/// The frame the valid 4 KiB leaf at `va` maps, if there is one.
+pub fn leaf_frame<F: Format, M: TableMemory>(mem: &M, root: u64, va: u64) -> Option<u64> {
+    let Walk::Table(table) = walk::<F, M>(mem, root, va, 3) else {
+        return None;
+    };
+    let descriptor = mem.load(table, index(va, 3));
+    F::is_valid(descriptor).then(|| F::address(descriptor))
+}
+
 /// Pass the VA of each leaf of `[va, va + len)` awaiting reclaim to `each`.
 pub fn invalidated_leaves<F: Format, M: TableMemory>(
     mem: &M,
@@ -464,7 +515,8 @@ pub fn invalidated_leaves<F: Format, M: TableMemory>(
 }
 
 /// Clear each leaf of `[va, va + len)` awaiting reclaim, and pass the
-/// physical range it mapped to `frames` as `(pa, bytes)`. Returns the leaves
+/// physical range it mapped to `frames` as `(pa, bytes)`, except for a
+/// forwarded leaf, whose frame another mapping holds. Returns the leaves
 /// cleared. The caller has flushed them on each CPU.
 pub fn reclaim_range<F: Format, M: TableMemory>(
     mem: &M,
@@ -477,7 +529,9 @@ pub fn reclaim_range<F: Format, M: TableMemory>(
     for_each_leaf::<F, M>(mem, root, va, len, &mut |table, index, level, _, descriptor| {
         if !F::is_valid(descriptor) {
             mem.store(table, index, 0);
-            frames(F::address(descriptor), entry_bytes(level));
+            if !F::is_forwarded(descriptor) {
+                frames(F::address(descriptor), entry_bytes(level));
+            }
             count += 1;
         }
     });

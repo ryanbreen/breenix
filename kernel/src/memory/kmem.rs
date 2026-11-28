@@ -17,7 +17,7 @@ use super::slab_cache::{class_of, Backing, Short, Slab, SlabCache, CLASSES, CLAS
 
 #[path = "kmem_core.rs"]
 mod core_impl;
-pub use core_impl::{AllocError, Ctx, ReclaimCtx, Shrinker};
+pub use core_impl::{moved_layer, route, AllocError, Ctx, Drain, Layer, ReclaimCtx, Shrinker};
 pub(super) use core_impl::{reserve_frames, Cpu, Front, Miss, Pool, Reclaim, Registry, Small, Stats};
 
 pub(super) static SHRINKERS: Registry = Registry::new();
@@ -35,6 +35,12 @@ static CPUS_UNREGISTERED: AtomicU64 = AtomicU64::new(0);
 /// path, and must follow `Shrinker`'s rules.
 pub fn register_shrinker(shrinker: &'static Shrinker) {
     SHRINKERS.register(shrinker);
+}
+
+/// Add a step-2 drain (7.2): a layer's per-CPU frames, given back from each
+/// CPU with `try_lock` before the shrinkers run.
+pub fn register_drain(drain: &'static Drain) {
+    SHRINKERS.register_drain(drain);
 }
 
 /// Allocate `layout` in `ctx`, which the allocator lowers in interrupt context
@@ -61,7 +67,7 @@ pub(super) fn cpu_number() -> usize {
 /// data exists; before that it takes the slab layer's shared path (5.4a).
 /// TPIDR_EL1's reset value is UNKNOWN, so on ARM64 the value is compared with
 /// the array's entries and not read through (`cpu_of_base`).
-fn named_cpu() -> Option<usize> {
+pub(super) fn named_cpu() -> Option<usize> {
     #[cfg(target_arch = "aarch64")]
     return {
         let (first, stride, count) = crate::per_cpu_aarch64::cpu_data_array();
@@ -229,6 +235,7 @@ pub fn init_cpu_slots(cpus: usize) {
         core::slice::from_raw_parts(table, count)
     };
     KMEM.install_slots(slots);
+    super::large::init_cpu_arenas(count);
 }
 
 /// Build this CPU's magazines from the shared path and publish them in its
@@ -309,8 +316,9 @@ pub fn note_fault_out_of_memory() {
 }
 
 /// Lines `write_stats` writes, for a reader that reserves its buffer first:
-/// 18 allocator and slab lines, a row per class, and the kernel windows' 14.
-pub const STATS_LINES: usize = 18 + CLASS_COUNT + 14;
+/// 18 allocator and slab lines, a row per class, the kernel windows' 14 and
+/// the span and vmap layers' 4.
+pub const STATS_LINES: usize = 18 + CLASS_COUNT + 14 + 4;
 
 /// The slow path's counts, and a row per size class, as `name value` lines.
 pub fn write_stats(out: &mut impl core::fmt::Write) -> core::fmt::Result {
@@ -342,5 +350,6 @@ pub fn write_stats(out: &mut impl core::fmt::Write) -> core::fmt::Result {
             stats.magazine_rounds
         )?;
     }
-    super::kva::write_stats(out)
+    super::kva::write_stats(out)?;
+    super::large::write_stats(out)
 }

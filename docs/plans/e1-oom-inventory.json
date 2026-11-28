@@ -2714,7 +2714,9 @@
    "functions": [
     "Heap::allocate_inner",
     "Heap::deallocate",
-    "Heap::init"
+    "Heap::grow_in_place",
+    "Heap::init",
+    "Heap::shrink_in_place"
    ]
   },
   {
@@ -2727,11 +2729,21 @@
    ]
   },
   {
+   "file": "kernel/src/memory/kmem_core.rs",
+   "owner": "E1-12",
+   "error": "ENOMEM",
+   "rollback": "before the VMA or page-table change is published",
+   "functions": [
+    "Front::reallocate"
+   ]
+  },
+  {
    "file": "kernel/src/memory/kva.rs",
    "owner": "E1-12",
    "error": "ENOMEM",
    "rollback": "before the VMA or page-table change is published",
    "functions": [
+    "extend",
     "reserve"
    ]
   },
@@ -2742,7 +2754,26 @@
    "rollback": "before the VMA or page-table change is published",
    "functions": [
     "Extents::allocate",
+    "Extents::extend",
     "Extents::link_free"
+   ]
+  },
+  {
+   "file": "kernel/src/memory/kva_window.rs",
+   "owner": "E1-12",
+   "error": "ENOMEM",
+   "rollback": "before the VMA or page-table change is published",
+   "functions": [
+    "Window::extend"
+   ]
+  },
+  {
+   "file": "kernel/src/memory/large.rs",
+   "owner": "E1-12",
+   "error": "ENOMEM",
+   "rollback": "before the VMA or page-table change is published",
+   "functions": [
+    "reallocate"
    ]
   },
   {
@@ -2811,6 +2842,16 @@
    "functions": [
     "VmaList::insert",
     "VmaList::remove"
+   ]
+  },
+  {
+   "file": "kernel/src/memory/vmap.rs",
+   "owner": "E1-12",
+   "error": "ENOMEM",
+   "rollback": "before the VMA or page-table change is published",
+   "functions": [
+    "allocate",
+    "resize"
    ]
   },
   {
