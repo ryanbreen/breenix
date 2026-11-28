@@ -14,6 +14,10 @@ const MIN_BLOCK: u32 = 16;
 const FREE: u32 = 1;
 const PADDING: u32 = 2;
 const CLASSES: usize = 128;
+/// `usable_size` exceeds the size a block was allocated or resized for by
+/// less than this: under 8 bytes of rounding, plus a remainder of under
+/// `MIN_BLOCK` bytes too small to index on its own.
+pub(super) const RESIZE_SLACK: usize = (MIN_BLOCK + ALIGN) as usize;
 
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -227,8 +231,8 @@ impl Heap {
     }
 
     /// Grow the live allocation `ptr` to hold `new_size` bytes without moving
-    /// it, by taking the front of the free block after it. Returns false,
-    /// changing nothing, when that block is absent, allocated or too small.
+    /// it, by taking the front of the free block after it. Returns false, with
+    /// the heap unchanged, when that block is absent, allocated or too small.
     /// This is the boundary-tag step `deallocate` coalesces with: one class
     /// removal and at most one insertion.
     ///
@@ -269,7 +273,7 @@ impl Heap {
     /// Shrink the live allocation `ptr` to `new_size` bytes without moving
     /// it, returning its tail to the free index, joined to a free block after
     /// it. A tail too small to index, with no free block after it to join,
-    /// stays in the allocation. Returns false, changing nothing, when
+    /// stays in the allocation. Returns false, with the heap unchanged, when
     /// `new_size` is larger than the block.
     ///
     /// Safety: `ptr` is a still-live allocation from this heap.

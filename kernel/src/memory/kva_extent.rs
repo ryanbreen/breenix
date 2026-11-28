@@ -476,6 +476,37 @@ impl Extents {
         }
     }
 
+    /// Grow an allocation's `extent` by `extra` bytes in place, taking them
+    /// from the front of the free extent that starts where it ends. Returns
+    /// the grown extent, or `NoVa` with the trees unchanged when that extent
+    /// is absent or shorter than `extra`. A free extent taken whole gives its
+    /// node back to the spares, so this takes 0 spare nodes.
+    pub fn extend(&mut self, extent: Extent, extra: u64) -> Result<Extent, ExtentError> {
+        self.check(extent)?;
+        if extra == 0 || extra & (self.granule - 1) != 0 {
+            return Err(ExtentError::BadRequest);
+        }
+        let (_, above) = self.neighbours(extent.end());
+        // SAFETY: `above` is a free node of this allocator.
+        unsafe {
+            if above.is_null() || (*above).start != extent.end() || (*above).len < extra {
+                return Err(ExtentError::NoVa);
+            }
+            self.remove(above, BY_SIZE);
+            self.remove(above, BY_START);
+            if (*above).len == extra {
+                self.put_spare(above);
+            } else {
+                (*above).start += extra;
+                (*above).len -= extra;
+                self.insert(above, BY_START);
+                self.insert(above, BY_SIZE);
+            }
+        }
+        self.free_bytes -= extra;
+        Ok(Extent { start: extent.start, len: extent.len + extra })
+    }
+
     /// Hold `extent` out of the free trees until a TLB flush covers it.
     /// `extent` is an allocation's, and the retirement uses the node the
     /// allocation holds, so it needs no spare. With no allocation

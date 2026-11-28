@@ -146,7 +146,7 @@ pub trait Pool {
     unsafe fn give(&self, ptr: NonNull<u8>);
     /// Resize a block `take` gave to hold `new_size` bytes without moving
     /// it (`heap_index`'s `grow_in_place` and `shrink_in_place`). Returns
-    /// false, changing nothing, when it cannot.
+    /// false, with the block unchanged, when it cannot.
     ///
     /// # Safety
     ///
@@ -199,15 +199,59 @@ impl Shrinker {
     }
 }
 
-/// The shrinkers in cost order. Registration links a shrinker in with a
-/// compare-exchange, and a linked shrinker stays linked, so a walk needs no lock.
+/// A layer's share of 7.2 step 2 beyond the magazines: the per-CPU memory
+/// it holds as whole frames, given back from each CPU under that CPU's lock
+/// taken with `try_lock`, skipping a CPU whose lock is busy. The span arenas'
+/// kept empty spans are one (6.4). `run` returns the frames free now; frames
+/// a flush still has to cover are counted by the shrinker that flushes them.
+pub struct Drain {
+    pub name: &'static str,
+    pub run: fn() -> usize,
+    next: AtomicPtr<Drain>,
+}
+
+impl Drain {
+    pub const fn new(name: &'static str, run: fn() -> usize) -> Self {
+        Self { name, run, next: AtomicPtr::new(core::ptr::null_mut()) }
+    }
+}
+
+/// The shrinkers in cost order, and the step-2 drains. Registration links a
+/// hook in with a compare-exchange, and a linked hook stays linked, so a walk
+/// needs no lock.
 pub struct Registry {
     head: AtomicPtr<Shrinker>,
+    drains: AtomicPtr<Drain>,
 }
 
 impl Registry {
     pub const fn new() -> Self {
-        Self { head: AtomicPtr::new(core::ptr::null_mut()) }
+        Self { head: AtomicPtr::new(core::ptr::null_mut()), drains: AtomicPtr::new(core::ptr::null_mut()) }
+    }
+
+    /// Link a step-2 drain in. A drain is registered once.
+    pub fn register_drain(&self, drain: &'static Drain) {
+        let new = drain as *const Drain as *mut Drain;
+        let mut head = self.drains.load(Ordering::Acquire);
+        loop {
+            drain.next.store(head, Ordering::Relaxed);
+            match self.drains.compare_exchange(head, new, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => return,
+                Err(current) => head = current,
+            }
+        }
+    }
+
+    /// Run each step-2 drain; returns the frames they gave back.
+    pub fn drain_cpus(&self) -> usize {
+        let mut freed = 0;
+        let mut next = self.drains.load(Ordering::Acquire);
+        // SAFETY: linked drains are `&'static` and stay linked.
+        while let Some(drain) = unsafe { next.as_ref() } {
+            freed += (drain.run)();
+            next = drain.next.load(Ordering::Acquire);
+        }
+        freed
     }
 
     /// Link `shrinker` in after each registered shrinker of equal or lower
@@ -388,6 +432,47 @@ pub fn reserve_frames(heap_frames: usize) -> usize {
     (heap_frames / 1024).max(128).min(heap_frames / 16) / 2
 }
 
+/// The largest request the slab layer serves (6.1 row 1).
+pub const SLAB_MAX: usize = PAGE;
+/// The largest request a span arena serves (6.1 row 2).
+pub const SPAN_MAX: usize = 512 << 10;
+/// The largest alignment the slab layer and the span arenas serve.
+pub const SMALL_ALIGN_MAX: usize = PAGE;
+/// `kva_window::WindowId::Vmap`'s number, for `NoVa`.
+const VMAP_WINDOW: u8 = 1;
+
+/// The layer that serves a layout (6.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Layer {
+    /// Row 1: size and alignment at most 4096.
+    Slab,
+    /// Row 2: size at most 512 KiB, alignment at most 4096.
+    Span,
+    /// Row 3: a larger size, or an alignment above 4096 at any size.
+    Vmap,
+}
+
+/// The one layer `layout` routes to (6.1): the first of the three rows it
+/// matches. Alignment above 4096 is the VA's, which only the vmap window
+/// aligns, up to its own size `vmap_bytes`; a larger alignment, which no
+/// window can meet, is `NoVa`.
+pub fn route(layout: Layout, vmap_bytes: u64) -> Result<Layer, AllocError> {
+    let (size, align) = (layout.size(), layout.align());
+    if align <= SMALL_ALIGN_MAX {
+        if size <= SLAB_MAX {
+            return Ok(Layer::Slab);
+        }
+        if size <= SPAN_MAX {
+            return Ok(Layer::Span);
+        }
+    }
+    if align as u64 <= vmap_bytes && (size as u64) <= vmap_bytes {
+        Ok(Layer::Vmap)
+    } else {
+        Err(AllocError::NoVa { window: VMAP_WINDOW })
+    }
+}
+
 /// The slab caches and per-CPU magazines in front of the heap (6.1 row 1,
 /// 6.2, 6.3). Each call masks the CPU's interrupts and reads the CPU's
 /// identity itself, so the identity cannot go stale by migration.
@@ -494,6 +579,7 @@ impl<M: Pool, R: Pool, S: Small> Front<'_, M, R, S> {
         for other in 0..self.small.cpus() {
             self.small.drain(other);
         }
+        self.shrinkers.drain_cpus();
         if ctx.may_shrink() {
             self.reclaim(layout, cpu);
         } else {
@@ -572,7 +658,8 @@ impl<M: Pool, R: Pool, S: Small> Front<'_, M, R, S> {
         for other in 0..self.small.cpus() {
             self.small.drain(other);
         }
-        self.reclaim_pages(frames + RECLAIM_BATCH_FRAMES, cpu)
+        let drained = self.shrinkers.drain_cpus();
+        drained + self.reclaim_pages(frames.saturating_sub(drained) + RECLAIM_BATCH_FRAMES, cpu)
     }
 
     /// Run the shrinkers with interrupts masked, holding no pool lock, for

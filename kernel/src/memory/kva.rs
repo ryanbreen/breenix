@@ -120,6 +120,8 @@ static NODE_PAGES: AtomicUsize = AtomicUsize::new(0);
 struct Windows {
     root: u64,
     windows: [Mutex<Window>; 3],
+    /// Each window's place, fixed at `init`, read with no lock.
+    placements: [Placement; 3],
 }
 
 static WINDOWS: spin::Once<Windows> = spin::Once::new();
@@ -209,7 +211,7 @@ pub fn init() -> Result<[Placement; 3], InitError> {
         add_node_page(&mut window).map_err(|_| InitError::NoFrames)?;
         window.open().expect("a new window has a spare node and no extent");
     }
-    WINDOWS.call_once(|| Windows { root, windows });
+    WINDOWS.call_once(|| Windows { root, windows, placements });
     #[cfg(target_arch = "x86_64")]
     kmem::register_shrinker(&PENDING_SHRINKER);
     Ok(placements)
@@ -238,7 +240,7 @@ fn with_window<R>(id: WindowId, f: impl FnOnce(&mut Window) -> R) -> Option<R> {
 
 /// `ctx` as the allocator lowers it: `Atomic` in an interrupt handler and
 /// inside reclaim.
-fn lowered(ctx: Ctx) -> Ctx {
+pub(super) fn lowered(ctx: Ctx) -> Ctx {
     use kmem::Cpu;
     let cpu = kmem::KernelCpu;
     ctx.lowered(cpu.in_interrupt(), kmem::RECLAIM.held_by(cpu.id()))
@@ -281,20 +283,99 @@ pub fn map(
     frame_at: impl FnMut(u64) -> u64,
     ctx: Ctx,
 ) -> Result<(), AllocError> {
+    map_at(allocation, 0, len, frame_at, ctx)
+}
+
+/// Map `len` bytes of `allocation` from `offset` (each a multiple of 4 KiB,
+/// inside its length), the page at `offset + o` to frame `frame_at(o)`, which
+/// the window then owns. A shortfall of table pages leaves the range unmapped.
+pub fn map_at(
+    allocation: &Allocation,
+    offset: u64,
+    len: u64,
+    frame_at: impl FnMut(u64) -> u64,
+    ctx: Ctx,
+) -> Result<(), AllocError> {
     let ctx = lowered(ctx);
     if !ctx.may_map() {
         return Err(kmem::STATS.refuse(ctx));
     }
-    assert!(len <= allocation.len, "kernel window mapping past its allocation");
+    assert!(
+        offset.checked_add(len).is_some_and(|end| end <= allocation.len),
+        "kernel window mapping past its allocation"
+    );
     let windows = windows().ok_or(AllocError::NoFrames)?;
     let mut pages = TableFrames;
-    match kva_map::map_range::<Fmt, _>(
-        &KernelTables, windows.root, allocation.start, len, 3, frame_at, &mut pages,
-    ) {
+    let va = allocation.start + offset;
+    match kva_map::map_range::<Fmt, _>(&KernelTables, windows.root, va, len, 3, frame_at, &mut pages) {
         Ok(_) => Ok(()),
         Err(MapError::NoTables { .. }) => Err(AllocError::NoFrames),
-        Err(error) => panic!("kernel window mapping at {:#x}: {:?}", allocation.start, error),
+        Err(error) => panic!("kernel window mapping at {:#x}: {:?}", va, error),
     }
+}
+
+/// Grow `allocation` by `extra` bytes into the free VA after it in window
+/// `id`, if there is that much; its guard page moves past them.
+pub fn extend(id: WindowId, allocation: &Allocation, extra: u64) -> Option<Allocation> {
+    with_window(id, |window| window.extend(allocation, extra).ok()).flatten()
+}
+
+/// Map `to` whole: its first `moved` bytes to the frames `from` maps at the
+/// same offsets, and the rest to `frame_at(o)`. The window then owns the new
+/// frames. A shortfall of table pages leaves `to` unmapped.
+pub fn remap(
+    from: &Allocation,
+    to: &Allocation,
+    moved: u64,
+    frame_at: impl FnMut(u64) -> u64,
+    ctx: Ctx,
+) -> Result<(), AllocError> {
+    let ctx = lowered(ctx);
+    if !ctx.may_map() {
+        return Err(kmem::STATS.refuse(ctx));
+    }
+    let windows = windows().ok_or(AllocError::NoFrames)?;
+    let mut pages = TableFrames;
+    match kva_window::remap::<Fmt, _>(&KernelTables, windows.root, from, to, moved, frame_at, &mut pages) {
+        Ok(_) => Ok(()),
+        Err(MapError::NoTables { .. }) => Err(AllocError::NoFrames),
+        Err(error) => panic!("kernel window remap to {:#x}: {:?}", to.start, error),
+    }
+}
+
+/// Unmap `allocation` after `remap` moved its pages: its leaves wait for the
+/// flush like `release`'s, and its frames stay with the range they moved to.
+pub fn forward(id: WindowId, allocation: Allocation, ctx: Ctx) {
+    let Some(windows) = windows() else { return };
+    let pending = with_window(id, |window| {
+        window
+            .forward::<Fmt, _>(&KernelTables, windows.root, &allocation)
+            .map(|_| window.extents.retired_bytes())
+    })
+    .expect("windows are set up")
+    .unwrap_or_else(|error| panic!("kernel window {} forward: {:?}", id.name(), error));
+    flush_if_due(id, pending, ctx);
+}
+
+/// The frame the window page at `va` maps, if it is mapped.
+pub fn frame_of(va: u64) -> Option<u64> {
+    let windows = windows()?;
+    kva_map::leaf_frame::<Fmt, _>(&KernelTables, windows.root, va)
+}
+
+/// The window `va` lies in, if any.
+pub fn window_of(va: u64) -> Option<WindowId> {
+    let windows = windows()?;
+    windows
+        .placements
+        .iter()
+        .find(|placement| va >= placement.base && va - placement.base < placement.bytes)
+        .map(|placement| placement.id)
+}
+
+/// Where window `id` sits, once the windows are set up.
+pub fn placement(id: WindowId) -> Option<Placement> {
+    Some(windows()?.placements[id as usize])
 }
 
 /// Unmap `allocation` and give its VA and frames back after the flush that
@@ -311,11 +392,37 @@ pub fn release(id: WindowId, allocation: Allocation, ctx: Ctx) {
     })
     .expect("windows are set up")
     .unwrap_or_else(|error| panic!("kernel window {} release: {:?}", id.name(), error));
+    flush_if_due(id, pending, ctx);
+}
+
+/// Flush window `id` now on ARM64, and on x86 once its pending list passes
+/// 16 MiB and `ctx` may wait for the shootdown.
+fn flush_if_due(id: WindowId, pending: u64, ctx: Ctx) {
     let flush_now = POLICY == FlushPolicy::Chunked
         || (pending > kva_window::PENDING_FLUSH_BYTES && lowered(ctx).may_map());
     if flush_now {
         flush(id);
     }
+}
+
+/// `release` that takes the window's lock with one `try_lock`, for 7.2's
+/// step 2, which may run while this CPU holds that lock (a frame request
+/// made under it). A busy lock hands `allocation` back untouched. Returns
+/// the frames given back now: the flushed frames on ARM64, and 0 on x86,
+/// whose pending list the `kva-pending` shrinker flushes.
+pub fn try_release(id: WindowId, allocation: Allocation) -> Result<usize, Allocation> {
+    let Some(windows) = windows() else { return Err(allocation) };
+    let mutex = &windows.windows[id as usize];
+    crate::arch_without_interrupts(|| {
+        let Some(mut window) = mutex.try_lock() else {
+            return Err(allocation);
+        };
+        window
+            .unmap::<Fmt, _>(&KernelTables, windows.root, &allocation)
+            .unwrap_or_else(|error| panic!("kernel window {} release: {:?}", id.name(), error));
+        Ok(())
+    })?;
+    Ok(if POLICY == FlushPolicy::Chunked { flush_window(id, true) } else { 0 })
 }
 
 /// Flush window `id`'s pending unmaps on each CPU and give back their frames
