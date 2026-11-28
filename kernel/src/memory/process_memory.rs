@@ -923,19 +923,7 @@ impl ProcessPageTable {
         unsafe {
             let master_virt = phys_offset + master_frame.start_address().as_u64();
             let master = &*master_virt.as_ptr::<PageTable>();
-
-            for i in 256..512 {
-                level_4_table[i] = master[i].clone();
-            }
-
-            // The bootloader can place kernel mappings in the lower half.
-            // Retain the existing policy for those entries and leave PML4[0]
-            // to this process. Slots 2 and 3 are the legacy kernel slots.
-            for i in 1..256 {
-                if i == 2 || i == 3 || !master[i].flags().contains(PageTableFlags::USER_ACCESSIBLE) {
-                    level_4_table[i] = master[i].clone();
-                }
-            }
+            crate::memory::kernel_page_table::inherit_master_slots(master, level_4_table);
 
             let user_pdpt_lease =
                 allocate_frame_leased().ok_or("Failed to allocate PDPT for PML4[0]")?;
@@ -2364,13 +2352,18 @@ impl ProcessPageTable {
         // We need to be careful here - we can't clear the entire entry
         // For now, we'll skip entry 0 and let the ELF loader overwrite user mappings
 
+        #[cfg(target_arch = "x86_64")]
+        crate::memory::kernel_page_table::clear_exec_slots(level_4_table);
+
         // Entry 32: Alternative user code location (0x100000000000)
+        #[cfg(not(target_arch = "x86_64"))]
         if !level_4_table[32].is_unused() {
             log::debug!("Clearing PML4 entry 32 (potential user code range)");
             level_4_table[32].set_unused();
         }
 
         // Entry 170: User stack location (0x550000000000)
+        #[cfg(not(target_arch = "x86_64"))]
         if !level_4_table[170].is_unused() {
             log::debug!("Clearing PML4 entry 170 (user stack range)");
             level_4_table[170].set_unused();

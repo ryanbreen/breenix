@@ -114,3 +114,45 @@ fn migration_preserves_two_direct_map_slots_with_the_same_pdpt_index() {
     tables[new_pdpt][0].set_addr(PhysAddr::new(1 << 30), flags | Flags::HUGE_PAGE);
     assert_eq!(translate(&mut tables[0]), (Some(phys0), Some(phys1)));
 }
+
+#[test]
+fn exec_root_keeps_a_direct_map_at_pml4_32() {
+    // The physical-memory mapping is dynamic, so the loader can place the
+    // direct map in any free lower-half slot; this fixture uses slot 32
+    // (VA 0x1000_0000_0000). The slot-170 entry stands for any other
+    // supervisor-only lower-half mapping.
+    let direct_map = VirtAddr::new(32 << 39);
+    let low_ram = PhysAddr::new(0x20_0000);
+    let other = VirtAddr::new(170 << 39);
+    let flags = Flags::PRESENT | Flags::WRITABLE;
+
+    // Frame 0 is the master, 1 the process root, 2 and 3 the master's PDPTs
+    // for slots 32 and 170, and 4 a user PDPT the root must not inherit.
+    let mut tables = Vec::new();
+    tables.resize_with(5, PageTable::new);
+    let offset = VirtAddr::from_ptr(tables.as_ptr());
+    tables[0][32].set_frame(frame(2), flags);
+    tables[0][170].set_frame(frame(3), flags);
+    tables[0][7].set_frame(frame(4), flags | Flags::USER_ACCESSIBLE);
+    tables[2][0].set_addr(PhysAddr::new(0), flags | Flags::HUGE_PAGE);
+    tables[3][0].set_addr(PhysAddr::new(1 << 30), flags | Flags::HUGE_PAGE);
+
+    let (master, rest) = tables.split_at_mut(1);
+    x86_kernel_half::inherit_master_slots(&master[0], &mut rest[0]);
+    // Exec's preparation of its new root.
+    x86_kernel_half::clear_exec_slots(&mut rest[0]);
+
+    let translate = |root: &mut PageTable, va: VirtAddr| {
+        // This is a software walk. The synthetic physical range is backed by tables.
+        let mapper = unsafe { OffsetPageTable::new(root, offset) };
+        mapper.translate_addr(va)
+    };
+    assert_eq!(
+        translate(&mut tables[1], direct_map + low_ram.as_u64()),
+        Some(low_ram),
+        "the process root must reach low physical RAM through the direct map"
+    );
+    assert_eq!(translate(&mut tables[1], other), Some(PhysAddr::new(1 << 30)));
+    assert!(tables[1][7].is_unused(), "a user-accessible master slot is not inherited");
+    assert!(tables[1][0].is_unused(), "slot 0 is left to the process");
+}

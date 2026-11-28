@@ -46,3 +46,32 @@ pub(super) unsafe fn migrate_kernel_half(
         root_entry.set_frame(frame, flags);
     }
 }
+
+/// Copy the master's shared entries into a new process root: the 256 kernel
+/// slots, and each lower-half slot the master marks supervisor-only, plus the
+/// legacy kernel slots 2 and 3. Slot 0 is left to the process.
+pub(crate) fn inherit_master_slots(master: &PageTable, root: &mut PageTable) {
+    for i in 256..512 {
+        root[i] = master[i].clone();
+    }
+
+    // The bootloader can place kernel mappings in the lower half.
+    for i in 1..256 {
+        if i == 2 || i == 3 || !master[i].flags().contains(PageTableFlags::USER_ACCESSIBLE) {
+            root[i] = master[i].clone();
+        }
+    }
+}
+
+/// Clear the PML4 entries exec treats as old user ranges.
+pub(crate) fn clear_exec_slots(root: &mut PageTable) {
+    // Entry 32: Alternative user code location (0x100000000000)
+    if !root[32].is_unused() {
+        root[32].set_unused();
+    }
+
+    // Entry 170: User stack location (0x550000000000)
+    if !root[170].is_unused() {
+        root[170].set_unused();
+    }
+}
