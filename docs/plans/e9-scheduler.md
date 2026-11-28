@@ -307,9 +307,9 @@ removes the tick.
 - **The outgoing thread.** It is queued on this CPU, or on its pinned home through `retain_affine`,
   while the mark is set. A peer that finds it skips it (S3). `aarch64_complete_exception_switch` clears
   the mark with one release store (§3.4).
-- **Identity.** The CPU index used for the lock comes from the same masked read the pivot already checks
-  (`CpuId::current_checked`, `context_switch.rs:6972`). A disagreement retracts the transaction as it does
-  today.
+- **Identity.** A task retry reads the CPU again after remasking IRQs, and the inline transaction takes
+  its index from the acquired guard. The pivot still checks the index against the hardware and retracts
+  the transaction on disagreement.
 - **The acquired lock travels with the transaction.** Today's rollback can release any CPU's view of the
   lock, because there is one global lock (`force_unlock_scheduler`). Under E9.1 the lock is per CPU. So
   forgetting the `Held` guard yields a `PivotToken { cpu }` naming the lock actually acquired. The
@@ -1400,10 +1400,18 @@ The E9.1 implementation records these details.
   each kernel builds for a single architecture and the architecture operations need no runtime state.
 - **Whole-scheduler pin management and an isolated boot-test fixture retain their existing shape
   checks** because they already hold every queue and can evaluate a pin before an inbox record exists.
-- **A fresh CPU identity is read after an IRQ-enabled task retry** because the waiting task can
-  migrate until it masks IRQs again.
-- **This lane runs the deterministic host checks and the two prescribed rig invocations** because
-  DEV-30 limits guest runs to the measurement rig for this brief.
+- **The inline switch uses the guard's CPU after acquisition** because a legal migration during the
+  IRQ-enabled retry invalidates the entry CPU before the transaction begins.
+- **The independent-dispatch and stopped-peer checks run as fixed host interleavings** because
+  DEV-30 reserves the guest runs for the measurement rig and the host can execute acquisition,
+  selection and the unlock notification with a peer held.
+- **The ownership, pinned-placement and acquired-release checks compile the ARM64 run-queue
+  operations with fixture storage and CPU and SGI boundaries** because the shared module selects
+  architecture operations at compile time and has no `RqArch` trait.
+- **The acquired-release check exercises guard reconstruction and drop** because both the normal
+  pivot and retraction use `Dispatch::from_pivot` with the same carried token.
+- **The idle recheck has a runnable-after-custody case** because checking the call site alone cannot
+  show that its queue predicate sees eligible work.
 - **The rig has no idle-wake case** because its standard workload list has no independent wake
   latency measurement. The before and after series can compare process timings and cannot measure
   the one-tick bound directly.
