@@ -419,33 +419,13 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
             // MEM handler
             memory::debug_memory_info();
         },
-        || {
-            // TEST handler
-            serial_println!("Running test processes...");
-            userspace_test::test_multiple_processes();
-            serial_println!("Test processes scheduled. Type to continue...");
-        },
-        || {
-            // FORKTEST handler
-            serial_println!("Testing Fork System Call (Debug Mode)");
-            userspace_test::test_fork_debug();
-            serial_println!("Fork debug test scheduled. Press keys to continue...");
-        },
-        || {
-            // EXECTEST handler - test userspace fork when testing feature enabled
-            #[cfg(feature = "testing")]
-            {
-                serial_println!("Testing Fork Syscall from Userspace");
-                test_exec::test_userspace_fork();
-                serial_println!("Userspace fork test completed. Press keys to continue...");
-            }
-            #[cfg(not(feature = "testing"))]
-            {
-                serial_println!("Testing Exec System Call with Real Userspace Programs");
-                test_exec::test_exec_real_userspace();
-                serial_println!("Real userspace exec test scheduled. Press keys to continue...");
-            }
-        },
+        // The TEST, FORKTEST and EXECTEST handlers load programs from disk.
+        // The console executor that runs them is CPU 0's idle continuation in
+        // the non-production profiles, so each runs on a braked kernel thread
+        // of its own (`serial_storage_command`, E2.4x review).
+        || serial_storage_command("serial_test", serial_test_processes),
+        || serial_storage_command("serial_forktest", serial_fork_test),
+        || serial_storage_command("serial_exectest", serial_exec_test),
     );
 
     // The boot CPU's per-CPU init: its GDT/TSS, IDT, GS bases, syscall MSRs,
@@ -987,10 +967,25 @@ fn release_x86_boot_storage() {
 /// baseline 0, so its block waits park. First the mounts, while the boot
 /// continuation waits; then, once the continuation releases it, the programs
 /// the boot starts from storage.
+///
+/// Both phases run at a `park::Braked` level (`braked`), as `breenfs-commit`
+/// and ARM64's `test-loader` do (design §3.2): the thread keeps CPU 0 except
+/// while it sleeps on a read. At baseline 0 the timer could preempt it inside
+/// AHCI's `PORT_IO_LOCK` spin section, and a braked `breenfs-commit` taking
+/// CPU 0 would then spin on that lock while this pinned holder cannot run; and
+/// its block waits would not sleep (`completion::wait_sleeps`), so a VirtIO
+/// read past the bootstrap cutoff would be abandoned. The park between the
+/// phases is at baseline 0.
 #[cfg(target_arch = "x86_64")]
 fn run_x86_boot_storage() {
     use core::sync::atomic::Ordering;
-    mount_x86_boot_storage();
+    braked(mount_x86_boot_storage);
+    // #728 ext2 lock-discipline repro oracle (test profile only, feature
+    // `ext2_lock_race`), after the mounts and the fence. Its driver only
+    // starts and waits for kernel threads that take their own braked level,
+    // and needs this CPU preemptible, so it runs outside `braked`.
+    #[cfg(feature = "ext2_lock_race")]
+    kernel::fs::run_ext2_lock_race_leg();
     BOOT_STORAGE_MOUNTED.store(true, Ordering::Release);
     if !X86_BOOT_PROGRAMS {
         return;
@@ -998,16 +993,80 @@ fn run_x86_boot_storage() {
     while !BOOT_STORAGE_RELEASED.load(Ordering::Acquire) {
         task::kthread::kthread_park_if(|| !BOOT_STORAGE_RELEASED.load(Ordering::Acquire));
     }
-    run_x86_boot_programs();
+    braked(run_x86_boot_programs);
 }
 
-/// The boot_storage thread's program phase. Production reads and publishes
+/// Run `work` at one `park::Braked` level: its block waits sleep, and it keeps
+/// this CPU otherwise (design §3.2). `work` must not take a second level.
+#[cfg(target_arch = "x86_64")]
+fn braked(work: fn()) {
+    let level = task::park::Braked::new();
+    work();
+    drop(level);
+}
+
+/// Run a serial command that loads programs from disk on a kernel thread of
+/// its own, at a `park::Braked` level, so its block waits sleep. The console
+/// executor that calls the handler may be CPU 0's idle continuation, which
+/// may not wait for storage once the APs dispatch (E2.4x review).
+#[cfg(target_arch = "x86_64")]
+fn serial_storage_command(name: &'static str, command: fn()) {
+    let spawned = task::kthread::kthread_run(
+        move || {
+            let level = task::park::Braked::new();
+            command();
+            drop(level);
+        },
+        name,
+    );
+    if let Err(e) = spawned {
+        serial_println!("{}: cannot start its kernel thread: {:?}", name, e);
+    }
+}
+
+/// The TEST serial command.
+#[cfg(target_arch = "x86_64")]
+fn serial_test_processes() {
+    serial_println!("Running test processes...");
+    userspace_test::test_multiple_processes();
+    serial_println!("Test processes scheduled. Type to continue...");
+}
+
+/// The FORKTEST serial command.
+#[cfg(target_arch = "x86_64")]
+fn serial_fork_test() {
+    serial_println!("Testing Fork System Call (Debug Mode)");
+    userspace_test::test_fork_debug();
+    serial_println!("Fork debug test scheduled. Press keys to continue...");
+}
+
+/// The EXECTEST serial command: the userspace fork test when the testing
+/// feature is on, otherwise the real-userspace exec test.
+#[cfg(target_arch = "x86_64")]
+fn serial_exec_test() {
+    #[cfg(feature = "testing")]
+    {
+        serial_println!("Testing Fork Syscall from Userspace");
+        test_exec::test_userspace_fork();
+        serial_println!("Userspace fork test completed. Press keys to continue...");
+    }
+    #[cfg(not(feature = "testing"))]
+    {
+        serial_println!("Testing Exec System Call with Real Userspace Programs");
+        test_exec::test_exec_real_userspace();
+        serial_println!("Real userspace exec test scheduled. Press keys to continue...");
+    }
+}
+
+/// The boot_storage thread's program phase, run at its `park::Braked` level
+/// (`braked`), as ARM64's test loader is (design §6), so test processes take
+/// this CPU only while it sleeps on a read. Production reads and publishes
 /// PID 1 (`run_x86_production_init`). Testing loads and registers the test
-/// programs, then runs the contract tests that need their process tables,
-/// holding a `park::Braked` level as ARM64's test loader does (design §6), so
-/// test processes take this CPU only while it sleeps on a read. The
-/// interactive profile and the single-program modes load and start their
-/// program.
+/// programs, runs the contract tests that need their process tables, and
+/// starts the late `hello_time`; only then does it close BTRT's loading
+/// bracket and start the completion reporter, because earlier tests run and
+/// exit while later ones are still being created. The interactive profile
+/// and the single-program modes load and start their program.
 #[cfg(target_arch = "x86_64")]
 fn run_x86_boot_programs() {
     #[cfg(feature = "dns_test_only")]
@@ -1018,6 +1077,11 @@ fn run_x86_boot_programs() {
     nonblock_eagain_test_program();
     #[cfg(not(any(feature = "kthread_test_only", feature = "kthread_stress_test", feature = "workqueue_test_only", feature = "dns_test_only", feature = "blocking_recv_test", feature = "nonblock_eagain_test")))]
     {
+        // Registered tests can exit before the next one is registered; BTRT
+        // auto-finalizes only once loading ends (`btrt::end_loading` below).
+        #[cfg(all(feature = "btrt", feature = "testing"))]
+        kernel::test_framework::btrt::begin_loading();
+
         // INTERACTIVE MODE: Load init_shell as the only userspace process
         #[cfg(feature = "interactive")]
         {
@@ -1044,9 +1108,6 @@ fn run_x86_boot_programs() {
             });
         }
 
-        #[cfg(feature = "testing")]
-        let braked = task::park::Braked::new();
-
         // RING3_SMOKE: Create userspace process early for CI validation
         //
         // NOTE: The canonical list of test binaries is in boot::test_list::TEST_BINARIES.
@@ -1066,7 +1127,7 @@ fn run_x86_boot_programs() {
             // claim-lint:ok: moved unchanged by E2.4x (DEV-48) within kernel/src/main.rs from its 5aa428fc kernel_main_continue.
             //
             // The scheduling brake for this whole window is the `park::Braked`
-            // level taken above (E2.4x): this thread keeps CPU 0 except while it
+            // level `braked` holds for this phase (E2.4x): this thread keeps CPU 0 except while it
             // sleeps on a read, and those reads park.
             x86_64::instructions::interrupts::enable();
             let elf = userspace_test::get_test_binary("hello_time");
@@ -1677,7 +1738,6 @@ fn run_x86_boot_programs() {
             log::info!("=== GRAPHICS TEST: FbInfo syscall ===");
             test_exec::test_fbinfo();
             log::info!("Boot test program registration complete");
-            task::userspace_completion::start();
         }
 
         // Run contracts after test registration has created real process tables.
@@ -1690,9 +1750,6 @@ fn run_x86_boot_programs() {
                 panic!("Contract test failures!");
             }
         }
-
-        #[cfg(feature = "testing")]
-        drop(braked);
 
         // RING3_SMOKE: Create userspace process early for CI validation
         // Must be done after interrupts are enabled but before other tests
@@ -1715,6 +1772,13 @@ fn run_x86_boot_programs() {
                 }
             });
         }
+
+        // The last test process exists: end BTRT's loading bracket, and start
+        // the reporter, which reports once no user thread is live.
+        #[cfg(all(feature = "btrt", feature = "testing"))]
+        kernel::test_framework::btrt::end_loading();
+        #[cfg(all(feature = "testing", not(feature = "interactive")))]
+        task::userspace_completion::start();
 
         #[cfg(not(any(
             feature = "testing",
@@ -1862,6 +1926,11 @@ fn nonblock_eagain_test_program() {
 /// and content from when the boot continuation ran it; only the context moved.
 #[cfg(target_arch = "x86_64")]
 fn mount_x86_boot_storage() {
+    // The storage driver self-tests, AHCI attach first: they wait for block
+    // completions, so they moved here from the continuation's
+    // `run_post_init_self_tests` (E2.4x review).
+    kernel::drivers::run_storage_self_tests();
+
     // A storage-lane install copies the RAM disk to the hardware disk while the
     // RAM disk is still unmounted, so the copy is the image as delivered.
     kernel::block::install_requested_root();
@@ -1930,12 +1999,6 @@ fn mount_x86_boot_storage() {
     kernel::block::fence_seal();
     #[cfg(feature = "block_fence_inject")]
     kernel::block::fence_fault::run();
-
-    // #728 ext2 lock-discipline repro oracle (test profile only, feature
-    // `ext2_lock_race`). It needs a running scheduler, timer and preemption,
-    // which this thread has, and both filesystems mounted.
-    #[cfg(feature = "ext2_lock_race")]
-    kernel::fs::run_ext2_lock_race_leg();
 }
 
 /// DNS test only mode - minimal boot, just run DNS test and exit
