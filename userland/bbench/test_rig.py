@@ -34,16 +34,25 @@ class MemoryShape(unittest.TestCase):
     effort's acceptance (self-host) boots larger still. A smaller guest starves the
     page cache on both systems and hides the gap (DEV-31's same-shape rule)."""
 
-    def test_the_guest_memory_covers_the_toolchain_suites_minimums(self):
+    @staticmethod
+    def expected():
+        """The manifests' largest minimum, read here and not from the rig."""
         minimums = {suite: json.loads((rig.ROOT / f"docs/suites/{suite}.json").read_text())
                     ["minimumGuestMemory"]["mib"] for suite in ("rustc", "cargo", "self-host")}
-        self.assertEqual(rig.MEMORY, f"{max(minimums.values())}M", minimums)
+        return f"{max(minimums.values())}M", minimums
+
+    def test_the_guest_memory_covers_the_toolchain_suites_minimums(self):
+        expected, minimums = self.expected()
+        self.assertEqual(rig.MEMORY, expected, minimums)
 
     def test_both_guests_boot_with_that_memory(self):
+        # Against the manifests, not rig.MEMORY: the launch and the constant could be
+        # wrong together.
+        expected, minimums = self.expected()
         for system in ("linux", "breenix"):
             argv = [str(word) for word in rig.Guest(system, Path("/rig"), Path("/disk"),
                                                     headed=False).argv()]
-            self.assertEqual(argv[argv.index("-m") + 1], rig.MEMORY, system)
+            self.assertEqual(argv[argv.index("-m") + 1], expected, (system, minimums))
 
 
 class RecordingGuest:
@@ -108,13 +117,48 @@ class BreenixCompileRows(unittest.TestCase):
                 self.assertIn(f"--sysroot={self.FIXTURE}/sysroot", flags.split("\x1f")[0], case)
                 self.assertIn(f"-Clinker={self.FIXTURE}/bin/bld", flags.split("\x1f"), case)
 
-    def test_the_fixture_path_is_where_the_suite_staging_puts_it(self):
+    def test_the_rig_stages_the_toolchain_the_compile_rows_run(self):
+        """The image the rig boots is staged by rust_host_stage.py for the rustc and cargo
+        suites on aarch64, which puts the hosted toolchain (its rustc selection) and
+        Cargo (its cargo selection) at HOSTED_TOOLCHAIN, the path the rows run."""
         import importlib.util
         spec = importlib.util.spec_from_file_location("rust_host_stage",
                                                       rig.ROOT / "scripts/rust_host_stage.py")
         stage = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(stage)
         self.assertEqual(stage.HOSTED_TOOLCHAIN, self.FIXTURE)
+        self.assertEqual(rig.BREENIX_TOOLCHAIN, self.FIXTURE)
+
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        work = Path(temp.name)
+        standard = work / "ext2-aarch64.img"
+        standard.write_bytes(b"\0" * 1024)
+        calls = []
+
+        def run_command(words, **kwargs):
+            words = [str(word) for word in words]
+            calls.append(words)
+            if words[-2:-1] and words[1].endswith("create-breenfs-root.sh"):
+                Path(words[-1]).write_bytes(b"breenfs")
+
+        with mock.patch.object(rig, "STANDARD_IMAGE", standard), \
+                mock.patch.object(rig, "BREENIX_IMAGE", work / "out/root.raw"), \
+                mock.patch.object(rig, "DISK_BYTES", 4096), \
+                mock.patch.object(rig, "run_command", run_command):
+            rig.stage_image({})
+        staging = [words for words in calls
+                   if words[1:2] == [str(rig.ROOT / "scripts/rust_host_stage.py")]]
+        self.assertEqual(len(staging), 1, calls)
+        [words] = staging
+        self.assertEqual(words[words.index("--arch") + 1], "aarch64")
+        self.assertTrue({"rustc", "cargo"} <= set(words[words.index("--suite") + 1].split(",")))
+        # It stages the copy that becomes the BreenFS root, before the conversion.
+        image = words[words.index("--image") + 1]
+        converted = [calls.index(other) for other in calls
+                     if other[1].endswith("create-breenfs-root.sh") and other[2] == image]
+        self.assertTrue(converted and converted[0] > calls.index(words), calls)
+        self.assertEqual((work / "out/root.raw").read_bytes(), b"breenfs")
 
 
 class RootFilesystem(unittest.TestCase):
