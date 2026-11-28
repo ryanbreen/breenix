@@ -1,5 +1,5 @@
 //! Apply a sealed userspace inventory to a writable clone of the booted root.
-use super::{is_metal_generation, layout, local};
+use super::{is_metal_generation, layout, local, valid_id};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     ffi::{OsStr, OsString},
@@ -12,6 +12,9 @@ use std::{
 #[path = "paired/tree.rs"]
 mod tree;
 use tree::{Dir, Info, DIR, LINK, REG};
+
+#[path = "paired/session.rs"]
+pub(crate) mod session;
 
 #[cfg(target_os = "breenix")]
 #[path = "paired/guest.rs"]
