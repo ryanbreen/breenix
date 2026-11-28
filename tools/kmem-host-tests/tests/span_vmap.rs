@@ -716,3 +716,28 @@ fn every_layout_routes_to_exactly_one_layer_that_holds_it() {
     let huge = Layout::from_size_align(16, 8 << 30).unwrap();
     assert_eq!(kmem_core::route(huge, vmap_bytes), Err(AllocError::NoVa { window: 1 }), "an alignment no window can meet");
 }
+
+/// Span search (6.4): a request whose worst case is above every free extent
+/// is still served from an extent that holds it at its actual alignment.
+/// One span is filled with 5000-byte blocks aligned to 4096, the gaps their
+/// alignment leaves are filled with 64-byte blocks, and one 5000-byte block
+/// is freed. Its extent, about 5 KiB, holds 4097 bytes at the old 4096-aligned
+/// address, below the request's 8200-byte worst case.
+#[test]
+fn a_span_serves_an_aligned_request_from_a_hole_below_its_worst_case() {
+    let world = World::new(WindowId::Span, 303, 512);
+    let mut arena = SpanArena::new(0);
+    let mut mapped = 0;
+    let big = Layout::from_size_align(5000, 4096).unwrap();
+    let mut blocks = vec![span_alloc(&world, &mut arena, big, &mut mapped)];
+    while let Ok(ptr) = arena.allocate(big) {
+        blocks.push(ptr);
+    }
+    let filler = Layout::from_size_align(64, 8).unwrap();
+    while arena.allocate(filler).is_ok() {}
+    assert!(mapped == 1 && blocks.len() > 100, "the fixture fills one span");
+    let hole = blocks[blocks.len() / 2];
+    assert!(unsafe { arena.free(hole, big.size()) }.unwrap().is_none());
+    let request = Layout::from_size_align(4097, 4096).unwrap();
+    assert_eq!(arena.allocate(request), Ok(hole), "the arena asked for a new span with a fitting hole");
+}
