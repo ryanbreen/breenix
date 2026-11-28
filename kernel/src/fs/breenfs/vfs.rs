@@ -4585,6 +4585,30 @@ impl<W: Wait + 'static> BreenFs<W> {
         }
         result
     }
+    /// Whether an extent of `ino` covers byte `floor`, read as a no-wait
+    /// pass (design 7.3a row 1, review M5 on #3310): the lookup is not a
+    /// tree edit. None when a node it needs is cold; `staged` then records
+    /// it for `stage`.
+    fn tail_backed(
+        &self,
+        state: &mut MountState<W>,
+        ino: u64,
+        floor: u64,
+        staged: &mut Staged,
+    ) -> Result<Option<bool>, Errno> {
+        let _strict = i7::strict();
+        self.inner.decoded.begin_pass(core::mem::take(&mut staged.held));
+        let result = state.files.extents(ino);
+        let (wanted, held) = self.inner.decoded.end_pass();
+        staged.held = held;
+        if !wanted.is_empty() {
+            staged.nodes.append(wanted).map_err(|_| Errno(ENOMEM))?;
+            return Ok(None);
+        }
+        Ok(Some(state.observed(result)?.iter().any(|(k, e)| {
+            k.offset <= floor && floor < k.offset + u64::from(e.num_blocks) * BLOCK_SIZE as u64
+        })))
+    }
     /// After an edit refused for a cold page (design 7.3a row 1): pin the
     /// durable generation, release the lock, and read the nodes and pages the
     /// edit needs into `staged`, checked against their REF checksums.
@@ -5266,14 +5290,17 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
     }
     fn mapping_io(&self, node: &VNode) -> Result<Box<dyn MappingIo>, Errno> {
         self.check_node(node)?;
-        let mut state = self.foreground_lock()?;
-        let size = state.regular(node.ino)?.size;
+        // Read-only reads in no-wait passes (review M5 on #3310).
+        let (size, opened, writable) = self.passes(&mut metadata(|fs: &Self, state: &mut MountState<W>| {
+            let size = state.regular(node.ino)?.size;
+            // A failed writable mount must still flush through sync's EIO path.
+            Ok((size, fs.open_locked(state, node.ino)?, state.committer.is_some()))
+        }))?;
         let transfer = Mapping {
             fs: self.clone(),
-            node: self.open_locked(&mut state, node.ino)?,
+            node: opened,
             size,
-            // A failed writable mount must still flush through sync's EIO path.
-            writable: state.committer.is_some(),
+            writable,
             staged_generation: Cell::new(None),
         };
         Ok(Box::try_new(transfer).map_err(|_| Errno(ENOMEM))?)
@@ -5588,10 +5615,11 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                     let index = floor / BLOCK_SIZE as u64;
                     let frozen = state.dirty.get(&node.ino).is_none_or(|open| open.pages.get(index).is_none())
                         && state.page(node.ino, index).is_some();
-                    let result = state.files.extents(node.ino);
-                    frozen || state.observed(result)?.iter().any(|(k, e)| {
-                        k.offset <= floor && floor < k.offset + u64::from(e.num_blocks) * BLOCK_SIZE as u64
-                    })
+                    frozen || match self.tail_backed(state, node.ino, floor, &mut staged)? {
+                        Some(backed) => backed,
+                        // Nothing is reserved yet: stage the cold nodes and retry.
+                        None => return Ok((inode, false, None)),
+                    }
                 } else { false };
                 // Shrinking records the trim and the inode; growing, the inode.
                 state.root_change(node.ino, &self.inner.root_frozen)?;
@@ -5606,6 +5634,11 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                 Ok((inode, mapped_tail, Some(grant)))
             },
         )?;
+        if staged.needs_io() {
+            self.stage(state, &mut staged)?;
+            admitted = self.admit_data(node.ino, BLOCK_SIZE as u64, Split::No, CostOp::Resize)?;
+            continue;
+        }
         let _edit = self.inner.costs.span(CostOp::Resize, CostPhase::Edit);
         let Some(grant) = grant else { return Ok(()); };
         if node.map.prepare_resize(inode.size, size).is_err() {
