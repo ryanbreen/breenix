@@ -89,6 +89,9 @@ pub enum ProcEntryType {
     SlabInfo,
     /// /proc/stat - kernel activity counters
     Stat,
+    /// /proc/interrupts - interrupts per CPU per source, in proc(5)'s layout
+    #[cfg(target_arch = "aarch64")]
+    Interrupts,
     /// /proc/cowinfo - copy-on-write statistics
     CowInfo,
     /// /proc/mounts - mounted filesystems
@@ -231,6 +234,8 @@ impl ProcEntryType {
             ProcEntryType::TraceTeardownPid(_) => "pid",
             ProcEntryType::SlabInfo => "slabinfo",
             ProcEntryType::Stat => "stat",
+            #[cfg(target_arch = "aarch64")]
+            ProcEntryType::Interrupts => "interrupts",
             ProcEntryType::CowInfo => "cowinfo",
             ProcEntryType::Mounts => "mounts",
             ProcEntryType::BreenixDir => "breenix",
@@ -325,6 +330,8 @@ impl ProcEntryType {
             ProcEntryType::TraceTeardownPid(_) => "/proc/trace/teardown/<pid>",
             ProcEntryType::SlabInfo => "/proc/slabinfo",
             ProcEntryType::Stat => "/proc/stat",
+            #[cfg(target_arch = "aarch64")]
+            ProcEntryType::Interrupts => "/proc/interrupts",
             ProcEntryType::CowInfo => "/proc/cowinfo",
             ProcEntryType::Mounts => "/proc/mounts",
             ProcEntryType::BreenixDir => "/proc/breenix",
@@ -420,6 +427,8 @@ impl ProcEntryType {
             ProcEntryType::TraceTeardownPid(pid) => pid_inode(*pid, 3),
             ProcEntryType::SlabInfo => 5,
             ProcEntryType::Stat => 6,
+            #[cfg(target_arch = "aarch64")]
+            ProcEntryType::Interrupts => 12,
             ProcEntryType::CowInfo => 7,
             ProcEntryType::Mounts => 8,
             ProcEntryType::BreenixDir => 200,
@@ -584,6 +593,8 @@ pub fn init() {
     procfs.entries.push(ProcEntry::new(ProcEntryType::CpuInfo));
     procfs.entries.push(ProcEntry::new(ProcEntryType::SlabInfo));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Stat));
+    #[cfg(target_arch = "aarch64")]
+    procfs.entries.push(ProcEntry::new(ProcEntryType::Interrupts));
     procfs.entries.push(ProcEntry::new(ProcEntryType::CowInfo));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Mounts));
 
@@ -1067,6 +1078,8 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         }
         ProcEntryType::SlabInfo => text(generate_slabinfo()),
         ProcEntryType::Stat => text(generate_stat()),
+        #[cfg(target_arch = "aarch64")]
+        ProcEntryType::Interrupts => text(generate_interrupts()),
         ProcEntryType::CowInfo => text(generate_cowinfo()),
         ProcEntryType::Pids => text(generate_pids()),
         ProcEntryType::KmsgSequence => {
@@ -1101,14 +1114,16 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         ProcEntryType::PageCache => {
             use core::fmt::Write;
             let mut report = String::new();
-            report.try_reserve_exact(40).map_err(|_| -12)?;
+            report.try_reserve_exact(3 * 40).map_err(|_| -12)?;
             let _ = writeln!(report, "absent_bound {}", crate::memory::file_map::absent_bound());
+            let _ = writeln!(report, "exec_copy_fallbacks {}", crate::memory::file_map::exec_copy_fallbacks());
+            let _ = writeln!(report, "etxtbsy_refusals {}", crate::memory::file_map::etxtbsy_refusals());
             text(report)
         }
         ProcEntryType::Kmem => {
-            // 3 frame-pool lines and 14 allocator lines, each at most 48 bytes.
+            // 3 frame-pool lines and the allocator's lines, each at most 96 bytes.
             let mut report = String::new();
-            report.try_reserve_exact(17 * 48).map_err(|_| -12)?;
+            report.try_reserve_exact((3 + crate::memory::kmem::STATS_LINES) * 96).map_err(|_| -12)?;
             #[cfg(target_arch = "aarch64")]
             {
                 use core::fmt::Write;
@@ -1311,7 +1326,6 @@ fn generate_frames() -> Result<String, i32> {
 
 /// Generate /proc/meminfo content
 fn generate_meminfo() -> String {
-    use crate::memory::slab::{FD_TABLE_SLAB, SIGNAL_HANDLERS_SLAB};
     use alloc::format;
 
     let stats = crate::memory::frame_allocator::memory_stats();
@@ -1330,14 +1344,9 @@ fn generate_meminfo() -> String {
         0
     };
 
-    // Slab memory usage: sum of allocated objects * object size for each slab
-    let slab_kb = {
-        let fd_stats = FD_TABLE_SLAB.stats();
-        let sig_stats = SIGNAL_HANDLERS_SLAB.stats();
-        let fd_bytes = (fd_stats.allocated * fd_stats.obj_size) as u64;
-        let sig_bytes = (sig_stats.allocated * sig_stats.obj_size) as u64;
-        (fd_bytes + sig_bytes) / 1024
-    };
+    // Slab memory: the pages the slab layer holds, the size classes', the
+    // named caches' and its descriptors' and magazines'.
+    let slab_kb = crate::memory::kmem::slab_pages() as u64 * 4;
 
     // Kernel heap is 32 MiB fixed
     let kernel_stack_kb: u64 = 32 * 1024; // 32 MiB heap as rough kernel memory estimate
@@ -1599,7 +1608,27 @@ fn generate_stat() -> String {
             "net_msi_irqs {}\n",
             crate::drivers::virtio::net_pci::msi_interrupt_count()
         );
+        // proc(5): the total, which also counts spurious acknowledges, then
+        // each numbered source (the GIC INTID) summed over the online CPUs.
+        let _ = crate::arch_impl::aarch64::exception::IRQ_SOURCES.write_intr_line(
+            &mut out,
+            num_cpus,
+            IRQ_TOTAL.aggregate(),
+        );
     }
+    out
+}
+
+/// Generate /proc/interrupts: a column per online CPU and a row per GIC INTID
+/// taken, with its controller and device.
+#[cfg(target_arch = "aarch64")]
+fn generate_interrupts() -> String {
+    let mut out = String::with_capacity(1024);
+    let _ = crate::arch_impl::aarch64::exception::IRQ_SOURCES.write_table(
+        &mut out,
+        procfs_online_cpus(),
+        crate::arch_impl::aarch64::exception::irq_source_label,
+    );
     out
 }
 

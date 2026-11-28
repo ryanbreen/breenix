@@ -19,7 +19,7 @@ mod kmem_core;
 mod sim;
 
 use heap_index::Heap;
-use kmem_core::{AllocError, Cpu, Ctx, Front, Miss, Pool, Reclaim, ReclaimCtx, Registry, Shrinker, Stats};
+use kmem_core::{AllocError, Cpu, Ctx, Front, Miss, Pool, Reclaim, ReclaimCtx, Registry, Shrinker, Small, Stats};
 use sim::SimLock;
 
 const ARENA_BYTES: usize = 64 * 1024;
@@ -31,7 +31,7 @@ const ATOMIC: usize = 2;
 
 /// A heap_index heap behind a simulated lock.
 struct Arena {
-    _backing: Vec<u64>,
+    backing: Vec<u64>,
     lock: SimLock<Heap>,
 }
 
@@ -40,7 +40,7 @@ impl Arena {
         let mut backing = vec![0u64; bytes / 8];
         let mut heap = Heap::empty();
         unsafe { heap.init(backing.as_mut_ptr().cast(), bytes) };
-        Self { _backing: backing, lock: SimLock::new(heap) }
+        Self { backing, lock: SimLock::new(heap) }
     }
 }
 
@@ -48,6 +48,55 @@ impl Pool for Arena {
     fn take(&self, layout: Layout, wait: bool) -> Result<NonNull<u8>, Miss> {
         let mut heap = if wait { self.lock.lock() } else { self.lock.try_lock().ok_or(Miss::Busy)? };
         heap.allocate(layout).0.ok_or(Miss::Exhausted)
+    }
+
+    fn contains(&self, ptr: NonNull<u8>) -> bool {
+        let start = self.backing.as_ptr() as usize;
+        (start..start + self.backing.len() * 8).contains(&(ptr.as_ptr() as usize))
+    }
+
+    unsafe fn give(&self, ptr: NonNull<u8>) {
+        unsafe { self.lock.lock().deallocate(ptr) }
+    }
+
+    unsafe fn resize(&self, ptr: NonNull<u8>, new_size: usize) -> bool {
+        unsafe { self.lock.lock().resize_in_place(ptr, new_size) }
+    }
+}
+
+/// These tests drive the fixed-heap path, so their front has a small-object
+/// layer that serves no request (`slab_magazine.rs` drives that layer).
+struct NoSmall;
+
+impl Small for NoSmall {
+    fn serves(&self, _: Layout) -> bool {
+        false
+    }
+
+    fn take(&self, _: Layout, _: bool) -> Result<NonNull<u8>, Miss> {
+        unreachable!("no request is routed to this layer")
+    }
+
+    unsafe fn give(&self, _: NonNull<u8>, _: Layout) {
+        unreachable!("no request is routed to this layer")
+    }
+
+    fn same_object(&self, _: Layout, _: Layout) -> bool {
+        false
+    }
+
+    fn drain_own(&self, _: bool) {}
+
+    fn drain(&self, _: usize) -> bool {
+        true
+    }
+
+    fn cpus(&self) -> usize {
+        0
+    }
+
+    fn release_freed(&self, _target: usize) -> usize {
+        0
     }
 }
 
@@ -163,6 +212,7 @@ fn allocate(world: &'static World, request: Request) -> Result<NonNull<u8>, Allo
     let front = Front {
         main: &world.main,
         reserve: &world.reserve,
+        small: &NoSmall,
         shrinkers: &world.shrinkers,
         reclaim: &world.reclaim,
         stats: &world.stats,
@@ -287,4 +337,38 @@ fn shrinkers_run_in_cost_order_and_stop_at_the_target() {
     assert_eq!(registry.reclaim(9), 9);
     let order = ORDER.with(|order| order.borrow().clone());
     assert_eq!(order, [("cheap", 9), ("middle", 6)], "a shrinker ran out of cost order or after the target was met");
+}
+
+/// Check first (E1 plan, E1-7): a heap_index block with a free extent after
+/// it. `realloc` to a larger size keeps the block's address when the extent
+/// after it holds the growth, and a shrink keeps it too and gives the tail
+/// back. The old realloc allocates a new block and copies on each call, so
+/// both pointers move.
+#[test]
+fn a_block_with_free_space_after_it_is_resized_in_place() {
+    let main = Arena::new(ARENA_BYTES);
+    let reserve = Arena::new(RESERVE_BYTES);
+    let (shrinkers, reclaim, stats) = (Registry::new(), Reclaim::new(), Stats::new());
+    let front = Front { main: &main, reserve: &reserve, small: &NoSmall, shrinkers: &shrinkers, reclaim: &reclaim, stats: &stats };
+    let cpu = SimCpu { interrupt: false };
+    let layout = Layout::from_size_align(8192, 8).unwrap();
+    let ptr = front.allocate(layout, Ctx::Normal, &cpu).unwrap();
+    let bytes = |ptr: NonNull<u8>, len: usize| unsafe { std::slice::from_raw_parts(ptr.as_ptr(), len).to_vec() };
+    let pattern: Vec<u8> = (0..8192).map(|i| (i * 7 + 3) as u8).collect();
+    unsafe { std::ptr::copy_nonoverlapping(pattern.as_ptr(), ptr.as_ptr(), pattern.len()) };
+
+    let grown = unsafe { front.reallocate(ptr, layout, 3 * 8192, &cpu) }.unwrap();
+    assert_eq!(grown, ptr, "a block with a free extent after it moved when it grew");
+    assert_eq!(bytes(grown, 8192), pattern);
+    let used = main.lock.lock().used();
+
+    let grown_layout = Layout::from_size_align(3 * 8192, 8).unwrap();
+    let shrunk = unsafe { front.reallocate(grown, grown_layout, 4096, &cpu) }.unwrap();
+    assert_eq!(shrunk, ptr, "a block moved when it shrank");
+    assert_eq!(bytes(shrunk, 4096), pattern[..4096]);
+    assert_eq!(used - main.lock.lock().used(), 3 * 8192 - 4096, "the shrink gave its tail back");
+
+    unsafe { front.deallocate(shrunk, Layout::from_size_align(4096, 8).unwrap()) };
+    let heap = main.lock.lock();
+    assert_eq!((heap.used(), heap.free_shape()), (0, (1, ARENA_BYTES as u32)), "the heap coalesced whole");
 }

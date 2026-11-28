@@ -10099,19 +10099,14 @@ pub fn get_process_display_state(owner_pid: u64) -> Option<&'static str> {
 /// Get the current thread ID
 /// This function disables interrupts to prevent deadlock with timer interrupt
 pub fn current_thread_id() -> Option<u64> {
-    #[cfg(target_arch = "x86_64")]
-    {
-        without_interrupts(|| {
-            if let Some(mut local) = rq::local() {
-                return local.state().current_thread;
-            }
-            let scheduler_lock = lock_scheduler();
-            scheduler_lock
-                .as_ref()
-                .and_then(|s| s.cpu_state[Scheduler::current_cpu_id()].current_thread)
-        })
+    // This CPU's state is under its own run-queue lock (E9 plan 3.2). The
+    // whole scheduler adds the peers' locks, a refresh of their summaries and
+    // a reschedule SGI to a peer owed a pass, on each return to EL0 (#3287).
+    let local = without_interrupts(|| rq::local().map(|mut local| local.state().current_thread));
+    if let Some(current) = local {
+        return current;
     }
-    #[cfg(not(target_arch = "x86_64"))]
+    // Before the run-queue locks exist.
     with_scheduler_lock(|scheduler_lock| {
         scheduler_lock
             .as_ref()

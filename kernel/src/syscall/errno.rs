@@ -78,6 +78,9 @@ pub const EMFILE: i32 = 24;
 /// Not a typewriter (inappropriate ioctl for device)
 pub const ENOTTY: i32 = 25;
 
+/// Text file busy (write access to an image a process is running)
+pub const ETXTBSY: i32 = 26;
+
 /// File too large
 pub const EFBIG: i32 = 27;
 

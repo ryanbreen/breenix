@@ -14,6 +14,10 @@ const MIN_BLOCK: u32 = 16;
 const FREE: u32 = 1;
 const PADDING: u32 = 2;
 const CLASSES: usize = 128;
+/// `usable_size` exceeds the size a block was allocated or resized for by
+/// less than this: under 8 bytes of rounding, plus a remainder of under
+/// `MIN_BLOCK` bytes too small to index on its own.
+pub(super) const RESIZE_SLACK: usize = (MIN_BLOCK + ALIGN) as usize;
 
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -195,6 +199,121 @@ impl Heap {
         self.write_header(start, size | FREE, previous_size);
         self.set_previous(start + size, size);
         self.insert(start, size);
+    }
+
+    /// The offset of the block holding the live allocation `ptr`.
+    fn block_of(&self, ptr: NonNull<u8>) -> u32 {
+        let start = (ptr.addr().get() - self.base.addr()) as u32 - HEADER;
+        if self.header(start).size_flags == PADDING {
+            start - ALIGN
+        } else {
+            start
+        }
+    }
+
+    /// The bytes the block `ptr` names can hold from `ptr` on. This is at
+    /// least the size it was allocated or last resized for, and less than
+    /// that plus `RESIZE_SLACK`.
+    ///
+    /// Safety: `ptr` is a still-live allocation from this heap.
+    pub(super) unsafe fn usable_size(&self, ptr: NonNull<u8>) -> usize {
+        let start = self.block_of(ptr);
+        let end = start + self.header(start).size();
+        end as usize - (ptr.addr().get() - self.base.addr())
+    }
+
+    /// The block size, header included, that holds `new_size` bytes from
+    /// `ptr` in the block at `start`.
+    fn resized_block(&self, start: u32, ptr: NonNull<u8>, new_size: usize) -> Option<u32> {
+        let lead = (ptr.addr().get() - self.base.addr()) as u32 - start;
+        let size = new_size.checked_next_multiple_of(ALIGN as usize)?;
+        u32::try_from(size).ok()?.checked_add(lead).map(|size| size.max(MIN_BLOCK))
+    }
+
+    /// Grow the live allocation `ptr` to hold `new_size` bytes without moving
+    /// it, by taking the front of the free block after it. Returns false, with
+    /// the heap unchanged, when that block is absent, allocated or too small.
+    /// This is the boundary-tag step `deallocate` coalesces with: one class
+    /// removal and at most one insertion.
+    ///
+    /// Safety: `ptr` is a still-live allocation from this heap.
+    pub(super) unsafe fn grow_in_place(&mut self, ptr: NonNull<u8>, new_size: usize) -> bool {
+        let start = self.block_of(ptr);
+        let block = self.header(start);
+        let Some(needed) = self.resized_block(start, ptr, new_size) else {
+            return false;
+        };
+        if needed <= block.size() {
+            return true;
+        }
+        let next = start + block.size();
+        if next >= self.size {
+            return false;
+        }
+        let following = self.header(next);
+        let combined = block.size() + following.size();
+        if !following.is_free() || combined < needed {
+            return false;
+        }
+        self.remove(next, following.size());
+        let rest = combined - needed;
+        let size = if rest >= MIN_BLOCK { needed } else { combined };
+        self.write_header(start, size, block.previous_size);
+        if size == combined {
+            self.set_previous(start + combined, combined);
+        } else {
+            self.write_header(start + size, rest | FREE, size);
+            self.insert(start + size, rest);
+            self.set_previous(start + combined, rest);
+        }
+        self.used += size - block.size();
+        true
+    }
+
+    /// Shrink the live allocation `ptr` to `new_size` bytes without moving
+    /// it, returning its tail to the free index, joined to a free block after
+    /// it. A tail too small to index, with no free block after it to join,
+    /// stays in the allocation. Returns false, with the heap unchanged, when
+    /// `new_size` is larger than the block.
+    ///
+    /// Safety: `ptr` is a still-live allocation from this heap.
+    pub(super) unsafe fn shrink_in_place(&mut self, ptr: NonNull<u8>, new_size: usize) -> bool {
+        let start = self.block_of(ptr);
+        let block = self.header(start);
+        let Some(needed) = self.resized_block(start, ptr, new_size) else {
+            return false;
+        };
+        if needed > block.size() {
+            return false;
+        }
+        let end = start + block.size();
+        let mut tail = block.size() - needed;
+        let next_free = end < self.size && self.header(end).is_free();
+        if tail == 0 || (tail < MIN_BLOCK && !next_free) {
+            return true;
+        }
+        if next_free {
+            let following = self.header(end).size();
+            self.remove(end, following);
+            tail += following;
+        }
+        self.write_header(start, needed, block.previous_size);
+        self.write_header(start + needed, tail | FREE, needed);
+        self.insert(start + needed, tail);
+        self.set_previous(start + needed + tail, tail);
+        self.used -= block.size() - needed;
+        true
+    }
+
+    /// `grow_in_place` or `shrink_in_place`, as `new_size` asks.
+    ///
+    /// Safety: `ptr` is a still-live allocation from this heap.
+    pub(super) unsafe fn resize_in_place(&mut self, ptr: NonNull<u8>, new_size: usize) -> bool {
+        if new_size > self.usable_size(ptr) {
+            self.grow_in_place(ptr, new_size)
+        } else {
+            self.shrink_in_place(ptr, new_size)
+        }
     }
 
     fn class(size: u32) -> usize {

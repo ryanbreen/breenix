@@ -54,6 +54,7 @@ thread_local! {
     static DISPATCH_DURING_REMOTE_LOCK: Cell<bool> = const { Cell::new(false) };
     static DISPATCHES_OWED_ON_A: Cell<usize> = const { Cell::new(0) };
     static NOW_NS: Cell<u64> = const { Cell::new(0) };
+    static ACQUISITIONS: Cell<usize> = const { Cell::new(0) };
 }
 pub(super) use super::{PINNED_HOLDS_OUTSTANDING, SAVING_CPU};
 
@@ -116,6 +117,9 @@ mod arm64 {
     use super::*;
 
     pub(super) fn note_lock_interval(acquired: bool, _: u64) {
+        if acquired {
+            ACQUISITIONS.set(ACQUISITIONS.get() + 1);
+        }
         if acquired && RQ_LOCKS[0].is_locked() && DISPATCH_DURING_REMOTE_LOCK.replace(false) {
             // CPU A reaches its return-path dispatch while the idle peer
             // holds A's queue. Resume the peer after the acquisition attempt.
@@ -267,6 +271,50 @@ fn drain_wake_inbox(cpu: usize, apply: impl FnMut(u64, u64)) {
     unsafe { WAKE_INBOXES[cpu].drain(apply) };
 }
 
+mod rq {
+    pub(super) use super::local;
+}
+
+fn without_interrupts<R>(f: impl FnOnce() -> R) -> R {
+    f()
+}
+
+impl Scheduler {
+    fn current_cpu_id() -> usize {
+        current_cpu_id_raw()
+    }
+}
+
+/// The whole scheduler as `lock_scheduler` takes it on ARM64: `lock_all`,
+/// then `refresh` and `unlock_all` when the guard drops.
+struct WholeScheduler(Option<&'static Scheduler>);
+
+impl std::ops::Deref for WholeScheduler {
+    type Target = Option<&'static Scheduler>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Drop for WholeScheduler {
+    fn drop(&mut self) {
+        if let Some(scheduler) = self.0 {
+            refresh(scheduler);
+        }
+        unlock_all();
+    }
+}
+
+fn with_scheduler_lock<R>(f: impl FnOnce(&mut WholeScheduler) -> R) -> R {
+    without_interrupts(|| {
+        lock_all();
+        // SAFETY: the fixture's scheduler outlives the guard.
+        let mut whole = WholeScheduler(unsafe { LIVE.load(Ordering::Acquire).as_ref() });
+        f(&mut whole)
+    })
+}
+
 include!(concat!(env!("OUT_DIR"), "/queue_operations.rs"));
 
 impl Held {
@@ -306,6 +354,7 @@ fn fixture(run: impl FnOnce()) {
     DISPATCH_DURING_REMOTE_LOCK.set(false);
     DISPATCHES_OWED_ON_A.set(0);
     NOW_NS.set(0);
+    ACQUISITIONS.set(0);
     for cpu in 0..MAX_CPUS {
         publish_next_check(cpu, u64::MAX);
     }
@@ -575,5 +624,24 @@ fn pinned_placement_touches_only_home_and_owner_and_refreshes_ownership() {
         for lock in &RQ_LOCKS {
             lock.unlock();
         }
+    });
+}
+
+#[test]
+fn return_to_user_reads_its_current_thread_under_its_own_queue_lock_alone() {
+    fixture(|| {
+        // SAFETY: the fixture's scheduler is live for the closure.
+        let sched = unsafe { &mut *LIVE.load(Ordering::Acquire) };
+        sched.cpu_state[1].current_thread = Some(TID);
+        set_owner(TID, 1);
+        // CPU 2's last dispatch found its own lock busy and is owed a pass.
+        DISPATCH_OWED[2].store(true, Ordering::SeqCst);
+        CPU.set(1);
+        // The syscall return to EL0 reads this (context_switch.rs,
+        // check_and_deliver_signals_for_current_thread_arm64).
+        assert_eq!(current_thread_id(), Some(TID));
+        assert_eq!(ACQUISITIONS.get(), 1, "the read took peers' run-queue locks");
+        assert_eq!(KICKS.get(), 0, "the read sent a peer a reschedule SGI");
+        DISPATCH_OWED[2].store(false, Ordering::SeqCst);
     });
 }

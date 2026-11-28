@@ -137,6 +137,45 @@ const OPEN_DIR: i32 = sys::O_DIRECTORY | sys::O_NOFOLLOW | sys::O_CLOEXEC;
 pub(super) struct Dir {
     pub file: File,
     dev: u64,
+    #[cfg(feature = "paired-host-test")]
+    _held: held::Held,
+}
+
+/// The host tests' model of BreenFS's held-directory rule: removing a directory that an
+/// open descriptor still holds fails with EBUSY (the held-directory check in BreenFS's
+/// `remove`, kernel/src/fs/breenfs/vfs.rs). POSIX allows that refusal, but Linux and APFS
+/// remove such a directory, so without the model a host run passes code that the box
+/// refuses. Each `Dir` counts as one hold on its directory for as long as it lives.
+#[cfg(feature = "paired-host-test")]
+mod held {
+    use std::{collections::BTreeMap, sync::Mutex};
+
+    static OPEN: Mutex<BTreeMap<(u64, u64), usize>> = Mutex::new(BTreeMap::new());
+
+    pub(super) struct Held((u64, u64));
+
+    impl Held {
+        pub fn new(dev: u64, ino: u64) -> Self {
+            *OPEN.lock().unwrap().entry((dev, ino)).or_default() += 1;
+            Self((dev, ino))
+        }
+    }
+
+    impl Drop for Held {
+        fn drop(&mut self) {
+            let mut open = OPEN.lock().unwrap();
+            if let Some(count) = open.get_mut(&self.0) {
+                *count -= 1;
+                if *count == 0 {
+                    open.remove(&self.0);
+                }
+            }
+        }
+    }
+
+    pub(super) fn is_held(dev: u64, ino: u64) -> bool {
+        OPEN.lock().unwrap().contains_key(&(dev, ino))
+    }
 }
 
 fn cstr(s: &OsStr) -> io::Result<CString> {
@@ -164,7 +203,18 @@ impl Dir {
             .custom_flags(OPEN_DIR)
             .open(path)?;
         let dev = file.metadata()?.dev();
-        Ok(Self { file, dev })
+        Self::new(file, dev)
+    }
+
+    fn new(file: File, dev: u64) -> io::Result<Self> {
+        #[cfg(feature = "paired-host-test")]
+        let _held = held::Held::new(dev, file.metadata()?.ino());
+        Ok(Self {
+            file,
+            dev,
+            #[cfg(feature = "paired-host-test")]
+            _held,
+        })
     }
 
     fn fd(&self) -> i32 {
@@ -196,19 +246,13 @@ impl Dir {
             other => other?,
         };
         self.no_crossing(file.metadata()?.dev())?;
-        Ok(Self {
-            file,
-            dev: self.dev,
-        })
+        Self::new(file, self.dev)
     }
 
     pub fn parent<'a>(&self, path: &'a Path, create: bool) -> io::Result<(Self, &'a OsStr)> {
         let parent = path.parent().ok_or(io::ErrorKind::InvalidInput)?;
         let leaf = path.file_name().ok_or(io::ErrorKind::InvalidInput)?;
-        let mut directory = Self {
-            file: self.file.try_clone()?,
-            dev: self.dev,
-        };
+        let mut directory = Self::new(self.file.try_clone()?, self.dev)?;
         for part in parent.components() {
             let Component::Normal(name) = part else {
                 return Err(io::ErrorKind::InvalidInput.into());
@@ -318,6 +362,14 @@ impl Dir {
     }
 
     pub fn remove(&self, name: &OsStr, dir: bool) -> io::Result<()> {
+        #[cfg(feature = "paired-host-test")]
+        if dir
+            && self
+                .info(name)?
+                .is_some_and(|info| held::is_held(self.dev, info.ino))
+        {
+            return Err(io::Error::from_raw_os_error(sys::EBUSY));
+        }
         let name = cstr(name)?;
         result(unsafe {
             sys::unlinkat(
@@ -524,5 +576,32 @@ fn bounded_name(bytes: &[u8]) -> &[u8] {
 fn collect_name(bytes: &[u8], names: &mut Vec<OsString>) {
     if !matches!(bytes, b"" | b"." | b"..") {
         names.push(OsString::from_vec(bytes.to_vec()));
+    }
+}
+
+#[cfg(all(test, feature = "paired-host-test"))]
+mod held_tests {
+    use super::Dir;
+    use std::{ffi::OsStr, fs, io};
+
+    /// The model the host tests rely on: while a `Dir` holds a directory its removal
+    /// fails with EBUSY, as on BreenFS, and once the handle is dropped it succeeds.
+    #[test]
+    fn a_held_directory_is_removed_only_after_its_handle_closes() {
+        let base = std::env::temp_dir().join(format!("paired-held-{}", std::process::id()));
+        fs::create_dir(&base).unwrap();
+        fs::create_dir(base.join("victim")).unwrap();
+        let parent = Dir::open(&base).unwrap();
+        let held = parent.dir(OsStr::new("victim"), None).unwrap();
+        let refused = parent.remove(OsStr::new("victim"), true).unwrap_err();
+        assert_eq!(refused.raw_os_error(), Some(libc::EBUSY));
+        drop(held);
+        parent.remove(OsStr::new("victim"), true).unwrap();
+        assert_eq!(
+            fs::metadata(base.join("victim")).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        drop(parent);
+        fs::remove_dir(&base).unwrap();
     }
 }

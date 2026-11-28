@@ -42,6 +42,9 @@ const NO_FRAME: u64 = u64::MAX;
 
 /// The state of one 4 KiB frame. The buddy order, zone and flag bytes of the
 /// plan's layout are padding until the buddy allocator reads them (E1-8).
+/// `next` and `slab` are the two words of the plan's `use` union: a free
+/// frame uses the first; a slab page, and the first frame of a vmap
+/// allocation, the second.
 #[repr(C, align(32))]
 pub struct FrameMeta {
     /// Two state bits and a 30-bit generation that only increases.
@@ -54,6 +57,9 @@ pub struct FrameMeta {
     owner: AtomicU8,
     /// The next frame on the free list, or `NO_FRAME`.
     next: AtomicU64,
+    /// The descriptor of the slab this frame holds (6.2), or the record of
+    /// the vmap allocation whose first page it backs (6.5), or 0.
+    slab: AtomicU64,
 }
 
 const _: () = assert!(size_of::<FrameMeta>() == 32);
@@ -77,6 +83,33 @@ impl FrameMeta {
 
     pub fn owner(&self) -> u8 {
         self.owner.load(Ordering::Relaxed)
+    }
+
+    /// The descriptor address of the slab this frame holds, or 0.
+    #[inline]
+    pub fn slab(&self) -> u64 {
+        self.slab.load(Ordering::Acquire)
+    }
+
+    /// Record the slab this allocated frame holds; 0 clears the record. The
+    /// slab layer writes it under its cache lock, before an object of the
+    /// slab is handed out, and clears it before the frame is returned.
+    #[inline]
+    pub fn set_slab(&self, descriptor: u64) {
+        self.slab.store(descriptor, Ordering::Release);
+    }
+
+    /// The record of the vmap allocation whose first page this frame
+    /// backs, or 0: the same word as `slab`, which a vmap frame does not use.
+    pub fn vmap_record(&self) -> u64 {
+        self.slab.load(Ordering::Acquire)
+    }
+
+    /// Record the vmap allocation whose first page this allocated frame
+    /// backs; 0 clears it. The vmap layer clears it before the frame's
+    /// allocation is freed.
+    pub fn set_vmap_record(&self, record: u64) {
+        self.slab.store(record, Ordering::Release);
     }
 }
 
@@ -589,6 +622,7 @@ pub fn build(set: &mut RangeSet, storage: &impl RangeStorage) -> Result<FrameMet
                             site: AtomicU16::new(0),
                             owner: AtomicU8::new(0),
                             next: AtomicU64::new(NO_FRAME),
+                            slab: AtomicU64::new(0),
                         });
                     }
                     *page_slot = entries.cast::<MetaPage>();

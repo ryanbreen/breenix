@@ -5,6 +5,7 @@ pub mod boot_ranges;
 pub mod arch_stub;
 pub mod anon_map;
 pub mod cow_stats;
+pub mod dma;
 pub mod dirty_limit;
 pub mod file_map;
 pub mod fork_copy;
@@ -12,6 +13,7 @@ pub mod frame_allocator;
 pub mod frame_meta;
 pub mod frame_metadata;
 pub mod heap;
+mod heap_index;
 pub mod kmem;
 #[cfg(target_arch = "x86_64")]
 pub mod kernel_page_table;
@@ -20,6 +22,9 @@ pub mod kva;
 pub mod kva_extent;
 pub mod kva_map;
 pub mod kva_window;
+pub mod large;
+mod large_check;
+pub mod magazine;
 pub mod kernel_stack;
 pub mod layout;
 pub mod lru;
@@ -32,6 +37,8 @@ pub mod per_cpu_stack;
 pub mod process_memory;
 pub mod readahead;
 pub mod slab;
+pub mod slab_cache;
+pub mod span_arena;
 pub mod stack;
 pub(crate) mod stack_growth;
 pub mod table_reclaim;
@@ -41,6 +48,7 @@ pub mod tlb_request;
 #[cfg(target_arch = "aarch64")]
 pub mod tlbi;
 pub mod vma;
+pub mod vmap;
 pub mod locked;
 
 #[cfg(not(target_arch = "x86_64"))]
@@ -79,7 +87,6 @@ pub fn init_aarch64_heap() {
     let phys_offset = physical_memory_offset();
     let mapper = unsafe { paging::init(phys_offset) };
     heap::init(&mapper).expect("ARM64 heap initialization failed");
-    slab::init();
 }
 
 /// Next available MMIO virtual address
@@ -156,9 +163,6 @@ pub fn init(physical_memory_offset: VirtAddr, memory_regions: &'static MemoryReg
         log::info!("Initializing heap allocator...");
         heap::init(&mapper).expect("heap initialization failed");
     }
-    // Initialize slab caches (must be after heap)
-    slab::init();
-
     // Initialize stack allocation system
     log::info!("Initializing stack allocation system...");
     stack::init();
@@ -191,6 +195,16 @@ pub fn init(physical_memory_offset: VirtAddr, memory_regions: &'static MemoryReg
                 ),
                 Err(reason) => log::error!("Kernel VA windows self-check FAILED: {}", reason),
             }
+            // Span arenas and vmap allocations (E1 plan 6.4, 6.5): only this
+            // check uses them until E1-9 routes the heap to them.
+            large::init();
+            match large::self_check() {
+                Ok(check) => log::info!(
+                    "Span and vmap self-check passed: spans={} vmap_moves={}",
+                    check.spans, check.vmap_moves,
+                ),
+                Err(reason) => log::error!("Span and vmap self-check FAILED: {}", reason),
+            }
         }
         Err(error) => log::error!("Kernel VA windows unavailable: {:?}", error),
     }
@@ -201,6 +215,11 @@ pub fn init(physical_memory_offset: VirtAddr, memory_regions: &'static MemoryReg
     frame_allocator::run_x86_frame_custody_gate();
     #[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
     process_memory::run_x86_page_table_custody_gate();
+}
+
+/// The direct map's offset, if it is set yet.
+pub(crate) fn direct_map_offset() -> Option<u64> {
+    PHYSICAL_MEMORY_OFFSET.get().map(|offset| offset.as_u64())
 }
 
 /// Get the physical memory offset

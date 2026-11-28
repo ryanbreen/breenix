@@ -360,6 +360,15 @@ fn prepare_open_descriptor(
     use spin::Mutex;
     let inode_num = open.node.ino;
     let mount_id = open.node.mount;
+    // Write access to a running image is refused (ETXTBSY, docs/plans/
+    // e3-page-cache.md 10.3), before O_TRUNC can change it.
+    let writes = !directory && (flags & 3 != O_RDONLY || flags & O_TRUNC != 0);
+    let writer = match writes {
+        true => Some(open.node.map.open_writer().inspect_err(|_| {
+            log::warn!("ETXTBSY: write-open of a running image refused (ino {})", inode_num);
+        })?),
+        false => None,
+    };
     let kind = if directory {
         FdKind::Directory(Arc::try_new(Mutex::new(DirectoryFile {
             open, inode_num, mount_id, position: 0,
@@ -372,8 +381,12 @@ fn prepare_open_descriptor(
             position: crate::ipc::sleep_mutex::SleepMutex::new(0),
         }).map_err(|_| Errno(super::errno::ENOMEM))?)
     };
-    FileDescriptor::try_opened(kind, flags).map(|entry| entry.on_mount(mount_flags))
-        .map_err(|e| Errno(e as i32))
+    let entry = FileDescriptor::try_opened(kind, flags).map(|entry| entry.on_mount(mount_flags))
+        .map_err(|e| Errno(e as i32))?;
+    if let Some(writer) = writer {
+        entry.hold_writer(writer);
+    }
+    Ok(entry)
 }
 
 /// A descriptor slot held in the calling thread's table for an open that
@@ -4376,6 +4389,23 @@ pub fn sys_truncate(pathname: u64, length: i64) -> SyscallResult {
         Err(error) => return SyscallResult::Err(error.into()),
     };
     let length = length as u64;
+    // A truncation is write access for its duration: a running image's is
+    // refused (ETXTBSY, docs/plans/e3-page-cache.md 10.3), after the
+    // permission check a refusal must not hide.
+    let attrs = match fs.getattr(node.ino) {
+        Ok(attrs) => attrs,
+        Err(error) => return SyscallResult::Err(error.into()),
+    };
+    if let Err(error) = check_open_access(attrs.attrs, O_WRONLY, &cred) {
+        return error;
+    }
+    let _writer = match node.map.open_writer() {
+        Ok(writer) => writer,
+        Err(error) => {
+            log::warn!("ETXTBSY: truncation of a running image refused (ino {})", node.ino);
+            return SyscallResult::Err(error.into());
+        }
+    };
     let exceeded = core::cell::Cell::new(false);
     let check = |attrs: crate::fs::vfs::NodeAttrs| {
         check_open_access(attrs.attrs, O_WRONLY, &cred).map_err(|error| match error {

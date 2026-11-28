@@ -1,5 +1,5 @@
 //! Apply a sealed userspace inventory to a writable clone of the booted root.
-use super::{is_metal_generation, layout, local};
+use super::{is_metal_generation, layout, local, valid_id};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     ffi::{OsStr, OsString},
@@ -12,6 +12,9 @@ use std::{
 #[path = "paired/tree.rs"]
 mod tree;
 use tree::{Dir, Info, DIR, LINK, REG};
+
+#[path = "paired/session.rs"]
+pub(crate) mod session;
 
 #[cfg(target_os = "breenix")]
 #[path = "paired/guest.rs"]
@@ -692,6 +695,9 @@ fn apply(
     let image = local::baseline_text(managed);
     write_path(root, BASELINE, &image, 0o600).map_err(io_error)?;
     write_path(root, ".complete", layout::record(id).as_bytes(), 0o644).map_err(io_error)?;
+    // BreenFS refuses to remove a directory that an open descriptor holds (EBUSY), so
+    // close this function's own handles on the incoming tree before removing it.
+    drop((objects, work, incoming));
     root.remove_tree(incoming_name).map_err(io_error)?;
     root.file.sync_all().map_err(io_error)?;
     Ok(report)
@@ -916,12 +922,15 @@ pub(crate) fn verify_runtime_fixture(path: &Path, rust: &Path) -> Result<(), Str
 }
 
 fn toolchain(root: &Dir, rust: &Dir) -> Result<(), String> {
-    let selected = field(root, SELECTION).map_err(io_error)?;
+    let selected = field(root, SELECTION).map_err(|err| format!("/{SELECTION}: {err}"))?;
     let id = version_id(&selected)?;
-    let version = rust.dir(OsStr::new(id), None).map_err(io_error)?;
+    let place = format!("/opt/breenix/rust/{id}");
+    let version = rust
+        .dir(OsStr::new(id), None)
+        .map_err(|err| format!("{place}: {err}"))?;
     let bytes = version
         .read(OsStr::new("MANIFEST.json"))
-        .map_err(io_error)?;
+        .map_err(|err| format!("{place}/MANIFEST.json: {err}"))?;
     let manifest: serde_json::Value =
         serde_json::from_slice(&bytes).map_err(|err| err.to_string())?;
     if manifest["id"].as_str() != Some(id) {
@@ -939,7 +948,9 @@ fn toolchain(root: &Dir, rust: &Dir) -> Result<(), String> {
             return Err(format!("missing toolchain runtime {required}"));
         }
     }
-    let libraries = root.dir(OsStr::new("lib"), None).map_err(io_error)?;
+    let libraries = root
+        .dir(OsStr::new("lib"), None)
+        .map_err(|err| format!("/lib: {err}"))?;
     for (root, rows, hash) in [(&version, payload, false), (&libraries, runtime, true)] {
         for (path, facts) in rows {
             let path = Path::new(path);

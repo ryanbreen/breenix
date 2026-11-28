@@ -721,6 +721,16 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
                 ),
                 Err(reason) => serial_println!("[boot] Kernel VA windows self-check FAILED: {}", reason),
             }
+            // Span arenas and vmap allocations (E1 plan 6.4, 6.5): only this
+            // check uses them until E1-9 routes the heap to them.
+            kernel::memory::large::init();
+            match kernel::memory::large::self_check() {
+                Ok(check) => serial_println!(
+                    "[boot] Span and vmap self-check passed: spans={} vmap_moves={}",
+                    check.spans, check.vmap_moves,
+                ),
+                Err(reason) => serial_println!("[boot] Span and vmap self-check FAILED: {}", reason),
+            }
         }
         Err(error) => serial_println!("[boot] Kernel VA windows unavailable: {:?}", error),
     }
@@ -999,6 +1009,12 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // Initialize per-CPU data (required before scheduler and interrupts)
     serial_println!("[boot] Initializing per-CPU data...");
     kernel::per_cpu_aarch64::init();
+    // What the firmware reports, read before any secondary is started. The
+    // slab layer's per-CPU slot table is sized from it (E1 plan, 5.4a), and
+    // CPU 0 publishes its magazines now that TPIDR_EL1 names it.
+    let (reported_cpus, reported_cpus_source) = kernel::arch_impl::aarch64::smp::reported_cpus();
+    kernel::memory::kmem::init_cpu_slots(reported_cpus as usize);
+    kernel::memory::kmem::register_cpu();
     // Store the boot TTBR0 as the kernel page table for this CPU.
     // Without this, exception handlers fall back to a wrong hardcoded address.
     let boot_ttbr0: u64;
@@ -1172,9 +1188,6 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     kernel::task::park::revoke_early_boot_io();
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::AARCH64_TIMER_INIT);
-
-    // What the firmware reports, read before any secondary is started.
-    let (reported_cpus, reported_cpus_source) = kernel::arch_impl::aarch64::smp::reported_cpus();
 
     // Bring up secondary CPUs via PSCI CPU_ON.
     // Probe-based: try each CPU ID and let PSCI tell us which exist.

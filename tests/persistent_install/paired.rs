@@ -280,6 +280,39 @@ fn runtime_readback_rejects_mismatched_bytes() {
         .contains("libc.so"));
 }
 
+/// The rehearsal on the built image (paired_image.rs) first stopped verify with a bare
+/// "No such file or directory": the toolchain check named neither the selection, the
+/// version directory, its manifest nor `/lib`. On the box that is a stopped deploy whose
+/// error names no path. Each missing piece must be named.
+#[test]
+fn runtime_readback_names_what_is_missing() {
+    let root = Fixture::new();
+    let opt = Fixture::new();
+    let check = || installer::paired::verify_runtime_fixture(&root.0, &opt.0).unwrap_err();
+    let error = check();
+    assert!(error.contains("/usr/lib/breenix/rust-current"), "{error}");
+    root.write("usr/lib/breenix/rust-current", b"old-version\n", 0o644);
+    let error = check();
+    assert!(error.contains("/opt/breenix/rust/old-version"), "{error}");
+    fs::create_dir_all(opt.0.join("old-version/bin")).unwrap();
+    let error = check();
+    assert!(error.contains("/opt/breenix/rust/old-version/MANIFEST.json"), "{error}");
+    opt.write("old-version/bin/rustc", b"rustc", 0o755);
+    let facts = |bytes: &[u8]| {
+        serde_json::json!({
+            "size": bytes.len(), "mode": "0755", "sha256": installer::paired::digest(bytes)
+        })
+    };
+    let manifest = serde_json::json!({
+        "id": "old-version", "files": {"bin/rustc": facts(b"rustc")},
+        "runtime": {"libc.so": facts(b"libc"), "ld-breenix.so": facts(b"loader")}
+    });
+    opt.write("old-version/MANIFEST.json", manifest.to_string().as_bytes(), 0o444);
+    fs::remove_dir_all(root.0.join("lib")).unwrap();
+    let error = check();
+    assert!(error.contains("/lib"), "{error}");
+}
+
 #[test]
 fn publication_keeps_epoch_outside_the_draft_and_refuses_changed_or_stale_boot() {
     let f = Fixture::new();
