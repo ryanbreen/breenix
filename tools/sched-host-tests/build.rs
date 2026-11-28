@@ -60,6 +60,9 @@ fn queue_operations(kernel: &Path, out: &Path) {
         "pub(super) struct RqLock {",
         "impl RqLock {",
         "pub(super) fn try_lock_all(",
+        "pub(super) fn lock_all(",
+        "pub(super) fn unlock_all(",
+        "pub(super) fn local(",
         "pub(super) fn refresh(",
         "pub(super) struct Held {",
         "impl Drop for Held {",
@@ -91,6 +94,13 @@ fn queue_operations(kernel: &Path, out: &Path) {
         code.push_str(item(&rq, signature, "\n}"));
         code.push('\n');
     }
+    // The current-thread read the return to EL0 makes, with the ARM64 cfg
+    // selected on any host architecture.
+    code.push_str(
+        &item(&scheduler, "pub fn current_thread_id(", "\n}")
+            .replace("#[cfg(not(target_arch = \"x86_64\"))]", ""),
+    );
+    code.push('\n');
     for signature in [
         "fn post_resched_arm64(",
         "fn request_resched_arm64(",
