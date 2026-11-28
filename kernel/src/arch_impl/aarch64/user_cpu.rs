@@ -66,8 +66,11 @@ static COMMON: CommonCaps = CommonCaps::new();
 pub fn init() -> bool {
     let (pfr0, isar0, cpacr, sctlr): (u64, u64, u64, u64);
     // Arm ARM, SCTLR_EL1.A, SA and SA0. Ordinary EL0 RAM mappings use Normal
-    // memory. Normal scalar loads/stores may be unaligned; retain SP checks
-    // and the architectural restrictions on atomics and Device memory.
+    // memory. Normal scalar loads/stores may be unaligned; keep the
+    // architectural restrictions on atomics and Device memory. SA and SA0
+    // turn the SP alignment checks on: boot.S leaves both clear, so from
+    // here an EL1 SP must be 16-byte aligned wherever it is used as a base
+    // (`sp_frame_slot.rs`).
     unsafe {
         core::arch::asm!(
             "mrs {pfr0}, id_aa64pfr0_el1",

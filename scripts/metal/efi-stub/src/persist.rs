@@ -16,6 +16,8 @@ use core::ptr::{null, null_mut};
 use metal_efi::bootdisk::SECTOR;
 use metal_efi::files::{self, Root};
 use metal_efi::say;
+use metal_efi::slot_store::{self, Esp, ImagePages, SlotStore};
+use metal_efi::slot_transaction::{self, RecordStore, Records, Store, NOTE_MAX};
 use metal_efi::uefi::*;
 
 use crate::suite_disk::Buffer;
@@ -840,15 +842,41 @@ unsafe fn load_option(boot: &BootServices, runtime: &RuntimeServices, esp: Handl
     Ok(())
 }
 
+const NEXT_IMAGE: &str = r"\EFI\BREENIX\NEXT.IMG";
+const NEXT_NOTE: &str = r"\EFI\BREENIX\NEXT.TXT";
+
+fn esp_file_request(line: &str) -> Result<(&str, u64, usize), Status> {
+    let mut words = line.split(' ');
+    let name = words.next().ok_or(INVALID_PARAMETER)?;
+    let offset = number(words.next().ok_or(INVALID_PARAMETER)?)?;
+    let length = usize::try_from(number(words.next().ok_or(INVALID_PARAMETER)?)?)
+        .map_err(|_| INVALID_PARAMETER)?;
+    Ok((name, offset, length))
+}
+
 unsafe fn write_esp_files(
-    boot: &BootServices, root: &files::Root, payload: *mut File, text: &str, prefix: &str,
+    boot: &BootServices, root: &Root, payload: *mut File, text: &str, prefix: &str,
+    records: Option<(&Esp<'_>, &mut Records)>,
 ) -> Result<usize, Status> {
     let mut written = 0;
+    let mut image = None;
+    let mut note = None;
     for line in text.lines().filter_map(|line| line.strip_prefix(prefix)) {
-        let mut words = line.split(' ');
-        let name = words.next().ok_or(INVALID_PARAMETER)?;
-        let offset = number(words.next().ok_or(INVALID_PARAMETER)?)?;
-        let length = number(words.next().ok_or(INVALID_PARAMETER)?)? as usize;
+        let (name, offset, length) = esp_file_request(line)?;
+        if records.is_some() {
+            let entry = match name {
+                NEXT_IMAGE => Some(&mut image),
+                NEXT_NOTE => Some(&mut note),
+                _ => None,
+            };
+            if let Some(entry) = entry {
+                if entry.replace((offset, length)).is_some() {
+                    return Err(INVALID_PARAMETER);
+                }
+                written += 1;
+                continue;
+            }
+        }
         let pages = length.div_ceil(4096).max(1);
         let mut address = 0u64;
         ok((boot.allocate_pages)(ALLOCATE_ANY_PAGES, LOADER_DATA, pages, &mut address))?;
@@ -857,6 +885,22 @@ unsafe fn write_esp_files(
         (boot.free_pages)(address, pages);
         result?;
         written += 1;
+    }
+    match (records, image, note) {
+        (Some((esp, records)), Some((offset, size)), Some((note_offset, note_size)))
+            if size <= metal_efi::live_flash::MAX_IMAGE && note_size <= NOTE_MAX =>
+        {
+            let mut image = ImagePages::allocate(boot, size)?;
+            data(payload, offset, &mut image.page_bytes()[..size])?;
+            let mut note = [0; NOTE_MAX];
+            data(payload, note_offset, &mut note[..note_size])?;
+            records.stage_install(esp, image.as_ref(), &note[..note_size])?;
+            if let Err(status) = records.collect(esp) {
+                say!("slot image cleanup deferred ({:#x})", status);
+            }
+        }
+        (_, None, None) => (),
+        _ => return Err(INVALID_PARAMETER),
     }
     Ok(written)
 }
@@ -933,19 +977,45 @@ fn slot_intent<'a>(
 
 /// Read the actual boot intent out of a slot image. Firmware can retain the attached memory.
 unsafe fn read_slot_intent(
-    boot: &BootServices, root: &Root, path: &str, intent: &mut [u8; 1024],
-) -> Result<(*mut u8, usize, usize), Status> {
-    if root.size(path)? > 512 << 20 {
-        return Err(OUT_OF_RESOURCES);
-    }
-    let (memory, size) = root.read_pages(boot, path)?;
+    boot: &BootServices, mut image: ImagePages<'_>, intent: &mut [u8; 1024],
+) -> Result<(*const u8, usize, usize), Status> {
+    let (memory, size) = (image.as_ref().as_ptr(), image.as_ref().len());
     let disk = metal_efi::bootdisk::attach(boot, memory, size, "reference slot")?;
+    image.retain_for_firmware();
     let mut volume = metal_efi::bootdisk::connect(boot, disk, "reference slot")?;
     let mut handle = null_mut();
     ok((boot.locate_device_path)(&SIMPLE_FILE_SYSTEM, &mut volume, &mut handle))?;
     let slot_root = files::root_of(boot, handle)?;
-    let len = slot_root.read("ramdisk", intent)?;
+    let len = slot_root.read_bounded("ramdisk", intent)?;
     Ok((memory, size, len))
+}
+
+fn open_slot<'a>(
+    esp: &Esp<'a>, records: &Records, slot: &str, note: &mut [u8; NOTE_MAX],
+) -> Result<(ImagePages<'a>, usize), Status> {
+    if let Some(record) = records.latest() {
+        let image = match slot {
+            "CURRENT" => record.current,
+            "PREVIOUS" => record.previous,
+            "NEXT" => record.trial.filter(|_| record.live_trial().is_none()),
+            _ => return Err(INVALID_PARAMETER),
+        }.ok_or(NOT_FOUND)?;
+        note[..image.note().len()].copy_from_slice(image.note());
+        return Ok((image.verified(esp)?, image.note().len()));
+    }
+    let (image, note_name) = match slot {
+        "CURRENT" => ("CURRENT.IMG", "CURRENT.TXT"),
+        "PREVIOUS" => ("PREVIOUS.IMG", "PREVIOUS.TXT"),
+        "NEXT" => ("NEXT.IMG", "NEXT.TXT"),
+        _ => return Err(INVALID_PARAMETER),
+    };
+    let image = esp.read_image(image, None)?;
+    let len = match esp.files().read(note_name, note) {
+        Ok(len) => len,
+        Err(NOT_FOUND) => 0,
+        Err(status) => return Err(status),
+    };
+    Ok((image, len))
 }
 
 unsafe fn check_reclaim_slots(
@@ -953,35 +1023,21 @@ unsafe fn check_reclaim_slots(
 ) -> Result<(), Status> {
     let esp = partition_handle(boot, &parts[0].unique)?;
     let root = files::root_of(boot, esp)?;
-    for path in [
-        r"\EFI\BREENIX\NEXT.IMG", r"\EFI\BREENIX\NEXT.TXT",
-        r"\EFI\BREENIX\SWAP.IMG", r"\EFI\BREENIX\SWAP.TXT",
-        r"\EFI\BREENIX\SLOT.TXN", r"\EFI\BREENIX\SLOT.NEW",
-    ] {
-        match root.size(path) {
-            Err(NOT_FOUND) => (),
-            Err(status) => return Err(status),
-            Ok(_) => return Err(VOLUME_CORRUPTED),
-        }
-    }
+    let esp = Esp::new(&root, boot, esp);
+    let records = Records::read(&esp);
+    ensure_idle_slots(&esp, &records)?;
     let guids = [parts[4].unique, parts[5].unique, parts[2].unique, parts[3].unique];
-    for ((image, note), expected) in [
-        (r"\EFI\BREENIX\CURRENT.IMG", r"\EFI\BREENIX\CURRENT.TXT"),
-        (r"\EFI\BREENIX\PREVIOUS.IMG", r"\EFI\BREENIX\PREVIOUS.TXT"),
-    ].into_iter().zip(generations) {
+    for (slot, expected) in ["CURRENT", "PREVIOUS"].into_iter().zip(generations) {
+        let mut bytes = [0; NOTE_MAX];
+        let (image, note_len) = open_slot(&esp, &records, slot, &mut bytes)?;
         let mut intent = [0u8; 1024];
-        let (_, _, len) = read_slot_intent(boot, &root, image, &mut intent)?;
+        let (_, _, len) = read_slot_intent(boot, image, &mut intent)?;
         let text = core::str::from_utf8(&intent[..len]).map_err(|_| VOLUME_CORRUPTED)?;
         // Use CURRENT for both checks to forbid the read-only ext2 rescue form.
         if slot_intent(text, false, Some(guids), "CURRENT")? != (expected, false) {
             return Err(VOLUME_CORRUPTED);
         }
-        let mut bytes = [0u8; 256];
-        if root.size(note)? > bytes.len() as u64 {
-            return Err(VOLUME_CORRUPTED);
-        }
-        let len = root.read(note, &mut bytes)?;
-        let mut lines = core::str::from_utf8(&bytes[..len]).map_err(|_| VOLUME_CORRUPTED)?.lines();
+        let mut lines = core::str::from_utf8(&bytes[..note_len]).map_err(|_| VOLUME_CORRUPTED)?.lines();
         let commit = lines.next().and_then(|line| line.strip_prefix("commit ")).ok_or(VOLUME_CORRUPTED)?;
         if commit.len() != 40 || !commit.bytes().all(|byte| byte.is_ascii_hexdigit())
             || lines.next().and_then(|line| line.strip_prefix("installed-by ")) != Some(expected)
@@ -1021,25 +1077,20 @@ unsafe fn reclaim_ext2(boot: &BootServices, disk: &mut Disk, request: &Request<'
 }
 
 unsafe fn report_slot(
-    boot: &BootServices, root: &Root, request: &Request<'_>, slot: &str,
+    boot: &BootServices, root: &Root, esp: &Esp<'_>, records: &Records, request: &Request<'_>, slot: &str,
 ) -> Result<(), Status> {
-    let mut name = [0u8; 64];
-    let prefix = br"\EFI\BREENIX\";
-    name[..prefix.len()].copy_from_slice(prefix);
-    name[prefix.len()..prefix.len()+slot.len()].copy_from_slice(slot.as_bytes());
-    name[prefix.len()+slot.len()..prefix.len()+slot.len()+4].copy_from_slice(b".IMG");
-    let path = core::str::from_utf8(&name[..prefix.len()+slot.len()+4]).map_err(|_| INVALID_PARAMETER)?;
-    match root.size(path) {
+    let mut note = [0; NOTE_MAX];
+    let (image, note_len) = match open_slot(esp, records, slot, &mut note) {
         Err(NOT_FOUND) if request.expected_userland.is_some() && slot != "PREVIOUS" => return Err(NOT_FOUND),
         Err(NOT_FOUND) if request.breenfs_upgrade.is_none() || slot == "PREVIOUS" => {
             say!("slot userland: {} empty", slot);
             return Ok(());
         }
         Err(status) => return Err(status),
-        Ok(_) => (),
-    }
+        Ok(open) => open,
+    };
     let mut intent = [0u8; 1024];
-    let (memory, size, len) = read_slot_intent(boot, root, path, &mut intent)?;
+    let (memory, size, len) = read_slot_intent(boot, image, &mut intent)?;
     let text = core::str::from_utf8(&intent[..len]).map_err(|_| VOLUME_CORRUPTED)?;
     let (id, rescue) = slot_intent(text, request.migration_slots, request.breenfs_upgrade, slot)?;
     if request.action == Action::ReplaceUsr
@@ -1063,10 +1114,8 @@ unsafe fn report_slot(
     if rescue {
         // Ordinary promotion replaces PREVIOUS. Save the read-only pair for
         // the manager's independent rescue entry.
-        let mut note = [0u8; 256];
-        let len = root.read(r"\EFI\BREENIX\PREVIOUS.TXT", &mut note)?;
         root.write(r"\EFI\BREENIX\RESCUE.IMG", core::slice::from_raw_parts(memory, size))?;
-        root.write(r"\EFI\BREENIX\RESCUE.TXT", &note[..len])?;
+        root.write(r"\EFI\BREENIX\RESCUE.TXT", &note[..note_len])?;
         say!("BreenFS upgrade: ext2 rescue pair preserved");
     }
     say!("slot userland: {} {}", slot, id);
@@ -1083,6 +1132,22 @@ fn check_replace_usr_slots(mut size: impl FnMut(&str) -> Result<u64, Status>) ->
         }
     }
     Ok(())
+}
+
+fn ensure_idle_slots(esp: &Esp<'_>, records: &Records) -> Result<(), Status> {
+    records.check_readable()?;
+    if records.latest().is_some_and(|record| record.trial.is_some()) {
+        return Err(VOLUME_CORRUPTED);
+    }
+    let files = esp.files();
+    if files.exists("SLOT.NEW") {
+        return Err(VOLUME_CORRUPTED);
+    }
+    check_replace_usr_slots(|path| {
+        // The transaction uses the same ESP root as the installer.
+        let name = path.strip_prefix(r"\EFI\BREENIX\").ok_or(INVALID_PARAMETER)?;
+        if files.exists(name) { Ok(0) } else { Err(NOT_FOUND) }
+    })
 }
 
 /// Carries out persist.cfg when the boot disk has one.
@@ -1160,27 +1225,33 @@ pub(super) unsafe fn run(boot: &BootServices, runtime: &RuntimeServices, volume:
             Err(status) => return Err(status),
         }
     }
+    let store = Esp::new(&root, boot, esp);
+    let mut records = Records::read(&store);
+    records.check_readable()?;
     if request.action == Action::ReplaceUsr {
         // The manager already recovered before launching the test image.
         // This path must never recover or write a kernel slot.
-        check_replace_usr_slots(|path| root.size(path))?;
+        ensure_idle_slots(&store, &records)?;
         if delivered.size("persist.dat")? != 0 {
             return Err(INVALID_PARAMETER);
         }
-        report_slot(boot, &root, &request, "CURRENT")?;
+        report_slot(boot, &root, &store, &records, &request, "CURRENT")?;
         say!("persistent install request complete");
         return Ok(());
     }
-    metal_efi::slot_transaction::recover(&metal_efi::slot_store::SlotStore(&root))?;
+    if records.latest().is_none() {
+        slot_transaction::recover(&SlotStore(&root))?;
+    }
     if request.replace_manager {
-        check_replace_usr_slots(|path| root.size(path))?;
-        report_slot(boot, &root, &request, "CURRENT")?;
-        // The existing manager and its Boot#### entry remain available in
-        // firmware setup, even if the replacement application cannot start.
+        ensure_idle_slots(&store, &records)?;
+        report_slot(boot, &root, &store, &records, &request, "CURRENT")?;
+        // The previous boot option is still available in firmware setup.
         root.size(MANAGER_FILE)?;
         root.size(CONFIG_FILE)?;
         let system = request.breenfs_upgrade.ok_or(INVALID_PARAMETER)?[0];
-        write_esp_files(boot, &root, payload.handle(), text, "esp-file ")?;
+        slot_store::prepare_records(&root)?;
+        files::flush_volume(boot, esp)?;
+        write_esp_files(boot, &root, payload.handle(), text, "esp-file ", None)?;
         root.write(LIVE_CONFIG, &system)?;
         files::flush_volume(boot, esp)?;
         load_option(boot, runtime, esp, "Breenix live boot manager", LIVE_MANAGER, None)?;
@@ -1188,28 +1259,36 @@ pub(super) unsafe fn run(boot: &BootServices, runtime: &RuntimeServices, volume:
         say!("persistent install request complete");
         metal_efi::com1::halt();
     }
+    let use_records = installing || records.latest().is_some();
     if request.expected_userland.is_some() {
         for slot in ["CURRENT", "PREVIOUS"] {
-            report_slot(boot, &root, &request, slot)?;
+            report_slot(boot, &root, &store, &records, &request, slot)?;
         }
-        write_esp_files(boot, &root, payload.handle(), text, "esp-file ")?;
-        report_slot(boot, &root, &request, "NEXT")?;
+        write_esp_files(boot, &root, payload.handle(), text, "esp-file ",
+            use_records.then_some((&store, &mut records)))?;
+        report_slot(boot, &root, &store, &records, &request, "NEXT")?;
         say!("slot userlands complete");
         say!("persistent install request complete");
         metal_efi::com1::halt();
     }
     let http_option = if installing { boot_current } else { recorded_http_option(&root) };
     if request.migration_slots {
-        write_esp_files(boot, &root, payload.handle(), text, "rescue-file ")?;
-        metal_efi::slot_transaction::begin(&metal_efi::slot_store::SlotStore(&root), false)?;
+        write_esp_files(boot, &root, payload.handle(), text, "rescue-file ",
+            use_records.then_some((&store, &mut records)))?;
+        if use_records {
+            records.commit_install(&store)?;
+        } else {
+            slot_transaction::begin(&SlotStore(&root), false)?;
+        }
         say!("migration rescue slot installed");
     }
     if request.breenfs_upgrade.is_some() {
         for slot in ["CURRENT", "PREVIOUS"] {
-            report_slot(boot, &root, &request, slot)?;
+            report_slot(boot, &root, &store, &records, &request, slot)?;
         }
     }
-    let written = write_esp_files(boot, &root, payload.handle(), text, "esp-file ")?;
+    let written = write_esp_files(boot, &root, payload.handle(), text, "esp-file ",
+        use_records.then_some((&store, &mut records)))?;
     if written > 0 {
         say!("persistent install: EFI system partition files written: {}", written);
     }
@@ -1222,10 +1301,10 @@ pub(super) unsafe fn run(boot: &BootServices, runtime: &RuntimeServices, volume:
     // The host's disk.json is deliberately not an authority for reclamation.
     if request.breenfs_upgrade.is_none() {
         for slot in ["CURRENT", "PREVIOUS"] {
-            report_slot(boot, &root, &request, slot)?;
+            report_slot(boot, &root, &store, &records, &request, slot)?;
         }
     }
-    report_slot(boot, &root, &request, "NEXT")?;
+    report_slot(boot, &root, &store, &records, &request, "NEXT")?;
     say!("slot userlands complete");
     say!("persistent install request complete");
     Ok(())

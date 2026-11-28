@@ -54,6 +54,11 @@ Verify that each primary and secondary entry path reaches EL0 with
 Set the bit policy explicitly if an entry path inherits a different value.
 Keep SP alignment checks, atomic and exclusive-access alignment, and Device
 memory rules. The kernel target remains strict-align and general-register-only.
+Deviation (DEV-45, recorded under DEV-39(2)): boot.S left SCTLR_EL1.SA and SA0
+clear, so "keep" meant turning the checks on in `user_cpu::init`. That exposed
+an EL1 path that put SP on an 8-byte-aligned per-CPU frame and wedged CPUs 1
+and 3. The checks stay on, as this section asks, and those frames are 16-byte
+aligned (`kernel/src/arch_impl/aarch64/sp_frame_slot.rs`).
 [AAPCS64 §§5–7](https://github.com/ARM-software/abi-aa/blob/2025Q1/aapcs64/aapcs64.rst),
 [AAELF64 §§5.2 and 5.7](https://github.com/ARM-software/abi-aa/blob/2025Q1/aaelf64/aaelf64.rst),
 [Arm ARM, AArch64 alignment and SCTLR_EL1](https://developer.arm.com/documentation/ddi0487/latest).
