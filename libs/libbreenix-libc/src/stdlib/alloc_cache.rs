@@ -58,33 +58,19 @@ fn futex(op: u64, value: u32) {
     }
 }
 
-/// Whether thread `tid` exists in process `pid`: tgkill with signal 0 checks
-/// the target without delivery, and fails with ESRCH outside that group.
-fn thread_exists(pid: u32, tid: u32) -> bool {
-    unsafe { raw::syscall3(nr::TGKILL, pid.into(), tid.into(), 0) == 0 }
-}
-
-/// Take over a lock word whose owner is not a thread of this process, then
-/// rebuild the indexes it may have left half-edited. When several threads
-/// find the same missing owner, the compare-exchange admits one of them.
-unsafe fn recover(observed: u32, id: u32) -> bool {
-    if OWNER.compare_exchange(observed, id, Acquire, Relaxed).is_err() {
-        return false;
-    }
-    rebuild_indexes();
-    FORK_HELD.store(false, Relaxed);
-    true
-}
-
 pub(crate) struct Guard;
 
 impl Guard {
+    /// A held lock is never taken over here. Every thread that shares this
+    /// memory, in this thread group or (with CLONE_VM) in another, can be
+    /// a live owner, and no check from this side tells a live owner in a
+    /// shared address space from one a fork left behind. The fork child
+    /// hook, where the memory is a private copy, repairs the second case.
     fn acquire() -> Option<Self> {
         let id = crate::malloc_thread_id();
         let Err(mut observed) = OWNER.compare_exchange(0, id, Acquire, Relaxed) else {
             return Some(Self);
         };
-        let mut checked = false;
         loop {
             if observed == 0 {
                 match OWNER.compare_exchange(0, id | WAITERS, Acquire, Relaxed) {
@@ -97,27 +83,6 @@ impl Guard {
                 // when a handler forked is the same case: the interrupted call
                 // resumes and releases the lock.
                 return None;
-            } else if !checked {
-                checked = true;
-                // A direct fork syscall bypasses libc's child hook, so the
-                // child still records its parent's pid and the lock may name
-                // a parent thread the child lacks. Ask the kernel.
-                let pid = crate::getpid() as u32;
-                if PROCESS.load(Relaxed) != pid {
-                    let owner = observed & !WAITERS;
-                    if !thread_exists(pid, owner) {
-                        if unsafe { recover(observed, id) } {
-                            PROCESS.store(pid, Relaxed);
-                            return Some(Self);
-                        }
-                        checked = false;
-                        observed = OWNER.load(Relaxed);
-                        continue;
-                    }
-                    // A thread of this process took the lock after the fork,
-                    // so the indexes are whole; wait for it.
-                    PROCESS.store(pid, Relaxed);
-                }
             } else if observed & WAITERS == 0 {
                 match OWNER.compare_exchange(observed, observed | WAITERS, Relaxed, Relaxed) {
                     Ok(_) => observed |= WAITERS,
@@ -139,12 +104,6 @@ impl Drop for Guard {
     }
 }
 
-fn initialize_process() {
-    if PROCESS.load(Relaxed) == 0 {
-        PROCESS.store(crate::getpid() as u32, Relaxed);
-    }
-}
-
 /// libc fork's hold on the allocator across the fork syscall. The parent
 /// drops it; the child forgets it, and `after_fork` releases the lock there.
 pub(crate) struct ForkGuard {
@@ -161,23 +120,24 @@ impl Drop for ForkGuard {
 /// Returns no guard when a signal handler forks while this thread is in the
 /// allocator; the child keeps the interrupted call's ownership.
 pub(crate) fn before_fork() -> Option<ForkGuard> {
-    initialize_process();
     let guard = Guard::acquire()?;
     FORK_HELD.store(true, Relaxed);
     Some(ForkGuard { _held: guard })
 }
 
-/// Called by the surviving thread before child atfork callbacks, and by
-/// pthread_create in a process a direct fork syscall created. A raw fork may
-/// have copied a half-edited index. Each forward link of an arena list is
-/// published in one store and stays valid during an edit, so the child
-/// rebuilds the back links and the partial index from those links.
+/// Called only in a fork child, by its surviving thread, from libc's fork
+/// and libbreenix's fork before child atfork callbacks. The child's memory
+/// is a private copy and the survivor is its only thread, so a lock that
+/// names another thread has no live owner. A fork may have copied a
+/// half-edited index. Each forward link of an arena list is published in one
+/// store and stays valid during an edit, so the child rebuilds the back links
+/// and the partial index from those links.
 pub(crate) unsafe fn after_fork(pid: u32) {
+    // libc's fork calls libbreenix's, so the hook can run twice.
     if PROCESS.load(Acquire) == pid {
         return;
     }
-    let observed = OWNER.load(Acquire);
-    let owner = observed & !WAITERS;
+    let owner = OWNER.load(Acquire) & !WAITERS;
     // The survivor's descriptor still holds its ID from before the fork.
     let id = crate::malloc_thread_id();
     if owner != 0 && owner == id {
@@ -191,7 +151,9 @@ pub(crate) unsafe fn after_fork(pid: u32) {
             // give its ownership this thread's ID in the child.
             OWNER.store(crate::fork_child_thread_id(), Relaxed);
         }
-    } else if owner != 0 && !thread_exists(pid, owner) && recover(observed, id) {
+    } else if owner != 0 {
+        rebuild_indexes();
+        FORK_HELD.store(false, Relaxed);
         OWNER.store(0, Release);
     }
     PROCESS.store(pid, Release);
@@ -332,7 +294,6 @@ unsafe fn take_inner(
     map: impl FnOnce(usize) -> *mut u8,
     clear: usize,
 ) -> Option<(*mut u8, usize)> {
-    initialize_process();
     let guard = Guard::acquire()?;
     if DEFERRED.load(Relaxed) {
         apply_deferred();
@@ -481,7 +442,6 @@ pub unsafe fn drain(
     mut unmap: impl FnMut(*mut u8, usize) -> bool,
     mut discard: impl FnMut(*mut u8, usize) -> bool,
 ) -> usize {
-    initialize_process();
     let Some(_guard) = Guard::acquire() else {
         return 0;
     };
@@ -761,7 +721,6 @@ mod tests {
         .unwrap();
         let (first, first_tag, waited) = holder.join().unwrap();
         crate::OWN_PROCESS.with(|own| own.set(None));
-        PROCESS.store(current as u32, Relaxed);
         assert!(waited, "contender entered while a live thread held the lock");
         assert_eq!(tag, first_tag);
         unsafe {

@@ -6,14 +6,8 @@ pub mod syscall {
     pub mod nr {
         pub const MADVISE: u64 = 0;
         pub const FUTEX: u64 = 1;
-        pub const TGKILL: u64 = 2;
     }
 }
-
-const ESRCH: u64 = 3;
-// The threads that have taken an allocator ID, by the host process they ran in.
-// A fork child inherits the list, but its parent's threads do not exist there.
-static THREADS: Mutex<Vec<(u32, u32)>> = Mutex::new(Vec::new());
 
 static SYSCALLS: AtomicUsize = AtomicUsize::new(0);
 static CLEARS: AtomicUsize = AtomicUsize::new(0);
@@ -50,13 +44,6 @@ pub mod raw {
 
     pub unsafe fn syscall3(number: u64, addr: u64, len: u64, advice: u64) -> u64 {
         SYSCALLS.fetch_add(1, Relaxed);
-        if number == crate::syscall::nr::TGKILL {
-            // tgkill(tgid, tid, 0): does thread tid exist in process tgid?
-            assert_eq!(advice, 0);
-            let live = (addr as u32 == std::process::id() && len as u32 == crate::malloc_thread_id())
-                || THREADS.lock().unwrap().contains(&(addr as u32, len as u32));
-            return if live { 0 } else { ESRCH.wrapping_neg() };
-        }
         assert_eq!((number, advice), (crate::syscall::nr::MADVISE, 4));
         assert_eq!((addr % 4096, len % 4096), (0, 0));
         let mappings = crate::MAPPINGS.lock().unwrap();
@@ -92,13 +79,7 @@ fn getpid() -> i32 {
 #[allow(dead_code)] // Also drives the old allocator in the check-first run.
 fn malloc_thread_id() -> u32 {
     static NEXT: AtomicU32 = AtomicU32::new(1);
-    thread_local! {
-        static ID: u32 = {
-            let id = NEXT.fetch_add(1, Relaxed);
-            THREADS.lock().unwrap().push((std::process::id(), id));
-            id
-        };
-    }
+    thread_local! { static ID: u32 = NEXT.fetch_add(1, Relaxed); }
     ID.with(|id| *id)
 }
 // libc gives a fork child's survivor its new kernel thread ID. Host threads

@@ -854,9 +854,6 @@ pub unsafe extern "C" fn pthread_create(
     if out.is_null() {
         return EINVAL;
     }
-    // Also repair the library before starting a sibling in a process created
-    // by a direct fork syscall that bypassed the libc child hook.
-    __breenix_after_fork();
     if current().is_null() {
         return EAGAIN;
     }
