@@ -1617,14 +1617,62 @@ E1-2 implementation decisions (DEV-39):
   - Sparse placement: a fixed map of 64 ranges of 768 KiB each, with the ranges spread across 1 TiB of
     address space. No range is 1 MiB long, so a layout that needs a contiguous 1 MiB array per section
     fits in 0 of the 64 ranges. The page-granular layout places the metadata (at most 192 pages), and its
-    directory and descriptors total under 200 KiB: a 128-byte root, at most 16 leaf pages and at most 64
+    directory and descriptors total under 200 KiB: one root page, at most 16 leaf pages and at most 64
     descriptors. Each RAM pfn resolves, and each hole pfn is untracked.
+  - Check first (#3276 review): 40 MiB dense plus 4864 two-page spans keeps at least 64 MiB after the carve,
+    with at most 4 spare pages; 64 non-adjacent pages at 32 TiB build without a contiguous run.
 - Boot: one ARM64 QEMU boot of the boot-path gate (`--features testing`). The change reorders boot memory
   initialisation, which is publication order that host tests cannot settle. Cases: the boot-path milestone
   stages and the frame census.
 - Rows: `memory.anonymous-touch` and `process.fork-exec`. Each fault and each shared fork page loses the
   empty-span mutex and two or three O(regions) scans. The free list's global lock stays until E1-8. `memory.driver-mmap` and
   `memory.driver-map-touch` lose the same per populated page.
+
+E1-3 implementation decisions (DEV-39(2)):
+
+- `FrameMeta` holds the fields E1-3 reads: `state_gen`, `leaf_refs`, `site`, `owner` and one free-list link. It is
+  `repr(C, align(32))`, so it stays 32 bytes, and the flag, order and zone bytes are padding until E1-8 reads them.
+  E1-3 has 0 readers of those bytes, and an unread field is dead code.
+- A frame inside a metadata page's 512 KiB that the range set does not hold gets state 3 (untracked), and lookups
+  treat it as absent. The old ordinal lookup refused such frames as untracked, so the refusal taxonomy is unchanged.
+- `frame_meta::build` carves its pages one at a time from the top before it places any, then walks the final set to
+  place them. A carve can empty a 512 KiB span, a section, a leaf or a root, which lowers what the set needs. So the
+  build recounts the set and carves a fifth of the shortfall per round until the pool covers the set as it is now.
+  One carved page lowers the need by at most 4, so `spare_pages` is at most 4. Deviation (#3276 review): the first
+  version carved what the starting set needed, which on a fixture of 40 MiB dense RAM plus 4864 two-page spans left
+  2489 spare pages and 58.6 MiB, under the x86 64 MiB boot heap.
+- Deviation from 4.2 (#3276 review): the root is not one contiguous array. A fixed 128-entry top inside the map,
+  one entry per 32 TiB up to the 52-bit physical address limit, points at one-page roots of 512 leaf pointers.
+  4.2's rule that each piece fits in one 4 KiB page is kept, because a root carved as a run needed two adjacent
+  pages for RAM at 32 TiB and failed with `NoFit` on a map with no two adjacent pages. A lookup is the top entry
+  and then the same four dependent loads. RAM above the 52-bit limit, the largest x86-64 MAXPHYADDR and ARMv8
+  PARange, fails the build with `AboveAddressLimit`.
+- Section descriptors are packed `PAGE_SIZE / size_of::<Section>()` to a carved page (2 at 32 bytes), which is what
+  keeps the sparse fixture's directory and descriptors under 200 KiB.
+- `FrameLease` drops its ordinal: the frame gives the pfn. It stays `Copy` until E1-8 adds `BlockLease`.
+- The free list is singly linked (`next` only). A LIFO list needs no back link, and the buddy lists of E1-8 add one.
+- `BOOTSTRAP_FREE_FRAMES` goes in E1-3 rather than E1-8. The metadata exists before the first allocation on both
+  architectures, so no return can come before it.
+- `FRAME_LOST_CONTENDED` and `record_pt_frame_lost` go with `LostContended` (`COUNTER_COUNT` 88 to 87).
+  `PT_RETIRE_FRAMES_LOST` stays, because the retirement gates read it and its `lost=` fields, and it can now only
+  read 0.
+- The census owner moves to the frame (`FrameMeta.owner`), as section 4.3's table has it, and `FRAME_SITE_OWNERS`
+  goes. An `allocate_frame_for` site gives each of its frames the same owner as before.
+- The boot gates lose the halves that held the free list to force a loss: O2/E of
+  `frame_custody_refusal_gate_test`, O2/E of `page_table_custody_disposition_gate_test`, and E1 to E11 of the x86
+  `reclaim_progress_gate_test`. They tested a state that cannot occur now. The x86 healthy retirement after them stays,
+  measured from its own start. D injects three distinct live frames, because an intrusive list cannot hold one frame
+  three times.
+- On ARM64 the metadata is carved in `with_kernel_pools` after `arm64_direct_map::extend`. Each page is written through
+  `LiveBootMemory`, whose write probe (`AT S1E1W`) confirms the extended map before the first store.
+- `contiguous::allocate` keeps its `prepare` hook with an always-true closure. E1-8 deletes the frontier and the hook.
+- The check-first tests drive `tools/kmem-host-tests/tests/frame_meta/old_ledger.rs`, the old ledger's bodies with
+  their statics as fields. The old free list reaches exactly-full capacity only through an allocation nested inside
+  its own capacity reservation, the heap-growth path that `with_free_frames` guarded. The red test uses that path.
+- The structure ratchets of `tests/teardown_structure.rs` are re-pinned to the metadata. Their old mutation probes
+  targeted the `Vec` free list and the ledger chunks, and sat after a check of
+  `deliberately_broken_variants_fail_the_ratchet` that already fails on main. They are replaced by probes of the new
+  structure in `frame_metadata_ratchets_reject_broken_variants`, which runs them.
 
 ### E1-4: allocation errors, contexts and reclaim hooks
 
