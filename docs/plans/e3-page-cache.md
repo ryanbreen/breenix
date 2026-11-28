@@ -391,6 +391,24 @@ failure (SIGBUS with `absent_bound` incremented in `/proc/breenix/pagecache`), n
 - EOF extension inserts explicit `Hole` entries for bound pages, instead of relying on the absent-means-zero
   rule. E3-11 removes that step, because a fault can then ask the filesystem. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
 
+### 5.4 Replacing a page's frame
+
+Three transitions give an index a new frame while PTEs may still map the old one: a `Hole` page written by <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+`write()` or by a shared store (the old frame is the shared zero frame), and a `Writeback` page written by
+`write()` or a shrink (the old frame is G's stable copy, 11.2). Read-only PTEs of the old frame can exist
+in any address space: private mappings, shared read-only mappings and fault-around entries. A process
+reading through one would keep seeing zeros, or G's bytes, after the change. So each replacement:
+
+1. publishes the new frame in the tree under `tree_lock`, so a new fault maps it;
+2. then revokes, through the reverse map (12.5), every PTE that maps the old frame's pfn at this index, <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+   with its flush. A PTE that maps another frame, such as a private copy-on-write copy, is left alone;
+3. returns to its caller only after the flush has completed. The next access through a revoked PTE faults
+   and maps the new frame. That fault needs no I/O, so it works before E2.9.
+
+`write()` does step 2 holding `io` (`io` → `as.pt`, section 15). A store fault does it after dropping its own <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+`as.pt`, taking each address space's `as.pt` in turn and never two at once, then re-executes. Before E2.8,
+all of this runs under PROCESS_MANAGER, as today's `revoke` does.
+
 ## 6. The filesystem interface: fill and writeback
 
 ### 6.1 The operations
@@ -550,7 +568,8 @@ For a Native file, `write(fd, buf, n)`:
    - Reserve the tree nodes that publishing the new frames needs (4.3).
 5. **Publish**, which cannot fail. Copy the chunk's bytes into the page or its prepared frame, insert the
    prepared frames into the tree, and mark each page `DIRTY` with `dirty_gen` set to the open generation. Tag
-   it.
+   it. A prepared frame that replaced a `Hole` or `Writeback` page revokes the old frame's PTEs (5.4)
+   before the write returns.
 6. Publish the new size, if it grew, through BreenFS's inode update, then through `mapped_size`, as
    `transition` does today.
 7. Release `io`. Throttle if the dirty limit says so (11.5), with no lock held.
@@ -660,7 +679,8 @@ The fault runs `resolve_fault(as, addr, access, ctx)` (E2.9). For a file VMA:
      the VMA's rights: a private writable mapping is copy-on-write, as `entry_flags` does today, and a store
      into a shared mapping of a `Writeback` page follows 11.2. Return.
    - **Hole:** map the shared zero frame read-only. A store into a private mapping copies, as for any COW
-     page. A store into a shared writable mapping allocates a zeroed frame, inserts it `MAPPED_DIRTY` (11.2a), and maps it
+     page. A store into a shared writable mapping allocates a zeroed frame, inserts it `MAPPED_DIRTY`
+     (11.2a), revokes the zero frame's PTEs at this index in other address spaces (5.4), and maps it
      writable. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
    - **Filling:** take a reference, read the page's channel `seq`, drop `as.mapping`, and park (E2 section
      5.2, "must wait for X"). When it wakes, return; the access re-executes.
@@ -816,7 +836,9 @@ E3 keeps the same rule with frames:
   G's write completes.
   - Readers see the new bytes at once.
   - Writers never wait for writeback. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
-  - No PTE maps the old frame, because a `Writeback` page with PTEs takes the next path instead.
+  - Read-only PTEs of the old frame are revoked after the new frame is published (5.4), so no mapping keeps
+    showing G's bytes after the write. A writable shared PTE cannot exist on a `Writeback` page: the freeze
+    write-protected it (next item).
 - **A page mapped writable and shared at the freeze** (`SHARED_WRITE`), once admitted to G (11.2a):
   1. the freeze revokes write permission from its PTEs through the reverse map, and waits for the TLB
      flush to complete;
@@ -1293,7 +1315,8 @@ waits for E3-6 (it needs pages retained by the cache to be worth anything), so t
   - `resolve_page` never inserts a zero frame for an absent index. A bound index below EOF with no entry
     is `Signal(SIGBUS)` and increments `absent_bound` (5.3). <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
   - The EOF transition (`MapState::transition`) and `prepare_write` insert explicit `Hole` entries for the
-    bound pages they make valid, holding the shared zero frame. A store into one allocates. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+    bound pages they make valid, holding the shared zero frame. A store into one allocates and revokes the
+    zero frame's PTEs at that index (5.4). <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
   - The module invariant at `file_map.rs:9-14` is rewritten: a bound page is resident, Hole, or poisoned.
   - `Runs` in `read_verified` reports the hole ranges it zero-fills, so E3-4's `fill` can return them as
     `Hole`. BreenFS `read` keeps its behaviour: since #3239 it zero-fills only the gaps between extents and the EOF tail.
@@ -1305,6 +1328,10 @@ waits for E3-6 (it needs pages retained by the cache to be worth anything), so t
     with `absent_bound` = 1, and `read` returns the file's bytes.
   - Extension: `ftruncate` grows a mapped file, and a fault on the new page reads 00 through a `Hole` entry.
     This guards existing behaviour, so it is not red.
+  - Aliases of a `Hole`: after the extension, process A maps the new page shared read-only and reads 00; <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+    process B stores through a shared writable mapping. A's next read returns B's bytes. Today's fault
+    inserts one fresh zeroed frame that both share, so this guards the revocation the PR adds with the
+    shared zero frame, and is not red on the old tree; the PR says so.
   - `read_verified` over a file with two extents and a gap reports exactly the gap as a hole range, with
     00 bytes. This guards the report the PR adds, so it cannot be red on the old tree, and the PR says so.
 - **Rows.** None. This is a correctness change. The series should show no move, and the PR says so if one
@@ -1482,6 +1509,10 @@ waits for E3-6 (it needs pages retained by the cache to be worth anything), so t
     says so.
   - A shared mapped page stored after a freeze faults once, is redirtied in G+1, and G's image has the
     bytes from before the store.
+  - Aliases of a `Writeback` page: a process maps page 0 shared read-only and reads it; freeze G; `write()`
+    page 0 in G+1 during G's drain. The mapping's next read returns G+1's bytes, and G's image holds G's.
+    Today the mapping cache page is updated in place by the mutation hooks, so this guards the revocation
+    the PR adds and is not red on the old tree; the PR says so.
   - Mapped admission, as a fixed interleaving: a store fault on a clean page of a file no `write()` has
     touched pauses after its lookup; G's freeze and install run; the fault completes; then G+1 freezes and
     installs. G+1's image holds the stored bytes, G+1's changed set holds the inode, and the space
@@ -1847,7 +1878,7 @@ Before it completes, a write changes page 0 (DEV-29(3) 0.1's second interleaving
 the shared zero frame. A `write()` then gives the page a frame of its own.
 
 ```pycon
->>> RULE = 'replace-entry'
+>>> RULE = 'replace-and-revoke'
 >>> ZERO = 0
 >>> tree, ptes = {4: ZERO}, {'reader': ZERO}
 >>> frames = {ZERO: b'\x00\x00', 9: b'hi'}
