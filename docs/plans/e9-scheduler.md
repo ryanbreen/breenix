@@ -668,8 +668,28 @@ for the head: <!-- claim-lint:ok: normative requirement of docs/plans/e9-schedul
 - **Who may hold translations.** Each address space keeps a `CpuSet` of the CPUs that may hold its
   translations: those that have it loaded, plus those that cache its PCID at some generation. A CPU
   leaves the set when it evicts the PCID from its cache.
-- **Targets.** A shootdown for address space A at generation g goes only to the CPUs in A's set that have
-  A loaded now. They invalidate the range or flush the PCID and acknowledge. A CPU that caches A but does
+- **Ordering between activation and target selection.** Each address space A keeps a `loaded` `CpuSet`
+  beside its generation. Both sides use locked read-modify-writes. Locked instructions have one total
+  order, and loads are not reordered with them (SDM Vol. 3A, "Memory Ordering in P6 and More Recent
+  Processor Families").
+  - *Activation*, a CPU switching to A with interrupts masked:
+    1. set its bit in `A.loaded` with a locked RMW;
+    2. only then read `A.gen`;
+    3. load CR3 with the no-flush bit only if its cached generation for A equals that value;
+    4. record that value as its cached generation.
+
+    Leaving A clears the bit after CR3 holds the next root.
+  - *Change*, the initiator after editing A's page-table entries:
+    1. increment `A.gen` with a locked RMW;
+    2. only then read `A.loaded`;
+    3. the CPUs in that read are the targets.
+
+  If the initiator's read misses an activating CPU, that CPU's RMW came after the increment in the total
+  order, so its generation read sees g and it flushes. If the activating CPU read the old generation,
+  its RMW came first, so the initiator's read includes it and the IPI reaches it. An IPI handler flushes
+  when its current address space is A at a cached generation below g, and acknowledges in every case.
+- **Targets.** A shootdown for address space A at generation g goes only to the CPUs in that read of
+  `A.loaded`. They invalidate the range or flush the PCID and acknowledge. A CPU that caches A but does
   not have it loaded needs no interrupt: at its next switch to A it finds its cached generation below g
   and loads CR3 without the no-flush bit. That is lazy TLB invalidation (Black et al. 1989), with batched
   ranges (Amit 2017).
@@ -1109,10 +1129,11 @@ of their steps, keeping each CPU's program order. The steps are sequentially con
     untargeted by the shootdown and running A on a cached PCID at the old generation. If it could, the
     CPU would keep translating to a frame the initiator then frees. Red on §9.2 as first written. That
     text targets "the CPUs that have A loaded now", and it gives no order between the activating CPU's
-    generation read and its entry into A's loaded set.
+    generation read and its entry into A's loaded set. Green on §9.2's ordering rule: set `loaded`, then
+    read the generation, against increment the generation, then read `loaded`.
 
     ```pycon
-    >>> ACTIVATE = ['read_gen', 'set_loaded']
+    >>> ACTIVATE = ['set_loaded', 'read_gen']
     >>> CHANGE = ['bump_gen', 'read_loaded']
     >>> def stale_and_untargeted(order):
     ...     gen, loaded, seen_gen, targeted = 0, False, None, None
