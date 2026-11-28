@@ -1575,15 +1575,29 @@ fn completion_poller(cpu: usize) {
 /// without a poller is not ready: its sleeping requests are refused.
 #[cfg(target_arch = "aarch64")]
 pub fn start_completion_poller(cpu: usize) {
+    use crate::arch_impl::aarch64::smp;
     if AHCI_ABAR.load(Ordering::Relaxed) == 0 || AHCI_IRQ.load(Ordering::Relaxed) != 0 || cpu >= POLLER_CPUS {
         return;
     }
-    if cpu >= crate::arch_impl::aarch64::smp::cpus_online() as usize {
-        // A CPU counted online out of order cannot take a CPU-affine thread
-        // yet: it stays without a poller, so it is not ready.
-        crate::serial_println!("[ahci] no completion poller on CPU {}: not yet counted online", cpu);
-        return;
+    let counted = smp::cpus_online() as usize;
+    let (mut online, mut spawned) = (0u64, 0u64);
+    for other in 0..POLLER_CPUS {
+        online |= u64::from(smp::is_cpu_online(other)) << other;
+        spawned |= u64::from(POLLER_SPAWNED[other].load(Ordering::Acquire)) << other;
     }
+    let start = admission::pollers_to_start(cpu, counted, online, spawned);
+    if start & (1 << cpu) == 0 && spawned & (1 << cpu) == 0 {
+        // A CPU counted online out of order cannot take a CPU-affine thread
+        // yet.
+        crate::serial_println!("[ahci] no completion poller on CPU {} yet: not counted online", cpu);
+    }
+    for other in (0..POLLER_CPUS).filter(|other| start & (1 << other) != 0) {
+        spawn_completion_poller(other);
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn spawn_completion_poller(cpu: usize) {
     if POLLER_SPAWNED[cpu].swap(true, Ordering::AcqRel) {
         return;
     }

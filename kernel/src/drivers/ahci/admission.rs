@@ -35,3 +35,16 @@ pub const fn decide(context: ContextInputs, token_held: bool, owner: u64) -> Adm
         Ok(IoContext::EarlyBoot) => Admission::Refuse(AhciReadError::EarlyBootPortOwned),
     }
 }
+
+/// The CPUs whose AHCI completion pollers start when CPU `arriving` comes
+/// online (DEV-48(3)), as a mask over CPU ids below 64. `counted` is how many
+/// CPUs the scheduler counts online: a CPU at or past it cannot take a
+/// CPU-affine thread yet. `online` and `spawned` are the masks of the CPUs
+/// marked online and of those whose poller has started.
+pub const fn pollers_to_start(arriving: usize, counted: usize, online: u64, spawned: u64) -> u64 {
+    let _ = online;
+    if arriving >= counted || arriving >= 64 || spawned & (1 << arriving) != 0 {
+        return 0;
+    }
+    1 << arriving
+}

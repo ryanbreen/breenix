@@ -292,3 +292,30 @@ fn revocation_names_an_unarmed_device_and_its_requests_are_refused() {
     assert!(!full.attach(UNARMED, true), "a full table refuses the device, which is then never ready");
     assert!(!full.ready(UNARMED));
 }
+
+/// DEV-48(3), with secondaries that come online out of order (#3298 review):
+/// each CPU's AHCI completion poller starts once the scheduler's count covers
+/// it, whatever order the CPUs arrive in, and never for a CPU the count does
+/// not yet cover (`spawn_on_cpu` refuses one). The model replays
+/// `secondary_cpu_entry_rust`: mark the CPU online, count it, then start what
+/// `pollers_to_start` names.
+#[test]
+fn every_online_cpu_gets_a_poller_whatever_order_secondaries_arrive_in() {
+    use crate::admission::pollers_to_start;
+    for order in [[1, 2, 3], [1, 3, 2], [3, 2, 1], [2, 3, 1], [3, 1, 2]] {
+        // CPU 0 starts its poller at the first dispatch, before any release.
+        let (mut online, mut counted) = (1u64, 1usize);
+        let mut spawned = pollers_to_start(0, counted, online, 0);
+        for cpu in order {
+            online |= 1 << cpu;
+            counted += 1;
+            let start = pollers_to_start(cpu, counted, online, spawned);
+            assert_eq!(start & !((1u64 << counted) - 1), 0, "{order:?}: started a CPU the count does not cover");
+            assert_eq!(start & spawned, 0, "{order:?}: started a poller twice");
+            spawned |= start;
+        }
+        assert_eq!(spawned, 0b1111, "{order:?}: an online CPU has no completion poller");
+    }
+    // A CPU past a hole the count never closes stays without one.
+    assert_eq!(pollers_to_start(3, 3, 0b1011, 0b0011), 0);
+}
