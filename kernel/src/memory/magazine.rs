@@ -417,20 +417,35 @@ impl<B: Backing> Kmem<B> {
             core::mem::swap(&mut pair.loaded, &mut pair.previous);
         }
         if pair.loaded.is_null() {
-            match self.new_magazine(size, wait) {
-                Some(magazine) => pair.loaded = magazine,
-                None => return self.take_one(class, wait),
+            // No magazine yet. The request's object comes first, so a new
+            // magazine never takes the page the request needed; the magazine
+            // is built only if a page is left, and filled as far as one goes.
+            let object = self.take_one(class, wait)?;
+            if let Some(magazine) = self.new_magazine(size, wait) {
+                pair.loaded = magazine;
+                // SAFETY: the new magazine is this CPU's and holds no rounds.
+                let _ = unsafe { self.fill(class, magazine, wait) };
             }
+            return Ok(object);
         }
         let magazine = pair.loaded;
         // SAFETY: the magazine is this CPU's and holds no rounds.
+        unsafe {
+            self.fill(class, magazine, wait)?;
+            Ok(pop(magazine))
+        }
+    }
+
+    /// Fill an empty magazine from the class's slabs; at least one round on
+    /// success.
+    unsafe fn fill(&self, class: usize, magazine: *mut Magazine, wait: bool) -> Result<(), Short> {
         unsafe {
             let capacity = (*magazine).capacity as usize;
             let out = core::slice::from_raw_parts_mut(round(magazine, 0), capacity);
             let taken = self.classes[class].take(out, wait, &self.backing, &self.descriptors)?;
             (*magazine).rounds = taken as u32;
-            Ok(pop(magazine))
         }
+        Ok(())
     }
 
     fn take_one(&self, class: usize, wait: bool) -> Result<NonNull<u8>, Short> {

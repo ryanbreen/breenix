@@ -416,7 +416,11 @@ fn an_object_freed_on_another_cpu_returns_to_a_slab_of_its_cache() {
     let object = world.alloc(layout);
     world.on(1);
     world.free(object, layout);
-    assert_eq!(world.kmem.class_stats(class).cpu_rounds, 15, "CPU 0's fill less its one object, plus CPU 1's free");
+    assert_eq!(
+        world.kmem.class_stats(class).cpu_rounds,
+        16,
+        "CPU 0's 15-round fill after its own object, plus CPU 1's free"
+    );
     for cpu in 0..2 {
         assert!(world.kmem.drain(cpu, true));
     }
@@ -532,7 +536,8 @@ fn a_page_request_under_pressure_is_met_from_another_cpus_magazines() {
             world.free(object, page_object);
         }
         let stats = world.kmem.class_stats(class_of(4096, 8).unwrap());
-        assert_eq!((stats.cpu_rounds, stats.slabs.slabs), (15, 15));
+        // The first object, then a 15-round fill: 16 page-sized objects.
+        assert_eq!((stats.cpu_rounds, stats.slabs.slabs), (16, 16));
         world.kmem.backing().limit.set(world.pages_in_use());
         world.on(0);
         let result = world.try_alloc(bytes(64));
