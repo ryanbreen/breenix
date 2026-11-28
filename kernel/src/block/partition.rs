@@ -94,6 +94,10 @@ impl BlockDevice for Partition {
         self.disk.write_blocks(self.span(start, count)?, count, buf)
     }
 
+    fn max_single_write_bytes(&self) -> usize {
+        self.disk.max_single_write_bytes()
+    }
+
     fn block_size(&self) -> usize {
         self.disk.block_size()
     }

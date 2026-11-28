@@ -101,6 +101,10 @@ impl BlockDevice for VirtioBlockWrapper {
         self.device.write_sectors(start_block, &buf[..bytes]).map_err(BlockError::from)
     }
 
+    fn max_single_write_bytes(&self) -> usize {
+        self.device.max_single_write_bytes()
+    }
+
     fn write_block(&self, block_num: u64, buf: &[u8]) -> Result<(), BlockError> {
         // Validate buffer size
         if buf.len() < self.block_size {
@@ -245,6 +249,10 @@ impl BlockDevice for VirtioBlockWrapper {
         }
         block_driver::write_sectors(self.device_index, start_block, &buf[..bytes])
             .map_err(|_| BlockError::IoError)
+    }
+
+    fn max_single_write_bytes(&self) -> usize {
+        block_driver::max_single_write_bytes(self.device_index)
     }
 
     fn block_size(&self) -> usize {

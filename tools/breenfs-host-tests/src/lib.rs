@@ -88,6 +88,7 @@ pub mod block {
             }
             Ok(())
         }
+        fn max_single_write_bytes(&self) -> usize { 0 }
         fn block_size(&self) -> usize;
         fn num_blocks(&self) -> u64;
         fn flush(&self) -> Result<(), BlockError>;
