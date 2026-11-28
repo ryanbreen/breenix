@@ -70,6 +70,50 @@ class PairedFlashTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             runner['install_persistent'](args)
 
+    def test_stage_before_begin_and_verify_only_the_selected_pair(self):
+        calls = []
+        path = '/root/.breenix-flash/tools/' + 'a' * 64 + '/persistent-install'
+        inventory = b'inventory'
+
+        def put(name, payload, mode):
+            calls.append(('put', name, payload, mode))
+
+        def paired(*words):
+            calls.append(('paired', *words))
+            return {'protocol': 'BREENIX-PAIRED 1', 'have': '', 'apply': '{}',
+                    'verify': 'paired verify ' + self.trial + ' rows=1 sha256=' + 'b' * 64}.get(words[0], '')
+
+        roots = ['gen-' + self.current, 'gen-' + self.previous]
+        self.flash['stage_pair'](self.trial, path, b'tool', inventory, roots, put, paired,
+                                 lambda have: calls.append(('upload', have)), 'b' * 64)
+        self.assertEqual(calls[:5], [
+            ('put', path, b'tool', '0700'),
+            ('put', '/root/.breenix-flash/' + self.trial + '/inventory.tsv', inventory, '0600'),
+            ('paired', 'protocol'),
+            ('paired', 'reclaim', *roots),
+            ('paired', 'begin', self.trial, *roots),
+        ])
+        self.assertEqual([call[1] for call in calls if call[0] == 'paired'],
+                         ['protocol', 'reclaim', 'begin', 'have', 'apply', 'verify', 'publish'])
+        for root, mode, digest, accepted in (
+            ('gen-' + self.trial, 'rw', 'b' * 64, True),
+            ('gen-' + self.current, 'rw', 'b' * 64, False),
+            ('gen-' + self.trial, 'ro', 'b' * 64, False),
+            ('gen-' + self.trial, 'rw', 'c' * 64, False),
+        ):
+            with self.subTest(root=root, mode=mode, digest=digest):
+                cold = Mock(return_value='paired verify ' + self.trial + ' rows=1 sha256=' + digest)
+                self.assertEqual(self.flash['confirmed_pair'](('7-8-9', root, mode), '7-8-9',
+                    self.trial, 'b' * 64, self.trial, cold), accepted)
+                if root == 'gen-' + self.trial and mode == 'rw':
+                    cold.assert_called_once_with('verify', self.trial, '--booted')
+
+    def test_reboot_checks_pending_keys_as_well_as_boot_id(self):
+        guard = self.flash['paired_reboot_guard']('7-8-9')
+        self.assertIn('/run/breenix/boot-id', guard)
+        self.assertIn('/var/lib/accounts/pending', guard)
+        self.assertTrue(guard.endswith(' && '))
+
     def test_forced_rollback_waits_for_both_halves_of_the_old_pair(self):
         for trial_boot in (None, '4-5-6'):
             with self.subTest(trial_boot=trial_boot):

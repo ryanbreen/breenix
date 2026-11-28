@@ -25,6 +25,10 @@ mod breenfs;
 #[path = "../../../kernel/src/fs/breenfs/abi.rs"]
 pub mod breenfs_abi;
 
+#[cfg(feature = "paired-host-test")]
+#[path = "persistent_install/paired.rs"]
+pub(crate) mod paired;
+
 const TARGET: &str = "/home";
 const KEPT: [&str; 1] = ["root"];
 const UNTOUCHED: [&str; 8] = ["home", "lost+found", "proc", "dev", "sys", ".breenix-generations", ".complete", ".breenix-shared"];
@@ -981,16 +985,16 @@ fn main() {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "paired-host-test")))]
 extern crate alloc;
-#[cfg(test)]
+#[cfg(all(test, not(feature = "paired-host-test")))]
 #[path = "../../../kernel/src/fs/ext2/generation.rs"]
 mod generation;
-#[cfg(test)]
+#[cfg(all(test, not(feature = "paired-host-test")))]
 #[path = "../../../scripts/metal/efi-stub/src/slot_transaction.rs"]
 mod slots;
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "paired-host-test")))]
 mod tests {
     use super::*;
     use std::cell::{Cell, RefCell};

@@ -1,0 +1,21 @@
+[package]
+name = "paired-install-host-tests"
+version = "0.1.0"
+edition = "2021"
+
+[[test]]
+name = "paired"
+path = "paired.rs"
+
+[dependencies]
+libc = "0.2"
+serde_json = "=1.0.154"
+
+[features]
+default = ["paired-host-test"]
+paired-host-test = []
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("breenix"))'] }
+
+[workspace]
