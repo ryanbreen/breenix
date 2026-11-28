@@ -247,6 +247,8 @@ def stage(source, snapshot, output):
     if output.exists() or output.is_symlink():
         raise ValueError(f'output already exists: {output}')
     record = read_generation(source)
+    if record.get('std_patch_sha256') != digest(sysroot_builder.STD_PATCH):
+        raise ValueError('rebuild the E6 sysroot with the current Rust std stack minimum patch')
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='.e6-runtime-', dir=output.parent) as directory:
         work = Path(directory).resolve()
