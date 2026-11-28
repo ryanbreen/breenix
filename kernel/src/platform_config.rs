@@ -161,10 +161,8 @@ const _: () = {
     assert!(KERNEL_FIXED_RANGES[1].end - KERNEL_FIXED_RANGES[1].start == 0x20_0000);
 };
 
-/// Physical memory both boot paths map as normal memory in the high-half
-/// direct map ends here (L1 entries 0-3).
 #[cfg(target_arch = "aarch64")]
-const DIRECT_MAP_RAM_END: u64 = 0x1_0000_0000;
+use arm64_boot_contract::phys_memory::{direct_map_ram_window, DIRECT_MAP_RAM_END};
 
 /// QEMU's virt machine places the DTB of an ELF guest at the start of RAM when
 /// it fits below the kernel's load address (0x4020_0000; its DTB is 1 MiB) and
@@ -196,17 +194,6 @@ pub struct FramePool {
 
 #[cfg(target_arch = "aarch64")]
 static FRAME_POOL: spin::Once<FramePool> = spin::Once::new();
-
-/// The window of physical RAM the direct map covers as normal memory. On
-/// VMware the loader remaps the linked RAM alias, so the direct map is an
-/// identity map only from the relocated RAM base.
-#[cfg(target_arch = "aarch64")]
-fn direct_map_ram_window(ram_base_offset: u64) -> PhysRange {
-    PhysRange::new(
-        arm64_boot_contract::LINKED_RAM_START + ram_base_offset,
-        DIRECT_MAP_RAM_END,
-    )
-}
 
 #[cfg(target_arch = "aarch64")]
 fn unavailable_pool(reason: MapError) -> FramePool {

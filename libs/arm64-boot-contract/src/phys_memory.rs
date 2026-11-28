@@ -30,6 +30,22 @@ fn final_uefi_conventional_ranges(
 /// Granule of the frame allocator.
 pub const PAGE_SIZE: u64 = 4096;
 
+/// End of the RAM window already covered by both ARM64 boot paths.
+pub const DIRECT_MAP_RAM_END: u64 = 0x1_0000_0000;
+
+pub const fn direct_map_ram_window(ram_base_offset: u64) -> PhysRange {
+    PhysRange::new(crate::LINKED_RAM_START + ram_base_offset, DIRECT_MAP_RAM_END)
+}
+
+/// The boot translation's IPS encoding and corresponding exclusive PA limit.
+pub const fn boot_ips(_parange: u64) -> u64 {
+    2
+}
+
+pub const fn boot_pa_limit(ips: u64) -> u64 {
+    1 << [32, 36, 40, 42, 44, 48][ips as usize]
+}
+
 /// Ranges a [`RangeSet`] holds. The kernel's allocator accepts more, but a
 /// firmware map that needs more than this after merging is dropped from the
 /// top rather than overflowing.

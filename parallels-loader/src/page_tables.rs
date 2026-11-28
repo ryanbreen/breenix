@@ -6,7 +6,7 @@
 ///
 /// Uses 1GB block mappings (L1) where possible, 2MB blocks (L2) for
 /// device regions and for VMware's split kernel/device address space.
-use arm64_boot_contract::phys_memory::{PhysRange, PAGE_SIZE};
+use arm64_boot_contract::phys_memory::{boot_ips, boot_pa_limit, PhysRange, PAGE_SIZE};
 use core::ptr;
 
 /// Physical extent and ELF permissions for one loaded kernel segment.
@@ -619,7 +619,7 @@ pub fn build_page_tables(
         let end = map.end.checked_next_multiple_of(PAGE_SIZE);
         // E1-2 will derive IPS from PARange. A buffer outside today's
         // translation width is left for the kernel's named rule-5 refusal.
-        if let Some(end) = end.filter(|end| *end <= 1 << 40) {
+        if let Some(end) = end.filter(|end| *end <= boot_pa_limit(boot_ips(0))) {
             map_buffer(
                 storage, config, ttbr0_l0,
                 PhysRange::new(map.start & !(PAGE_SIZE - 1), end), execution.image,
