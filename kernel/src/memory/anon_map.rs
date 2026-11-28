@@ -79,7 +79,7 @@ where
                                 && permitted(v.prot, access)
                         });
                         if same_mapping && prepared == Err(crate::syscall::errno::ENOMEM as u64) {
-                            FaultOutcome::Signal(crate::signal::constants::SIGKILL)
+                            out_of_memory()
                         } else {
                             resolve_shm_page(table, &owner.vmas, address, access)
                         }
@@ -89,7 +89,7 @@ where
             } else {
                 FaultOutcome::NotFile
             };
-            if let (FaultOutcome::Signal(signal), Some(tid)) = (outcome, user_thread) {
+            if let (Some(signal), Some(tid)) = (outcome.raised(), user_thread) {
                 if let Some((_, process)) = manager.find_process_by_thread_mut(tid) {
                     let info = match signal {
                         crate::signal::constants::SIGBUS => crate::signal::types::SigInfo::fault(
@@ -163,9 +163,9 @@ where
                                     );
                                     return FaultOutcome::Resolved;
                                 }
-                                FaultOutcome::Signal(crate::signal::constants::SIGKILL)
+                                out_of_memory()
                             } else {
-                                FaultOutcome::Signal(crate::signal::constants::SIGKILL)
+                                out_of_memory()
                             }
                         }
                         None => FaultOutcome::NotFile,
@@ -175,7 +175,7 @@ where
             }
             None => FaultOutcome::NotFile,
         };
-        if let (FaultOutcome::Signal(signal), Some(tid)) = (outcome, user_thread) {
+        if let (Some(signal), Some(tid)) = (outcome.raised(), user_thread) {
             if let Some((_, process)) = manager.find_process_by_thread_mut(tid) {
                 // SIGSEGV is a mapping that forbids the access; SIGKILL is no
                 // memory to back it.
@@ -279,11 +279,11 @@ fn resolve_page(
         return FaultOutcome::NotFile;
     }
     let Some(frame) = zeroed_frame() else {
-        return FaultOutcome::Signal(crate::signal::constants::SIGKILL);
+        return out_of_memory();
     };
     if table.map_page(page, frame, flags).is_err() {
         let _ = super::frame_allocator::deallocate_leaf_frame(frame);
-        return FaultOutcome::Signal(crate::signal::constants::SIGKILL);
+        return out_of_memory();
     }
     crate::syscall::memory_common::flush_new_mapping(page.start_address());
     FaultOutcome::Resolved
@@ -383,4 +383,11 @@ pub(crate) fn prepare_write(
         address += 4096;
     }
     Ok(())
+}
+
+/// No frame for the page: counted in `/proc/breenix/kmem`, and SIGKILL for
+/// the faulting process until E3 (E1 plan, 7.4).
+fn out_of_memory() -> FaultOutcome {
+    super::kmem::note_fault_out_of_memory();
+    FaultOutcome::OutOfMemory
 }

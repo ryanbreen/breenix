@@ -202,8 +202,8 @@ Each is checked by a deterministic test named in §11.
   bounded section: revalidate, one queue operation and the summary publish.
 - **S3, stack custody.** No CPU dispatches a thread while another CPU still stands on that thread's
   kernel stack. Selection skips such a thread, records itself as a waiter and then rechecks the mark.
-  The CPU that leaves the stack clears the mark, then notifies the waiters through a flag the idle
-  recheck reads. No CPU waits for a stack.
+  The CPU that leaves the stack clears the mark with a release store on ARM64; the periodic tick covers the skip until
+  E9.6b supplies its replacement. No CPU waits for a stack.
 - **S4, bounded work under the lock.** Enqueue, dequeue, membership and selection are O(1) or
   O(log n) in the CPU's runnable count. Balancing does a constant amount of work per pass.
 - **S5, every wake lands.** A wake either transitions the thread under its owner's lock or is published
@@ -281,24 +281,18 @@ only for whole-scheduler holders until E9.4. <!-- claim-lint:ok: normative requi
 ### 3.4 Stack custody (S3)
 
 Neither architecture waits for a stack (ruling S8). They differ in what follows the skip. x86 registers
-as a waiter, rechecks the mark and is kicked by the clear (§1.2). ARM64 registers nothing and relies on
-a later selection. The shared selection calls `RqArch::stack_owner_elsewhere`. x86's implementation
-keeps today's protocol, unchanged in every PR. ARM64's adopts the same protocol in E9.1, as follows. <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
+as a waiter, rechecks the mark and is kicked by the clear (§1.2). ARM64 registers nothing and relies on a later selection, as DEV-46 confirms for E9.1.
+The shared selection calls the architecture's stack-owner check. x86 retains its existing protocol. <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
 
-**ARM64 registers, rechecks and is kicked durably (E9.1).** Today ARM64 skips a marked thread and relies
-on a later selection, "at the latest the next tick" (`switch_save.rs:11-14`). Tickless idle (E9.6b)
-removes that tick. So E9.1 gives `switch_save` a waiter set per marking CPU and this order:
-
-- *Selector*: on finding `tid` marked by CPU m, set its own bit in m's waiter set, then load m's mark
-  again. If the mark is clear or names another thread, it selects again at once rather than idling.
-- *Leaver*: clear the mark, then swap m's waiter set to empty, and kick each waiter. A kick sets the
-  waiter's resched-requested flag before its SGI. That flag is the ARM64 counterpart of x86's
-  `RESCHED_REQUESTED`, which E9.1 adds. The idle masked recheck reads that flag, so a waiter
-  that is entering WFI does not sleep through it.
-
-The waiter's set-then-load and the leaver's clear-then-swap are sequentially consistent operations.
-Either the selector's second load sees the clear, or the leaver's swap sees the selector's bit. That
-holds for every interleaving (model in §10, E9.1). This is the order x86 already uses (§1.2). <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
+**ARM64 wakes with the periodic tick available (E9.1, DEV-46).** The enqueuer sets
+the target CPU's atomic reschedule flag before publishing the thread. The idle
+loop rechecks that flag and its ready queue before WFI. A remote enqueuer sends
+a reschedule SGI from its own context when the target was idle at enqueue.
+The exception-return completion clears the save mark with a release store, and
+the outgoing requeue sends no SGI. If an idle CPU passes its recheck while the
+selected thread still carries the mark, the existing periodic tick bounds that
+wake window to one tick period. E9.6b supplies the post-clear wake before it
+removes the tick.
 
 ### 3.5 The ARM64 switch transaction
 
@@ -312,10 +306,10 @@ holds for every interleaving (model in §10, E9.1). This is the order x86 alread
   order `Held::drop` uses.
 - **The outgoing thread.** It is queued on this CPU, or on its pinned home through `retain_affine`,
   while the mark is set. A peer that finds it skips it (S3). `aarch64_complete_exception_switch` clears
-  the mark (`context_switch.rs:6093`), then takes the waiter set and kicks each waiter (§3.4).
-- **Identity.** The CPU index used for the lock comes from the same masked read the pivot already checks
-  (`CpuId::current_checked`, `context_switch.rs:6972`). A disagreement retracts the transaction as it does
-  today.
+  the mark with one release store (§3.4).
+- **Identity.** A task retry reads the CPU again after remasking IRQs, and the inline transaction takes
+  its index from the acquired guard. The pivot still checks the index against the hardware and retracts
+  the transaction on disagreement.
 - **The acquired lock travels with the transaction.** Today's rollback can release any CPU's view of the
   lock, because there is one global lock (`force_unlock_scheduler`). Under E9.1 the lock is per CPU. So
   forgetting the `Held` guard yields a `PivotToken { cpu }` naming the lock actually acquired. The
@@ -946,7 +940,7 @@ of their steps, keeping each CPU's program order. The steps are sequentially con
     []
 
     ```
-  - **Custody registration against the clear.** A host model races a selecting CPU that finds a thread
+  - **Custody registration against the clear (E9.6b model).** A host model races a selecting CPU that finds a thread
     marked in `switch_save` against the CPU that clears the mark. In no interleaving may the selector
     pass the thread over and then go unkicked without seeing the mark clear. A tickless idle CPU would
     otherwise leave the thread queued with nobody to pick it. Red on §3.4 and §3.5 as first written:
@@ -1220,6 +1214,9 @@ of their steps, keeping each CPU's program order. The steps are sequentially con
 
 ### E9.6b: tickless idle
 
+- **Prerequisite (DEV-46).** Supply a post-clear wake that preserves strict-gate S6 and S7 before disabling
+  the periodic tick, because a CPU past its idle recheck can otherwise sleep while a ready thread's save
+  mark is cleared.
 - **Scope.** §8.3.
 - **Tests.**
   - A host model of the idle protocol: a wake, a deadline post and a deferred-work raise at each point
@@ -1393,14 +1390,31 @@ Notes:
 ## 14. Deviations log (DEV-39(2))
 
 Builders record each design-detail deviation here, in the PR that makes it, with one sentence of reason.
-Two resolutions were made while writing this design, where the code and the brief pulled different ways:
+The E9.1 implementation records these details.
 
-- **Stack custody follows x86's protocol on both architectures** (§3.4). The first draft read
-  `wait_for_stacks_x86` as a wait. The code registers, rechecks and is kicked (`scheduler.rs:2615-2626`,
-  `:2224-2236`), so x86 is unchanged and E9.1 brings ARM64 to the same protocol, because ARM64's
-  wait-free skip relies on a tick that E9.6b removes.
-- **The ARM64 owner index in E9.1 sits on the chained wake index, not on x86's 4,096-slot table** (§3.3),
-  so that E9.1 adds no thread cap to ARM64. E9.4 replaces both.
+- **Stack custody follows DEV-46.** ARM64 keeps the release-only completion and no-SGI outgoing
+  requeue because the existing 1 kHz tick supplies the remaining save-mark wake.
+- **ARM64's owner index uses the existing wake-record thread pointer and CPU field** because those
+  records already have the required publication and retirement pin.
+- **Architecture operations use compile-time selection in the common run-queue module** because
+  each kernel builds for a single architecture and the architecture operations need no runtime state.
+- **Whole-scheduler pin management and an isolated boot-test fixture retain their existing shape
+  checks** because they already hold every queue and can evaluate a pin before an inbox record exists.
+- **The inline switch uses the guard's CPU after acquisition** because a legal migration during the
+  IRQ-enabled retry invalidates the entry CPU before the transaction begins.
+- **The independent-dispatch and stopped-peer checks run as fixed host interleavings** because
+  DEV-30 reserves the guest runs for the measurement rig and the host can execute acquisition,
+  selection and the unlock notification with a peer held.
+- **The ownership, pinned-placement and acquired-release checks compile the ARM64 run-queue
+  operations with fixture storage and CPU and SGI boundaries** because the shared module selects
+  architecture operations at compile time and has no `RqArch` trait.
+- **The acquired-release check exercises guard reconstruction and drop** because both the normal
+  pivot and retraction use `Dispatch::from_pivot` with the same carried token.
+- **The idle recheck has a runnable-after-custody case** because checking the call site alone cannot
+  show that its queue predicate sees eligible work.
+- **The rig has no idle-wake case** because its standard workload list has no independent wake
+  latency measurement. The before and after series can compare process timings and cannot measure
+  the one-tick bound directly.
 
 ## 15. Decisions for the coordinator
 
