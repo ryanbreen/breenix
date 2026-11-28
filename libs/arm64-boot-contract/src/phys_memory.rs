@@ -13,7 +13,8 @@
 /// Tables 7.5 and 7.6. Type 7 is EfiConventionalMemory; attribute bit 63 is
 /// EFI_MEMORY_RUNTIME. Boot-services and loader pages remain unavailable while
 /// firmware DMA can still own them, even after ExitBootServices.
-pub fn final_uefi_conventional_ranges(
+#[cfg(test)]
+fn final_uefi_conventional_ranges(
     descriptors: impl IntoIterator<Item = (u32, u64, u64, u64)>,
 ) -> RangeSet {
     let mut ranges = RangeSet::new();
@@ -32,6 +33,7 @@ pub const PAGE_SIZE: u64 = 4096;
 /// Ranges a [`RangeSet`] holds. The kernel's allocator accepts more, but a
 /// firmware map that needs more than this after merging is dropped from the
 /// top rather than overflowing.
+#[cfg(test)]
 pub const MAX_RANGES: usize = 32;
 
 /// A half-open physical address range `[start, end)`.
@@ -65,18 +67,21 @@ impl PhysRange {
 
 /// Sorted, disjoint, non-adjacent ranges.
 #[derive(Clone, Copy, Debug)]
+#[cfg(test)]
 pub struct RangeSet {
     ranges: [PhysRange; MAX_RANGES],
     len: usize,
     truncated: bool,
 }
 
+#[cfg(test)]
 impl Default for RangeSet {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(test)]
 impl RangeSet {
     pub const fn new() -> Self {
         Self {
@@ -208,6 +213,7 @@ impl RangeSet {
 
 /// Build the frame pool from RAM regions, keeping only what lies inside
 /// `window` and outside the `reserved` ranges.
+#[cfg(test)]
 pub fn frame_pool(
     ram: impl IntoIterator<Item = PhysRange>,
     reserved: impl IntoIterator<Item = PhysRange>,
@@ -228,6 +234,7 @@ pub fn frame_pool(
 /// Build the frame pool from a flattened device tree: its memory nodes, less
 /// its reservation block, its `/reserved-memory` children, the blob itself
 /// (at `blob_phys`) and `reserved`.
+#[cfg(test)]
 pub fn frame_pool_from_fdt(
     blob: &[u8],
     blob_phys: u64,
@@ -292,6 +299,7 @@ pub struct KernelPools {
 
 /// The lowest `KERNEL_POOL_ALIGN`-aligned run of `size` bytes inside one
 /// range of `pool`.
+#[cfg(test)]
 fn first_fit(pool: &RangeSet, size: u64) -> Option<PhysRange> {
     pool.as_slice().iter().find_map(|range| {
         let start = range.start.checked_add(KERNEL_POOL_ALIGN - 1)? & !(KERNEL_POOL_ALIGN - 1);
@@ -306,6 +314,7 @@ fn first_fit(pool: &RangeSet, size: u64) -> Option<PhysRange> {
 /// frame allocator may hand out, so what this returns is RAM the firmware
 /// described that no other kernel range covers. When either does not fit it
 /// places neither and leaves `pool` as it was.
+#[cfg(test)]
 pub fn place_kernel_pools(pool: &mut RangeSet, stack_bytes: u64) -> Option<KernelPools> {
     let mut rest = *pool;
     let heap = first_fit(&rest, kernel_heap_size(pool.total_bytes()))?;

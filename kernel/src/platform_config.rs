@@ -8,10 +8,11 @@
 /// to override these with ACPI-discovered addresses.
 
 #[cfg(target_arch = "aarch64")]
-use arm64_boot_contract::phys_memory::{
-    self, fdt, frame_pool_from_fdt, place_kernel_pools, FdtError, KernelPools, PhysRange,
-    RangeSet,
-};
+use arm64_boot_contract::phys_memory::{fdt, FdtError, KernelPools, PhysRange};
+#[cfg(target_arch = "aarch64")]
+use crate::memory::boot_ranges::{self, BootMemory, MapError, MapStats, ProbeError, RangeSet, RangeStorage};
+#[cfg(target_arch = "aarch64")]
+use core::ptr::NonNull;
 #[cfg(target_arch = "aarch64")]
 use core::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 
@@ -132,13 +133,15 @@ pub fn kernel_pools() -> Option<&'static KernelPools> {
 /// the direct map) and record where they went. Without room for both, no
 /// frame pool is safe to hand out either.
 #[cfg(target_arch = "aarch64")]
-fn with_kernel_pools(mut ranges: RangeSet, source: FramePoolSource) -> FramePool {
-    match place_kernel_pools(&mut ranges, crate::memory::kernel_stack::ARM64_KERNEL_STACK_POOL_SIZE) {
-        Some(pools) => {
+fn with_kernel_pools(mut ranges: RangeSet, source: FramePoolSource, stats: MapStats) -> FramePool {
+    match boot_ranges::place_kernel_pools(
+        &mut ranges, crate::memory::kernel_stack::ARM64_KERNEL_STACK_POOL_SIZE, DIRECT_MAP_RAM_END,
+    ) {
+        Ok(pools) => {
             KERNEL_POOLS.call_once(|| pools);
-            FramePool { ranges, source }
+            FramePool { ranges, source, stats }
         }
-        None => unavailable_pool("no room in RAM for the kernel heap and stacks"),
+        Err(error) => unavailable_pool(MapError::Ranges(error)),
     }
 }
 
@@ -177,16 +180,18 @@ const QEMU_DTB_MAX_SIZE: usize = 0x20_0000;
 pub enum FramePoolSource {
     /// The UEFI memory map's conventional memory, passed by the loader.
     UefiMemoryMap,
+    UefiRegionListV7 { possibly_truncated: bool },
     /// The memory nodes of QEMU's device tree.
     DeviceTree,
     /// No trustworthy description could be read; no page may be allocated.
-    Unavailable(&'static str),
+    Unavailable(MapError),
 }
 
 #[cfg(target_arch = "aarch64")]
 pub struct FramePool {
     pub ranges: RangeSet,
     pub source: FramePoolSource,
+    pub stats: MapStats,
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -204,20 +209,77 @@ fn direct_map_ram_window(ram_base_offset: u64) -> PhysRange {
 }
 
 #[cfg(target_arch = "aarch64")]
-fn unavailable_pool(reason: &'static str) -> FramePool {
+fn unavailable_pool(reason: MapError) -> FramePool {
     // A partial or missing map cannot establish that even the old window is
     // free of firmware reservations. Keep the pool empty until a valid map exists.
     FramePool {
         ranges: RangeSet::new(),
         source: FramePoolSource::Unavailable(reason),
+        stats: MapStats::default(),
     }
 }
 
 #[cfg(target_arch = "aarch64")]
-fn kernel_fixed_ranges(ram_base_offset: u64) -> impl Iterator<Item = PhysRange> {
-    KERNEL_FIXED_RANGES
-        .into_iter()
-        .map(move |r| PhysRange::new(r.start + ram_base_offset, r.end + ram_base_offset))
+fn kernel_fixed_ranges(ram_base_offset: u64) -> [PhysRange; KERNEL_FIXED_RANGES.len()] {
+    KERNEL_FIXED_RANGES.map(|r| PhysRange::new(r.start + ram_base_offset, r.end + ram_base_offset))
+}
+
+#[cfg(target_arch = "aarch64")]
+struct LiveBootMemory;
+
+#[cfg(target_arch = "aarch64")]
+impl LiveBootMemory {
+    fn probe(virtual_address: u64, phys: u64) -> Result<(), ProbeError> {
+        let par: u64 = crate::arch_without_interrupts(|| {
+            let par: u64;
+            unsafe {
+                core::arch::asm!(
+                    "at s1e1w, {va}", "isb", "mrs {par}, par_el1",
+                    va = in(reg) virtual_address, par = out(reg) par,
+                    options(nostack, preserves_flags),
+                );
+            }
+            par
+        });
+        if par & 1 != 0 {
+            let fault_status = (par >> 1) & 0x3f;
+            return Err(if (0x0c..=0x0f).contains(&fault_status) {
+                ProbeError::ReadOnly
+            } else {
+                ProbeError::NoTranslation
+            });
+        }
+        if par & 0x000f_ffff_ffff_f000 != phys {
+            return Err(ProbeError::WrongPhysicalAddress);
+        }
+        if par >> 56 != 0xff {
+            return Err(ProbeError::WrongMemoryType);
+        }
+        Ok(())
+    }
+}
+
+// The boot builders keep each page exclusively reserved from the firmware map.
+#[cfg(target_arch = "aarch64")]
+unsafe impl RangeStorage for LiveBootMemory {
+    fn storage_page(&self, phys: u64) -> Option<NonNull<u8>> {
+        let address = crate::arch_impl::aarch64::constants::HHDM_BASE.checked_add(phys)?;
+        Self::probe(address, phys).ok()?;
+        NonNull::new(address as *mut u8)
+    }
+}
+
+// The kernel is still alone on the boot CPU, with the loader's TTBR0 active.
+#[cfg(target_arch = "aarch64")]
+unsafe impl BootMemory for LiveBootMemory {
+    fn probe_identity_write(&self, page: u64) -> Result<(), ProbeError> {
+        Self::probe(page, page)
+    }
+
+    unsafe fn map_buffer(&self, range: PhysRange) -> NonNull<u8> {
+        debug_assert_ne!(range.start, 0);
+        unsafe { NonNull::new_unchecked(range.start as *mut u8) }
+    }
 }
 
 /// Read QEMU's device tree from the start of RAM.
@@ -238,9 +300,9 @@ fn qemu_dtb() -> Result<&'static [u8], FdtError> {
 }
 
 #[cfg(target_arch = "aarch64")]
-fn frame_pool_from_qemu_dtb() -> Result<RangeSet, FdtError> {
+fn frame_pool_from_qemu_dtb() -> Result<RangeSet, MapError> {
     let blob = qemu_dtb()?;
-    frame_pool_from_fdt(blob, QEMU_DTB_PHYS, KERNEL_FIXED_RANGES, direct_map_ram_window(0))
+    boot_ranges::from_fdt(&LiveBootMemory, blob, QEMU_DTB_PHYS, &KERNEL_FIXED_RANGES, direct_map_ram_window(0))
 }
 
 /// The frame allocator's free memory: the pages the firmware describes as
@@ -250,8 +312,8 @@ fn frame_pool_from_qemu_dtb() -> Result<RangeSet, FdtError> {
 #[cfg(target_arch = "aarch64")]
 pub fn frame_pool() -> &'static FramePool {
     FRAME_POOL.call_once(|| match frame_pool_from_qemu_dtb() {
-        Ok(ranges) => with_kernel_pools(ranges, FramePoolSource::DeviceTree),
-        Err(error) => unavailable_pool(error.as_str()),
+        Ok(ranges) => with_kernel_pools(ranges, FramePoolSource::DeviceTree, MapStats::default()),
+        Err(error) => unavailable_pool(error),
     })
 }
 
@@ -770,101 +832,23 @@ pub fn fb_is_bgr() -> bool {
 // Initialization from HardwareConfig (Parallels boot path)
 // =============================================================================
 
-/// HardwareConfig as received from the UEFI loader.
-/// This must match the layout in parallels-loader/src/hw_config.rs.
 #[cfg(target_arch = "aarch64")]
-#[repr(C)]
-pub struct HardwareConfig {
-    pub magic: u32,
-    pub version: u32,
-    pub uart_base_phys: u64,
-    pub uart_irq: u32,
-    /// UART type: 0 = PL011, 1 = 16550
-    pub uart_type: u8,
-    pub _pad0: [u8; 3],
-    pub gic_version: u8,
-    pub _pad1: [u8; 7],
-    pub gicd_base: u64,
-    pub gicc_base: u64,
-    pub gicr_range_count: u32,
-    pub _pad2: u32,
-    pub gicr_ranges: [GicrRange; 8],
-    pub pci_ecam_base: u64,
-    pub pci_ecam_size: u64,
-    pub pci_bus_start: u8,
-    pub pci_bus_end: u8,
-    pub _pad3: [u8; 6],
-    pub pci_mmio_base: u64,
-    pub pci_mmio_size: u64,
-    pub ram_region_count: u32,
-    pub _pad4: u32,
-    pub ram_regions: [RamRegion; 32],
-    pub has_framebuffer: u32,
-    pub _pad5: u32,
-    pub framebuffer: FramebufferInfo,
-    pub rsdp_addr: u64,
-    pub timer_freq_hz: u64,
-    pub xhci_hcrst_done: u32,
-    pub _pad6: u32,
-    pub xhci_bar_phys: u64,
-    pub boot_wall_time_utc: u64,
-    pub ram_base_offset: u64,
-    pub firmware_cpu_count: u32,
-    pub _pad7: u32,
-    pub rtc_get_time: u64,
-    pub runtime_region_count: u32,
-    pub _pad8: u32,
-    pub runtime_regions: [arm64_boot_contract::RuntimeRegion; arm64_boot_contract::MAX_RUNTIME_REGIONS],
-    pub boot_flags: u32,
-    pub _pad9: u32,
-    pub boot_seed_source: u32,
-    pub _pad10: u32,
-    pub boot_seed: [u8; arm64_boot_contract::BOOT_SEED_BYTES],
-}
+pub use arm64_boot_contract::hw_config::{HardwareConfigV7, UefiMapHandoff};
+#[cfg(target_arch = "aarch64")]
+pub use arm64_boot_contract::hw_config::HARDWARE_CONFIG_MAGIC;
 
+/// Configure the UART using the stable leading fields of the loader handoff.
 #[cfg(target_arch = "aarch64")]
-#[repr(C)]
-pub struct GicrRange {
-    pub base: u64,
-    pub length: u32,
-    pub _pad: u32,
-}
-
-#[cfg(target_arch = "aarch64")]
-#[repr(C)]
-pub struct RamRegion {
-    pub base: u64,
-    pub size: u64,
-}
-
-#[cfg(target_arch = "aarch64")]
-#[repr(C)]
-pub struct FramebufferInfo {
-    pub base: u64,
-    pub size: u64,
-    pub width: u32,
-    pub height: u32,
-    pub stride: u32,
-    pub pixel_format: u32,
-}
-
-#[cfg(target_arch = "aarch64")]
-const HARDWARE_CONFIG_MAGIC: u32 = 0x4252_4E58;
-
-/// Initialize platform config from the HardwareConfig struct provided by
-/// the UEFI loader. Called very early in boot, before serial init.
-#[cfg(target_arch = "aarch64")]
-pub fn init_from_parallels(config: &HardwareConfig) -> bool {
-    if config.magic != HARDWARE_CONFIG_MAGIC
-        || config.version != arm64_boot_contract::HARDWARE_CONFIG_VERSION
-    {
-        return false;
+pub fn configure_loader_uart(base: u64, kind: u8) {
+    if base != 0 {
+        UART_BASE_PHYS.store(base, Ordering::Relaxed);
     }
+    UART_TYPE.store(kind, Ordering::Relaxed);
+}
 
-    if config.uart_base_phys != 0 {
-        UART_BASE_PHYS.store(config.uart_base_phys, Ordering::Relaxed);
-    }
-    UART_TYPE.store(config.uart_type, Ordering::Relaxed);
+/// Initialize platform config from the validated loader prefix.
+#[cfg(target_arch = "aarch64")]
+pub fn init_from_parallels(config: &HardwareConfigV7, map: Option<UefiMapHandoff>) {
     if config.gic_version != 0 {
         GIC_VERSION.store(config.gic_version, Ordering::Relaxed);
     }
@@ -891,38 +875,24 @@ pub fn init_from_parallels(config: &HardwareConfig) -> bool {
 
     RAM_BASE_OFFSET.store(config.ram_base_offset, Ordering::Relaxed);
 
-    // HardwareConfig v5 carries only EfiConventionalMemory from the final
-    // ExitBootServices map (UEFI 2.10 section 7.2, Tables 7.5 and 7.6).
-    // Boot-services and loader pages stay reserved: firmware's in-flight
-    // device DMA may still be active after ExitBootServices.
-    let region_count = (config.ram_region_count as usize).min(config.ram_regions.len());
-    if region_count > 0 {
+    FRAME_POOL.call_once(|| {
         let offset = config.ram_base_offset;
-        let runtime_count =
-            (config.runtime_region_count as usize).min(config.runtime_regions.len());
-        let runtime = config.runtime_regions[..runtime_count]
-            .iter()
-            .map(|r| PhysRange::from_base_size(r.base, r.pages.saturating_mul(4096)));
-        let mut ranges = phys_memory::frame_pool(
-            config.ram_regions[..region_count]
-                .iter()
-                .map(|r| PhysRange::from_base_size(r.base, r.size)),
-            runtime,
-            direct_map_ram_window(offset),
-        );
-        // The heap and kernel stacks are written directly, outside the frame
-        // allocator, so they come out of conventional RAM, after the fixed
-        // ranges are excluded.
-        for fixed in kernel_fixed_ranges(offset) {
-            ranges.subtract(fixed);
+        let fixed = kernel_fixed_ranges(offset);
+        match boot_ranges::from_hardware_config(config, map, &LiveBootMemory,
+            direct_map_ram_window(offset), &fixed) {
+            Ok((ranges, stats)) => {
+                let source = if config.version == 7 {
+                    FramePoolSource::UefiRegionListV7 {
+                        possibly_truncated: config.ram_region_count as usize >= config.ram_regions.len(),
+                    }
+                } else {
+                    FramePoolSource::UefiMemoryMap
+                };
+                with_kernel_pools(ranges, source, stats)
+            }
+            Err(error) => unavailable_pool(error),
         }
-        let pool = with_kernel_pools(ranges, FramePoolSource::UefiMemoryMap);
-        FRAME_POOL.call_once(|| pool);
-    } else {
-        FRAME_POOL.call_once(|| {
-            unavailable_pool("the loader passed no conventional RAM regions")
-        });
-    }
+    });
 
     // Store framebuffer info if the loader discovered a GOP framebuffer
     if config.has_framebuffer != 0 && config.framebuffer.base != 0 {
@@ -955,5 +925,4 @@ pub fn init_from_parallels(config: &HardwareConfig) -> bool {
     crate::time::firmware_rtc::configure(config.rtc_get_time,
         &config.runtime_regions[..(config.runtime_region_count as usize).min(config.runtime_regions.len())]);
 
-    true
 }

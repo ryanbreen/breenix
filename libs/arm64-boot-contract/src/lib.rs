@@ -25,8 +25,8 @@ const _: () = {
 
 /// HardwareConfig v5 carries only final-map conventional memory as free RAM.
 /// Earlier versions included boot-services memory before loader allocations.
-/// v6 adds `boot_flags`. v7 adds the boot seed (`boot_seed_source`, `boot_seed`).
-pub const HARDWARE_CONFIG_VERSION: u32 = 7;
+/// v6 adds `boot_flags`. v7 adds the boot seed. v8 appends the final UEFI map.
+pub const HARDWARE_CONFIG_VERSION: u32 = 8;
 
 /// Bytes of boot seed the loader hands the kernel's random pool.
 pub const BOOT_SEED_BYTES: usize = 64;
@@ -100,3 +100,7 @@ mod tests {
         }
     }
 }
+
+pub mod hw_config;
+pub mod uefi_map;
+pub mod handoff_elf;

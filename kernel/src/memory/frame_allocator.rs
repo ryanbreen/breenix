@@ -4,6 +4,8 @@ mod contiguous;
 #[cfg(not(target_arch = "x86_64"))]
 use crate::memory::arch_stub::{FrameAllocator, PhysAddr, PhysFrame, Size4KiB};
 use alloc::vec::Vec;
+use super::boot_ranges::RangeSet;
+#[cfg(target_arch = "x86_64")]
 use bootloader_api::info::{MemoryRegionKind, MemoryRegions};
 use core::panic::Location;
 #[cfg(feature = "testing")]
@@ -15,17 +17,11 @@ use x86_64::structures::paging::{FrameAllocator, PhysFrame, Size4KiB};
 #[cfg(target_arch = "x86_64")]
 use x86_64::PhysAddr;
 
-/// Maximum number of usable memory regions we support
-/// Increased from 32 to 128 to handle UEFI's fragmented memory map
-const MAX_REGIONS: usize = 128;
-
 /// Whether a physical address belongs to allocator-managed RAM.
 #[cfg(target_arch = "x86_64")]
 pub(crate) fn is_usable_address(address: u64) -> bool {
     MEMORY_INFO.get().is_some_and(|info| {
-        info.regions[..info.region_count]
-            .iter()
-            .flatten()
+        info.iter()
             .any(|region| address >= region.start && address < region.end)
     })
 }
@@ -58,23 +54,10 @@ pub fn ap_trampoline_base() -> Option<u64> {
     }
 }
 
-/// A memory region descriptor
-#[derive(Debug, Clone, Copy)]
-struct UsableRegion {
-    start: u64,
-    end: u64,
-}
-
-/// Stores extracted memory information (immutable after initialization)
-struct MemoryInfo {
-    regions: [Option<UsableRegion>; MAX_REGIONS],
-    region_count: usize,
-}
-
-/// Memory region info, initialized once during boot and never modified.
-/// Using spin::Once instead of Mutex eliminates lock contention on the
-/// frame allocation hot path - get() is a single atomic load after init.
-static MEMORY_INFO: spin::Once<MemoryInfo> = spin::Once::new();
+/// Immutable boot ranges, published before the first frame allocation.
+static MEMORY_INFO: spin::Once<&'static RangeSet> = spin::Once::new();
+#[cfg(target_arch = "x86_64")]
+static X86_BOOT_RANGES: spin::Once<RangeSet> = spin::Once::new();
 static NEXT_FREE_FRAME: AtomicUsize = AtomicUsize::new(0);
 
 const LEDGER_CHUNK_FRAMES: usize = 64 * 1024;
@@ -374,34 +357,32 @@ impl BootInfoFrameAllocator {
         let info = MEMORY_INFO.get()?;
 
         let mut count = 0;
-        for i in 0..info.region_count {
-            if let Some(region) = info.regions[i] {
-                let region_frames = (region.end - region.start) / 4096;
+        for region in info.iter() {
+            let region_frames = (region.end - region.start) / 4096;
 
-                if count + region_frames as usize > n {
-                    let frame_offset = n - count;
-                    let frame_addr = region.start + (frame_offset as u64 * 4096);
+            if count + region_frames as usize > n {
+                let frame_offset = n - count;
+                let frame_addr = region.start + (frame_offset as u64 * 4096);
 
-                    // CRITICAL: Assert we never return frame 0x0
-                    debug_assert!(
-                        frame_addr >= LOW_MEMORY_FLOOR,
-                        "Attempting to allocate frame below low memory floor: {:#x}",
-                        frame_addr
+                // CRITICAL: Assert we never return frame 0x0
+                debug_assert!(
+                    frame_addr >= LOW_MEMORY_FLOOR,
+                    "Attempting to allocate frame below low memory floor: {:#x}",
+                    frame_addr
+                );
+
+                // Production safety: Never return frames below the floor
+                if frame_addr < LOW_MEMORY_FLOOR {
+                    log::error!(
+                        "CRITICAL: Attempted to allocate frame {:#x} below low memory floor {:#x}",
+                        frame_addr, LOW_MEMORY_FLOOR
                     );
-
-                    // Production safety: Never return frames below the floor
-                    if frame_addr < LOW_MEMORY_FLOOR {
-                        log::error!(
-                            "CRITICAL: Attempted to allocate frame {:#x} below low memory floor {:#x}",
-                            frame_addr, LOW_MEMORY_FLOOR
-                        );
-                        return None;
-                    }
-
-                    return Some(PhysFrame::containing_address(PhysAddr::new(frame_addr)));
+                    return None;
                 }
-                count += region_frames as usize;
+
+                return Some(PhysFrame::containing_address(PhysAddr::new(frame_addr)));
             }
+            count += region_frames as usize;
         }
         None
     }
@@ -413,7 +394,7 @@ fn frame_ordinal(frame: PhysFrame) -> Option<usize> {
     let info = MEMORY_INFO.get()?;
     let address = frame.start_address().as_u64();
     let mut ordinal = 0usize;
-    for region in info.regions[..info.region_count].iter().flatten() {
+    for region in info.iter() {
         if (region.start..region.end).contains(&address) {
             return Some(ordinal + ((address - region.start) / 4096) as usize);
         }
@@ -625,9 +606,7 @@ pub fn init_frame_ledger() {
     }
 
     let info = MEMORY_INFO.get().expect("frame allocator not initialized");
-    let advertised_frames = info.regions[..info.region_count]
-        .iter()
-        .flatten()
+    let advertised_frames = info.iter()
         .map(|region| ((region.end - region.start) / 4096) as usize)
         .sum::<usize>();
     // u32::MAX is reserved as the untracked sentinel. Oversized firmware maps
@@ -770,112 +749,50 @@ unsafe impl FrameAllocator<Size4KiB> for BootInfoFrameAllocator {
     }
 }
 
-/// Initialize the global frame allocator
+/// Initialize the global frame allocator from the x86 bootloader's complete map.
+#[cfg(target_arch = "x86_64")]
 pub fn init(memory_regions: &'static MemoryRegions) {
-    let mut regions = [None; MAX_REGIONS];
-    let mut region_count = 0;
-    let mut total_memory = 0u64;
-    let mut ignored_regions = 0;
-    let mut ignored_memory = 0u64;
+    use super::boot_ranges::{from_x86, RangeStorage};
+    use arm64_boot_contract::phys_memory::PhysRange;
+    use core::ptr::NonNull;
 
-    // Extract usable regions, excluding low memory below the floor
-    for region in memory_regions.iter() {
-        // A usable run below the VGA hole that holds the AP startup
-        // trampoline; page 0 (real-mode interrupt vectors) is never used.
-        #[cfg(target_arch = "x86_64")]
-        if region.kind == MemoryRegionKind::Usable {
-            let start = region.start.max(0x1000).next_multiple_of(4096);
-            let end = region.end.min(0xA0000) & !0xfff;
-            if end >= start + AP_TRAMPOLINE_PAGES * 4096 {
-                AP_TRAMPOLINE_BASE.store(end - AP_TRAMPOLINE_PAGES * 4096, Ordering::Release);
-            }
-        }
-        if region.kind == MemoryRegionKind::Usable {
-            // Skip regions entirely below the low memory floor
-            if region.end <= LOW_MEMORY_FLOOR {
-                log::debug!(
-                    "Skipping low memory region {:#x}..{:#x} (below floor {:#x})",
-                    region.start,
-                    region.end,
-                    LOW_MEMORY_FLOOR
-                );
-                ignored_regions += 1;
-                ignored_memory += region.end - region.start;
-                continue;
-            }
+    struct DirectMap(u64);
 
-            if region_count < MAX_REGIONS {
-                // Adjust region start if it begins below the floor
-                let adjusted_start = if region.start < LOW_MEMORY_FLOOR {
-                    log::info!(
-                        "Adjusting region start from {:#x} to {:#x} (low memory floor)",
-                        region.start,
-                        LOW_MEMORY_FLOOR
-                    );
-                    LOW_MEMORY_FLOOR
-                } else {
-                    region.start
-                };
-
-                debug_assert_eq!(adjusted_start % 4096, 0);
-                debug_assert_eq!(region.end % 4096, 0);
-
-                regions[region_count] = Some(UsableRegion {
-                    start: adjusted_start,
-                    end: region.end,
-                });
-                region_count += 1;
-                total_memory += region.end - adjusted_start;
-            } else {
-                // Count ignored regions instead of logging each one
-                ignored_regions += 1;
-                ignored_memory += region.end - region.start;
-            }
+    // The bootloader maps the usable ranges writable, and the builder
+    // reserves each page before the allocator can see it.
+    unsafe impl RangeStorage for DirectMap {
+        fn storage_page(&self, phys: u64) -> Option<NonNull<u8>> {
+            NonNull::new(self.0.checked_add(phys)? as *mut u8)
         }
     }
 
-    // Store the extracted information (once, immutable)
-    MEMORY_INFO.call_once(|| MemoryInfo {
-        regions,
-        region_count,
-    });
+    let usable = || memory_regions.iter().filter(|r| r.kind == MemoryRegionKind::Usable);
+    for region in usable() {
+        let Some(start) = region.start.max(0x1000).checked_next_multiple_of(4096) else {
+            continue;
+        };
+        let end = region.end.min(0xA0000) & !0xfff;
+        if start <= end && end - start >= AP_TRAMPOLINE_PAGES * 4096 {
+            AP_TRAMPOLINE_BASE.store(end - AP_TRAMPOLINE_PAGES * 4096, Ordering::Release);
+        }
+    }
 
+    let ranges = X86_BOOT_RANGES.call_once(|| {
+        let storage = DirectMap(super::physical_memory_offset().as_u64());
+        from_x86(&storage, usable().map(|r| PhysRange::new(r.start, r.end)))
+            .unwrap_or_else(|error| panic!("boot: {}", error.as_str()))
+    });
+    MEMORY_INFO.call_once(|| ranges);
     log::info!(
         "Frame allocator initialized with {} MiB of usable memory in {} regions (floor={:#x})",
-        total_memory / (1024 * 1024),
-        region_count,
-        LOW_MEMORY_FLOOR
+        ranges.total_bytes() >> 20, ranges.len(), LOW_MEMORY_FLOOR
     );
-
-    if ignored_regions > 0 {
-        log::warn!(
-            "Ignored {} memory regions ({} MiB) due to MAX_REGIONS limit",
-            ignored_regions,
-            ignored_memory / (1024 * 1024)
-        );
-    }
 }
 
-/// Initialize the frame allocator for ARM64 from the frame pool's ranges:
-/// page-aligned, ascending and disjoint (see `platform_config::frame_pool`).
+/// Use the same immutable ranges the ARM64 boot path built before the heap.
 #[cfg(target_arch = "aarch64")]
-pub fn init_aarch64(ranges: &[arm64_boot_contract::phys_memory::PhysRange]) {
-    let mut regions = [None; MAX_REGIONS];
-    let mut region_count = 0;
-    for range in ranges.iter().take(MAX_REGIONS) {
-        debug_assert_eq!(range.start % 4096, 0);
-        debug_assert_eq!(range.end % 4096, 0);
-        regions[region_count] = Some(UsableRegion {
-            start: range.start,
-            end: range.end,
-        });
-        region_count += 1;
-    }
-
-    MEMORY_INFO.call_once(|| MemoryInfo {
-        regions,
-        region_count,
-    });
+pub fn init_aarch64(ranges: &'static RangeSet) {
+    MEMORY_INFO.call_once(|| ranges);
 }
 
 /// Allocate a physical frame
@@ -1230,17 +1147,7 @@ pub struct MemoryStats {
 /// These can be used to compute total, used, and free memory.
 pub fn memory_stats() -> MemoryStats {
     // Calculate total memory from MEMORY_INFO regions (lock-free read)
-    let total_bytes = if let Some(info) = MEMORY_INFO.get() {
-        let mut total = 0u64;
-        for i in 0..info.region_count {
-            if let Some(region) = info.regions[i] {
-                total += region.end - region.start;
-            }
-        }
-        total
-    } else {
-        0
-    };
+    let total_bytes = MEMORY_INFO.get().map_or(0, |info| info.total_bytes());
 
     let allocated_frames = NEXT_FREE_FRAME.load(Ordering::Relaxed);
 

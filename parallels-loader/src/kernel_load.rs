@@ -4,6 +4,7 @@
 //! loads PT_LOAD segments into physical memory, and locates the
 //! `kernel_main` entry point by scanning the ELF symbol table.
 
+use crate::page_tables::KernelLoadSegment;
 use uefi::boot;
 use uefi::mem::memory_map::MemoryType;
 use uefi::proto::media::file::{File, FileAttribute, FileInfo, FileMode};
@@ -21,28 +22,12 @@ const EI_CLASS_64: u8 = 2;
 const EI_DATA_LSB: u8 = 1;
 const EM_AARCH64: u16 = 183;
 const PT_LOAD: u32 = 1;
-pub const PF_X: u32 = 1 << 0;
-pub const PF_W: u32 = 1 << 1;
 const SHT_SYMTAB: u32 = 2;
 const SHT_STRTAB: u32 = 3;
 const STT_FUNC: u8 = 2;
 const MAX_LOAD_SEGMENTS: usize = 16;
 
-/// Physical extent and ELF permissions for one loaded kernel segment.
-#[derive(Clone, Copy)]
-pub struct KernelLoadSegment {
-    pub phys_start: u64,
-    pub phys_end: u64,
-    pub flags: u32,
-}
-
-impl KernelLoadSegment {
-    const EMPTY: Self = Self {
-        phys_start: 0,
-        phys_end: 0,
-        flags: 0,
-    };
-}
+const EMPTY_SEGMENT: KernelLoadSegment = KernelLoadSegment { phys_start: 0, phys_end: 0, flags: 0 };
 
 /// Result of loading the kernel.
 pub struct LoadedKernel {
@@ -65,10 +50,21 @@ impl LoadedKernel {
     }
 }
 
+pub enum LoadError {
+    Load(&'static str),
+    Incompatible(arm64_boot_contract::handoff_elf::HandoffError),
+}
+
+impl From<&'static str> for LoadError {
+    fn from(error: &'static str) -> Self {
+        Self::Load(error)
+    }
+}
+
 /// Load the kernel ELF from the ESP filesystem.
 ///
 /// This must be called while UEFI boot services are still active.
-pub fn load_kernel(ram_base_offset: u64) -> Result<LoadedKernel, &'static str> {
+pub fn load_kernel(ram_base_offset: u64) -> Result<LoadedKernel, LoadError> {
     // Open the ESP filesystem
     let sfs_handle = boot::get_handle_for_protocol::<SimpleFileSystem>()
         .map_err(|_| "No SimpleFileSystem protocol")?;
@@ -100,7 +96,7 @@ pub fn load_kernel(ram_base_offset: u64) -> Result<LoadedKernel, &'static str> {
     );
 
     if file_size < 64 {
-        return Err("Kernel file too small for ELF header");
+        return Err("Kernel file too small for ELF header".into());
     }
 
     // Allocate buffer and read the entire file
@@ -114,11 +110,13 @@ pub fn load_kernel(ram_base_offset: u64) -> Result<LoadedKernel, &'static str> {
         .read(elf_buf)
         .map_err(|_| "Failed to read kernel file")?;
     if bytes_read != file_size {
-        return Err("Incomplete read of kernel file");
+        return Err("Incomplete read of kernel file".into());
     }
 
     // Parse and load the ELF
-    let result = parse_and_load_elf(elf_buf, ram_base_offset);
+    let result = arm64_boot_contract::handoff_elf::handoff_decision(elf_buf)
+        .map_err(LoadError::Incompatible)
+        .and_then(|()| parse_and_load_elf(elf_buf, ram_base_offset).map_err(LoadError::Load));
 
     // Free the file buffer (segments are already copied to physical memory)
     unsafe {
@@ -166,7 +164,7 @@ fn parse_and_load_elf(elf: &[u8], ram_base_offset: u64) -> Result<LoadedKernel, 
     let mut load_base = u64::MAX;
     let mut load_end = 0u64;
     let mut vaddr_to_paddr_offset: i64 = 0;
-    let mut load_segments = [KernelLoadSegment::EMPTY; MAX_LOAD_SEGMENTS];
+    let mut load_segments = [EMPTY_SEGMENT; MAX_LOAD_SEGMENTS];
     let mut load_segment_count = 0usize;
 
     for i in 0..e_phnum {

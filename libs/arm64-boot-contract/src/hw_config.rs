@@ -1,0 +1,288 @@
+/// Hardware configuration discovered by the UEFI loader.
+///
+/// This struct is passed to the kernel at entry. It contains physical addresses
+/// for all platform-specific hardware, discovered via ACPI tables.
+/// The kernel uses these instead of hardcoded QEMU virt addresses.
+
+/// Maximum number of RAM regions from the UEFI memory map.
+pub const MAX_RAM_REGIONS: usize = 32;
+
+/// Maximum number of GIC redistributor ranges.
+pub const MAX_GICR_RANGES: usize = 8;
+
+/// A contiguous region of physical memory.
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct RamRegion {
+    pub base: u64,
+    pub size: u64,
+}
+
+/// GIC redistributor discovery range.
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct GicrRange {
+    pub base: u64,
+    pub length: u32,
+    pub _pad: u32,
+}
+
+/// Framebuffer information from UEFI GOP.
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct FramebufferInfo {
+    pub base: u64,
+    pub size: u64,
+    pub width: u32,
+    pub height: u32,
+    pub stride: u32,
+    /// 0 = RGB, 1 = BGR
+    pub pixel_format: u32,
+}
+
+/// Complete hardware configuration for the platform.
+///
+/// Populated by the UEFI loader via ACPI discovery and UEFI boot services.
+/// Passed to the kernel entry point in x0.
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct HardwareConfigV7 {
+    /// Magic number for validation: 0x4252_4E58 ("BRNX")
+    pub magic: u32,
+    /// Version of this struct (`HARDWARE_CONFIG_VERSION`)
+    pub version: u32,
+
+    // --- UART ---
+    /// UART base physical address (PL011 or 16550)
+    pub uart_base_phys: u64,
+    /// UART interrupt (GIC SPI number)
+    pub uart_irq: u32,
+    /// UART type: 0 = PL011, 1 = 16550
+    pub uart_type: u8,
+    pub _pad0: [u8; 3],
+
+    // --- GIC ---
+    /// GIC version (2, 3, or 4)
+    pub gic_version: u8,
+    pub _pad1: [u8; 7],
+    /// GIC Distributor base physical address
+    pub gicd_base: u64,
+    /// GIC CPU Interface base (GICv2 only, 0 for GICv3+)
+    pub gicc_base: u64,
+    /// Number of GICR ranges
+    pub gicr_range_count: u32,
+    pub _pad2: u32,
+    /// GIC Redistributor ranges (GICv3+)
+    pub gicr_ranges: [GicrRange; MAX_GICR_RANGES],
+
+    // --- PCI ---
+    /// PCI ECAM base physical address
+    pub pci_ecam_base: u64,
+    /// PCI ECAM region size
+    pub pci_ecam_size: u64,
+    /// PCI bus range start
+    pub pci_bus_start: u8,
+    /// PCI bus range end
+    pub pci_bus_end: u8,
+    pub _pad3: [u8; 6],
+    /// PCI MMIO window base
+    pub pci_mmio_base: u64,
+    /// PCI MMIO window size
+    pub pci_mmio_size: u64,
+
+    // --- Memory ---
+    /// Number of valid RAM regions
+    pub ram_region_count: u32,
+    pub _pad4: u32,
+    /// RAM regions from UEFI memory map
+    pub ram_regions: [RamRegion; MAX_RAM_REGIONS],
+
+    // --- Framebuffer ---
+    /// Whether framebuffer info is valid
+    pub has_framebuffer: u32,
+    pub _pad5: u32,
+    /// Framebuffer from UEFI GOP
+    pub framebuffer: FramebufferInfo,
+
+    // --- ACPI ---
+    /// RSDP physical address (for kernel to parse additional ACPI tables)
+    pub rsdp_addr: u64,
+
+    // --- Timer ---
+    /// Generic timer frequency in Hz (from CNTFRQ_EL0)
+    pub timer_freq_hz: u64,
+
+    // --- xHCI ---
+    /// Set to 1 if the loader already performed HCRST before ExitBootServices.
+    /// The kernel should skip HCRST and just reconfigure rings.
+    pub xhci_hcrst_done: u32,
+    pub _pad6: u32,
+    /// xHCI BAR0 physical address (read from PCI ECAM by the loader).
+    /// 0 if not discovered.
+    pub xhci_bar_phys: u64,
+
+    /// Wall clock time (Unix timestamp) read from UEFI GetTime() at boot.
+    /// 0 if not available.
+    pub boot_wall_time_utc: u64,
+
+    /// Relocation offset used to load the image and build the linked RAM alias.
+    pub ram_base_offset: u64,
+
+    // --- CPUs ---
+    /// GICC (processor) entries in the firmware's MADT flagged Enabled: the
+    /// number of CPUs the firmware reports. 0 if the MADT walk found none.
+    pub firmware_cpu_count: u32,
+    pub _pad7: u32,
+    pub rtc_get_time: u64,
+    pub runtime_region_count: u32,
+    pub _pad8: u32,
+    pub runtime_regions: [crate::RuntimeRegion; crate::MAX_RUNTIME_REGIONS],
+    /// Reserved: no boot flag is defined, and the loader writes 0.
+    pub boot_flags: u32,
+    pub _pad9: u32,
+    /// Where `boot_seed` came from: `crate::BOOT_SEED_*`, 0 for
+    /// no seed. The kernel credits the seed to its random pool and zeroes it.
+    pub boot_seed_source: u32,
+    pub _pad10: u32,
+    pub boot_seed: [u8; crate::BOOT_SEED_BYTES],
+}
+
+pub const HARDWARE_CONFIG_MAGIC: u32 = 0x4252_4E58; // "BRNX"
+use crate::HARDWARE_CONFIG_VERSION;
+
+impl HardwareConfigV7 {
+    /// Create a zeroed config with magic and version set.
+    pub const fn new() -> Self {
+        Self {
+            magic: HARDWARE_CONFIG_MAGIC,
+            version: MIN_HARDWARE_CONFIG_VERSION,
+            uart_base_phys: 0,
+            uart_irq: 0,
+            uart_type: 0,
+            _pad0: [0; 3],
+            gic_version: 0,
+            _pad1: [0; 7],
+            gicd_base: 0,
+            gicc_base: 0,
+            gicr_range_count: 0,
+            _pad2: 0,
+            gicr_ranges: [GicrRange {
+                base: 0,
+                length: 0,
+                _pad: 0,
+            }; MAX_GICR_RANGES],
+            pci_ecam_base: 0,
+            pci_ecam_size: 0,
+            pci_bus_start: 0,
+            pci_bus_end: 0,
+            _pad3: [0; 6],
+            pci_mmio_base: 0,
+            pci_mmio_size: 0,
+            ram_region_count: 0,
+            _pad4: 0,
+            ram_regions: [RamRegion { base: 0, size: 0 }; MAX_RAM_REGIONS],
+            has_framebuffer: 0,
+            _pad5: 0,
+            framebuffer: FramebufferInfo {
+                base: 0,
+                size: 0,
+                width: 0,
+                height: 0,
+                stride: 0,
+                pixel_format: 0,
+            },
+            rsdp_addr: 0,
+            timer_freq_hz: 0,
+            xhci_hcrst_done: 0,
+            _pad6: 0,
+            xhci_bar_phys: 0,
+            boot_wall_time_utc: 0,
+            ram_base_offset: 0,
+            firmware_cpu_count: 0,
+            _pad7: 0,
+            rtc_get_time: 0,
+            runtime_region_count: 0,
+            _pad8: 0,
+            runtime_regions: [crate::RuntimeRegion {
+                base: 0,
+                pages: 0,
+                kind: 0,
+                _pad: 0,
+            }; crate::MAX_RUNTIME_REGIONS],
+            boot_flags: 0,
+            _pad9: 0,
+            boot_seed_source: 0,
+            _pad10: 0,
+            boot_seed: [0; crate::BOOT_SEED_BYTES],
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+#[repr(C)]
+pub struct UefiMapHandoff {
+    pub map_phys: u64,
+    pub map_size: u64,
+    pub descriptor_size: u32,
+    pub descriptor_version: u32,
+    pub loader_check: u32,
+    pub _reserved: u32,
+}
+
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct HardwareConfig {
+    pub v7: HardwareConfigV7,
+    pub uefi_map: UefiMapHandoff,
+}
+
+impl HardwareConfig {
+    pub const fn new() -> Self {
+        Self {
+            v7: HardwareConfigV7 {
+                version: HARDWARE_CONFIG_VERSION,
+                ..HardwareConfigV7::new()
+            },
+            uefi_map: UefiMapHandoff {
+                map_phys: 0,
+                map_size: 0,
+                descriptor_size: 0,
+                descriptor_version: 0,
+                loader_check: 0,
+                _reserved: 0,
+            },
+        }
+    }
+}
+
+impl Default for HardwareConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Default for HardwareConfigV7 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl core::ops::Deref for HardwareConfig {
+    type Target = HardwareConfigV7;
+
+    fn deref(&self) -> &Self::Target {
+        &self.v7
+    }
+}
+
+impl core::ops::DerefMut for HardwareConfig {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.v7
+    }
+}
+
+pub const MIN_HARDWARE_CONFIG_VERSION: u32 = 7;
+
+pub fn accepts_version(version: u32) -> bool {
+    (MIN_HARDWARE_CONFIG_VERSION..=HARDWARE_CONFIG_VERSION).contains(&version)
+}
