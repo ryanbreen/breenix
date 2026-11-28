@@ -247,9 +247,12 @@ impl Headers {
             return Err(Errno(ENOEXEC));
         }
         let bias = self.program_bias.unwrap_or(0);
-        Ok(ExecPlan::static_image(
+        let plan = ExecPlan::static_image(
             self.phdr_vaddr + bias, (self.table.len() / PHDR) as u16, PHDR as u16, self.entry + bias,
-        ))
+        );
+        #[cfg(test)]
+        let plan = ExecPlan { test_machine: self.machine, ..plan };
+        Ok(plan)
     }
 
     fn bias_in(&self, region: Range<u64>) -> Result<u64, Errno> {
@@ -454,11 +457,17 @@ pub(crate) struct ExecPlan {
     interpreter_bias: Option<u64>,
     program_bias: u64,
     initial_pc: u64,
+    #[cfg(test)]
+    test_machine: u16,
 }
+
+#[cfg(test)]
+#[path = "../../libs/libbreenix/src/auxv.rs"]
+mod test_auxv;
 
 impl ExecPlan {
     const PREFIX_PAIRS: usize = 5;
-    const SUFFIX_PAIRS: usize = 7;
+    const SUFFIX_PAIRS: usize = 10;
     const PAIR_SIZE: usize = size_of::<(u64, u64)>();
     pub(crate) const STATIC_AUXV_SIZE: usize =
         (Self::PREFIX_PAIRS + Self::SUFFIX_PAIRS) * Self::PAIR_SIZE;
@@ -472,6 +481,8 @@ impl ExecPlan {
             interpreter_bias: None,
             program_bias: 0,
             initial_pc: entry,
+            #[cfg(test)]
+            test_machine: EM_X86_64,
         }
     }
 
@@ -499,6 +510,18 @@ impl ExecPlan {
             (4, u64::from(self.phentsize)),  // AT_PHENT
             (6, PAGE as u64),               // AT_PAGESZ
         ];
+        #[cfg(test)]
+        let ([hwcap, hwcap2], minimum) = ([0, 0], if self.test_machine == EM_AARCH64 { 5120 } else { 2048 });
+        #[cfg(test)]
+        use self::test_auxv::*;
+        #[cfg(not(test))]
+        use crate::auxv::*;
+        #[cfg(all(not(test), target_arch = "x86_64"))]
+        let [hwcap, hwcap2] = crate::arch_impl::x86_64::xstate::hwcap();
+        #[cfg(all(not(test), target_arch = "aarch64"))]
+        let [hwcap, hwcap2] = crate::arch_impl::aarch64::user_cpu::hwcap();
+        #[cfg(not(test))]
+        let minimum = crate::signal::minimum_alt_stack() as u64;
         let suffix: [_; Self::SUFFIX_PAIRS] = [
             (25, random_addr), // AT_RANDOM
             (11, uid),         // AT_UID
@@ -506,6 +529,9 @@ impl ExecPlan {
             (13, gid),         // AT_GID
             (14, egid),        // AT_EGID
             (23, secure),      // AT_SECURE
+            (AT_HWCAP, hwcap),
+            (AT_HWCAP2, hwcap2),
+            (AT_MINSIGSTKSZ, minimum),
             (0, 0),            // AT_NULL
         ];
         let program_bias = self.program_bias;

@@ -1604,6 +1604,7 @@ impl ProcessManager {
         stack_top: VirtAddr,
         initial_sp: VirtAddr,
     ) -> Result<Thread, &'static str> {
+        let fpu = crate::arch_impl::x86_64::fpu::FpuState::allocate(true)?;
         let thread_id = crate::task::thread::allocate_thread_id();
 
         let actual_tls_block = VirtAddr::new(0x10000 + thread_id * 0x1000);
@@ -1645,7 +1646,7 @@ impl ProcessManager {
             kernel_stack_top: Some(kernel_stack_top),
             kernel_stack_allocation: Some(kernel_stack),
             #[cfg(target_arch = "x86_64")]
-            fpu: crate::arch_impl::x86_64::fpu::FpuState::initial(),
+            fpu: Some(fpu),
             #[cfg(target_arch = "aarch64")]
             fpsimd: crate::signal::FpsimdContext::initial(),
             tls_block: actual_tls_block,
@@ -1742,8 +1743,6 @@ impl ProcessManager {
             stack_bottom,
             kernel_stack_top: Some(kernel_stack_top),
             kernel_stack_allocation: Some(kernel_stack),
-            #[cfg(target_arch = "x86_64")]
-            fpu: crate::arch_impl::x86_64::fpu::FpuState::initial(),
             #[cfg(target_arch = "aarch64")]
             fpsimd: crate::signal::FpsimdContext::initial(),
             tls_block: initial_tpidr_el0,
@@ -2928,6 +2927,7 @@ impl ProcessManager {
             parent_pgid,
             parent_cwd,
             parent_thread_info,
+            parent_fpu,
             parent_heap_start,
             parent_heap_end,
             parent_mmap_hint,
@@ -2954,6 +2954,11 @@ impl ProcessManager {
                 parent.pgid,
                 parent.cwd.copy(),
                 _parent_thread.clone(),
+                if _parent_thread.privilege == crate::task::thread::ThreadPrivilege::User {
+                    Some(crate::arch_impl::x86_64::fpu::FpuState::inherit(_parent_thread.id, _parent_thread.fpu.as_ref())?)
+                } else {
+                    None
+                },
                 parent.heap_start,
                 parent.heap_end,
                 parent.mmap_hint,
@@ -3070,6 +3075,7 @@ impl ProcessManager {
                 parent_pid,
                 child_pid,
                 &parent_thread_info,
+                parent_fpu,
                 userspace_rsp,
                 return_rip,
                 None, // No parent context - will use parent_thread.context
@@ -3318,16 +3324,22 @@ impl ProcessManager {
         let (_claim, ended) = self.end_fork_copy(fork, copied, abandoned);
         let (parent_pid, child_pid, parent_thread, child_process, memory) = ended?;
         let mut memory = Some(memory);
-        let completed = self.complete_fork(
+        let parent_fpu = if parent_thread.privilege == crate::task::thread::ThreadPrivilege::User {
+            crate::arch_impl::x86_64::fpu::FpuState::inherit(parent_thread.id, None).map(Some)
+        } else {
+            Ok(None)
+        };
+        let completed = parent_fpu.and_then(|child_fpu| self.complete_fork(
             parent_pid,
             child_pid,
             &parent_thread,
+            child_fpu,
             Some(parent_context.rsp),
             Some(parent_context.rip),
             Some(parent_context),
             child_process,
             &mut memory,
-        );
+        ));
         Self::abandon_unpublished(memory, abandoned);
         if completed.is_ok() {
             undo.keep();
@@ -3554,6 +3566,7 @@ impl ProcessManager {
         parent_pid: ProcessId,
         child_pid: ProcessId,
         parent_thread: &Thread,
+        child_fpu: Option<crate::arch_impl::x86_64::fpu::FpuState>,
         userspace_rsp: Option<u64>,
         return_rip: Option<u64>,
         parent_context_override: Option<crate::task::thread::CpuContext>,
@@ -3617,14 +3630,15 @@ impl ProcessManager {
         // Create a dummy entry function - we'll set the real entry point via context
         fn dummy_entry() {}
 
-        let mut child_thread = Thread::new(
+        let mut child_thread = Thread::new_prepared(
             format!("{}_main", child_process.name),
             dummy_entry,
             child_stack_top,
             parent_thread.stack_bottom,
             child_tls_block,
             parent_thread.privilege,
-        );
+            child_fpu,
+        )?;
 
         // Set the ID, kernel stack, and owning process separately.
         child_thread.id = child_thread_id;
@@ -3722,8 +3736,14 @@ impl ProcessManager {
         let parent_thread = parent
             .main_thread
             .as_ref()
-            .ok_or("Parent process has no main thread")?
-            .clone();
+            .ok_or("Parent process has no main thread")?;
+        #[cfg(target_arch = "x86_64")]
+        let fpu = if parent_thread.privilege == crate::task::thread::ThreadPrivilege::User {
+            crate::arch_impl::x86_64::fpu::FpuState::inherit(parent_thread.id, parent_thread.fpu.as_ref())?
+        } else {
+            crate::arch_impl::x86_64::fpu::FpuState::allocate(false)?
+        };
+        let parent_thread = parent_thread.clone();
 
         // Allocate a new PID for the child
         let child_pid = self.allocate_ordinary_pid();
@@ -3916,7 +3936,7 @@ impl ProcessManager {
                 kernel_stack_top: child_kernel_stack_top,
                 kernel_stack_allocation: child_kernel_stack_allocation,
                 #[cfg(target_arch = "x86_64")]
-                fpu: crate::arch_impl::x86_64::fpu::FpuState::capture(),
+                fpu: Some(fpu),
                 #[cfg(target_arch = "aarch64")]
                 fpsimd: crate::arch_impl::aarch64::fpsimd::capture(),
                 tls_block: child_tls_block,

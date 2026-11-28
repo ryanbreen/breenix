@@ -452,7 +452,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     // FPU/SSE state and local APIC timer. Each secondary CPU runs the same
     // routine from its entry path.
     log::info!("Initializing system call infrastructure...");
-    kernel::arch_impl::x86_64::cpu_init::init_cpu(0);
+    kernel::arch_impl::x86_64::cpu_init::init_cpu(0).expect("BSP userspace state contract");
     log::info!("System call infrastructure initialized");
 
     // The screen console's display BAR, its write-combining mapping and shadow:
@@ -562,7 +562,7 @@ extern "C" fn kernel_main_on_kernel_stack_checked(
         idle_kernel_stack_top, // Use the properly allocated kernel stack
         VirtAddr::new(tls_base),
         task::thread::ThreadPrivilege::Kernel,
-    ));
+    ).expect("BSP idle xstate backing"));
 
     // Mark init_task as already running (boot CPU idle task). The id stays the
     // one `Thread::new` allocated: 0 is the no-thread sentinel and is never a
@@ -573,6 +573,7 @@ extern "C" fn kernel_main_on_kernel_stack_checked(
     init_task.kernel_stack_top = Some(idle_kernel_stack_top);
 
     // Set up per-CPU current thread and idle thread
+    kernel::arch_impl::x86_64::fpu::start_idle(&mut init_task);
     let init_task_ptr = &*init_task as *const _ as *mut task::thread::Thread;
     per_cpu::set_current_thread(init_task_ptr);
     per_cpu::set_idle_thread(init_task_ptr);
@@ -3009,7 +3010,7 @@ fn test_threading() {
         x86_64::VirtAddr::new(0x1000),
         x86_64::VirtAddr::new(tls_base),
         kernel::task::thread::ThreadPrivilege::Kernel,
-    );
+    ).expect("test xstate backing");
     log::info!("✓ Thread structure creation works");
 
     // Test 4: TLS helper functions

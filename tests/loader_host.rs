@@ -109,6 +109,9 @@ fn interp_handoff_auxv() {
             (13, 2000),
             (14, 2001),
             (23, 1),
+            (16, 0),
+            (26, 0),
+            (51, 2048),
             (0, 0),
         ]
     );
@@ -127,6 +130,43 @@ fn arm_elf(kind: u16, base: u64, entry: u64, path: Option<&[u8]>) -> Vec<u8> {
     let mut bytes = elf(kind, base, entry, path);
     put(&mut bytes, 18, &EM_AARCH64.to_le_bytes());
     bytes
+}
+
+#[test]
+fn e6_initial_stack_capability_suffix() {
+    for (machine, minimum) in [(62, 2048), (EM_AARCH64, 5120)] {
+        for interpreted in [false, true] {
+            let path = interpreted.then_some(PATH);
+            let mut program = elf(2, PROGRAM_BASE, PROGRAM_ENTRY, path);
+            let mut interpreter = elf(3, INTERP_BASE, INTERP_ENTRY, None);
+            put(&mut program, 18, &machine.to_le_bytes());
+            put(&mut interpreter, 18, &machine.to_le_bytes());
+            let program = read(&program, machine).unwrap();
+            let interpreter = read(&interpreter, machine).unwrap();
+            let region = PROGRAM_BASE..PROGRAM_BASE + 0x10000;
+            let plan = program
+                .exec_plan(interpreted.then_some((&interpreter, region)))
+                .unwrap();
+            let words: Vec<_> = plan.auxv(RANDOM, IDS).collect();
+            let bytes: Vec<_> = words
+                .iter()
+                .flat_map(|&(tag, value)| tag.to_le_bytes().into_iter().chain(value.to_le_bytes()))
+                .collect();
+            let suffix = [(16u64, 0u64), (26, 0), (51, minimum), (0, 0)];
+            let expected: Vec<_> = suffix
+                .into_iter()
+                .flat_map(|(tag, value)| tag.to_le_bytes().into_iter().chain(value.to_le_bytes()))
+                .collect();
+            assert_eq!(&bytes[bytes.len() - expected.len()..], expected);
+            assert_eq!(plan.auxv_size(), bytes.len());
+            for (tag, _) in suffix {
+                assert_eq!(words.iter().filter(|pair| pair.0 == tag).count(), 1);
+            }
+            // Controls for the existing credential and interpreter contracts.
+            assert_eq!(words.contains(&(7, plan.interpreter_bias().unwrap_or(0))), interpreted);
+            assert_eq!(words.iter().find(|pair| pair.0 == 12), Some(&(12, IDS[1])));
+        }
+    }
 }
 
 #[test]
@@ -182,6 +222,9 @@ fn interp_handoff_auxv_aarch64() {
             (13, 2000),
             (14, 2001),
             (23, 1),
+            (16, 0),
+            (26, 0),
+            (51, 5120),
             (0, 0),
         ]
     );
@@ -246,7 +289,7 @@ fn interpreter_machine_must_match_program() {
 }
 
 #[test]
-fn static_auxv_unchanged_aarch64() {
+fn static_auxv_aarch64() {
     let program = arm_elf(2, PROGRAM_BASE, PROGRAM_ENTRY, None);
     let headers = read(&program, EM_AARCH64).unwrap();
     assert_eq!(headers.interpreter_path(), None);
@@ -266,6 +309,9 @@ fn static_auxv_unchanged_aarch64() {
             (13, 2000),
             (14, 2001),
             (23, 1),
+            (16, 0),
+            (26, 0),
+            (51, 5120),
             (0, 0),
         ]
     );
@@ -288,7 +334,7 @@ fn pie_handoff_supplies_bias_without_pt_phdr() {
 }
 
 #[test]
-fn static_auxv_unchanged() {
+fn static_auxv() {
     let headers = read(&elf(2, PROGRAM_BASE, PROGRAM_ENTRY, None), 62).unwrap();
     assert_eq!(headers.interpreter_path(), None);
     let plan = headers.exec_plan(None).unwrap();
@@ -307,6 +353,9 @@ fn static_auxv_unchanged() {
             (13, 2000),
             (14, 2001),
             (23, 1),
+            (16, 0),
+            (26, 0),
+            (51, 2048),
             (0, 0),
         ]
     );

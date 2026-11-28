@@ -38,6 +38,7 @@ pub mod timer;
 pub mod timer_interrupt;
 pub mod trace;
 pub mod ttbr0;
+pub mod user_cpu;
 
 // Re-export commonly used items
 // These re-exports are part of the complete HAL API

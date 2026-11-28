@@ -766,7 +766,7 @@ pub struct Thread {
 
     /// x87/SSE registers while the thread is not current on a CPU
     #[cfg(target_arch = "x86_64")]
-    pub fpu: crate::arch_impl::x86_64::fpu::FpuState,
+    pub fpu: Option<crate::arch_impl::x86_64::fpu::FpuState>,
 
     /// FP/SIMD registers while the thread is not current on a CPU, stored
     /// where a context switch saves the thread's registers and loaded by
@@ -1389,7 +1389,7 @@ impl Clone for Thread {
             // publishing a process-table row so ownership moves to the copy.
             kernel_stack_allocation: None,
             #[cfg(target_arch = "x86_64")]
-            fpu: self.fpu,
+            fpu: None,
             #[cfg(target_arch = "aarch64")]
             fpsimd: self.fpsimd,
             tls_block: self.tls_block,
@@ -1461,6 +1461,10 @@ impl Thread {
     pub fn publish_to_scheduler(&mut self) -> Thread {
         let mut published = self.clone();
         published.kernel_stack_allocation = self.kernel_stack_allocation.take();
+        #[cfg(target_arch = "x86_64")]
+        {
+            published.fpu = self.fpu.take();
+        }
         if let Some(allocation) = published.kernel_stack_allocation.as_mut() {
             allocation.set_owner_pid(self.owner_pid);
         }
@@ -1474,6 +1478,13 @@ impl Thread {
     }
 
     // =========================================================================
+    // x86 state backing moves with the scheduler publication, independently
+    // of the process row's metadata copy.
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn fpu_mut(&mut self) -> &mut crate::arch_impl::x86_64::fpu::FpuState {
+        self.fpu.as_mut().expect("scheduler thread owns xstate backing")
+    }
+
     // x86_64-specific constructors
     // =========================================================================
 
@@ -1486,6 +1497,7 @@ impl Thread {
         entry_point: extern "C" fn(u64) -> !,
         arg: u64,
     ) -> Result<Self, &'static str> {
+        let fpu = crate::arch_impl::x86_64::fpu::FpuState::allocate(false)?;
         let id = NEXT_THREAD_ID.fetch_add(1, Ordering::SeqCst);
 
         // Allocate a kernel stack
@@ -1518,9 +1530,8 @@ impl Thread {
             stack_top,
             stack_bottom,
             kernel_stack_top: Some(stack_top), // Kernel threads use their stack for everything
+            fpu: Some(fpu),
             kernel_stack_allocation: Some(stack), // Keep allocation alive
-            #[cfg(target_arch = "x86_64")]
-            fpu: crate::arch_impl::x86_64::fpu::FpuState::initial(),
             #[cfg(target_arch = "aarch64")]
             fpsimd: crate::signal::FpsimdContext::initial(),
             tls_block,
@@ -1601,8 +1612,6 @@ impl Thread {
             stack_bottom,
             kernel_stack_top: Some(stack_top),
             kernel_stack_allocation: Some(stack),
-            #[cfg(target_arch = "x86_64")]
-            fpu: crate::arch_impl::x86_64::fpu::FpuState::initial(),
             #[cfg(target_arch = "aarch64")]
             fpsimd: crate::signal::FpsimdContext::initial(),
             tls_block,
@@ -1646,7 +1655,25 @@ impl Thread {
         stack_bottom: VirtAddr,
         tls_block: VirtAddr,
         privilege: ThreadPrivilege,
-    ) -> Self {
+    ) -> Result<Self, &'static str> {
+        Self::new_prepared(name, entry_point, stack_top, stack_bottom, tls_block, privilege, None)
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn new_prepared(
+        name: alloc::string::String,
+        entry_point: fn(),
+        stack_top: VirtAddr,
+        stack_bottom: VirtAddr,
+        tls_block: VirtAddr,
+        privilege: ThreadPrivilege,
+        fpu: Option<crate::arch_impl::x86_64::fpu::FpuState>,
+    ) -> Result<Self, &'static str> {
+        let fpu = match fpu {
+            Some(fpu) => fpu,
+            None => crate::arch_impl::x86_64::fpu::FpuState::allocate(privilege == ThreadPrivilege::User)?,
+        };
+
         let id = NEXT_THREAD_ID.fetch_add(1, Ordering::SeqCst);
 
         // Set up initial context
@@ -1657,7 +1684,7 @@ impl Thread {
             privilege,
         );
 
-        Self {
+        Ok(Self {
             id,
             wake: None,
             name,
@@ -1666,9 +1693,8 @@ impl Thread {
             stack_top,
             stack_bottom,
             kernel_stack_top: None, // Will be set separately for userspace threads
+            fpu: Some(fpu),
             kernel_stack_allocation: None, // No kernel stack allocation for regular threads
-            #[cfg(target_arch = "x86_64")]
-            fpu: crate::arch_impl::x86_64::fpu::FpuState::initial(),
             #[cfg(target_arch = "aarch64")]
             fpsimd: crate::signal::FpsimdContext::initial(),
             tls_block,
@@ -1700,7 +1726,7 @@ impl Thread {
             kill_custody: core::sync::atomic::AtomicU64::new(0),
             futex_group: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
-        }
+        })
     }
 
     /// Create a new thread (AArch64)
@@ -1735,8 +1761,6 @@ impl Thread {
             stack_bottom,
             kernel_stack_top: None,
             kernel_stack_allocation: None,
-            #[cfg(target_arch = "x86_64")]
-            fpu: crate::arch_impl::x86_64::fpu::FpuState::initial(),
             #[cfg(target_arch = "aarch64")]
             fpsimd: crate::signal::FpsimdContext::initial(),
             tls_block,
@@ -1779,7 +1803,8 @@ impl Thread {
         entry_point: VirtAddr,
         stack_top: VirtAddr,
         tls_block: VirtAddr,
-    ) -> Self {
+    ) -> Result<Self, &'static str> {
+        let fpu = crate::arch_impl::x86_64::fpu::FpuState::allocate(true)?;
         let id = NEXT_THREAD_ID.fetch_add(1, Ordering::SeqCst);
 
         // For userspace threads, we'll use a simple TLS setup for now
@@ -1803,7 +1828,7 @@ impl Thread {
         // Set up initial context for userspace
         let context = CpuContext::new(entry_point, stack_top, ThreadPrivilege::User);
 
-        Self {
+        Ok(Self {
             id,
             wake: None,
             name,
@@ -1812,9 +1837,8 @@ impl Thread {
             stack_top,
             stack_bottom,
             kernel_stack_top: None,        // Will be set separately
+            fpu: Some(fpu),
             kernel_stack_allocation: None, // Will be set separately for userspace threads
-            #[cfg(target_arch = "x86_64")]
-            fpu: crate::arch_impl::x86_64::fpu::FpuState::initial(),
             #[cfg(target_arch = "aarch64")]
             fpsimd: crate::signal::FpsimdContext::initial(),
             tls_block: actual_tls_block,
@@ -1846,7 +1870,7 @@ impl Thread {
             kill_custody: core::sync::atomic::AtomicU64::new(0),
             futex_group: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
-        }
+        })
     }
 
     /// Create a new userspace thread (AArch64)
@@ -1889,8 +1913,6 @@ impl Thread {
             stack_bottom,
             kernel_stack_top: None,
             kernel_stack_allocation: None,
-            #[cfg(target_arch = "x86_64")]
-            fpu: crate::arch_impl::x86_64::fpu::FpuState::initial(),
             #[cfg(target_arch = "aarch64")]
             fpsimd: crate::signal::FpsimdContext::initial(),
             tls_block: actual_tls_block,
@@ -1991,7 +2013,8 @@ impl Thread {
         stack_bottom: VirtAddr,
         tls_block: VirtAddr,
         privilege: ThreadPrivilege,
-    ) -> Self {
+    ) -> Result<Self, &'static str> {
+        let fpu = crate::arch_impl::x86_64::fpu::FpuState::allocate(privilege == ThreadPrivilege::User)?;
         // Set up initial context
         let context = CpuContext::new(
             VirtAddr::new(thread_entry_trampoline as u64),
@@ -1999,7 +2022,7 @@ impl Thread {
             privilege,
         );
 
-        Self {
+        Ok(Self {
             id,
             wake: None,
             name,
@@ -2008,9 +2031,8 @@ impl Thread {
             stack_top,
             stack_bottom,
             kernel_stack_top: None, // Will be set separately for userspace threads
+            fpu: Some(fpu),
             kernel_stack_allocation: None, // No kernel stack allocation for regular threads
-            #[cfg(target_arch = "x86_64")]
-            fpu: crate::arch_impl::x86_64::fpu::FpuState::initial(),
             #[cfg(target_arch = "aarch64")]
             fpsimd: crate::signal::FpsimdContext::initial(),
             tls_block,
@@ -2042,7 +2064,7 @@ impl Thread {
             kill_custody: core::sync::atomic::AtomicU64::new(0),
             futex_group: core::sync::atomic::AtomicU64::new(0),
             cpu_affinity: None,
-        }
+        })
     }
 
     /// Create a new thread with a specific ID (used for fork) - AArch64
@@ -2073,8 +2095,6 @@ impl Thread {
             stack_bottom,
             kernel_stack_top: None,
             kernel_stack_allocation: None,
-            #[cfg(target_arch = "x86_64")]
-            fpu: crate::arch_impl::x86_64::fpu::FpuState::initial(),
             #[cfg(target_arch = "aarch64")]
             fpsimd: crate::signal::FpsimdContext::initial(),
             tls_block,
