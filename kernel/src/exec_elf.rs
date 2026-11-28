@@ -581,18 +581,32 @@ impl Headers {
             }
             return Ok(false);
         };
+        // Populate only the file pages a piece maps or copies, one run per
+        // stretch of adjacent pages: a gap between two loads is never read.
         let page = PAGE as u64;
-        let (mut low, mut high) = (u64::MAX, 0);
+        let mut runs: Vec<(u64, u64)> = Vec::new();
+        runs.try_reserve(pieces.len()).map_err(|_| Errno(ENOMEM))?;
         for piece in &pieces {
-            let (from, to) = match *piece {
-                Piece::File { start, end, pgoff, .. } => (pgoff, pgoff + (end - start) / page),
-                Piece::Tail { pgoff, .. } => (pgoff, pgoff + 1),
-                Piece::Zero { .. } => continue,
-            };
-            (low, high) = (low.min(from), high.max(to));
+            match *piece {
+                Piece::File { start, end, pgoff, .. } => runs.push((pgoff, pgoff + (end - start) / page)),
+                Piece::Tail { pgoff, .. } => runs.push((pgoff, pgoff + 1)),
+                Piece::Zero { .. } => {}
+            }
         }
-        if low < high {
-            target.populate(low, high - low)?;
+        runs.sort_unstable();
+        let mut merged: Option<(u64, u64)> = None;
+        for (from, to) in runs {
+            merged = match merged {
+                Some((first, last)) if from <= last => Some((first, last.max(to))),
+                Some((first, last)) => {
+                    target.populate(first, last - first)?;
+                    Some((from, to))
+                }
+                None => Some((from, to)),
+            };
+        }
+        if let Some((first, last)) = merged {
+            target.populate(first, last - first)?;
         }
         for piece in pieces {
             match piece {

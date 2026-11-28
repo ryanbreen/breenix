@@ -2064,7 +2064,8 @@ pub(crate) struct ExecImage<'a> {
     node: &'a Arc<VNode>,
     file: &'a dyn MappingIo,
     _load: ExecLoad,
-    population: Option<PageClaim>,
+    /// One claim per populated run of the image's file pages.
+    population: Vec<PageClaim>,
 }
 
 impl<'a> ExecImage<'a> {
@@ -2080,14 +2081,15 @@ impl<'a> ExecImage<'a> {
         }
         inner.exec_loads += 1;
         drop(inner);
-        Some(Self { node, file, _load: ExecLoad(node.map.clone()), population: None })
+        Some(Self { node, file, _load: ExecLoad(node.map.clone()), population: Vec::new() })
     }
 
-    /// Read file pages `[first, first + count)` into the cache and hold them
-    /// until this load ends. A second exec of a resident image finds its
-    /// pages resident and does not read them.
+    /// Read file pages `[first, first + count)` into the cache and hold them,
+    /// with every run populated before, until this load ends. A second exec
+    /// of a resident image finds its pages resident and does not read them.
     pub(crate) fn populate(&mut self, first: u64, count: u64) -> Result<(), MapError> {
-        self.population = Some(populate_through(self.node, self.file, first, count)?);
+        self.population.try_reserve(1).map_err(|_| MapError::NoMemory)?;
+        self.population.push(populate_through(self.node, self.file, first, count)?);
         Ok(())
     }
 
