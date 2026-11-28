@@ -188,6 +188,28 @@ pub fn flush_all() {
     shootdown::request(shootdown::Request::All);
 }
 
+/// Invalidate the kernel pages `pages`, global translations included, on
+/// every CPU, before the frames behind them are released (E1 plan, 6.5).
+///
+/// x86: `tlb_request::kernel_unmap_request` on this CPU and every other
+/// online CPU, which `invlpg`s each page, or for more than 32 clears and
+/// restores CR4.PGE. A CR3 reload, `flush_all`, would keep the global ones.
+/// ARM64: `dsb ishst`, `tlbi vaae1is` per page and `dsb ish; isb`; the
+/// broadcast TLBI has completed on each CPU when the last barrier does.
+pub fn flush_kernel_pages(pages: &[u64]) {
+    if pages.is_empty() {
+        return;
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        let request = crate::memory::tlb_request::kernel_unmap_request(pages);
+        shootdown::execute_here(request);
+        shootdown::request(request);
+    }
+    #[cfg(target_arch = "aarch64")]
+    tlb::flush_pages(pages);
+}
+
 /// Ensure TLB consistency after page table switch
 ///
 /// This function should be called after switching page tables (writing to CR3)
@@ -398,6 +420,18 @@ mod shootdown {
     /// to: it is wedged with NMIs blocked, and the kernel stops rather than
     /// free memory that CPU may still translate to.
     const ACK_TIMEOUT_SECONDS: u64 = 5;
+
+    /// Carry out `request` on this CPU, as a target would.
+    pub(super) fn execute_here(request: Request) {
+        let cpu = if crate::per_cpu::is_initialized() {
+            crate::per_cpu::cpu_id()
+        } else {
+            0
+        };
+        let (kind, arg) = tlb_request::encode(request);
+        // SAFETY: the caller keeps what the request names live.
+        unsafe { tlb_request::execute(kind, arg, &mut ThisCpu(cpu)) };
+    }
 
     /// Deliver `request` to every other online CPU and wait for every
     /// acknowledgement. One atomic load when only this CPU is online.

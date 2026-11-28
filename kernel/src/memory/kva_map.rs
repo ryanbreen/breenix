@@ -68,9 +68,10 @@ pub fn index(va: u64, level: usize) -> usize {
 pub enum Walk {
     /// The table at `leaf_level` that holds the leaf.
     Table(u64),
-    /// Entry `index` of the table `parent` at `level` is invalid.
+    /// Entry `index` of the table `parent` at `level` is empty (0).
     Missing { parent: u64, index: usize, level: usize },
-    /// A valid descriptor at `level` maps a block where a table is needed.
+    /// The descriptor at `level` is not a valid table: a block, or an
+    /// invalid descriptor that still holds its address.
     Blocked { level: usize, descriptor: u64 },
 }
 
@@ -81,10 +82,10 @@ pub fn walk<F: Format, M: TableMemory>(mem: &M, root: u64, va: u64, leaf_level: 
     for level in 0..leaf_level {
         let index = index(va, level);
         let descriptor = mem.load(table, index);
-        if !F::is_valid(descriptor) {
+        if descriptor == 0 {
             return Walk::Missing { parent: table, index, level };
         }
-        if !F::is_table(descriptor, level) {
+        if !F::is_valid(descriptor) || !F::is_table(descriptor, level) {
             return Walk::Blocked { level, descriptor };
         }
         table = F::address(descriptor);
@@ -95,6 +96,11 @@ pub fn walk<F: Format, M: TableMemory>(mem: &M, root: u64, va: u64, leaf_level: 
 /// Link the page at `page` as the table under entry `index` of `parent`,
 /// which a walk found invalid. Returns the table the caller continues in,
 /// and the page when the caller must give it back.
+///
+/// The link is a compare-exchange of the empty entry, so of two CPUs that
+/// found it empty, one links its page and the other continues in that
+/// table and gets its own page back, still zeroed. Leaves need no such
+/// care: each VA range has one owner.
 pub fn install_table<F: Format, M: TableMemory>(
     mem: &M,
     parent: u64,
@@ -103,8 +109,15 @@ pub fn install_table<F: Format, M: TableMemory>(
 ) -> (u64, Option<u64>) {
     mem.zero(page);
     mem.publish_table();
-    mem.store(parent, index, F::table(page));
-    (page, None)
+    match mem.compare_exchange(parent, index, 0, F::table(page)) {
+        Ok(_) => (page, None),
+        Err(winner) => {
+            // Only a table install races into an empty entry above an owned
+            // range: a block there would overlap the caller's own range.
+            debug_assert!(F::is_valid(winner) && F::is_table(winner, 0));
+            (F::address(winner), Some(page))
+        }
+    }
 }
 
 /// Remove the 4 KiB leaf that maps `va` below `root` and return the physical

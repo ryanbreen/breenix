@@ -12,6 +12,15 @@ pub const KIND_PAGE: u8 = 1;
 pub const KIND_ALL: u8 = 2;
 /// Leave this page-table root if it is loaded and this CPU is not returning to it.
 pub const KIND_RELEASE_ROOT: u8 = 3;
+/// Clear and restore CR4.PGE: every translation, global ones included.
+pub const KIND_GLOBAL_ALL: u8 = 4;
+/// `invlpg` each of the pages in a list. The kind is this base plus the
+/// page count, 1 to `MAX_GLOBAL_PAGES`, and the argument is the list's address.
+pub const KIND_GLOBAL_PAGES: u8 = 0x20;
+
+/// The most pages a kernel unmap flushes one `invlpg` at a time; a larger
+/// batch clears and restores CR4.PGE instead (E1 plan, 6.5).
+pub const MAX_GLOBAL_PAGES: usize = 32;
 
 /// A shootdown request, as an initiator names it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,6 +32,11 @@ pub enum Request {
     /// Leave this page-table root if it is loaded and this CPU is not
     /// returning to it.
     ReleaseRoot(u64),
+    /// `invlpg` each page of the list at `pages`, `count` of them (1 to
+    /// `MAX_GLOBAL_PAGES`). `invlpg` removes a page's global translations too.
+    GlobalPages { pages: *const u64, count: u8 },
+    /// Clear and restore CR4.PGE.
+    GlobalAll,
 }
 
 /// The TLB operations one CPU can perform on itself.
@@ -45,6 +59,8 @@ pub fn encode(request: Request) -> (u8, u64) {
         Request::Page(addr) => (KIND_PAGE, addr),
         Request::All => (KIND_ALL, 0),
         Request::ReleaseRoot(root) => (KIND_RELEASE_ROOT, root),
+        Request::GlobalPages { pages, count } => (KIND_GLOBAL_PAGES + count, pages as u64),
+        Request::GlobalAll => (KIND_GLOBAL_ALL, 0),
     }
 }
 
@@ -58,13 +74,31 @@ pub unsafe fn execute(kind: u8, arg: u64, cpu: &mut impl TlbOps) {
         KIND_PAGE => cpu.invlpg(arg),
         KIND_ALL => cpu.reload_cr3(),
         KIND_RELEASE_ROOT => cpu.release_root(arg),
+        KIND_GLOBAL_ALL => cpu.toggle_global_pages(),
+        _ if kind > KIND_GLOBAL_PAGES && usize::from(kind - KIND_GLOBAL_PAGES) <= MAX_GLOBAL_PAGES => {
+            let count = usize::from(kind - KIND_GLOBAL_PAGES);
+            // SAFETY: `encode` put a list of `count` pages at `arg`, which
+            // the caller keeps live.
+            let pages = unsafe { core::slice::from_raw_parts(arg as *const u64, count) };
+            for &page in pages {
+                cpu.invlpg(page);
+            }
+        }
         _ => {}
     }
 }
 
-/// The flush a kernel unmap of `pages` sends to each CPU before the frames
-/// behind them are released. `unmap_kernel_page` leaves this to its caller,
-/// which flushes once on every CPU with `tlb::flush_all`.
-pub fn kernel_unmap_request(_pages: &[u64]) -> Request {
-    Request::All
+/// The flush a kernel unmap of `pages` sends to each CPU, the initiator
+/// included, before the frames behind them are released. Kernel window
+/// pages are global, and a CR3 reload keeps global translations (SDM vol. 3A
+/// §4.10.4.1), so the flush is `invlpg` per page for up to
+/// `MAX_GLOBAL_PAGES` pages and a CR4.PGE toggle above that.
+///
+/// The request names `pages`, which the caller keeps live until every CPU
+/// has acknowledged it.
+pub fn kernel_unmap_request(pages: &[u64]) -> Request {
+    match pages.len() {
+        count @ 1..=MAX_GLOBAL_PAGES => Request::GlobalPages { pages: pages.as_ptr(), count: count as u8 },
+        _ => Request::GlobalAll,
+    }
 }
