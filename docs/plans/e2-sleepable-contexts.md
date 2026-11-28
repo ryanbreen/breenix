@@ -679,9 +679,22 @@ A foreground operation runs in passes (an optimistic read with validation: Kung 
 ### 7.3 Write paths and the commit worker
 
 - **Writes** stage dirty data in memory under the lock, as today.
-- **A full dirty budget.** Today the writer commits inline (audit R11). Instead, the writer releases the
-  lock, signals the commit worker and parks on commit progress, then retries. It never waits on a FLUSH
-  while holding the lock. <!-- claim-lint:ok: normative requirement of docs/plans/e2-sleepable-contexts.md under ruling DEV-37(2), not a measured result. -->
+- **A full dirty budget.** Today the writer commits inline (audit R11). Instead, a foreground writer
+  releases the lock, signals the commit worker and parks on commit progress, then retries. It never waits
+  on a FLUSH while holding the lock. <!-- claim-lint:ok: normative requirement of docs/plans/e2-sleepable-contexts.md under ruling DEV-37(2), not a measured result. -->
+- **The commit worker never waits for itself.** `admit` also runs on the commit worker: `commit_due`
+  stages mapped dirty pages, and their writeback goes through `admit` (`vfs.rs:2508-2569`, `:4320-4347`).
+  Today's inline commit in `admit` exists so that the worker does not sleep for progress only it can make
+  (`vfs.rs:2188-2196`). A worker that parked on commit progress there would stop commits, and fsync would
+  wait for good. So admission on a full budget branches on who is asking: <!-- claim-lint:ok: normative requirement of docs/plans/e2-sleepable-contexts.md under ruling DEV-37(2), not a measured result. -->
+  - a foreground writer parks, as above;
+  - the commit worker does not park. If no other publisher owns the detached generation, it publishes
+    the generation it already holds, as today, with the mount state lock released across the writes and
+    FLUSH. If another publisher does own it, the worker stops staging mappings for this pass, records
+    the remaining mappings as still dirty and returns to its loop, where that publisher's completion wakes
+    it.
+  Admission learns who is asking from the worker's own thread identity, recorded when the worker starts,
+  and not from a flag a caller passes. <!-- claim-lint:ok: normative requirement of docs/plans/e2-sleepable-contexts.md under ruling DEV-37(2), not a measured result. -->
 - **The commit worker** freezes the generation under the lock and writes and flushes without it. It takes
   the lock again only to publish. E2.5 takes an inventory of every device wait currently reached under the
   lock and lists what each becomes in that PR's body, checked by the guard in §9. <!-- claim-lint:ok: normative requirement of docs/plans/e2-sleepable-contexts.md under ruling DEV-37(2), not a measured result. -->
@@ -873,6 +886,11 @@ should own each, not several agents on one PR (DEV-30(3)).
       writer's device;
   - **the write path:** a full dirty budget makes the writer park on commit progress without holding the
     lock;
+  - **the worker path:** a full budget reached while the commit worker stages mapped dirty pages. In
+    one case the worker owns the detached generation, and in the other another publisher does. In both,
+    a concurrent fsync completes and the worker is never parked on commit progress. A variant of the
+    check against §7.3's earlier rule, where every full-budget caller parks, deadlocks in the model,
+    which shows the case is reached; <!-- claim-lint:ok: normative requirement of docs/plans/e2-sleepable-contexts.md under ruling DEV-37(2), not a measured result. -->
   - **the §7.3a paths, each with a cold cache under the I7 guard:** a partial-page write, a truncate to
     the middle of a page, a scrub pass, the durable-root check, snapshot status, a read-only snapshot
     read and a snapshot delete. Each is red on the old code at its first device read, or at its
