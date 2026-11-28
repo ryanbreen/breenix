@@ -191,3 +191,23 @@ fn a_hole_page_shows_a_later_shared_store_to_every_mapping() {
     assert_eq!(private.load(late), Ok(0x42), "a private reader kept the hole's zeros");
     assert_eq!(read(fs.as_ref(), &node, late, 1), [0x42]);
 }
+
+// E3-2 review: mmap's population returns before the binding is published,
+// and a mutation that grows the file can run in that gap. The pages it makes
+// valid lie in the population's claim, not yet in any binding. Once the
+// binding is published, a page the growth left as a hole reads 00 and a page
+// the write reached reads the written byte. Neither is the absent page's SIGBUS.
+#[test]
+fn a_growth_before_the_binding_is_published_reads_the_grown_bytes() {
+    use crate::memory::file_map::{bind_populated, populate};
+    let (fs, _disk, node) = fixture(&[b'x'; 4096]);
+    let Ok(population) = populate(&node, 0, 3) else { panic!("population failed") };
+    fs.resize(&node, 2 * PAGE, false, &|_| Ok(())).unwrap();
+    write(fs.as_ref(), &node, 2 * PAGE + 5, b"w");
+    let binding = bind_populated(node.clone(), &*population, 3 * PAGE);
+    assert_eq!(binding.load(7), Ok(b'x'));
+    assert_eq!(binding.load(PAGE + 7), Ok(0), "the page the resize made valid was absent");
+    assert_eq!(binding.load(2 * PAGE + 5), Ok(b'w'), "the page the write reached was absent");
+    drop(binding);
+    drop(population);
+}
