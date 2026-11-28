@@ -104,9 +104,12 @@ to the default tree. PR A adds a third slot:
   `MountedRoot` for it (so delete and rename of that root return `EBUSY`), calls `include_staging_tree`, and
   returns the staging root inode `STAGING_TREE | 2`. Refusals: `ENOENT` (no such root), `EROFS` (a read-only root or
   a read-only writer), `EBUSY` (the booted root, root 1, or a staging tree already attached).
-- **Detach** syncs, so the staging tree's changes are in a durable generation. It refuses with `EBUSY` while a
-  VNode of the staging tag is open, apart from the mount's own custody. Then it excludes the tree and drops the
-  claim.
+- **Detach** runs only after the staging mount has left the registry (3.2), so no path reaches the tree and no
+  reference of the unmount's own walk is outstanding. It syncs, so the staging tree's changes are in a durable
+  generation, requires that no node of the staging tag is still referenced (an open file description that
+  outlived the mount), then excludes the tree and drops the claim. A refusal at that point leaves the tree
+  attached and claimed with no mount: the draft cannot be deleted or renamed until a reboot drops the attachment,
+  and `paired abort` reports that. That direction loses no data.
 - The staging attachment has no on-disk record. After a crash or reboot, no tree is attached, and the draft is
   just a root.
 
@@ -122,10 +125,21 @@ The mount syscall (`kernel/src/fs/breenfs/mount.rs:12`) gains one source, alongs
   already uses for `/etc` and the other shared binds (vfs/boot.rs:203-230).
 - refuses flags 1 with `EINVAL`. The existing `GenerationView` already gives read-only access.
 
-Unmount (`mount.rs:90`) checks for this mount before its existing branches. It calls `writer.detach_staging()`, then
-unregisters. It does not call `shutdown` on the shared writer. If detach refuses, the mount stays registered and
-the call returns the error. Shutting down the root's writer from an unmount is the failure this check prevents,
-and test T-A4 pins it.
+Unmount (`mount.rs:90`) checks for this mount before its existing branches, in this order:
+1. `registry::unmount(id, force)` removes the entry. `MountTable::remove` applies its existing busy check (pins
+   from open files and working directories in the mount) first, so a busy mount is refused before any change:
+   still registered, still attached.
+2. The syscall drops its resolved walk.
+3. `writer.detach_staging()` (3.1).
+
+It does not call `shutdown` on the shared writer. Detaching before removal would be the wrong order: a removal
+refused afterwards would leave a registered mount over a tree that is gone.
+
+**Who can reach the draft.** Once mounted, a path through the mount point is checked against the draft's own
+root directory, which is the clone of `/` at 0755, so the covered directory's mode no longer applies. The mount
+point therefore sits inside a directory that stays protected: `/run/breenix/paired/stage`, where
+`/run/breenix/paired` is created by `paired begin` (4.0's walk) as root:root 0700 and refused if it already exists
+with another owner, mode or type. Traversal needs search permission on that parent, which only root has.
 
 The x86 write fence needs no change. The staging tree lives on the system partition, whose range the persistent
 boot already opened.
@@ -218,7 +232,7 @@ a window, so the paired installer uses descriptors instead.
      publish's unmount leave it in place. The epoch restarts at 0 on each mount (3.3), so publish refuses when the
      file's boot ID is not the running one, and a missing file refuses too;
    - `SNAPSHOT_CREATE` `<id>.new`, flags 0, on `/`;
-   - mount it with `root-volume` at `/run/breenix/stage`, mode 0700. `/run` is emptied at boot, so a crashed
+   - mount it with `root-volume` at `/run/breenix/paired/stage` (3.2). `/run` is emptied at boot, so a crashed
      deploy leaves no stale mount point.
 
 ### 4.2 Upload, with checksums
@@ -227,7 +241,7 @@ a window, so the paired installer uses descriptors instead.
 2. `paired have <id>` prints the inventory rows the clone already satisfies byte for byte: same type, mode, owner,
    size and SHA-256 at the same path. Only the remaining rows need bytes from the host.
 3. The host writes each remaining regular file once, as a content-addressed object, then runs
-   `bsync --sudo objects/ host:/run/breenix/stage/.breenix-incoming/objects/`. The objects go straight into the
+   `bsync --sudo objects/ host:/run/breenix/paired/stage/.breenix-incoming/objects/`. The objects go straight into the
    draft, so each byte crosses SSH once and is written once, with no second copy from a staging area.
    bsync's `bput --adopt` checks each object's length and SHA-256 before publishing it (tools/bsync/README.md).
    Each object is named by its own SHA-256, so the installer can check each object against its name. Objects are plain files at mode 0600. bsync refuses
@@ -517,7 +531,7 @@ behavior: `EBUSY`, a second writer refused. The tests then fail at run time.
 | T-A1 staging write isolation | `tools/breenfs-host-tests/tests/snapshot.rs` | A persistent writer (`gen-A` plus the default tree) clones `gen-A` to `B.new` and attaches it. It then creates, overwrites, truncates, unlinks, hard-links, symlinks and chmods in the staging tree, interleaved with booted-root and default-tree writes, across several commits. After a fresh recovery mount, `B.new`'s migration manifest equals the model, and `gen-A` and the default tree equal their own models. | Attach returns `EBUSY` |
 | T-A2 crash images | `tools/breenfs-host-tests/tests/crash_images.rs` | The same stream, through detach and the rename to `gen-B`, under the recording device. Each crash image recovers and passes `breenfs-check --full`. `gen-A` and the default tree match the model at the recovered commit. The second root is absent, a `B.new` that equals some prefix of the staged stream, or a complete `gen-B`. | The stream stops at attach |
 | T-A3 refusals and epoch | `tools/breenfs-host-tests/tests/snapshot.rs` | Attach is refused for the booted root, root 1, a read-only root and a second staging tree. Delete and rename of the attached root return `EBUSY`. Detach with an open staged file returns `EBUSY`. The epoch does not change for reads (atime), default-tree writes or staging writes, and does change for a booted-root write. After `ROOT_FREEZE`, a booted-root create, write, rename and setattr return `EROFS` and the epoch stays at the frozen value, while default-tree writes and atime touches still succeed. `ROOT_THAW` admits writes again. A booted-root write racing the freeze, driven by a fixed interleaving, is either counted in the returned epoch or refused. | No attach, no epoch and no freeze |
-| T-A4 unmount keeps the writer | `tools/vfs-host-tests/tests/boot_mount_tests.rs`, which already mounts and unmounts through the registry | Unmounting the staging mount detaches it, and `/` stays registered, writable and committing. A failed detach leaves the staging mount registered. | Today's non-bind unmount path calls `shutdown` |
+| T-A4 unmount keeps the writer | `tools/vfs-host-tests/tests/boot_mount_tests.rs`, which already mounts and unmounts through the registry | Unmounting the staging mount detaches it, and `/` stays registered, writable and committing. Order: with a process's working directory inside the staging mount, unmount returns `EBUSY` and the mount is still registered and still attached (a staged write still succeeds); after that directory is left, unmount succeeds with no reference from its own walk blocking detach. Access: a non-root credential's lookup of `/run/breenix/paired/stage/usr` returns `EACCES`. | Today's non-bind unmount path calls `shutdown` |
 
 No boot belongs to PR A. Its live effect is the staging mount PR B uses on the R240. The kernel reaches the box
 through a kernel-only one-reboot flash (#3247) of a main that contains PR A, before PR B's live run (below).
