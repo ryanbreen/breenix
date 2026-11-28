@@ -5,7 +5,9 @@ const SWITCH: &str = include_str!("../kernel/src/arch_impl/aarch64/context_switc
 
 fn function<'a>(source: &'a str, name: &str) -> &'a str {
     let signature = format!("fn {name}(");
-    let start = source.find(&signature).unwrap_or_else(|| panic!("missing {name}"));
+    let start = source
+        .find(&signature)
+        .unwrap_or_else(|| panic!("missing {name}"));
     source[start..]
         .split_once("\n}")
         .unwrap_or_else(|| panic!("missing closing brace of {name}"))
@@ -22,11 +24,18 @@ fn dispatch_does_not_take_the_scheduler_list_lock() {
         "exit_schedule_trampoline",
     ] {
         let body = function(SWITCH, entry);
-        for line in body.lines().filter(|line| !line.trim_start().starts_with("//")) {
+        for line in body
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+        {
             assert!(
-                !["lock_for_context_switch", "force_unlock_scheduler", "with_scheduler("]
-                    .iter()
-                    .any(|call| line.contains(call)),
+                ![
+                    "lock_for_context_switch",
+                    "force_unlock_scheduler",
+                    "with_scheduler("
+                ]
+                .iter()
+                .any(|call| line.contains(call)),
                 "{entry} is serialized with another CPU by the scheduler list lock: {line}"
             );
         }
@@ -36,12 +45,17 @@ fn dispatch_does_not_take_the_scheduler_list_lock() {
 #[test]
 fn idle_rechecks_the_queue_before_waiting() {
     let idle = function(SWITCH, "idle_loop_arm64");
-    let check = idle.find("if idle_enter_scheduler_if_needed()").expect("missing idle recheck");
+    let check = idle
+        .find("if idle_enter_scheduler_if_needed()")
+        .expect("missing idle recheck");
     let wfi = idle.find("\"wfi\"").expect("missing idle wait");
     assert!(check < wfi, "the masked idle recheck must precede WFI");
 
     let gate = function(SWITCH, "idle_gate_state");
-    assert!(gate.contains("is_need_resched()"), "idle lost the reschedule flag");
+    assert!(
+        gate.contains("is_need_resched()"),
+        "idle lost the reschedule flag"
+    );
     assert!(
         gate.contains("Dispatch::has_ready_work()"),
         "idle needs to examine the run queue even after a reschedule flag has been consumed"
