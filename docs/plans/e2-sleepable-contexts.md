@@ -632,9 +632,31 @@ BreenFS is copy-on-write:
   `docs/fs/breenfs-format.md`);
 - since #3245, the decoded-node cache is keyed by (address, generation).
 
+The quarantine alone does not make a lock-free read safe. The format's reuse rule
+(`docs/fs/breenfs-format.md` §2.5, lines 139-142) protects the last two durable commits, and
+`promote_pending` applies it by generation arithmetic alone (`kernel/src/fs/breenfs/space.rs:235-258`). A
+reader that drops the lock while reading generation P, and is still reading when commits P+1, P+2 and
+P+3 have published, can be reading a block that P+3 converted to FREE and reallocated. Neither a pinned
+root in memory nor a later CRC check prevents that: the CRC is checked after the device has already
+returned the new owner's bytes. So E2.5 makes the pin govern reuse:
+
+- **A pin table per device.** `DeviceMounts` (`vfs.rs:208-218`), which every mount of the device shares,
+  read-only mounts included, gets a table of pinned generations and their counts. A reader registers its
+  pin under its mount's state lock, at the mount's current durable generation, before it releases the lock. <!-- claim-lint:ok: normative requirement of docs/plans/e2-sleepable-contexts.md under ruling DEV-37(2), not a measured result. -->
+- **Promotion honours the oldest pin.** A block released by commit R is reachable from generation R-1
+  and older. So a PENDING extent with `released_generation` R becomes FREE only when both R ≤ T−2 (the
+  format's rule) and R ≤ the device's oldest pinned generation. `promote_pending` takes that bound as an
+  argument, and so does any other path that converts PENDING space. The format does not change. Pins
+  delay reuse, and they do not reorder it.
+- **The race with a commit in preparation.** Preparation runs without the mount lock (`vfs.rs:2780-2785`)
+  and may allocate while a reader is registering. That is safe: a reader pins the durable generation D,
+  and the generation in preparation is D+1, which frees only R ≤ D−1, blocks D does not reach. Every
+  later preparation starts after D+1 publishes, and it reads the pin table when it computes its bound.
+  The publication hold in §7.2 step 4 is therefore a progress rule, not a safety rule. <!-- claim-lint:ok: normative requirement of docs/plans/e2-sleepable-contexts.md under ruling DEV-37(2), not a measured result. -->
+
 So a node or data extent read without the mount lock stays valid for as long as the reader's generation
 is pinned. Only the open generation's in-memory state (dirty pages, the replay log and the inode edits)
-needs the lock.
+needs the lock. <!-- claim-lint:ok: normative requirement of docs/plans/e2-sleepable-contexts.md under ruling DEV-37(2), not a measured result. -->
 
 ### 7.2 Read and lookup operations
 
@@ -824,6 +846,11 @@ should own each, not several agents on one PR (DEV-30(3)).
     - a commit publishes G+1 while A waits on a node of G, and A's retry returns results consistent with
       G+1, not a mix of G and G+1;
     - a publication hold after the bounded number of passes lets A finish while commits keep arriving;
+    - **reuse past the horizon:** A pins generation P and blocks in the test device on a read of a
+      block that P+1 releases. With the publication hold disabled, commits P+1 to P+4 publish and
+      allocate. The released block stays PENDING, and A's read returns P's bytes. Red on today's
+      `promote_pending`, which frees it at P+3. The same case with A on a read-only mount of the
+      writer's device;
   - **the write path:** a full dirty budget makes the writer park on commit progress without holding the
     lock.
 - **Risk retired.** The BreenFS half of DEV-24 (R10). One reader's device wait stalls the whole mount,
