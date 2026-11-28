@@ -183,6 +183,7 @@ impl ProbeResults {
     fn passed(self, id: u32) -> bool { self.exact & (1 << id) != 0 }
 }
 #[cfg(target_os = "none")]
+#[path = "caps/executable.rs"]
 mod executable;
 #[cfg(target_os = "none")]
 pub(in crate::gk208) use executable::{run, run_reprobe};
