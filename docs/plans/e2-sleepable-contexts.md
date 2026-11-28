@@ -1111,6 +1111,83 @@ goes first, and E2.4 then follows as designed.
 
   x86's part reaches hardware at the coordinator's flash.
 
+#### E2.4 as built: deviations (ruling DEV-39(2), DEV-48(3))
+
+The builder resolved these details against the code. Each has one sentence of reason.
+
+- **The token lives in the park module.** `kernel_main` mints it (`park::mint_early_boot_io`) and
+  revokes it (`park::revoke_early_boot_io`), and `park::io_context()` answers `IoContext::EarlyBoot`
+  only while it is held, because passing a value from `kernel_main` through the VFS, BreenFS and the
+  block cache to `begin_port_io` would change those subsystems' interfaces, and before the first
+  dispatch the boot thread is the only thread, so the held state names it.
+- **Where the token is revoked.** ARM64 revokes right after `timer_interrupt::init()`, before the
+  secondaries are released, and x86 right before `start_application_processors`, the first dispatch
+  ruling DEV-48 names; from there the revocation is `park::context()`'s "dispatching" input, which
+  replaces E2.2's stand-in (a current thread and, on ARM64, the timer running).
+- **The refusal's error.** A refused request surfaces as the driver's typed read receipt
+  (`AhciReadError::NotSleepable`, and the virtio gates' `gate-not-sleepable` stage), which BreenFS maps
+  to EIO, rather than as a new `BlockError::NotSleepable`, because those receipts already carry the
+  phase and context the read-failure path records. Both are pre-issue, so neither latches the volume
+  read-only. `WaitPublication` and the virtio kill stages keep EAGAIN, because they are kill refusals,
+  which E2.10a's custody park owns. <!-- claim-lint:ok: describes kernel/src/fs/breenfs/vfs.rs read_cause_errno and latches_on_read at this PR's head. -->
+- **Early boot and a busy device.** Early boot is the only thread, so an AHCI port, a request gate or
+  a chain slot that is busy there is refused (`EarlyBootPortOwned`, "already in progress during early
+  boot"), not waited for.
+- **`Completion` keeps its own sleep.** It decides by the caller rule (sleep, the early-boot poll, or
+  `NOT_SLEEPABLE`, which is EIO), and its sleep releases the whole baseline
+  (`park::release_baseline`), so a sleepable caller at any baseline switches; but it keeps its
+  waiter-tid wake (the R17 inbox and the x86 halted-CPU kick) rather than moving onto `park::wait`'s
+  queue, because `complete()` runs in interrupt context in the block drivers and the queue's IRQ
+  waker would change that wake path. Its idle branches (`wait_idle_completion` on both architectures)
+  are gone: idle may not wait for a device.
+- **The `init-loader` holds `park::Braked`.** The design names baseline 0. The thread holds one
+  `Braked` level, as the `test-loader` and x86's `boot_storage` (E2.4x) do, because AHCI's port lock is
+  a `spin::Mutex` that does not raise the preemption depth, and preempted inside it the loader would
+  leave a braked contender spinning on its CPU. The context is still `Sleepable`, and the host check
+  feeds the decision that context.
+- **PID 1 starts through the scheduler.** `launch_init_from_elf` goes. `start_init_from_elf` creates,
+  designates and publishes PID 1 and spawns its thread, and `test_disk::run_userspace_from_disk`
+  spawns `init_shell` the same way, because a kernel thread cannot return into PID 1 as the boot
+  continuation did. The idle-context resets and the TTBR0 switch that return needed go with it: the
+  scheduler's switch installs init's address space under its ASID, as for the test processes. The
+  `boot_tests` ProcessContext cohort runs there under `park::without_braked`, as the `test-loader`
+  runs it.
+- **The VMware poller (DEV-48(3)).** `ahci::start_completion_poller(cpu)` starts one CPU's poller.
+  CPU 0's starts just before the revocation and arms the AHCI completion source. Each secondary's
+  starts in `secondary_cpu_entry_rust` once the CPU is counted online and before it unmasks
+  interrupts, because `spawn_on_cpu` refuses a CPU not yet counted online. The poller's thread ID is
+  published at the spawn, so the CPU is ready before the poller first runs. A CPU without a poller
+  refuses a sleeping request with `CompletionNotReady` rather than polling.
+- **The readiness table.** `park::attach_completion_source`, `arm_completion_source` and
+  `completion_source_ready` sit over a fixed table (`park_core::CompletionSources`), and the
+  revocation writes one `READINESS_RECEIPT` serial line per device that is not armed. The AHCI
+  controller and the virtio-blk MMIO devices attach armed when their interrupt is routed and unmasked
+  at attach. x86 virtio-blk PCI attaches unarmed and is armed where `run_post_init_self_tests` unmasks
+  its legacy lines after AP start, because moving that unmask ahead would move IRQ 10 and 11 on the
+  R240 too, where AHCI may complete on INTx; so an x86 QEMU boot's revocation names
+  `virtio-blk-pci 0`. NVMe registers no source: its completion is INTx where that is routed, and
+  otherwise the device's own poll of its completion queue, which a sleeping caller parks between, so
+  I8 holds (the caller does not spin).
+- **x86 AHCI arms its interrupt before IDENTIFY.** x86 attaches on the `boot_storage` thread after the
+  first dispatch, so `AhciController::init` enables MSI (or INTx) before `init_common` issues IDENTIFY,
+  and `init_common` keeps GHC.IE set when an interrupt is armed. A controller with neither now has no
+  completion source, and its sleeping commands are refused rather than polled.
+- **The GPU waits.** `wait_for_completion`, `wait_for_traced` and the GK208 copy-engine recovery
+  pause keep the prepared wait, and a baseline-0 kernel thread takes a syscall's shape for it through
+  `park::Braked` (`park::braked_for_prepared_wait`) rather than a bare level, because moving them onto
+  `park::wait` would also need `gpu::notify()` to end its waiters' park words instead of unlinking
+  them, a change to the GPU wake path (#2003's lock order) that belongs with E2.10's conversion of the
+  prepared waits. `gpu::arch::poll_pause` releases the baseline through
+  `park::with_baseline_released`.
+- **The request gates.** The virtio-blk PCI and MMIO, NVMe and virtio-sound PCI and MMIO gates wait on
+  `park::wait`, and the admitted `IoContext` rides on the request guard to pick the chain window, the
+  completion wait and NVMe's polling, because the context is decided once, at admission. The x86
+  virtio-sound silence test moves from the idle continuation to the `boot_storage` thread's
+  `run_storage_self_tests`.
+- **The seam's architecture input goes.** The seam commit's `Arch` and `Admission::Poll` existed to
+  give the old answer, so the fix removes them with the check that read that answer; both
+  architectures now decide by one rule.
+
 ### E2.5: BreenFS lock order
 
 - **Scope.** §7.1-§7.3.
