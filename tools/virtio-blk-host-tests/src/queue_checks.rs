@@ -193,6 +193,7 @@ fn an_abandoned_chain_keeps_its_memory_and_a_stale_used_entry_completes_nothing(
     let taken = dev.take();
     assert_eq!((queue.chains(), queue.chain_bytes()), (3, 8192));
     assert_eq!((queue.slot_head(a), queue.is_issued(b), queue.is_issued(c)), (Some(head_a), true, false));
+    assert_eq!((queue.slot_state(a), queue.slot_state(c)), ('I', 'R'));
 
     // The boot wait gives up: the queue stops while the device holds both.
     queue.stop();
@@ -218,6 +219,7 @@ fn an_abandoned_chain_keeps_its_memory_and_a_stale_used_entry_completes_nothing(
     assert!(!queue.publish());
     assert_eq!(mem.borrow().bus.driver_writes.len(), writes_at_stop, "the driver wrote no chain memory");
     assert_eq!(queue.finish(&mut dma, a, None), Err(RequestError::Lost), "still lost");
+    assert_eq!(queue.slot_state(a), 'L');
 }
 
 #[test]

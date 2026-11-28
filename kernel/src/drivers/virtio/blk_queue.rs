@@ -372,6 +372,18 @@ impl<R: RingMemory> BlkQueue<R> {
         }
     }
 
+    /// A slot's state for failure reports: `F`ree, `R`eserved, `I`ssued,
+    /// `D`one or `L`ost.
+    pub fn slot_state(&self, slot: usize) -> char {
+        match self.slots.get(slot) {
+            Some(Slot::Free) => 'F',
+            Some(Slot::Reserved) => 'R',
+            Some(Slot::Issued { .. }) => 'I',
+            Some(Slot::Done { .. }) => 'D',
+            Some(Slot::Lost) | None => 'L',
+        }
+    }
+
     /// Whether `slot` still waits for the device.
     pub fn is_issued(&self, slot: usize) -> bool {
         matches!(self.slots.get(slot), Some(Slot::Issued { .. }))

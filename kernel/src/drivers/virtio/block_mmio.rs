@@ -1380,6 +1380,58 @@ fn report_slow_request(request: u32, waited_ns: u64) {
             request,
             waited_ns / 1_000_000
         );
+        for device_index in 0..device_count() {
+            report_queue_state(device_index);
+        }
+    }
+}
+
+/// Failure-only report of one device's queue: whether the device returned
+/// chains the driver has not drained, and each slot's state and tokens.
+fn report_queue_state(device_index: usize) {
+    let Ok(state) = block_device_state(device_index) else {
+        return;
+    };
+    let queue = &QUEUES[device_index];
+    let sample = crate::arch_without_interrupts(|| {
+        queue.engine.try_lock().map(|mut guard| {
+            guard.as_mut().map(|engine| {
+                let mut slots = [' '; MAX_CHAINS];
+                for (slot, state) in slots.iter_mut().enumerate().take(engine.chains()) {
+                    *state = engine.slot_state(slot);
+                }
+                (engine.device_used_idx(), engine.last_used(), engine.published_idx(),
+                    engine.outstanding(), engine.free_descriptors(), engine.is_stopped(), slots)
+            })
+        })
+    });
+    let base = block_mmio_virt_base(state);
+    let (interrupt_status, device_status) = unsafe {
+        (
+            crate::arch_impl::aarch64::mmio::read32((base + 0x60) as *const u32),
+            crate::arch_impl::aarch64::mmio::read32((base + 0x70) as *const u32),
+        )
+    };
+    let pending = queue.drain_pending.load(Ordering::Acquire);
+    match sample {
+        Some(Some((used, last_used, published, outstanding, free, stopped, slots))) => log::warn!(
+            "VirtIO block {}: used={} last_used={} published={} outstanding={} free_desc={} stopped={} drain_pending={} isr={:#x} status={:#x} slots={}",
+            device_index, used, last_used, published, outstanding, free, stopped, pending,
+            interrupt_status, device_status, slots.iter().collect::<alloc::string::String>()
+        ),
+        _ => log::warn!(
+            "VirtIO block {}: queue lock busy; drain_pending={} isr={:#x} status={:#x}",
+            device_index, pending, interrupt_status, device_status
+        ),
+    }
+    for (slot, entry) in COMPLETIONS[device_index].slots.iter().enumerate() {
+        let token = entry.token.load(Ordering::Acquire);
+        if token != 0 {
+            log::warn!(
+                "VirtIO block {} slot {}: token={} done={} waiter={}",
+                device_index, slot, token, entry.completion.completed_token(), entry.completion.waiter_tid()
+            );
+        }
     }
 }
 
