@@ -34,13 +34,17 @@ pub fn frame_number(frame: &[u8]) -> u32 {
     u32::from_be_bytes(frame[len - 8..len - 4].try_into().unwrap())
 }
 
-/// What the receive path delivers until it reports no further frame, then the
-/// buffers are given back, as the kernel's receive loop does.
+/// What the receive path delivers until it reports no further frame, with the
+/// kernel's receive loop around it (net::process_rx): the buffers are given
+/// back explicitly only when a frame was handed up, so a drain whose
+/// completions were all dropped relies on the driver to give theirs back.
 pub fn drain() -> Vec<Vec<u8>> {
     let mut frames = Vec::new();
     while let Some(frame) = net_mmio::receive() {
         frames.push(frame.to_vec());
     }
-    net_mmio::recycle_rx_buffers();
+    if !frames.is_empty() {
+        net_mmio::recycle_rx_buffers();
+    }
     frames
 }
