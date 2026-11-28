@@ -1117,10 +1117,14 @@ of their steps, keeping each CPU's program order. The steps are sequentially con
     False
 
     ```
-  - A churn fixture through the admission seam: 10,000 create-and-exit cycles with a reclamation batch
-    of one per pass never fail admission and never panic. Red on the old tree: fork and clone get EAGAIN
-    once 3,840 slots are indexed or reserved (`rq.rs:127-133`), and an insert that finds no slot panics
-    (`rq.rs:270`). That is #1712's class. <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
+  - A churn fixture through the admission seam. In each of three rounds it creates 5,000 user threads
+    and holds all of them live, then exits them all. Reclamation runs a batch of one per pass. The next
+    round starts once the previous round's backlog has drained. No admission may fail and nothing may
+    panic. Red on the old tree: fork and clone get EAGAIN once 3,840 slots are indexed or reserved
+    (`rq.rs:127-133`), in the first round's 3,841st creation. An insert that finds no slot panics
+    (`rq.rs:270`). That is #1712's class. The peak of simultaneously live threads is what crosses the
+    old limit. Create-and-exit cycles that free their slot before the next creation reuse it and pass on
+    the old tree. <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
 
     The red claim, checked against the old admission limit. `reserve` refuses once `TAKEN` reaches
     `SLOTS - KERNEL_RESERVE`, and `TAKEN` falls as threads are reclaimed (`rq.rs:116`, `:127-133`). So
@@ -1128,7 +1132,7 @@ of their steps, keeping each CPU's program order. The steps are sequentially con
 
     ```pycon
     >>> OLD_LIMIT = 4096 - 256
-    >>> CHURN_PEAK_LIVE = 2
+    >>> CHURN_PEAK_LIVE = 5_000
     >>> CHURN_PEAK_LIVE > OLD_LIMIT
     True
 
