@@ -1208,7 +1208,11 @@ or 52-bit VA (ARM64) question, outside E1.
   (`BootInfo::memory_regions`, `MemoryRegions`). These are interface documents; no bootloader or firmware
   implementation was read.
 - System V Application Binary Interface, Generic ABI: the ELF section header and symbol table formats the
-  loader's `find_symbol` already reads.
+  loader's `find_symbol` already reads, and the symbol types, section indexes and `SHT_PROGBITS` and
+  `SHT_NOBITS` section types that `find_object_symbol` checks.
+- The Rust Reference, the `used` attribute (an item kept in the object file, which the linker may still
+  remove), and the `uefi` crate 0.33's `table::set_system_table`, `MemoryMap` and `MemoryMapMeta`
+  documentation.
 - J. W. J. Williams, "Algorithm 232: Heapsort", Communications of the ACM 7(6), 1964; Knuth, *TAOCP*
   vol. 3, §5.2.3.
 - POSIX.1-2017 (The Open Group Base Specifications, Issue 7) and the Linux man pages, for errno values only.
