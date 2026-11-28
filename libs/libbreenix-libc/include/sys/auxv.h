@@ -1,6 +1,8 @@
 #ifndef _SYS_AUXV_H
 #define _SYS_AUXV_H
 
+#include <__breenix/features.h>
+
 #define AT_HWCAP 16
 #define AT_HWCAP2 26
 #define AT_MINSIGSTKSZ 51
@@ -30,6 +32,10 @@
 extern "C" {
 #endif
 unsigned long getauxval(unsigned long);
+#ifdef __BREENIX_E6
+/* Custom entry points pass the original exec stack, which must stay readable. */
+void __breenix_init_auxv(const unsigned long *initial_stack);
+#endif
 #ifdef __cplusplus
 }
 #endif

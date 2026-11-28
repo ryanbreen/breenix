@@ -502,6 +502,8 @@ fn relocate_and_initialize(stack: *const usize, auxv: &Auxv) {
     let dl = unsafe {
         dl::publish_initial(&scope, &files, auxv.page, interpreter)
     };
+    // The libc hook publishes auxv and the dispatch table before any
+    // initializer in the load set can call libc.
     initialize_libc(stack, scope.objects(), dl);
     let mut state = [InitState::default(); OBJECTS];
     scope
@@ -565,7 +567,7 @@ fn initialize_libc(
             unsafe { core::mem::transmute(address as usize) };
         // SAFETY: the object is relocated and stack is the kernel's initial stack.
         unsafe { initialize(stack) };
-    } else if count != 0 {
+    } else if count != 0 || (cfg!(feature = "e6") && libc.is_some()) {
         fail("no Breenix libc startup export");
     }
 }

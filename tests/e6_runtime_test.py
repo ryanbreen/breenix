@@ -6,6 +6,7 @@ with the source headers and the stage's generation selector.
 """
 import argparse
 from io import BytesIO
+from itertools import groupby
 from pathlib import Path
 import re
 import struct
@@ -48,8 +49,14 @@ def image(data):
 
 def symbol(elf, name):
     table = elf.get_section_by_name(".symtab")
-    found = table.get_symbol_by_name(name) if table else None
-    assert found, f"missing {name} in link output"
+    assert table is not None, "link output has no symbol table"
+    if name == "memcpy":
+        table = elf.get_section_by_name(".dynsym") or table
+        found = [sym for sym in table.get_symbol_by_name(name) or ()
+                 if sym["st_shndx"] != "SHN_UNDEF"]
+    else:
+        found = [sym for sym in table.iter_symbols() if name in sym.name]
+    assert len(found) == 1, f"expected one {name} in link output"
     return found[0]["st_value"]
 
 
@@ -63,6 +70,7 @@ class Process:
         self.arm = arch == "aarch64"
         self.files = {key: bytearray(value) for key, value in files.items()}
         self.fds = {}
+        self.directories = {"/", "/lib"}
         self.pages = set()
         self.next_map = 0x100000000
         self.status = None
@@ -80,10 +88,12 @@ class Process:
             self.fs = x86.UC_X86_REG_FS_BASE
 
     def map(self, address, length):
-        for page in range(address & -PAGE, (address + length + PAGE - 1) & -PAGE, PAGE):
-            if page not in self.pages:
-                self.pages.add(page)
-                self.cpu.mem_map(page, PAGE)
+        pages = range(address & -PAGE, (address + length + PAGE - 1) & -PAGE, PAGE)
+        for present, group in groupby(pages, key=self.pages.__contains__):
+            if not present:
+                missing = list(group)
+                self.cpu.mem_map(missing[0], len(missing) * PAGE)
+                self.pages.update(missing)
 
     def load(self, elf, bias):
         for segment in elf.iter_segments(type="PT_LOAD"):
@@ -101,17 +111,17 @@ class Process:
 
     def syscall(self):
         numbers = ({
-            17: "getcwd", 25: "fcntl", 29: "ioctl", 56: "openat", 57: "close",
+            17: "getcwd", 25: "fcntl", 29: "ioctl", 34: "mkdirat", 35: "unlinkat", 38: "renameat", 56: "openat", 57: "close",
             62: "seek", 63: "read", 64: "write", 66: "writev", 67: "pread",
-            78: "readlinkat", 79: "statat", 80: "fstat", 93: "exit", 94: "exit",
-            96: "tid", 135: "mask", 172: "tid", 178: "tid", 215: "unmap",
+            73: "poll", 78: "readlinkat", 79: "statat", 80: "fstat", 93: "exit", 94: "exit",
+            96: "tid", 134: "sigaction", 135: "mask", 172: "tid", 178: "tid", 215: "unmap",
             222: "map", 226: "protect", 261: "limit", 278: "random",
         } if self.arm else {
             0: "read", 1: "write", 2: "open", 3: "close", 5: "fstat",
-            8: "seek", 9: "map", 10: "protect", 11: "unmap", 14: "mask",
+            7: "poll", 8: "seek", 9: "map", 10: "protect", 11: "unmap", 13: "sigaction", 14: "mask",
             16: "ioctl", 17: "pread", 20: "writev", 39: "tid", 60: "exit",
-            72: "fcntl", 79: "getcwd", 89: "readlink", 158: "arch_prctl",
-            186: "tid", 218: "tid", 231: "exit", 257: "openat", 262: "statat",
+            72: "fcntl", 79: "getcwd", 82: "rename", 83: "mkdir", 84: "rmdir", 89: "readlink", 158: "arch_prctl",
+            186: "tid", 218: "tid", 231: "exit", 257: "openat", 258: "mkdirat", 262: "statat", 263: "unlinkat", 264: "renameat",
             267: "readlinkat", 302: "limit", 318: "random",
         })
         nr = self.cpu.reg_read(self.nr)
@@ -141,9 +151,25 @@ class Process:
         elif op == "getcwd":
             write(a, b"/\0")
             return 2
+        elif op in ("mkdir", "mkdirat"):
+            path = self.string(a if op == "mkdir" else b)
+            if path in self.directories or path in self.files:
+                return -17
+            assert str(Path(path).parent) in self.directories, path
+            self.directories.add(path)
+        elif op == "rmdir" or (op == "unlinkat" and c == 0x200):
+            self.directories.remove(self.string(a if op == "rmdir" else b))
+        elif op == "unlinkat":
+            del self.files[self.string(b)]
+        elif op in ("rename", "renameat"):
+            source, dest = (a, b) if op == "rename" else (b, d)
+            self.files[self.string(dest)] = self.files.pop(self.string(source))
         elif op in ("open", "openat"):
             path, flags = (self.string(a), b) if op == "open" else (self.string(b), c)
             if flags & 0x40:
+                assert str(Path(path).parent) in self.directories, path
+                if flags & 0x80 and path in self.files:
+                    return -17
                 self.files[path] = bytearray()
             if path not in self.files:
                 return -2
@@ -252,17 +278,17 @@ def compile_case(clang, arch, include, out, name, source, *flags):
 def copy_trace(process, libc, base):
     from unicorn import UC_HOOK_CODE
     observed = []
-    names = ("memcpy",) if process.arm else ("breenix_copy_words", "breenix_copy_rep")
+    names = ("memcpy",) if process.arm else ("copy_scalar", "copy_enhanced")
     for name in names:
         address = base + symbol(libc, name)
         def record(cpu, pc, size, name):
-            if cpu.reg_read(process.args[2]) == 23:
+            if cpu.reg_read(process.args[2]) == 277:
                 observed.append(name)
         process.cpu.hook_add(UC_HOOK_CODE, record, name, address, address)
     return observed
 
 
-def check_startup(proc, interpreter=False):
+def check_startup(proc, interpreter=False, trace_copy=True):
     fixture = image(proc.files["/lib/libc.so" if interpreter else "/probe"])
     for mode, caps in (("absent", []), ("zero", [(16, 0), (26, 0)]),
                        ("enabled", [(16, 2 if proc.arm else 1), (26, 0 if proc.arm else 1),
@@ -281,13 +307,13 @@ def check_startup(proc, interpreter=False):
                         traces.append(copy_trace(case, fixture, args[0]))
                 return address
             case.handle = mapped
-        else:
+        elif trace_copy:
             trace = copy_trace(case, fixture, 0)
         case.run(["/probe", mode], caps, interpreter)
-        expected = "memcpy" if case.arm else ("breenix_copy_rep" if mode == "enabled" else "breenix_copy_words")
+        expected = "memcpy" if case.arm else ("copy_enhanced" if mode == "enabled" else "copy_scalar")
         if interpreter:
             assert traces == [[expected, expected]], (mode, traces)
-        else:
+        elif trace_copy:
             assert trace == [expected], (mode, trace)
 
 
@@ -308,7 +334,7 @@ def verify_artifacts(root, work, clang, lld, readelf, arch):
 
     obj = compile_case(clang, arch, include, work, "startup.o", "startup.c")
     ref = work / "reference"
-    link = ["-T", static[1], "--gc-sections", "-static", obj, static[0]]
+    link = ["-T", static[1], "--gc-sections", "-Bstatic", obj, static[0]]
     command(lld, "--fatal-warnings", *link, "-o", ref)
 
     # Execute the actual rebuilt guest bld, with the same ordered input
@@ -316,12 +342,17 @@ def verify_artifacts(root, work, clang, lld, readelf, arch):
     files = {"/probe": bld.read_bytes(), "/linker.ld": static[1].read_bytes(),
              "/startup.o": obj.read_bytes(), "/libc.a": static[0].read_bytes()}
     guest = Process(arch, files)
-    guest.run(["/probe", "-T", "/linker.ld", "--gc-sections", "-static",
-               "/startup.o", "/libc.a", "-o", "/out"])
-    for data in (ref.read_bytes(), guest.files["/out"]):
+    guest.run(["/probe", "-T", "/linker.ld", "--gc-sections", "-Bstatic",
+               "/startup.o", "/libc.a", "-Map", "/out.map", "-o", "/out"])
+    link_map = guest.files["/out.map"].decode()
+    for name in ("_start", "memcpy", "snprintf"):
+        assert re.search(rf"^{name}\t.*\t/libc\.a\(", link_map, re.M), (name, link_map)
+    bld_output = work / "bld-output"
+    bld_output.write_bytes(guest.files["/out"])
+    for data, trace_copy in ((ref.read_bytes(), True), (bld_output.read_bytes(), False)):
         assert image(data).header["e_type"] == "ET_EXEC"
         assert not any(True for _ in image(data).iter_segments(type="PT_INTERP"))
-        check_startup(Process(arch, {"/probe": data}))
+        check_startup(Process(arch, {"/probe": data}), trace_copy=trace_copy)
 
     dynamic = compile_case(clang, arch, include, work, "dynamic.o", "startup.c", "-fPIC", "-DDYNAMIC")
     dependency = compile_case(clang, arch, include, work, "dep.o", "consumer.c", "-fPIC")
@@ -333,10 +364,10 @@ def verify_artifacts(root, work, clang, lld, readelf, arch):
     command(lld, "--fatal-warnings", "--hash-style=sysv", "-pie", "-E",
             "--dynamic-linker=/lib/ld-breenix.so", "-rpath", "/lib",
             "-o", exe, shared[2], dynamic, shared[0], work / "dep.so")
-    for artifact in [exe, *shared[:2], ref]:
-        info = command(readelf, "-r", artifact)
+    for artifact in [exe, *shared[:2], ref, bld_output]:
+        info = command(readelf, "--elf-output-style=GNU", "--relocations", artifact)
         assert "IRELATIVE" not in info, artifact
-        assert not re.search(r"\bIFUNC\b", command(readelf, "-sW", artifact)), artifact
+        assert not re.search(r"\bIFUNC\b", command(readelf, "--elf-output-style=GNU", "--symbols", artifact)), artifact
     files = {"/probe": exe.read_bytes()}
     files.update({f"/lib/{path.name}": path.read_bytes() for path in (*shared[:2], work / "dep.so", work / "late.so")})
     check_startup(Process(arch, files), interpreter=True)
@@ -347,6 +378,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("root", type=Path, nargs="?")
     parser.add_argument("--headers-only", action="store_true")
+    parser.add_argument("--arch", choices=("x86_64", "aarch64"))
     args = parser.parse_args()
     clang = command(ROOT / "scripts/breenix-cc", "--arch", "aarch64", "--tool-dir").strip() + "/clang"
     if args.headers_only:
@@ -356,7 +388,7 @@ def main():
         parser.error("the staged runtime parent is required")
     host = re.search(r"^host: (.+)$", command("rustc", "-vV"), re.M)[1]
     tools = Path(command("rustc", "--print", "sysroot").strip()) / "lib/rustlib" / host / "bin"
-    for arch in ("x86_64", "aarch64"):
+    for arch in ((args.arch,) if args.arch else ("x86_64", "aarch64")):
         root = args.root.resolve() / arch
         with tempfile.TemporaryDirectory(prefix="e6-runtime-", dir=root.parent) as directory:
             verify_artifacts(root, Path(directory), clang, tools / "gcc-ld/ld.lld",

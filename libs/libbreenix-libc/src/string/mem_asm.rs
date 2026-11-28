@@ -3,7 +3,7 @@
 
 #[cfg(target_arch = "aarch64")]
 #[unsafe(naked)]
-#[no_mangle]
+#[cfg_attr(not(feature = "e6"), no_mangle)]
 pub unsafe extern "C" fn memcpy(dst: *mut u8, src: *const u8, n: usize) -> *mut u8 {
     // x0 = dst (returned unchanged), x1 = src, x2 = n; x3 walks dst.
     core::arch::naked_asm!(
@@ -30,7 +30,7 @@ pub unsafe extern "C" fn memcpy(dst: *mut u8, src: *const u8, n: usize) -> *mut 
 
 #[cfg(target_arch = "aarch64")]
 #[unsafe(naked)]
-#[no_mangle]
+#[cfg_attr(not(feature = "e6"), no_mangle)]
 pub unsafe extern "C" fn memmove(dst: *mut u8, src: *const u8, n: usize) -> *mut u8 {
     // A forward copy is safe unless dst lies inside (src, src + n); then copy from the end.
     core::arch::naked_asm!(
@@ -89,7 +89,7 @@ pub unsafe extern "C" fn memset(dst: *mut u8, c: i32, n: usize) -> *mut u8 {
     )
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", not(feature = "e6")))]
 fn enhanced_rep_movsb() -> bool {
     use core::arch::x86_64::{__cpuid, __cpuid_count};
     use core::sync::atomic::{AtomicU8, Ordering::Relaxed};
@@ -108,28 +108,42 @@ fn enhanced_rep_movsb() -> bool {
     }
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", not(feature = "e6")))]
 #[no_mangle]
 pub unsafe extern "C" fn memcpy(dst: *mut u8, src: *const u8, n: usize) -> *mut u8 {
-    // Avoid string-engine startup on short copies. For a bulk copy use the
-    // enhanced engine only when CPUID advertises it.
     if n >= 256 && enhanced_rep_movsb() {
-        core::arch::asm!(
-            "rep movsb",
-            inout("rdi") dst => _,
-            inout("rsi") src => _,
-            inout("rcx") n => _,
-            options(nostack, preserves_flags),
-        );
-        dst
+        copy_rep(dst, src, n)
+    } else {
+        copy_scalar(dst, src, n)
+    }
+}
+
+// Keep the same short-copy threshold when auxv authorizes the enhanced engine.
+#[cfg(all(target_arch = "x86_64", feature = "e6"))]
+pub(super) unsafe extern "C" fn copy_enhanced(dst: *mut u8, src: *const u8, n: usize) -> *mut u8 {
+    if n >= 256 {
+        copy_rep(dst, src, n)
     } else {
         copy_scalar(dst, src, n)
     }
 }
 
 #[cfg(target_arch = "x86_64")]
+#[inline]
+unsafe fn copy_rep(dst: *mut u8, src: *const u8, n: usize) -> *mut u8 {
+    core::arch::asm!(
+        "rep movsb",
+        inout("rdi") dst => _,
+        inout("rsi") src => _,
+        inout("rcx") n => _,
+        options(nostack, preserves_flags),
+    );
+    dst
+}
+
+#[cfg(target_arch = "x86_64")]
 #[unsafe(naked)]
-unsafe extern "C" fn copy_scalar(dst: *mut u8, src: *const u8, n: usize) -> *mut u8 {
+pub(super) unsafe extern "C" fn copy_scalar(dst: *mut u8, src: *const u8, n: usize) -> *mut u8 {
     core::arch::naked_asm!(
         "mov rax, rdi",
         "cmp rdx, 32",
@@ -198,7 +212,7 @@ unsafe extern "C" fn copy_scalar(dst: *mut u8, src: *const u8, n: usize) -> *mut
 
 #[cfg(target_arch = "x86_64")]
 #[unsafe(naked)]
-#[no_mangle]
+#[cfg_attr(not(feature = "e6"), no_mangle)]
 pub unsafe extern "C" fn memmove(dst: *mut u8, src: *const u8, n: usize) -> *mut u8 {
     core::arch::naked_asm!(
         "mov rax, rdi",

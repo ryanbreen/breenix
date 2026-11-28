@@ -43,6 +43,7 @@ def clean(archive, tool_dir, shared_libc=None):
         [str(tool_dir / 'llvm-readobj'), '--elf-output-style=GNU']
     members = subprocess.check_output([str(ar), 't', str(archive)], text=True).splitlines()
     removed = 0
+    localized = 0
     with tempfile.TemporaryDirectory(prefix='breenix-libc-clean-') as tmp:
         directory = Path(tmp)
         for member in members:
@@ -63,6 +64,14 @@ def clean(archive, tool_dir, shared_libc=None):
                        '--remove-section=.llvmbc', '--remove-section=.llvmcmd']
             metadata = subprocess.check_output(readelf + ['-SW', '-sW', str(obj)], text=True)
             sections = dict(re.findall(r'^\s*\[\s*(\d+)\]\s+(\S+)', metadata, re.MULTILINE))
+            # The hosted sysroot's builtin objects can carry FDEs for these
+            # memory routines. Give their weak definitions local binding so
+            # they cannot shadow libc's exports, while retaining their
+            # sections and the relocations that describe their frames.
+            keep = names & shared_memory_exports if shared_libc and '.eh_frame' in sections.values() else set()
+            names -= keep
+            command.extend('--localize-symbol=' + name for name in sorted(keep))
+            localized += len(keep)
             for line in metadata.splitlines():
                 fields = line.split()
                 if len(fields) == 8 and fields[-1] in names and fields[-2] in sections:
@@ -93,7 +102,7 @@ def clean(archive, tool_dir, shared_libc=None):
     temporary = record.with_suffix('.tmp')
     temporary.write_text(json.dumps({'sha256': after.hex(), 'mtime_ns': archive.stat().st_mtime_ns}) + '\n')
     temporary.replace(record)
-    print(f'  libc-clean-archive: removed {removed} foreign math symbols')
+    print(f'  libc-clean-archive: removed {removed} symbols, localized {localized} memory symbols')
 
 
 def main():

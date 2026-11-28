@@ -32,6 +32,7 @@
 
 mod crypt;
 mod crt;
+mod startup_auxv;
 mod lifecycle;
 mod link;
 mod setjmp;

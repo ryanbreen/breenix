@@ -12,8 +12,8 @@
 static int observed;
 static int observed_missing;
 static unsigned long observed_cap2;
-static volatile size_t copy_size = 23;
-static const char source[] = "startup dispatch check";
+static volatile size_t copy_size = 277;
+static const char source[277] = "startup dispatch check";
 static char destination[sizeof source];
 
 void check_startup(void)

@@ -79,7 +79,7 @@ ret
         cleaner.clean(self.archive, TOOLS, shared_libc='aarch64')
         subprocess.run([TOOLS / 'llvm-ar', 'x', self.archive, obj.name],
                        cwd=self.dir, check=True)
-        frames = subprocess.check_output([TOOLS / 'llvm-readelf', '-w', obj], text=True)
+        frames = subprocess.check_output([TOOLS / 'llvm-dwarfdump', '--eh-frame', obj], text=True)
         self.assertIn('FDE', frames)
         self.assertIn(('memcpy', 't'), cleaner.symbols(TOOLS / 'llvm-nm', obj))
 
