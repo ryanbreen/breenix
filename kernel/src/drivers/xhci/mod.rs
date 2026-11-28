@@ -157,9 +157,12 @@ fn request(flag: &AtomicBool) {
 /// its sleeping path. Report failure or timeout so the caller can retain
 /// serial login when USB input is unavailable.
 pub fn wait_console_ready() -> bool {
-    crate::per_cpu::preempt_disable();
+    // A braked level selects the completion's sleeping wait on the
+    // console-start kernel thread (park::Braked); a bare preempt_disable()
+    // would make it spin that CPU for up to a minute.
+    let braked = crate::task::park::Braked::new();
     let completed = CONSOLE_READY.wait_timeout_uninterruptible(1, 60 * SECOND);
-    crate::per_cpu::preempt_enable();
+    drop(braked);
     matches!(completed, Ok(true)) && !FAILED.load(Ordering::Acquire)
 }
 
