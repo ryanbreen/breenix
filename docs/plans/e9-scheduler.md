@@ -766,6 +766,18 @@ of their steps, keeping each CPU's program order. The steps are sequentially con
     []
 
     ```
+  - **Release by the acquired identity.** A seam test acquires CPU 1's run-queue lock and forgets the
+    guard before the pivot. It then makes `CpuId::current_checked` answer 2 at the pivot. Both the
+    retraction fallback and `release_after_pivot` must release CPU 1's lock and leave CPU 2's untouched.
+    Red on §3.5 as first written, which names the lock only by the CPU identity read at release.
+
+    ```pycon
+    >>> def released_lock(acquired_cpu, cpu_at_release):
+    ...     return cpu_at_release
+    >>> released_lock(acquired_cpu=1, cpu_at_release=2)
+    1
+
+    ```
   - **A structure test**, `tests/arm64_dispatch_lock_structure.rs`, that no ARM64 dispatch entry point
     (`check_need_resched_and_switch_arm64`, `schedule_from_kernel`, `schedule_terminated_from_exit`) reaches
     `lock_for_context_switch`, `force_unlock_scheduler` or `Scheduler::get_thread`. Red on the old tree.
