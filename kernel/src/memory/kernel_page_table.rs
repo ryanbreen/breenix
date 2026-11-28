@@ -8,7 +8,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use x86_64::{
     instructions::tlb,
     registers::control::{Cr3, Cr3Flags},
-    structures::paging::{PageTable, PageTableFlags, PhysFrame},
+    structures::paging::{PageTable, PageTableFlags, PhysFrame, Size4KiB},
     PhysAddr, VirtAddr,
 };
 
