@@ -702,6 +702,24 @@ E9.1 goes first and needs nothing unmerged. E9.3 can run in its own lane beside 
 the nesting word and the deferred-work runner, not run queues. E9.2a and E9.4 can run beside each other
 after E9.1. One lane owns each PR (DEV-30(3)). <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
 
+**Protocol models.** Several checks below carry a small Python model of the rule they guard, run with
+`python3 -m doctest docs/plans/e9-scheduler.md`. A model states the design's rule, not the implementation.
+The implementation PR's own check binds that PR. Models that race two CPUs enumerate every interleaving
+of their steps, keeping each CPU's program order. The steps are sequentially consistent, which §3.4 and
+§9.2 require of the operations they name.
+
+```pycon
+>>> from itertools import combinations
+>>> def interleavings(a, b):
+...     n = len(a) + len(b)
+...     for picks in combinations(range(n), len(a)):
+...         ia, ib = iter(a), iter(b)
+...         yield [next(ia) if i in picks else next(ib) for i in range(n)]
+>>> len(list(interleavings(['a1', 'a2'], ['b1', 'b2'])))
+6
+
+```
+
 ### E9.1: ARM64 per-CPU dispatch
 
 - **Scope.** §3. Commits in order:
@@ -734,6 +752,20 @@ after E9.1. One lane owns each PR (DEV-30(3)). <!-- claim-lint:ok: normative req
     These are characterisation checks: green on today's x86 logic, which shows the harness reaches the
     production code, and green on the shared module. They are not red, because ARM64 has no such module
     on the old tree.
+  - **Pinned placement reads only what it holds.** A host test holds a pinned wake for home CPU 0. The
+    thread's owner is CPU 2, and CPU 1 pushes onto its own queue during CPU 0's pass. CPU 0's pass must
+    read no queue or CPU state whose lock it does not hold or has not try-locked. It places the thread
+    once, after it revalidates the owner under the owner's lock. Red on the design as first written,
+    because §3.2 moved `deliver_pinned_wakes_for_this_cpu` under the home CPU's lock alone. Its
+    `pinned_wake_is_waiting_here` reads every CPU's queue and `cpu_state` (`scheduler.rs:7316-7386`).
+
+    ```pycon
+    >>> def pinned_delivery_reads(home, cpus, owner):
+    ...     return [(cpu, 'held' if cpu == home else 'unlocked') for cpu in cpus]
+    >>> [read for read in pinned_delivery_reads(0, [0, 1, 2, 3], owner=2) if read[1] == 'unlocked']
+    []
+
+    ```
   - **A structure test**, `tests/arm64_dispatch_lock_structure.rs`, that no ARM64 dispatch entry point
     (`check_need_resched_and_switch_arm64`, `schedule_from_kernel`, `schedule_terminated_from_exit`) reaches
     `lock_for_context_switch`, `force_unlock_scheduler` or `Scheduler::get_thread`. Red on the old tree.
