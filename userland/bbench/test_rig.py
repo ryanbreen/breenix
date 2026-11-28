@@ -510,6 +510,31 @@ class RunStorage(unittest.TestCase):
             spec.loader.exec_module(lane)
         return lane
 
+    def test_stale_stamp_leaves_the_run_id_available_for_retry(self):
+        lane = self.worktree("stamp-retry")
+        lane.git = lambda *words: "c0ffee" if words[0] == "rev-parse" else ""
+        lane.BREENIX_ARTIFACTS = (lane.BREENIX_KERNEL, lane.BREENIX_IMAGE)
+        lane.DISK_BYTES = len(b"fixture")
+        for path in (*lane.BREENIX_ARTIFACTS, lane.BREENIX_KEY):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"fixture")
+        lane.write_build_stamp(lane.BUILD_STAMP, "0ld", lane.BREENIX_ARTIFACTS)
+
+        argv = ["run", "--run", "stamp-retry"]
+        run_dir = self.cache / "runs" / "stamp-retry"
+        with mock.patch.object(lane, "TcpEndpoint"), \
+                mock.patch.object(lane.threading, "Thread"), \
+                mock.patch.object(lane, "provision_linux",
+                                  side_effect=RuntimeError("stop before Linux provisioning")):
+            with self.assertRaisesRegex(ValueError, "built at 0ld.*build-breenix"):
+                lane.cli(argv)
+            self.assertFalse(run_dir.exists(), f"refused run reserved {run_dir}")
+
+            lane.write_build_stamp(lane.BUILD_STAMP, "c0ffee", lane.BREENIX_ARTIFACTS)
+            with self.assertRaisesRegex(RuntimeError, "stop before Linux provisioning"):
+                lane.cli(argv)
+            self.assertTrue((run_dir / "breenix-disk.raw").is_file())
+
     def test_overlapping_worktrees_publish_their_own_image_and_stamp(self):
         lanes = [self.worktree(name) for name in ("lane-a", "lane-b")]
         building = threading.Barrier(2)
