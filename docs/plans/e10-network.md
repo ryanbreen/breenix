@@ -602,5 +602,7 @@ concurrency, loss or RTT named in the prediction.
   tuple and owning port retain their keys when the connection is replaced.
 - The deterministic receive fixture seeds an exact and a wildcard listener for
   the same port because the public listen path rejects overlapping listeners.
+- The bind collision fixture matches nine hash bits because its 96 unrelated
+  owners of each kind grow the combined bind index to 512 buckets.
 - Run the default QEMU matrix for this A/B pair because DEV-45 and DEV-49
   require at least 31 measured Breenix rows per series.

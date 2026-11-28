@@ -110,14 +110,16 @@ fn indexed_demux_and_bind_consult_only_their_buckets() {
         .find(|&port| tuple_hash(target, port) & 255 == tuple_hash(target, PEER_PORT) & 255)
         .unwrap();
     let other = active(target, peer).unwrap();
+    // The bind index carries all three kinds of owner. The 96 unrelated
+    // endpoints of each kind grow it to 512 buckets in this fixture.
     let bind_collision = (60001..u16::MAX)
-        .find(|&port| port_hash(port) & 255 == port_hash(bind_port) & 255)
+        .find(|&port| port_hash(port) & 511 == port_hash(bind_port) & 511)
         .unwrap();
     tcp_bind_port(LOCAL_IP, bind_collision, false).unwrap();
     let listener_collision = (60001..u16::MAX)
         .find(|&port| {
             listener_hash(LOCAL_IP, port) & 255 == listener_hash(LOCAL_IP, listen_port) & 255
-                && port_hash(port) & 255 != port_hash(bind_port) & 255
+                && port_hash(port) & 511 != port_hash(bind_port) & 511
         })
         .unwrap();
     listen(LOCAL_IP, listener_collision).unwrap();
