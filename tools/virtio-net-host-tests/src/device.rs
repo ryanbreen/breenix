@@ -98,6 +98,8 @@ pub struct Config {
     pub ctrl_ack: u8,
     /// CPUs firmware reports to the kernel.
     pub cpus: u64,
+    /// Take control commands without answering them until `answer_ctrl`.
+    pub ctrl_late: bool,
 }
 
 impl Config {
@@ -112,6 +114,7 @@ impl Config {
             mtu: 1500,
             ctrl_ack: 0,
             cpus: 4,
+            ctrl_late: false,
         }
     }
 }
@@ -182,6 +185,8 @@ pub struct Device {
     pub suppress_notify: bool,
     /// Reads of the device-specific configuration: (offset into it, bytes wide).
     pub config_reads: Vec<(u64, u32)>,
+    /// Control commands taken and not yet answered (`ctrl_late`): (head, ack address).
+    pub ctrl_unanswered: Vec<(u16, u64)>,
 }
 
 static DEVICE: Mutex<Option<Device>> = Mutex::new(None);
@@ -210,6 +215,7 @@ pub fn install(cfg: Config) {
         frame_budget: None,
         suppress_notify: false,
         config_reads: Vec::new(),
+        ctrl_unanswered: Vec::new(),
     });
 }
 
@@ -616,12 +622,25 @@ impl Device {
             }
             self.ctrl.push(command);
             match ack_at {
+                Some(addr) if self.cfg.ctrl_late => self.ctrl_unanswered.push((head, addr)),
                 Some(addr) => {
                     unsafe { core::ptr::write_volatile(addr as *mut u8, self.cfg.ctrl_ack) };
                     done.push((u32::from(head), 1));
                 }
                 None => self.errors.push("control command without a writable ack".into()),
             }
+        }
+        self.push_used(q, &done);
+    }
+
+    /// Answer the control commands held by `ctrl_late` with `ctrl_ack`, and
+    /// act on them as the device then does.
+    pub fn answer_ctrl(&mut self) {
+        let Some(q) = self.ctrl_index() else { return };
+        let mut done = Vec::new();
+        for (head, addr) in std::mem::take(&mut self.ctrl_unanswered) {
+            unsafe { core::ptr::write_volatile(addr as *mut u8, self.cfg.ctrl_ack) };
+            done.push((u32::from(head), 1));
         }
         self.push_used(q, &done);
     }
