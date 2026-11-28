@@ -364,7 +364,7 @@ Hole    --write() (allocate, zero, DIRTY, dirty_gen = open G), or a shared store
 Uptodate --write() (DIRTY, dirty_gen = open G; tag DIRTY), or a shared store (MAPPED_DIRTY, dirty_gen = 0; tag DIRTY)--> Dirty
 Dirty with MAPPED_DIRTY --mapped admission (11.2a: reserve, changed set, dirty_gen = open G)--> Dirty
 Dirty   --freeze of G = dirty_gen (WRITEBACK; tag WRITEBACK; the frame is G's stable copy)--> Writeback
-Writeback --G durable (clear WRITEBACK; clear DIRTY unless redirtied in G+1)--> Uptodate or Dirty
+Writeback --G durable and adopted by the open view (11.2; clear WRITEBACK; clear DIRTY unless redirtied in G+1)--> Uptodate or Dirty
 Writeback --write(), or a shrink's tail zeroing (7.5), while WRITEBACK (copy into a new frame, replace the entry; the old frame stays G's)--> Dirty (new frame)
 any frame-backed state except Filling and Writeback --reclaim, clean and unmapped (12)--> Absent
 any state --truncation past it (7.5)--> Absent (a Writeback frame stays referenced by G's batch until written)
@@ -790,8 +790,16 @@ E3 keeps the same rule with frames:
   A store that lands before step 1 completes is in G's copy. A store after it faults on a present
   read-only PTE in a shared writable VMA, and becomes `MAPPED_DIRTY` for a later generation (11.2a). A
   mapped page therefore changes only in the cache's frame, never in G's copy. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
-- **At G's install** each batch page clears `WRITEBACK`. A page that is still in the tree and was not
-  redirtied becomes clean `Uptodate`.
+- **At G's install** G is durable, and fsync waiters for G are released. Its batch pages do not become
+  clean yet. While N+1 changed during G's commit, the open view stays N+1's scratch view until the replay
+  of N+1's log onto G's published view completes, and installed G's pages stay readable until then
+  (`materialize`, `fs/breenfs/vfs.rs:1159-1166`). The scratch view does not hold G's new extents, so a G
+  page reclaimed in that interval would refill from older extents, or as a hole.
+- **When the open view adopts G's view** (the replay done, the point where `materialize` moves the
+  installed pages to `stale_views`, or at the install itself when no replay is pending), each batch page
+  clears `WRITEBACK`. A page that is still in the tree and was not redirtied becomes clean `Uptodate`, and
+  only then is it reclaimable (12.2). If the replay fails, the mount latches read-only as today, and the
+  pages stay until unmount (11.5).
 
   This is the change behind `disk.sequential-read`: data just written stays cached after fsync, instead of
   being dropped and re-read from the device.
@@ -930,7 +938,7 @@ the tree (the `11` kind value 3 is unused). E3 does not need it to close the gap
 | Hole entry | Dropped (no frame) | Dropped |
 | Clean, mapped | Kept | Unmapped through the reverse map, flushed, freed |
 | Dirty | Kept; the page daemon asks its mount to commit | Same |
-| Writeback | Kept until its generation is durable | Same |
+| Writeback | Kept until its generation is durable and the open view has adopted it (11.2) | Same |
 
 Mapped pages wait for E3-13. Unmapping one takes each mapping address space's page-table lock, which E2.8
 makes per address space; before that it would mean PROCESS_MANAGER sections from the reclaim path.
@@ -1385,6 +1393,11 @@ waits for E3-6 (it needs pages retained by the cache to be worth anything), so t
   first.**
   - Write 64 MiB, fsync, and read it back: 0 device reads. The old code drops the dirty pages at install
     and reads every block back, which is red. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+  - Reclaim in the replay window, as a fixed interleaving: write page 5 in G, freeze G, write another file
+    in G+1 so a replay is pending, install G, then run the production reclaim pass before `materialize`
+    completes, and read page 5. The read returns G's bytes with 0 device reads, and page 5 is still
+    `Writeback`. Today's installed pages are not in a reclaimable cache, so this guards the rule the PR adds
+    and the PR says so.
   - Stable pages: freeze G, then write the same page in G+1 during G's drain. For every subset of G's
     writes, the crash images recover G-1 or G, and G's copy of the page is G's bytes. The cache holds
     G+1's bytes. The old code holds this through immutable `Arc` pages, so the check is red only on a seam
@@ -1661,7 +1674,7 @@ open view is still the scratch view, whose extent for page 5 is G-1's (`fs/breen
 Reclaim runs on page 5 in that interval, and a read refills it from the open view.
 
 ```pycon
->>> RULE = 'clean-at-install'
+>>> RULE = 'clean-at-adoption'
 >>> open_view = {5: 'G-1'}
 >>> page = {'bytes': 'G', 'writeback': True}
 >>> def install():
