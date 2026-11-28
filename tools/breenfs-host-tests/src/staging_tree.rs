@@ -260,3 +260,52 @@ fn reattach_serves_the_new_root_not_cached_inodes() {
     fs.detach_staging().unwrap();
     fs.shutdown("staging-reattach", u64::MAX).unwrap();
 }
+
+/// Ruling DEV-44(2a). A writable shared mapping of a booted-root file
+/// changes the file with no filesystem admission. With one alive across the
+/// clone, a store after the clone leaves the epoch unchanged, so a freeze that
+/// admitted it would return E2 == E1 for a root that changed. ROOT_FREEZE
+/// refuses with EBUSY and the mapping count instead. Once the mapping is
+/// gone, its stores are written back and counted before the freeze. While
+/// frozen, a writable shared mapping of a booted-root file and mprotect
+/// adding write to a shared one are refused; private and default-tree
+/// mappings are not.
+#[test]
+fn freeze_refuses_writable_shared_root_mappings() {
+    use crate::memory::file_map::try_bind_host;
+    let fs = persistent();
+    let node = file(&fs, 2, b"db").unwrap();
+    write(&fs, &node, 0, &[b'a'; 4096]).unwrap();
+    let mapping = try_bind_host(node.clone(), 4096, true, true, true).unwrap();
+    let e1 = epoch(&fs);
+    clone_root(&fs, b"B.new", 0);
+    mapping.store(0, b'Z').unwrap();
+    match freeze(&fs) {
+        Ok(e2) => panic!(
+            "ROOT_FREEZE admitted a booted root with a writable shared mapping alive: \
+             E1 = {e1}, E2 = {e2} after a mapped store changed the file (the E1 == E2 race)"
+        ),
+        Err((error, busy)) => {
+            assert_eq!(error, Errno(EBUSY));
+            assert_eq!(busy.writable_mappings, 1, "{busy:?}");
+        }
+    }
+    drop(mapping);
+    let e2 = freeze(&fs).unwrap();
+    assert!(e2 > e1, "the mapped store is counted before the freeze: E1 = {e1}, E2 = {e2}");
+    assert_eq!(read(&fs, node.ino)[0], b'Z');
+
+    assert!(try_bind_host(node.clone(), 4096, true, true, false).is_err(), "mmap(PROT_WRITE, MAP_SHARED)");
+    let reader = try_bind_host(node.clone(), 4096, true, false, false).unwrap();
+    assert!(reader.protect_write().is_err(), "mprotect adding PROT_WRITE");
+    let private = try_bind_host(node.clone(), 4096, false, true, false).unwrap();
+    let log = file(&fs, fs.default_root_inode(), b"log").unwrap();
+    write(&fs, &log, 0, b"log").unwrap();
+    let shared_log = try_bind_host(log.clone(), 4096, true, true, false).unwrap();
+    assert_eq!(epoch(&fs), e2);
+    drop((private, shared_log));
+    thaw(&fs);
+    reader.protect_write().expect("mprotect after thaw");
+    drop(reader);
+    fs.shutdown("freeze-mappings", u64::MAX).unwrap();
+}

@@ -212,6 +212,13 @@ struct HostBindingOwner { node: Arc<VNode>, id: u64 }
 #[derive(Debug, PartialEq, Eq)]
 pub enum HostFault { Sigbus }
 pub fn bind_host(node: Arc<VNode>, length: u64, shared: bool, writable: bool, populate: bool) -> HostBinding {
+    try_bind_host(node, length, shared, writable, populate).unwrap()
+}
+/// mmap of the file, which the filesystem may refuse for shared write
+/// authority (paired generations DEV-44).
+pub fn try_bind_host(
+    node: Arc<VNode>, length: u64, shared: bool, writable: bool, populate: bool,
+) -> Result<HostBinding, Errno> {
     let io = node.filesystem.mapping_io(&node).unwrap();
     if populate {
         let bytes = io.read(0, length.min(io.size()) as usize).unwrap();
@@ -223,28 +230,43 @@ pub fn bind_host(node: Arc<VNode>, length: u64, shared: bool, writable: bool, po
         }
         node.map.refresh(&inner);
     }
-    let id = publish_host(&node, &*io, length, shared, writable);
-    HostBinding(Arc::new(HostBindingOwner { node, id }))
+    let id = publish_host(&node, &*io, length, shared, writable)?;
+    Ok(HostBinding(Arc::new(HostBindingOwner { node, id })))
 }
 /// Publish a read-only private binding through the transfer that production
 /// `populate` returned, as mmap's `map_file` does after population.
 pub fn bind_populated(node: Arc<VNode>, io: &dyn MappingIo, length: u64) -> HostBinding {
-    let id = publish_host(&node, io, length, false, false);
+    let id = publish_host(&node, io, length, false, false).unwrap();
     HostBinding(Arc::new(HostBindingOwner { node, id }))
 }
-fn publish_host(node: &VNode, io: &dyn MappingIo, length: u64, shared: bool, writable: bool) -> u64 {
+fn publish_host(node: &VNode, io: &dyn MappingIo, length: u64, shared: bool, writable: bool) -> Result<u64, Errno> {
     let mut id = 0;
     io.publish(&mut |_| {
         let mut inner = node.map.state.inner.lock();
+        if shared && writable {
+            inner.writable_shared += 1;
+        }
         id = inner.bindings.iter().map(|r| r.id).max().unwrap_or(0) + 1;
         inner.bindings.push(BindingRec { id, pgoff: 0, pages: pages(length), shared, writable,
             parked: Vec::new(), leaves: Vec::new() });
-        inner.writable_shared += usize::from(shared && writable);
         Ok(())
-    }).unwrap();
-    id
+    })?;
+    Ok(id)
 }
 impl HostBinding {
+    /// mprotect adding PROT_WRITE to this binding.
+    pub fn protect_write(&self) -> Result<(), Errno> {
+        let mut inner = self.0.node.map.state.inner.lock();
+        let slot = inner.bindings.iter().position(|r| r.id == self.0.id).unwrap();
+        if inner.bindings[slot].writable {
+            return Ok(());
+        }
+        if inner.bindings[slot].shared {
+            inner.writable_shared += 1;
+        }
+        inner.bindings[slot].writable = true;
+        Ok(())
+    }
     pub fn load(&self, offset: u64) -> Result<u8, HostFault> {
         self.access(offset, None)
     }
