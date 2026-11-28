@@ -438,6 +438,41 @@ class BuildIdentity(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "build-breenix"):
             rig.verify_build_stamp(self.stamp, "c0ffee", self.artifacts)
 
+    def test_the_run_keeps_the_build_it_verified(self):
+        """Another worktree's build-breenix can replace the shared stamp and artifacts
+        while a run samples. The run boots, uploads and records the build it verified."""
+        rig.write_build_stamp(self.stamp, "c0ffee", self.artifacts)
+        record, inputs = rig.snapshot_inputs(self.stamp, "c0ffee", self.artifacts,
+                                             self.dir / "run/inputs")
+        verified = {str(path): path.read_bytes() for path in self.artifacts}
+        for path in self.artifacts:
+            path.write_bytes(b"another build")
+        rig.write_build_stamp(self.stamp, "0ther", self.artifacts)
+        for path in self.artifacts:
+            self.assertEqual(inputs[path].read_bytes(), verified[str(path)], path)
+            self.assertEqual(rig.sha256(inputs[path]), record["artifacts"][str(path)], path)
+        guest = rig.Guest("breenix", self.dir, self.dir / "disk", headed=False,
+                          kernel=inputs[self.artifacts[0]])
+        self.assertIn(str(inputs[self.artifacts[0]]), [str(word) for word in guest.argv()])
+
+        bench = rig.Rig.__new__(rig.Rig)
+        bench.args = type("Args", (), {"run": "qemu-vol", "pr": None})()
+        out = self.dir / "out"
+        out.mkdir()
+        bench.out = {"breenix": out}
+        bench.guests = {"breenix": mock.Mock(profiles=["hvf-host"])}
+        bench.notes = {"breenix": []}
+        bench.build = record
+        bench.started = rig.datetime(2026, 11, 27, tzinfo=rig.timezone.utc)
+        with mock.patch.object(rig, "SERIES_DIR", self.dir / "series"), \
+                mock.patch.object(rig, "BUILD_STAMP", self.stamp), \
+                mock.patch.object(rig, "qemu_version", lambda: "11.0.3"), \
+                mock.patch.object(rig, "host_description", lambda: "Mac"), \
+                mock.patch("sys.stdout"):
+            path = bench.write("breenix", "c0ffee" + "0" * 34, {}, {}, {})
+        sidecar = json.loads((Path(path).parent / "qemu-vol-breenix.provenance.json").read_text())
+        self.assertEqual(sidecar["provenance"]["toolchain"]["stamp"], record)
+
     def test_a_stamp_missing_an_artifact_is_refused(self):
         rig.write_build_stamp(self.stamp, "c0ffee", self.artifacts[:1])
         with self.assertRaisesRegex(ValueError, "bbench"):
