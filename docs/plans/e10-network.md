@@ -154,8 +154,8 @@ In PR 4, set `TCP_NODELAY` with an integer value of 1 on the connected
 [bssh](../../userspace/programs/src/bssh.rs) fd and on each accepted
 [bsshd](../../userland/bsshd/src/bsshd.rs) fd before the first SSH write.
 Report option failures through the respective connection error path. The choice
-applies to the transport for its lifetime so the handshake, short exec
-exchanges and interactive channels all get it, including on reused transports.
+applies for the transport's lifetime, covering handshake, short exec
+exchanges and interactive channels on fresh and reused transports.
 Check `ssh.round-trip` for a regression in the matched before/after run.
 
 ## Packet ownership and socket concurrency
@@ -257,21 +257,22 @@ require a coordinator ruling on it under DEV-39(2).
   before trying state ownership or scheduling a drain.
 - A socket owner may take the timer-wheel lock while holding socket state to
   update the entry and its generation. The wheel worker dequeues and drops
-  the wheel lock before locking the socket. The gate and wheel never nest.
+  the wheel lock before locking the socket. Take the gate and wheel in
+  separate critical sections.
 - TCP index writers take bind, listener, then established shards, in
-  ascending shard number within each table, once per distinct shard. Index
-  locks never nest with socket or listener state. Pin the identity before
+  ascending shard number within each table, once per distinct shard. Separate
+  index critical sections from socket and listener state. Pin the identity before
   dropping the lookup shard and revalidate its generation under state
   ownership.
-- Listener state and child state never nest. The listener owns the queue
+- Acquire listener and child state in separate critical sections. The listener owns the queue
   reservation and decides whether to accept or cancel it. Child promotion
   publishes through the reservation after releasing child state and checks
   the listener generation. Close detaches pending children under listener
   state and then retires each detached child separately.
 - Take the global memory-budget lock and UDP bucket writer locks in isolation.
   Reserve budget before locking state, revalidate the socket before attaching
-  it, and return unused credit after dropping state. Defer budget-release
-  wakes until all locks are dropped. Publish UDP bucket snapshots before
+  it, and return unused credit after dropping state. Release network locks
+  before issuing budget-release wakes. Publish UDP bucket snapshots before
   taking any socket state lock. Receive readers pin a reference from a
   snapshot and revalidate before delivery.
 
@@ -412,9 +413,9 @@ concurrency, loss or RTT named in the prediction.
 | 2 | Legacy and modern virtio-net rings, merged RX, checksum/TSO, EVENT_IDX, TX completion and multiqueue. **No E1.** | Run the production setup with fake version-1 MMIO advertising a 256-entry maximum and the PR's feature bits. Check 256 entries, more than four posted RX buffers, exact guest-page/PFN/used-ring offsets, the accepted low feature word and the 10-/12-byte legacy headers with merge disabled/enabled. Check modern VERSION_1 and FEATURES_OK separately. Drive merge and event-index wrap, malformed merges, offload header bytes, control-command rejection and TX full-to-available without RX traffic. | TX and RX are primary on the existing legacy rig. SCP up/down may improve if packet service limits either direction. Record which features were offered and enabled. |
 | 3 | Hashed established, listener and bind indexes. **No E1.** | Collision fixture with unrelated connections drives production demux and bind. Check exact/wildcard selection, TIME_WAIT and reuse conflicts, and that a failed reservation preserves the established, listener and bind indexes. A fixed comparison counter shows lookup work stays within the affected bucket. | TX/RX and SCP up/down can gain with many active sockets. Little movement is expected on the standard single-flow rows. |
 | 4 | Nagle default, live `TCP_NODELAY`, and SSH transport opt-outs. **No E1.** | With an outstanding small write, verify that the next small write waits, an ACK or full MSS permits output, and enabling NODELAY flushes eligible data. Drive both SSH transport setup paths with a fixture that records NODELAY on the connected or accepted fd before the first protocol write. Withhold the first ACK and verify two short writes leave on the opted-out TCP connection. | Use `ssh.round-trip` as an explicit regression guard against the matched pre-PR Breenix run. SCP up/down guard short control writes. TX/RX are bulk controls. |
-| 5 | Frame-backed packet descriptors, receive ownership and virtio scatter-gather. **E1-8 and prerequisites**, with E1-16 coordination. | Drive one MSS of TCP payload each way through production send/receive and a fake virtio DMA ring, with offloads disabled and ample preallocated capacity. Count payload bytes copied and fresh heap allocations for packet storage from syscall to TX submit and from RX completion to userspace. Require one payload's worth of copied bytes in each direction and zero fresh packet-storage heap allocations, with exact delivered bytes. Independently force descriptor exhaustion and ACK before DMA completion, checking reference retirement, odd fragment boundaries, software checksum and copy fallback. | TX/RX gain from fewer copies and allocations. SCP up/down can follow. |
+| 5 | Frame-backed packet descriptors, receive ownership and virtio scatter-gather. **E1-8 and prerequisites**, with E1-16 coordination. | Drive one MSS of TCP payload each way through production send/receive and a fake virtio DMA ring, with offloads disabled and ample preallocated capacity. Count payload bytes copied and fresh heap allocations for packet storage from syscall to TX submit and from RX completion to userspace. Require one payload's worth of copied bytes in each direction and a fresh packet-storage heap allocation count of `0`, with exact delivered bytes. Independently force descriptor exhaustion and ACK before DMA completion, checking reference retirement, odd fragment boundaries, software checksum and copy fallback. | TX/RX gain from fewer copies and allocations. SCP up/down can follow. |
 | 6 | Per-socket state, listener queues, backlog and ordered deferred output. Depends on 3 and 5 plus durable wakes. | Force RX between an owner's last drain and release, and close/reuse while queued RX and TX still hold the old reference. Verify one delivery, one retirement and progress on a different socket during the pause. Force listener close between child readiness and publication to the accept queue. Verify that the child is retired once and its slot is returned. Record held locks at production acquisitions in the affected fixtures for PRs 6, 7, 11 and 12 and compare the nested acquisitions with the coordinator-approved order. | TX/RX and SCP up/down can gain from less lock hold time. Largest movement is expected with concurrent flows. |
-| 7 | Timer wheel. Depends on 6. | With fake time and one due timer, run the actual timer worker pass with 16 and then 4096 unrelated sockets, including sockets with later deadlines. Count connection visits across deadline selection, expiry/reaping and notification collection. In each run require one visit to the due socket, zero visits to unrelated sockets, and one event. Also arm an earlier deadline during the worker's wait and cancel an entry after dequeue before tuple reuse. Check the wake and stale-event rejection. | TX and SCP down can gain when many deadlines compete with real work. SSH and the single-flow rows act as latency and throughput controls. |
+| 7 | Timer wheel. Depends on 6. | With fake time and one due timer, run the actual timer worker pass with 16 and then 4096 unrelated sockets, including sockets with later deadlines. Count connection visits across deadline selection, expiry/reaping and notification collection. In each run require one visit to the due socket, `0/16` or `0/4096` unrelated sockets visited, and one event. Also arm an earlier deadline during the worker's wait and cancel an entry after dequeue before tuple reuse. Check the wake and stale-event rejection. | TX and SCP down can gain when many deadlines compete with real work. SSH and the single-flow rows act as latency and throughput controls. |
 | 8 | SACK scoreboard and range-based recovery. Depends on 1 and 5. | Drive a cumulative ACK plus overlapping SACK blocks across sequence wrap, then RTO and reneging. Check unique delivery credit, hole-only repair before timeout, and retention of selectively acknowledged bytes. | TX and SCP down gain if multiple losses share a flight. RX and SCP up are controls. |
 | 9 | RFC 7323 timestamps, RACK-TLP and PRR. Depends on 7 and 8. | Replay reordering followed by real tail loss with fake time. Check the reordering window, probe before RTO, one repair of the lost range, bounded PRR sends and stale timestamp rejection across wrap. | TX and SCP down gain on loss or tail stalls. SSH may gain if its short exchange previously hit RTO. |
 | 10 | CUBIC and pacing. Depends on 9. | Feed fixed ACK times, loss and an idle interval to both policies. Check CUBIC's window trajectory and restart, pacing deadlines, burst limit and recovery credit under delayed device service. | TX and SCP down should gain on long, fast paths or from fewer bursts. Record ordinary QEMU rows even when the short path shows little change. |
@@ -474,7 +475,7 @@ concurrency, loss or RTT named in the prediction.
   200 ms floor predates this standards-based recovery design.
 - Opt out at SSH transport setup because both programs start the handshake on
   the connected fd before they know which channels the transport will carry.
-- Count all connection visits in a timer pass because today's `run_timers`
+- Count connection visits across the entire timer pass because today's `run_timers`
   scans live sockets and invokes forced reaping, even though
   `note_timer_deadline` already wakes the worker for an earlier arm.
 - Count payload copies and fresh packet-storage allocations on the virtio
