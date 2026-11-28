@@ -150,9 +150,13 @@ class CommitPreemption(unittest.TestCase):
                          r'cache\.submit\(device, group\)\.wait\(\)\.map_err\([^;]+;\s*preemption_point\(\);')
 
     def test_waits_park_with_the_count_released(self):
+        # E2.2: the BreenFS waits and AHCI admission park through the park
+        # contract (task::park), which releases exactly the caller's baseline
+        # for the switch and takes it back.
         for file, name in [('mount_lock.rs', 'park'), ('commit_signal.rs', 'wait')]:
             code = function(strip_comments((BREENFS / file).read_text()), name)
-            self.assertIn('schedule_current_wait()', code)
+            self.assertIn('park::wait_allowing_boot_idle(', code)
+            self.assertNotRegex(code, r'\bpreempt_(?:enable|disable)\(')
         waitqueue = (ROOT / 'kernel/src/task/waitqueue.rs').read_text()
         source = strip_comments(waitqueue)
         # ARM64 enters through a naked stub that hands the caller's return
@@ -164,11 +168,24 @@ class CommitPreemption(unittest.TestCase):
         self.assertIn('sleep_while_blocked();', function(source[non_arm_entry.start():], 'schedule_current_wait'))
         wait = function(source, 'sleep_while_blocked')
         # The level the caller holds is released for the sleep and taken back
-        # after it; a caller at level 0 has no level to release.
-        self.assertIn('let release = crate::per_cpu::preempt_count() & '
-                      'crate::arch_impl::current::constants::PREEMPT_MASK != 0;', wait)
-        enable = re.escape('if release {') + r'\s*' + re.escape('crate::per_cpu::preempt_enable();')
-        disable = re.escape('if release {') + r'\s*' + re.escape('crate::per_cpu::preempt_disable();')
+        # after it (task::park::release_for_sleep releases one only when one
+        # is held, so a caller at level 0 keeps its depth).
+        release = re.escape('let released = super::park::release_for_sleep();')
+        switch = re.escape('switch_while_blocked();')
+        retake = re.escape('super::park::retake_after_sleep(released);')
+        park = strip_comments((ROOT / 'kernel/src/task/park.rs').read_text())
+        self.assertRegex(function(park, 'release_for_sleep'),
+                         re.escape('let held = depth() != 0;') + r'\s*' + re.escape('if held {') + r'\s*'
+                         + re.escape('crate::per_cpu::preempt_enable();'))
+        self.assertRegex(function(park, 'retake_after_sleep'),
+                         re.escape('if released.0 {') + r'\s*' + re.escape('crate::per_cpu::preempt_disable();'))
+        # The park's own switch is the same loop, entered with the levels
+        # already released (park_core::commit_loop releases, sleeps, retakes).
+        self.assertIn('switch_while_blocked();', function(source, 'sleep_released'))
+        core = strip_comments((ROOT / 'kernel/src/task/park_core.rs').read_text())
+        self.assertRegex(function(core, 'commit_loop'),
+                         re.escape('entry.release_for_sleep(hooks);') + r'\s*' + re.escape('hooks.sleep();')
+                         + r'\s*' + re.escape('entry.retake_after_sleep(hooks);'))
         # ARM64 switches through the native scheduler, with no reclamation
         # while the blocked state is published; x86 halts.
         parks = (
@@ -176,29 +193,33 @@ class CommitPreemption(unittest.TestCase):
              re.escape('crate::arch_impl::aarch64::context_switch::schedule_from_kernel();')),
             ('not(target_arch = "aarch64")', re.escape('halt_blocked_current();')),
         )
+        switching = function(source, 'switch_while_blocked')
 
         def assert_park_releases_count(code):
+            self.assertRegex(code, release + r'\s*' + switch + r'\s*' + retake)
+
+        def assert_switch_keeps_count(code):
             loop = re.search(r'\bloop\s*\{', code)
             self.assertIsNotNone(loop)
             end = block_end(code, loop.end())
-            self.assertRegex(code[:loop.start()], enable)
-            self.assertNotIn('preempt_disable()', code[:loop.start()])
-            for cfg, park in parks:
+            for cfg, arm in parks:
                 prefix = re.escape(strip_comments(f'#[cfg({cfg})]')) + r'\s*'
-                self.assertRegex(code[loop.end():end], prefix + park)
-            self.assertNotRegex(code[loop.end():end], r'\bpreempt_(?:enable|disable)\(')
-            self.assertNotIn('run_deferred_reclamation', code[loop.end():end])
-            self.assertRegex(code[end + 1:], disable)
+                self.assertRegex(code[loop.end():end], prefix + arm)
+            self.assertNotRegex(code, r'\bpreempt_(?:enable|disable)\(')
+            self.assertNotIn('run_deferred_reclamation', code)
 
         assert_park_releases_count(wait)
+        assert_switch_keeps_count(switching)
         with self.assertRaises(AssertionError):
-            assert_park_releases_count(re.sub(enable, '', wait, count=1))
+            assert_park_releases_count(re.sub(release, '', wait, count=1))
+        with self.assertRaises(AssertionError):
+            assert_switch_keeps_count(switching.replace('halt_blocked_current();', 'crate::per_cpu::preempt_enable();'))
         # Ruling 488 retains the driver's existing sleepable entry contract.
         ahci = (ROOT / 'kernel/src/drivers/ahci/mod.rs').read_text()
-        self.assertIn('schedule_current_wait()', function(strip_comments(ahci), 'begin_port_io'))
+        self.assertIn('crate::task::park::wait(', function(strip_comments(ahci), 'begin_port_io'))
         completion = (ROOT / 'kernel/src/task/completion.rs').read_text()
-        self.assertIn('preempt_enable()', completion)
-        self.assertIn('preempt_disable()', completion)
+        self.assertIn('crate::task::park::release_for_sleep()', completion)
+        self.assertIn('crate::task::park::retake_after_sleep(released)', completion)
         self.assertIn('schedule_from_kernel()', completion)
         mmio = (ROOT / 'kernel/src/drivers/virtio/block_mmio.rs').read_text()
         self.assertIn('schedule_current_wait()', mmio)

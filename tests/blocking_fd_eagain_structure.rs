@@ -305,16 +305,6 @@ fn boolean(nodes: &[Node], bindings: &BTreeMap<String, bool>) -> Option<bool> {
     }
     None
 }
-fn only_if_condition(nodes: &[Node], name: &str) -> bool {
-    nodes.iter().enumerate().all(|(i, node)| match node {
-        Node::Group(_, body) => only_if_condition(body, name),
-        Node::Token(token) if token == name => {
-            i > 0 && nodes[i - 1].token() == "if"
-                && nodes.get(i + 1).is_some_and(|next| next.group('{').is_some())
-        }
-        _ => true,
-    })
-}
 
 /// Explore both unknown branches; prune only a derived mode predicate. Follow
 /// local helpers and bind positional boolean arguments to renamed parameters.
@@ -330,19 +320,6 @@ fn inspect(
         let token = nodes[i].token();
         if token == "let" {
             if let Some(semi) = (i + 1..nodes.len()).find(|j| nodes[*j].token() == ";") {
-                // Permit the preemption read in this mask test only. Its
-                // boolean binding may select branches, whose bodies are
-                // still explored, but cannot be used as a result value.
-                if compact(&nodes[i..semi]) == concat!(
-                    "letrelease_preempt=crate::per_cpu::preempt_count()",
-                    "&crate::arch_impl::current::constants::PREEMPT_MASK!=0",
-                ) {
-                    if !only_if_condition(&nodes[semi + 1..], "release_preempt") {
-                        return Err("release_preempt used outside an if condition".into());
-                    }
-                    i = semi + 1;
-                    continue;
-                }
                 if let Some(eq) = (i + 1..semi).find(|j| nodes[*j].token() == "=") {
                     if let Some(name) = nodes[i + 1..eq]
                         .iter()
@@ -428,6 +405,10 @@ fn inspect(
                     "arch_halt_while_blocked",
                     "preempt_enable",
                     "preempt_disable",
+                    // E2.2: the sleep's level release and retake, owned by
+                    // task::park (they return a token and unit, not a result).
+                    "release_for_sleep",
+                    "retake_after_sleep",
                     "from",
                     "min",
                     "read_or_prepare",
@@ -570,9 +551,11 @@ fn console_route_restricts_preempt_count_to_the_wait_predicate() {
         "return Err(crate::per_cpu::preempt_count() as i32 + 10);",
         1,
     );
+    // E2.2: the level the sleep releases is task::park's; preemption read at
+    // that site still must not reach an errno.
     let bound = helper.replacen(
-        "if release_preempt {\n            crate::per_cpu::preempt_enable();",
-        "if release_preempt {\n            return Err(release_preempt as i32 + 10);",
+        "let released = crate::task::park::release_for_sleep();",
+        "let released = crate::task::park::release_for_sleep();\n        return Err(crate::per_cpu::preempt_count() as i32 + 10);",
         1,
     );
     assert_ne!(bound, helper);

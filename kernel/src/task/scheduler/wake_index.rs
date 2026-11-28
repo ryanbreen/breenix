@@ -27,6 +27,16 @@ impl Pin {
         let wake = unsafe { find(tid).as_ref() }?;
         Some((&wake.node, wake.cpu.load(Ordering::Acquire)))
     }
+
+    /// `tid`'s thread. The pin keeps it allocated: a thread is freed only
+    /// once no pin is held (`unpinned`). Read only its atomics.
+    pub(super) fn thread(&self, tid: u64) -> Option<&Thread> {
+        // SAFETY: this pin defers reclamation of any record lookup can reach,
+        // and of the thread that record names.
+        let wake = unsafe { find(tid).as_ref() }?;
+        // SAFETY: as above.
+        unsafe { wake.thread.load(Ordering::Acquire).as_ref() }
+    }
 }
 
 impl Drop for Pin {

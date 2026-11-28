@@ -842,6 +842,52 @@ should own each, not several agents on one PR (DEV-30(3)).
   level-arithmetic hazard (the #672 underflow guard's class).
 - **Rows.** No row is predicted to move. **Boot.** Not needed: the predicate is pure, and the host tests settle it.
 
+#### E2.2 as built: deviations (ruling DEV-39(2))
+
+The builder resolved these details against the code. Each has one sentence of reason.
+
+- **Where the wait word lives.** Each `Thread` holds its wait word (`park::ParkState`), because ARM64 threads
+  have no wake record until the wake index is published and so cannot hold it there.
+- **How wakes carry the sequence.** A queue waker ends the word's current wait while it holds the queue
+  lock with the waiter linked, and the timer heap ends a live I/O deadline as `Timeout`. The R17 inbox
+  carries no sequence, so a late inbox wake makes the thread runnable with its word unchanged, and
+  `park::wait` publishes again. This keeps the inbox's interface as it is. Signals and kills are seen at
+  the waiter's own checks, which §3.3 already allows.
+- **Where the baseline is set.** `KillCustody::enter_syscall` sets it and `resume_user_time` clears it.
+  Both syscall entries call the first, and both returns to user mode call the second, so the Tier-1
+  `syscall/handler.rs` is not edited.
+- **"Dispatching".** Until E2.4's early-boot token, this is a current thread and, on ARM64, the timer
+  running, the conditions the converted predicates tested.
+- **More `park::Braked` sites.** The BreenFS commit and scrub workers, ext2 writeback and the input
+  release service hold a level across their waits the way a syscall does, as the test-loader does. They
+  take the guard in E2.2, and so does the test-loader (the design had it in E2.4). Otherwise the converted
+  predicates would refuse them. The test-loader's boot-tests step that lets its CPU dispatch uses
+  `park::without_braked`.
+- **The census is wider than §1.2's table.** `tests/park_contract_structure.rs` also found the serial
+  console writer's predicate, the commit signal and block cache waits' added level, and the input
+  service's level. E2.2 converts those. It classifies the other drivers' predicates (virtio-blk,
+  virtio-sound, NVMe, GPU) as E2.4's (§6). It classifies the syscall waits that release the brake by hand
+  (futex, signals, sleep, wait4, poll and select, sockets, pipes and FIFOs) as E2.10's, by class, and the
+  custody loop as E2.10a's.
+- **Sleeps not yet on `park::wait`.** `schedule_current_wait`, `Completion`, the syscall prepared waits
+  and the retry pause release one level, if one is held, through `park::release_for_sleep`, as they did
+  before. Where they chose a sleep path by depth, they now ask `park::sleepable_braked()`: sleepable at a
+  baseline of exactly 1, because that path releases exactly one level. So `Completion` still polls for a
+  depth-0 kernel thread until E2.4 collapses its modes.
+- **The boot continuation.** On ARM64 it runs as CPU 0's idle thread and reaches the BreenFS mount lock,
+  the commit signal and the block cache when it resolves init's path. Those waits keep their pre-E2.2
+  sleep for it, with a receipt, through `park::wait_allowing_boot_idle`, until E2.4 moves its storage
+  reads into `init-loader`.
+- **Refusals in callers with no error channel.** MountLock spins as before, the block cache wait returns
+  to its caller's recheck, the commit signal returns EINTR, and AHCI keeps `CannotPark` on x86 and its
+  polling on ARM64 (E2.4 removes both). The "nested preemption guards" assertions in the block cache and
+  commit signal waits are replaced by the refusal.
+- **Smaller details.** A depth below the baseline is `LocksHeld(0)`, because the design names no variant
+  for it. `wait_any` takes at most 8 queues (`WAIT_ANY_MAX`), so the wait path does not allocate. AHCI's
+  recovery deferral, written for a masked caller, admits `IrqsMasked` as well as `Sleepable`. On ARM64 a
+  `park::wait` keeps the wait-site PC its publication recorded, because the generic path cannot pass its
+  caller's return address.
+
 ### E2.3: parking and parked
 
 - **Scope.** §3.5: the `Parking` state, requeueing on an involuntary switch, and committing only in

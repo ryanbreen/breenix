@@ -448,6 +448,7 @@ pub fn sys_clone_thread(
     let mut child_thread = Thread {
         id: child_thread_id,
         wake: None,
+        park: crate::task::park::ParkState::new(),
         name: alloc::format!("clone-child-{}", child_thread_id),
         state: crate::task::thread::ThreadState::Blocked,
         #[cfg(target_arch = "aarch64")]

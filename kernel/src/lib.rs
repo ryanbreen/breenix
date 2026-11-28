@@ -656,7 +656,7 @@ pub fn arch_halt_while_blocked() {
     // is not a park.
     per_cpu::note_wait_loop_park();
     #[cfg(target_arch = "aarch64")]
-    if per_cpu::preempt_count() == 0 {
+    if task::park::may_switch_now() {
         // Save the blocked continuation now. Otherwise its timer can make it
         // ready on a peer CPU, but cannot dispatch it until this CPU takes an
         // interrupt and saves the still-current stack. Do not reclaim here:
@@ -667,7 +667,7 @@ pub fn arch_halt_while_blocked() {
     }
     #[cfg(target_arch = "x86_64")]
     {
-        if wait_state.1 && per_cpu::preempt_count() == 0 {
+        if wait_state.1 && task::park::may_switch_now() {
             task::scheduler::set_need_resched();
             // SAFETY: the reschedule vector's gate is the reschedule entry,
             // which saves the 15 general-purpose registers and restores them;
