@@ -429,8 +429,17 @@ fn writeback(&self, node: &VNode, batch: &WritebackBatch) -> Result<(), Errno>  
 Clean file data no longer passes through the block cache. Fill reads the device directly, so the
 `DataReader` path (`vfs.rs:4756-4778`) and its data entries go (section 14).
 
-The fill never reads a page that the cache holds dirty or under writeback, because those are never absent.
-So the fill reads the open view's extents and nothing else. The layered "open generation's page, then the
+**Until E3-8, the fill reads BreenFS's dirty layers first.** Before E3-8 dirty bytes do not live in the
+cache: they are BreenFS's open dirty pages and the frozen or installed generation's pages, and the extents do
+not hold them yet. So E3-4's fill, and E3-7's read, resolve each page with today's layered lookup, the
+mount state's `page` (`fs/breenfs/vfs.rs:1020-1035`): the open generation's dirty page, then the frozen
+generation's (or the installed one's until the replay completes) unless the open one truncated it away, and
+only then the extents. That lookup runs under the same snapshot as the extent walk (step 1), and a page
+found in a dirty layer is `Data`. E3-8 removes the layers, because from E3-8 on the statement below
+holds. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+
+From E3-8, the fill never reads a page that the cache holds dirty or under writeback, because those are never
+absent. So the fill reads the open view's extents and nothing else. The layered "open generation's page, then the
 frozen generation's page, then the Files view" lookup of today's `read` (design 2.5, "Foreground reads")
 becomes a tree lookup. The cache holds the newest bytes for every index it has, and the open view's extents
 give the bytes of every other one: <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
@@ -1333,6 +1342,10 @@ waits for E3-6 (it needs pages retained by the cache to be worth anything), so t
     verifies its run and pauses before its copy, then fill B asks for a buffer. B waits for A's token, and
     A's frames hold file A's bytes. Today's staging is per call, so this guards the ownership the PR keeps
     and is not red on the old tree; the PR says so.
+  - A population of a file with an uncommitted write, and with a frozen generation's page, maps the written
+    bytes: write page 0, freeze, write page 1, then `mmap` and read both through the mapping before the
+    drain. Today's `read_into` reads through the mount state's layers, so this guards that the new `fill`
+    keeps them; it is red only against an extents-only fill, and the PR says so.
 - **Rows.** `memory.driver-mmap` and `memory.driver-map-touch` (fewer, larger requests and no block-cache
   churn), `compile.rustc-vv`, `process.rustc-first-output`, `compile.hello-object`.
 - **Boot.** None. The recording device settles the request shapes, and the bounce path uses the existing
@@ -1388,10 +1401,19 @@ waits for E3-6 (it needs pages retained by the cache to be worth anything), so t
 
 - **Change.**
   - Native `read` per 7.1, with readahead (8), under BreenFS's existing exclusion (7.3).
-  - The overlay (`file_map.rs:827-856`) and the layered page lookup in BreenFS `read` go. Each byte
-    comes from one source, which is R1's read side.
+  - The overlay (`file_map.rs:827-856`) and the zero prefill in BreenFS `read` go. Each byte comes from one <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+    source, which is R1's read side. The layered lookup moves into the fill (6.2) and stays there until
+    E3-8, so a page whose newest bytes are in BreenFS's open or frozen dirty pages fills from them, not from
+    the extents. BreenFS writes keep updating resident cache pages through today's mutation hooks
+    (`file_map.rs:557-561`), so a page read into the cache before a write reads the write's bytes after
+    it.
   - `DataReader`'s clean-data path goes (section 14).
 - **Tests (host), check first.**
+  - Dirty layers before E3-8, through the production fill: write page 0 (open generation), freeze, write
+    page 1 (G+1), then, before the commit drains, `read` both pages and populate a mapping of them. Both
+    return the written bytes. A variant reads page 0 first, writes it, and reads it again. Red if the fill
+    reads only the extents, which return the older bytes or 00; on the old tree today's `read` uses the
+    layers, so the check is red only against the new path, and the PR says so.
   - Read a 16 MiB file twice with no pressure. The second pass makes 0 device reads. The old code serves it
     from an 8 MiB block cache and re-reads at least half, which is red.
   - A sequential loop of 4 KiB reads over 4 MiB issues at most 4 MiB / `max` + log2(`max` / 16 KiB) + 1
@@ -1763,7 +1785,7 @@ buffer, then sleeps before copying. Fill B runs on the same CPU and reads file B
 generation, and its bytes live only in BreenFS's `DirtyPages` map. A population or a read then fills it.
 
 ```pycon
->>> RULE = 'extents-only'
+>>> RULE = 'dirty-layers-first'
 >>> extents = {0: b'disk'}
 >>> open_dirty, frozen_dirty = {0: b'open'}, {1: b'froz'}
 >>> def fill(i):
