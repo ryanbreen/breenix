@@ -2008,9 +2008,10 @@ E1-7 implementation decisions (DEV-39(2)):
   caller names, because `heap_index` records the block's size, not the request's: rounding to 8 bytes plus a
   remainder below the 16-byte minimum block.
 - `dma::bus_address` counts as direct-map memory the frames that have a `FrameMeta` entry, and as the image
-  `[__kernel_virt_start, _end)` on ARM64 and `[__ehdr_start, _end)` on x86, and translates each page with
-  `PhysAddrWrapper::from_kernel_virt`, because the CPU's translation is the address a device sees, the IPA on
-  VMware.
+  `[__kernel_virt_start, __kernel_writable_end)` and `[__dma_start, __dma_end)` on ARM64 and
+  `[__ehdr_start, _end)` on x86, and translates each page with `PhysAddrWrapper::from_kernel_virt`, because the
+  CPU's translation is the address a device sees, the IPA on VMware. ARM64's two ranges leave out the gap the
+  linker leaves before `.dma`, which holds the loader's boot stack (PR #3307 review).
 - `kmem_core::route` is 6.1's table, and a size or alignment larger than the vmap window is
   `NoVa { window: vmap }`, the cause 7.1 names for VA; E1-9 points `GlobalAlloc` at it.
 - The init self-check runs on both architectures after E1-5's and prints `[boot] Span and vmap self-check

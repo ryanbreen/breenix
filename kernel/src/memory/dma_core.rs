@@ -58,9 +58,12 @@ pub struct ImageLayout {
     pub end: u64,
 }
 
-/// The VA ranges `[start, end)` the check counts as kernel-image memory.
+/// The VA ranges `[start, end)` the check counts as kernel-image memory:
+/// the loaded image and the separate section, each on its own, so the gap
+/// between them (on ARM64 the loader's boot stack and unused RAM, which the
+/// boot direct map translates) is not image memory.
 pub fn image_ranges(image: ImageLayout) -> [(u64, u64); 2] {
-    [(image.start, image.end), (image.end, image.end)]
+    [(image.start, image.loaded_end), (image.dma_start, image.dma_end)]
 }
 
 /// Whether `va` lies in one of `ranges`.
