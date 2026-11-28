@@ -944,6 +944,27 @@ of their steps, keeping each CPU's program order. The steps are sequentially con
   - Host tests of the deadline queue: arm, cancel, re-arm, earliest-first, no refusal at any count. A
     65th sleeper's deadline is kept, where today's fine heap refuses it (red).
   - A seam test that after every queue change the programmed compare equals the head. <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
+  - **Compare in the armed timer's counter domain.** A seam test with a nonzero virtual offset (a
+    hypervisor's `CNTVOFF_EL2`) arms a deadline 24,000 counts ahead on the physical timer and on the
+    virtual timer. Each must fire 24,000 counts later in its own counter's time. `CNTVCT_EL0` reads
+    `CNTPCT_EL0` minus the offset, `CNTP_CVAL_EL0` compares against `CNTPCT_EL0`, and `CNTV_CVAL_EL0`
+    against `CNTVCT_EL0` (Arm ARM, "The Generic Timer in AArch64 state"). Red on §8.2 as first written,
+    which makes `CNTVCT_EL0` the clock for both compares.
+
+    ```pycon
+    >>> CNTVOFF = 5_000_000
+    >>> def counter(name, physical_now):
+    ...     return physical_now if name == 'CNTPCT' else physical_now - CNTVOFF
+    >>> def compare_for(timer, physical_now, delta):
+    ...     return counter('CNTVCT', physical_now) + delta
+    >>> def fires_at(timer, cval):
+    ...     return cval if timer == 'CNTP' else cval + CNTVOFF
+    >>> fires_at('CNTP', compare_for('CNTP', 10_000_000, 24_000)) - 10_000_000
+    24000
+    >>> fires_at('CNTV', compare_for('CNTV', 10_000_000, 24_000)) - 10_000_000
+    24000
+
+    ```
   - A host test that `get_ticks()` advances with the counter when no interrupt arrives.
   - **Deadlines across migration.** A host test arms a sleeper's deadline while CPU A owns the thread,
     then moves the thread to CPU B before A runs again. The deadline must end up in B's queue only, and
