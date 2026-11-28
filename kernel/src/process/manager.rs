@@ -4117,10 +4117,6 @@ impl ProcessManager {
         );
         log::info!("exec_process: New page table created successfully");
 
-        // Clear any user mappings that might have been copied from the current page table
-        // This prevents conflicts when loading the new program
-        new_page_table.clear_user_entries();
-
         // Unmap the old program's pages in common userspace ranges
         // This is necessary because entry 0 contains both kernel and user mappings
         // Typical userspace code location: USERSPACE_BASE + 1MB range
@@ -4457,9 +4453,6 @@ impl ProcessManager {
     /// image is loaded into it, for in-memory and filesystem images alike.
     #[cfg(target_arch = "x86_64")]
     pub(crate) fn clear_exec_table(new_page_table: &mut ProcessPageTable) {
-        // Clear any user mappings that might have been copied
-        new_page_table.clear_user_entries();
-
         // Unmap old pages
         if let Err(e) = new_page_table.unmap_user_pages(
             VirtAddr::new(crate::memory::layout::USERSPACE_BASE),
@@ -4902,7 +4895,6 @@ impl ProcessManager {
     #[cfg(target_arch = "aarch64")]
     pub(crate) fn clear_exec_table(new_page_table: &mut ProcessPageTable) {
         use crate::arch_impl::aarch64::constants::USER_STACK_REGION_START;
-        new_page_table.clear_user_entries();
 
         if let Err(e) = new_page_table.unmap_user_pages(
             VirtAddr::new(crate::memory::layout::USERSPACE_BASE),
@@ -5410,9 +5402,6 @@ impl ProcessManager {
             pid.as_u64(),
         );
         log::info!("exec_process [ARM64]: New page table created successfully");
-
-        // Clear any user mappings that might have been copied from the current page table
-        new_page_table.clear_user_entries();
 
         // Unmap the old program's pages in common userspace ranges
         if let Err(e) = new_page_table.unmap_user_pages(

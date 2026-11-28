@@ -2332,44 +2332,6 @@ impl ProcessPageTable {
         Ok(())
     }
 
-    /// Clear specific PML4 entries that might contain user mappings
-    /// This is used during exec() to clear out old process mappings
-    ///
-    /// NOTE: This doesn't work well when L3 tables are shared between processes
-    pub fn clear_user_entries(&mut self) {
-        self.assert_unclaimed();
-        // Get physical memory offset
-        let phys_offset = crate::memory::physical_memory_offset();
-
-        // Get the L4 table
-        let level_4_table = unsafe {
-            let virt = phys_offset + self.level_4_frame.start_address().as_u64();
-            &mut *(virt.as_mut_ptr() as *mut PageTable)
-        };
-
-        // Clear entries that typically contain user mappings
-        // Entry 0: While it contains kernel code, it might also have user mappings at 0x10000000
-        // We need to be careful here - we can't clear the entire entry
-        // For now, we'll skip entry 0 and let the ELF loader overwrite user mappings
-
-        #[cfg(target_arch = "x86_64")]
-        crate::memory::kernel_page_table::clear_exec_slots(level_4_table);
-
-        // Entry 32: Alternative user code location (0x100000000000)
-        #[cfg(not(target_arch = "x86_64"))]
-        if !level_4_table[32].is_unused() {
-            log::debug!("Clearing PML4 entry 32 (potential user code range)");
-            level_4_table[32].set_unused();
-        }
-
-        // Entry 170: User stack location (0x550000000000)
-        #[cfg(not(target_arch = "x86_64"))]
-        if !level_4_table[170].is_unused() {
-            log::debug!("Clearing PML4 entry 170 (user stack range)");
-            level_4_table[170].set_unused();
-        }
-    }
-
     /// Unmap specific user pages in the address space
     /// This is more precise than clearing entire PML4 entries
     pub fn unmap_user_pages(

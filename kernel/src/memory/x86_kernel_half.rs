@@ -55,23 +55,13 @@ pub(crate) fn inherit_master_slots(master: &PageTable, root: &mut PageTable) {
         root[i] = master[i].clone();
     }
 
-    // The bootloader can place kernel mappings in the lower half.
+    // The bootloader can place kernel mappings in the lower half, and the
+    // physical-memory mapping is dynamic, so any of these slots may hold the
+    // direct map. Exec does not clear root slots of its new table, which the
+    // `exec_root_keeps_a_direct_map_at_pml4_32` host fixture checks.
     for i in 1..256 {
         if i == 2 || i == 3 || !master[i].flags().contains(PageTableFlags::USER_ACCESSIBLE) {
             root[i] = master[i].clone();
         }
-    }
-}
-
-/// Clear the PML4 entries exec treats as old user ranges.
-pub(crate) fn clear_exec_slots(root: &mut PageTable) {
-    // Entry 32: Alternative user code location (0x100000000000)
-    if !root[32].is_unused() {
-        root[32].set_unused();
-    }
-
-    // Entry 170: User stack location (0x550000000000)
-    if !root[170].is_unused() {
-        root[170].set_unused();
     }
 }

@@ -1573,6 +1573,15 @@ E1-2 implementation decisions (DEV-39):
   - `memory::init` no longer calls `paging::init` before the CR3 switch. That call's only lasting
     effect was to fill the never-read `PAGE_TABLE_MAPPER` cell with a mapper over the boot root;
     the remaining call after the switch now fills it with the master.
+  - Exec no longer clears PML4 slots 32 and 170 of its new root (`clear_user_entries`, removed).
+    This defect predates E1-2x and was raised in the #3270 review. The root is fresh from
+    `ProcessPageTable::new`, which on x86 fills those slots only from the master's supervisor-only
+    entries, and the dynamic physical-memory mapping can place the direct map there. So the clear
+    could only erase a kernel mapping. On ARM64 the fresh root is empty and the clear had no effect.
+- Check first, exec root. The fixture `exec_root_keeps_a_direct_map_at_pml4_32` puts the master's
+  direct map at PML4[32] and runs the production slot policy (`inherit_master_slots`) and exec's
+  slot clear. It fails on the commit that moves them into `x86_kernel_half.rs` unchanged: low
+  physical RAM does not translate under the exec root. The fix removes the clear.
 - Check first. The #3264 fixture drives the production migration loop with slots 256 and 257
   sharing a PDPT index. Before and after migration, the expected translations are
   `0xffff800010000000` to `0x10000000` and `0xffff808010000000` to `0x8010000000`.

@@ -138,9 +138,8 @@ fn exec_root_keeps_a_direct_map_at_pml4_32() {
     tables[3][0].set_addr(PhysAddr::new(1 << 30), flags | Flags::HUGE_PAGE);
 
     let (master, rest) = tables.split_at_mut(1);
+    // Exec builds its new root this way and leaves the root's slots alone.
     x86_kernel_half::inherit_master_slots(&master[0], &mut rest[0]);
-    // Exec's preparation of its new root.
-    x86_kernel_half::clear_exec_slots(&mut rest[0]);
 
     let translate = |root: &mut PageTable, va: VirtAddr| {
         // This is a software walk. The synthetic physical range is backed by tables.

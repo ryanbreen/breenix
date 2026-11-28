@@ -14,7 +14,7 @@ use x86_64::{
 
 #[path = "x86_kernel_half.rs"]
 mod x86_kernel_half;
-pub(crate) use x86_kernel_half::{clear_exec_slots, inherit_master_slots};
+pub(crate) use x86_kernel_half::inherit_master_slots;
 
 /// The master kernel PML4 frame (Phase 2), published as a physical address in a
 /// lock-free cell rather than as a `Mutex<Option<PhysFrame>>`.
