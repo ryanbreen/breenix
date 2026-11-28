@@ -1,8 +1,8 @@
 use super::*;
 use crate::test_framework::registry::TestResult;
 
-/// Take every frame off the free list, in list order. The buffer is reserved
-/// before the list is held, so nothing allocates under the hold.
+/// Take the free list's frames off it, in list order. The buffer is reserved
+/// before the list is held, so the hold makes no allocation.
 fn drain_free_list() -> Option<Vec<u64>> {
     let meta = frame_meta()?;
     loop {
@@ -86,8 +86,9 @@ fn take_free_frame(frame: PhysFrame) -> Option<FrameLease> {
     claim_frame(frame, 0, 0)
 }
 
-/// A frame above every usable region. This forces the production lookup to
-/// reject the address rather than merely indexing past the metadata.
+/// The first frame above the highest usable range. This forces the
+/// production lookup to reject the address rather than index past the
+/// metadata.
 fn above_top_of_ram_frame() -> Option<PhysFrame> {
     let info = MEMORY_INFO.get()?;
     let top = info.iter()

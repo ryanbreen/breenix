@@ -130,7 +130,8 @@ impl FrameLease {
 }
 
 /// Free list for deallocated frames, threaded through their metadata. A
-/// return needs no capacity, so it is always recorded. Interrupts are masked
+/// return needs no capacity, so a returned frame is linked, not dropped
+/// (`a_return_at_exact_free_list_capacity_is_recorded`). Interrupts are masked
 /// for the hold, so a holder is not interrupted or switched out with it held.
 static FREE_FRAMES: Mutex<FreeList> = Mutex::new(FreeList::new());
 
@@ -478,10 +479,11 @@ pub fn allocate_frame() -> Option<PhysFrame> {
 /// adjacent in physical memory. The free list recycles frames in arbitrary
 /// order, so adjacency can only be established at the sequential frontier:
 /// this reserves a run of consecutive allocator ordinals whose physical
-/// addresses are checked adjacent, and claims every one of them in the
-/// metadata exactly as a single-frame allocation does. Frames reserved but not
+/// addresses are checked adjacent, and claims each of them in the metadata
+/// exactly as a single-frame allocation does. Frames reserved but not
 /// usable (a run cut short by a usable-region boundary) are handed back
 /// through the normal fail-closed return path, never dropped on the floor.
+/// claim-lint:ok: tests/frame_allocator_contiguous.rs releases the claimed prefix in 2 of its 3 cases.
 ///
 /// Fail-closed: returns `None` rather than a run that is not contiguous. A
 /// caller that cannot get real contiguity must fail its own initialization.
@@ -507,8 +509,8 @@ pub fn allocate_contiguous_frames(
         &NEXT_FREE_FRAME,
         BootInfoFrameAllocator::get_usable_frame,
         |frame| frame.start_address().as_u64(),
-        // The metadata of every usable frame exists from boot, so a run
-        // needs nothing prepared before the frontier moves.
+        // The metadata of the usable frames is built at boot, before the
+        // first allocation, so a run has no capacity to prepare.
         |_, _| true,
         |frame| claim_frame(frame, site, 0).is_some(),
         deallocate_frame,
@@ -563,8 +565,8 @@ pub(crate) fn deallocate_leaf_frame(frame: PhysFrame) -> ReturnOutcome {
 
 /// Deallocate a physical frame, returning it to the free pool
 ///
-/// Every return is fail-closed through the generation transition; a refusal
-/// leaks rather than risking reuse by two owners.
+/// A return goes through the generation transition and fails closed; a
+/// refusal leaks rather than risking reuse by two owners.
 pub fn deallocate_frame(frame: PhysFrame) {
     // Don't deallocate frames below the low memory floor
     if frame.start_address().as_u64() < LOW_MEMORY_FLOOR {

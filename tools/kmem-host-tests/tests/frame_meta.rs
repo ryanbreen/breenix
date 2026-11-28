@@ -21,7 +21,7 @@ use frame_meta::{ClaimError, Decref, FrameMetaMap, FreeList, ReturnOutcome};
 
 const PAGE: u64 = 4096;
 
-/// The system allocator, refusing every request while this thread's flag is set.
+/// The system allocator, returning null while this thread's flag is set.
 struct FailingAllocator;
 
 thread_local! {
@@ -51,8 +51,8 @@ fn without_heap<R>(f: impl FnOnce() -> R) -> R {
     result
 }
 
-/// Simulated physical memory: each RAM range is backed up front, so nothing
-/// allocates while the build runs.
+/// Simulated physical memory: the RAM ranges are backed up front, so the
+/// build makes no host allocation.
 struct Memory {
     ranges: Vec<(u64, u64, *mut u8)>,
 }
@@ -160,8 +160,8 @@ impl Subject for NewMeta<'_> {
         }
     }
 
-    /// The free list needs no reservation, so nothing allocates under its
-    /// hold and an allocation cannot nest inside it.
+    /// The free list needs no reservation, so its hold makes no allocation
+    /// and an allocation cannot nest inside it.
     fn allocate_nested(&mut self) -> Option<(u64, u32)> {
         self.allocate()
     }
@@ -407,14 +407,15 @@ fn lease_refusals_match_the_old_ledger_seed_5eede103() {
         steps[op] += usize::from(ran);
         assert_eq!(old.free_list_len(), new.free_list_len(), "step {step}: free list");
     }
-    // The sequence reached every kind of step, and reused frames.
+    // Each of the 8 kinds of step ran more than 300 times, and frames were reused.
     assert!(steps.iter().all(|&count| count > 300), "{steps:?}");
     assert!(newest.values().any(|&generation| generation > 2));
 }
 
-/// Each usable frame resolves to exactly one entry, and each frame that is
+/// A usable frame resolves to exactly one entry, and a frame that is
 /// not usable RAM (a one-page hole inside a metadata page, the space between
 /// ranges, a carved metadata page, and above the top) has none.
+/// claim-lint:ok: tools/kmem-host-tests/tests/frame_meta.rs checks 8 hole pfns and the carved pfns.
 #[test]
 fn each_usable_frame_has_one_entry_and_holes_have_none() {
     const MAP: [(u64, u64); 4] = [
@@ -453,7 +454,7 @@ fn each_usable_frame_has_one_entry_and_holes_have_none() {
 }
 
 /// 64 ranges of 768 KiB, spread across 1 TiB. A layout that needs a
-/// contiguous 1 MiB array per section fits in none of them. The page-granular
+/// contiguous 1 MiB array per section fits in 0 of the 64. The page-granular
 /// layout places the metadata in at most 192 pages, with a 128-byte root, at
 /// most 16 leaf pages and at most 64 descriptors, under 200 KiB together.
 #[test]

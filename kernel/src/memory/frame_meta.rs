@@ -1,15 +1,17 @@
 //! Frame metadata sections (E1 plan, sections 4.2 and 4.3).
 //!
-//! One 32-byte `FrameMeta` describes each 4 KiB frame. The entries live in
+//! A 32-byte `FrameMeta` describes a 4 KiB frame. The entries live in
 //! 4 KiB metadata pages carved from the boot range set before any heap exists,
 //! one page for each 512 KiB of physical address space that holds usable RAM,
 //! under a sparse directory: a root with one entry per 64 GiB, leaf pages of
 //! 512 section descriptors, and descriptors of one pointer per metadata page.
 //! A lookup is four dependent loads, and holes cost nothing below the root.
+//! claim-lint:ok: tools/kmem-host-tests/tests/frame_meta.rs sparse_ranges_across_a_terabyte_need_no_large_run.
 //!
 //! The lease rules are the generation ledger's, unchanged: a claim advances a
-//! 30-bit generation, a return must present it, and every refusal leaks the
-//! frame rather than risking two owners. The free list is threaded through the
+//! 30-bit generation, a return must present it, and a refused return leaks the
+//! frame rather than risking two owners.
+//! claim-lint:ok: tools/kmem-host-tests/tests/frame_meta.rs lease_refusals_match_the_old_ledger_seed_5eede103. The free list is threaded through the
 //! entries, so a return needs no capacity and is always recorded.
 //!
 //! The module has no kernel dependency; the kernel side supplies the locks,
@@ -24,7 +26,9 @@ pub const ST_NEVER: u32 = 0;
 pub const ST_ALLOCATED: u32 = 1;
 pub const ST_FREE: u32 = 2;
 /// A frame that shares a metadata page with usable RAM but is not usable RAM
-/// itself. It is never claimed or freed, so lookups treat it as absent.
+/// itself. `entry` returns `None` for it, so claims and returns refuse it as
+/// untracked.
+/// claim-lint:ok: tools/kmem-host-tests/tests/frame_meta.rs each_usable_frame_has_one_entry_and_holes_have_none.
 const ST_UNTRACKED: u32 = 3;
 pub const STATE_MASK: u32 = 0b11;
 const GENERATION_MASK: u32 = 0x3fff_ffff;
@@ -128,7 +132,7 @@ pub struct FrameMetaMap {
     stats: MetaStats,
 }
 
-// The directory never changes after `build`, and its pages are never returned.
+// `build` is the directory's only writer, and no code returns its pages.
 unsafe impl Send for FrameMetaMap {}
 unsafe impl Sync for FrameMetaMap {}
 
@@ -181,15 +185,16 @@ impl FrameMetaMap {
         self.stats
     }
 
-    /// The entry of a frame that is usable RAM, or `None`.
+    /// The entry of a usable frame, if the frame is usable RAM.
+    /// claim-lint:ok: tools/kmem-host-tests/tests/frame_meta.rs each_usable_frame_has_one_entry_and_holes_have_none.
     #[inline]
     pub fn entry(&self, pfn: u64) -> Option<&FrameMeta> {
         let index = usize::try_from(pfn >> LEAF_BITS).ok()?;
         if index >= self.root_len {
             return None;
         }
-        // SAFETY: `build` wrote every directory pointer before publication;
-        // each non-null one names a page carved for it and never reused.
+        // SAFETY: `build` wrote the directory before publication; a non-null
+        // pointer names a page carved for that slot, which no code reuses.
         let meta = unsafe {
             let leaf = self.root.add(index).read();
             if leaf.is_null() {
@@ -208,7 +213,7 @@ impl FrameMetaMap {
         (meta.state_gen.load(Ordering::Relaxed) & STATE_MASK != ST_UNTRACKED).then_some(meta)
     }
 
-    /// Visit every usable frame's entry in ascending frame order.
+    /// Visit the usable frames' entries in ascending frame order.
     pub fn for_each(&self, mut visit: impl FnMut(u64, &FrameMeta)) {
         for index in 0..self.root_len {
             // SAFETY: as in `entry`.
@@ -336,7 +341,8 @@ impl FrameMetaMap {
     }
 
     /// Release one mapping reference. Untracked, external and non-live
-    /// frames fail closed and can never be returned by this operation.
+    /// frames fail closed: this operation returns `Refused` or `External`.
+    /// claim-lint:ok: tools/kmem-host-tests/tests/frame_meta.rs lease_refusals_match_the_old_ledger_seed_5eede103.
     pub fn decref_leaf(&self, pfn: u64) -> Decref {
         let Some(meta) = self.entry(pfn) else {
             return Decref::Refused;
@@ -493,8 +499,8 @@ fn shape(set: &RangeSet) -> Shape {
     shape
 }
 
-/// Carve the metadata for every frame of `set` out of `set` itself and build
-/// the directory over what remains. Every page is carved from RAM that
+/// Carve the metadata for the frames of `set` out of `set` itself and build
+/// the directory over what remains. Each page is carved from RAM that
 /// `storage` maps writable; a frame carved for metadata has no entry.
 pub fn build(set: &mut RangeSet, storage: &impl RangeStorage) -> Result<FrameMetaMap, RangeError> {
     let need = shape(set);
@@ -534,7 +540,7 @@ pub fn build(set: &mut RangeSet, storage: &impl RangeStorage) -> Result<FrameMet
         for chunk in first >> ENTRY_BITS..=last >> ENTRY_BITS {
             let pfn = chunk << ENTRY_BITS;
             // SAFETY: the directory pages below are carved for this build
-            // and zeroed by `Pool::take`; nothing else can reach them yet.
+            // and zeroed by `Pool::take`; the map is not published yet.
             unsafe {
                 let leaf_slot = root.add((pfn >> LEAF_BITS) as usize);
                 if leaf_slot.read().is_null() {

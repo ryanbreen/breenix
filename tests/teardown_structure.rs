@@ -6704,8 +6704,8 @@ fn validate_frame_return_choke_point(
     );
 
     // E1-3: the free list is threaded through the frame metadata. Only
-    // with_free_frames touches it, under a plain lock with interrupts masked;
-    // nothing reserves capacity, and the boot fixtures go through that helper.
+    // with_free_frames names it, under a plain lock with interrupts masked;
+    // no capacity is reserved, and the boot fixtures go through that helper.
     let allocator = source(sources, "kernel/src/memory/frame_allocator.rs");
     record_unit(
         &mut failures,
@@ -6837,7 +6837,7 @@ fn validate_frame_ledger_bounded_boot_allocation(sources: &[(String, String)]) -
     // published, so no allocation path builds or grows it.
     let metadata = source(sources, "kernel/src/memory/frame_meta.rs");
     let build = function_body(metadata, "build");
-    // Every carve comes before the walk that builds the directory, so the
+    // The last carve comes before the walk that builds the directory, so the
     // walk sees the final set.
     let carve = build.rfind("set.carve(").ok_or(())?;
     let walk = build.find("for range in set.iter()").ok_or(())?;
@@ -7700,7 +7700,7 @@ fn validate_process_page_table_counter_inventory(sources: &[(String, String)]) -
         && drop_body.contains("PT_ROOT_DROPPED_UNDECIDED")
         && drop_body.contains("PT_ROOT_DROPPED_MID_RETIRE")
         && retire.contains("record_pt_frame_returned")
-        // E1-3: a return is always recorded, so retirement has no lost arm.
+        // E1-3: a returned frame is linked, not dropped, so retirement has no lost arm.
         && !retire.contains("record_pt_frame_lost")
         && !retire.contains("LostContended")
         && retire.contains("record_pt_root_retired")
@@ -8813,7 +8813,7 @@ fn frame_metadata_ratchets_reject_broken_variants() {
         assert!(validate_frame_ledger_bounded_boot_allocation(&variant).is_err(), "boot carve accepted: {replacement}");
     }
 
-    // R9: the metadata precedes the heap, kernel page tables and every root.
+    // R9: the metadata precedes the heap, kernel page tables and process roots.
     for (path, anchor, replacement) in [
         ("kernel/src/memory/mod.rs", "    frame_allocator::init(memory_regions);",
             "    let _p = process_memory::ProcessPageTable::new();\n    frame_allocator::init(memory_regions);"),

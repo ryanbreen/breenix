@@ -145,7 +145,7 @@ fn with_kernel_pools(mut ranges: RangeSet, source: FramePoolSource, stats: MapSt
             let direct_map = arm64_direct_map::extend(
                 &mut ranges, &LiveBootMemory, &LiveBootMemory, ttbr1_root(),
             );
-            // The extended direct map now covers every page the set holds,
+            // The extended direct map now covers the pages the set holds,
             // so the metadata may come from any of them (E1 plan 4.4).
             let metadata = crate::memory::frame_meta::build(&mut ranges, &LiveBootMemory);
             KERNEL_POOLS.call_once(|| pools);

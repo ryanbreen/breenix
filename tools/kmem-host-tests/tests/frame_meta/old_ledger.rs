@@ -280,8 +280,8 @@ impl<'a> OldLedger<'a> {
             let frame = self.get_usable_frame(current)?;
 
             match self.prepare_frame_for_allocation(current) {
-                // The kernel resets the count here for a lost frontier CAS,
-                // which a single host thread never sees.
+                // The kernel resets the count here for a lost frontier CAS;
+                // a single host thread has no rival to lose one to.
                 PrepareFrame::Ready => {}
                 PrepareFrame::Contended if capacity_contentions < 8 => {
                     capacity_contentions += 1;
