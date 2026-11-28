@@ -203,6 +203,26 @@ fn free_before_pending_and_one_ref_edit_per_allocation() {
     assert_eq!(space::reference(&view, space, 1_000, 256).unwrap().unwrap().refcount, 1);
 }
 
+/// Delayed references (audit R13): count changes that cancel within one
+/// transaction leave a stored REF unedited, so settlement copies no SPACE
+/// node and keeps the root. Replaying each change in order edits the REF to
+/// 2 and back to 1, which copies the leaf and ends at the same count.
+#[test]
+fn cancelled_ref_changes_leave_space_unedited() {
+    let (store, root) = txn_tree(&[(100, format::REF, 4, node_ref(1)), (104, format::REF, 4, node_ref(2))]);
+    let mut t = Transaction::new(&store, root, 3).unwrap();
+    t.increment(100, 4).unwrap();
+    t.increment(100, 4).unwrap();
+    t.release(100, 4, false).unwrap();
+    t.release(100, 4, false).unwrap();
+    t.release(104, 4, false).unwrap();
+    t.increment(104, 4).unwrap();
+    assert_eq!(t.settle().unwrap(), root, "cancelled changes edited SPACE");
+    assert_eq!(t.writes().count(), 0, "cancelled changes copied a SPACE node");
+    assert_eq!(space::reference(&t.view(), root, 100, 4).unwrap().unwrap().refcount, 1);
+    assert_eq!(space::reference(&t.view(), root, 104, 4).unwrap().unwrap().refcount, 2);
+}
+
 #[test]
 fn refcount_overflow_is_emlink() {
     let r = Ref { refcount: u32::MAX - 1, kind: 1, alloc_generation: 1, crcs: vec![] };
