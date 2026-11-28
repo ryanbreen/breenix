@@ -167,6 +167,85 @@ fn masks_cover_both_regimes() {
     }
 }
 
+/// T-A2 (docs/metal/paired-generations.md 9): the staging stream of T-A1,
+/// through detach and the rename of `B.new` to `gen-B`, under the recording
+/// device. Each sampled crash image taken after attach recovers writably and passes
+/// `breenfs-check --full`, and its roots (gen-A, the default tree and the
+/// second root) equal the models at the commit before or after the crash:
+/// the second root is a `B.new` holding a committed prefix of the staged
+/// stream, or the complete `gen-B`. Windows of at most 12 writes keep 17
+/// evenly spaced selections; longer ones keep the representative slice.
+#[test]
+fn staging_stream_crash_images_recover_to_a_commit() {
+    use breenfs_host_tests::{
+        recording::RecordingDevice,
+        recover,
+        staging_stream::{recovered, windows, MemoryDevice, Run, STREAM},
+    };
+    let initial = test_image::image();
+    let device = RecordingDevice::new(initial.clone()).unwrap();
+    let mut run = Run::begin(&device).unwrap();
+    let attached = device.events().len();
+    for step in STREAM {
+        run.step(step).unwrap_or_else(|error| panic!("{step:?}: {error:?}"));
+    }
+    run.finish().unwrap();
+    let events = device.events();
+    let path = std::env::temp_dir().join(format!("breenfs-staging-{}.img", std::process::id()));
+    let mut artifact = OpenOptions::new().create_new(true).write(true).open(&path).unwrap();
+    let (mut checked, mut renamed) = (0, 0);
+    for (number, window) in windows(&initial, &events).iter().enumerate() {
+        if window.end <= attached {
+            continue;
+        }
+        let commit = run.commits.iter().position(|(mark, _)| *mark >= window.end).unwrap();
+        let allowed = [&run.commits[commit - 1].1, &run.commits[commit].1];
+        let writes = window.writes.len();
+        let masks = crash::subsets(writes, 0x51a6 + number as u64).unwrap();
+        let stride = (masks.len() / 16).max(1);
+        for (case, mask) in masks.iter().enumerate() {
+            let keep = if writes <= 12 {
+                case % stride == 0 || case + 1 == masks.len()
+            } else {
+                Masks::Representative.keeps(writes, case)
+            };
+            if !keep {
+                continue;
+            }
+            let crash = MemoryDevice::new(window.image(mask));
+            recover::recover(&crash, true)
+                .unwrap_or_else(|error| panic!("window={number} image={case}: recover {error:?}"));
+            let image = crash.image();
+            artifact.set_len(0).unwrap();
+            artifact.set_len(image.len()).unwrap();
+            for (sector, bytes) in image.sectors() {
+                artifact.seek(SeekFrom::Start(sector * SECTOR_SIZE as u64)).unwrap();
+                artifact.write_all(bytes).unwrap();
+            }
+            artifact.flush().unwrap();
+            let output = Command::new(env!("CARGO_BIN_FILE_BREENFS_breenfs-check"))
+                .arg("--full")
+                .arg(&path)
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(0), "window={number} image={case}: {output:?}");
+            let state = recovered(&crash).unwrap();
+            assert!(
+                allowed.contains(&&state),
+                "window={number} image={case}: state outside commits {} and {}: {state:?}",
+                commit - 1,
+                commit
+            );
+            renamed += usize::from(state.contains_key(&b"gen-B"[..]));
+            checked += 1;
+        }
+    }
+    drop(artifact);
+    std::fs::remove_file(path).unwrap();
+    assert!(checked > 50, "{checked} staging crash images");
+    assert!(renamed > 0 && renamed < checked, "{renamed} of {checked} images hold gen-B");
+}
+
 #[test]
 fn subset_images_sample_recovers_to_an_acknowledged_commit() {
     masks_cover_both_regimes();

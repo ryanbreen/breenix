@@ -44,3 +44,7 @@ pub mod preempt;
 
 #[path = "../../../kernel/src/fs/breenfs/probe.rs"]
 pub mod probe;
+
+// The native unmount entry and the root-volume mount (paired generations 3.2).
+#[path = "../../../kernel/src/fs/breenfs/mount.rs"]
+pub mod mount;
