@@ -573,8 +573,18 @@ preempted or may it run deferred work" are mask tests on the whole word. <!-- cl
   This is quiescent-state-based reclamation (McKenney and Slingwine 1998; Hart et al. 2007). It replaces
   the single global `PINS` counter, which a long-lived reader on any CPU holds up for everyone. A `Pin`
   becomes a per-CPU nesting count, read only by that CPU's quiescent-state report.
+- **Idle is an extended quiescent state.** A CPU in tickless idle enters neither the scheduler nor the
+  idle loop again until something wakes it, so it would never report. Each CPU therefore keeps an idle
+  counter. It increments the counter, making it odd, as the last step before WFI or HLT, holding no
+  `Pin`. It increments it again, making it even, as the first step on any exit from idle: an interrupt
+  entry from idle, before the handler can take a `Pin`, or the idle loop's return to the scheduler. Both
+  increments are sequentially consistent. A grace period snapshots each CPU's counter after the unlink.
+  A CPU whose snapshot is odd, or whose counter has changed since, has passed a quiescent state. So an
+  idle CPU holds up no grace period, and a handler that leaves idle to take a `Pin` is waited for.
 - **Bounded batches.** Each CPU frees at most a fixed batch per pass from its own queue, in its idle loop
-  or its housekeeping deadline.
+  or its housekeeping deadline. An idle CPU frees its batch before it halts. While its own backlog is
+  non-empty it arms the reclamation housekeeping deadline rather than halting with no deadline. A
+  tickless idle CPU therefore never sits on a backlog of its own.
 - **Backpressure.** When a CPU's backlog passes a threshold, new admissions on that CPU park on reclamation
   progress (E2 `park::wait`) until the backlog falls. Until E2.2 lands, they return EAGAIN as today.
 - **What reclamation preserves.** Batched translation invalidation for kernel stacks, the per-thread
@@ -1094,11 +1104,13 @@ of their steps, keeping each CPU's program order. The steps are sequentially con
     complete. A second case has CPU 3 leave idle for an interrupt whose handler holds a pin, and there
     the grace must wait. Red on §6.2 as first written, which counts a quiescent state only at an entry
     to the scheduler or the idle loop. An idle CPU makes neither, so retired threads pile up until
-    admission hits backpressure.
+    admission hits backpressure. Green on §6.2's idle counter: odd at the snapshot, or changed since,
+    counts. The second case guards the even-on-exit step that the counter adds.
 
     ```pycon
     >>> def grace_completes(after_unlink):
-    ...     return all({'enter_scheduler', 'enter_idle'} & set(events) for events in after_unlink.values())
+    ...     passed = {'enter_scheduler', 'enter_idle', 'stay_idle'}
+    ...     return all(passed & set(events) for events in after_unlink.values())
     >>> grace_completes({0: ['enter_scheduler'], 1: ['enter_scheduler'], 2: ['enter_scheduler'], 3: ['stay_idle']})
     True
     >>> grace_completes({0: ['enter_scheduler'], 3: ['irq_from_idle_holding_pin']})
