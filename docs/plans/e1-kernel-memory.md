@@ -441,12 +441,24 @@ filters it in one place. No fixed array sits between the two.
     newer kernel.
 - Newer loader, older kernel. Each kernel before E1-1 accepts only version 7, and fails the boot
   unreadably on anything else (1.5). So the loader decides before it exits boot services.
-  - A kernel from E1-1 on exports `#[used] #[no_mangle] static BREENIX_HANDOFF_VERSIONS: [u32; 2] =
-    [7, 8]` (lowest and highest accepted) in `.rodata`.
-  - The loader finds the symbol with its existing `find_symbol` (`kernel_load.rs:329`). It reads the two
-    words from the ELF file image, at the file offset of the section that holds the symbol. So no
-    load-address translation is involved: `vaddr_to_paddr_offset` (`kernel_load.rs:251-254`) is the last
-    segment's offset, not each segment's.
+  - A kernel from E1-1 on exports `#[used] #[no_mangle] #[link_section = ".rodata.breenix_handoff"]
+    static BREENIX_HANDOFF_VERSIONS: [u32; 2] = [7, 8]` (lowest and highest accepted).
+  - The static must survive the link. The kernel's own code does not read it, and the Rust Reference says
+    `#[used]` keeps an item in the object file but leaves the linker free to remove it. The ARM64 linker
+    script's `.rodata` rule (`linker.ld:84-91`) has no `KEEP`. So E1-1 adds
+    `KEEP(*(.rodata.breenix_handoff))` as the first line of that output section. If a future link drops
+    the static anyway, the loader finds no symbol and refuses loudly rather than guess a version.
+  - The existing `find_symbol` (`kernel_load.rs:329-443`) cannot find it. It skips a symbol whose type
+    is not `STT_FUNC` (line 426) and returns only `st_value`, and a static is `STT_OBJECT` (gABI,
+    symbol table, symbol type). `kernel_main`'s lookup keeps that function unchanged. The version gets a
+    new, bounded `find_object_symbol`, which returns the 8 bytes or a named reason:
+    - the symbol's type is `STT_OBJECT` and its `st_size` is 8;
+    - `st_shndx` names a real section (not `SHN_UNDEF`, `SHN_ABS` or `SHN_COMMON`, and less than
+      `e_shnum`), and that section is `SHT_PROGBITS`, so the bytes are in the file;
+    - `[st_value, st_value + 8)` lies inside `[sh_addr, sh_addr + sh_size)`, with no overflow;
+    - the bytes are read at `sh_offset + (st_value - sh_addr)`, and that range lies inside the ELF image.
+    No load-address translation is involved: `vaddr_to_paddr_offset` (`kernel_load.rs:251-254`) is the
+    last segment's offset, not each segment's.
   - If the symbol is missing or 8 is outside the range, the loader prints "kernel accepts HardwareConfig v7
     only; this loader writes v8" (or the range it found) on the UEFI console and the UART. Then it returns
     `EFI_INCOMPATIBLE_VERSION` from its entry point without exiting boot services. The firmware's boot
@@ -1162,15 +1174,17 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
     passes, and releases the map's pages last (4.5.4).
   - It reads physical memory only through a `BootMemory` trait (read, write and "does this page
     translate"). The kernel implements the trait with the identity map and `AT S1E1R`.
-  - The kernel exports `BREENIX_HANDOFF_VERSIONS = [7, 8]`. For a version it does not accept, it prints
-    the refusal on the UART and halts, instead of the `assert!` (4.5.3).
+  - The kernel exports `BREENIX_HANDOFF_VERSIONS = [7, 8]` in `.rodata.breenix_handoff`, and the ARM64
+    linker script keeps that section (4.5.3). For a version it does not accept, it prints the refusal on
+    the UART and halts, instead of the `assert!` (4.5.3).
 - Change, `arm64-boot-contract`:
   - one `HardwareConfig` (`HardwareConfigV7` plus `UefiMapHandoff`), `HARDWARE_CONFIG_VERSION = 8`, and
     `BOOT_MAP_MEMORY_TYPE`;
   - a stride-aware descriptor reader with the checks of 4.5.5, which the kernel uses;
   - `encode_uefi_map`, which the loader uses to fill `UefiMapHandoff` from the final map's `meta()` and
     buffer;
-  - `handoff_decision(elf)`, which the loader uses to proceed or refuse (4.5.3).
+  - `handoff_decision(elf)`, which the loader uses to proceed or refuse, and the bounded
+    `find_object_symbol` it reads the version with (4.5.3).
 - Change, `parallels-loader`:
   - `exit_boot_services` with `BOOT_MAP_MEMORY_TYPE`;
   - `encode_uefi_map`, and `ram_region_count = 0`;
@@ -1215,9 +1229,18 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
     - A v7 config from `encode_v7_ram_regions` is accepted with at most 32 ranges under source
       `UefiRegionListV7`. This guards the older-loader direction.
     - A v9 config is refused with its reason.
-    - On the loader side, `handoff_decision` gets two minimal ELF images the test builds: one exports
-      `BREENIX_HANDOFF_VERSIONS = [7, 8]` and one has no such symbol. It proceeds for the first and refuses
-      the second, which is red on the old decision. An image exporting `[7, 7]` is refused too.
+    - On the loader side, `handoff_decision` gets minimal ELF images the test builds. One exports
+      `BREENIX_HANDOFF_VERSIONS = [7, 8]` as an `STT_OBJECT` of size 8 in a `SHT_PROGBITS` section, as
+      rustc emits a static, and the decision proceeds. That is red twice on the old code: the old decision
+      proceeds with any image, and the old `find_symbol` skips an `STT_OBJECT`. The decision
+      refuses, each with its own reason, an image with no such symbol, one exporting `[7, 7]`, one whose
+      symbol is `STT_FUNC`, one whose section is `SHT_NOBITS`, and one whose `st_value` lies past its
+      section's end.
+    - Retention, on the real link. Symbol type and linker retention only show in a linked kernel, so
+      `scripts/parallels/build-efi.sh` runs the production `handoff_decision`, as a host binary from
+      `tools/kmem-host-tests`, on the ARM64 kernel ELF it has just linked, and fails the build if the
+      decision refuses. The check is added in the first commit and fails on today's kernel, which has no
+      such symbol. With the static, the `KEEP` line and `find_object_symbol` in place, it proceeds.
   - Check first, validation (one fixture per rule, each a single change to the reference map):
     - Structural cases are each refused with their own reason: `descriptor_version` 2; `descriptor_size`
       36 and 44; a `map_size` that is not a multiple; `map_phys` not 8-byte aligned; a buffer page that
