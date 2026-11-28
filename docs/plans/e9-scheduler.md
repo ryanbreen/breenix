@@ -91,8 +91,11 @@ Line numbers are at b22a066f.
 - **Lock-free summaries.** Load, idle, queue length and current thread are published on release
   (`Held::publish`, `rq.rs:562-583`) and read by placement without locks.
 - **Stack custody.** `LEAVING_STACK` names the thread whose kernel stack a CPU is still leaving
-  (`scheduler.rs:2120`). Selection passes such a thread over and waits for it
-  (`x86_stack_owner_elsewhere`, `:2581`; `wait_for_stacks_x86`, `:2615`).
+  (`scheduler.rs:2120`). Selection passes such a thread over (`x86_stack_owner_elsewhere`, `:2581`) and
+  does not wait for it. `wait_for_stacks_x86` (`:2615-2626`) sets this CPU's bit in the owner's
+  `LEAVING_STACK_WAITERS` and then rechecks `LEAVING_STACK`. A clear it sees makes this CPU ask itself to
+  pick again. `release_leaving_stack` (`:2224-2236`) clears the mark, then swaps the waiter set to empty
+  and sends each waiter a reschedule request.
 - **Whole-scheduler holders** take the list lock and every run-queue lock (`lock_all`, `rq.rs:87`), and
   recompute the owners and summaries before release (`refresh`, `:472`). New threads are published on a
   lock-free list (`splice_spawned`, `:2231`). <!-- claim-lint:ok: read from kernel/src/task/scheduler/rq.rs and the other files this bullet cites, at b22a066f. -->
@@ -277,11 +280,10 @@ only for whole-scheduler holders until E9.4. <!-- claim-lint:ok: normative requi
 
 ### 3.4 Stack custody (S3)
 
-The two architectures already agree on the rule's purpose and differ on waiting: x86 waits
-(`wait_for_stacks_x86`), ARM64 does not (ruling S8). E9.1 keeps each architecture's existing behaviour:
-the shared selection calls `RqArch::stack_owner_elsewhere`, and only the x86 implementation waits. E9.2
-moves x86 to the ARM64 rule: skip, record the waiter, and have the leaving CPU kick it (x86 already keeps
-`LEAVING_STACK_WAITERS`, `scheduler.rs:2189`). That change has its own check (§10, E9.2).
+Neither architecture waits for a stack (ruling S8). They differ in what follows the skip. x86 registers
+as a waiter, rechecks the mark and is kicked by the clear (§1.2). ARM64 registers nothing and relies on
+a later selection. The shared selection calls `RqArch::stack_owner_elsewhere`. x86's implementation
+keeps today's protocol, unchanged in every PR. ARM64's adopts the same protocol in E9.1, as follows.
 
 **ARM64 registers, rechecks and is kicked durably (E9.1).** Today ARM64 skips a marked thread and relies
 on a later selection, "at the latest the next tick" (`switch_save.rs:11-14`). Tickless idle (E9.6b)
@@ -290,7 +292,8 @@ removes that tick. So E9.1 gives `switch_save` a waiter set per marking CPU and 
 - *Selector*: on finding `tid` marked by CPU m, set its own bit in m's waiter set, then load m's mark
   again. If the mark is clear or names another thread, it selects again at once rather than idling.
 - *Leaver*: clear the mark, then swap m's waiter set to empty, and kick each waiter. A kick sets the
-  waiter's `RESCHED_REQUESTED` flag before its SGI. The idle masked recheck reads that flag, so a waiter
+  waiter's resched-requested flag before its SGI. That flag is the ARM64 counterpart of x86's
+  `RESCHED_REQUESTED`, which E9.1 adds. The idle masked recheck reads that flag, so a waiter
   that is entering WFI does not sleep through it.
 
 The waiter's set-then-load and the leaver's clear-then-swap are sequentially consistent operations.
@@ -771,7 +774,7 @@ their evidence at the coordinator's batched R240 flash (DEV-31(2)); there is no 
 | PR | Work | Needs | Needs E2? | Tier-1/2 files |
 |---|---|---|---|---|
 | **E9.1** | ARM64 per-CPU dispatch: `rq` made architecture-neutral; ARM64 dispatch, wakes and timers under the local run-queue lock; ARM64 owner index over the chained wake index | R17 (#3238, merged) | No | `interrupts/context_switch.rs` (Tier 2) only for moving x86 callers to the shared names; `per_cpu.rs` (Tier 2) not touched |
-| E9.2a | Fixed and background classes: bitmap and FIFO lists, intrusive links, O(1) membership; x86 stack custody moves to skip-and-kick | E9.1 | No | — |
+| E9.2a | Fixed and background classes: bitmap and FIFO lists, intrusive links, O(1) membership; x86 dispatch on `try_local` (§3.5) | E9.1 | No | — |
 | E9.2b | Fair class by virtual time with nice weights; wake placement and pull balancing from summaries | E9.2a | No | — |
 | E9.3 | Deferred work and the nesting word, clean-room from B3 | — (independent of E9.1) | No. Uses E2.2's baseline at the exit check when present (§5.3) | `per_cpu.rs` (Tier 2); `interrupts.rs` (Tier 2) if the x86 exit path calls the new runner |
 | E9.4 | Growable registry; per-CPU retire queues; quiescent-state pins | E9.1 | Partly: the admission backpressure park needs E2.2; before it, EAGAIN as today | — |
@@ -935,7 +938,7 @@ of their steps, keeping each CPU's program order. The steps are sequentially con
 ### E9.2a: fixed and background classes
 
 - **Scope.** §4.1 for ranks 0 and 2 to 101, intrusive links, `queued_on`; fair threads stay in a FIFO list
-  for this PR. x86 stack custody moves to skip-and-kick (§3.4). x86 dispatch moves from `rq::local` to
+  for this PR. x86 stack custody does not change (§3.4). x86 dispatch moves from `rq::local` to
   `rq::try_local` with an owed dispatch (§3.5), under E9.1's stopped-peer kernel check, which it reaches
   through the shared module; its x86 evidence comes at the flash.
 - **Tests.**
@@ -944,10 +947,12 @@ of their steps, keeping each CPU's program order. The steps are sequentially con
   - A seam test of selection over the production `rq` with a test scheduler. A queue of 64 fair threads
     and one rank-50 thread at the tail selects the rank-50 thread with one bitmap read. The test counts
     entries visited: 1 against 65 on the old `promote_best_of`. Red.
-  - The x86 custody seam: selection finding a stack-marked thread skips it and records the waiter, and the
-    clear kicks the waiter. Red on today's `wait_for_stacks_x86`, which waits.
+  - The x86 custody seam is a characterisation check, not a red one. Selection that finds a stack-marked
+    thread skips it, records the waiter and rechecks, and the clear kicks the waiter. That is already
+    today's behaviour, so the check is green on the old tree and green after the queue change. It shows
+    that the new queues keep the protocol. ARM64's red custody check is E9.1's.
 
-    The red claim, checked against today's x86 sequence. `wait_for_stacks_x86` registers in
+    Checked against today's x86 sequence. `wait_for_stacks_x86` registers in
     `LEAVING_STACK_WAITERS`, then rechecks `LEAVING_STACK` (`scheduler.rs:2615-2626`).
     `release_leaving_stack` clears the mark, then takes the waiters and kicks each one
     (`scheduler.rs:2224-2236`).
@@ -955,7 +960,7 @@ of their steps, keeping each CPU's program order. The steps are sequentially con
     ```pycon
     >>> X86_TODAY = ['see_mark', 'register_waiter', 'recheck_mark']
     >>> any(stranded(order) for order in interleavings(X86_TODAY, LEAVER))
-    True
+    False
 
     ```
 - **Rows.** `process.fork-exec`; compile rows. **Boot.** Not needed on ARM64: the structures are pure and
@@ -1235,7 +1240,7 @@ of their steps, keeping each CPU's program order. The steps are sequentially con
 | Independent dispatch under a held peer | testing-feature kernel test | E9.1 |
 | Ownership protocol (revalidation, hold, custody, `refresh`) | `tools/sched-host-tests` | E9.1 (characterisation) |
 | No ARM64 dispatch path takes the global lock or scans threads | `tests/arm64_dispatch_lock_structure.rs` | E9.1 |
-| Queue structures; selection visits one entry; x86 skip-and-kick | `tools/sched-host-tests` | E9.2a |
+| Queue structures; selection visits one entry; x86 custody (characterisation) | `tools/sched-host-tests` | E9.2a |
 | Weights, nice shares, sleeper credit, lag on migration, placement | `tools/sched-host-tests` | E9.2b |
 | Deferred-work runner sequences, nesting-word fields, ARM64 locality model | `tools/defer-host-tests`; `kernel/src/task/softirq_tests.rs` reworded | E9.3 |
 | No raw nesting constants outside `cpu_nest` | `tests/cpu_nest_structure.rs` | E9.3 |
@@ -1315,9 +1320,10 @@ Notes:
 Builders record each design-detail deviation here, in the PR that makes it, with one sentence of reason.
 Two resolutions were made while writing this design, where the code and the brief pulled different ways:
 
-- **Stack custody waits on x86 and skips on ARM64** (§3.4). E9.1 keeps both behaviours so that it changes
-  only ARM64, and E9.2a moves x86 to the ARM64 rule under its own check, because ruling S8 already settled
-  that no CPU waits for a stack.
+- **Stack custody follows x86's protocol on both architectures** (§3.4). The first draft read
+  `wait_for_stacks_x86` as a wait. The code registers, rechecks and is kicked (`scheduler.rs:2615-2626`,
+  `:2224-2236`), so x86 is unchanged and E9.1 brings ARM64 to the same protocol, because ARM64's
+  wait-free skip relies on a tick that E9.6b removes.
 - **The ARM64 owner index in E9.1 sits on the chained wake index, not on x86's 4,096-slot table** (§3.3),
   so that E9.1 adds no thread cap to ARM64. E9.4 replaces both.
 
@@ -1327,7 +1333,7 @@ Two resolutions were made while writing this design, where the code and the brie
   tests settle descriptor parsing, SGI encoding and redistributor matching. A real boot of more than
   eight CPUs needs a different VM shape. The proposal is one ARM64 QEMU boot at `-smp 16` in the
   program's final run, where the coordinator sets the shapes. The alternative is to add it to E9.5.
-- **Q2. x86 boot evidence** for E9.2a's custody change, E9.6a's TSC-deadline path, E9.6b's xAPIC change
+- **Q2. x86 boot evidence** for E9.2a's move to `try_local`, E9.6a's TSC-deadline path, E9.6b's xAPIC change
   and all of E9.7. As in E2 §12 Q1, the proposal is that each merges on its host tests and review, and
   that its boot evidence is the coordinator's next batched kernel-only flash. <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
 - **Q3. A timeout-overshoot bbench row.** No current row measures wake latency on its own; `ssh.round-trip`
