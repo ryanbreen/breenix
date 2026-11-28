@@ -15,11 +15,11 @@ use crate::block::cache_kernel::HostWait as SystemWait;
 use crate::fs::{
     namei,
     permissions::Credentials,
-    vfs::{mount as registry, FileSystem, MountFlags},
+    vfs::{mount as registry, MountFlags},
 };
 #[cfg(test)]
 use crate::statfs_support::mount as registry;
-use crate::fs::{namei::Target, vfs::mount_table::InodeKey};
+use crate::fs::{namei::Target, vfs::{mount_table::InodeKey, FileSystem}};
 use crate::syscall::errno::*;
 #[cfg(not(test))]
 use crate::syscall::{at_path::AT_FDCWD, metadata::resolve_at, userptr};
@@ -131,8 +131,47 @@ pub fn mount_root_volume(
     parent: InodeKey,
     custody: Arc<dyn Send + Sync>,
 ) -> Result<(), u64> {
-    let _ = (name, flags, path, cover, parent, custody);
-    Err(ENODEV as u64)
+    // GenerationView already gives read-only access to any root.
+    if flags != 0 {
+        return Err(EINVAL as u64);
+    }
+    let writer_id = registry::find_mount("/").ok_or(ENODEV as u64)?;
+    let writer = system_writer(writer_id).ok_or(ENODEV as u64)?;
+    if writer.read_only().map_err(|e| e.0 as u64)? {
+        return Err(ENODEV as u64);
+    }
+    let root = writer.attach_staging(name).map_err(|e| e.0 as u64)?;
+    let published = (|| {
+        let id = registry::allocate_id()?;
+        let fs: Arc<dyn FileSystem> = writer.clone();
+        let mut entry = registry::MountPoint::new(
+            id,
+            path,
+            "breenfs",
+            Default::default(),
+            registry::Backend::Fs(fs),
+            root,
+            Some(cover),
+            Some(parent),
+        );
+        entry.bind = Some((writer_id, root));
+        entry.custody = Some(custody);
+        entry.source.try_reserve_exact(name.len()).map_err(|_| crate::fs::errno::Errno(ENOMEM))?;
+        entry.source.extend_from_slice(name);
+        registry::register(entry)
+    })();
+    if let Err(error) = published {
+        // Nothing reached the tree; a refused detach leaves it claimed until reboot.
+        writer.detach_staging().map_err(|e| e.0 as u64)?;
+        return Err(error.0 as u64);
+    }
+    Ok(())
+}
+
+/// The writable BreenFS writer registered as mount `id`, if it is one.
+fn system_writer(id: usize) -> Option<Arc<BreenFs<SystemWait>>> {
+    let fs: Arc<dyn core::any::Any + Send + Sync> = registry::filesystem(id).ok()?;
+    fs.downcast::<BreenFs<SystemWait>>().ok()
 }
 
 /// The writer behind a removed staging mount. The caller drops its own walk
@@ -160,6 +199,12 @@ pub fn unmount(target: &Target, flags: u64) -> Option<Result<Option<StagingDetac
         return None;
     }
     Some((|| {
+        // A staging mount first (3.2): removal applies the table's busy check
+        // before any change, then the caller drops its walk, then detach.
+        if let Some(writer) = system_writer(mount.0).filter(|writer| writer.is_staging_root(*ino)) {
+            registry::unmount(mount.0, flags != 0).map_err(|error| error.0 as u64)?;
+            return Ok(Some(StagingDetach(writer)));
+        }
         if registry::is_bind(mount.0) {
             return registry::unmount(mount.0, flags != 0).map(|()| None).map_err(|error| error.0 as u64);
         }

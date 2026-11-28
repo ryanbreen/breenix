@@ -284,6 +284,17 @@ impl Drop for MountedRoot {
     }
 }
 
+/// The staging tree attached to a writer (paired generations 3.1). The claim
+/// makes delete and rename of its root return EBUSY until detach drops it.
+struct Staging {
+    id: u64,
+    _claim: MountedRoot,
+}
+
+fn staged(ino: u64) -> bool {
+    ino & ops::TREE_TAGS == ops::STAGING_TREE
+}
+
 struct WritableOwner(usize);
 impl WritableOwner {
     fn claim(identity: usize) -> Result<Self, Errno> {
@@ -325,6 +336,9 @@ struct Mount<W: Wait + 'static> {
     default_root: Option<MountedRoot>,
     frozen: bool,
     writable: bool,
+    // ROOT_FREEZE (paired generations 3.3): written only under the mount
+    // exclusion; read there by admission and without it by mapping refusal.
+    root_frozen: AtomicBool,
     signal: Arc<CommitSignal>,
     scrub_signal: Arc<CommitSignal>,
     // The open generation, read by touch() without the mount exclusion; the
@@ -440,6 +454,10 @@ struct MountState<W: Wait + 'static> {
     // SPACE funded independently of the FS allocations the scratch log owes.
     replay_space: u64,
     drain_growth: u64,
+    // The attached staging tree and its MountedRoot claim (3.1).
+    staging: Option<Staging>,
+    // Changes the booted tree admitted since this mount (3.3).
+    root_epoch: u64,
     signal: Arc<CommitSignal>,
 }
 // Mapping pins are held separately until cache retirement or stopped-service
@@ -971,6 +989,24 @@ impl InodeCache {
     fn clear(&mut self) {
         self.pages.fill_with(|| None);
     }
+
+    fn any(&self, matches: impl Fn(u64) -> bool) -> bool {
+        self.pages.iter().flatten().flat_map(|page| page.slots.iter())
+            .any(|slot| slot.is_some_and(|(ino, _)| matches(ino)))
+    }
+
+    /// Visit every cached inode once; `keep` returning false drops it.
+    /// Bounded by the cache's RAM budget (at most INODE_HEAP_CAP).
+    fn retain(&mut self, mut keep: impl FnMut(u64) -> bool) -> usize {
+        let mut dropped = 0;
+        for slot in self.pages.iter_mut().flatten().flat_map(|page| page.slots.iter_mut()) {
+            if slot.is_some_and(|(ino, _)| !keep(ino)) {
+                *slot = None;
+                dropped += 1;
+            }
+        }
+        dropped
+    }
 }
 impl<W: Wait> MountState<W> {
     fn read_only(&self) -> bool {
@@ -982,6 +1018,54 @@ impl<W: Wait> MountState<W> {
         } else {
             Ok(())
         }
+    }
+    /// Admit one change to `ino`'s tree (paired generations 3.3). A change to
+    /// the booted tree (tag 0) advances the epoch, or is refused with EROFS
+    /// while the root is frozen. The flag is written only under this mount
+    /// exclusion, so each change is either counted in a frozen epoch or refused.
+    fn root_change(&mut self, ino: u64, frozen: &AtomicBool) -> Result<(), Errno> {
+        if self.files.tag(ino) != 0 {
+            return Ok(());
+        }
+        if frozen.load(Ordering::Acquire) {
+            return Err(Errno(EROFS));
+        }
+        self.root_epoch += 1;
+        Ok(())
+    }
+    /// A staged node in use beyond the mount's own mapping pin.
+    fn staged_in_use(&self) -> bool {
+        self.nodes.range(ops::STAGING_TREE..ops::DEFAULT_TREE).any(|(_, entry)| {
+            entry.splitting || entry.node.strong_count() > usize::from(entry.mapped.is_some())
+        })
+    }
+    /// Any per-inode state of the staging tag: NodeStates (whose VNodes carry
+    /// the mapping cache), touches, refreshes, dirty pages or cached inodes.
+    fn staged_state(&self) -> bool {
+        let range = ops::STAGING_TREE..ops::DEFAULT_TREE;
+        self.nodes.range(range.clone()).next().is_some()
+            || self.touches.range(range.clone()).next().is_some()
+            || self.refresh.range(range.clone()).next().is_some()
+            || self.dirty.range(range.clone()).next().is_some()
+            || self.dirty_nodes.range(range).next().is_some()
+            || self.inodes.any(staged)
+    }
+    /// Remove the staging tag's per-inode state after its tree is excluded.
+    /// Returns the mapping pins, which the caller drops outside the exclusion.
+    fn forget_staged(&mut self) -> Result<Vec<Arc<VNode>>, Errno> {
+        let range = ops::STAGING_TREE..ops::DEFAULT_TREE;
+        let mut pins = Vec::new();
+        let count = self.nodes.range(range.clone()).filter(|(_, entry)| entry.mapped.is_some()).count();
+        pins.try_reserve_exact(count).map_err(|_| Errno(ENOMEM))?;
+        while let Some((&ino, _)) = self.nodes.range(range.clone()).next() {
+            if let Some(pin) = self.nodes.remove(&ino).and_then(|entry| entry.mapped) {
+                pins.push(pin);
+            }
+        }
+        self.touches.retain(|&ino, _| !staged(ino));
+        self.refresh.retain(|&ino| !staged(ino));
+        self.inodes.retain(|ino| !staged(ino));
+        Ok(pins)
     }
     /// The open generation: one past the published, and one more while a
     /// frozen generation is in flight (E24 coordinator 601(3)).
@@ -1821,17 +1905,124 @@ impl<W: Wait + 'static> BreenFs<W> {
     /// Serve writable root `name` beside the booted tree, under this writer
     /// (docs/metal/paired-generations.md 3.1). Returns its root inode.
     pub fn attach_staging(&self, name: &[u8]) -> Result<u64, Errno> {
-        let _ = name;
-        Err(Errno(EBUSY))
+        let device = &self.inner.mounted_root.device;
+        let _selection = device.selection.lock();
+        loop {
+            // Share the committed tree, as SNAPSHOT_CREATE does.
+            self.sync()?;
+            let mut state = self.foreground_lock()?;
+            state.writable()?;
+            if !state.fresh || state.pending.is_some() || state.next_files.is_some()
+                || state.files.log.is_some()
+            {
+                continue;
+            }
+            if state.staging.is_some() {
+                return Err(Errno(EBUSY));
+            }
+            let (&id, &(_, flags)) = state.roots.iter().find(|(_, (root, _))| root == name)
+                .ok_or(Errno(ENOENT))?;
+            if id == 1 || id == self.inner.root_id {
+                return Err(Errno(EBUSY));
+            }
+            if flags & SNAPSHOT_READ_ONLY != 0 {
+                return Err(Errno(EROFS));
+            }
+            // Another mount or view holds this root, or a previous
+            // attachment's per-inode state was not purged.
+            self.check_root_unmounted(id)?;
+            if state.staged_state() {
+                return Err(Errno(EBUSY));
+            }
+            let claim = MountedRoot::claim(device.clone(), id)?;
+            state.files.files.include_staging_tree(id).map_err(errno)?;
+            state.staging = Some(Staging { id, _claim: claim });
+            return Ok(ops::STAGING_TREE | 2);
+        }
     }
-    /// Commit and release the staging tree after its mount left the registry.
+    /// Commit and release the staging tree after its mount left the registry,
+    /// so no path reaches it (3.1). Refused with EBUSY, leaving the tree
+    /// attached and claimed, while a staged node is still in use.
     pub fn detach_staging(&self) -> Result<(), Errno> {
-        Err(Errno(EINVAL))
+        let device = &self.inner.mounted_root.device;
+        let _selection = device.selection.lock();
+        // A staged orphan is reclaimed by the commit after its last close.
+        for _ in 0..3 {
+            {
+                let mut state = self.foreground_lock()?;
+                if state.staging.is_none() {
+                    return Err(Errno(EINVAL));
+                }
+                // Apply every queued close, so the open-inode snapshot the
+                // commit reclaims orphans against is current.
+                while {
+                    state.retain_open()?;
+                    !state.retained_events.is_empty()
+                } {}
+                if state.staged_in_use() {
+                    return Err(Errno(EBUSY));
+                }
+            }
+            self.sync()?;
+            let mut state = self.foreground_lock()?;
+            if !state.fresh || state.pending.is_some() || state.next_files.is_some()
+                || state.files.log.is_some()
+            {
+                continue;
+            }
+            if state.staged_in_use() {
+                return Err(Errno(EBUSY));
+            }
+            let staged_dirty = state.dirty.range(ops::STAGING_TREE..ops::DEFAULT_TREE).next().is_some()
+                || state.nodes.range(ops::STAGING_TREE..ops::DEFAULT_TREE)
+                    .any(|(_, entry)| entry.mapped.as_ref().is_some_and(|node| node.map.has_dirty()));
+            if staged_dirty {
+                continue;
+            }
+            match state.files.files.exclude_staging_tree() {
+                Ok(_) => (),
+                Err(ops::Error::EBUSY) => continue,
+                Err(error) => return Err(errno(error)),
+            }
+            let pins = match state.forget_staged() {
+                Ok(pins) => pins,
+                Err(error) => {
+                    // Keep serving the tree rather than leave stale state.
+                    let id = state.staging.as_ref().map_or(0, |staging| staging.id);
+                    state.files.files.include_staging_tree(id).map_err(errno)?;
+                    return Err(error);
+                }
+            };
+            state.staging = None;
+            drop(state);
+            drop(pins);
+            return Ok(());
+        }
+        Err(Errno(EBUSY))
     }
     /// Whether `ino` is the root of the attached staging tree.
     pub fn is_staging_root(&self, ino: u64) -> bool {
-        let _ = ino;
-        false
+        ino == ops::STAGING_TREE | 2 && self.inner.state.lock().staging.is_some()
+    }
+    /// The epoch with the booted tree's writable shared mappings and files
+    /// with unwritten mapped stores (3.3, DEV-44).
+    fn root_epoch(&self, state: &MountState<W>) -> RootEpoch {
+        RootEpoch { epoch: state.root_epoch, writable_mappings: 0, dirty_files: 0 }
+    }
+    /// Freeze the booted tree and return the epoch at that instant (E2).
+    fn root_freeze(&self) -> Result<RootEpoch, (Errno, RootEpoch)> {
+        let state = self.foreground_lock().map_err(|error| (error, RootEpoch::default()))?;
+        let epoch = self.root_epoch(&state);
+        if let Err(error) = state.writable() {
+            return Err((error, epoch));
+        }
+        self.inner.root_frozen.store(true, Ordering::Release);
+        Ok(epoch)
+    }
+    fn root_thaw(&self) -> Result<RootEpoch, Errno> {
+        let state = self.foreground_lock()?;
+        self.inner.root_frozen.store(false, Ordering::Release);
+        Ok(self.root_epoch(&state))
     }
     fn mount_with(
         device: Arc<dyn BlockDevice>,
@@ -1944,6 +2135,8 @@ impl<W: Wait + 'static> BreenFs<W> {
                 first_write_space: 0,
                 replay_space: 0,
                 drain_growth: 0,
+                staging: None,
+                root_epoch: 0,
                 durable,
                 durable_pending,
                 failed: false,
@@ -1985,6 +2178,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             mounted_root,
             default_root,
             frozen,
+            root_frozen: AtomicBool::new(false),
             writable,
             signal,
             scrub_signal: Arc::new(CommitSignal::new()),
@@ -2450,6 +2644,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                     .filter(|end| *end <= (1 << 63) - 4096).ok_or(Errno(EFBIG))?;
                 let grant = if length == 0 { None } else {
                     // The inode record follows the page edit: reserve it first.
+                    state.root_change(node.ino, &self.inner.root_frozen)?;
                     state.files.reserve(1).map_err(errno)?;
                     Some(state.reserve_data(node.ino, offset, length, Operation::Allocate,
                         inode.size == 0 && inode.nblocks == 0)?)
@@ -3062,7 +3257,8 @@ impl<W: Wait + 'static> BreenFs<W> {
             && !state.closed && !state.reap_shutdown && state.dead_remaining != 0;
         let growing_edits = core::mem::take(&mut state.drain_growth);
         state.files.replay_bounds = state.durable_pending.and_then(PendingSummary::census)
-            .filter(|_| !reap && !files.has_orphans() && !files.includes_default_tree())
+            .filter(|_| !reap && !files.has_orphans() && !files.includes_default_tree()
+                && !files.includes_staging_tree())
             .map(|(pending, _)| {
                 // N can allocate at most durable FREE plus eligible PENDING.
                 // A four-block node's REF costs 21 slot + 16 value bytes.
@@ -3535,6 +3731,26 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             }
             SNAPSHOT_STATUS => {
                 crate::syscall::userptr::copy_to_user(arg as *mut SnapshotStatus, &self.snapshot_status()?)
+                    .map_err(|error| Errno(error as i32))?;
+            }
+            ROOT_EPOCH | ROOT_FREEZE | ROOT_THAW => {
+                if request != ROOT_EPOCH
+                    && !crate::fs::permissions::Credentials::current(false)
+                        .map_err(|error| Errno(error as i32))?.privileged()
+                {
+                    return Err(Errno(EPERM));
+                }
+                let result = match request {
+                    ROOT_EPOCH => self.foreground_lock().map(|state| self.root_epoch(&state)),
+                    ROOT_THAW => self.root_thaw(),
+                    _ => self.root_freeze().or_else(|(error, epoch)| {
+                        // A refusal still reports what blocked it (DEV-44).
+                        crate::syscall::userptr::copy_to_user(arg as *mut RootEpoch, &epoch)
+                            .map_err(|error| Errno(error as i32))?;
+                        Err(error)
+                    }),
+                }?;
+                crate::syscall::userptr::copy_to_user(arg as *mut RootEpoch, &result)
                     .map_err(|error| Errno(error as i32))?;
             }
             SCRUB_START => self.start_scrub()?,
@@ -4026,6 +4242,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             {
                 return Err(Errno(EAGAIN).into());
             }
+            state.root_change(ino, &self.inner.root_frozen)?;
             let grant = state.reserve_metadata(&[ino], 1, false, false, Operation::Allocate)?;
 
             Ok(grant)
@@ -4058,6 +4275,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             NewNode::Socket { attrs } => (attrs, 0o140000, 0, None),
         };
         let (mut state, grant) = self.reserve_with_pressure(CostOp::Create, state, || self.mutation_admission_lock(CostOp::Create), |state| {
+            state.root_change(dir, &self.inner.root_frozen)?;
             state.reserve_create(dir, target.is_some())
         })?;
         let _edit = self.inner.costs.span(CostOp::Create, CostPhase::Edit);
@@ -4102,6 +4320,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             };
             // The create and its open are two replay records while N is frozen.
             state.files.reserve(2).map_err(errno)?;
+            state.root_change(dir, &self.inner.root_frozen)?;
             let grant = state.reserve_create(dir, false)?;
             Ok((attrs, bits, grant))
         })?;
@@ -4161,6 +4380,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                 return Err(Errno(EPERM).into());
             }
             check(parent, source)?;
+            state.root_change(dir, &self.inner.root_frozen)?;
             let grant = state.reserve_metadata(&[ino, dir], 4, false, false, Operation::Allocate)?;
 
             Ok(grant)
@@ -4195,6 +4415,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             {
                 return Err(Errno(EBUSY).into());
             }
+            state.root_change(dir, &self.inner.root_frozen)?;
             let grant = state.reserve_metadata(
                 &[dir, victim], 5, false, !which.directory,
                 if which.directory { Operation::Rmdir } else { Operation::Unlink },
@@ -4248,6 +4469,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             }
             let mut objects = alloc::vec![from_dir, to_dir, source.ino];
             if let Some(dest) = dest { objects.push(dest.ino); }
+            state.root_change(from_dir, &self.inner.root_frozen)?;
             let grant = state.reserve_metadata(&objects, 12, false, dest.is_some(), Operation::Allocate)?;
 
             Ok((grant, objects, dest.map(|dest| dest.ino)))
@@ -4314,6 +4536,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                     })
                 } else { false };
                 // Shrinking records the trim and the inode; growing, the inode.
+                state.root_change(node.ino, &self.inner.root_frozen)?;
                 state.files.reserve(if size < inode.size { 2 } else { 1 }).map_err(errno)?;
                 let grant = state.reserve_data(
                     node.ino,
@@ -4395,6 +4618,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                 if length == 0 {
                     return Ok((inode, length, None));
                 }
+                state.root_change(node.ino, &self.inner.root_frozen)?;
                 state.files.reserve(1).map_err(errno)?;
                 let grant = state.reserve_data(node.ino, offset, length, Operation::Allocate, false)?;
                 Ok((inode, length, Some(grant)))
@@ -4422,6 +4646,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             return Ok(());
         }
         state.protect_edit()?;
+        state.root_change(node.ino, &self.inner.root_frozen)?;
         let _edit = self.inner.costs.span(CostOp::Setattr, CostPhase::Edit);
         inode.mode &= !content_privilege(inode.mode);
         inode.ctime = now();
@@ -4465,6 +4690,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                         XattrSet::Replace if !exists => return Err(Errno(ENODATA).into()),
                         _ => (),
                     }
+                    state.root_change(ino, &self.inner.root_frozen)?;
                     let grant = state.reserve_metadata(&[ino], 2, false, false, Operation::Allocate)?;
                     Ok(grant)
                 })?;
@@ -4480,6 +4706,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                     if !records.iter().any(|x| x.name == name) {
                         return Err(Errno(ENODATA).into());
                     }
+                    state.root_change(ino, &self.inner.root_frozen)?;
                     let grant = state.reserve_metadata(&[ino], 2, false, false, Operation::RemoveXattr)?;
                     Ok(grant)
                 })?;
