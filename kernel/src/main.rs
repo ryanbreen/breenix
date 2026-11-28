@@ -419,33 +419,13 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
             // MEM handler
             memory::debug_memory_info();
         },
-        || {
-            // TEST handler
-            serial_println!("Running test processes...");
-            userspace_test::test_multiple_processes();
-            serial_println!("Test processes scheduled. Type to continue...");
-        },
-        || {
-            // FORKTEST handler
-            serial_println!("Testing Fork System Call (Debug Mode)");
-            userspace_test::test_fork_debug();
-            serial_println!("Fork debug test scheduled. Press keys to continue...");
-        },
-        || {
-            // EXECTEST handler - test userspace fork when testing feature enabled
-            #[cfg(feature = "testing")]
-            {
-                serial_println!("Testing Fork Syscall from Userspace");
-                test_exec::test_userspace_fork();
-                serial_println!("Userspace fork test completed. Press keys to continue...");
-            }
-            #[cfg(not(feature = "testing"))]
-            {
-                serial_println!("Testing Exec System Call with Real Userspace Programs");
-                test_exec::test_exec_real_userspace();
-                serial_println!("Real userspace exec test scheduled. Press keys to continue...");
-            }
-        },
+        // The TEST, FORKTEST and EXECTEST handlers load programs from disk.
+        // The console executor that runs them is CPU 0's idle continuation in
+        // the non-production profiles, so each runs on a braked kernel thread
+        // of its own (`serial_storage_command`, E2.4x review).
+        || serial_storage_command("serial_test", serial_test_processes),
+        || serial_storage_command("serial_forktest", serial_fork_test),
+        || serial_storage_command("serial_exectest", serial_exec_test),
     );
 
     // The boot CPU's per-CPU init: its GDT/TSS, IDT, GS bases, syscall MSRs,
@@ -647,73 +627,13 @@ extern "C" fn kernel_main_on_kernel_stack_checked(
     drivers::run_post_init_self_tests();
     kernel::gk208::initialize_clocks();
 
-    // A storage-lane install copies the RAM disk to the hardware disk while the
-    // RAM disk is still unmounted, so the copy is the image as delivered.
-    kernel::block::install_requested_root();
-
-    // Probe and mount the root filesystem once IRQ-driven block completions can arrive.
-    let explicit_mounts = kernel::boot::intent::explicit_mounts_requested();
-    match kernel::fs::vfs::mount_root() {
-        Ok(()) => {
-            log::info!("{} root filesystem mounted", kernel::fs::vfs::root_kind());
-            if !explicit_mounts && kernel::block::ramdisk::device().is_some() {
-                log::info!("[fs] root mounted from the RAM disk");
-            } else if kernel::block::root_on_installed_disk() {
-                log::info!("[fs] root mounted from the installed disk");
-            } else if kernel::block::root_on_system_partition() {
-                log::info!("[fs] root mounted from the system partition");
-            }
-            if kernel::block::hardware_read_only() {
-                let count = kernel::block::devices().len();
-                log::info!("[block] hardware disks read-only: detected={} gated={}", count, count);
-            }
-            #[cfg(feature = "btrt")]
-            kernel::test_framework::btrt::pass(kernel::test_framework::catalog::EXT2_MOUNT);
-        }
-        Err(e) => {
-            log::warn!("Failed to mount root filesystem: {:?}", e);
-            if explicit_mounts || kernel::fs::vfs::suite_boot_requested() {
-                serial_println!("\nBREENIX_ROOT_MOUNT_FATAL errno={}", e.0);
-                kernel::hlt_loop();
-            }
-            #[cfg(feature = "btrt")]
-            kernel::test_framework::btrt::fail(
-                kernel::test_framework::catalog::EXT2_MOUNT,
-                kernel::test_framework::btrt::BtrtErrorCode::IoError,
-                0,
-            );
-        }
-    }
-
-    if !explicit_mounts {
-        kernel::fs::vfs::init_services().expect("filesystem finalization services");
-    }
-
-    // ext2/VFS fault-injection leg (test profile only, feature `fs_fault_inject`).
-    // Runs immediately after the root filesystem mounts, so every marker the rest
-    // of this boot prints is evidence the kernel survived the injected faults.
-    #[cfg(feature = "fs_fault_inject")]
-    kernel::fs::vfs::fault::run_fs_fault_leg();
-    if !explicit_mounts {
-        // Noninteractive testing can supply a fixture; interactive needs a home disk.
-        if cfg!(all(feature = "testing", not(feature = "interactive")))
-            || (!kernel::block::hardware_read_only() && kernel::block::disk(3).is_some())
-            || kernel::block::home_named()
-        {
-            match kernel::fs::vfs::mount_home() {
-                Ok(()) => log::info!("ext2 home filesystem mounted at /home"),
-                Err(e) => log::warn!("No home filesystem: {:?}", e),
-            }
-        } else {
-            log::info!("No home filesystem: no home block device attached");
-        }
-        kernel::fs::vfs::mount::bind_home_if_unmounted();
-    }
-    kernel::fs::vfs::init_services().expect("filesystem finalization services");
-    // The boot's partitions are chosen and mounted: no further range may take writes.
-    kernel::block::fence_seal();
-    #[cfg(feature = "block_fence_inject")]
-    kernel::block::fence_fault::run();
+    // E2.4x (ruling DEV-48): the APs dispatch from start_application_processors
+    // on, so this continuation is CPU 0's idle thread beside a live scheduler,
+    // and it reads no storage from here. The boot_storage kernel thread, pinned
+    // to CPU 0 and sleepable, does the install copy, the mounts and the fence.
+    // This context waits for that before any user process exists: until a
+    // thread reaches Ring 3, a dispatch of idle resumes this saved context.
+    start_x86_boot_storage();
 
     // Run after process::init() and the memory custody gates, while deferred-reclaim
     // queues are still quiescent and before any user process exists. This is inside
@@ -815,13 +735,6 @@ extern "C" fn kernel_main_on_kernel_stack_checked(
     // the frame/page-table/kernel-stack counts the gate block above pins.
     #[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
     kernel::test_framework::registry::run_x86_tracing_provider_gate();
-
-    // #728 ext2 lock-discipline repro oracle (test profile only, feature
-    // `ext2_lock_race`). Needs a running scheduler/timer/preemption, so it
-    // runs here rather than at the fault-injection leg's early insertion
-    // point right after mount -- kthreads do not exist that early in boot.
-    #[cfg(all(target_arch = "x86_64", feature = "ext2_lock_race"))]
-    kernel::fs::run_ext2_lock_race_leg();
 
     kernel::tracing::providers::teardown::emit_root_custody_summary();
     kernel::tracing::providers::teardown::emit_tombstone_census();
@@ -988,15 +901,899 @@ extern "C" fn kernel_main_on_kernel_stack_checked(
     nonblock_eagain_test_main();
 }
 
-/// DNS test only mode - minimal boot, just run DNS test and exit
+/// Set by the boot_storage thread once the mounts and the fence are done.
+#[cfg(target_arch = "x86_64")]
+static BOOT_STORAGE_MOUNTED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// Set by the boot continuation when its sequential work allows the program phase.
+#[cfg(target_arch = "x86_64")]
+static BOOT_STORAGE_RELEASED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+#[cfg(target_arch = "x86_64")]
+static BOOT_STORAGE_THREAD: spin::Once<task::kthread::KthreadHandle> = spin::Once::new();
+
+/// Whether this profile's boot runs programs from storage: the boot_storage
+/// thread's second phase. The kthread, workqueue and stress-only modes do not.
+#[cfg(target_arch = "x86_64")]
+const X86_BOOT_PROGRAMS: bool = cfg!(any(
+    feature = "dns_test_only",
+    feature = "blocking_recv_test",
+    feature = "nonblock_eagain_test",
+    all(
+        not(any(feature = "kthread_test_only", feature = "kthread_stress_test", feature = "workqueue_test_only", feature = "dns_test_only", feature = "blocking_recv_test", feature = "nonblock_eagain_test")),
+        any(feature = "testing", feature = "interactive", not(feature = "disable_x86_prod_init"))
+    )
+));
+
+/// Start the boot_storage kernel thread on CPU 0 and wait for its mounts
+/// (E2.4x, ruling DEV-48).
+///
+/// This runs on the boot continuation, CPU 0's idle thread, after the APs
+/// dispatch. It reads no storage: it halts until the thread has mounted. The
+/// thread is pinned to this CPU, so each halt hands it the CPU, and when it
+/// sleeps on a block completion this context resumes where it halted. That
+/// resumption holds only until a thread reaches Ring 3, after which a dispatch
+/// of idle restarts at `idle_loop`; no user process exists yet here.
+#[cfg(target_arch = "x86_64")]
+fn start_x86_boot_storage() {
+    use core::sync::atomic::Ordering;
+    let thread = task::kthread::kthread_run_on_cpu(run_x86_boot_storage, "boot_storage", 0)
+        .expect("E2.4x: start the boot_storage kernel thread");
+    BOOT_STORAGE_THREAD.call_once(|| thread);
+    while !BOOT_STORAGE_MOUNTED.load(Ordering::Acquire) {
+        x86_64::instructions::interrupts::enable_and_hlt();
+    }
+}
+
+/// Let the boot_storage thread run its program phase. The boot continuation
+/// calls this once its own sequential work no longer needs the CPU to itself;
+/// the thread starts when this CPU next dispatches.
+#[cfg(all(
+    target_arch = "x86_64",
+    any(
+        not(any(feature = "kthread_test_only", feature = "kthread_stress_test", feature = "workqueue_test_only", feature = "dns_test_only", feature = "blocking_recv_test", feature = "nonblock_eagain_test")),
+        feature = "dns_test_only",
+        feature = "blocking_recv_test",
+        feature = "nonblock_eagain_test"
+    )
+))]
+fn release_x86_boot_storage() {
+    BOOT_STORAGE_RELEASED.store(true, core::sync::atomic::Ordering::Release);
+    if let Some(thread) = BOOT_STORAGE_THREAD.get() {
+        task::kthread::kthread_unpark(thread);
+    }
+}
+
+/// The boot_storage kernel thread (E2.4x, ruling DEV-48): the storage reads
+/// the x86 boot makes after the APs dispatch. It is pinned to CPU 0 and runs at
+/// baseline 0, so its block waits park. First the mounts, while the boot
+/// continuation waits; then, once the continuation releases it, the programs
+/// the boot starts from storage.
+///
+/// Both phases run at a `park::Braked` level (`braked`), as `breenfs-commit`
+/// and ARM64's `test-loader` do (design §3.2): the thread keeps CPU 0 except
+/// while it sleeps on a read. At baseline 0 the timer could preempt it inside
+/// AHCI's `PORT_IO_LOCK` spin section, and a braked `breenfs-commit` taking
+/// CPU 0 would then spin on that lock while this pinned holder cannot run; and
+/// its block waits would not sleep (`completion::wait_sleeps`), so a VirtIO
+/// read past the bootstrap cutoff would be abandoned. The park between the
+/// phases is at baseline 0.
+#[cfg(target_arch = "x86_64")]
+fn run_x86_boot_storage() {
+    use core::sync::atomic::Ordering;
+    braked(mount_x86_boot_storage);
+    // #728 ext2 lock-discipline repro oracle (test profile only, feature
+    // `ext2_lock_race`), after the mounts and the fence. Its driver only
+    // starts and waits for kernel threads that take their own braked level,
+    // and needs this CPU preemptible, so it runs outside `braked`.
+    #[cfg(feature = "ext2_lock_race")]
+    kernel::fs::run_ext2_lock_race_leg();
+    BOOT_STORAGE_MOUNTED.store(true, Ordering::Release);
+    if !X86_BOOT_PROGRAMS {
+        return;
+    }
+    while !BOOT_STORAGE_RELEASED.load(Ordering::Acquire) {
+        task::kthread::kthread_park_if(|| !BOOT_STORAGE_RELEASED.load(Ordering::Acquire));
+    }
+    braked(run_x86_boot_programs);
+}
+
+/// Run `work` at one `park::Braked` level: its block waits sleep, and it keeps
+/// this CPU otherwise (design §3.2). `work` must not take a second level.
+#[cfg(target_arch = "x86_64")]
+fn braked(work: fn()) {
+    let level = task::park::Braked::new();
+    work();
+    drop(level);
+}
+
+/// Run a serial command that loads programs from disk on a kernel thread of
+/// its own, at a `park::Braked` level, so its block waits sleep. The console
+/// executor that calls the handler may be CPU 0's idle continuation, which
+/// may not wait for storage once the APs dispatch (E2.4x review).
+#[cfg(target_arch = "x86_64")]
+fn serial_storage_command(name: &'static str, command: fn()) {
+    let spawned = task::kthread::kthread_run(
+        move || {
+            let level = task::park::Braked::new();
+            command();
+            drop(level);
+        },
+        name,
+    );
+    if let Err(e) = spawned {
+        serial_println!("{}: cannot start its kernel thread: {:?}", name, e);
+    }
+}
+
+/// The TEST serial command.
+#[cfg(target_arch = "x86_64")]
+fn serial_test_processes() {
+    serial_println!("Running test processes...");
+    userspace_test::test_multiple_processes();
+    serial_println!("Test processes scheduled. Type to continue...");
+}
+
+/// The FORKTEST serial command.
+#[cfg(target_arch = "x86_64")]
+fn serial_fork_test() {
+    serial_println!("Testing Fork System Call (Debug Mode)");
+    userspace_test::test_fork_debug();
+    serial_println!("Fork debug test scheduled. Press keys to continue...");
+}
+
+/// The EXECTEST serial command: the userspace fork test when the testing
+/// feature is on, otherwise the real-userspace exec test.
+#[cfg(target_arch = "x86_64")]
+fn serial_exec_test() {
+    #[cfg(feature = "testing")]
+    {
+        serial_println!("Testing Fork Syscall from Userspace");
+        test_exec::test_userspace_fork();
+        serial_println!("Userspace fork test completed. Press keys to continue...");
+    }
+    #[cfg(not(feature = "testing"))]
+    {
+        serial_println!("Testing Exec System Call with Real Userspace Programs");
+        test_exec::test_exec_real_userspace();
+        serial_println!("Real userspace exec test scheduled. Press keys to continue...");
+    }
+}
+
+/// The boot_storage thread's program phase, run at its `park::Braked` level
+/// (`braked`), as ARM64's test loader is (design §6), so test processes take
+/// this CPU only while it sleeps on a read. Production reads and publishes
+/// PID 1 (`run_x86_production_init`). Testing loads and registers the test
+/// programs, runs the contract tests that need their process tables, and
+/// starts the late `hello_time`; only then does it close BTRT's loading
+/// bracket and start the completion reporter, because earlier tests run and
+/// exit while later ones are still being created. The interactive profile
+/// and the single-program modes load and start their program.
+#[cfg(target_arch = "x86_64")]
+fn run_x86_boot_programs() {
+    #[cfg(feature = "dns_test_only")]
+    dns_test_only_program();
+    #[cfg(feature = "blocking_recv_test")]
+    blocking_recv_test_program();
+    #[cfg(feature = "nonblock_eagain_test")]
+    nonblock_eagain_test_program();
+    #[cfg(not(any(feature = "kthread_test_only", feature = "kthread_stress_test", feature = "workqueue_test_only", feature = "dns_test_only", feature = "blocking_recv_test", feature = "nonblock_eagain_test")))]
+    {
+        // Registered tests can exit before the next one is registered; BTRT
+        // auto-finalizes only once loading ends (`btrt::end_loading` below).
+        #[cfg(all(feature = "btrt", feature = "testing"))]
+        kernel::test_framework::btrt::begin_loading();
+
+        // INTERACTIVE MODE: Load init_shell as the only userspace process
+        #[cfg(feature = "interactive")]
+        {
+            // Disk-backed test binaries require VirtIO block IRQ completions, so the
+            // load has to happen with interrupts enabled - 62af9d13 hoisted exactly
+            // this call out of exactly this kind of block for the testing profile
+            // (#554), and the interactive profile kept the hazardous shape because
+            // no gate runs it (#665). Only process registration below needs the
+            // masked window.
+            x86_64::instructions::interrupts::enable();
+            serial_println!("INTERACTIVE: Loading init_shell as PID 1");
+            let elf = userspace_test::get_test_binary("init_shell");
+
+            x86_64::instructions::interrupts::without_interrupts(|| {
+                use alloc::string::String;
+                match process::creation::create_user_process(String::from("init_shell"), &elf) {
+                    Ok(pid) => {
+                        serial_println!("INTERACTIVE: init_shell running as PID {}", pid.as_u64());
+                    }
+                    Err(e) => {
+                        serial_println!("INTERACTIVE: Failed to create init: {}", e);
+                    }
+                }
+            });
+        }
+
+        // RING3_SMOKE: Create userspace process early for CI validation
+        //
+        // NOTE: The canonical list of test binaries is in boot::test_list::TEST_BINARIES.
+        // The x86_64 loading pattern below uses individual blocks with per-block
+        // without_interrupts for architectural reasons and is intentionally not
+        // refactored to iterate the shared list. See boot/test_list.rs for details.
+        #[cfg(all(feature = "testing", not(feature = "interactive")))]
+        {
+            // Disk-backed test binaries require VirtIO block IRQ completions, so
+            // interrupts must be hardware-enabled here and must STAY enabled for
+            // the rest of this boot-time test-registration phase: every
+            // get_test_binary() call in the dozens of test_exec::test_*()
+            // functions invoked later in this function also loads from disk and
+            // needs the same IRQ completion (confirmed: unconditionally
+            // re-disabling interrupts here causes those later calls to panic
+            // with "DISK LOADING FAILED" - the IRQ can never be serviced).
+            // claim-lint:ok: moved unchanged by E2.4x (DEV-48) within kernel/src/main.rs from its 5aa428fc kernel_main_continue.
+            //
+            // The scheduling brake for this whole window is the `park::Braked`
+            // level `braked` holds for this phase (E2.4x): this thread keeps CPU 0 except while it
+            // sleeps on a read, and those reads park.
+            x86_64::instructions::interrupts::enable();
+            let elf = userspace_test::get_test_binary("hello_time");
+            let register_test_buf = kernel::userspace_test::get_test_binary("register_init_test");
+            let clock_test_buf = kernel::userspace_test::get_test_binary("clock_gettime_test");
+            let brk_test_buf = kernel::userspace_test::get_test_binary("brk_test");
+            let test_mmap_buf = kernel::userspace_test::get_test_binary("test_mmap");
+            let diagnostic_test_buf =
+                kernel::userspace_test::get_test_binary("syscall_diagnostic_test");
+            let udp_test_buf = kernel::userspace_test::get_test_binary("udp_socket_test");
+            let tcp_test_buf = kernel::userspace_test::get_test_binary("tcp_socket_test");
+            let tcp_dup_listener_test_buf =
+                kernel::userspace_test::get_test_binary("tcp_dup_listener_test");
+            let tcp_cloexec_exec_test_buf =
+                kernel::userspace_test::get_test_binary("tcp_cloexec_exec_test");
+            let dns_test_buf = kernel::userspace_test::get_test_binary("dns_test");
+            let http_test_buf = kernel::userspace_test::get_test_binary("http_test");
+            let loopback_wake_test_buf = kernel::userspace_test::get_test_binary("loopback_wake_test");
+            let clonevm_exec_test_buf = kernel::userspace_test::get_test_binary("clonevm_exec_test");
+            let futex_handoff_oracle_buf =
+                kernel::userspace_test::get_test_binary("futex_handoff_oracle");
+            // #737 direction-flag preempt oracle. Fork-free on purpose: the gate's
+            // PRODUCTION_REAPED_ROWS census counts fork() call sites per roster
+            // program (docker/qemu/run-x86-boot-tests.sh), and this program has no
+            // such call site, so it contributes 0 there and moves only
+            // EXPECTED_USERSPACE_EXITS.
+            // claim-lint:ok: 0 of 0 fork() call sites in
+            // userspace/programs/src/df_preempt_oracle.rs under the gate's own
+            // census pattern, measured in the round that added this launch. #737.
+            let df_preempt_oracle_buf = kernel::userspace_test::get_test_binary("df_preempt_oracle");
+
+            x86_64::instructions::interrupts::without_interrupts(|| {
+                use alloc::string::String;
+                log::info!("RING3_SMOKE: creating hello_time userspace process (early)");
+                match process::creation::create_user_process(String::from("smoke_hello_time"), &elf) {
+                    Ok(pid) => {
+                        log::info!(
+                            "RING3_SMOKE: created userspace PID {} (will run on timer interrupts)",
+                            pid.as_u64()
+                        );
+                    }
+                    Err(e) => {
+                        log::error!("RING3_SMOKE: failed to create userspace process: {}", e);
+                    }
+                }
+
+                // Launch register_init_test to verify registers are properly initialized
+                {
+                    serial_println!("RING3_SMOKE: creating register_init_test userspace process");
+                    match process::creation::create_user_process(
+                        String::from("register_init_test"),
+                        &register_test_buf,
+                    ) {
+                        Ok(pid) => {
+                            log::info!(
+                                "Created register_init_test process with PID {}",
+                                pid.as_u64()
+                            );
+                        }
+                        Err(e) => {
+                            log::error!("Failed to create register_init_test process: {}", e);
+                        }
+                    }
+                }
+
+                // Launch clock_gettime_test after hello_time
+                {
+                    serial_println!("RING3_SMOKE: creating clock_gettime_test userspace process");
+                    match process::creation::create_user_process(
+                        String::from("clock_gettime_test"),
+                        &clock_test_buf,
+                    ) {
+                        Ok(pid) => {
+                            log::info!(
+                                "Created clock_gettime_test process with PID {}",
+                                pid.as_u64()
+                            );
+                        }
+                        Err(e) => {
+                            log::error!("Failed to create clock_gettime_test process: {}", e);
+                        }
+                    }
+                }
+
+                // Launch brk_test to validate heap management syscall
+                {
+                    serial_println!("RING3_SMOKE: creating brk_test userspace process");
+                    match process::creation::create_user_process(
+                        String::from("brk_test"),
+                        &brk_test_buf,
+                    ) {
+                        Ok(pid) => {
+                            log::info!("Created brk_test process with PID {}", pid.as_u64());
+                        }
+                        Err(e) => {
+                            log::error!("Failed to create brk_test process: {}", e);
+                        }
+                    }
+                }
+
+                // Launch test_mmap to validate mmap/munmap syscalls
+                {
+                    serial_println!("RING3_SMOKE: creating test_mmap userspace process");
+                    match process::creation::create_user_process(
+                        String::from("test_mmap"),
+                        &test_mmap_buf,
+                    ) {
+                        Ok(pid) => {
+                            log::info!("Created test_mmap process with PID {}", pid.as_u64());
+                        }
+                        Err(e) => {
+                            log::error!("Failed to create test_mmap process: {}", e);
+                        }
+                    }
+                }
+
+                // Launch syscall_diagnostic_test to isolate register corruption bug
+                {
+                    serial_println!("RING3_SMOKE: creating syscall_diagnostic_test userspace process");
+                    match process::creation::create_user_process(
+                        String::from("syscall_diagnostic_test"),
+                        &diagnostic_test_buf,
+                    ) {
+                        Ok(pid) => {
+                            log::info!(
+                                "Created syscall_diagnostic_test process with PID {}",
+                                pid.as_u64()
+                            );
+                        }
+                        Err(e) => {
+                            log::error!("Failed to create syscall_diagnostic_test process: {}", e);
+                        }
+                    }
+                }
+
+                // Launch UDP socket test to verify network syscalls from userspace
+                {
+                    serial_println!("RING3_SMOKE: creating udp_socket_test userspace process");
+                    match process::creation::create_user_process(
+                        String::from("udp_socket_test"),
+                        &udp_test_buf,
+                    ) {
+                        Ok(pid) => {
+                            log::info!("Created udp_socket_test process with PID {}", pid.as_u64());
+                        }
+                        Err(e) => {
+                            log::error!("Failed to create udp_socket_test process: {}", e);
+                        }
+                    }
+                }
+
+                // Launch TCP socket test to verify TCP syscalls from userspace
+                {
+                    serial_println!("RING3_SMOKE: creating tcp_socket_test userspace process");
+                    match process::creation::create_user_process(
+                        String::from("tcp_socket_test"),
+                        &tcp_test_buf,
+                    ) {
+                        Ok(pid) => {
+                            log::info!("Created tcp_socket_test process with PID {}", pid.as_u64());
+                        }
+                        Err(e) => {
+                            log::error!("Failed to create tcp_socket_test process: {}", e);
+                        }
+                    }
+                }
+
+                // Launch TCP dup'd-listener test (regression for #724 review
+                // finding M1: dup()/dup2() never incremented a TcpListener's
+                // ref_count, so sys_close()'s new decrement could retire a
+                // listener out from under a surviving dup'd fd).
+                // claim-lint:ok: moved unchanged by E2.4x (DEV-48) within kernel/src/main.rs from its 5aa428fc kernel_main_continue.
+                {
+                    serial_println!("RING3_SMOKE: creating tcp_dup_listener_test userspace process");
+                    match process::creation::create_user_process(
+                        String::from("tcp_dup_listener_test"),
+                        &tcp_dup_listener_test_buf,
+                    ) {
+                        Ok(pid) => {
+                            log::info!(
+                                "Created tcp_dup_listener_test process with PID {}",
+                                pid.as_u64()
+                            );
+                        }
+                        Err(e) => {
+                            log::error!("Failed to create tcp_dup_listener_test process: {}", e);
+                        }
+                    }
+                }
+
+                // Launch TCP FD_CLOEXEC exec() survival test (regression for #707:
+                // close_cloexec() -- the path exec() uses to retire FD_CLOEXEC-marked
+                // fds -- had no arm for FdKind::TcpListener, so a listener fd marked
+                // FD_CLOEXEC leaked a reference across exec() instead of being
+                // retired via tcp_listener_ref_dec()).
+                {
+                    serial_println!("RING3_SMOKE: creating tcp_cloexec_exec_test userspace process");
+                    match process::creation::create_user_process(
+                        String::from("tcp_cloexec_exec_test"),
+                        &tcp_cloexec_exec_test_buf,
+                    ) {
+                        Ok(pid) => {
+                            log::info!(
+                                "Created tcp_cloexec_exec_test process with PID {}",
+                                pid.as_u64()
+                            );
+                        }
+                        Err(e) => {
+                            log::error!("Failed to create tcp_cloexec_exec_test process: {}", e);
+                        }
+                    }
+                }
+
+                // Launch DNS test to verify DNS resolution using UDP sockets
+                {
+                    serial_println!("RING3_SMOKE: creating dns_test userspace process");
+                    match process::creation::create_user_process(
+                        String::from("dns_test"),
+                        &dns_test_buf,
+                    ) {
+                        Ok(pid) => {
+                            log::info!("Created dns_test process with PID {}", pid.as_u64());
+                        }
+                        Err(e) => {
+                            log::error!("Failed to create dns_test process: {}", e);
+                        }
+                    }
+                }
+
+                // Launch HTTP test to verify HTTP client over TCP+DNS
+                {
+                    serial_println!("RING3_SMOKE: creating http_test userspace process");
+                    match process::creation::create_user_process(
+                        String::from("http_test"),
+                        &http_test_buf,
+                    ) {
+                        Ok(pid) => {
+                            log::info!("Created http_test process with PID {}", pid.as_u64());
+                        }
+                        Err(e) => {
+                            log::error!("Failed to create http_test process: {}", e);
+                        }
+                    }
+                }
+
+                // Launch the userspace #545 regression in the normal userspace phase,
+                // where scheduling works and the #567 boot-window restriction does not apply.
+                {
+                    serial_println!("RING3_SMOKE: creating loopback_wake_test userspace process");
+                    match process::creation::create_user_process(
+                        String::from("loopback_wake_test"),
+                        &loopback_wake_test_buf,
+                    ) {
+                        Ok(pid) => {
+                            log::info!(
+                                "Created loopback_wake_test process with PID {}",
+                                pid.as_u64()
+                            );
+                        }
+                        Err(e) => {
+                            log::error!("Failed to create loopback_wake_test process: {}", e);
+                        }
+                    }
+                }
+
+                // The #568 blocking-poll-on-connected-TCP oracle (poll_tcp_oracle)
+                // is deliberately NOT launched here. It runs on aarch64, where eight
+                // gates pin its marker and its verdict, and it is green there. On x86
+                // it is not gate-compatible yet: it fork()s a peer per retry attempt,
+                // so it shifts the tombstone census this file's own boot gate pins
+                // (CENSUS_REMOVED = 6 + attempts, exact on 30/30 boots), and its
+                // late_lost_wake verdict carries neither the peer's exit status nor
+                // its token_ms/write_ms stamps, so a red cannot be told apart from
+                // TCG starvation. Re-wiring it here, together with the marker
+                // assertion removed from docker/qemu/run-boot-parallel.sh, is
+                // tracked by #697. The #568 kernel fix itself is proven on x86
+                // without the oracle, by the strand census in the A/B battery.
+                //
+                // #693's x86 batteries DID need it launched, so they ran on bytes
+                // carrying an investigation patch that adds this launch site back,
+                // committed as an apply/revert pair next to the drivers
+                // (docs/planning/green-program/sockets/serials/693-fix/
+                // x86-launch-site-apply.sh and -revert.sh). That patch is NOT in
+                // the branch's bytes, because with it applied this file's own x86
+                // boot gate cannot satisfy the census assertion at
+                // docker/qemu/run-x86-boot-tests.sh:548: the oracle's stage-3 and
+                // stage-4 ladders each fork at least 1 peer, so CENSUS_REMOVED is
+                // at least 8 against a pin of 6, and the 1 gate boot the round-2
+                // review ran at eba15887 reaped 5 peers. That is #697's scope.
+
+                {
+                    serial_println!("RING3_SMOKE: creating clonevm_exec_test userspace process");
+                    match process::creation::create_user_process(
+                        String::from("clonevm_exec_test"),
+                        &clonevm_exec_test_buf,
+                    ) {
+                        Ok(pid) => {
+                            log::info!(
+                                "Created clonevm_exec_test process with PID {}",
+                                pid.as_u64()
+                            );
+                        }
+                        Err(e) => {
+                            log::error!("Failed to create clonevm_exec_test process: {}", e);
+                        }
+                    }
+                }
+
+                {
+                    serial_println!("RING3_SMOKE: creating futex_handoff_oracle userspace process");
+                    match process::creation::create_user_process(
+                        String::from("futex_handoff_oracle"),
+                        &futex_handoff_oracle_buf,
+                    ) {
+                        Ok(pid) => {
+                            log::info!(
+                                "Created futex_handoff_oracle process with PID {}",
+                                pid.as_u64()
+                            );
+                        }
+                        Err(e) => {
+                            log::error!("Failed to create futex_handoff_oracle process: {}", e);
+                        }
+                    }
+                }
+
+                // The 737 direction-flag preempt oracle: it holds DF=1 across many
+                // timer ticks so the first from-userspace preempt lands inside the
+                // window, instead of waiting for the timer to hit a userspace
+                // memmove backward arm. Fork-free, so the gate's
+                // PRODUCTION_REAPED_ROWS census (which counts fork call sites per
+                // roster program) is unmoved; it moves EXPECTED_USERSPACE_EXITS by 1.
+                {
+                    serial_println!("RING3_SMOKE: creating df_preempt_oracle userspace process");
+                    match process::creation::create_user_process(
+                        String::from("df_preempt_oracle"),
+                        &df_preempt_oracle_buf,
+                    ) {
+                        Ok(pid) => {
+                            log::info!(
+                                "Created df_preempt_oracle process with PID {}",
+                                pid.as_u64()
+                            );
+                        }
+                        Err(e) => {
+                            log::error!("Failed to create df_preempt_oracle process: {}", e);
+                        }
+                    }
+                }
+            });
+        }
+
+        // Run tests BEFORE enabling interrupts - they will create userspace processes
+        // which will then run when the scheduler activates after interrupt enable
+        #[cfg(all(feature = "testing", not(feature = "interactive")))]
+        {
+            log::info!("=== Running kernel tests to create userspace processes ===");
+            for name in kernel::boot::test_list::TEST_BINARIES {
+                drop(userspace_test::get_test_binary(name));
+            }
+            let required = kernel::boot::test_list::TEST_BINARIES.len();
+            serial_println!("[test] Loaded {}/{} test binaries (0 failed, 0 not found)", required, required);
+
+
+            // Run all tests - fork/CoW page table lifecycle bug fixed
+            // claim-lint:ok: moved unchanged by E2.4x (DEV-48) within kernel/src/main.rs from its 5aa428fc kernel_main_continue.
+            log::info!("=== BASELINE TEST: Direct userspace execution ===");
+            test_exec::test_direct_execution();
+            log::info!("Direct execution test: process scheduled for execution.");
+
+            // Test fork from userspace
+            log::info!("=== USERSPACE TEST: Fork syscall from Ring 3 ===");
+            test_exec::test_userspace_fork();
+            log::info!("Fork test: process scheduled for execution.");
+
+            // Test ENOSYS syscall
+            log::info!("=== SYSCALL TEST: Undefined syscall returns ENOSYS ===");
+            test_exec::test_syscall_enosys();
+            log::info!("ENOSYS test: process scheduled for execution.");
+
+            // Test signal handler execution
+            log::info!("=== SIGNAL TEST: Signal handler execution ===");
+            test_exec::test_signal_handler();
+            log::info!("Signal handler test: process scheduled for execution.");
+
+            // Test signal handler return via trampoline
+            log::info!("=== SIGNAL TEST: Signal handler return via trampoline ===");
+            test_exec::test_signal_return();
+            log::info!("Signal return test: process scheduled for execution.");
+
+            // Test signal register preservation
+            log::info!("=== SIGNAL TEST: Register preservation across signals ===");
+            test_exec::test_signal_regs();
+
+            // Test pipe IPC syscalls
+            log::info!("=== IPC TEST: Pipe syscall functionality ===");
+            test_exec::test_pipe();
+
+            // Test Unix domain socket (AF_UNIX) - socketpair AND bind/listen/accept/connect
+            log::info!("=== IPC TEST: Unix domain socket (socketpair + named sockets) ===");
+            test_exec::test_unix_socket();
+
+            // Test FIFO (named pipe) functionality
+            log::info!("=== IPC TEST: FIFO (named pipe) functionality ===");
+            test_exec::test_fifo();
+            test_exec::test_fifo_fs();
+
+            // Test SIGTERM delivery with default handler (kill test)
+            log::info!("=== SIGNAL TEST: SIGTERM delivery with default handler ===");
+            test_exec::test_signal_kill();
+
+            // Test SIGCHLD delivery when child exits
+            log::info!("=== SIGNAL TEST: SIGCHLD delivery on child exit ===");
+            test_exec::test_sigchld();
+
+            // Test pause() syscall
+            log::info!("=== SIGNAL TEST: pause() syscall functionality ===");
+            test_exec::test_pause();
+
+            // Test process group kill semantics
+            log::info!("=== SIGNAL TEST: process group kill semantics ===");
+            test_exec::test_kill_process_group();
+
+            // Test sigsuspend() syscall
+            log::info!("=== SIGNAL TEST: sigsuspend() syscall functionality ===");
+            test_exec::test_sigsuspend();
+
+            // Test sigaltstack() syscall
+            log::info!("=== SIGNAL TEST: sigaltstack() syscall functionality ===");
+            test_exec::test_sigaltstack();
+
+            // Test dup() syscall
+            log::info!("=== IPC TEST: dup() syscall functionality ===");
+            test_exec::test_dup();
+
+            // Test fcntl() syscall
+            log::info!("=== IPC TEST: fcntl() syscall functionality ===");
+            test_exec::test_fcntl();
+
+            // Test close-on-exec (O_CLOEXEC) behavior
+            log::info!("=== IPC TEST: close-on-exec (O_CLOEXEC) behavior ===");
+            test_exec::test_cloexec();
+
+            // Test pipe2() syscall
+            log::info!("=== IPC TEST: pipe2() syscall functionality ===");
+            test_exec::test_pipe2();
+
+            // Test poll() syscall
+            log::info!("=== IPC TEST: poll() syscall functionality ===");
+            test_exec::test_poll();
+
+            // Test select() syscall
+            log::info!("=== IPC TEST: select() syscall functionality ===");
+            test_exec::test_select();
+
+            // Test O_NONBLOCK pipe behavior
+            log::info!("=== IPC TEST: O_NONBLOCK pipe behavior ===");
+            test_exec::test_nonblock();
+
+            // Test TTY layer functionality
+            log::info!("=== TTY TEST: TTY layer functionality ===");
+            test_exec::test_tty();
+
+            // Test session and process group syscalls
+            log::info!("=== SESSION TEST: Session and process group syscalls ===");
+            test_exec::test_session();
+
+            // Test ext2 file read functionality
+            log::info!("=== FS TEST: ext2 file read functionality ===");
+            test_exec::test_file_read();
+
+            // Test Ctrl-C (SIGINT) signal delivery
+            log::info!("=== SIGNAL TEST: Ctrl-C (SIGINT) signal delivery ===");
+            test_exec::test_ctrl_c();
+
+            // Test fork memory isolation (CoW semantics)
+            log::info!("=== FORK TEST: Fork memory isolation (CoW semantics) ===");
+            test_exec::test_fork_memory();
+
+            // Test fork state copying (copy_process_state)
+            log::info!("=== FORK TEST: Fork state copying (FD, signals, pgid, sid) ===");
+            test_exec::test_fork_state();
+
+            // Test fork pending signal non-inheritance (POSIX)
+            log::info!("=== SIGNAL TEST: fork pending signal non-inheritance ===");
+            test_exec::test_fork_pending_signal();
+
+            // Test CoW signal delivery (deadlock fix)
+            log::info!("=== COW TEST: signal delivery on CoW-shared stack ===");
+            test_exec::test_cow_signal();
+
+            // Test CoW cleanup on process exit
+            log::info!("=== COW TEST: cleanup on process exit ===");
+            test_exec::test_cow_cleanup();
+
+            // Test CoW sole owner optimization
+            log::info!("=== COW TEST: sole owner optimization ===");
+            test_exec::test_cow_sole_owner();
+
+            // Test CoW at scale with many pages
+            log::info!("=== COW TEST: stress test with many pages ===");
+            test_exec::test_cow_stress();
+
+            // Test CoW read-only page sharing (code sections)
+            log::info!("=== COW TEST: read-only page sharing (code sections) ===");
+            test_exec::test_cow_readonly();
+
+            // Test argv support in exec syscall
+            log::info!("=== EXEC TEST: argv support ===");
+            test_exec::test_argv();
+            log::info!("=== EXEC TEST: exec with argv ===");
+            test_exec::test_exec_argv();
+            log::info!("=== EXEC TEST: exec with stack-allocated argv ===");
+            test_exec::test_exec_stack_argv();
+
+            // Test getdents64 syscall for directory listing
+            log::info!("=== FS TEST: getdents64 directory listing ===");
+            test_exec::test_getdents();
+
+            // Test lseek syscall
+            log::info!("=== FS TEST: lseek syscall ===");
+            test_exec::test_lseek();
+
+            // Test filesystem write operations
+            log::info!("=== FS TEST: filesystem write operations ===");
+            test_exec::test_fs_write();
+
+            // Test filesystem rename operations
+            log::info!("=== FS TEST: filesystem rename operations ===");
+            test_exec::test_fs_rename();
+
+            // Test large file operations (indirect blocks)
+            log::info!("=== FS TEST: large file operations ===");
+            test_exec::test_fs_large_file();
+
+            // Test filesystem directory operations
+            log::info!("=== FS TEST: directory operations ===");
+            test_exec::test_fs_directory();
+
+            // Test filesystem link operations
+            log::info!("=== FS TEST: link operations ===");
+            test_exec::test_fs_link();
+
+            // Test access() syscall
+            log::info!("=== FS TEST: access() syscall ===");
+            test_exec::test_access();
+
+            // Test devfs device files (/dev/null, /dev/zero, /dev/console, /dev/tty)
+            // claim-lint:ok: moved unchanged by E2.4x (DEV-48) within kernel/src/main.rs from its 5aa428fc kernel_main_continue.
+            log::info!("=== FS TEST: devfs device files ===");
+            test_exec::test_devfs();
+
+            // Test current working directory syscalls (getcwd, chdir)
+            log::info!("=== FS TEST: cwd syscalls (getcwd, chdir) ===");
+            test_exec::test_cwd();
+
+            // Test exec from ext2 filesystem
+            log::info!("=== FS TEST: exec from ext2 filesystem ===");
+            test_exec::test_exec_from_ext2();
+
+            // Test filesystem block allocation (regression test for truncate/alloc bugs)
+            log::info!("=== FS TEST: block allocation regression test ===");
+            test_exec::test_fs_block_alloc();
+
+            // Coreutil tests
+            log::info!("=== COREUTIL TEST: true (exit code 0) ===");
+            test_exec::test_true_coreutil();
+            log::info!("=== COREUTIL TEST: false (exit code 1) ===");
+            test_exec::test_false_coreutil();
+            log::info!("=== COREUTIL TEST: head (first N lines) ===");
+            test_exec::test_head_coreutil();
+            log::info!("=== COREUTIL TEST: tail (last N lines) ===");
+            test_exec::test_tail_coreutil();
+            log::info!("=== COREUTIL TEST: wc (line/word/byte counts) ===");
+            test_exec::test_wc_coreutil();
+            log::info!("=== COREUTIL TEST: which (command location) ===");
+            test_exec::test_which_coreutil();
+            log::info!("=== COREUTIL TEST: cat (file concatenation) ===");
+            test_exec::test_cat_coreutil();
+            log::info!("=== COREUTIL TEST: ls (directory listing) ===");
+            test_exec::test_ls_coreutil();
+
+            // Test Rust std library support
+            log::info!("=== STD TEST: Rust std library support ===");
+            test_exec::test_hello_std_real();
+
+            // Test signal handler reset on exec
+            log::info!("=== SIGNAL TEST: Signal handler reset on exec ===");
+            test_exec::test_signal_exec();
+
+            // Test waitpid syscall
+            log::info!("=== IPC TEST: Waitpid syscall functionality ===");
+            test_exec::test_waitpid();
+
+            // Test signal fork inheritance
+            log::info!("=== SIGNAL TEST: Signal handler fork inheritance ===");
+            test_exec::test_signal_fork();
+
+            // Test WNOHANG timing behavior
+            log::info!("=== IPC TEST: WNOHANG timing behavior ===");
+            test_exec::test_wnohang_timing();
+
+            // Test shell pipeline execution (pipe+fork+dup2 pattern)
+            log::info!("=== IPC TEST: Shell pipeline execution ===");
+            test_exec::test_shell_pipe();
+
+            // Test FbInfo syscall (framebuffer information)
+            log::info!("=== GRAPHICS TEST: FbInfo syscall ===");
+            test_exec::test_fbinfo();
+            log::info!("Boot test program registration complete");
+        }
+
+        // Run contracts after test registration has created real process tables.
+        #[cfg(feature = "testing")]
+        {
+            log::info!("Running contract tests...");
+            let (passed, failed) = contract_runner::run_all_contracts();
+            log::info!("Contract tests: {} passed, {} failed", passed, failed);
+            if failed > 0 {
+                panic!("Contract test failures!");
+            }
+        }
+
+        // RING3_SMOKE: Create userspace process early for CI validation
+        // Must be done after interrupts are enabled but before other tests
+        #[cfg(all(feature = "testing", not(feature = "interactive")))]
+        {
+            let elf = userspace_test::get_test_binary("hello_time");
+            x86_64::instructions::interrupts::without_interrupts(|| {
+                use alloc::string::String;
+                serial_println!("RING3_SMOKE: creating hello_time userspace process (early)");
+                match process::create_user_process(String::from("smoke_hello_time"), &elf) {
+                    Ok(pid) => {
+                        serial_println!(
+                            "RING3_SMOKE: created userspace PID {} (will run on timer interrupts)",
+                            pid.as_u64()
+                        );
+                    }
+                    Err(e) => {
+                        serial_println!("RING3_SMOKE: failed to create userspace process: {}", e);
+                    }
+                }
+            });
+        }
+
+        // The last test process exists: end BTRT's loading bracket, and start
+        // the reporter, which reports once no user thread is live.
+        #[cfg(all(feature = "btrt", feature = "testing"))]
+        kernel::test_framework::btrt::end_loading();
+        #[cfg(all(feature = "testing", not(feature = "interactive")))]
+        task::userspace_completion::start();
+
+        #[cfg(not(any(
+            feature = "testing",
+            feature = "interactive",
+            feature = "disable_x86_prod_init"
+        )))]
+        run_x86_production_init();
+    }
+}
+
+/// The dns_test_only mode's program, loaded and started on the boot_storage thread.
 #[cfg(all(target_arch = "x86_64", feature = "dns_test_only"))]
-fn dns_test_only_main() -> ! {
+fn dns_test_only_program() {
     use alloc::string::String;
 
-    log::info!("=== DNS_TEST_ONLY: Starting minimal DNS test ===");
-
-    // Disk-backed test binaries require VirtIO block IRQ completions.
-    x86_64::instructions::interrupts::enable();
     serial_println!("DNS_TEST_ONLY: Loading dns_test binary");
     let elf = userspace_test::get_test_binary("dns_test");
 
@@ -1021,35 +1818,13 @@ fn dns_test_only_main() -> ! {
             }
         }
     });
-
-    // Enable interrupts so dns_test can run
-    log::info!("DNS_TEST_ONLY: Enabling interrupts");
-    x86_64::instructions::interrupts::enable();
-
-    // Enter idle loop - dns_test will run via scheduler
-    // The test harness watches for the userspace DNS completion marker
-    // and kills QEMU when it appears
-    log::info!("DNS_TEST_ONLY: Entering idle loop (dns_test running via scheduler)");
-    loop {
-        x86_64::instructions::interrupts::enable_and_hlt();
-
-        // Yield to give scheduler a chance
-        task::scheduler::yield_current();
-
-        // Drain loopback queue for localhost packets
-        net::drain_loopback_queue();
-    }
 }
 
-/// Blocking recvfrom test only mode - minimal boot, just run blocking_recv_test and exit
+/// The blocking_recv_test mode's program, loaded and started on the boot_storage thread.
 #[cfg(all(target_arch = "x86_64", feature = "blocking_recv_test"))]
-fn blocking_recv_test_main() -> ! {
+fn blocking_recv_test_program() {
     use alloc::string::String;
 
-    log::info!("=== BLOCKING_RECV_TEST: Starting minimal blocking recv test ===");
-
-    // Disk-backed test binaries require VirtIO block IRQ completions.
-    x86_64::instructions::interrupts::enable();
     serial_println!("BLOCKING_RECV_TEST: Loading blocking_recv_test binary");
     let elf = match userspace_test::load_test_binary_from_disk("blocking_recv_test") {
         Ok(elf) => elf,
@@ -1093,33 +1868,13 @@ fn blocking_recv_test_main() -> ! {
             }
         }
     });
-
-    // Enable interrupts so blocking_recv_test can run
-    log::info!("BLOCKING_RECV_TEST: Enabling interrupts");
-    x86_64::instructions::interrupts::enable();
-
-    // Enter idle loop - blocking_recv_test will run via scheduler
-    log::info!("BLOCKING_RECV_TEST: Entering idle loop (blocking_recv_test running via scheduler)");
-    loop {
-        x86_64::instructions::interrupts::enable_and_hlt();
-
-        // Yield to give scheduler a chance
-        task::scheduler::yield_current();
-
-        // Drain loopback queue for localhost packets
-        net::drain_loopback_queue();
-    }
 }
 
-/// Nonblock EAGAIN test only mode - minimal boot, just run nonblock_eagain_test and exit
+/// The nonblock_eagain_test mode's program, loaded and started on the boot_storage thread.
 #[cfg(all(target_arch = "x86_64", feature = "nonblock_eagain_test"))]
-fn nonblock_eagain_test_main() -> ! {
+fn nonblock_eagain_test_program() {
     use alloc::string::String;
 
-    log::info!("=== NONBLOCK_EAGAIN_TEST: Starting minimal nonblock EAGAIN test ===");
-
-    // Disk-backed test binaries require VirtIO block IRQ completions.
-    x86_64::instructions::interrupts::enable();
     serial_println!("NONBLOCK_EAGAIN_TEST: Loading nonblock_eagain_test binary");
     let elf = match userspace_test::load_test_binary_from_disk("nonblock_eagain_test") {
         Ok(elf) => elf,
@@ -1163,6 +1918,151 @@ fn nonblock_eagain_test_main() -> ! {
             }
         }
     });
+}
+
+/// The x86 boot's storage work, on the `boot_storage` kernel thread (E2.4x):
+/// the install copy, the root and home mounts, `bind_home_if_unmounted`, the
+/// write fence and the fault-injection legs that need them. Unchanged in order
+/// and content from when the boot continuation ran it; only the context moved.
+#[cfg(target_arch = "x86_64")]
+fn mount_x86_boot_storage() {
+    // The storage driver self-tests, AHCI attach first: they wait for block
+    // completions, so they moved here from the continuation's
+    // `run_post_init_self_tests` (E2.4x review).
+    kernel::drivers::run_storage_self_tests();
+
+    // A storage-lane install copies the RAM disk to the hardware disk while the
+    // RAM disk is still unmounted, so the copy is the image as delivered.
+    kernel::block::install_requested_root();
+
+    // Probe and mount the root filesystem once IRQ-driven block completions can arrive.
+    let explicit_mounts = kernel::boot::intent::explicit_mounts_requested();
+    match kernel::fs::vfs::mount_root() {
+        Ok(()) => {
+            log::info!("{} root filesystem mounted", kernel::fs::vfs::root_kind());
+            if !explicit_mounts && kernel::block::ramdisk::device().is_some() {
+                log::info!("[fs] root mounted from the RAM disk");
+            } else if kernel::block::root_on_installed_disk() {
+                log::info!("[fs] root mounted from the installed disk");
+            } else if kernel::block::root_on_system_partition() {
+                log::info!("[fs] root mounted from the system partition");
+            }
+            if kernel::block::hardware_read_only() {
+                let count = kernel::block::devices().len();
+                log::info!("[block] hardware disks read-only: detected={} gated={}", count, count);
+            }
+            #[cfg(feature = "btrt")]
+            kernel::test_framework::btrt::pass(kernel::test_framework::catalog::EXT2_MOUNT);
+        }
+        Err(e) => {
+            log::warn!("Failed to mount root filesystem: {:?}", e);
+            if explicit_mounts || kernel::fs::vfs::suite_boot_requested() {
+                serial_println!("\nBREENIX_ROOT_MOUNT_FATAL errno={}", e.0);
+                kernel::hlt_loop();
+            }
+            #[cfg(feature = "btrt")]
+            kernel::test_framework::btrt::fail(
+                kernel::test_framework::catalog::EXT2_MOUNT,
+                kernel::test_framework::btrt::BtrtErrorCode::IoError,
+                0,
+            );
+        }
+    }
+
+    if !explicit_mounts {
+        kernel::fs::vfs::init_services().expect("filesystem finalization services");
+    }
+
+    // ext2/VFS fault-injection leg (test profile only, feature `fs_fault_inject`).
+    // Runs immediately after the root filesystem mounts, so every marker the rest
+    // of this boot prints is evidence the kernel survived the injected faults.
+    // claim-lint:ok: moved unchanged by E2.4x (DEV-48) within kernel/src/main.rs from its 5aa428fc kernel_main.
+    #[cfg(feature = "fs_fault_inject")]
+    kernel::fs::vfs::fault::run_fs_fault_leg();
+    if !explicit_mounts {
+        // Noninteractive testing can supply a fixture; interactive needs a home disk.
+        if cfg!(all(feature = "testing", not(feature = "interactive")))
+            || (!kernel::block::hardware_read_only() && kernel::block::disk(3).is_some())
+            || kernel::block::home_named()
+        {
+            match kernel::fs::vfs::mount_home() {
+                Ok(()) => log::info!("ext2 home filesystem mounted at /home"),
+                Err(e) => log::warn!("No home filesystem: {:?}", e),
+            }
+        } else {
+            log::info!("No home filesystem: no home block device attached");
+        }
+        kernel::fs::vfs::mount::bind_home_if_unmounted();
+    }
+    kernel::fs::vfs::init_services().expect("filesystem finalization services");
+    // The boot's partitions are chosen and mounted: no further range may take writes.
+    kernel::block::fence_seal();
+    #[cfg(feature = "block_fence_inject")]
+    kernel::block::fence_fault::run();
+}
+
+/// DNS test only mode - minimal boot, just run DNS test and exit
+#[cfg(all(target_arch = "x86_64", feature = "dns_test_only"))]
+fn dns_test_only_main() -> ! {
+    log::info!("=== DNS_TEST_ONLY: Starting minimal DNS test ===");
+
+    // E2.4x (ruling DEV-48): the boot_storage thread loads and starts the
+    // program (dns_test_only_program); this continuation reads no storage.
+    release_x86_boot_storage();
+
+    // Enable interrupts so dns_test can run
+    log::info!("DNS_TEST_ONLY: Enabling interrupts");
+    x86_64::instructions::interrupts::enable();
+
+    // Enter idle loop - dns_test will run via scheduler
+    // The test harness watches for the userspace DNS completion marker
+    // and kills QEMU when it appears
+    log::info!("DNS_TEST_ONLY: Entering idle loop (dns_test running via scheduler)");
+    loop {
+        x86_64::instructions::interrupts::enable_and_hlt();
+
+        // Yield to give scheduler a chance
+        task::scheduler::yield_current();
+
+        // Drain loopback queue for localhost packets
+        net::drain_loopback_queue();
+    }
+}
+
+/// Blocking recvfrom test only mode - minimal boot, just run blocking_recv_test and exit
+#[cfg(all(target_arch = "x86_64", feature = "blocking_recv_test"))]
+fn blocking_recv_test_main() -> ! {
+    log::info!("=== BLOCKING_RECV_TEST: Starting minimal blocking recv test ===");
+
+    // E2.4x (ruling DEV-48): the boot_storage thread loads and starts the
+    // program (blocking_recv_test_program); this continuation reads no storage.
+    release_x86_boot_storage();
+
+    // Enable interrupts so blocking_recv_test can run
+    log::info!("BLOCKING_RECV_TEST: Enabling interrupts");
+    x86_64::instructions::interrupts::enable();
+
+    // Enter idle loop - blocking_recv_test will run via scheduler
+    log::info!("BLOCKING_RECV_TEST: Entering idle loop (blocking_recv_test running via scheduler)");
+    loop {
+        x86_64::instructions::interrupts::enable_and_hlt();
+
+        // Yield to give scheduler a chance
+        task::scheduler::yield_current();
+
+        // Drain loopback queue for localhost packets
+        net::drain_loopback_queue();
+    }
+}
+
+/// Nonblock EAGAIN test only mode - minimal boot, just run nonblock_eagain_test and exit
+#[cfg(all(target_arch = "x86_64", feature = "nonblock_eagain_test"))]
+fn nonblock_eagain_test_main() -> ! {
+    log::info!("=== NONBLOCK_EAGAIN_TEST: Starting minimal nonblock EAGAIN test ===");
+
+    // E2.4x (ruling DEV-48): the boot_storage thread loads and starts the
+    // program (nonblock_eagain_test_program); this continuation reads no storage.
+    release_x86_boot_storage();
 
     // Enable interrupts so nonblock_eagain_test can run
     log::info!("NONBLOCK_EAGAIN_TEST: Enabling interrupts");
@@ -1612,41 +2512,15 @@ fn run_x86_production_init() {
     ))
 ))]
 fn kernel_main_continue() -> ! {
-    // INTERACTIVE MODE: Load init_shell as the only userspace process
-    #[cfg(feature = "interactive")]
-    {
-        // Disk-backed test binaries require VirtIO block IRQ completions, so the
-        // load has to happen with interrupts enabled - 62af9d13 hoisted exactly
-        // this call out of exactly this kind of block for the testing profile
-        // (#554), and the interactive profile kept the hazardous shape because
-        // no gate runs it (#665). Only process registration below needs the
-        // masked window.
-        x86_64::instructions::interrupts::enable();
-        serial_println!("INTERACTIVE: Loading init_shell as PID 1");
-        let elf = userspace_test::get_test_binary("init_shell");
-
-        x86_64::instructions::interrupts::without_interrupts(|| {
-            use alloc::string::String;
-            match process::creation::create_user_process(String::from("init_shell"), &elf) {
-                Ok(pid) => {
-                    serial_println!("INTERACTIVE: init_shell running as PID {}", pid.as_u64());
-                }
-                Err(e) => {
-                    serial_println!("INTERACTIVE: Failed to create init: {}", e);
-                }
-            }
-        });
-    }
-
     // Dispatch the staged boot-test registry (#533).
     //
     // This is the last point in the x86 boot where the registry CAN be
     // dispatched: `run_staged_tests` spawns one kthread per subsystem and
     // `kthread_join`s them, so it needs preemption enabled, and the boot thread
     // has to still be running. The `preempt_disable()` below takes the
-    // scheduling brake. Completion now retains that brake for idle-task disk
-    // waits (508), so the test_exec registration block can return, but joining
-    // the registry workers still requires this earlier, preemptible site.
+    // scheduling brake, so joining the registry workers requires this earlier,
+    // preemptible site. (The test_exec registration that once ran under that
+    // brake is on the boot_storage thread since E2.4x.)
     //
     // The historical call site sat next to `preempt_enable()` several hundred
     // lines further down, past both of those. It was therefore unreachable, and
@@ -1746,385 +2620,12 @@ fn kernel_main_continue() -> ! {
     // a decrement below zero rather than wrapping.
     //
     // preempt_disable() is the brake here, not interrupts::disable(), because
-    // the disk-backed test binaries loaded in the block below need VirtIO block
-    // IRQ completions: interrupts stay hardware-enabled and preempt_count gates
-    // scheduling instead. PRECONDITION 7 checks that invariant. Completion's
-    // idle-task wait retains the brake and uses a masked check plus STI; HLT:
-    // IRQs can complete disk requests without donating boot's continuation.
+    // the timer checks below need interrupts hardware-enabled: preempt_count
+    // gates scheduling instead. PRECONDITION 7 checks that invariant. The brake
+    // also holds back the CPU-0 boot_storage thread, released below, until
+    // this continuation's sequential work is done (E2.4x). This continuation
+    // reads no storage.
     kernel::per_cpu::preempt_disable();
-
-    // RING3_SMOKE: Create userspace process early for CI validation
-    // Must be done before int3() which might hang in CI
-    //
-    // NOTE: The canonical list of test binaries is in boot::test_list::TEST_BINARIES.
-    // The x86_64 loading pattern below uses individual blocks with per-block
-    // without_interrupts for architectural reasons and is intentionally not
-    // refactored to iterate the shared list. See boot/test_list.rs for details.
-    #[cfg(all(feature = "testing", not(feature = "interactive")))]
-    {
-        // Disk-backed test binaries require VirtIO block IRQ completions, so
-        // interrupts must be hardware-enabled here and must STAY enabled for
-        // the rest of this boot-time test-registration phase: every
-        // get_test_binary() call in the dozens of test_exec::test_*()
-        // functions invoked later in this function also loads from disk and
-        // needs the same IRQ completion (confirmed: unconditionally
-        // re-disabling interrupts here causes those later calls to panic
-        // with "DISK LOADING FAILED" - the IRQ can never be serviced).
-        //
-        // The scheduling brake for this whole window is the unconditional
-        // preempt_disable() hoisted above this block (see its comment): it is
-        // deliberately outside this cfg so that it pairs with the equally
-        // unconditional preempt_enable() near the end of this function.
-        // Disk-backed test binaries require VirtIO block IRQ completions.
-        x86_64::instructions::interrupts::enable();
-        let elf = userspace_test::get_test_binary("hello_time");
-        let register_test_buf = kernel::userspace_test::get_test_binary("register_init_test");
-        let clock_test_buf = kernel::userspace_test::get_test_binary("clock_gettime_test");
-        let brk_test_buf = kernel::userspace_test::get_test_binary("brk_test");
-        let test_mmap_buf = kernel::userspace_test::get_test_binary("test_mmap");
-        let diagnostic_test_buf =
-            kernel::userspace_test::get_test_binary("syscall_diagnostic_test");
-        let udp_test_buf = kernel::userspace_test::get_test_binary("udp_socket_test");
-        let tcp_test_buf = kernel::userspace_test::get_test_binary("tcp_socket_test");
-        let tcp_dup_listener_test_buf =
-            kernel::userspace_test::get_test_binary("tcp_dup_listener_test");
-        let tcp_cloexec_exec_test_buf =
-            kernel::userspace_test::get_test_binary("tcp_cloexec_exec_test");
-        let dns_test_buf = kernel::userspace_test::get_test_binary("dns_test");
-        let http_test_buf = kernel::userspace_test::get_test_binary("http_test");
-        let loopback_wake_test_buf = kernel::userspace_test::get_test_binary("loopback_wake_test");
-        let clonevm_exec_test_buf = kernel::userspace_test::get_test_binary("clonevm_exec_test");
-        let futex_handoff_oracle_buf =
-            kernel::userspace_test::get_test_binary("futex_handoff_oracle");
-        // #737 direction-flag preempt oracle. Fork-free on purpose: the gate's
-        // PRODUCTION_REAPED_ROWS census counts fork() call sites per roster
-        // program (docker/qemu/run-x86-boot-tests.sh), and this program has no
-        // such call site, so it contributes 0 there and moves only
-        // EXPECTED_USERSPACE_EXITS.
-        // claim-lint:ok: 0 of 0 fork() call sites in
-        // userspace/programs/src/df_preempt_oracle.rs under the gate's own
-        // census pattern, measured in the round that added this launch. #737.
-        let df_preempt_oracle_buf = kernel::userspace_test::get_test_binary("df_preempt_oracle");
-
-        x86_64::instructions::interrupts::without_interrupts(|| {
-            use alloc::string::String;
-            log::info!("RING3_SMOKE: creating hello_time userspace process (early)");
-            match process::creation::create_user_process(String::from("smoke_hello_time"), &elf) {
-                Ok(pid) => {
-                    log::info!(
-                        "RING3_SMOKE: created userspace PID {} (will run on timer interrupts)",
-                        pid.as_u64()
-                    );
-                }
-                Err(e) => {
-                    log::error!("RING3_SMOKE: failed to create userspace process: {}", e);
-                }
-            }
-
-            // Launch register_init_test to verify registers are properly initialized
-            {
-                serial_println!("RING3_SMOKE: creating register_init_test userspace process");
-                match process::creation::create_user_process(
-                    String::from("register_init_test"),
-                    &register_test_buf,
-                ) {
-                    Ok(pid) => {
-                        log::info!(
-                            "Created register_init_test process with PID {}",
-                            pid.as_u64()
-                        );
-                    }
-                    Err(e) => {
-                        log::error!("Failed to create register_init_test process: {}", e);
-                    }
-                }
-            }
-
-            // Launch clock_gettime_test after hello_time
-            {
-                serial_println!("RING3_SMOKE: creating clock_gettime_test userspace process");
-                match process::creation::create_user_process(
-                    String::from("clock_gettime_test"),
-                    &clock_test_buf,
-                ) {
-                    Ok(pid) => {
-                        log::info!(
-                            "Created clock_gettime_test process with PID {}",
-                            pid.as_u64()
-                        );
-                    }
-                    Err(e) => {
-                        log::error!("Failed to create clock_gettime_test process: {}", e);
-                    }
-                }
-            }
-
-            // Launch brk_test to validate heap management syscall
-            {
-                serial_println!("RING3_SMOKE: creating brk_test userspace process");
-                match process::creation::create_user_process(
-                    String::from("brk_test"),
-                    &brk_test_buf,
-                ) {
-                    Ok(pid) => {
-                        log::info!("Created brk_test process with PID {}", pid.as_u64());
-                    }
-                    Err(e) => {
-                        log::error!("Failed to create brk_test process: {}", e);
-                    }
-                }
-            }
-
-            // Launch test_mmap to validate mmap/munmap syscalls
-            {
-                serial_println!("RING3_SMOKE: creating test_mmap userspace process");
-                match process::creation::create_user_process(
-                    String::from("test_mmap"),
-                    &test_mmap_buf,
-                ) {
-                    Ok(pid) => {
-                        log::info!("Created test_mmap process with PID {}", pid.as_u64());
-                    }
-                    Err(e) => {
-                        log::error!("Failed to create test_mmap process: {}", e);
-                    }
-                }
-            }
-
-            // Launch syscall_diagnostic_test to isolate register corruption bug
-            {
-                serial_println!("RING3_SMOKE: creating syscall_diagnostic_test userspace process");
-                match process::creation::create_user_process(
-                    String::from("syscall_diagnostic_test"),
-                    &diagnostic_test_buf,
-                ) {
-                    Ok(pid) => {
-                        log::info!(
-                            "Created syscall_diagnostic_test process with PID {}",
-                            pid.as_u64()
-                        );
-                    }
-                    Err(e) => {
-                        log::error!("Failed to create syscall_diagnostic_test process: {}", e);
-                    }
-                }
-            }
-
-            // Launch UDP socket test to verify network syscalls from userspace
-            {
-                serial_println!("RING3_SMOKE: creating udp_socket_test userspace process");
-                match process::creation::create_user_process(
-                    String::from("udp_socket_test"),
-                    &udp_test_buf,
-                ) {
-                    Ok(pid) => {
-                        log::info!("Created udp_socket_test process with PID {}", pid.as_u64());
-                    }
-                    Err(e) => {
-                        log::error!("Failed to create udp_socket_test process: {}", e);
-                    }
-                }
-            }
-
-            // Launch TCP socket test to verify TCP syscalls from userspace
-            {
-                serial_println!("RING3_SMOKE: creating tcp_socket_test userspace process");
-                match process::creation::create_user_process(
-                    String::from("tcp_socket_test"),
-                    &tcp_test_buf,
-                ) {
-                    Ok(pid) => {
-                        log::info!("Created tcp_socket_test process with PID {}", pid.as_u64());
-                    }
-                    Err(e) => {
-                        log::error!("Failed to create tcp_socket_test process: {}", e);
-                    }
-                }
-            }
-
-            // Launch TCP dup'd-listener test (regression for #724 review
-            // finding M1: dup()/dup2() never incremented a TcpListener's
-            // ref_count, so sys_close()'s new decrement could retire a
-            // listener out from under a surviving dup'd fd).
-            {
-                serial_println!("RING3_SMOKE: creating tcp_dup_listener_test userspace process");
-                match process::creation::create_user_process(
-                    String::from("tcp_dup_listener_test"),
-                    &tcp_dup_listener_test_buf,
-                ) {
-                    Ok(pid) => {
-                        log::info!(
-                            "Created tcp_dup_listener_test process with PID {}",
-                            pid.as_u64()
-                        );
-                    }
-                    Err(e) => {
-                        log::error!("Failed to create tcp_dup_listener_test process: {}", e);
-                    }
-                }
-            }
-
-            // Launch TCP FD_CLOEXEC exec() survival test (regression for #707:
-            // close_cloexec() -- the path exec() uses to retire FD_CLOEXEC-marked
-            // fds -- had no arm for FdKind::TcpListener, so a listener fd marked
-            // FD_CLOEXEC leaked a reference across exec() instead of being
-            // retired via tcp_listener_ref_dec()).
-            {
-                serial_println!("RING3_SMOKE: creating tcp_cloexec_exec_test userspace process");
-                match process::creation::create_user_process(
-                    String::from("tcp_cloexec_exec_test"),
-                    &tcp_cloexec_exec_test_buf,
-                ) {
-                    Ok(pid) => {
-                        log::info!(
-                            "Created tcp_cloexec_exec_test process with PID {}",
-                            pid.as_u64()
-                        );
-                    }
-                    Err(e) => {
-                        log::error!("Failed to create tcp_cloexec_exec_test process: {}", e);
-                    }
-                }
-            }
-
-            // Launch DNS test to verify DNS resolution using UDP sockets
-            {
-                serial_println!("RING3_SMOKE: creating dns_test userspace process");
-                match process::creation::create_user_process(
-                    String::from("dns_test"),
-                    &dns_test_buf,
-                ) {
-                    Ok(pid) => {
-                        log::info!("Created dns_test process with PID {}", pid.as_u64());
-                    }
-                    Err(e) => {
-                        log::error!("Failed to create dns_test process: {}", e);
-                    }
-                }
-            }
-
-            // Launch HTTP test to verify HTTP client over TCP+DNS
-            {
-                serial_println!("RING3_SMOKE: creating http_test userspace process");
-                match process::creation::create_user_process(
-                    String::from("http_test"),
-                    &http_test_buf,
-                ) {
-                    Ok(pid) => {
-                        log::info!("Created http_test process with PID {}", pid.as_u64());
-                    }
-                    Err(e) => {
-                        log::error!("Failed to create http_test process: {}", e);
-                    }
-                }
-            }
-
-            // Launch the userspace #545 regression in the normal userspace phase,
-            // where scheduling works and the #567 boot-window restriction does not apply.
-            {
-                serial_println!("RING3_SMOKE: creating loopback_wake_test userspace process");
-                match process::creation::create_user_process(
-                    String::from("loopback_wake_test"),
-                    &loopback_wake_test_buf,
-                ) {
-                    Ok(pid) => {
-                        log::info!(
-                            "Created loopback_wake_test process with PID {}",
-                            pid.as_u64()
-                        );
-                    }
-                    Err(e) => {
-                        log::error!("Failed to create loopback_wake_test process: {}", e);
-                    }
-                }
-            }
-
-            // The #568 blocking-poll-on-connected-TCP oracle (poll_tcp_oracle)
-            // is deliberately NOT launched here. It runs on aarch64, where eight
-            // gates pin its marker and its verdict, and it is green there. On x86
-            // it is not gate-compatible yet: it fork()s a peer per retry attempt,
-            // so it shifts the tombstone census this file's own boot gate pins
-            // (CENSUS_REMOVED = 6 + attempts, exact on 30/30 boots), and its
-            // late_lost_wake verdict carries neither the peer's exit status nor
-            // its token_ms/write_ms stamps, so a red cannot be told apart from
-            // TCG starvation. Re-wiring it here, together with the marker
-            // assertion removed from docker/qemu/run-boot-parallel.sh, is
-            // tracked by #697. The #568 kernel fix itself is proven on x86
-            // without the oracle, by the strand census in the A/B battery.
-            //
-            // #693's x86 batteries DID need it launched, so they ran on bytes
-            // carrying an investigation patch that adds this launch site back,
-            // committed as an apply/revert pair next to the drivers
-            // (docs/planning/green-program/sockets/serials/693-fix/
-            // x86-launch-site-apply.sh and -revert.sh). That patch is NOT in
-            // the branch's bytes, because with it applied this file's own x86
-            // boot gate cannot satisfy the census assertion at
-            // docker/qemu/run-x86-boot-tests.sh:548: the oracle's stage-3 and
-            // stage-4 ladders each fork at least 1 peer, so CENSUS_REMOVED is
-            // at least 8 against a pin of 6, and the 1 gate boot the round-2
-            // review ran at eba15887 reaped 5 peers. That is #697's scope.
-
-            {
-                serial_println!("RING3_SMOKE: creating clonevm_exec_test userspace process");
-                match process::creation::create_user_process(
-                    String::from("clonevm_exec_test"),
-                    &clonevm_exec_test_buf,
-                ) {
-                    Ok(pid) => {
-                        log::info!(
-                            "Created clonevm_exec_test process with PID {}",
-                            pid.as_u64()
-                        );
-                    }
-                    Err(e) => {
-                        log::error!("Failed to create clonevm_exec_test process: {}", e);
-                    }
-                }
-            }
-
-            {
-                serial_println!("RING3_SMOKE: creating futex_handoff_oracle userspace process");
-                match process::creation::create_user_process(
-                    String::from("futex_handoff_oracle"),
-                    &futex_handoff_oracle_buf,
-                ) {
-                    Ok(pid) => {
-                        log::info!(
-                            "Created futex_handoff_oracle process with PID {}",
-                            pid.as_u64()
-                        );
-                    }
-                    Err(e) => {
-                        log::error!("Failed to create futex_handoff_oracle process: {}", e);
-                    }
-                }
-            }
-
-            // The 737 direction-flag preempt oracle: it holds DF=1 across many
-            // timer ticks so the first from-userspace preempt lands inside the
-            // window, instead of waiting for the timer to hit a userspace
-            // memmove backward arm. Fork-free, so the gate's
-            // PRODUCTION_REAPED_ROWS census (which counts fork call sites per
-            // roster program) is unmoved; it moves EXPECTED_USERSPACE_EXITS by 1.
-            {
-                serial_println!("RING3_SMOKE: creating df_preempt_oracle userspace process");
-                match process::creation::create_user_process(
-                    String::from("df_preempt_oracle"),
-                    &df_preempt_oracle_buf,
-                ) {
-                    Ok(pid) => {
-                        log::info!(
-                            "Created df_preempt_oracle process with PID {}",
-                            pid.as_u64()
-                        );
-                    }
-                    Err(e) => {
-                        log::error!("Failed to create df_preempt_oracle process: {}", e);
-                    }
-                }
-            }
-        });
-    }
 
     // Keep boot's idle continuation until its sequential work is complete.
     // Hardware interrupts remain enabled for the timer checks below.
@@ -2136,12 +2637,13 @@ fn kernel_main_continue() -> ! {
     {
         kernel::per_cpu::preempt_disable();
         x86_64::instructions::interrupts::enable();
-        // Pin the loader to this CPU so it cannot publish PID 1 until the
-        // final release below, even while APs are running storage workers.
-        if let Err(e) = task::kthread::kthread_run_on_cpu(run_x86_production_init, "production_init", 0) {
-            log::error!("PRODUCTION INIT: failed to start loader kthread: {:?}", e);
-        }
     }
+
+    // E2.4x (ruling DEV-48): hand the boot_storage thread its program phase:
+    // PID 1 in production, the test programs in testing. That thread is
+    // pinned to this CPU, so it cannot publish a user process until the final
+    // brake release below, even while APs are running storage workers.
+    release_x86_boot_storage();
 
     // Test timer functionality immediately
     // TEMPORARILY DISABLED - these tests delay userspace execution
@@ -2184,276 +2686,6 @@ fn kernel_main_continue() -> ! {
     test_checkpoint!("POST_COMPLETE");
 
     log::info!("DEBUG: About to print POST marker (before enabling interrupts)");
-
-    // Run tests BEFORE enabling interrupts - they will create userspace processes
-    // which will then run when the scheduler activates after interrupt enable
-    #[cfg(all(feature = "testing", not(feature = "interactive")))]
-    {
-        log::info!("=== Running kernel tests to create userspace processes ===");
-        for name in kernel::boot::test_list::TEST_BINARIES {
-            drop(userspace_test::get_test_binary(name));
-        }
-        let required = kernel::boot::test_list::TEST_BINARIES.len();
-        serial_println!("[test] Loaded {}/{} test binaries (0 failed, 0 not found)", required, required);
-
-
-        // Run all tests - fork/CoW page table lifecycle bug fixed
-        log::info!("=== BASELINE TEST: Direct userspace execution ===");
-        test_exec::test_direct_execution();
-        log::info!("Direct execution test: process scheduled for execution.");
-
-        // Test fork from userspace
-        log::info!("=== USERSPACE TEST: Fork syscall from Ring 3 ===");
-        test_exec::test_userspace_fork();
-        log::info!("Fork test: process scheduled for execution.");
-
-        // Test ENOSYS syscall
-        log::info!("=== SYSCALL TEST: Undefined syscall returns ENOSYS ===");
-        test_exec::test_syscall_enosys();
-        log::info!("ENOSYS test: process scheduled for execution.");
-
-        // Test signal handler execution
-        log::info!("=== SIGNAL TEST: Signal handler execution ===");
-        test_exec::test_signal_handler();
-        log::info!("Signal handler test: process scheduled for execution.");
-
-        // Test signal handler return via trampoline
-        log::info!("=== SIGNAL TEST: Signal handler return via trampoline ===");
-        test_exec::test_signal_return();
-        log::info!("Signal return test: process scheduled for execution.");
-
-        // Test signal register preservation
-        log::info!("=== SIGNAL TEST: Register preservation across signals ===");
-        test_exec::test_signal_regs();
-
-        // Test pipe IPC syscalls
-        log::info!("=== IPC TEST: Pipe syscall functionality ===");
-        test_exec::test_pipe();
-
-        // Test Unix domain socket (AF_UNIX) - socketpair AND bind/listen/accept/connect
-        log::info!("=== IPC TEST: Unix domain socket (socketpair + named sockets) ===");
-        test_exec::test_unix_socket();
-
-        // Test FIFO (named pipe) functionality
-        log::info!("=== IPC TEST: FIFO (named pipe) functionality ===");
-        test_exec::test_fifo();
-        test_exec::test_fifo_fs();
-
-        // Test SIGTERM delivery with default handler (kill test)
-        log::info!("=== SIGNAL TEST: SIGTERM delivery with default handler ===");
-        test_exec::test_signal_kill();
-
-        // Test SIGCHLD delivery when child exits
-        log::info!("=== SIGNAL TEST: SIGCHLD delivery on child exit ===");
-        test_exec::test_sigchld();
-
-        // Test pause() syscall
-        log::info!("=== SIGNAL TEST: pause() syscall functionality ===");
-        test_exec::test_pause();
-
-        // Test process group kill semantics
-        log::info!("=== SIGNAL TEST: process group kill semantics ===");
-        test_exec::test_kill_process_group();
-
-        // Test sigsuspend() syscall
-        log::info!("=== SIGNAL TEST: sigsuspend() syscall functionality ===");
-        test_exec::test_sigsuspend();
-
-        // Test sigaltstack() syscall
-        log::info!("=== SIGNAL TEST: sigaltstack() syscall functionality ===");
-        test_exec::test_sigaltstack();
-
-        // Test dup() syscall
-        log::info!("=== IPC TEST: dup() syscall functionality ===");
-        test_exec::test_dup();
-
-        // Test fcntl() syscall
-        log::info!("=== IPC TEST: fcntl() syscall functionality ===");
-        test_exec::test_fcntl();
-
-        // Test close-on-exec (O_CLOEXEC) behavior
-        log::info!("=== IPC TEST: close-on-exec (O_CLOEXEC) behavior ===");
-        test_exec::test_cloexec();
-
-        // Test pipe2() syscall
-        log::info!("=== IPC TEST: pipe2() syscall functionality ===");
-        test_exec::test_pipe2();
-
-        // Test poll() syscall
-        log::info!("=== IPC TEST: poll() syscall functionality ===");
-        test_exec::test_poll();
-
-        // Test select() syscall
-        log::info!("=== IPC TEST: select() syscall functionality ===");
-        test_exec::test_select();
-
-        // Test O_NONBLOCK pipe behavior
-        log::info!("=== IPC TEST: O_NONBLOCK pipe behavior ===");
-        test_exec::test_nonblock();
-
-        // Test TTY layer functionality
-        log::info!("=== TTY TEST: TTY layer functionality ===");
-        test_exec::test_tty();
-
-        // Test session and process group syscalls
-        log::info!("=== SESSION TEST: Session and process group syscalls ===");
-        test_exec::test_session();
-
-        // Test ext2 file read functionality
-        log::info!("=== FS TEST: ext2 file read functionality ===");
-        test_exec::test_file_read();
-
-        // Test Ctrl-C (SIGINT) signal delivery
-        log::info!("=== SIGNAL TEST: Ctrl-C (SIGINT) signal delivery ===");
-        test_exec::test_ctrl_c();
-
-        // Test fork memory isolation (CoW semantics)
-        log::info!("=== FORK TEST: Fork memory isolation (CoW semantics) ===");
-        test_exec::test_fork_memory();
-
-        // Test fork state copying (copy_process_state)
-        log::info!("=== FORK TEST: Fork state copying (FD, signals, pgid, sid) ===");
-        test_exec::test_fork_state();
-
-        // Test fork pending signal non-inheritance (POSIX)
-        log::info!("=== SIGNAL TEST: fork pending signal non-inheritance ===");
-        test_exec::test_fork_pending_signal();
-
-        // Test CoW signal delivery (deadlock fix)
-        log::info!("=== COW TEST: signal delivery on CoW-shared stack ===");
-        test_exec::test_cow_signal();
-
-        // Test CoW cleanup on process exit
-        log::info!("=== COW TEST: cleanup on process exit ===");
-        test_exec::test_cow_cleanup();
-
-        // Test CoW sole owner optimization
-        log::info!("=== COW TEST: sole owner optimization ===");
-        test_exec::test_cow_sole_owner();
-
-        // Test CoW at scale with many pages
-        log::info!("=== COW TEST: stress test with many pages ===");
-        test_exec::test_cow_stress();
-
-        // Test CoW read-only page sharing (code sections)
-        log::info!("=== COW TEST: read-only page sharing (code sections) ===");
-        test_exec::test_cow_readonly();
-
-        // Test argv support in exec syscall
-        log::info!("=== EXEC TEST: argv support ===");
-        test_exec::test_argv();
-        log::info!("=== EXEC TEST: exec with argv ===");
-        test_exec::test_exec_argv();
-        log::info!("=== EXEC TEST: exec with stack-allocated argv ===");
-        test_exec::test_exec_stack_argv();
-
-        // Test getdents64 syscall for directory listing
-        log::info!("=== FS TEST: getdents64 directory listing ===");
-        test_exec::test_getdents();
-
-        // Test lseek syscall
-        log::info!("=== FS TEST: lseek syscall ===");
-        test_exec::test_lseek();
-
-        // Test filesystem write operations
-        log::info!("=== FS TEST: filesystem write operations ===");
-        test_exec::test_fs_write();
-
-        // Test filesystem rename operations
-        log::info!("=== FS TEST: filesystem rename operations ===");
-        test_exec::test_fs_rename();
-
-        // Test large file operations (indirect blocks)
-        log::info!("=== FS TEST: large file operations ===");
-        test_exec::test_fs_large_file();
-
-        // Test filesystem directory operations
-        log::info!("=== FS TEST: directory operations ===");
-        test_exec::test_fs_directory();
-
-        // Test filesystem link operations
-        log::info!("=== FS TEST: link operations ===");
-        test_exec::test_fs_link();
-
-        // Test access() syscall
-        log::info!("=== FS TEST: access() syscall ===");
-        test_exec::test_access();
-
-        // Test devfs device files (/dev/null, /dev/zero, /dev/console, /dev/tty)
-        log::info!("=== FS TEST: devfs device files ===");
-        test_exec::test_devfs();
-
-        // Test current working directory syscalls (getcwd, chdir)
-        log::info!("=== FS TEST: cwd syscalls (getcwd, chdir) ===");
-        test_exec::test_cwd();
-
-        // Test exec from ext2 filesystem
-        log::info!("=== FS TEST: exec from ext2 filesystem ===");
-        test_exec::test_exec_from_ext2();
-
-        // Test filesystem block allocation (regression test for truncate/alloc bugs)
-        log::info!("=== FS TEST: block allocation regression test ===");
-        test_exec::test_fs_block_alloc();
-
-        // Coreutil tests
-        log::info!("=== COREUTIL TEST: true (exit code 0) ===");
-        test_exec::test_true_coreutil();
-        log::info!("=== COREUTIL TEST: false (exit code 1) ===");
-        test_exec::test_false_coreutil();
-        log::info!("=== COREUTIL TEST: head (first N lines) ===");
-        test_exec::test_head_coreutil();
-        log::info!("=== COREUTIL TEST: tail (last N lines) ===");
-        test_exec::test_tail_coreutil();
-        log::info!("=== COREUTIL TEST: wc (line/word/byte counts) ===");
-        test_exec::test_wc_coreutil();
-        log::info!("=== COREUTIL TEST: which (command location) ===");
-        test_exec::test_which_coreutil();
-        log::info!("=== COREUTIL TEST: cat (file concatenation) ===");
-        test_exec::test_cat_coreutil();
-        log::info!("=== COREUTIL TEST: ls (directory listing) ===");
-        test_exec::test_ls_coreutil();
-
-        // Test Rust std library support
-        log::info!("=== STD TEST: Rust std library support ===");
-        test_exec::test_hello_std_real();
-
-        // Test signal handler reset on exec
-        log::info!("=== SIGNAL TEST: Signal handler reset on exec ===");
-        test_exec::test_signal_exec();
-
-        // Test waitpid syscall
-        log::info!("=== IPC TEST: Waitpid syscall functionality ===");
-        test_exec::test_waitpid();
-
-        // Test signal fork inheritance
-        log::info!("=== SIGNAL TEST: Signal handler fork inheritance ===");
-        test_exec::test_signal_fork();
-
-        // Test WNOHANG timing behavior
-        log::info!("=== IPC TEST: WNOHANG timing behavior ===");
-        test_exec::test_wnohang_timing();
-
-        // Test shell pipeline execution (pipe+fork+dup2 pattern)
-        log::info!("=== IPC TEST: Shell pipeline execution ===");
-        test_exec::test_shell_pipe();
-
-        // Test FbInfo syscall (framebuffer information)
-        log::info!("=== GRAPHICS TEST: FbInfo syscall ===");
-        test_exec::test_fbinfo();
-        log::info!("Boot test program registration complete");
-        task::userspace_completion::start();
-    }
-
-    // Run contracts after test registration has created real process tables.
-    #[cfg(feature = "testing")]
-    {
-        log::info!("Running contract tests...");
-        let (passed, failed) = contract_runner::run_all_contracts();
-        log::info!("Contract tests: {} passed, {} failed", passed, failed);
-        if failed > 0 {
-            panic!("Contract test failures!");
-        }
-    }
 
     // NOTE: Premature success markers removed - tests must verify actual execution
     // The legitimate markers are printed from context_switch.rs when Ring 3 actually runs
@@ -2547,11 +2779,9 @@ fn kernel_main_continue() -> ! {
     };
 
     // PRECONDITION 7: Preemption Currently Disabled
-    // (Interrupts are intentionally already hardware-enabled by this point -
-    // see the preempt_disable()/interrupts::enable() pair in the first
-    // RING3_SMOKE block above, needed for disk-backed test binary loads.
-    // preempt_count is the real invariant guarding against premature
-    // scheduling during this boot-time test-registration phase.)
+    // (Interrupts may already be hardware-enabled by this point. preempt_count
+    // is the real invariant: it holds back the boot_storage thread's program
+    // phase, and other CPU-0 switches, until the release below.)
     log::info!("PRECONDITION 7: Verifying preemption is currently disabled...");
     let preemption_disabled = kernel::per_cpu::preempt_count() > 0;
     if preemption_disabled {
@@ -2627,28 +2857,6 @@ fn kernel_main_continue() -> ! {
     log::info!("Enabling interrupts (after creating user processes)...");
     x86_64::instructions::interrupts::enable();
     // NOTE: Code below this point may never execute due to scheduler preemption
-
-    // RING3_SMOKE: Create userspace process early for CI validation
-    // Must be done after interrupts are enabled but before other tests
-    #[cfg(all(feature = "testing", not(feature = "interactive")))]
-    {
-        let elf = userspace_test::get_test_binary("hello_time");
-        x86_64::instructions::interrupts::without_interrupts(|| {
-            use alloc::string::String;
-            serial_println!("RING3_SMOKE: creating hello_time userspace process (early)");
-            match process::create_user_process(String::from("smoke_hello_time"), &elf) {
-                Ok(pid) => {
-                    serial_println!(
-                        "RING3_SMOKE: created userspace PID {} (will run on timer interrupts)",
-                        pid.as_u64()
-                    );
-                }
-                Err(e) => {
-                    serial_println!("RING3_SMOKE: failed to create userspace process: {}", e);
-                }
-            }
-        });
-    }
 
     // Keyboard was already initialized earlier (line 225), don't initialize again
 

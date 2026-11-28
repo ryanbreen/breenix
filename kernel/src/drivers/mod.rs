@@ -179,6 +179,31 @@ pub fn run_post_init_self_tests() {
         crate::interrupts::enable_virtio_irq();
     }
 
+    // The storage self-tests wait for block completions, so they run on the
+    // boot_storage kernel thread (`run_storage_self_tests`), not here on the
+    // x86 boot continuation, which is CPU 0's idle thread once the APs
+    // dispatch (E2.4x, ruling DEV-48).
+
+    if virtio::sound::is_initialized() {
+        if let Err(e) = virtio::sound::test_silence() {
+            log::warn!("VirtIO sound test failed: {}", e);
+        }
+    }
+
+    // BCM5720 bring-up probes wait for link and take frames by MSI.
+    bcm5720::start_networking();
+
+    // The independent bare-metal USB worker uses MSI; ARM USB is unchanged.
+    xhci::init();
+}
+
+/// Run the storage driver self-tests: AHCI attach with its IDENTIFY, and the
+/// VirtIO and NVMe sector-0 reads. Each waits for a block completion, so the
+/// caller must be able to sleep for I/O: on x86 that is the boot_storage
+/// kernel thread at a `park::Braked` level, before the root mount (E2.4x).
+/// It runs after `run_post_init_self_tests` has unmasked the VirtIO lines.
+#[cfg(target_arch = "x86_64")]
+pub fn run_storage_self_tests() {
     // AHCI IDENTIFY needs a calibrated clock even before IRQ completions exist.
     // This runs after time/PIC setup and before root mounting.
     if let Err(e) = ahci::init() {
@@ -194,19 +219,6 @@ pub fn run_post_init_self_tests() {
             log::warn!("NVMe test failed: {}", e);
         }
     }
-
-
-    if virtio::sound::is_initialized() {
-        if let Err(e) = virtio::sound::test_silence() {
-            log::warn!("VirtIO sound test failed: {}", e);
-        }
-    }
-
-    // BCM5720 bring-up probes wait for link and take frames by MSI.
-    bcm5720::start_networking();
-
-    // The independent bare-metal USB worker uses MSI; ARM USB is unchanged.
-    xhci::init();
 }
 
 /// Initialize the driver subsystem (ARM64 version)
