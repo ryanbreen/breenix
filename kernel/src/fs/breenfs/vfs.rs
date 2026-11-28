@@ -221,6 +221,10 @@ mod free_space;
 #[path = "../../../../tools/breenfs-host-tests/src/staging_tree.rs"]
 pub(super) mod staging_tree;
 
+#[cfg(test)]
+#[path = "../../../../tools/breenfs-host-tests/src/clone_reservation.rs"]
+mod clone_reservation;
+
 // Extended attributes use ABI errno 61 for an absent attribute.
 const ENODATA: i32 = 61;
 
