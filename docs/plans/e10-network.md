@@ -61,15 +61,38 @@ loss response**. CUBIC will use the same interface as NewReno.
   and the congestion allowance. Use RFC 5681's MSS-dependent initial window,
   slow start, byte-counted additive growth, idle restart and flight-based
   reduction. Count qualifying duplicate ACKs only after sequence and ACK
-  validation, excluding window updates. Three qualifying duplicates trigger
-  fast retransmit subject to the NewReno recovery-point guard. A partial ACK
-  repairs the next missing range while staying in recovery. A full ACK through
-  the recovery point exits. On RTO resend the earliest unacknowledged range and
-  reduce the window. Keep the SYN/FIN accounting and zero-window persist path.
-  A failed local admission retains the range for retry and leaves flight
-  accounting unchanged. [RFC 9293 §§3.4, 3.8, 3.10](https://www.rfc-editor.org/rfc/rfc9293.html),
-  [RFC 5681 §§2–4](https://www.rfc-editor.org/rfc/rfc5681.html),
-  [RFC 6582 §§3–4](https://www.rfc-editor.org/rfc/rfc6582.html).
+  validation, excluding window updates. Use SMSS for the sender's maximum
+  segment size. At the third qualifying duplicate, enter recovery only if the
+  ACK covers a sequence beyond `recover` (compare `ACK - 1` with `recover`
+  using wrap-safe sequence arithmetic). Initialize `recover` to the initial
+  send sequence at connection setup. On entry, snapshot the highest sequence
+  sent in `recover`, set `ssthresh = max(FlightSize / 2, 2 * SMSS)` using
+  outstanding data excluding any Limited Transmit segments, retransmit the
+  first unacknowledged segment, and set `cwnd = ssthresh + 3 * SMSS`. Each
+  further qualifying duplicate in recovery adds one SMSS to cwnd and permits
+  a new segment if the window allows.
+  [RFC 5681 §§2, 3.1–3.2](https://www.rfc-editor.org/rfc/rfc5681.html),
+  [RFC 6582 §3.2, steps 1–2](https://www.rfc-editor.org/rfc/rfc6582.html#section-3.2).
+
+  On a partial ACK, retransmit the first unacknowledged segment, subtract
+  newly cumulatively acknowledged bytes from cwnd and add back one SMSS if
+  the ACK advances by at least one SMSS. Remain in recovery, send new data if
+  permitted, and restart the retransmit timer on the first partial ACK.
+  On a full ACK through `recover`, set
+  `cwnd = min(ssthresh, max(remaining FlightSize, SMSS) + SMSS)` and exit
+  recovery. [RFC 6582 §3.2, step 3](https://www.rfc-editor.org/rfc/rfc6582.html#section-3.2).
+
+  On data RTO, set cwnd to one SMSS and update ssthresh by the flight-size
+  rule on the first timer retransmission of that segment. Hold ssthresh
+  constant on subsequent timeouts for that segment. Set `recover` to the
+  highest sequence already sent, clear the duplicate-ACK count, exit fast
+  recovery, retransmit just the oldest unacknowledged segment, and resume slow
+  start. Three duplicate ACKs covering at most `recover` cannot trigger a
+  second fast retransmit or ssthresh reduction. Keep SYN/FIN sequence
+  accounting and zero-window persist separate. A failed local admission
+  retains the range for retry and leaves flight accounting unchanged.
+  [RFC 5681 §3.1](https://www.rfc-editor.org/rfc/rfc5681.html#section-3.1),
+  [RFC 6582 §3.2 step 4 and §4](https://www.rfc-editor.org/rfc/rfc6582.html#section-4).
 - **Retransmission clock.** Keep SRTT and RTTVAR, update variance with the old
   SRTT, apply Karn's rule, restart for newly cumulatively acknowledged data,
   and back off on timeout. Use RFC 6298's recommended one-second floor for
@@ -369,6 +392,9 @@ concurrency, loss or RTT named in the prediction.
 
 ## Design details resolved against the current tree
 
+- Snapshot the highest transmitted sequence independently of the resend cursor
+  because today's RTO rewinds `send_next` to `send_unack` and resends through
+  `push_output`, losing the boundary the post-timeout duplicate-ACK guard needs.
 - Keep the Phase 0 TX publication lock, TX-submit reap, ISN/port selection and
   existing timeout counter as the starting point because they have already
   landed since the audit.
