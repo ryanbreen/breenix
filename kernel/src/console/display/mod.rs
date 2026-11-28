@@ -8,9 +8,6 @@
 //!   write-combining) and the ARM64 GOP framebuffer on Parallels and VMware.
 //! - `virtio_2d` (ARM64 QEMU): the guest backing of the virtio-gpu 2D resource,
 //!   then TRANSFER_TO_HOST_2D and RESOURCE_FLUSH for the rows written.
-//! - `virgl_backing` (ARM64 Parallels with VirGL): the guest backing of the
-//!   resource the kernel's screens present through the virtio-gpu PCI driver,
-//!   until userspace takes the display.
 //! - `gpu_core` (ARM64, when the GPU core owns the display: Parallels with the
 //!   core, and QEMU's `virtio-gpu-gl-pci`): the guest backing of the kernel's
 //!   display-sized scanout target, which the core uploads, binds and flushes
@@ -30,8 +27,6 @@
 
 pub mod gpu_core;
 pub mod linear;
-#[cfg(target_arch = "aarch64")]
-pub mod virgl_backing;
 #[cfg(target_arch = "aarch64")]
 pub mod virtio_2d;
 
@@ -125,8 +120,6 @@ pub enum Display {
     #[cfg(target_arch = "aarch64")]
     Virtio2d(virtio_2d::Virtio2d),
     #[cfg(target_arch = "aarch64")]
-    VirglBacking(virgl_backing::VirglBacking),
-    #[cfg(target_arch = "aarch64")]
     GpuCore(gpu_core::GpuCore),
 }
 
@@ -176,8 +169,6 @@ impl Display {
             #[cfg(target_arch = "aarch64")]
             Display::Virtio2d(display) => display.layout(),
             #[cfg(target_arch = "aarch64")]
-            Display::VirglBacking(display) => display.layout(),
-            #[cfg(target_arch = "aarch64")]
             Display::GpuCore(display) => display.layout(),
         }
     }
@@ -191,8 +182,6 @@ impl Display {
             Display::Linear(_) => "GOP framebuffer",
             #[cfg(target_arch = "aarch64")]
             Display::Virtio2d(_) => "virtio-gpu 2D resource",
-            #[cfg(target_arch = "aarch64")]
-            Display::VirglBacking(_) => "virtio-gpu PCI scanout backing",
             #[cfg(target_arch = "aarch64")]
             Display::GpuCore(_) => "GPU core scanout target",
         }
@@ -224,8 +213,6 @@ impl Display {
             #[cfg(target_arch = "aarch64")]
             Display::Virtio2d(display) => display.write(shadow, lines, allowed),
             #[cfg(target_arch = "aarch64")]
-            Display::VirglBacking(display) => display.write(shadow, lines, allowed),
-            #[cfg(target_arch = "aarch64")]
             Display::GpuCore(display) => display.write(shadow, lines, allowed),
         }
     }
@@ -240,8 +227,6 @@ impl Display {
             #[cfg(target_arch = "aarch64")]
             Display::Virtio2d(display) => display.flush(lines),
             #[cfg(target_arch = "aarch64")]
-            Display::VirglBacking(display) => display.flush(lines),
-            #[cfg(target_arch = "aarch64")]
             Display::GpuCore(display) => display.flush(lines),
         }
     }
@@ -254,8 +239,6 @@ impl Display {
             #[cfg(target_arch = "aarch64")]
             Display::Virtio2d(display) => display.settle(),
             #[cfg(target_arch = "aarch64")]
-            Display::VirglBacking(display) => display.settle(),
-            #[cfg(target_arch = "aarch64")]
             Display::GpuCore(display) => display.settle(),
         }
     }
@@ -267,8 +250,6 @@ impl Display {
             Display::Linear(display) => display.read_line(y, out),
             #[cfg(target_arch = "aarch64")]
             Display::Virtio2d(display) => display.read_line(y, out),
-            #[cfg(target_arch = "aarch64")]
-            Display::VirglBacking(display) => display.read_line(y, out),
             #[cfg(target_arch = "aarch64")]
             Display::GpuCore(display) => display.read_line(y, out),
         }
