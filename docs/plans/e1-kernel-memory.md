@@ -342,19 +342,24 @@ Zone, order and per-CPU cache counts go in a new `/proc/breenix/kmem`.
 - When RAM ends below 4 GiB (the 512 MiB rig), only `DMA32` exists. `NORMAL` requests are served from it.
 - No 16 MiB ISA zone: no supported device declares an address limit below 32 bits. A driver whose limit is
   narrower fails its own init with an error instead of getting a special case (DEV-27(2)).
-- Fallback order: `NORMAL` falls back to `DMA32`, which keeps a fallback reserve of 1/256 of the higher
-  zone's pages on top of its own watermark. That way `NORMAL` demand cannot use up the memory 32-bit
-  devices need. `DMA32` requests do not fall forward.
+- Fallback order: `NORMAL` falls back to `DMA32`, which keeps a fallback reserve against those fallback
+  requests only. `DMA32`'s own requests see only its watermarks (5.3). `DMA32` requests do not fall forward.
+  - The reserve is min(`NORMAL` frames / 256, `DMA32` frames / 4). Without the second term, a small
+    `DMA32` zone under a large `NORMAL` one has a reserve larger than itself. For example, 64 MiB below
+    4 GiB and 64 GiB above gives 256 MiB, and `NORMAL` could never fall back. With it, the reserve is
+    16 MiB, and 32-bit devices keep 3/4 of the zone (less its `min`) against `NORMAL` demand.
 - ARM64's fixed 2 MiB non-cacheable block (`KERNEL_FIXED_RANGES[1]`) is a memory-attribute requirement for
   xHCI, not an address limit. It stays outside the buddy as it is.
 
 ### 5.3 Watermarks
 
 - Each zone has `min`, `low` and `high`:
-  - `min` = max(128 frames, zone frames / 1024);
+  - `min` = min(max(128 frames, zone frames / 1024), zone frames / 16);
   - `low` = 5/4 of `min`;
   - `high` = 3/2 of `min`.
-  They are computed from the zone's size at boot, with no upper constant.
+  They are computed from the zone's size at boot, with no upper constant. The zone / 16 term keeps a small
+  zone usable: without it, a 1 MiB `DMA32` zone (256 frames) would hold half of itself as `min`. With it,
+  `min` is 16 frames, and `high` stays under 1/10 of the zone for each zone size.
 - An ordinary allocation that would take the zone below `min` enters the slow path (section 7.2).
 - Allocations from interrupt context, and from inside reclaim, may use half of `min` (the emergency
   reserve) before failing.
@@ -1082,8 +1087,18 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
   3 GiB at QEMU's and Parallels' 1 GiB RAM base).
 - Tests (host):
   - Check first: `contiguous.rs` after the frontier has reached the end of a 64 MiB map, with 512 aligned
-    frames freed back in random order. The old algorithm cannot return a 2 MiB run, which is red. The buddy
-    can, and does.
+    frames freed back in random order. The old algorithm cannot return a 2 MiB run, which is red. The same
+    sequence on the pure `buddy.rs`, which has no watermarks, returns the 2 MiB run. The fixture frees
+    exactly 512 frames, so it runs below the zone layer: at the zone layer, taking those 512 would leave 0
+    free frames, under `min`, and the watermark would correctly send it to the slow path.
+  - The same 2 MiB run through the zone layer, with the fixture also freeing `min` frames elsewhere in
+    the zone, succeeds without the slow path and leaves exactly `min` free.
+  - Reserves: zones of 256 frames, 16,384 frames (64 MiB) and 2^20 frames (4 GiB), each under a `NORMAL`
+    zone of 2^24 frames (64 GiB). For each one, a `DMA32` request succeeds until free frames reach `min`, and
+    `min` and `high` stay below 1/10 of the zone and the fallback reserve at most 1/4. A `NORMAL` fallback succeeds
+    until the reserve is reached. With the uncapped formulas, the 256-frame and 64 MiB zones fail one of
+    these. That is red, against the design's own first draft rather than old code, because the old
+    allocator has no zones.
   - Invariants, checked after each operation of a seeded random workload of 10^5 operations, with fixed
     seeds:
     - each free block is naturally aligned, in one zone, and on exactly one list;
