@@ -32,6 +32,7 @@ pub mod percpu_custody;
 pub mod privilege;
 pub mod psci;
 pub mod smp;
+pub mod sp_frame_slot;
 pub mod switch_save;
 pub mod syscall_entry;
 pub mod timer;

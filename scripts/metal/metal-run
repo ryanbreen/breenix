@@ -6,7 +6,7 @@
                  [--ramdisk] [--mode default|shell|probe|suite|console|tests] [--disk install|root] [--session [--idle-minutes N]]
                  [--suite ID | --suite ID,ID,... | --suite all] [--catchup]
   metal-run boot --persistent [--entry previous|rescue] [--run CMD ...] [--verify]
-  metal-run install-persistent [--sha SHA | --branch NAME] [--replace-usr | --add-breenfs] [--recovery [--replace-manager]] | --rollback
+  metal-run install-persistent [--sha SHA | --branch NAME] [--paired | --replace-usr | --add-breenfs] [--recovery [--replace-manager]] | --rollback
   metal-run migrate-persistent migrate|readback|cutover|rescue|return --sha SHA --branch NAME
   metal-run close-migration RETURN_BOOT
   metal-run record-breenfs-upgrades FIRST SECOND --sha SHA
@@ -255,6 +255,15 @@ def catchup_from_env():
     raise SystemExit('BREENIX_CATCHUP must be 1, true or yes for the catch-up, or 0, false, no or unset')
 
 
+def paired_tools_commit():
+    pin = HERE / 'COMMIT'
+    commit = (pin.read_text().strip() if pin.exists() else
+              subprocess.check_output(['git', '-C', str(HERE), 'rev-parse', 'HEAD'], text=True).strip())
+    if not re.fullmatch(r'[0-9a-f]{40}', commit):
+        raise ValueError('paired deploy needs a clean commit of the metal tools')
+    return commit
+
+
 def live_flash(args):
     return run_live_flash(globals(), args)
 
@@ -266,16 +275,20 @@ def install_persistent(args):
                   serve_as=None, content_type=None, linux_directory=None, catchup=False, run=None, verify=False,
                   entry=None, slot_action=None, persistent=False)
     replace_usr = getattr(args, 'replace_usr', False)
+    paired = getattr(args, 'paired', False)
     migration_image = getattr(args, 'migration_image', False)
     carry_local = getattr(args, 'carry_local', False)
     kernel_only = not (replace_usr or migration_image)
-    explicit_flash = replace_usr or migration_image or getattr(args, 'kernel_only', False)
+    explicit_flash = paired or replace_usr or migration_image or getattr(args, 'kernel_only', False)
     if (explicit_flash and (args.rollback or getattr(args, 'add_breenfs', False))
             or carry_local and not migration_image
             or args.inject == 'upgrade-service-down' and not migration_image
             or args.inject and replace_usr):
         raise SystemExit('invalid persistent flash options')
     replace_manager = getattr(args, 'replace_manager', False)
+    if (paired and (getattr(args, 'recovery', False) or args.inject not in (None, 'paired-no-commit'))
+            or not paired and args.inject == 'paired-no-commit'):
+        raise SystemExit('--paired uses the live flash and accepts only --inject paired-no-commit')
     if replace_manager and (not getattr(args, 'recovery', False) or not kernel_only
                             or args.rollback or args.inject or getattr(args, 'add_breenfs', False)):
         raise SystemExit('--replace-manager requires --kernel-only --recovery without another action')
@@ -693,7 +706,7 @@ def stub_sources(stub):
 
 
 def build(boot_id, sha, features=None, suite=None, tools_profile=None, catchup=False, smb_helper=False,
-          migration=False, milestone=None, kernel_only=False, live=False):
+          migration=False, milestone=None, kernel_only=False, live=False, paired_tools=False):
     """Detached: build in the metal build container, stream the inputs into the boot's stage folder, signal the driver."""
     validate_id(boot_id)
     env = host_env()
@@ -748,6 +761,7 @@ def build(boot_id, sha, features=None, suite=None, tools_profile=None, catchup=F
                       *(['--milestone', milestone] if milestone else []),
                       *(['--stub-only', '--tools-profile', tools_profile] if tools_profile else []),
                       *(['--kernel-only'] if kernel_only else []),
+                      *(['--paired-tools'] if paired_tools else []),
                       *(['--catchup'] if catchup else [])).returncode
     print(f'[metal-run] build exit {status} after {time.time() - started:.0f} s', flush=True)
     if status == 3:
@@ -848,9 +862,11 @@ def argument_parser(automatic=False):
     p.add_argument('--branch')
     p.add_argument('--add-breenfs', action='store_true', help='append the two BreenFS GPT partitions')
     p.add_argument('--rollback', action='store_true', help='swap the current and previous kernel slots')
-    p.add_argument('--inject', choices=('upgrade-no-ssh', 'upgrade-service-down'), help='stage an unbootable or bootable SSH-less candidate to exercise automatic rollback')
+    p.add_argument('--inject', choices=('upgrade-no-ssh', 'upgrade-service-down', 'paired-no-commit'),
+                   help='force a trial rollback')
     options = p.add_mutually_exclusive_group()
     options.add_argument('--kernel-only', action='store_true', help='replace the kernel (default)')
+    options.add_argument('--paired', action='store_true', help='stage and try a new kernel and system root together')
     options.add_argument('--replace-usr', action='store_true', help='replace /usr on the selected writable root')
     options.add_argument('--migration-image', action='store_true', help=argparse.SUPPRESS)
     p.add_argument('--recovery', action='store_true', help='use the powered-off network installer')

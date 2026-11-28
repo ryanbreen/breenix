@@ -16,6 +16,18 @@ pub unsafe fn read8(address: *const u8) -> u8 {
     value as u8
 }
 
+/// Read a 16-bit device register.
+///
+/// # Safety
+/// `address` must be a valid, aligned device-memory pointer for this access.
+#[inline]
+pub unsafe fn read16(address: *const u16) -> u16 {
+    let value: u32;
+    core::arch::asm!("ldrh {value:w}, [{address}]", value = out(reg) value,
+                     address = in(reg) address, options(nostack, preserves_flags));
+    value as u16
+}
+
 /// Read a 32-bit device register.
 ///
 /// # Safety

@@ -26,7 +26,7 @@
 //! | 0x0fc | ConfigGeneration | R |
 //! | 0x100+ | Config | RW |
 
-use crate::arch_impl::aarch64::mmio::{read8 as read_mmio8, read32 as read_mmio32, write32 as write_mmio32};
+use crate::arch_impl::aarch64::mmio::{read16 as read_mmio16, read8 as read_mmio8, read32 as read_mmio32, write32 as write_mmio32};
 
 /// VirtIO MMIO magic value ("virt" in little-endian)
 pub const VIRTIO_MMIO_MAGIC: u32 = 0x74726976;
@@ -318,6 +318,12 @@ impl VirtioMmioDevice {
     /// Read a byte from device config space
     pub fn read_config_u8(&self, offset: usize) -> u8 {
         unsafe { read_mmio8((self.base + regs::CONFIG as u64 + offset as u64) as *const u8) }
+    }
+
+    /// Read a 16-bit field of device config space with one aligned 16-bit
+    /// access (virtio 1.2 section 4.2.2.2). `offset` must be even.
+    pub fn read_config_u16(&self, offset: usize) -> u16 {
+        unsafe { read_mmio16((self.base + regs::CONFIG as u64 + offset as u64) as *const u16) }
     }
 
     /// Read a u32 from device config space

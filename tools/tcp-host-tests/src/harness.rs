@@ -18,6 +18,12 @@ static SERIAL: Mutex<()> = Mutex::new(());
 static CLOCK_MS: AtomicU64 = AtomicU64::new(0);
 static REFUSE: AtomicBool = AtomicBool::new(false);
 static WIRE: Mutex<Vec<Sent>> = Mutex::new(Vec::new());
+/// The largest TCP payload the route's device segments in one batch, if
+/// the route has segmentation offload (by default it has not).
+static BATCH_LIMIT: Mutex<Option<usize>> = Mutex::new(None);
+/// Batches the device was given: (local port, sequence number, payload
+/// length, MSS).
+static BATCHES: Mutex<Vec<(u16, u32, usize, u16)>> = Mutex::new(Vec::new());
 
 /// Run one check at a time, with the clock at `start_ms` and the record empty.
 pub fn lock(start_ms: u64) -> MutexGuard<'static, ()> {
@@ -25,7 +31,65 @@ pub fn lock(start_ms: u64) -> MutexGuard<'static, ()> {
     CLOCK_MS.store(start_ms, Ordering::SeqCst);
     REFUSE.store(false, Ordering::SeqCst);
     WIRE.lock().unwrap().clear();
+    *BATCH_LIMIT.lock().unwrap() = None;
+    BATCHES.lock().unwrap().clear();
     guard
+}
+
+/// Give the route a device that segments batches of up to `limit` payload
+/// bytes, or take it away.
+pub fn offer_batches(limit: Option<usize>) {
+    *BATCH_LIMIT.lock().unwrap() = limit;
+}
+
+pub fn batch_limit() -> Option<usize> {
+    *BATCH_LIMIT.lock().unwrap()
+}
+
+/// A batch TCP handed to the route's device: refused while output is refused,
+/// or when the route has no segmentation offload; else recorded. Its checksum
+/// field must hold the pseudo-header sum (RFC 9293 3.1) the device completes.
+pub fn batch_output(
+    src: [u8; 4],
+    dst: [u8; 4],
+    segment: &[u8],
+    mss: u16,
+) -> Result<(), crate::net::BatchError> {
+    let limit = batch_limit().ok_or(crate::net::BatchError::Unavailable)?;
+    if REFUSE.load(Ordering::SeqCst) {
+        return Err(crate::net::BatchError::Refused);
+    }
+    assert_eq!((src, dst), (LOCAL_IP, PEER_IP), "a batch left for an address no check uses");
+    let (header, payload) = TcpHeader::parse(segment).expect("TCP sent an unparseable batch");
+    assert!(payload.len() <= limit, "a {}-byte batch over the {limit}-byte limit", payload.len());
+    assert_eq!(payload.len() % usize::from(mss), 0, "a batch of part segments");
+    let mut sum: u32 = 0;
+    for word in [&src[..2], &src[2..], &dst[..2], &dst[2..]] {
+        sum += u32::from(u16::from_be_bytes([word[0], word[1]]));
+    }
+    sum += 6 + segment.len() as u32;
+    while sum >> 16 != 0 {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    assert_eq!(
+        u16::from_be_bytes([segment[16], segment[17]]),
+        sum as u16,
+        "the checksum field does not hold the pseudo-header sum"
+    );
+    BATCHES
+        .lock()
+        .unwrap()
+        .push((header.src_port, header.seq_num, payload.len(), mss));
+    Ok(())
+}
+
+/// The batches sent from `local_port` since the last look, as (sequence
+/// number, payload length, MSS).
+pub fn take_batches(local_port: u16) -> Vec<(u32, usize, u16)> {
+    let mut batches = BATCHES.lock().unwrap();
+    let (mine, rest): (Vec<_>, Vec<_>) = batches.drain(..).partition(|b| b.0 == local_port);
+    *batches = rest;
+    mine.into_iter().map(|(_, seq, len, mss)| (seq, len, mss)).collect()
 }
 
 pub fn now_ms() -> u64 {
@@ -54,10 +118,13 @@ pub struct Sent {
     pub ack: u32,
     pub flags: u8,
     pub len: usize,
+    /// The window field, unscaled.
+    pub window: u16,
 }
 
 const SYN: u8 = 0x02;
 const ACK: u8 = 0x10;
+const PSH: u8 = 0x08;
 
 pub fn ip_output(src: [u8; 4], dst: [u8; 4], segment: &[u8]) -> Result<(), &'static str> {
     if REFUSE.load(Ordering::SeqCst) {
@@ -73,6 +140,7 @@ pub fn ip_output(src: [u8; 4], dst: [u8; 4], segment: &[u8]) -> Result<(), &'sta
         ack: header.ack_num,
         flags: header.flags.to_byte(),
         len: payload.len(),
+        window: header.window_size,
     });
     Ok(())
 }
@@ -151,6 +219,25 @@ impl Flow {
         self.deliver(self.peer_seq, ack, ACK, &[]);
     }
 
+    /// The peer sends `len` bytes of data, in order, acknowledging our
+    /// initial sequence number: the checks here send it no data first.
+    pub fn send(&mut self, len: usize) {
+        let payload = vec![0xa5; len];
+        self.deliver_payload(self.peer_seq, self.data_start, ACK | PSH, &[], &payload);
+        self.peer_seq = self.peer_seq.wrapping_add(len as u32);
+    }
+
+    /// The peer's next sequence number.
+    pub fn peer_next(&self) -> u32 {
+        self.peer_seq
+    }
+
+    /// The application reads up to `len` bytes; returns how many it got.
+    pub fn read(&self, len: usize) -> usize {
+        let mut buf = vec![0u8; len];
+        tcp::tcp_recv(&self.id, &mut buf).expect("the connection is in the table")
+    }
+
     /// Our data's sequence number `n` SMSS in.
     pub fn at(&self, n: u32) -> u32 {
         self.data_start.wrapping_add(n * SMSS)
@@ -168,6 +255,10 @@ impl Flow {
     /// Hand the segment to TCP as the receive path does, then run deferred
     /// output as the receive path does once it has processed its batch.
     fn deliver(&self, seq: u32, ack: u32, flags: u8, options: &[u8]) {
+        self.deliver_payload(seq, ack, flags, options, &[]);
+    }
+
+    fn deliver_payload(&self, seq: u32, ack: u32, flags: u8, options: &[u8], payload: &[u8]) {
         let mut segment = Vec::new();
         segment.extend_from_slice(&PEER_PORT.to_be_bytes());
         segment.extend_from_slice(&self.id.local_port.to_be_bytes());
@@ -178,6 +269,7 @@ impl Flow {
         segment.extend_from_slice(&self.window.to_be_bytes());
         segment.extend_from_slice(&[0, 0, 0, 0]);
         segment.extend_from_slice(options);
+        segment.extend_from_slice(payload);
         let checksum = tcp::tcp_checksum(PEER_IP, LOCAL_IP, &segment);
         segment[16..18].copy_from_slice(&checksum.to_be_bytes());
         let ip = crate::net::ipv4::Ipv4Packet {

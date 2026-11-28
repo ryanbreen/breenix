@@ -277,13 +277,20 @@ pub extern "C" fn check_need_resched_and_switch(
     // during a boot-thread disk-completion wait). The two sites are not
     // inconsistent: each recognizes the family that is provably safe for
     // where it sits.
-    let mut current_thread_blocked_or_terminated =
-        scheduler::current_thread_blocked_or_terminated();
-
+    //
+    // The decision is `task::park::apply_exit_switch`, the one the ARM64 exit
+    // makes too (E2.3, design §3.5). It reads need_resched, so the flag is
+    // taken first. A wait on `task::park` publishes BlockedOnIO before its
+    // signal and deadline checks and its commit, at its baseline; until it
+    // commits it is runnable, so the decision returns it to running and the
+    // switch below requeues it instead of switching it out.
+    //
     // Check if reschedule is needed
     // CRITICAL: If current thread is blocked/terminated, we MUST schedule regardless of need_resched.
     // A blocked thread cannot continue running - we must switch to another thread.
     let need_resched = scheduler::check_and_clear_need_resched();
+    let mut current_thread_blocked_or_terminated =
+        scheduler::current_thread_exit_switch(need_resched) == crate::task::park::ExitSwitch::SwitchOut;
 
     // A stopped process's thread is held off Ring 3 here, before the switch
     // decision, so the mandatory switch below saves its user context for
