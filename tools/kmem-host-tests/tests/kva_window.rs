@@ -612,3 +612,27 @@ fn arm64_window_page_flush_operand_names_the_page_with_no_wrong_ttl() {
         assert_eq!(operand >> 48, 0, "RES0 bits [63:48] of the operand for {va:#x}");
     }
 }
+
+/// Check first (review of E1-5): RAM that the RAM-sized windows outgrow
+/// still gets all three windows. x86 at 16 TiB wants 32 + 128 + 32 = 192
+/// PML4 slots and has 145 (257 to 401); ARM64 at 32 TiB of dense RAM wants
+/// 64 + 256 + 64 = 384 L0 entries above the direct map's 64 and below the
+/// ECAM entry, 447, and has 383. Each window is placed, inside the range,
+/// apart from the others, at least 1 GiB, and no larger than its RAM size.
+#[test]
+fn windows_are_placed_when_ram_outgrows_the_kernel_half() {
+    const TIB: u64 = 1 << 40;
+    for (ram, first, end) in [(16 * TIB, 257usize, 402usize), (32 * TIB, 64, 447)] {
+        let placed = kva_window::place(ram, first, end, |_| true)
+            .unwrap_or_else(|error| panic!("{} TiB in slots {first}..{end}: {error:?}", ram / TIB));
+        let mut next = first;
+        for (placement, id) in placed.iter().zip(WindowId::ALL) {
+            assert_eq!(placement.id, id);
+            assert!(placement.first_slot >= next && placement.first_slot + placement.slots <= end);
+            assert_eq!(placement.base, kva_window::slot_va(placement.first_slot));
+            assert!(placement.bytes >= kva_window::GIB && placement.bytes <= id.bytes(ram));
+            assert!(placement.bytes <= placement.slots as u64 * kva_window::SLOT_BYTES);
+            next = placement.first_slot + placement.slots;
+        }
+    }
+}
