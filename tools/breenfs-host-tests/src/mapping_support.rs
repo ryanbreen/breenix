@@ -281,8 +281,10 @@ pub fn bind_unpopulated(node: Arc<VNode>, length: u64) -> HostBinding {
 /// descriptor open for writing: it keeps write authority, so mprotect can
 /// make it writable after the descriptor closes (E3-3, design 10.3).
 pub fn bind_shared_authority(node: Arc<VNode>, length: u64) -> HostBinding {
-    // mmap populates the range before it binds (production `populate`).
+    // mmap populates the range before it binds (production `populate`), and
+    // refuses a running image before it replaces anything.
     let _population = populate(&node, 0, pages(length)).unwrap_or_else(|_| panic!("population failed"));
+    node.map.refuse_text_busy(true, true).unwrap();
     let mut inner = node.map.state.inner.lock();
     let id = inner.bindings.iter().map(|r| r.id).max().unwrap_or(0) + 1;
     inner.bindings.push(BindingRec { id, pgoff: 0, pages: pages(length), shared: true,
@@ -290,16 +292,109 @@ pub fn bind_shared_authority(node: Arc<VNode>, length: u64) -> HostBinding {
     drop(inner);
     HostBinding(Arc::new(HostBindingOwner { node, id }))
 }
-/// The exec binding of `pages` file pages from `pgoff` that exec registers
-/// for a cached PT_LOAD (kernel `bind` with `exec`); its entries are the
-/// caller's model.
-pub fn bind_exec(node: Arc<VNode>, pgoff: u64, pages: u64) -> HostBinding {
-    let mut inner = node.map.state.inner.lock();
+// Page-table and VMA stand-ins for the production `ExecImage::map` and
+// `entry_flags`. The host table records the entries exec installs; the flag
+// bits are the x86-64 ones the kernel's names stand for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PageTableFlags(u64);
+impl PageTableFlags {
+    pub const PRESENT: Self = Self(1);
+    pub const WRITABLE: Self = Self(1 << 1);
+    pub const USER_ACCESSIBLE: Self = Self(1 << 2);
+    pub const BIT_9: Self = Self(1 << 9);
+    pub const NO_EXECUTE: Self = Self(1 << 63);
+    pub fn contains(self, other: Self) -> bool { self.0 & other.0 == other.0 }
+    pub fn insert(&mut self, other: Self) { self.0 |= other.0; }
+    pub fn remove(&mut self, other: Self) { self.0 &= !other.0; }
+}
+impl core::ops::BitOr for PageTableFlags {
+    type Output = Self;
+    fn bitor(self, other: Self) -> Self { Self(self.0 | other.0) }
+}
+impl core::ops::BitOrAssign for PageTableFlags {
+    fn bitor_assign(&mut self, other: Self) { self.0 |= other.0; }
+}
+/// The kernel's copy-on-write marker (`process_memory::COW_FLAG`).
+pub const COW_FLAG: PageTableFlags = PageTableFlags::BIT_9;
+/// mmap protection bits (PROT_READ 1, PROT_WRITE 2, PROT_EXEC 4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Protection(u32);
+impl Protection {
+    pub const WRITE: Self = Self(2);
+    pub const EXEC: Self = Self(4);
+    pub fn from_bits_truncate(bits: u32) -> Self { Self(bits & 7) }
+    pub fn contains(self, other: Self) -> bool { self.0 & other.0 == other.0 }
+}
+#[derive(Clone, Copy)]
+pub struct MmapFlags(u32);
+impl MmapFlags {
+    pub const PRIVATE: Self = Self(2);
+    pub fn bits(self) -> u32 { self.0 }
+}
+#[derive(Clone, Copy)]
+pub struct VirtAddr(u64);
+impl VirtAddr {
+    pub fn new(address: u64) -> Self { Self(address) }
+    pub fn as_u64(self) -> u64 { self.0 }
+}
+pub struct Page(u64);
+impl Page {
+    pub fn containing_address(address: VirtAddr) -> Self { Self(address.0 & !(PAGE_SIZE - 1)) }
+}
+pub struct ProcessId;
+impl ProcessId {
+    pub fn new(_: u64) -> Self { Self }
+}
+/// A VMA, and the binding that maps its file pages.
+pub struct Vma {
+    pub start: VirtAddr,
+    pub end: VirtAddr,
+    pub prot: Protection,
+    pub flags: MmapFlags,
+    pub backing: Option<HostBinding>,
+}
+impl Vma {
+    pub fn new(start: VirtAddr, end: VirtAddr, prot: Protection, flags: MmapFlags) -> Self {
+        Self { start, end, prot, flags, backing: None }
+    }
+    pub fn size(&self) -> u64 { self.end.0 - self.start.0 }
+}
+/// The entries installed into an unpublished table, by virtual page.
+#[derive(Default)]
+pub struct ProcessPageTable {
+    pub entries: alloc::collections::BTreeMap<u64, (PhysFrame, PageTableFlags)>,
+}
+impl ProcessPageTable {
+    pub fn map_page(&mut self, page: Page, frame: PhysFrame, flags: PageTableFlags) -> Result<(), &'static str> {
+        match self.entries.insert(page.0, (frame, flags)) {
+            None => Ok(()),
+            Some(_) => Err("Page already mapped"),
+        }
+    }
+}
+/// The kernel `bind`'s binding record for `vma`, after the production
+/// running-image refusal (`MapInner::refuse_text_busy`). Shared write claims
+/// (DEV-44) are not modeled, because `ExecImage::map` makes private bindings.
+#[allow(clippy::too_many_arguments)]
+pub fn bind(
+    handle: Arc<VNode>,
+    _: ProcessId,
+    _: &ProcessPageTable,
+    vma: &Vma,
+    pgoff: u64,
+    may_write: bool,
+    _: Option<core::convert::Infallible>,
+    exec: bool,
+) -> Result<HostBinding, &'static str> {
+    let shared = vma.flags.bits() & 3 != 2;
+    let mut inner = handle.map.state.inner.lock();
+    inner.refuse_text_busy(shared, may_write)?;
     let id = inner.bindings.iter().map(|r| r.id).max().unwrap_or(0) + 1;
-    inner.bindings.push(BindingRec { id, pgoff, pages, shared: false, writable: false,
-        may_write: false, exec: true, parked: Vec::new(), leaves: Vec::new() });
+    inner.bindings.push(BindingRec { id, pgoff, pages: vma.size() / PAGE_SIZE, shared,
+        writable: shared && vma.prot.contains(Protection::WRITE), may_write, exec,
+        parked: Vec::new(), leaves: Vec::new() });
     drop(inner);
-    HostBinding(Arc::new(HostBindingOwner { node, id }))
+    Ok(HostBinding(Arc::new(HostBindingOwner { node: handle, id })))
 }
 fn publish_host(node: &VNode, io: &dyn MappingIo, length: u64, shared: bool, writable: bool) -> Result<u64, Errno> {
     let mut id = 0;

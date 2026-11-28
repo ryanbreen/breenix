@@ -1,15 +1,21 @@
 //! E3-3 (docs/plans/e3-page-cache.md 10.1-10.3): exec maps an image through
 //! its file cache. The loader's plan and placement (`Headers::load_image`),
-//! the exec admission, the cache frames it maps and the write-open rule
-//! (`file_map::ExecImage`, `MapState::open_writer`) are production code over
-//! the production BreenFS; the page table is the `Image` model below, which
-//! records what exec installs where.
+//! the exec admission, the exec bindings and the entries exec installs for
+//! a cached PT_LOAD (`file_map::ExecImage::map`, `entry_flags`), the
+//! running-image refusals (`MapState::open_writer`, `refuse_text_busy`) and
+//! binding lifetime are production code over the production BreenFS. The
+//! page table records those entries; the `bind` record, the private pages of
+//! the copying loader and a store's outcome under an entry's flags are the
+//! host model.
 use crate::{
     block::cache::BufferCache,
     breenfs::{commit::{Committer, DeviceStore}, format::{Superblock, Time}, ops::Files, vfs::BreenFs},
     errno::Errno,
     exec_elf::{prot_bits, Headers, ImageTarget},
-    memory::file_map::{bind_exec, bind_shared_authority, ExecImage, HostBinding, PhysFrame},
+    memory::file_map::{
+        bind_shared_authority, ExecImage, PageTableFlags, PhysFrame, ProcessPageTable, Protection, Vma,
+        COW_FLAG, TEXT_BUSY,
+    },
     permissions::Credentials,
     read_conformance::{Disk, NoWait},
     syscall_errno::ETXTBSY,
@@ -32,7 +38,6 @@ const EM_X86_64: u16 = 62;
 const PF_X: u32 = 1;
 const PF_W: u32 = 2;
 const PF_R: u32 = 4;
-const PROT_WRITE: u32 = 2;
 
 fn put(bytes: &mut [u8], at: usize, value: &[u8]) {
     bytes[at..at + value.len()].copy_from_slice(value);
@@ -129,18 +134,35 @@ struct Entry {
     flags: u32,
     /// A cache frame, not a page this image owns.
     cached: bool,
+    /// The entry production installed for a cache frame (`ExecImage::map`);
+    /// a private page is mapped with its ELF flags.
+    pte: Option<PageTableFlags>,
+}
+
+/// What a user store does under an entry.
+#[derive(Debug, PartialEq, Eq)]
+enum Store {
+    /// The entry is writable: the byte lands in its frame.
+    Written,
+    /// A read-only copy-on-write entry of a writable VMA: the kernel's COW
+    /// fault copies the frame into a private page, which takes the byte.
+    Copied,
+    /// No write access: SIGSEGV.
+    Segv,
 }
 
 /// The new address space: entries, VMAs and the exec bindings that hold the
 /// image's pages, as the kernel's `KernelImage` makes them.
 struct Image<'a> {
-    node: &'a Arc<VNode>,
     exec: Option<ExecImage<'a>>,
     entries: BTreeMap<u64, Entry>,
     owned: Vec<Box<[u8; 4096]>>,
     /// `(start, end, flags, file)`.
     vmas: Vec<(u64, u64, u32, bool)>,
-    bindings: Vec<HostBinding>,
+    /// The production table and VMAs of the cached pieces; each VMA's
+    /// binding holds the image's pages and its `deny_write`.
+    table: ProcessPageTable,
+    file_vmas: Vec<Vma>,
     fell_back: bool,
 }
 
@@ -148,7 +170,8 @@ impl ImageTarget for Image<'_> {
     fn private_page(&mut self, address: u64, flags: u32) -> Result<*mut u8, Errno> {
         let mut page = Box::new([0u8; 4096]);
         let ptr = page.as_mut_ptr();
-        assert!(self.entries.insert(address, Entry { frame: ptr as usize, flags, cached: false }).is_none());
+        let entry = Entry { frame: ptr as usize, flags, cached: false, pte: None };
+        assert!(self.entries.insert(address, entry).is_none());
         self.owned.push(page);
         Ok(ptr)
     }
@@ -160,12 +183,15 @@ impl ImageTarget for Image<'_> {
         self.exec.as_mut().unwrap().populate(first, count).map_err(|error| Errno(error.errno()))
     }
     fn map_file(&mut self, start: u64, end: u64, pgoff: u64, flags: u32) -> Result<(), Errno> {
-        let exec = self.exec.as_ref().unwrap();
-        self.bindings.push(bind_exec(self.node.clone(), pgoff, (end - start) / PAGE));
-        for (slot, address) in (start..end).step_by(PAGE as usize).enumerate() {
-            let PhysFrame(frame) = exec.frame(pgoff + slot as u64, flags & PF_X != 0).unwrap();
-            assert!(self.entries.insert(address, Entry { frame, flags, cached: true }).is_none());
+        // The kernel target's map_file (`KernelImage`): production ExecImage::map.
+        let prot = Protection::from_bits_truncate(prot_bits(flags));
+        let vma = self.exec.as_ref().unwrap().map(&mut self.table, start, end, pgoff, prot).unwrap();
+        for address in (start..end).step_by(PAGE as usize) {
+            let (PhysFrame(frame), pte) = self.table.entries[&address];
+            let entry = Entry { frame, flags, cached: true, pte: Some(pte) };
+            assert!(self.entries.insert(address, entry).is_none());
         }
+        self.file_vmas.push(vma);
         self.vmas.push((start, end, flags, true));
         Ok(())
     }
@@ -190,6 +216,34 @@ impl Image<'_> {
         // it; an owned page lives in `owned`.
         unsafe { std::slice::from_raw_parts(entry.frame as *const u8, PAGE as usize) }
     }
+
+    /// A user store of `byte` at `address`, as the CPU and the kernel's
+    /// permission and copy-on-write fault paths treat the entry there.
+    fn store(&mut self, address: u64, byte: u8) -> Store {
+        let page = address & !(PAGE - 1);
+        let entry = self.entries[&page];
+        let writable = match entry.pte {
+            Some(pte) => pte.contains(PageTableFlags::WRITABLE),
+            None => entry.flags & PF_W != 0,
+        };
+        let outcome = if writable {
+            Store::Written
+        } else if entry.pte.is_some_and(|pte| pte.contains(COW_FLAG)) && entry.flags & PF_W != 0 {
+            let mut copy = Box::new([0u8; 4096]);
+            copy.copy_from_slice(self.bytes(page));
+            let frame = copy.as_mut_ptr() as usize;
+            self.owned.push(copy);
+            self.entries.insert(page, Entry { frame, flags: entry.flags, cached: false, pte: None });
+            Store::Copied
+        } else {
+            return Store::Segv;
+        };
+        let frame = self.entries[&page].frame;
+        // SAFETY: the entry's frame is a cache page this image's binding holds
+        // or a page in `owned`.
+        unsafe { (frame as *mut u8).add((address - page) as usize).write(byte) };
+        outcome
+    }
 }
 
 /// Exec `node` as the kernel does (`MappedElf::load`): admit it to its cache
@@ -206,12 +260,12 @@ fn exec<'a>(
         fs, node, MountFlags::default(), &Credentials::kernel(), || false, false,
         |size, read| {
             let mut image = Image {
-                node,
                 exec: ExecImage::new(node, transfer),
                 entries: BTreeMap::new(),
                 owned: Vec::new(),
                 vmas: Vec::new(),
-                bindings: Vec::new(),
+                table: ProcessPageTable::default(),
+                file_vmas: Vec::new(),
                 fell_back: false,
             };
             let mut header = [0; 64];
@@ -223,6 +277,9 @@ fn exec<'a>(
             };
             // SAFETY: private_page gives the loader pages the image owns.
             unsafe { headers.load_image(&mut counted, &mut image, 0)? };
+            // The load ends before the table is published (`MappedElf::load`
+            // drops its target): from here the exec bindings hold the image.
+            image.exec = None;
             Ok(image)
         },
     ).unwrap();
@@ -240,7 +297,7 @@ fn a_second_exec_shares_the_first_execs_text_and_reads_nothing() {
     let (fs, node) = fixture(&bytes);
     let io = transfer(&node);
     let (first_reads, second_reads) = (Cell::new(0), Cell::new(0));
-    let first = exec(fs.as_ref(), &node, &io, &first_reads);
+    let mut first = exec(fs.as_ref(), &node, &io, &first_reads);
     let second = exec(fs.as_ref(), &node, &io, &second_reads);
     assert!(first_reads.get() > 0);
     // Text, rodata and the data's whole page are the cache's frames in both.
@@ -251,12 +308,16 @@ fn a_second_exec_shares_the_first_execs_text_and_reads_nothing() {
     }
     assert_eq!(second_reads.get(), 0, "the second exec read its segments again");
     assert_eq!(first.bytes(TEXT + PAGE), &bytes[PAGE as usize..2 * PAGE as usize]);
-    // A store to text faults (its VMA has no PROT_WRITE); data is a private
-    // writable mapping of the cache frame, so a store copies it.
-    let flags = |address| first.vmas.iter().find(|v| v.0 <= address && address < v.1).unwrap().2;
-    assert_eq!(prot_bits(flags(TEXT)) & PROT_WRITE, 0);
-    assert_ne!(prot_bits(flags(DATA)) & PROT_WRITE, 0);
-    assert_eq!((first.entries[&TEXT].flags, first.entries[&DATA].flags), (PF_R | PF_X, PF_R | PF_W));
+    // Under the entries production installed, a store to text faults and a
+    // store to data copies the page; the shared cache frame keeps the file's
+    // bytes for the second process running the image.
+    let text_pte = first.entries[&TEXT].pte.unwrap();
+    assert!(!text_pte.contains(PageTableFlags::NO_EXECUTE), "text is not executable");
+    assert_eq!(first.store(TEXT + 9, 0xee), Store::Segv, "a store to running text did not fault");
+    assert_eq!(first.store(DATA + 9, 0xee), Store::Copied, "a store to data wrote the shared cache frame");
+    assert_eq!(first.bytes(DATA)[9], 0xee);
+    let data = DATA_FILE as usize;
+    assert_eq!(second.bytes(DATA), &bytes[data..data + PAGE as usize], "another process saw the data store");
     assert!(first.vmas.iter().any(|v| v.0 == DATA && v.3), "data is not a file mapping");
 }
 
@@ -285,10 +346,17 @@ fn a_running_image_refuses_write_access() {
     let (fs, node) = fixture(&program());
     let io = transfer(&node);
     let image = exec(fs.as_ref(), &node, &io, &Cell::new(0));
+    // The exec load has ended: its exec bindings alone make this a running image.
     assert!(matches!(node.map.open_writer(), Err(Errno(ETXTBSY))));
+    // mmap's refusal, made before it replaces anything, is for shared write
+    // authority only.
+    assert_eq!(node.map.refuse_text_busy(true, true), Err(TEXT_BUSY));
+    assert_eq!(node.map.refuse_text_busy(true, false), Ok(()));
+    assert_eq!(node.map.refuse_text_busy(false, true), Ok(()));
     drop(image);
     let writer = node.map.open_writer().expect("the image no longer runs");
     drop(writer);
+    assert_eq!(node.map.refuse_text_busy(true, true), Ok(()));
 }
 
 #[test]
