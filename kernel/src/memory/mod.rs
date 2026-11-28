@@ -1,3 +1,5 @@
+#[cfg(target_arch = "aarch64")]
+pub mod boot_ranges;
 #[cfg(not(target_arch = "x86_64"))]
 pub mod arch_stub;
 pub mod anon_map;

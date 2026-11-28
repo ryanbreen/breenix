@@ -9,7 +9,7 @@
 
 #[cfg(target_arch = "aarch64")]
 use arm64_boot_contract::phys_memory::{
-    self, fdt, frame_pool_from_fdt, place_kernel_pools, FdtError, KernelPools, PhysRange,
+    fdt, frame_pool_from_fdt, place_kernel_pools, FdtError, KernelPools, PhysRange,
     RangeSet,
 };
 #[cfg(target_arch = "aarch64")]
@@ -770,86 +770,10 @@ pub fn fb_is_bgr() -> bool {
 // Initialization from HardwareConfig (Parallels boot path)
 // =============================================================================
 
-/// HardwareConfig as received from the UEFI loader.
-/// This must match the layout in parallels-loader/src/hw_config.rs.
 #[cfg(target_arch = "aarch64")]
-#[repr(C)]
-pub struct HardwareConfig {
-    pub magic: u32,
-    pub version: u32,
-    pub uart_base_phys: u64,
-    pub uart_irq: u32,
-    /// UART type: 0 = PL011, 1 = 16550
-    pub uart_type: u8,
-    pub _pad0: [u8; 3],
-    pub gic_version: u8,
-    pub _pad1: [u8; 7],
-    pub gicd_base: u64,
-    pub gicc_base: u64,
-    pub gicr_range_count: u32,
-    pub _pad2: u32,
-    pub gicr_ranges: [GicrRange; 8],
-    pub pci_ecam_base: u64,
-    pub pci_ecam_size: u64,
-    pub pci_bus_start: u8,
-    pub pci_bus_end: u8,
-    pub _pad3: [u8; 6],
-    pub pci_mmio_base: u64,
-    pub pci_mmio_size: u64,
-    pub ram_region_count: u32,
-    pub _pad4: u32,
-    pub ram_regions: [RamRegion; 32],
-    pub has_framebuffer: u32,
-    pub _pad5: u32,
-    pub framebuffer: FramebufferInfo,
-    pub rsdp_addr: u64,
-    pub timer_freq_hz: u64,
-    pub xhci_hcrst_done: u32,
-    pub _pad6: u32,
-    pub xhci_bar_phys: u64,
-    pub boot_wall_time_utc: u64,
-    pub ram_base_offset: u64,
-    pub firmware_cpu_count: u32,
-    pub _pad7: u32,
-    pub rtc_get_time: u64,
-    pub runtime_region_count: u32,
-    pub _pad8: u32,
-    pub runtime_regions: [arm64_boot_contract::RuntimeRegion; arm64_boot_contract::MAX_RUNTIME_REGIONS],
-    pub boot_flags: u32,
-    pub _pad9: u32,
-    pub boot_seed_source: u32,
-    pub _pad10: u32,
-    pub boot_seed: [u8; arm64_boot_contract::BOOT_SEED_BYTES],
-}
-
+pub use arm64_boot_contract::hw_config::HardwareConfig;
 #[cfg(target_arch = "aarch64")]
-#[repr(C)]
-pub struct GicrRange {
-    pub base: u64,
-    pub length: u32,
-    pub _pad: u32,
-}
-
-#[cfg(target_arch = "aarch64")]
-#[repr(C)]
-pub struct RamRegion {
-    pub base: u64,
-    pub size: u64,
-}
-
-#[cfg(target_arch = "aarch64")]
-#[repr(C)]
-pub struct FramebufferInfo {
-    pub base: u64,
-    pub size: u64,
-    pub width: u32,
-    pub height: u32,
-    pub stride: u32,
-    pub pixel_format: u32,
-}
-
-#[cfg(target_arch = "aarch64")]
-const HARDWARE_CONFIG_MAGIC: u32 = 0x4252_4E58;
+use arm64_boot_contract::hw_config::HARDWARE_CONFIG_MAGIC;
 
 /// Initialize platform config from the HardwareConfig struct provided by
 /// the UEFI loader. Called very early in boot, before serial init.
@@ -891,38 +815,16 @@ pub fn init_from_parallels(config: &HardwareConfig) -> bool {
 
     RAM_BASE_OFFSET.store(config.ram_base_offset, Ordering::Relaxed);
 
-    // HardwareConfig v5 carries only EfiConventionalMemory from the final
-    // ExitBootServices map (UEFI 2.10 section 7.2, Tables 7.5 and 7.6).
-    // Boot-services and loader pages stay reserved: firmware's in-flight
-    // device DMA may still be active after ExitBootServices.
-    let region_count = (config.ram_region_count as usize).min(config.ram_regions.len());
-    if region_count > 0 {
-        let offset = config.ram_base_offset;
-        let runtime_count =
-            (config.runtime_region_count as usize).min(config.runtime_regions.len());
-        let runtime = config.runtime_regions[..runtime_count]
-            .iter()
-            .map(|r| PhysRange::from_base_size(r.base, r.pages.saturating_mul(4096)));
-        let mut ranges = phys_memory::frame_pool(
-            config.ram_regions[..region_count]
-                .iter()
-                .map(|r| PhysRange::from_base_size(r.base, r.size)),
-            runtime,
-            direct_map_ram_window(offset),
-        );
-        // The heap and kernel stacks are written directly, outside the frame
-        // allocator, so they come out of conventional RAM, after the fixed
-        // ranges are excluded.
-        for fixed in kernel_fixed_ranges(offset) {
-            ranges.subtract(fixed);
+    FRAME_POOL.call_once(|| {
+        if config.ram_region_count == 0 {
+            return unavailable_pool("the loader passed no conventional RAM regions");
         }
-        let pool = with_kernel_pools(ranges, FramePoolSource::UefiMemoryMap);
-        FRAME_POOL.call_once(|| pool);
-    } else {
-        FRAME_POOL.call_once(|| {
-            unavailable_pool("the loader passed no conventional RAM regions")
-        });
-    }
+        let offset = config.ram_base_offset;
+        let ranges = crate::memory::boot_ranges::from_hardware_config(
+            config, direct_map_ram_window(offset), kernel_fixed_ranges(offset),
+        );
+        with_kernel_pools(ranges, FramePoolSource::UefiMemoryMap)
+    });
 
     // Store framebuffer info if the loader discovered a GOP framebuffer
     if config.has_framebuffer != 0 && config.framebuffer.base != 0 {

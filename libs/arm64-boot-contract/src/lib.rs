@@ -100,3 +100,5 @@ mod tests {
         }
     }
 }
+
+pub mod hw_config;
