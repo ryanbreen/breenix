@@ -39,9 +39,11 @@ impl SoundMmioRequestGate {
     }
 
     fn lock(&self) -> Result<SoundMmioRequestGuard<'_>, &'static str> {
+        use crate::task::park::{self, IoContext, WaitEnd, WaitMode};
         if self.wedged.load(Ordering::Acquire) {
             return Err("Sound MMIO device wedged after an abandoned request");
         }
+        let io = park::io_context().map_err(|_| "Sound MMIO request from a context that may not sleep")?;
 
         loop {
             if self
@@ -55,27 +57,22 @@ impl SoundMmioRequestGate {
                 });
             }
 
-            if !sound_mmio_request_gate_can_sleep() {
+            // The block I/O caller rule (design §6): a context that may park
+            // waits its turn; early boot, the only thread, does not wait; any
+            // other context was refused with a receipt above.
+            if io != IoContext::Sleepable {
                 return Err("Sound MMIO request already in progress");
             }
-
-            if self
-                .waiters
-                .prepare_to_wait(crate::task::thread::ThreadState::BlockedOnIO)
-                .is_none()
-            {
-                return Err("Sound MMIO request already in progress");
+            match park::wait(
+                &self.waiters,
+                || !self.locked.load(Ordering::Acquire) || self.wedged.load(Ordering::Acquire),
+                None,
+                WaitMode::Uninterruptible,
+            ) {
+                Ok(WaitEnd::NoMemory | WaitEnd::Killed) => return Err("Sound MMIO request already in progress"),
+                Ok(_) => {}
+                Err(_) => return Err("Sound MMIO request from a context that may not sleep"),
             }
-
-            if self.wedged.load(Ordering::Acquire) {
-                self.waiters.finish_wait();
-                return Err("Sound MMIO device wedged after an abandoned request");
-            }
-
-            if self.locked.load(Ordering::Acquire) {
-                crate::task::waitqueue::schedule_current_wait();
-            }
-            self.waiters.finish_wait();
 
             if self.wedged.load(Ordering::Acquire) {
                 return Err("Sound MMIO device wedged after an abandoned request");
@@ -103,13 +100,6 @@ impl Drop for SoundMmioRequestGuard<'_> {
             self.gate.unlock();
         }
     }
-}
-
-#[inline]
-fn sound_mmio_request_gate_can_sleep() -> bool {
-    crate::task::scheduler::current_thread_id().is_some()
-        && crate::per_cpu_aarch64::preempt_count() > 0
-        && crate::arch_impl::aarch64::timer_interrupt::is_initialized()
 }
 
 struct SoundMmioQueueCompletion {

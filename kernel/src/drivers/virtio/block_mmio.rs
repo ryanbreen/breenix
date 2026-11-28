@@ -27,6 +27,9 @@ use core::sync::atomic::{fence, AtomicBool, AtomicU32, Ordering};
 
 /// Capacity for block devices across the QEMU virt MMIO transport slots.
 pub const MAX_BLOCK_DEVICES: usize = VIRTIO_MMIO_COUNT;
+// Each device registers a completion source (design §6), so the park
+// contract's table is sized for this many.
+const _: () = assert!(MAX_BLOCK_DEVICES == crate::task::park_core::VIRTIO_BLK_MMIO_COMPLETION_SOURCES);
 
 const VIRTIO_IRQ_BASE: u32 = 48;
 /// A request waits for its completion in sleeps of this length, checking
@@ -62,7 +65,18 @@ struct BlockMmioRequestGuard<'a> {
     entry: usize,
     release_on_drop: bool,
     _custody: crate::task::thread::KillCustody,
+    /// The admitted caller's context: it waits for its commands by
+    /// sleeping, or polls them in early boot.
+    io: IoContext,
 }
+
+use crate::task::park::IoContext;
+
+/// A request from a context that may neither park nor poll (design §6).
+const NOT_SLEEPABLE_ERROR: &str = "Block MMIO request from a context that may not sleep";
+/// Early boot is the only thread, so a busy gate there is not waited for.
+const EARLY_BOOT_BUSY_ERROR: &str = "Block MMIO request already in progress during early boot";
+const PUBLICATION_REFUSED_ERROR: &str = "Block MMIO request already in progress (waiter publication refused)";
 
 impl BlockMmioRequestGate {
     const fn new() -> Self {
@@ -126,43 +140,50 @@ impl BlockMmioRequestGate {
             crate::arch_without_interrupts(|| self.ranges.lock().cancel_flush(&mut queued));
             self.waiters.wake_up();
         }
-        entry.map(|entry| BlockMmioRequestGuard { gate: self, entry, release_on_drop: true, _custody: custody })
+        entry.map(|(entry, io)| BlockMmioRequestGuard { gate: self, entry, release_on_drop: true, _custody: custody, io })
     }
 
-    fn wait_for_admission(&self, start: u64, end: u64, write: bool, mut flush: Option<&mut bool>) -> Result<usize, &'static str> {
+    /// The block I/O caller rule (design §6): a context that may park waits
+    /// its turn; early boot, the only thread, tries once; any other context
+    /// is refused with a receipt. Returns the entry and the caller's context,
+    /// which picks how its commands are waited for.
+    fn wait_for_admission(&self, start: u64, end: u64, write: bool, mut flush: Option<&mut bool>) -> Result<(usize, IoContext), &'static str> {
+        use crate::task::park::{self, WaitEnd, WaitMode};
+        let io = park::io_context().map_err(|_| NOT_SLEEPABLE_ERROR)?;
+        let sleeps = io == IoContext::Sleepable;
         loop {
-            let can_sleep = block_mmio_request_gate_can_sleep();
-            if let Some(entry) = self.attempt(start, end, write, flush.as_deref_mut(), can_sleep) {
-                return Ok(entry);
-            }
-
-            if !can_sleep {
-                return Err("Block MMIO request already in progress (context cannot sleep)");
-            }
-
-            if self
-                .waiters
-                .prepare_to_wait(crate::task::thread::ThreadState::BlockedOnIO)
-                .is_none()
-            {
-                return Err("Block MMIO request already in progress (waiter publication refused)");
-            }
-
-            if self.wedged.load(Ordering::Acquire) {
-                self.waiters.finish_wait();
-                return Err(BLOCK_MMIO_WEDGED_ERROR);
-            }
-
-            // Published before this check, so a release after it wakes us.
-            if let Some(entry) = self.attempt(start, end, write, flush.as_deref_mut(), can_sleep) {
-                self.waiters.finish_wait();
-                return Ok(entry);
-            }
-            crate::task::waitqueue::schedule_current_wait();
-            self.waiters.finish_wait();
-
             if self.wedged.load(Ordering::Acquire) {
                 return Err(BLOCK_MMIO_WEDGED_ERROR);
+            }
+            if let Some(entry) = self.attempt(start, end, write, flush.as_deref_mut(), sleeps) {
+                return Ok((entry, io));
+            }
+            if !sleeps {
+                return Err(EARLY_BOOT_BUSY_ERROR);
+            }
+            // The attempt runs under the queue lock, atomically with
+            // publishing the wait, so a release before the enqueue is seen.
+            let mut admitted = None;
+            let ended = park::wait(
+                &self.waiters,
+                || {
+                    if self.wedged.load(Ordering::Acquire) {
+                        return true;
+                    }
+                    admitted = self.attempt(start, end, write, flush.as_deref_mut(), true);
+                    admitted.is_some()
+                },
+                None,
+                WaitMode::Uninterruptible,
+            );
+            if let Some(entry) = admitted {
+                return Ok((entry, io));
+            }
+            match ended {
+                Ok(WaitEnd::NoMemory) => return Err(PUBLICATION_REFUSED_ERROR),
+                Ok(WaitEnd::Killed) => return Err(PUBLICATION_REFUSED_ERROR),
+                Ok(_) => {}
+                Err(_) => return Err(NOT_SLEEPABLE_ERROR),
             }
         }
     }
@@ -193,13 +214,6 @@ impl Drop for BlockMmioRequestGuard<'_> {
             self.gate.release(self.entry);
         }
     }
-}
-
-#[inline]
-fn block_mmio_request_gate_can_sleep() -> bool {
-    crate::task::scheduler::current_thread_id().is_some()
-        && crate::per_cpu_aarch64::preempt_count() > 0
-        && crate::arch_impl::aarch64::timer_interrupt::is_initialized()
 }
 
 #[cfg(feature = "boot_tests")]
@@ -235,23 +249,10 @@ struct BlockWedgeOracleSleepContext;
 
 #[cfg(feature = "boot_tests")]
 impl BlockWedgeOracleSleepContext {
+    /// The requester's kernel thread is a context that may park (design §6):
+    /// the gate waits for it to take its turn.
     fn enter() -> Option<Self> {
-        if crate::per_cpu_aarch64::preempt_count() != 0 {
-            return None;
-        }
-        crate::per_cpu_aarch64::preempt_disable();
-        if !block_mmio_request_gate_can_sleep() {
-            crate::per_cpu_aarch64::preempt_enable();
-            return None;
-        }
-        Some(Self)
-    }
-}
-
-#[cfg(feature = "boot_tests")]
-impl Drop for BlockWedgeOracleSleepContext {
-    fn drop(&mut self) {
-        crate::per_cpu_aarch64::preempt_enable();
+        (crate::task::park::context() == crate::task::park::ParkContext::Sleepable).then_some(Self)
     }
 }
 
@@ -433,30 +434,30 @@ impl SlotCompletion {
     /// request, and a slow device is not a failed one, so there is no
     /// timeout: the wait ends when the device completes the request. It
     /// sleeps in slices only to notice a device that has failed, the one case
-    /// where the request is abandoned. A wait that cannot sleep spins
-    /// instead, and is abandoned past the bootstrap limit rather than
-    /// spinning the boot CPU forever.
+    /// where the request is abandoned. Early boot polls instead, and is
+    /// abandoned past the bootstrap limit rather than spinning the boot CPU
+    /// forever.
     fn wait_for_completion(
         &self,
         token: u32,
         state: &BlockDeviceState,
         request: u32,
+        io: IoContext,
     ) -> Result<(), &'static str> {
         let started_ns = monotonic_now_ns();
-        let sleeps = crate::task::completion::wait_sleeps();
+        let sleeps = io == IoContext::Sleepable;
         loop {
-            if let Ok(true) = self
-                .completion
-                .wait_timeout_uninterruptible(token, BLOCK_MMIO_WAIT_SLICE_NS)
-            {
-                return Ok(());
+            match self.completion.wait_timeout_uninterruptible(token, BLOCK_MMIO_WAIT_SLICE_NS) {
+                Ok(true) => return Ok(()),
+                Ok(false) => {}
+                Err(_) => return Err(NOT_SLEEPABLE_ERROR),
             }
             if device_has_failed(state) {
                 return Err("Block MMIO device failed with a request outstanding");
             }
             let waited_ns = monotonic_now_ns().saturating_sub(started_ns);
             if !sleeps && waited_ns >= BLOCK_MMIO_BOOTSTRAP_WAIT_LIMIT_NS {
-                return Err("Block MMIO request not completed before the kernel could sleep");
+                return Err("Block MMIO request not completed during early boot");
             }
             report_slow_request(request, waited_ns);
         }
@@ -979,6 +980,12 @@ fn init_device(
 
     let irq = VIRTIO_IRQ_BASE + slot as u32;
     gic::Gicv2::enable_irq(irq as u8);
+    // The device's completion source: its interrupt, routed and unmasked.
+    crate::task::park::attach_completion_source(
+        crate::task::park::BlockSource::VirtioBlkMmio,
+        device_index as u32,
+        true,
+    );
     crate::serial_println!(
         "[virtio-blk] Block MMIO IRQ {} enabled for device {}: queue {} with {} chains of {} KiB",
         irq,
@@ -1008,10 +1015,20 @@ fn block_device_state(device_index: usize) -> Result<&'static BlockDeviceState, 
     }
 }
 
-#[inline]
-fn irq_completion_available() -> bool {
-    crate::task::scheduler::current_thread_id().is_some() || Aarch64Cpu::interrupts_enabled()
+/// Whether something will complete the admitted caller's commands (design
+/// §6). Early boot polls the slot's completion, which the device interrupt
+/// sets, so that CPU must take interrupts; a sleeping caller needs the
+/// device's interrupt armed. A device that is not ready refuses the request
+/// rather than polling.
+fn completion_ready(device_index: usize, io: IoContext) -> bool {
+    use crate::task::park::{completion_source_ready, BlockSource};
+    match io {
+        IoContext::EarlyBoot => Aarch64Cpu::interrupts_enabled(),
+        IoContext::Sleepable => completion_source_ready(BlockSource::VirtioBlkMmio, device_index as u32),
+    }
 }
+
+const COMPLETION_NOT_READY_ERROR: &str = "Block MMIO IRQ completion not armed";
 
 /// Snapshot on the failing path. Without admission these are concurrent
 /// samples of whatever requests the device holds.
@@ -1119,7 +1136,7 @@ fn transfer(
     let completions = &COMPLETIONS[device_index];
     let chunk = state.chain_bytes;
     // The boot thread's bounded polling keeps one request on the device.
-    let window = if crate::task::completion::wait_sleeps() { MAX_CHAINS } else { 1 };
+    let window = if guard.io == IoContext::Sleepable { MAX_CHAINS } else { 1 };
     let chunks = if total == 0 { 1 } else { total.div_ceil(chunk) };
     // (slot, token, chunk index), oldest first.
     let mut in_flight = [(0usize, 0u32, 0usize); MAX_CHAINS];
@@ -1163,7 +1180,7 @@ fn transfer(
                 Some(Err(None)) if count > 0 => break,
                 Some(Err(None)) => {
                     // Each slot belongs to another caller: wait for one.
-                    if let Err(reason) = wait_for_slot(device_index) {
+                    if let Err(reason) = wait_for_slot(device_index, guard.io) {
                         failure = Some(TransferFailure { reason, stage: "slot-wait", slot: None, sector });
                     }
                 }
@@ -1193,7 +1210,7 @@ fn transfer(
 
         let (slot, token, index) = in_flight[head];
         let sector = start_sector + (index * chunk / SECTOR_SIZE) as u64;
-        if let Err(reason) = completions.slots[slot].wait_for_completion(token, state, kind) {
+        if let Err(reason) = completions.slots[slot].wait_for_completion(token, state, kind, guard.io) {
             stop_device(device_index, guard);
             return Err(TransferFailure { reason, stage: "wait-completion", slot: Some(slot), sector });
         }
@@ -1229,30 +1246,31 @@ fn transfer(
     }
 }
 
-/// Wait until a chain slot is free, as admission waits for a range.
-fn wait_for_slot(device_index: usize) -> Result<(), &'static str> {
+/// Wait until a chain slot is free, as admission waits for a range. Early
+/// boot, with one request on the device at a time, never waits.
+fn wait_for_slot(device_index: usize, io: IoContext) -> Result<(), &'static str> {
+    use crate::task::park::{self, WaitEnd, WaitMode};
     let gate = &REQUEST_GATES[device_index];
     let free = || with_engine(device_index, |engine| engine.free_slots() > 0 || engine.is_stopped()).unwrap_or(true);
     if free() {
         return Ok(());
     }
-    if !block_mmio_request_gate_can_sleep() {
-        return Err("Block MMIO request already in progress (context cannot sleep)");
+    if io != IoContext::Sleepable {
+        return Err(EARLY_BOOT_BUSY_ERROR);
     }
-    if gate.waiters.prepare_to_wait(crate::task::thread::ThreadState::BlockedOnIO).is_none() {
-        return Err("Block MMIO request already in progress (waiter publication refused)");
+    match park::wait(&gate.waiters, free, None, WaitMode::Uninterruptible) {
+        Ok(WaitEnd::NoMemory) => Err(PUBLICATION_REFUSED_ERROR),
+        Ok(WaitEnd::Killed) => Err(PUBLICATION_REFUSED_ERROR),
+        Ok(_) => Ok(()),
+        Err(_) => Err(NOT_SLEEPABLE_ERROR),
     }
-    if !free() {
-        crate::task::waitqueue::schedule_current_wait();
-    }
-    gate.waiters.finish_wait();
-    Ok(())
 }
 
 fn admission_stage(reason: &'static str) -> &'static str {
     match reason {
-        "Block MMIO request already in progress (context cannot sleep)" => "gate-cannot-sleep",
-        "Block MMIO request already in progress (waiter publication refused)" => "gate-publish-refused",
+        NOT_SLEEPABLE_ERROR => "gate-not-sleepable",
+        EARLY_BOOT_BUSY_ERROR => "gate-early-boot-busy",
+        PUBLICATION_REFUSED_ERROR => "gate-publish-refused",
         "Block MMIO request gate refused a kill-claimed thread" => "gate-kill-claimed",
         _ => "gate-wedged",
     }
@@ -1285,13 +1303,13 @@ pub fn read_sectors(
         return Err(read_failure(device_index, Some(state), start_sector, buffer.len(),
             "Sector out of range", "read-range"));
     };
-    if !irq_completion_available() {
-        return Err(read_failure(device_index, Some(state), start_sector, buffer.len(),
-            "Block MMIO IRQ completion unavailable before interrupts are enabled", "irq-unavailable"));
-    }
     let bytes = buffer.len();
     let guard = REQUEST_GATES[device_index].admit(start_sector, end, false).map_err(|reason|
         read_failure(device_index, Some(state), start_sector, bytes, reason, admission_stage(reason)))?;
+    if !completion_ready(device_index, guard.io) {
+        return Err(read_failure(device_index, Some(state), start_sector, bytes,
+            COMPLETION_NOT_READY_ERROR, "irq-unavailable"));
+    }
     transfer(device_index, state, guard, start_sector, Data::Read(buffer)).map_err(|failure|
         read_failure_at(device_index, Some(state), failure.slot, failure.sector, bytes, failure.reason, failure.stage))
 }
@@ -1303,6 +1321,10 @@ pub fn write_sector(
     buffer: &[u8; SECTOR_SIZE],
 ) -> Result<(), &'static str> {
     write_sectors(device_index, sector, buffer)
+}
+
+pub fn max_single_write_bytes(device_index: usize) -> usize {
+    block_device_state(device_index).map_or(0, |state| state.chain_bytes)
 }
 
 /// Write consecutive sectors from `buffer`, a nonzero multiple of the sector
@@ -1322,10 +1344,10 @@ pub fn write_sectors(
         .checked_add((buffer.len() / SECTOR_SIZE) as u64)
         .filter(|end| *end <= state.capacity)
         .ok_or("Sector out of range")?;
-    if !irq_completion_available() {
-        return Err("Block MMIO IRQ completion unavailable before interrupts are enabled");
-    }
     let guard = REQUEST_GATES[device_index].admit(start_sector, end, true)?;
+    if !completion_ready(device_index, guard.io) {
+        return Err(COMPLETION_NOT_READY_ERROR);
+    }
     transfer(device_index, state, guard, start_sector, Data::Write(buffer)).map_err(|failure| failure.reason)
 }
 
@@ -1338,10 +1360,10 @@ pub fn flush(device_index: usize) -> Result<(), &'static str> {
     if state.device_features & features::RO != 0 || state.device_features & features::FLUSH == 0 {
         return Ok(());
     }
-    if !irq_completion_available() {
-        return Err("Block MMIO IRQ completion unavailable before interrupts are enabled");
-    }
     let guard = REQUEST_GATES[device_index].admit_flush()?;
+    if !completion_ready(device_index, guard.io) {
+        return Err(COMPLETION_NOT_READY_ERROR);
+    }
     transfer(device_index, state, guard, 0, Data::Flush).map_err(|failure| failure.reason)
 }
 

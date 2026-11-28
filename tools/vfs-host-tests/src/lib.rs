@@ -119,6 +119,9 @@ mod breenfs_boot_probe;
 #[path = "../tests/writable_owner.rs"]
 mod writable_owner;
 
+#[path = "../tests/superblock_slots.rs"]
+mod superblock_slots;
+
 #[path = "../tests/enospc.rs"]
 mod enospc;
 

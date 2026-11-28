@@ -99,11 +99,16 @@ impl BlockDevice for NvmeBlockDevice {
         if !super::hardware_write_allowed(disk, start, count) {
             return Err(BlockError::IoError);
         }
-        // Keep the single-LBA writer until the whole-slot publication change.
-        for (index, block) in buf.chunks_exact(size).enumerate() {
-            self.controller.write_sectors(start + index as u64, block).map_err(BlockError::from)?;
+        let blocks_per_command = self.controller.blocks_per_command();
+        for (index, chunk) in buf.chunks(blocks_per_command * size).enumerate() {
+            let lba = start + (index * blocks_per_command) as u64;
+            self.controller.write_sectors(lba, chunk).map_err(BlockError::from)?;
         }
         Ok(())
+    }
+
+    fn max_single_write_bytes(&self) -> usize {
+        self.controller.blocks_per_command() * self.block_size()
     }
 
     fn block_size(&self) -> usize {

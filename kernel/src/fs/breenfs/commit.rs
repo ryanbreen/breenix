@@ -450,7 +450,17 @@ impl PreparedCommit {
             write(device, addr, bytes)?;
         }
         device.flush().map_err(|_| Error::EIO)?;
-        self.superblocks(|addr, bytes| write(device, addr, bytes))?;
+        let sectors_per_slot = BLOCK_SIZE / device.block_size();
+        let whole_slot = device.max_single_write_bytes() >= BLOCK_SIZE;
+        self.superblocks(|addr, bytes| {
+            if whole_slot {
+                device
+                    .write_blocks(addr * sectors_per_slot as u64, sectors_per_slot, bytes)
+                    .map_err(|_| Error::EIO)
+            } else {
+                write(device, addr, bytes)
+            }
+        })?;
         device.flush().map_err(|_| Error::EIO)
     }
     /// Hold buffers are submitted in bounded batches when the cache fills.
@@ -538,6 +548,7 @@ impl PreparedCommit {
             faults::Faults::window(selected, faults::Window::FirstFlush);
         }
         preemption_point();
+        let whole_slot = device.max_single_write_bytes() >= BLOCK_SIZE;
         self.superblocks(|addr, bytes| {
             #[cfg(feature = "breenfs_commit_window")]
             if let Some(selected) = window {
@@ -545,18 +556,17 @@ impl PreparedCommit {
                     faults::Faults::window(selected, faults::Window::BetweenRings);
                 }
             }
+            let start = addr * (BLOCK_SIZE / sector) as u64;
+            if whole_slot {
+                return cache.write_through_blocks(device, start, bytes).map_err(at(SuperblockWrite));
+            }
             for (i, bytes) in bytes.chunks_exact(sector).enumerate() {
                 preemption_point();
                 cache
-                    .write(
-                        device,
-                        WriteGroup::WriteThrough,
-                        addr * (BLOCK_SIZE / sector) as u64 + i as u64,
-                        bytes,
-                    )
+                    .write(device, WriteGroup::WriteThrough, start + i as u64, bytes)
                     .map_err(at(SuperblockWrite))?;
             }
-            Ok::<(), PublicationError>(())
+            Ok(())
         })?;
         cache.flush(device).map_err(at(SuperblockFlush))
     }

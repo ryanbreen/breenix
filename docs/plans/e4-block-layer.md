@@ -485,6 +485,15 @@ that still loops over individual sectors. No E2/E3 prerequisite.
   durable generation is recoverable. Keep the between-rings crash case.
 - **QEMU rows.** `disk.fsync` and `disk.sequential-write` through fewer
   commands per publication.
+- **Details resolved in E4.3 (DEV-39(2)).**
+  - The publisher uses the existing cache write-through range operation when
+    the adapter's single-command limit covers a slot because `write_blocks`
+    also accepts devices that split a multi-sector request.
+  - The NVMe adapter splits writes at the existing one-page limit because its
+    synchronous controller already accepts consecutive native LBAs in a
+    single command backed by that page.
+  - The recording device still saves sector events for a whole-slot command
+    because power loss can persist only part of the slot.
 
 ### E4.4 Physical-device async queue
 

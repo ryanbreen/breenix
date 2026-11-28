@@ -38,9 +38,11 @@ impl SoundRequestGate {
     }
 
     fn lock(&self) -> Result<SoundRequestGuard<'_>, &'static str> {
+        use crate::task::park::{self, IoContext, WaitEnd, WaitMode};
         if self.wedged.load(Ordering::Acquire) {
             return Err("Sound device wedged after an abandoned request");
         }
+        let io = park::io_context().map_err(|_| "Sound request from a context that may not sleep")?;
 
         loop {
             if self
@@ -54,27 +56,22 @@ impl SoundRequestGate {
                 });
             }
 
-            if !sound_request_gate_can_sleep() {
+            // The block I/O caller rule (design §6): a context that may park
+            // waits its turn; early boot, the only thread, does not wait; any
+            // other context was refused with a receipt above.
+            if io != IoContext::Sleepable {
                 return Err("Sound request already in progress");
             }
-
-            if self
-                .waiters
-                .prepare_to_wait(crate::task::thread::ThreadState::BlockedOnIO)
-                .is_none()
-            {
-                return Err("Sound request already in progress");
+            match park::wait(
+                &self.waiters,
+                || !self.locked.load(Ordering::Acquire) || self.wedged.load(Ordering::Acquire),
+                None,
+                WaitMode::Uninterruptible,
+            ) {
+                Ok(WaitEnd::NoMemory | WaitEnd::Killed) => return Err("Sound request already in progress"),
+                Ok(_) => {}
+                Err(_) => return Err("Sound request from a context that may not sleep"),
             }
-
-            if self.wedged.load(Ordering::Acquire) {
-                self.waiters.finish_wait();
-                return Err("Sound device wedged after an abandoned request");
-            }
-
-            if self.locked.load(Ordering::Acquire) {
-                crate::task::waitqueue::schedule_current_wait();
-            }
-            self.waiters.finish_wait();
 
             if self.wedged.load(Ordering::Acquire) {
                 return Err("Sound device wedged after an abandoned request");
@@ -101,22 +98,6 @@ impl Drop for SoundRequestGuard<'_> {
         if self.release_on_drop {
             self.gate.unlock();
         }
-    }
-}
-
-#[inline]
-fn sound_request_gate_can_sleep() -> bool {
-    if crate::task::scheduler::current_thread_id().is_none() {
-        return false;
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    {
-        crate::per_cpu::preempt_count() > 0
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        false
     }
 }
 
@@ -171,8 +152,9 @@ impl SoundQueueCompletion {
         token: u32,
         timeout_error: &'static str,
     ) -> Result<(), &'static str> {
-        let scheduler_thread_present = crate::task::scheduler::current_thread_id().is_some();
-        let timeout_ns = if scheduler_thread_present {
+        // Early boot polls the completion; a sleeping caller waits longer.
+        let sleeps = crate::task::park::context() == crate::task::park::ParkContext::Sleepable;
+        let timeout_ns = if sleeps {
             SOUND_COMPLETION_TIMEOUT_NS
         } else {
             SOUND_EARLY_COMPLETION_TIMEOUT_NS

@@ -168,16 +168,19 @@ fn an_expired_timer_is_reported_before_set_clears_the_flag() {
                     result = subprocess.run([str(binary)], capture_output=True, text=True)
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def test_workers_start_after_init_publication_before_boot_pin_release(self):
+    def test_workers_start_after_init_publication_before_init_runs(self):
+        # Since E2.4 the init-loader kernel thread starts PID 1 through the
+        # scheduler (design §6): the workers start once init's construction
+        # is published and before its thread is made runnable.
         source = (ROOT / 'kernel/src/main_aarch64.rs').read_text()
-        begin = source.index('fn launch_init_from_elf(')
-        end = source.index('\n#[cfg(target_arch = "aarch64")]\nuse ', begin)
+        begin = source.index('fn start_init_from_elf(')
+        end = source.index('\n}\n', begin)
         launch = source[begin:end]
         call = 'kernel::drivers::i6300esb::start();'
         self.assertEqual(source.count(call), 1)
-        self.assertIn(call, launch, 'workers must not contend with init construction on the boot continuation')
+        self.assertIn(call, launch, 'workers must not contend with init construction')
         self.assertLess(launch.index('manager.publish_init(publication)'), launch.index(call))
-        self.assertLess(launch.index(call), launch.index('release_boot_preempt_pin();'))
+        self.assertLess(launch.index(call), launch.index('kernel::task::scheduler::spawn(init_thread);'))
 
     def test_timer_wait_switches_inline_and_health_io_can_sleep(self):
         source = (ROOT / 'kernel/src/drivers/watchdog_round.rs').read_text()
