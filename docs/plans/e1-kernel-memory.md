@@ -363,9 +363,9 @@ Zone, order and per-CPU cache counts go in a new `/proc/breenix/kmem`.
   - Entries are written only where the descriptor was invalid, so no break-before-make sequence is needed
     (Arm ARM, translation table updates). Then `dsb ishst; isb`.
 - `direct_map_ram_window`'s clip goes, and the frame pool covers the described RAM.
-- On x86-64, the bootloader's dynamic physical-memory mapping covers RAM. E1-2x preserves every
-  translation during the kernel's move to per-slot PDPTs, so E1-3's carved metadata can keep using
-  those addresses across the boot, master and process roots.
+- On x86-64, the bootloader's dynamic physical-memory mapping covers RAM. E1-2x's move to per-slot
+  PDPTs leaves the boot translations unchanged (the #3264 fixture checks two slots), so E1-3's
+  carved metadata can keep using those addresses across the boot, master and process roots.
 - `PhysAddrWrapper::from_kernel_virt` already uses the CPU's own translation (`AT S1E1R` on ARM64, a table
   walk on x86), so it needs no change.
 
@@ -1538,20 +1538,47 @@ E1-2 implementation decisions (DEV-39):
   and each process copies the master's 256 kernel entries. Later kernel mappings edit the shared
   tables below PML4. The frame allocator retains its boot order because the migration keeps its
   direct-map addresses backed by the same frames.
+- DEV-42(2) offered two orders. E1-2x takes the translation-preserving migration rather than moving
+  `kernel_page_table::init` ahead of `frame_allocator::init`: the migration needs 256 frames from that
+  allocator, and leaving the boot translations unchanged makes the order irrelevant to direct-map
+  pointers.
+- After `build_master_kernel_pml4`, the kernel writes PML4 kernel entries only into a process root
+  that `ProcessPageTable::new` has not yet published. The old `map_kernel_page` re-pointed slots at
+  the shared PDPT and fell back to the active root before the master existed. That fallback is gone:
+  the 3 of 3 `map_kernel_page` call sites (`kernel_stack`, `per_cpu_stack`, `gpu::dma`) run after
+  `memory::init` publishes the master, and a call before then now returns an error.
 - Implementation decisions (DEV-39(2)):
   - A copied PML4 entry's read-only or execute-disable restriction moves to its populated PDPTEs so
     existing access rights survive and later mappings can use empty PDPTEs without changing the root
     permissions. See [Intel SDM, Vol. 3A, paging and access rights](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).
-  - The master uses the migrated stack and IST PDPTs because replacing them would discard any
-    boot mappings in those slots. Their stack ranges still receive the lower-level tables built at boot.
-  - The master leaves slot 511's migrated entries in place because the old whole-slot alias of
-    PML4[0] could hide boot translations and the relocated x86 kernel uses its boot-provided mappings.
-  - A process requires the master root because all process creation follows memory initialization and
-    the active root can belong to a process.
+    XD is copied down only from a root entry that already sets it, which the CPU accepts only with
+    `IA32_EFER.NXE` set.
+  - The master uses the migrated stack and IST PDPTs (slots 402 and 403) instead of allocating
+    fresh ones. The old fresh allocation existed only to undo the shared-PDPT aliasing, and replacing
+    a per-slot PDPT would discard any boot mappings in those slots. `main.rs` sets the bootloader's
+    physical-memory mapping to `Mapping::Dynamic` and keeps the default for the others, and the
+    measured physical-memory and kernel offsets are lower-half. So these slots are expected to arrive
+    empty, matching the old fresh tables. The next R240 flash shows it: a present PTE in the stack
+    range would make `map_kernel_page` refuse a stack mapping and count it in
+    `pte_overwrite_refusals`. Their stack ranges still receive the lower-level tables built at boot.
+  - The master no longer aliases boot PML4[0]'s PDPT at slot 511. That alias did not serve
+    `layout::high_alias_from_low`: `0xffffffff80000000` falls in PDPT index 510 of the aliased table,
+    the low VA `0x7f80000000`, not `KERNEL_LOW_BASE`, and `syscall::entry_address` and the IDT setup
+    use the high alias only for kernels linked in `[0x100000, 0x40000000]`, while the bootloader
+    loads the PIE above that range (`0x8000000000` and `0x10000000000` observed). The alias also put
+    the boot root's slot-0 hierarchy at slot 511 of each process root, which copies 256 to 511.
+  - A process requires the master root: `memory::init` publishes it before `heap::init`, which
+    process creation depends on, and the active root at process creation can belong to another
+    process.
+  - `memory::init` no longer calls `paging::init` before the CR3 switch. That call's only lasting
+    effect was to fill the never-read `PAGE_TABLE_MAPPER` cell with a mapper over the boot root;
+    the remaining call after the switch now fills it with the master.
 - Check first. The #3264 fixture drives the production migration loop with slots 256 and 257
   sharing a PDPT index. Before and after migration, the expected translations are
   `0xffff800010000000` to `0x10000000` and `0xffff808010000000` to `0x8010000000`.
   The old loop sends both addresses to `0x8010000000`.
+  The access-rights assertions (slot 256's root entry read-only and XD) were added after the
+  migration change. They fail on a copy of the new helper with the push-down removed.
 - Boot. The next coordinator R240 one-reboot flash supplies x86 hardware evidence under DEV-42.
 
 ### E1-3: frame metadata sections replace the heap ledger
