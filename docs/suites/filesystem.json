@@ -4,6 +4,7 @@
   "area": "Filesystem",
   "summary": "Breenix's copy-on-write filesystem reads, writes, commits atomically, checksums and scrubs, snapshots and recovers from crashes and power cuts without losing an acknowledged write, behind a filesystem interface ext2 also implements.",
   "binary": "/sbin/suite-filesystem",
+  "timingSensitive": true,
   "categories": [
     {
       "id": "interface",
