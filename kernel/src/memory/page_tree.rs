@@ -22,6 +22,7 @@
 //! The module has no kernel dependency. The kernel supplies the lock and the
 //! node source (E1's slab cache from E3-6).
 
+use core::marker::PhantomData;
 use core::ptr::{self, NonNull};
 
 /// Index bits each level consumes.
@@ -107,25 +108,33 @@ impl Node {
     };
 }
 
-/// Where tree nodes come from.
+/// Where tree nodes come from. A [`NodeList`] and a [`PageTree`] are bound to
+/// one source type, so a node can only go back to a source of the type that
+/// allocated it.
 ///
 /// # Safety
 ///
 /// `alloc_node` returns memory valid for reads and writes of one `Node`, owned
-/// by the caller until it is passed back to `free_node`.
+/// by the caller until it is passed back to `free_node`. Every instance of the
+/// implementing type draws from one allocator: `free_node` on any instance
+/// accepts a node from `alloc_node` on any instance of the same type. A type
+/// whose instances own separate storage does not meet this.
 pub unsafe trait NodeSource {
     fn alloc_node(&mut self) -> Option<NonNull<Node>>;
     /// # Safety
     ///
-    /// `node` came from this source's `alloc_node` and is no longer referenced.
+    /// `node` came from `alloc_node` on an instance of this type and is no
+    /// longer referenced.
     unsafe fn free_node(&mut self, node: NonNull<Node>);
 }
 
-/// A list of nodes threaded through their first slot. It needs no capacity,
-/// so a removal records what it frees without allocating.
-pub struct NodeList {
+/// A list of nodes from sources of type `S`, threaded through their first
+/// slot. It needs no capacity, so a removal records what it frees without
+/// allocating.
+pub struct NodeList<S> {
     head: Option<NonNull<Node>>,
     len: usize,
+    source: PhantomData<fn() -> S>,
 }
 
 /// A reservation failed: the source refused a node. The reservation it was
@@ -133,9 +142,13 @@ pub struct NodeList {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReserveError;
 
-impl NodeList {
-    pub const fn new() -> NodeList {
-        NodeList { head: None, len: 0 }
+impl<S: NodeSource> NodeList<S> {
+    pub const fn new() -> NodeList<S> {
+        NodeList {
+            head: None,
+            len: 0,
+            source: PhantomData,
+        }
     }
 
     pub const fn len(&self) -> usize {
@@ -148,7 +161,7 @@ impl NodeList {
 
     /// Take `count` more nodes from `source`. On failure the nodes this call
     /// took go back to the source and the list is as it was.
-    pub fn fill_from<S: NodeSource>(&mut self, source: &mut S, count: usize) -> Result<(), ReserveError> {
+    pub fn fill_from(&mut self, source: &mut S, count: usize) -> Result<(), ReserveError> {
         let mut taken = NodeList::new();
         for _ in 0..count {
             match source.alloc_node() {
@@ -166,10 +179,13 @@ impl NodeList {
     }
 
     /// Return the list's nodes to `source`.
-    pub fn release<S: NodeSource>(&mut self, source: &mut S) {
+    pub fn release(&mut self, source: &mut S) {
         while let Some(node) = self.get() {
-            // SAFETY: the nodes on a list came from a source's `alloc_node`,
-            // and only the list refers to them.
+            // SAFETY: the nodes on a `NodeList<S>` came from `alloc_node` on
+            // an instance of `S` (through `fill_from`, or through a
+            // `PageTree<S>` that took them from such a list), which the trait
+            // contract lets any instance of `S` free; only the list refers to
+            // them.
             unsafe { source.free_node(node) };
         }
     }
@@ -192,7 +208,7 @@ impl NodeList {
     }
 }
 
-impl Default for NodeList {
+impl<S: NodeSource> Default for NodeList<S> {
     fn default() -> Self {
         NodeList::new()
     }
@@ -209,17 +225,19 @@ pub enum TreeError {
 
 /// The tree. Height 0 holds at most index 0, in `root` itself; height h > 0
 /// has a root node covering indices below 64^h. Its owner empties it with
-/// [`PageTree::clear`] and returns the nodes before dropping it.
-pub struct PageTree {
+/// [`PageTree::clear`] and returns the nodes before dropping it. Its nodes
+/// come from, and go back to, sources of type `S`.
+pub struct PageTree<S> {
     root: u64,
     height: u32,
     root_tags: u8,
     nodes: usize,
+    source: PhantomData<fn() -> S>,
 }
 
 // SAFETY: the tree is the sole owner of its nodes; the kernel serializes access
 // with the FileCache's tree lock.
-unsafe impl Send for PageTree {}
+unsafe impl<S: NodeSource> Send for PageTree<S> {}
 
 /// The height whose tree holds `index`.
 pub const fn height_for(index: u64) -> u32 {
@@ -262,13 +280,14 @@ fn node_ptr(word: u64) -> *mut Node {
     (word & !KIND_MASK) as *mut Node
 }
 
-impl PageTree {
-    pub const fn new() -> PageTree {
+impl<S: NodeSource> PageTree<S> {
+    pub const fn new() -> PageTree<S> {
         PageTree {
             root: KIND_EMPTY,
             height: 0,
             root_tags: 0,
             nodes: 0,
+            source: PhantomData,
         }
     }
 
@@ -337,7 +356,7 @@ impl PageTree {
     /// Store `entry` at `index`, returning what the index held. The index's
     /// tags are cleared: they described the entry being replaced. Nodes come
     /// from `reserved`; if it is short, the tree is unchanged.
-    pub fn store(&mut self, index: u64, entry: Entry, reserved: &mut NodeList) -> Result<Slot, TreeError> {
+    pub fn store(&mut self, index: u64, entry: Entry, reserved: &mut NodeList<S>) -> Result<Slot, TreeError> {
         let needed = self.nodes_needed(index);
         if needed > reserved.len() {
             return Err(TreeError::NeedNodes {
@@ -405,7 +424,7 @@ impl PageTree {
         Ok(old)
     }
 
-    fn take(&mut self, reserved: &mut NodeList) -> *mut Node {
+    fn take(&mut self, reserved: &mut NodeList<S>) -> *mut Node {
         let node = reserved
             .get()
             .expect("store checked the reservation before changing the tree");
@@ -418,7 +437,7 @@ impl PageTree {
 
     /// Remove `index`, returning what it held. Nodes that empty go onto
     /// `freed`, and the height shrinks to the largest index left.
-    pub fn remove(&mut self, index: u64, freed: &mut NodeList) -> Slot {
+    pub fn remove(&mut self, index: u64, freed: &mut NodeList<S>) -> Slot {
         if self.root == KIND_EMPTY || index > max_index(self.height) {
             return Slot::Absent;
         }
@@ -481,7 +500,7 @@ impl PageTree {
     }
 
     /// Collapse root nodes whose only occupant is slot 0.
-    fn shrink(&mut self, freed: &mut NodeList) {
+    fn shrink(&mut self, freed: &mut NodeList<S>) {
         while self.height > 0 {
             let root = node_ptr(self.root);
             // SAFETY: a node the tree owns.
@@ -503,7 +522,7 @@ impl PageTree {
     }
 
     /// Empty the tree, putting its nodes on `freed`.
-    pub fn clear(&mut self, freed: &mut NodeList) {
+    pub fn clear(&mut self, freed: &mut NodeList<S>) {
         if self.height > 0 {
             Self::free_subtree(node_ptr(self.root), self.height - 1, freed);
         }
@@ -513,7 +532,7 @@ impl PageTree {
         self.nodes = 0;
     }
 
-    fn free_subtree(node: *mut Node, level: u32, freed: &mut NodeList) {
+    fn free_subtree(node: *mut Node, level: u32, freed: &mut NodeList<S>) {
         if level > 0 {
             // SAFETY: a node the tree owns.
             let mut bits = unsafe { (*node).present };
@@ -672,7 +691,7 @@ impl PageTree {
     }
 }
 
-impl Default for PageTree {
+impl<S: NodeSource> Default for PageTree<S> {
     fn default() -> Self {
         PageTree::new()
     }

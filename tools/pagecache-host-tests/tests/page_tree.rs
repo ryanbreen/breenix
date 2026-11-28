@@ -49,7 +49,7 @@ fn page(pfn: u64) -> Entry {
 
 /// Store with an exact reservation, checking the tree took exactly what it
 /// said it needed.
-fn store(tree: &mut PageTree, source: &mut Source, index: u64, entry: Entry) -> Slot {
+fn store(tree: &mut PageTree<Source>, source: &mut Source, index: u64, entry: Entry) -> Slot {
     let needed = tree.nodes_needed(index);
     let before = tree.nodes();
     let mut reserved = NodeList::new();
@@ -60,7 +60,7 @@ fn store(tree: &mut PageTree, source: &mut Source, index: u64, entry: Entry) -> 
     old
 }
 
-fn remove(tree: &mut PageTree, source: &mut Source, index: u64) -> Slot {
+fn remove(tree: &mut PageTree<Source>, source: &mut Source, index: u64) -> Slot {
     let mut freed = NodeList::new();
     let before = tree.nodes();
     let old = tree.remove(index, &mut freed);
@@ -69,14 +69,14 @@ fn remove(tree: &mut PageTree, source: &mut Source, index: u64) -> Slot {
     old
 }
 
-fn clear(tree: &mut PageTree, source: &mut Source) {
+fn clear(tree: &mut PageTree<Source>, source: &mut Source) {
     let mut freed = NodeList::new();
     tree.clear(&mut freed);
     freed.release(source);
 }
 
 /// The entries, with their tags, in index order, plus the shape.
-fn snapshot(tree: &PageTree) -> (u32, usize, Vec<(u64, Slot, bool, bool)>) {
+fn snapshot(tree: &PageTree<Source>) -> (u32, usize, Vec<(u64, Slot, bool, bool)>) {
     let mut out = Vec::new();
     let mut from = 0;
     while let Some((index, slot)) = tree.next_present(from) {
@@ -89,7 +89,7 @@ fn snapshot(tree: &PageTree) -> (u32, usize, Vec<(u64, Slot, bool, bool)>) {
     (tree.height(), tree.nodes(), out)
 }
 
-fn tagged_walk(tree: &PageTree, tag: Tag) -> Vec<u64> {
+fn tagged_walk(tree: &PageTree<Source>, tag: Tag) -> Vec<u64> {
     let mut out = Vec::new();
     let mut from = 0;
     while let Some((index, _)) = tree.next_tagged(from, tag) {
