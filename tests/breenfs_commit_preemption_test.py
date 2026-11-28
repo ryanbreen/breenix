@@ -169,12 +169,11 @@ class CommitPreemption(unittest.TestCase):
                       'crate::arch_impl::current::constants::PREEMPT_MASK != 0;', wait)
         enable = re.escape('if release {') + r'\s*' + re.escape('crate::per_cpu::preempt_enable();')
         disable = re.escape('if release {') + r'\s*' + re.escape('crate::per_cpu::preempt_disable();')
-        # ARM64 switches through the native scheduler after the deferred
-        # reclamation task-context scheduling callers drain; x86 halts.
+        # ARM64 switches through the native scheduler, with no reclamation
+        # while the blocked state is published; x86 halts.
         parks = (
             ('target_arch = "aarch64"',
-             r'\{\s*' + re.escape('crate::arch_impl::aarch64::context_switch::run_deferred_reclamation();')
-             + r'\s*' + re.escape('crate::arch_impl::aarch64::context_switch::schedule_from_kernel();')),
+             re.escape('crate::arch_impl::aarch64::context_switch::schedule_from_kernel();')),
             ('not(target_arch = "aarch64")', re.escape('halt_blocked_current();')),
         )
 
@@ -188,6 +187,7 @@ class CommitPreemption(unittest.TestCase):
                 prefix = re.escape(strip_comments(f'#[cfg({cfg})]')) + r'\s*'
                 self.assertRegex(code[loop.end():end], prefix + park)
             self.assertNotRegex(code[loop.end():end], r'\bpreempt_(?:enable|disable)\(')
+            self.assertNotIn('run_deferred_reclamation', code[loop.end():end])
             self.assertRegex(code[end + 1:], disable)
 
         assert_park_releases_count(wait)

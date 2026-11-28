@@ -275,14 +275,12 @@ fn sleep_while_blocked(#[cfg(target_arch = "aarch64")] return_pc: u64) {
             break;
         }
         // ARM64 switches away through the native scheduler whatever level
-        // remains, as task-context scheduling callers do, after draining the
-        // deferred reclamation those callers drive (`completion.rs` waits the
-        // same way).
+        // remains. No deferred reclamation runs here: it takes locks, and
+        // with the blocked state published and preemption released, an
+        // interrupt exit can switch the thread out while it holds one
+        // (`arch_halt_while_blocked` omits reclamation for the same reason).
         #[cfg(target_arch = "aarch64")]
-        {
-            crate::arch_impl::aarch64::context_switch::run_deferred_reclamation();
-            crate::arch_impl::aarch64::context_switch::schedule_from_kernel();
-        }
+        crate::arch_impl::aarch64::context_switch::schedule_from_kernel();
         #[cfg(not(target_arch = "aarch64"))]
         halt_blocked_current();
     }
