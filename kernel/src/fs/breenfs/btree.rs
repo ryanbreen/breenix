@@ -13,6 +13,13 @@ const CAPACITY: usize = NODE_SIZE - HEADER;
 const MAX_PAYLOAD: usize = 6144;
 const MAX_INTERNAL: usize = 441;
 const MAX_HEIGHT: u8 = 8;
+/// The most references one FS node holds: an internal node's children, or a
+/// leaf's EXTENT items, each a 21-byte slot and a 24-byte extent (at most
+/// 363). Copying a shared node takes one reference to each (txn.rs `prepare`).
+pub(super) const MAX_REFERENCES: u64 = {
+    let extents = CAPACITY / (21 + 24);
+    (if extents > MAX_INTERNAL { extents } else { MAX_INTERNAL }) as u64
+};
 
 // Host measurement of the production decoder, isolated from parallel tests.
 #[cfg(test)]
