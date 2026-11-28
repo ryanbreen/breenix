@@ -78,8 +78,8 @@ fn rx_poll_fn() {
     }
 }
 
-/// Block on the timer for one tick, and switch away until the timer wakes it,
-/// as `sys_nanosleep` and the dispatch census thread's `sleep_one_interval` do.
+/// Block on the timer for one tick: the block/yield/halt sequence of
+/// `sys_nanosleep` and the dispatch census thread's `sleep_one_interval`.
 #[cfg(target_arch = "aarch64")]
 fn sleep_one_tick() {
     use crate::task::thread::ThreadState;
@@ -94,9 +94,12 @@ fn sleep_one_tick() {
         .saturating_add(nanos)
         .saturating_add(crate::time::timer::MS_PER_TICK * 1_000_000);
     scheduler::with_current(|sched| sched.block_current_for_timer(wake_at));
-    // Switch away while blocked rather than halting as the current thread
-    // until the next tick (E2.3, design section 3.5).
-    while scheduler::thread_state(tid) == Some(ThreadState::BlockedOnTimer) {
-        crate::arch_halt_while_blocked();
+    scheduler::yield_current();
+
+    loop {
+        crate::arch_halt_with_interrupts();
+        if scheduler::thread_state(tid) != Some(ThreadState::BlockedOnTimer) {
+            break;
+        }
     }
 }

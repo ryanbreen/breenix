@@ -57,22 +57,9 @@ pub mod task {
             Some(1)
         }
         pub fn yield_current() {}
-        /// The block stand-ins above publish no state, so the thread reads as running.
-        pub fn thread_state(_tid: u64) -> Option<super::thread::ThreadState> {
-            Some(super::thread::ThreadState::Running)
-        }
         pub fn unblock_thread(_tid: u64) {}
         pub fn wake_thread_any_context(_tid: u64) -> WakeOutcome {
             WakeOutcome::NoTarget
-        }
-    }
-
-    pub mod thread {
-        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-        pub enum ThreadState {
-            Running,
-            Blocked,
-            BlockedOnTimer,
         }
     }
 
@@ -126,6 +113,6 @@ pub fn arch_without_interrupts<R>(f: impl FnOnce() -> R) -> R {
     f()
 }
 
-pub fn arch_halt_while_blocked() {}
+pub fn arch_halt_with_interrupts() {}
 
 mod newreno_checks;

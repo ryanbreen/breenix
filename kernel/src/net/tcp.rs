@@ -373,14 +373,9 @@ fn tcp_timer_thread() {
                 crate::task::scheduler::unblock_thread(tid);
             }
         });
-        // Switch away while blocked rather than halting as the current
-        // thread until the next interrupt (E2.3, design section 3.5).
-        while matches!(
-            crate::task::scheduler::thread_state(tid),
-            Some(crate::task::thread::ThreadState::Blocked | crate::task::thread::ThreadState::BlockedOnTimer)
-        ) {
-            crate::arch_halt_while_blocked();
-        }
+        // A halting waiter keeps its CPU until it yields: yield before halting.
+        crate::task::scheduler::yield_current();
+        crate::arch_halt_with_interrupts();
     }
 }
 

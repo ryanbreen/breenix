@@ -423,13 +423,12 @@ fn census_thread_fn() {
 ///
 /// `kloopbackd` next door sleeps on `Scheduler::block_current()`, which has no
 /// timer wake at all: it stays blocked until loopback traffic unblocks it. The
-/// periodic form of that block is `Scheduler::block_current_for_timer()`, the
-/// primitive `sys_nanosleep` and
-/// `test_framework::registry::sleep_current_thread_ms` use: publish the block,
-/// then sleep through `arch_halt_while_blocked`, which switches away, until the
-/// timer wake has moved the thread out of `BlockedOnTimer`. (Before E2.3 this
-/// set `need_resched` and halted as the current thread until the next tick.)
-/// claim-lint:ok: the publication is `sleep_current_thread_ms`'s, in
+/// periodic form of that same block/yield/halt shape is
+/// `Scheduler::block_current_for_timer()`, the primitive `sys_nanosleep` and
+/// `test_framework::registry::sleep_current_thread_ms` use, and this is that
+/// sequence verbatim: publish the block, set `need_resched`, then halt until
+/// the timer wake has moved the thread out of `BlockedOnTimer`.
+/// claim-lint:ok: the shape is `sleep_current_thread_ms` in
 /// kernel/src/test_framework/registry.rs.
 ///
 /// Round 2's dedicated-kthread attempt is why the shape is spelled out here: it
@@ -451,10 +450,13 @@ fn sleep_one_interval(interval_ns: u64) {
     };
     let wake_at = monotonic_now_ns().saturating_add(interval_ns);
     super::scheduler::with_current(|scheduler| scheduler.block_current_for_timer(wake_at));
-    // Switch away while blocked rather than halting as the current thread
-    // until the next tick (E2.3, design section 3.5).
-    while super::scheduler::thread_state(tid) == Some(ThreadState::BlockedOnTimer) {
-        crate::arch_halt_while_blocked();
+    super::scheduler::yield_current();
+
+    loop {
+        crate::arch_halt_with_interrupts();
+        if super::scheduler::thread_state(tid) != Some(ThreadState::BlockedOnTimer) {
+            break;
+        }
     }
 }
 

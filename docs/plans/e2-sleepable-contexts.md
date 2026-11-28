@@ -945,11 +945,19 @@ The builder resolved these details against the code. Each has one sentence of re
   the levels it holds, and keeps its halt. This is the same treatment E2.2 gave its refusals in such
   callers. E2.4 and E2.10 move those waits onto `park::wait`, where the refusal is an error.
 - **Which "yield before parking" steps went.** The park's own x86 switch (`halt_blocked_current`) no
-  longer sets a reschedule first. The 8 waits the new HALT census found also drop theirs: each published
-  a blocked state and halted as the current thread itself, and each now sleeps through
-  `arch_halt_while_blocked`. The 17 `yield_current(); arch_halt_while_blocked()` pairs in syscall and
+  longer sets a reschedule first. The 17 `yield_current(); arch_halt_while_blocked()` pairs in syscall and
   driver waits not on `park::wait` stay. Those waits have no committed park yet, and their classes move
   in E2.4 and E2.10.
+- **The HALT census keeps a shrinking list.** It found 8 kernel threads that publish a timer or plain
+  block and halt as the current thread themselves. E2.3 first converted the 8 to sleep through
+  `arch_halt_while_blocked`. That tree's one ARM64 QEMU boot soft-locked at about 5 s, in
+  `test_deferral`, before any boot test, and a baseline boot of main with the same script and image did
+  not. These threads run on the secondary CPUs in that window, and no other change in this PR runs there
+  before the lockup, so the conversion was taken back out. The 8 are listed in
+  `tests/park_contract_structure.rs` (`HALT_CLASSIFIED`), the list may only shrink, and each moves in a
+  later PR with its own boot. In main's baseline boot its own `test_deferral` probe did not run on CPU 1
+  (verdict
+  `starved` after 15 s), which that later PR has to account for.
 - **The kernel test's feature.** It is a `boot_tests` case, because the test registry is built under that
   feature.
 - **E2.2's publication check.** Its host check that a baseline-0 publication reads depth 1 or more is

@@ -80,11 +80,8 @@ fn loopback_pump_fn() {
                 scheduler::unblock_thread(my_tid);
             }
         });
-        // Switch away while blocked rather than halting as the current
-        // thread until the next interrupt (E2.3, design section 3.5).
-        while scheduler::thread_state(my_tid) == Some(crate::task::thread::ThreadState::Blocked) {
-            crate::arch_halt_while_blocked();
-        }
+        scheduler::yield_current();
+        crate::arch_halt_with_interrupts();
     }
 }
 

@@ -71,10 +71,12 @@ fn report_when_finished() {
         let wake_at = seconds.saturating_mul(1_000_000_000).saturating_add(nanos)
             .saturating_add(1_000_000_000);
         super::scheduler::with_current(|scheduler| scheduler.block_current_for_timer(wake_at));
-        // Switch away while blocked rather than halting as the current
-        // thread until the next tick (E2.3, design section 3.5).
-        while super::scheduler::thread_state(tid) == Some(super::thread::ThreadState::BlockedOnTimer) {
-            crate::arch_halt_while_blocked();
+        super::scheduler::yield_current();
+        loop {
+            crate::arch_halt_with_interrupts();
+            let blocked =
+                super::scheduler::thread_state(tid) == Some(super::thread::ThreadState::BlockedOnTimer);
+            if !blocked { break; }
         }
     }
 }

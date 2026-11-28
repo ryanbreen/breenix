@@ -354,18 +354,52 @@ fn halt_census(root: &Path) -> Vec<Site> {
     sites
 }
 
+/// Kernel threads that still publish a timer or plain block, set a
+/// reschedule, and halt as the current thread until the next interrupt's exit
+/// switches them out. (file, function, why). E2.3 converted these 8 to sleep
+/// through `arch_halt_while_blocked`, and that tree's one ARM64 QEMU boot
+/// soft-locked before any boot test while main's did not; these threads run
+/// on the secondary CPUs in that window, so the conversion was taken back out
+/// of E2.3. Each moves in a later PR that gets its own boot. The list only
+/// shrinks: an entry that matches no site fails
+/// `every_halt_classification_still_matches_a_site`.
+const HALT_CLASSIFIED: &[(&str, &str, &str)] = &[
+    ("kernel/src/console/mod.rs", "sleep_ms", "x86 render-thread timer sleep"),
+    ("kernel/src/drivers/watchdog_round.rs", "wait", "x86 watchdog round wait"),
+    ("kernel/src/gpu/gk208/production.rs", "guard_thread", "GT 710 clock-guard poll"),
+    ("kernel/src/net/loopback_pump.rs", "loopback_pump_fn", "kloopbackd plain block"),
+    ("kernel/src/net/rx_poll.rs", "sleep_one_tick", "ARM64 receive-poll one-tick sleep"),
+    ("kernel/src/net/tcp.rs", "tcp_timer_thread", "ktcptimerd timer or plain block"),
+    ("kernel/src/task/dispatch_strand_census.rs", "sleep_one_interval", "kstrandd interval sleep"),
+    ("kernel/src/task/userspace_completion.rs", "report_when_finished", "testing completion reporter poll"),
+];
+
 /// Halting as current survives only where it is the same as running idle
 /// (design §3.5): in the idle thread and early boot, which are not waits that
 /// publish a blocked state, and in `arch_halt_while_blocked`'s own branches.
-/// No task-context wait halts as current on its own.
+/// No task-context wait outside `HALT_CLASSIFIED` halts as current on its own.
 #[test]
 fn no_task_context_wait_halts_as_current() {
     let sites = halt_census(&repo_root());
+    let unclassified: Vec<_> = sites
+        .iter()
+        .filter(|s| !HALT_CLASSIFIED.iter().any(|(file, function, _)| s.file == *file && s.function == *function))
+        .collect();
     assert!(
-        sites.is_empty(),
+        unclassified.is_empty(),
         "task-context waits that publish a blocked state and then halt as the current thread:\n{}",
-        sites.iter().map(|s| format!("  {}::{}", s.file, s.function)).collect::<Vec<_>>().join("\n")
+        unclassified.iter().map(|s| format!("  {}::{}", s.file, s.function)).collect::<Vec<_>>().join("\n")
     );
+}
+
+#[test]
+fn every_halt_classification_still_matches_a_site() {
+    let sites = halt_census(&repo_root());
+    let stale: Vec<_> = HALT_CLASSIFIED
+        .iter()
+        .filter(|(file, function, _)| !sites.iter().any(|s| s.file == *file && s.function == *function))
+        .collect();
+    assert!(stale.is_empty(), "halt classifications that match nothing (remove them): {stale:?}");
 }
 
 /// `arch_halt_while_blocked` is where halting as current survives. Each of

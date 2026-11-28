@@ -400,10 +400,10 @@ fn guard_thread(base:usize) {
         }
         let Some(tid)=crate::task::scheduler::current_thread_id() else {return;};
         crate::task::scheduler::with_current(|s|s.block_current_for_timer(now_ns().saturating_add(250_000_000)));
-        // Switch away while blocked rather than halting as the current
-        // thread until the next tick (E2.3, design section 3.5).
-        while crate::task::scheduler::thread_state(tid)==Some(crate::task::thread::ThreadState::BlockedOnTimer) {
-            crate::arch_halt_while_blocked();
+        crate::task::scheduler::yield_current();
+        loop {
+            crate::arch_halt_with_interrupts();
+            if crate::task::scheduler::thread_state(tid)!=Some(crate::task::thread::ThreadState::BlockedOnTimer) {break;}
         }
     }
 }
