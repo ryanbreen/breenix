@@ -1006,7 +1006,9 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
   - `Ctx`'s step table (6.6) enforced in the allocator, with the context lowered to `Atomic` in
     interrupt context and inside reclaim;
   - `report_oom` on both architectures;
-  - `FaultOutcome::OutOfMemory` with the existing SIGKILL policy, counted.
+  - `FaultOutcome::OutOfMemory` with the existing SIGKILL policy, counted;
+  - the caller inventory, `docs/plans/e1-oom-inventory.json`, and its scan `tests/kmem_oom_inventory.rs`
+    (see E1-11 to E1-20): each runtime site with its owning PR, error surfaced and rollback point.
 - x86-64 and ARM64: the same on both. A heap exhaustion that clean caches can cover is now survived instead
   of panicking. That is the #3226 and DEV-23 class.
 - Tests (host):
@@ -1025,6 +1027,8 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
     model's interrupt count is above 0 is treated the same way. A `NoReclaim` request runs 0
     shrinkers. Check first: today's front (`heap.rs` `alloc`) given the same held lock spins on it,
     which the model counts as a wait, and that is red.
+  - Check first, inventory: the scan with an empty inventory reports each runtime site as unowned, which
+    is red. With the filled inventory it passes, and a row with no owner, error or rollback point fails.
 - Boot: not needed.
 - Rows: no row expected to move. This is the failure path.
 
@@ -1292,18 +1296,40 @@ Each conversion PR follows the same check-first shape (7.4): its structural guar
 the subsystem has a host-test crate, an allocation-failure sweep. Each converts its subsystem's runtime
 paths and marks boot sites `boot:`. No row is expected to move; the rows are recorded to show that.
 
-| PR | Subsystem | Error surfaced | Host sweep in |
+The caller inventory comes first, in E1-4, so no runtime caller is left without an owner:
+
+- `tests/kmem_oom_inventory.rs` scans `kernel/src` for the infallible allocation APIs of 7.4, outside
+  `#[cfg(test)]`. Each site must match a row of `docs/plans/e1-oom-inventory.json`. A row holds the
+  file and function, the owning PR, the error surfaced, and the rollback point: the last state change
+  that must be undone, or that has not happened yet, when the allocation fails. A site with no row, or
+  a row with an empty field, fails the test.
+- Check first: with an empty inventory, the scan over f52fd83c reports each site as unowned, which is
+  red. E1-4 fills the inventory until it passes. Each conversion PR then marks its rows converted, and
+  its guard fails while one of its rows still names an infallible call.
+- The table below assigns each top-level part of `kernel/src`. A rough count at f52fd83c of the patterns
+  in 7.4 found runtime sites in each of these; the inventory, not the count, is the list.
+
+| PR | Subsystem | Error surfaced and rollback point | Host sweep in |
 |---|---|---|---|
-| E1-11 | Syscall entry, user copies and staging buffers (`syscall/`) | `ENOMEM` | `regular-read-host-tests` |
-| E1-12 | Memory syscalls and VMAs (`syscall/mmap.rs`, `syscall/memory.rs`, `memory/vma.rs`) | `ENOMEM` | `pagetable-host-tests` |
-| E1-13 | Process and thread lifecycle: fork, clone, exec, spawn (`process/`, `task/`) | `EAGAIN` or `ENOMEM` per the call | structural guard only |
-| E1-14 | VFS and path walk (`fs/vfs`, `fs/namei.rs`, `ipc/fd.rs`) | `ENOMEM` | `vfs-host-tests`, `resolve-host-tests` |
+| E1-11 | Syscall entry, user copies and staging buffers (`syscall/` except the files other rows name), `time/`, `random/`, `interrupts/` (interrupt handlers may not allocate; a site there moves to preallocated state) | `ENOMEM`, before any user-visible effect | `regular-read-host-tests` |
+| E1-12 | Memory syscalls and VMAs (`syscall/mmap.rs`, `syscall/memory.rs`, `memory/vma.rs`) and the rest of `memory/` | `ENOMEM`, before the VMA or page-table change is published | `pagetable-host-tests` |
+| E1-13 | Process and thread lifecycle: fork, clone, exec, spawn (`process/`, `task/`, `arch_impl/` runtime paths) and signals (`signal/`, `syscall/signal.rs`) | `EAGAIN` or `ENOMEM` per the call. `sigqueue` returns `EAGAIN` (POSIX: no resources to queue), before the signal is queued. Kernel-generated signals use per-thread preallocated slots and do not allocate | structural guard only |
+| E1-14 | VFS and path walk (`fs/vfs`, `fs/namei.rs`, `ipc/fd.rs`) and the other in-memory filesystems and locks (`fs/devfs`, `fs/devptsfs`, `fs/ufs`, `fs/flock*.rs`, `fs/locks.rs`) | `ENOMEM`, before the dentry, fd or lock is published | `vfs-host-tests`, `resolve-host-tests` |
 | E1-15 | BreenFS and ext2 runtime (`fs/breenfs`, `fs/ext2`) | `ENOMEM` before any disk change, by the reservation rule | `breenfs-host-tests`, `ext2-host-tests` |
-| E1-16 | Network and sockets (`net/`, `socket/`) | `ENOBUFS` on send; counted drop on receive | `net-host-tests`, `udp-host-tests`, `unix-host-tests` |
-| E1-17 | IPC: pipes, SysV and POSIX IPC, shared memory (`ipc/`) | `ENOMEM` or `ENOSPC` per the man page | `ipc-host-tests`, `shmsem-host-tests`, `shmem-api-host-tests` |
-| E1-18 | Block layer and storage drivers' runtime paths (`block/`, `drivers/ahci`, `drivers/nvme`, `drivers/virtio/block*`) | I/O error to the request; not a partial request | `block-host-tests` |
-| E1-19 | Other drivers, GPU and console runtime (`drivers/`, `gpu/`, `console/`) | Counted drop or the call's errno | `gpu-host-tests`, `console-host-tests` |
-| E1-20 | Diagnostics: `/proc`, census, tracing dumps (`fs/procfs`, `capture/`) | `ENOMEM` on read | structural guard only |
+| E1-16 | Network and sockets (`net/`, `socket/`) | `ENOBUFS` on send, before the segment is queued; counted drop on receive | `net-host-tests`, `udp-host-tests`, `unix-host-tests` |
+| E1-17 | IPC: pipes, SysV and POSIX IPC, shared memory (`ipc/` except `fd.rs`) | `ENOMEM` or `ENOSPC` per the man page, before the object is linked | `ipc-host-tests`, `shmsem-host-tests`, `shmem-api-host-tests` |
+| E1-18 | Block layer and storage drivers' runtime paths (`block/`, `drivers/ahci`, `drivers/nvme`, `drivers/virtio/block*`) | I/O error to the request, before it is submitted; not a partial request | `block-host-tests` |
+| E1-19 | Other drivers, GPU, console and windows (`drivers/`, `gpu/`, `console/`, `tty/`, `graphics/`, `window/` with its commit path, `input/`, `keyboard/`) | A window commit returns `ENOMEM` before the new buffer is published, so the last committed frame stays on screen. An input batch is dropped whole and counted, before it is published to readers. Other drivers: counted drop or the call's errno | `gpu-host-tests`, `console-host-tests` |
+| E1-20 | Diagnostics (`fs/procfs` including `/proc/kmsg`, `capture/`, `tracing/`, `log_buffer.rs`, `serial/`, `test_control/`) | A `/proc/kmsg` read builds its buffer before it consumes from the log ring, so a failure returns `ENOMEM` with the read position unchanged. Logging itself does not allocate | structural guard only |
+
+- `boot/` and the boot-time parts of other directories are `boot:` sites (7.4). The inventory lists them
+  with owner E1-4 and the boot rule.
+- `contracts/` (`testing` on x86), `proof/` (`coreproof` on ARM64) and `test_framework/` (`boot_tests` or
+  `btrt`) are built only with those features (`kernel/src/lib.rs:143-167`, `:263`). Their sites are
+  listed with the owner `test` and are outside the runtime rule, so they do not block E1-21's flip for
+  production builds. They are converted when a test feature builds `alloc` with the cfg.
+  `test_control/` is built in each configuration (`lib.rs:83`), so it is a runtime caller and belongs to
+  E1-20.
 
 - x86-64 and ARM64: the same on both.
 - Boot: not needed. A fallible API has the same success path, and the sweeps settle the failure paths.
@@ -1396,8 +1422,9 @@ where metadata leaving the heap matters most (section 1.1).
    map with `try_insert`. That map is new code, and gets its own host tests in the first conversion PR that
    needs it.
 5. The scale of E1-11..E1-20. The pattern counts in 7.4 include tests and boot code. The real runtime count
-   is unknown until each subsystem's guard lists it. If one subsystem's PR would be too large to review, it
-   splits by module with the same guard. The guard's file list says which part is done.
+   is known once E1-4's inventory (`docs/plans/e1-oom-inventory.json`) lists each site with its owner. If
+   one subsystem's PR would be too large to review, it splits by module with the same guard. The
+   inventory's converted rows say which part is done.
 6. The 32-byte `FrameMeta` costs 0.78% of RAM, against today's 12 bytes plus 8 bytes of free-list
    capacity. That buys O(1) buddy links, the slab back-pointer, and no heap dependency. E3 may grow it to
    64 bytes (5.7).
