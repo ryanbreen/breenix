@@ -239,11 +239,12 @@ class MountLockMechanism(unittest.TestCase):
 
     def test_kernel_park_waits_on_a_checked_bounded_queue(self):
         # E2.2: the park goes through the park contract (task::park), which
-        # refuses a context that may not sleep; only that refusal spins.
+        # refuses a context that may not sleep; only that refusal spins. Since
+        # E2.4 the boot continuation reads no storage, so it is park::wait.
         park = kernel_arm(self.lock, 'park')
         self.assertRegex(park, r'Err\(_\)\s*=>\s*core::hint::spin_loop\(\)',
                          'park must spin only where it cannot sleep')
-        self.assertRegex(park, r'park::wait_allowing_boot_idle\(\s*&self\.queue\s*,')
+        self.assertRegex(park, r'park::wait\(\s*&self\.queue\s*,')
         self.assertRegex(park, r'\|\|\s*!self\.held\.load\(Ordering::SeqCst\)\s*,\s*Some\(deadline\)',
                          'the enqueue must recheck the lock under the queue lock')
         self.assertNotRegex(self.lock, r'\.prepare_to_wait\(', 'untimed prepare_to_wait')
@@ -251,8 +252,8 @@ class MountLockMechanism(unittest.TestCase):
         # The release can miss a contender only if the announce precedes the
         # recheck on the contender's side.
         self.assertLess(park.index('park::announce(&self.parked)'),
-                        park.index('park::wait_allowing_boot_idle('))
-        self.assertLess(park.index('park::wait_allowing_boot_idle('),
+                        park.index('park::wait('))
+        self.assertLess(park.index('park::wait('),
                         park.index('park::withdraw(&self.parked)'))
 
     def test_release_clears_the_lock_before_waking(self):

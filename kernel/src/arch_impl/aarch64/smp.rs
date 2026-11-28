@@ -618,6 +618,12 @@ pub extern "C" fn secondary_cpu_entry_rust(cpu_id: u64) -> ! {
     set_bringup_stage(cpu_id as usize, BRINGUP_STAGE_ONLINE);
     CPUS_ONLINE.fetch_add(1, Ordering::Release);
 
+    // This CPU's AHCI completion poller, on a controller whose completions
+    // raise no interrupt this kernel takes, starts as the CPU comes online and
+    // before it dispatches (design §6; DEV-48(3)). It is queued on this CPU,
+    // so the scheduler runs it once interrupts are unmasked.
+    crate::drivers::ahci::start_completion_poller(cpu_id as usize);
+
     // This must be the final fallible control-flow handoff. A pending timer or
     // SGI may dispatch a runnable thread instead of returning here.
     unsafe {

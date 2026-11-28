@@ -88,12 +88,16 @@ fn boot_cpu_daemon_is_published_only_after_boot_preemption_pin_is_released() {
     let core = read("kernel/src/task/softirqd.rs");
     assert!(core.contains("cpu == 0 && crate::per_cpu_aarch64::preempt_count() != 0"));
     let main = read("kernel/src/main_aarch64.rs");
-    let handoff = main.split("fn launch_init_from_elf").nth(1).unwrap().split("pub extern \"C\" fn kernel_main").next().unwrap();
     let release = main.split("fn release_boot_preempt_pin()").nth(1).unwrap()
-        .split("/// Create a userspace process").next().unwrap();
+        .split("\n}\n").next().unwrap();
     assert!(release.find("preempt_enable();").unwrap() < release.find("init_online_daemons();").unwrap());
+    // Since E2.4 (design §6) the production continuation hands PID 1 to the
+    // init-loader kernel thread, then drops the pin once and becomes CPU 0's
+    // idle loop, as the testing continuation does.
+    let handoff = main.split("kthread_run(run_init_loader").nth(1).unwrap()
+        .split("fn run_init_loader").next().unwrap();
     assert_eq!(handoff.matches("release_boot_preempt_pin();").count(), 1);
-    assert!(handoff.find("release_boot_preempt_pin();").unwrap() < handoff.find("spawn_as_current(").unwrap());
+    assert!(handoff.find("release_boot_preempt_pin();").unwrap() < handoff.find("\"wfi\"").unwrap());
 }
 
 #[test]
