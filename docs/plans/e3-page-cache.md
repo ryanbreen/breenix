@@ -1727,6 +1727,25 @@ cache frame 100. Process B stored to the page, so its PTE now maps B's private c
 
 ```
 
+**A bounce buffer belongs to one request (6.4).** Fill A reads and verifies file A's run into its bounce
+buffer, then sleeps before copying. Fill B runs on the same CPU and reads file B's run.
+
+```pycon
+>>> RULE = 'per-cpu'
+>>> buffers = {}
+>>> def acquire(request):
+...     key = 'cpu0' if RULE == 'per-cpu' else request
+...     buffers[key] = None
+...     return key
+>>> a = acquire('fill-a')
+>>> buffers[a] = 'file A, CRC verified'
+>>> b = acquire('fill-b')
+>>> buffers[b] = 'file B, CRC verified'
+>>> buffers[a]
+'file A, CRC verified'
+
+```
+
 ## 20. bbench rows (DEV-31)
 
 | Row | Ratio (28668b28) | Expected to move in | Parity reachable from E3 alone |
