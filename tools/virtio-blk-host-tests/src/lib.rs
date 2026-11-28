@@ -2,7 +2,7 @@
 //! kernel's own file: several chains in flight over fragmented frames, returned
 //! out of order across index wrap, with exact data, descriptor credits and
 //! per-head status; a stopped queue that keeps an abandoned chain's memory and
-//! completes nothing a stale used entry names; and the same-range ordering.
+//! completes no chain a stale used entry names; and the same-range ordering.
 #![cfg(test)]
 
 #[path = "../../../kernel/src/drivers/virtio/blk_queue.rs"]

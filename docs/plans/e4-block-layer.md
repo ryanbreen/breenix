@@ -376,6 +376,36 @@ gate. E2/E3 unnecessary.
 - **QEMU rows.** `disk.sequential-read`, `disk.sequential-write` where callers
   already issue multi-block I/O. A depth-one file caller will still feed one
   request. No direct target for one-append fsync or metadata rows.
+- **Details resolved in E4.1 (DEV-39(2)).**
+  - Both drivers share one engine, `kernel/src/drivers/virtio/blk_queue.rs`,
+    which the host tests compile unchanged, because one ring implementation
+    can be checked once against a fake device for both transports.
+  - Each chain slot owns 16 individually allocated frames (64 KiB, the block
+    cache's `RUN_BYTES`), and a device holds at most 512 KiB of them. On a
+    256-entry ring that is 8 chains, because one coalesced cache run then
+    stays one request and the frame cost per disk stays bounded.
+  - A synchronous call is admitted for its whole sector range until its last
+    chain returns, and a flush is admitted for the whole device. This is the
+    same-range exclusion and flush ordering E4.1 must preserve, and E4.4
+    replaces it with its conflict and fence policy.
+  - A wait that cannot sleep keeps a window of one chain, because the boot
+    thread's bounded polling is the existing contract.
+  - An abandoned wait, or a used ring that names a head the driver did not
+    issue, stops the queue for good: each chain on the device keeps its
+    memory and no slot is reused. E4.1 does not reset the device, because
+    reset, rebuild and reopening admission are E4.4's recovery work.
+  - `seg_max` bounds the data descriptors and excludes the header and status
+    descriptors, because section 5.2.4 counts segments of the request's data.
+  - The MMIO driver now negotiates `VIRTIO_F_VERSION_1` on version 2
+    transports (section 6.1 requires accepting it), and `SIZE_MAX` and
+    `SEG_MAX` on both versions. Used lengths are checked exactly only with
+    `VERSION_1`, because section 5.2.6.3 tells legacy drivers to ignore them.
+  - The MMIO interrupt handler only tries the queue lock and leaves a drain
+    request for the holder, because the MMIO handler took no lock before.
+    The PCI handler keeps its existing spin on the queue lock, which
+    thread-side holders take with interrupts masked (`with_engine`).
+  - The check-first host test is red on the old code as a compile failure,
+    because the old drivers had no multi-chain engine for it to drive.
 
 ### E4.2 Attach geometry and limits
 

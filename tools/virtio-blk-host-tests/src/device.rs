@@ -16,7 +16,7 @@ const WRITE: u16 = 2;
 #[derive(Default)]
 pub struct Bus {
     pages: BTreeMap<u64, Box<[u8; 4096]>>,
-    /// Every driver store, by address, so a test can see what the driver touched.
+    /// Each driver store, by address, so a test can see what the driver touched.
     pub driver_writes: Vec<u64>,
 }
 
@@ -129,7 +129,7 @@ impl Device {
         Self { mem: mem.clone(), disk: vec![0; sectors * 512], seen: 0 }
     }
 
-    /// Take every chain published since the last call, in available order.
+    /// Take each chain published since the last call, in available order.
     pub fn take(&mut self) -> Vec<Taken> {
         let shared = self.mem.borrow();
         let mut out = Vec::new();

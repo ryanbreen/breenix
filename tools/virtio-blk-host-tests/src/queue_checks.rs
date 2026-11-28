@@ -124,8 +124,8 @@ fn chains_over_fragmented_frames_complete_out_of_order_across_index_wrap() {
         }
         assert_eq!(dev.disk, model);
 
-        // Read the ranges back, returned in another order. Every eleventh round
-        // one read's used length is short, which fails that read alone.
+        // Read the ranges back, returned in another order. In rounds divisible by
+        // 11, one read's used length is short, which fails that read alone.
         let short = if round % 11 == 0 { Some(order(round + 1)[2]) } else { None };
         let slots: Vec<usize> = (0..3).map(|_| queue.reserve().unwrap()).collect();
         assert_eq!(slots, [0, 1, 2]);
@@ -182,7 +182,7 @@ fn a_legacy_device_used_length_is_ignored() {
 #[test]
 fn an_abandoned_chain_keeps_its_memory_and_a_stale_used_entry_completes_nothing() {
     let (mem, mut dev, mut queue, mut dma) = setup(MODERN);
-    // Two chains on the device, a third reserved but never issued.
+    // Two chains on the device, a third reserved but not issued.
     let a = queue.reserve().unwrap();
     let b = queue.reserve().unwrap();
     let c = queue.reserve().unwrap();
@@ -305,7 +305,7 @@ fn overlapping_requests_wait_and_a_flush_covers_every_write_in_flight() {
     let Admission::Admitted(read) = table.try_admit(0, 8, false) else { panic!("disjoint read") };
     let Admission::Admitted(shared) = table.try_admit(4, 12, false) else { panic!("reads share") };
     assert_eq!(table.try_admit(0, 4, true), Admission::Wait, "a write under reads");
-    // A flush is a write of every sector: it waits for all of them...
+    // A flush is a write of the whole device: it waits for the four admitted...
     assert_eq!(table.try_admit(0, u64::MAX, true), Admission::Wait);
     for index in [write, disjoint, read] {
         table.release(index);
@@ -313,7 +313,7 @@ fn overlapping_requests_wait_and_a_flush_covers_every_write_in_flight() {
     }
     table.release(shared);
     let Admission::Admitted(flush) = table.try_admit(0, u64::MAX, true) else { panic!("flush") };
-    // ...and holds every later request until it completes.
+    // ...and holds later requests until it completes.
     assert_eq!(table.try_admit(500, 501, false), Admission::Wait);
     table.release(flush);
     assert!(table.is_empty());
