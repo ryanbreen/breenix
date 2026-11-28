@@ -23,6 +23,8 @@ use spin::{Mutex, MutexGuard};
 
 use crate::task::completion::{Completion, WaitStage};
 
+mod admission;
+use admission::Admission;
 mod command_ring;
 use command_ring::{CommandRing, Event, EventKind};
 mod identify;
@@ -455,18 +457,21 @@ fn begin_port_io(
         }
         drop(guard);
         // The park contract decides whether this context may wait
-        // (`task::park`). ARM64 boot loads PID 1's image before the timer
-        // starts, which is EarlyBoot, so it polls. A refused context gets a
-        // receipt; E2.4 removes CannotPark and the polling fallback (design
-        // §6).
-        if crate::task::park::require_sleepable().is_err() {
-            // Refuse this context on x86 and retain ARM64's polling fallback.
-            #[cfg(target_arch = "x86_64")]
-            return Err((AhciReadError::CannotPark, owner));
-            #[cfg(target_arch = "aarch64")]
-            {
+        // (`task::park`), through admission's decision (`admission::decide`).
+        // ARM64 boot loads PID 1's image before the timer starts, which is
+        // EarlyBoot, so it polls. A refused context gets a receipt; E2.4
+        // removes CannotPark and the polling fallback (design §6).
+        match admission::decide(crate::task::park::context_inputs(), owner, admission::ARCH) {
+            Admission::Acquire | Admission::Park => {}
+            Admission::Poll => {
+                let _ = crate::task::park::require_sleepable();
+                #[cfg(target_arch = "aarch64")]
                 relax_port_io_wait();
                 continue;
+            }
+            Admission::Refuse(error) => {
+                let _ = crate::task::park::require_sleepable();
+                return Err((error, owner));
             }
         }
         let (secs, nanos) = crate::time::get_monotonic_time_ns();

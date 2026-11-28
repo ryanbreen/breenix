@@ -14,7 +14,11 @@ use per_cpu as io_cpu;
 use read_failure::AhciReadError;
 
 #[allow(dead_code)]
-#[path = "READ_FAILURE"] mod read_failure;
+#[path = "READ_FAILURE"] pub mod read_failure;
+// The production decision `begin_port_io` calls (drivers/ahci/admission.rs).
+#[allow(dead_code)]
+#[path = "ADMISSION"] mod admission;
+use admission::Admission;
 
 const AHCI_TIMEOUT_SECS: u64 = 5;
 const OWNER_WITHOUT_TID: u64 = u64::MAX;
@@ -49,9 +53,12 @@ pub mod time {
         (super::NOW.with(|v| v.get()), 0)
     }
 }
-pub mod block { pub mod cache_kernel {
-    pub fn park_for_wait_retry() { panic!("unexpected retry"); }
-}}
+pub mod block {
+    pub use crate::read_failure;
+    pub mod cache_kernel {
+        pub fn park_for_wait_retry() { panic!("unexpected retry"); }
+    }
+}
 pub mod task {
     pub mod thread {
         pub enum ThreadState { BlockedOnIO }
@@ -60,10 +67,24 @@ pub mod task {
     pub mod scheduler {
         pub fn current_thread_id() -> Option<u64> { Some(26) }
     }
+    // The park contract's classification as admission relies on it
+    // (task::park_core::classify, checked itself in tools/park-host-tests):
+    // a context may park when its depth is its baseline.
+    pub mod park_core {
+        #[derive(Clone, Copy, Default)]
+        pub struct ContextInputs { pub depth: u32, pub baseline: u32 }
+        pub enum ParkContext { Sleepable, Atomic }
+        pub const fn classify(inputs: ContextInputs) -> ParkContext {
+            if inputs.depth == inputs.baseline { ParkContext::Sleepable } else { ParkContext::Atomic }
+        }
+    }
     // The park contract as `begin_port_io` relies on it (task::park, E2.2;
     // its own rules are checked in tools/park-host-tests): a context may park
     // when its depth is its baseline, and a wait returns at the entry depth.
     pub mod park {
+        pub fn context_inputs() -> super::park_core::ContextInputs {
+            super::park_core::ContextInputs { depth: crate::per_cpu::preempt_count(), baseline: crate::BASELINE.with(|v| v.get()) }
+        }
         use crate::{AHCI_TIMEOUT_SECS, BASELINE, NOW, PORT_IO_LOCK, PORT_IO_OWNER, RELEASE, WAITED};
         use crate::per_cpu::*;
         use std::sync::atomic::Ordering;
@@ -152,7 +173,10 @@ class AhciAdmission(unittest.TestCase):
         # Select the x86 Rust branches while running the fake scheduler on the host.
         admission = admission.replace('#[cfg(target_arch = "x86_64")]', '')
         admission = admission.replace('#[cfg(target_arch = "aarch64")]', '#[cfg(any())]')
+        # The host's own architecture would pick the decision's ARM64 rule.
+        admission = admission.replace('admission::ARCH', 'admission::Arch::X86_64')
         harness = HARNESS.replace('READ_FAILURE', str(ROOT / 'kernel/src/block/read_failure.rs'))
+        harness = harness.replace('ADMISSION', str(ROOT / 'kernel/src/drivers/ahci/admission.rs'))
         with tempfile.TemporaryDirectory() as scratch:
             test = Path(scratch) / 'admission.rs'
             binary = test.with_suffix('')

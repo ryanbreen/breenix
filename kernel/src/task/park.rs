@@ -76,6 +76,13 @@ fn dispatching() -> bool {
 /// Whether the current context may park (design §3.1). The only
 /// implementation of that decision.
 pub fn context() -> ParkContext {
+    park_core::classify(context_inputs())
+}
+
+/// The facts [`context`] decides from, read for the current context, for a
+/// caller that decides through a seam of its own over `park_core::classify`
+/// (AHCI admission, `drivers::ahci::admission`).
+pub fn context_inputs() -> ContextInputs {
     let mut inputs = ContextInputs {
         hardirq: crate::per_cpu::in_hardirq(),
         softirq: crate::per_cpu::in_softirq(),
@@ -85,7 +92,7 @@ pub fn context() -> ParkContext {
     // Interrupt context first: the reads below take scheduler locks, which
     // interrupt context may not.
     if inputs.hardirq || inputs.softirq || inputs.nmi {
-        return park_core::classify(inputs);
+        return inputs;
     }
     inputs.dispatching = dispatching();
     if inputs.dispatching {
@@ -100,7 +107,7 @@ pub fn context() -> ParkContext {
     }
     inputs.depth = depth();
     inputs.irqs_masked = !crate::arch_interrupts_enabled();
-    park_core::classify(inputs)
+    inputs
 }
 
 /// Sleepable, at a baseline of exactly one braked level (a syscall, or a
