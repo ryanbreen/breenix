@@ -2050,8 +2050,11 @@ impl<W: Wait + 'static> BreenFs<W> {
                 return Err((Errno(EBUSY), epoch));
             }
         }
-        // Write back, and so count, the stores of mappings already gone.
-        self.sync_mappings(None).map_err(|error| (error, RootEpoch::default()))?;
+        // Write back, and so count, the stores of the booted tree's mappings
+        // already gone. Other trees' mappings are not frozen and their
+        // writeback errors (a full /var) do not refuse this freeze.
+        self.sync_mappings_of(None, |ino| ino & ops::TREE_TAGS == 0)
+            .map_err(|error| (error, RootEpoch::default()))?;
         let state = self.foreground_lock().map_err(|error| (error, RootEpoch::default()))?;
         if let Err(error) = state.writable() {
             return Err((error, self.root_epoch(&state)));
@@ -2972,8 +2975,13 @@ impl<W: Wait + 'static> BreenFs<W> {
         Ok(handles)
     }
     fn sync_mappings(&self, deadline: Option<u64>) -> Result<(), Errno> {
+        self.sync_mappings_of(deadline, |_| true)
+    }
+    /// Write back the mappings of the files `ino` selects.
+    fn sync_mappings_of(&self, deadline: Option<u64>, ino: impl Fn(u64) -> bool) -> Result<(), Errno> {
         if self.inner.state.lock_interruptible()?.failed { return Err(Errno(EIO)); }
-        let nodes = self.mapped_nodes(core::convert::identity)?;
+        let mut nodes = self.mapped_nodes(core::convert::identity)?;
+        nodes.retain(|node| ino(node.ino));
         // Shutdown stages snapshots without an unbounded foreground generation
         // wait; its final sync_generation below retains the supplied deadline.
         let mut buffer = if deadline.is_some() && nodes.iter().any(|n| n.map.has_dirty()) {
