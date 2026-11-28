@@ -48,16 +48,24 @@ def manifest(token, entry, version):
     if not COMMIT.fullmatch(entry['commit']) or any(
             not re.fullmatch(r'[0-9a-f]{64}', entry[field]) for field in ('sha256', 'baseNoteSha256')):
         raise ValueError('invalid live flash commit or digest')
-    lines = [f'BREENIX-FLASH {version}', token, entry['commit'], str(size),
-             entry['sha256'], entry['baseNoteSha256']]
+    root = None
     if version == 2:
         if not BUILD_ID.fullmatch(entry['userland']):
             raise ValueError('invalid paired generation')
-        lines.append('gen-' + entry['userland'])
-    text = ('\n'.join(lines) + '\n').encode('ascii')
+        root = 'gen-' + entry['userland']
+    text = encode_manifest(token, entry['commit'], size, entry['sha256'],
+                           entry['baseNoteSha256'], root)
     if version not in MANIFEST_MAX or len(text) > MANIFEST_MAX[version]:
         raise ValueError('manifest does not fit the installed manager')
     return text
+
+
+def encode_manifest(token, commit, size, digest, base_digest, root=None):
+    version = 2 if root is not None else 1
+    lines = [f'BREENIX-FLASH {version}', token, commit, str(size), digest, base_digest]
+    if root is not None:
+        lines.append(root)
+    return ('\n'.join(lines) + '\n').encode('ascii')
 
 
 def record_path(m, token):

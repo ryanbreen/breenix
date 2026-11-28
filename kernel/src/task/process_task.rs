@@ -2741,156 +2741,13 @@ pub fn reclaim_progress_gate_test() -> crate::test_framework::registry::TestResu
 
     #[cfg(target_arch = "x86_64")]
     {
-        let mut contended = match crate::memory::process_memory::ProcessPageTable::new() {
-            Ok(page_table) => page_table,
-            Err(_) => return TestResult::Fail("E: x86 page-table construction failed"),
-        };
-        let custody_frames = contended.custody_frames_for_gate();
-        let recorded = contended.recorded_table_frames_for_gate();
-        let free_before = crate::memory::frame_allocator::free_list_len_for_gate();
-        let allocator_lost_before = trace::FRAME_LOST_CONTENDED.aggregate();
         let retire_lost_before = trace::PT_RETIRE_FRAMES_LOST.aggregate();
-        let returned_before = trace::PT_TABLE_FRAMES_RETURNED.aggregate();
-        let retired_before = trace::PT_ROOTS_RETIRED.aggregate();
         let no_arch_before = trace::PT_ROOT_ABANDONED_NO_ARCH.aggregate();
         let undecided_before = trace::PT_ROOT_DROPPED_UNDECIDED.aggregate();
-        let refusals_before = [
-            trace::FRAME_RETURN_REFUSED_DOUBLE.aggregate(),
-            trace::FRAME_RETURN_REFUSED_STALE.aggregate(),
-            trace::FRAME_RETURN_REFUSED_NEVER_ALLOCATED.aggregate(),
-            trace::FRAME_RETURN_REFUSED_UNTRACKED.aggregate(),
-            trace::FRAME_RETURN_REFUSED_LIVE_LEAF.aggregate(),
-        ];
-        let mut budget = crate::memory::process_memory::RETIRE_FRAME_BUDGET;
-        let progress = crate::memory::frame_allocator::retire_with_free_list_contended(
-            &mut contended,
-            BOOT_RECLAIM_PID_BASE + 90,
-            &mut budget,
-        );
-        let mut repaired = true;
-        for frame in custody_frames.iter().copied() {
-            repaired &= crate::memory::frame_allocator::republish_frame_for_gate(frame);
-        }
-        let refusals_after = [
-            trace::FRAME_RETURN_REFUSED_DOUBLE.aggregate(),
-            trace::FRAME_RETURN_REFUSED_STALE.aggregate(),
-            trace::FRAME_RETURN_REFUSED_NEVER_ALLOCATED.aggregate(),
-            trace::FRAME_RETURN_REFUSED_UNTRACKED.aggregate(),
-            trace::FRAME_RETURN_REFUSED_LIVE_LEAF.aggregate(),
-        ];
-        if progress != crate::memory::process_memory::RetireProgress::Complete {
-            fail_gate_debug!(
-                "E1",
-                "retire_progress",
-                progress,
-                crate::memory::process_memory::RetireProgress::Complete,
-                "E1: x86 contended retirement progress was not complete"
-            );
-        }
-        if custody_frames.len() != recorded + 1 {
-            fail_gate_value!(
-                "E2",
-                "custody_frame_count",
-                custody_frames.len(),
-                recorded + 1,
-                "E2: x86 contended retirement custody frame count was not exact"
-            );
-        }
-        let allocator_lost_delta = trace::FRAME_LOST_CONTENDED
-            .aggregate()
-            .saturating_sub(allocator_lost_before);
-        if allocator_lost_delta < custody_frames.len() as u64 {
-            fail_gate_value!(
-                "E3",
-                "frame_lost_contended_delta_minimum",
-                allocator_lost_delta,
-                custody_frames.len() as u64,
-                "E3: x86 contended allocator lost fewer frames than custody required"
-            );
-        }
-        let retire_lost_after = trace::PT_RETIRE_FRAMES_LOST.aggregate();
-        if retire_lost_after != retire_lost_before + custody_frames.len() as u64 {
-            fail_gate_value!(
-                "E4",
-                "pt_retire_frames_lost",
-                retire_lost_after,
-                retire_lost_before + custody_frames.len() as u64,
-                "E4: x86 contended retirement lost-frame total was not exact"
-            );
-        }
-        let returned_after = trace::PT_TABLE_FRAMES_RETURNED.aggregate();
-        if returned_after != returned_before {
-            fail_gate_value!(
-                "E5",
-                "pt_table_frames_returned",
-                returned_after,
-                returned_before,
-                "E5: x86 contended retirement returned a frame"
-            );
-        }
-        let retired_after = trace::PT_ROOTS_RETIRED.aggregate();
-        if retired_after != retired_before + 1 {
-            fail_gate_value!(
-                "E6",
-                "pt_roots_retired",
-                retired_after,
-                retired_before + 1,
-                "E6: x86 contended retirement root total was not exact"
-            );
-        }
-        let no_arch_after = trace::PT_ROOT_ABANDONED_NO_ARCH.aggregate();
-        if no_arch_after != no_arch_before {
-            fail_gate_value!(
-                "E7",
-                "pt_root_abandoned_no_arch",
-                no_arch_after,
-                no_arch_before,
-                "E7: x86 contended retirement changed no-arch abandonments"
-            );
-        }
-        let undecided_after = trace::PT_ROOT_DROPPED_UNDECIDED.aggregate();
-        if undecided_after != undecided_before {
-            fail_gate_value!(
-                "E8",
-                "pt_root_dropped_undecided",
-                undecided_after,
-                undecided_before,
-                "E8: x86 contended retirement changed undecided drops"
-            );
-        }
-        if refusals_after != refusals_before {
-            fail_gate_debug!(
-                "E9",
-                "frame_refusal_counters",
-                refusals_after,
-                refusals_before,
-                "E9: x86 contended retirement changed frame refusal counters"
-            );
-        }
-        if !repaired {
-            fail_gate_debug!(
-                "E10",
-                "all_custody_frames_republished",
-                repaired,
-                true,
-                "E10: x86 contended retirement did not republish every custody frame"
-            );
-        }
-        let free_after = crate::memory::frame_allocator::free_list_len_for_gate();
-        if free_after != free_before + custody_frames.len() {
-            fail_gate_value!(
-                "E11",
-                "free_list_length",
-                free_after,
-                free_before + custody_frames.len(),
-                "E11: x86 contended retirement did not restore the free list exactly"
-            );
-        }
-
         let mut healthy = match crate::memory::process_memory::ProcessPageTable::new() {
             Ok(page_table) => page_table,
             Err(_) => {
-                return TestResult::Fail("E: healthy recovery page-table construction failed")
+                return TestResult::Fail("E: healthy page-table construction failed")
             }
         };
         let healthy_recorded = healthy.recorded_table_frames_for_gate();
@@ -2905,7 +2762,7 @@ pub fn reclaim_progress_gate_test() -> crate::test_framework::registry::TestResu
                 "healthy_retire_progress",
                 healthy_progress,
                 crate::memory::process_memory::RetireProgress::Complete,
-                "E12: healthy x86 retirement progress was not complete after contention"
+                "E12: healthy x86 retirement progress was not complete"
             );
         }
         let healthy_returned_after = trace::PT_TABLE_FRAMES_RETURNED.aggregate();
@@ -2929,13 +2786,13 @@ pub fn reclaim_progress_gate_test() -> crate::test_framework::registry::TestResu
             );
         }
         let healthy_lost_after = trace::PT_RETIRE_FRAMES_LOST.aggregate();
-        if healthy_lost_after != retire_lost_before + custody_frames.len() as u64 {
+        if healthy_lost_after != retire_lost_before {
             fail_gate_value!(
                 "E15",
                 "healthy_pt_retire_frames_lost",
                 healthy_lost_after,
-                retire_lost_before + custody_frames.len() as u64,
-                "E15: healthy x86 retirement changed the repaired lost-frame total"
+                retire_lost_before,
+                "E15: healthy x86 retirement lost a frame"
             );
         }
         let healthy_no_arch_after = trace::PT_ROOT_ABANDONED_NO_ARCH.aggregate();

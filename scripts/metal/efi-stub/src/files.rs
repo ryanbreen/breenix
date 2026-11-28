@@ -30,6 +30,44 @@ impl Open {
     pub fn handle(&self) -> *mut File {
         self.file
     }
+
+    unsafe fn info(&self) -> Result<[u64; 64], Status> {
+        let mut info = [0; 64];
+        let mut size = core::mem::size_of_val(&info);
+        ok(((*self.file).get_info)(self.file, &FILE_INFO, &mut size, info.as_mut_ptr().cast()))?;
+        if size < FILE_INFO_FIXED {
+            return Err(VOLUME_CORRUPTED);
+        }
+        Ok(info)
+    }
+
+    unsafe fn size(&self) -> Result<u64, Status> {
+        Ok(self.info()?[1])
+    }
+
+    unsafe fn read_exact(&self, mut bytes: &mut [u8]) -> Result<(), Status> {
+        while !bytes.is_empty() {
+            let mut size = bytes.len();
+            ok(((*self.file).read)(self.file, &mut size, bytes.as_mut_ptr().cast()))?;
+            if size == 0 || size > bytes.len() {
+                return Err(VOLUME_CORRUPTED);
+            }
+            bytes = &mut bytes[size..];
+        }
+        Ok(())
+    }
+
+    unsafe fn write_all(&self, mut data: &[u8]) -> Result<(), Status> {
+        while !data.is_empty() {
+            let mut size = data.len().min(1 << 20);
+            ok(((*self.file).write)(self.file, &mut size, data.as_ptr().cast()))?;
+            if size == 0 || size > data.len() {
+                return Err(DEVICE_ERROR);
+            }
+            data = &data[size..];
+        }
+        ok(((*self.file).flush)(self.file))
+    }
 }
 
 impl Drop for Open {
@@ -109,6 +147,117 @@ impl Root {
         Ok(size)
     }
 
+    /// Reads a bounded file without accepting a truncated prefix.
+    ///
+    /// # Safety
+    /// The root's directory handle must still be open.
+    pub unsafe fn read_bounded(&self, path: &str, buffer: &mut [u8]) -> Result<usize, Status> {
+        let file = self.open(path, FILE_MODE_READ)?;
+        let length = usize::try_from(file.size()?).map_err(|_| BAD_BUFFER_SIZE)?;
+        let output = buffer.get_mut(..length).ok_or(BAD_BUFFER_SIZE)?;
+        file.read_exact(output)?;
+        Ok(length)
+    }
+
+    /// Rewrites the bytes of an existing file without changing its length.
+    ///
+    /// # Safety
+    /// The root's directory handle must still be open.
+    pub unsafe fn overwrite(&self, path: &str, data: &[u8]) -> Result<(), Status> {
+        let file = self.open(path, FILE_MODE_READ | FILE_MODE_WRITE)?;
+        if file.size()? != data.len() as u64 {
+            return Err(VOLUME_CORRUPTED);
+        }
+        ok(((*file.file).set_position)(file.file, 0))?;
+        file.write_all(data)
+    }
+
+    /// Creates a fresh file, preserving an existing file at the same path.
+    ///
+    /// # Safety
+    /// The root's directory handle must still be open.
+    pub unsafe fn write_new(&self, path: &str, data: &[u8]) -> Result<(), Status> {
+        match self.size(path) {
+            Err(NOT_FOUND) => (),
+            Ok(_) => return Err(ACCESS_DENIED),
+            Err(status) => return Err(status),
+        }
+        self.create_and_check(path, data)
+    }
+
+    /// Releases a file's data in place, preserving its directory name.
+    ///
+    /// # Safety
+    /// The root's directory handle must still be open.
+    pub unsafe fn truncate(&self, path: &str) -> Result<bool, Status> {
+        let file = self.open(path, FILE_MODE_READ | FILE_MODE_WRITE)?;
+        let mut info = file.info()?;
+        if info[1] == 0 {
+            return Ok(false);
+        }
+        let size = usize::try_from(info[0]).map_err(|_| VOLUME_CORRUPTED)?;
+        if !(FILE_INFO_FIXED + 2..=core::mem::size_of_val(&info)).contains(&size) {
+            return Err(VOLUME_CORRUPTED);
+        }
+        info[1] = 0;
+        ok(((*file.file).set_info)(
+            file.file,
+            &FILE_INFO,
+            size,
+            info.as_ptr().cast(),
+        ))?;
+        ok(((*file.file).flush)(file.file))?;
+        Ok(true)
+    }
+
+    /// Opens or creates a directory.
+    ///
+    /// # Safety
+    /// The root's directory handle must still be open.
+    pub unsafe fn ensure_directory(&self, path: &str) -> Result<(), Status> {
+        let wide = Wide::<128>::new(path);
+        let mut handle = null_mut();
+        ok(((*self.dir).open)(self.dir, &mut handle, wide.as_ptr(),
+            FILE_MODE_READ | FILE_MODE_WRITE | FILE_MODE_CREATE, FILE_DIRECTORY))?;
+        let file = Open { file: handle };
+        if file.info()?[9] & FILE_DIRECTORY == 0 {
+            return Err(VOLUME_CORRUPTED);
+        }
+        Ok(())
+    }
+
+    /// Visits the ASCII names returned by the firmware for a directory.
+    ///
+    /// # Safety
+    /// The root's directory handle must still be open.
+    pub unsafe fn visit_names(&self, path: &str, visit: &mut dyn FnMut(&str)) -> Result<(), Status> {
+        let dir = self.open(path, FILE_MODE_READ)?;
+        loop {
+            // EFI_FILE_INFO has 8-byte alignment and a NUL-terminated CHAR16 name.
+            let mut info = [0u64; 80];
+            let mut length = core::mem::size_of_val(&info);
+            ok(((*dir.file).read)(dir.file, &mut length, info.as_mut_ptr().cast()))?;
+            if length == 0 {
+                return Ok(());
+            }
+            if !(FILE_INFO_FIXED + 2..=core::mem::size_of_val(&info)).contains(&length) {
+                return Err(VOLUME_CORRUPTED);
+            }
+            let data = core::slice::from_raw_parts(info.as_ptr().cast::<u8>(), length);
+            let mut ascii = [0; 12];
+            for (i, unit) in data[FILE_INFO_FIXED..].chunks_exact(2).enumerate() {
+                if unit == [0, 0] {
+                    visit(core::str::from_utf8(&ascii[..i]).map_err(|_| VOLUME_CORRUPTED)?);
+                    break;
+                }
+                if i == ascii.len() || unit[1] != 0 || !unit[0].is_ascii() {
+                    break;
+                }
+                ascii[i] = unit[0];
+            }
+        }
+    }
+
     /// Creates or replaces a file with `data`, then reads it back.
     ///
     /// # Safety
@@ -117,17 +266,12 @@ impl Root {
         if self.exists(path) {
             self.delete(path)?;
         }
+        self.create_and_check(path, data)
+    }
+
+    unsafe fn create_and_check(&self, path: &str, data: &[u8]) -> Result<(), Status> {
         let file = self.open(path, FILE_MODE_READ | FILE_MODE_WRITE | FILE_MODE_CREATE)?;
-        let mut at = 0;
-        while at < data.len() {
-            let mut size = (data.len() - at).min(1 << 20);
-            ok(((*file.file).write)(file.file, &mut size, data[at..].as_ptr().cast()))?;
-            if size == 0 {
-                return Err(DEVICE_ERROR);
-            }
-            at += size;
-        }
-        ok(((*file.file).flush)(file.file))?;
+        file.write_all(data)?;
         drop(file);
         if self.size(path)? != data.len() as u64 {
             return Err(VOLUME_CORRUPTED);
@@ -159,10 +303,7 @@ impl Root {
     /// The root's directory handle must still be open.
     pub unsafe fn size(&self, path: &str) -> Result<u64, Status> {
         let file = self.open(path, FILE_MODE_READ)?;
-        let mut info = [0u64; 64];
-        let mut size = core::mem::size_of_val(&info);
-        ok(((*file.file).get_info)(file.file, &FILE_INFO, &mut size, info.as_mut_ptr().cast()))?;
-        Ok(info[1])
+        file.size()
     }
 
     /// Renames a file within its directory: `to` is the new name without a directory.
@@ -193,16 +334,16 @@ impl Root {
     /// # Safety
     /// The root's directory handle must still be open.
     pub unsafe fn read_pages(&self, boot: &BootServices, path: &str) -> Result<(*mut u8, usize), Status> {
-        let length = usize::try_from(self.size(path)?).map_err(|_| OUT_OF_RESOURCES)?;
+        let file = self.open(path, FILE_MODE_READ)?;
+        let length = usize::try_from(file.size()?).map_err(|_| OUT_OF_RESOURCES)?;
         let pages = length.div_ceil(4096).max(1);
         let mut address = 0u64;
         ok((boot.allocate_pages)(ALLOCATE_ANY_PAGES, LOADER_DATA, pages, &mut address))?;
-        let file = self.open(path, FILE_MODE_READ)?;
         let mut at = 0;
         while at < length {
             let mut size = (length - at).min(16 << 20);
             let status = ((*file.file).read)(file.file, &mut size, (address as *mut u8).add(at).cast());
-            if status != SUCCESS || size == 0 {
+            if status != SUCCESS || size == 0 || size > length - at {
                 (boot.free_pages)(address, pages);
                 return Err(if status == SUCCESS { VOLUME_CORRUPTED } else { status });
             }
