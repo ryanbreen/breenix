@@ -45,6 +45,51 @@ def tree(base, mmio=0x10000000, captured=None):
 
 
 class QemuPciEcamTest(unittest.TestCase):
+    def test_watchdog_discovery_uses_the_mapped_config_address(self):
+        source = (ROOT / 'kernel/src/drivers/i6300esb.rs').read_text()
+        discover = source.split('    pub fn discover(', 1)[1].split('\n    }', 1)[0]
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            harness = directory / 'watchdog.rs'
+            harness.write_text('''
+mod platform_config {
+    pub fn is_qemu() -> bool { true }
+    pub fn pci_ecam_base() -> u64 { 0x40_1000_0000 }
+    pub fn pci_ecam_virt_base() -> u64 { 0xffff_dfff_f000_0000 }
+}
+mod pci {
+    pub struct Bar { pub is_io: bool, pub address: u64, pub size: u64 }
+    pub struct Device { pub bus: u8, pub device: u8, pub function: u8, pub bars: [Bar; 1] }
+    impl Device {
+        pub fn enable_memory_space(&self) {}
+    }
+    pub fn find_device(vendor: u16, device: u16) -> Option<Device> {
+        assert_eq!((vendor, device), (0x8086, 0x25ab));
+        Some(Device {
+            bus: 1, device: 5, function: 1,
+            bars: [Bar { is_io: false, address: 0x1000_1000, size: 0x10 }],
+        })
+    }
+}
+struct MmioBus { config: usize, bar0: usize }
+struct Watchdog<T>(T);
+impl<T> Watchdog<T> {
+    fn new(bus: T) -> Self { Self(bus) }
+}
+fn discover(''' + discover + '''
+}
+fn main() {
+    let Watchdog(bus) = discover().unwrap();
+    assert_eq!(bus.config, platform_config::pci_ecam_virt_base() as usize + 0x12_9000,
+               "watchdog config address for 01:05.1 must use the mapped ECAM window");
+    assert_eq!(bus.bar0, 0xffff_0000_1000_1000);
+}
+''')
+            binary = directory / 'watchdog'
+            subprocess.run(['rustc', '--edition=2021', '-D', 'warnings', str(harness),
+                            '-o', str(binary)], check=True)
+            subprocess.run([str(binary)], check=True)
+
     def test_config_reads_and_writes_use_the_mapped_address(self):
         source = (ROOT / 'kernel/src/drivers/pci.rs').read_text()
         functions = []
