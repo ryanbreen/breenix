@@ -2155,6 +2155,25 @@ True
 
 ```
 
+**Before E4 the drain does not overlap device writes (11.3).** `BlockCache::submit` drives the device
+writes and returns a completed `Batch` (`block/cache.rs:94-105`, `:803-807`). The model records the order in
+which the drain submits runs and the device finishes them, and compares it with what the design claims.
+
+```pycon
+>>> RULE = 'overlap-before-e4'
+>>> def drain(runs):
+...     trace = []
+...     for k in runs:
+...         trace.append(('submit', k))
+...         trace.append(('device-done', k))
+...     return trace
+>>> t = drain([0, 1])
+>>> overlapped = t.index(('submit', 1)) < t.index(('device-done', 0))
+>>> overlapped == (RULE == 'overlap-before-e4')
+True
+
+```
+
 ## 20. bbench rows (DEV-31)
 
 | Row | Ratio (28668b28) | Expected to move in | Parity reachable from E3 alone |
