@@ -1105,15 +1105,23 @@ pub fn reclaim_tx_completed() -> usize {
 }
 
 /// The next received frame on any active queue (non-blocking). It stays valid
-/// until the next `receive` from its queue or `recycle_rx_buffers`.
+/// until the next `receive` that looks at its queue, or `recycle_rx_buffers`.
+///
+/// A queue with no further frame gives back the buffers it holds: its earlier
+/// frames are no longer valid, and a drain whose completions were all dropped
+/// hands nothing up, so its caller has no batch to recycle.
 pub fn receive() -> Option<&'static [u8]> {
     let info = DEVICE.get()?;
     let start = RX_NEXT.load(Ordering::Relaxed);
     for i in 0..info.pairs {
         let k = (start + i) % info.pairs;
-        if let Some(frame) = RXQ[k].lock().next_frame() {
+        let mut rx = RXQ[k].lock();
+        if let Some(frame) = rx.next_frame() {
             RX_NEXT.store((k + 1) % info.pairs, Ordering::Relaxed);
             return Some(frame);
+        }
+        if rx.recycle() {
+            notify(info.base_virt, 2 * k as u32);
         }
     }
     None
