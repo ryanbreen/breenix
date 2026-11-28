@@ -945,6 +945,24 @@ of their steps, keeping each CPU's program order. The steps are sequentially con
     65th sleeper's deadline is kept, where today's fine heap refuses it (red).
   - A seam test that after every queue change the programmed compare equals the head. <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
   - A host test that `get_ticks()` advances with the counter when no interrupt arrives.
+  - **Deadlines across migration.** A host test arms a sleeper's deadline while CPU A owns the thread,
+    then moves the thread to CPU B before A runs again. The deadline must end up in B's queue only, and
+    B's compare must cover it. A second case lets a deadline from the thread's earlier sleep expire
+    during a later sleep, which must not wake the later sleep. Red on §8.1 as first written. That text
+    posts a remote deadline to the owner's inbox, and the R17 inbox carries only wake bits
+    (`publish_wake(tid, bits, ..)`, `rq.rs:1263`), so a migrated thread's deadline stays with A.
+
+    ```pycon
+    >>> def deadline_queue_after(owner_at_post, owner_at_drain):
+    ...     return owner_at_post if owner_at_post == owner_at_drain else None
+    >>> deadline_queue_after(owner_at_post='A', owner_at_drain='B')
+    'B'
+    >>> def expiry_wakes(deadline_sleep, current_sleep):
+    ...     return True
+    >>> expiry_wakes(deadline_sleep=4, current_sleep=5)
+    False
+
+    ```
   - A kernel test in the testing feature: `nanosleep` of 3 ms on an otherwise idle CPU returns within the
     one-shot's resolution plus the wake path, and not at the next 1 ms or 5 ms boundary. The fixed
     point is the deadline itself.
