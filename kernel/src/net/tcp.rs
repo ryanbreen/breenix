@@ -4,7 +4,8 @@
 //!
 //! Each connection keeps the bytes it has not seen acknowledged in a bounded send
 //! buffer and transmits new data only within both the peer's advertised window and
-//! its congestion window. Its congestion policy (`tcp/congestion.rs`, NewReno) sets
+//! its congestion window, which Limited Transmit (RFC 3042) exceeds by one segment
+//! on each of the first two duplicate ACKs. Its congestion policy (`tcp/congestion.rs`, NewReno) sets
 //! that window; loss recovery (`tcp/recovery.rs`) fast retransmits on the third
 //! duplicate ACK and repairs each further hole a partial ACK reveals (RFC 5681,
 //! RFC 6582). A retransmission timeout resends only the oldest segment and slow
@@ -1454,14 +1455,23 @@ impl TcpConnection {
             // whole; one may whenever the flight is empty, so a window below
             // the SMSS cannot stall the connection.
             let allowance = (self.cc.cwnd() as usize).saturating_sub(self.tx_sent);
-            if allowance < want && self.tx_sent != 0 {
-                // The congestion window is full: the next ACK opens it.
+            let limited = allowance < want && self.tx_sent != 0;
+            if limited
+                && (seq_lt(self.send_next, self.send_max)
+                    || !self.recovery.limited_transmit_allows(want as u32, smss))
+            {
+                // The congestion window is full, and Limited Transmit does not
+                // apply: it sends only new data, one segment for each of the
+                // first two duplicates. The next ACK opens the window.
                 return true;
             }
             let len = want.min(room);
             let seq = self.send_next;
             if !self.send_data(self.tx_sent, len) {
                 return false;
+            }
+            if limited {
+                self.recovery.limited_transmit_sent(len as u32);
             }
             if seq_lt(seq, self.send_max) {
                 count_resend(self.resend);
@@ -1866,12 +1876,14 @@ impl TcpConnection {
                 _ => {}
             }
         }
-        // Output that may go now: freed or newly windowed bytes, a repair, or
-        // room a duplicate made by inflating the window in fast recovery.
+        // Output that may go now: freed or newly windowed bytes, a repair,
+        // room a duplicate made by inflating the window in fast recovery, or
+        // a Limited Transmit segment a duplicate allows.
         let opened = freed
             || self.send_window > window_was
             || self.repair.is_some()
-            || self.cc.cwnd() > cwnd_was;
+            || self.cc.cwnd() > cwnd_was
+            || duplicate;
         if opened && self.has_output() {
             TX_RETRY.store(true, Ordering::Release);
         }

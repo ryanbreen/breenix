@@ -501,8 +501,11 @@ concurrency, loss or RTT named in the prediction.
   ISN start makes `ACK - 1 > recover` false for a lost first data segment
   while no retransmission exists to guard against, and a marker kept through
   2^31 bytes of progress compares as ahead of the ACK (RFC 6582 section 6).
-- Recovery entry takes the outstanding data as FlightSize because PR 1 sends no
-  Limited Transmit (RFC 3042) segments to exclude.
+- Limited Transmit (RFC 3042) lets each of the first two duplicates send one
+  new segment beyond cwnd, counted in bytes against `dupacks * SMSS` and
+  excluding resends behind `send_max`, because RFC 3042 admits only new data and the
+  sender's segments may be shorter than SMSS. Recovery entry leaves those
+  bytes out of FlightSize.
 - New data leaves only in whole segments of `min(SMSS, queued)` under the
   congestion window, and one segment may leave whenever the flight from
   `send_unack` is empty, because filling the window's remainder would send sub-MSS segments

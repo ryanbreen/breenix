@@ -33,6 +33,9 @@ pub(super) struct Recovery {
     recover: Option<u32>,
     /// Qualifying duplicate acknowledgements since the cumulative ACK last moved.
     dupacks: u32,
+    /// Data bytes Limited Transmit sent since the cumulative ACK last moved,
+    /// which recovery entry leaves out of FlightSize (RFC 3042 section 2).
+    limited_sent: u32,
     /// In fast recovery.
     active: bool,
     /// This recovery episode has seen a partial acknowledgement.
@@ -44,6 +47,7 @@ impl Recovery {
         Recovery {
             recover: None,
             dupacks: 0,
+            limited_sent: 0,
             active: false,
             partial_seen: false,
         }
@@ -59,6 +63,21 @@ impl Recovery {
 
     pub fn active(&self) -> bool {
         self.active
+    }
+
+    /// Limited Transmit (RFC 3042 section 2, RFC 5681 section 3.2): outside
+    /// fast recovery, each of the first two duplicate acknowledgements lets
+    /// one new segment of `len` bytes leave beyond the congestion window,
+    /// which keeps the flight within cwnd + 2 * SMSS.
+    pub fn limited_transmit_allows(&self, len: u32, smss: u32) -> bool {
+        !self.active
+            && (1..DUPACK_THRESHOLD).contains(&self.dupacks)
+            && self.limited_sent.saturating_add(len) <= self.dupacks.saturating_mul(smss)
+    }
+
+    /// Limited Transmit sent `len` new data bytes.
+    pub fn limited_transmit_sent(&mut self, len: u32) {
+        self.limited_sent = self.limited_sent.saturating_add(len);
     }
 
     /// A qualifying duplicate acknowledgement (RFC 5681 section 2) of `ack`,
@@ -88,6 +107,10 @@ impl Recovery {
         self.recover = Some(highest_sent);
         self.active = true;
         self.partial_seen = false;
+        // The threshold comes from the flight without the Limited Transmit
+        // segments (RFC 3042 section 2).
+        let flight = flight.saturating_sub(self.limited_sent);
+        self.limited_sent = 0;
         cc.on_enter_recovery(flight, smss);
         true
     }
@@ -103,10 +126,11 @@ impl Recovery {
         smss: u32,
     ) -> Response {
         self.dupacks = 0;
+        self.limited_sent = 0;
         if !self.active {
             if self.beyond_recover(ack) {
-                // Past the marker: it no longer guards anything, and kept it
-                // would go stale (RFC 6582 section 6).
+                // Past the marker: it no longer guards anything, and if kept
+                // it would go stale (RFC 6582 section 6).
                 self.recover = None;
             }
             cc.on_ack(acked, smss);
@@ -141,6 +165,7 @@ impl Recovery {
         cc.on_timeout(flight, smss, first);
         self.recover = Some(highest_sent);
         self.dupacks = 0;
+        self.limited_sent = 0;
         self.active = false;
         self.partial_seen = false;
     }
