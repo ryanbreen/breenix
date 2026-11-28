@@ -15,7 +15,7 @@ use super::{
     dirty::DirtyPages,
     format::{self, Inode, Root, Superblock, Time, BLOCK_SIZE},
     mount_lock::{MountGuard, MountLock},
-    node_cache::{metadata_ram_bytes, CacheBudget, CacheCharge, CachedNodeStore, DecodedNodes, Held, Wanted},
+    node_cache::{metadata_ram_bytes, thread_token, CacheBudget, CacheCharge, CachedNodeStore, DecodedNodes, Held, Wanted},
     ops::{self, DeferredRun, Files, ReadError},
     recover,
     reserve::{Estimate, Grant, Ledger, Operation},
@@ -158,10 +158,12 @@ pub mod measurement {
     }
     /// Run `run` as the mount's commit worker, as its kthread runs each pass.
     pub fn as_worker<W: crate::block::cache::Wait + 'static, T>(
-        _fs: &super::BreenFs<W>, run: impl FnOnce() -> T,
+        fs: &super::BreenFs<W>, run: impl FnOnce() -> T,
     ) -> T {
         let was = super::i7::set_worker(true);
+        let previous = fs.inner.worker.swap(super::thread_token(), core::sync::atomic::Ordering::AcqRel);
         let result = run();
+        fs.inner.worker.store(previous, core::sync::atomic::Ordering::Release);
         super::i7::set_worker(was);
         result
     }
@@ -483,6 +485,12 @@ struct Mount<W: Wait + 'static> {
     // Readers past PASS_HOLD passes (design 7.2 step 4). Taken under the
     // state lock; a freeze does not start while any is held.
     read_holds: AtomicU32,
+    // The commit worker's thread (node_cache::thread_token), recorded when it
+    // starts, and 0 when no worker runs. Admission branches on it (design 7.3).
+    worker: core::sync::atomic::AtomicUsize,
+    // The worker's admission found another publisher owning the detached
+    // generation and returned EAGAIN; its pass keeps the mappings dirty.
+    worker_deferred: AtomicBool,
     mapping_passes: AtomicU64,
     mapping_pages_evicted: AtomicU64,
     mapping_requests_dropped: AtomicU64,
@@ -2649,6 +2657,8 @@ impl<W: Wait + 'static> BreenFs<W> {
             generation,
             materialize: AtomicBool::new(false),
             read_holds: AtomicU32::new(0),
+            worker: core::sync::atomic::AtomicUsize::new(0),
+            worker_deferred: AtomicBool::new(false),
             mapping_passes: AtomicU64::new(0),
             mapping_pages_evicted: AtomicU64::new(0),
             mapping_requests_dropped: AtomicU64::new(0),
@@ -2981,6 +2991,12 @@ impl<W: Wait + 'static> BreenFs<W> {
                 return Ok(state);
             }
             drop(state);
+            if !self.is_worker() {
+                // A foreground writer parks on commit progress with no lock
+                // held, then retries (design 7.3).
+                self.await_publication(cost, observed)?;
+                continue;
+            }
             // Admission can run on the commit worker while staging mappings.
             // Publish without servicing mappings recursively; waiting first
             // would ask that same worker to complete its own generation.
@@ -2992,10 +3008,48 @@ impl<W: Wait + 'static> BreenFs<W> {
             if published {
                 continue;
             }
-            // Another publisher owns the detached generation. Its completion
-            // wakes us, with neither mount nor mapping locks held here.
+            // Another publisher owns the detached generation. The worker does
+            // not park on progress it might be the one to make: it stops
+            // staging, its pass keeps the remaining mappings dirty, and that
+            // publisher's completion wakes its loop (design 7.3).
+            self.inner.worker_deferred.store(true, Ordering::Release);
+            return Err(Errno(EAGAIN));
+        }
+    }
+    /// Whether the caller is this mount's commit worker (design 7.3).
+    fn is_worker(&self) -> bool {
+        let worker = self.inner.worker.load(Ordering::Acquire);
+        worker != 0 && worker == thread_token()
+    }
+    /// A foreground caller that needs a publication asks the commit worker
+    /// for one and parks on commit progress with no lock held (design 7.3).
+    /// With no worker running (before init_service or after shutdown stops
+    /// it) no worker is there to wait for, so the caller publishes the generation
+    /// itself, as before E2.5.
+    fn await_publication(&self, cost: CostOp, observed: u64) -> Result<(), Errno> {
+        self.inner.signal.requested.store(true, Ordering::Release);
+        self.inner.signal.worker.wake();
+        #[cfg(not(test))]
+        let running = self.inner.signal.started.load(Ordering::Acquire)
+            && self.inner.worker.load(Ordering::Acquire) != 0;
+        // The host runs no worker thread unless a check runs one; stand in
+        // for it, as sync_generation does.
+        #[cfg(test)]
+        let running = self.inner.worker.load(Ordering::Acquire) != 0;
+        let published = if running {
+            false
+        } else {
+            let _publication = self.inner.costs.span(cost, CostPhase::Publication);
+            #[cfg(test)]
+            let published = measurement::as_worker(self, || self.commit_due(monotonic_ns()))?;
+            #[cfg(not(test))]
+            let published = self.commit_generation(monotonic_ns())?;
+            published
+        };
+        if !published {
             self.mutation_wait(cost, observed, None)?;
         }
+        Ok(())
     }
     /// Admission for a change to one file's data. Other callers wait while a
     /// write admitted in parts holds the file (N2), so write(2) stays atomic
@@ -3142,6 +3196,19 @@ impl<W: Wait + 'static> BreenFs<W> {
             // A racing install may introduce a backlog. Stop the inline
             // attempt at that generation and revalidate admission first.
             let through = if create { state.durable.generation + 1 } else { last };
+            if !self.is_worker() {
+                // A foreground caller asks the worker for the publication and
+                // parks on commit progress with no lock held (design 7.3).
+                #[cfg(test)]
+                let requested = !state.reservation_pressure;
+                state.reservation_pressure = true;
+                drop(state);
+                self.await_publication(cost, observed)?;
+                #[cfg(test)]
+                admission.pressure(requested);
+                state = readmit()?;
+                continue;
+            }
             drop(state);
             // Do not service mappings recursively: a mapping writer can be the
             // caller. Detached publication and its wait hold no mount lock.
@@ -3152,7 +3219,10 @@ impl<W: Wait + 'static> BreenFs<W> {
             #[cfg(test)]
             admission.pressure(published);
             if !published {
-                self.mutation_wait(cost, observed, None)?;
+                // Another publisher owns the detached generation: the worker
+                // returns to its loop rather than park (design 7.3).
+                self.inner.worker_deferred.store(true, Ordering::Release);
+                return Err(Errno(EAGAIN));
             }
             state = readmit()?;
         }
@@ -3321,7 +3391,9 @@ impl<W: Wait + 'static> BreenFs<W> {
                     let mut state = self.inner.state.lock();
                     // Shutdown can close admission while a service snapshot is in
                     // flight. Its own staged generation owns that final barrier.
-                    if error == Errno(ENOMEM) || error == Errno(ENOSPC) {
+                    let deferred = error == Errno(EAGAIN)
+                        && self.inner.worker_deferred.swap(false, Ordering::AcqRel);
+                    if error == Errno(ENOMEM) || error == Errno(ENOSPC) || deferred {
                         // Keep dirty custody. Defer ENOSPC to the next interval.
                         // Pressure publication wakes this worker and creates new
                         // PENDING metadata even if no data space becomes available;
@@ -4406,6 +4478,11 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             let signal = self.inner.signal.clone();
             if crate::task::kthread::kthread_run(
                 move || {
+                    // Admission learns it is the worker from this record, not
+                    // from a caller's flag (design 7.3).
+                    if let Some(inner) = mount.upgrade() {
+                        inner.worker.store(thread_token(), Ordering::Release);
+                    }
                     loop {
                         let observed = signal.worker.epoch();
                         if signal.stop.load(Ordering::Acquire) {
@@ -4436,6 +4513,9 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                         if signal.worker.wait(observed, Some(deadline)).is_err() {
                             break;
                         }
+                    }
+                    if let Some(inner) = mount.upgrade() {
+                        inner.worker.store(0, Ordering::Release);
                     }
                     signal.started.store(false, Ordering::Release);
                     signal.wake_waiters();
