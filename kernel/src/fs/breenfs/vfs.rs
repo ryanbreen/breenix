@@ -1889,6 +1889,13 @@ impl<W: Wait> MountState<W> {
 /// reader, which then finishes within this many passes and one more.
 const PASS_HOLD: u32 = 4;
 
+/// The directory entries one readdir pass collects before the sink sees them
+/// (design 7.2 step 5), counted as name bytes plus READDIR_RECORD_OVERHEAD.
+/// A getdents64 record takes at least that many bytes, so a reply buffer of
+/// up to this size is filled from one pass.
+const READDIR_PASS_BYTES: usize = 64 * 1024;
+const READDIR_RECORD_OVERHEAD: usize = 24;
+
 /// One read-only operation's work in a no-wait pass (design 7.2).
 trait PassOp<W: Wait + 'static> {
     type Output;
@@ -4716,13 +4723,45 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
     fn readdir(
         &self,
         dir: u64,
-        cookie: u64,
+        mut cookie: u64,
         sink: &mut dyn FnMut(DirEnt, u64) -> Result<bool, Errno>,
     ) -> Result<u64, Errno> {
-        self.passes(&mut metadata(|_: &Self, state: &mut MountState<W>| {
-            let result = read_directory(&state.files, dir, cookie, &mut *sink);
-            state.observed(result)?
-        }))
+        // A pass collects its entries and the sink sees them only once the
+        // pass completes (design 7.2 step 5): a pass that ends in NeedsIo
+        // discards its batch, so a reply repeats no entry and each batch is
+        // one generation's. A sink that takes a whole batch gets the next
+        // one, which continues from the batch's last cookie.
+        loop {
+            let start = cookie;
+            let (batch, end, more) = self.passes(&mut metadata(|_: &Self, state: &mut MountState<W>| {
+                let mut batch = Vec::new();
+                let mut bytes = 0;
+                let mut more = false;
+                let result = read_directory(&state.files, dir, start, &mut |entry, next| {
+                    let size = entry.name.len() + READDIR_RECORD_OVERHEAD;
+                    if !batch.is_empty() && bytes + size > READDIR_PASS_BYTES {
+                        more = true;
+                        return Ok(false);
+                    }
+                    bytes += size;
+                    batch.try_reserve(1).map_err(|_| Errno(ENOMEM))?;
+                    batch.push((entry, next));
+                    Ok(true)
+                });
+                let end = state.observed(result)??;
+                Ok((batch, end, more))
+            }))?;
+            for (entry, next) in batch {
+                if !sink(entry, next)? {
+                    return Ok(cookie);
+                }
+                cookie = next;
+            }
+            if !more {
+                return Ok(end);
+            }
+            cookie = end;
+        }
     }
 
     fn read(&self, node: &VNode, off: u64, buf: &mut [u8]) -> Result<usize, Errno> {

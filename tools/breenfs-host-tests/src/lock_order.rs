@@ -132,7 +132,8 @@ impl Disk {
         self.turn.notify_all();
     }
     fn release(&self) {
-        *self.gate.lock().unwrap() = Gate::default();
+        // A failed assertion can poison the gate; release it anyway.
+        *self.gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Gate::default();
         self.turn.notify_all();
     }
     fn take_log(&self) -> Log {
@@ -482,8 +483,8 @@ fn reply(fs: &Fs, dir: u64, budget: usize) -> Result<Vec<(Vec<u8>, u64)>, Errno>
 fn a_directory_reply_comes_from_one_pass_of_one_generation() {
     let (disk, inos) = image();
     let fs = mount(&disk, 134);
-    // Warm the first leaf only.
-    assert_eq!(reply(&fs, inos.d, 1).unwrap().len(), 1);
+    // Warm the first leaf only: a one-entry walk of the open view.
+    assert_eq!(fs.inner.state.lock().files.directory_entries(inos.d, 0, 1).unwrap().len(), 1);
     disk.stop("reader-a", true, false);
     let a = {
         let fs = fs.clone();

@@ -203,12 +203,6 @@ impl<T> MountLock<T> {
     pub fn parks(&self) -> u64 {
         self.host.parks.load(Ordering::SeqCst)
     }
-
-    /// Host checks: whether a guard is live.
-    #[cfg(test)]
-    pub fn is_held(&self) -> bool {
-        self.held.load(Ordering::SeqCst)
-    }
 }
 
 // Host checks: the MountLock guards this thread holds, counted where the
