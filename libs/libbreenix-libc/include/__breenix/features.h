@@ -12,6 +12,8 @@
 #ifndef __BREENIX_FEATURES_H
 #define __BREENIX_FEATURES_H
 
+#include <__breenix/generation.h>
+
 #if defined(_GNU_SOURCE) || defined(_DEFAULT_SOURCE) || defined(_BSD_SOURCE)
 #define __BREENIX_EXT 1
 #endif

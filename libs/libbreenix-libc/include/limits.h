@@ -37,7 +37,7 @@
 #define SEM_NSEMS_MAX 256
 #define DELAYTIMER_MAX 0x7fffffff
 #define PTHREAD_DESTRUCTOR_ITERATIONS 4
-#define PTHREAD_STACK_MIN 16384
+#include <__breenix/thread_stack_min.h>
 #define FILESIZEBITS 64
 #define GETENTROPY_MAX 256
 

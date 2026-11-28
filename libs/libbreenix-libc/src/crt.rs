@@ -5,7 +5,8 @@
 use crate::env::environ;
 use crate::lifecycle::{run_main, ArrayEntry};
 use crate::{exit, pthread};
-use core::sync::atomic::{AtomicPtr, Ordering};
+use crate::startup_auxv;
+pub(crate) use crate::startup_auxv::entry as auxv_entry;
 
 // Only linker-hosted.ld provides these private aliases. LLD can synthesize
 // the conventional names for ordinary links, too. These weak references
@@ -53,29 +54,6 @@ impl ArrayBounds {
 pub(crate) fn fini_array() -> &'static [ArrayEntry] {
     // SAFETY: the static declaration describes the three pairs in the table.
     unsafe { __breenix_array_bounds[2].entries() }
-}
-
-/// The auxiliary vector the kernel placed after the environment's NULL: pairs of
-/// (type, value) ending with type 0 (AT_NULL). Null before `_start` has run.
-static AUXV: AtomicPtr<u64> = AtomicPtr::new(core::ptr::null_mut());
-
-/// The value of auxiliary vector entry `kind`, if the kernel supplied one.
-pub(crate) fn auxv_entry(kind: u64) -> Option<u64> {
-    let mut entry = AUXV.load(Ordering::Acquire) as *const u64;
-    if entry.is_null() {
-        return None;
-    }
-    // SAFETY: the kernel ends the vector with an AT_NULL pair, and the initial stack
-    // that holds it lives for the whole process.
-    unsafe {
-        while *entry != 0 {
-            if *entry == kind {
-                return Some(*entry.add(1));
-            }
-            entry = entry.add(2);
-        }
-    }
-    None
 }
 
 /// Pristine x86_64 GPR values at process entry.
@@ -152,14 +130,9 @@ extern "C" fn _start_rust(sp: *const u64) -> ! {
         let argc = *sp as usize;
         let argv = sp.add(1) as *const *const u8;
 
-        // envp starts after argv NULL terminator: sp + 1 (argc) + argc + 1 (NULL)
-        let envp = sp.add(1 + argc + 1) as *const *const u8;
+        let envp = startup_auxv::environment(sp.cast());
         environ = envp as *mut *mut u8;
-        let mut end = envp;
-        while !(*end).is_null() {
-            end = end.add(1);
-        }
-        AUXV.store(end.add(1) as *mut u64, Ordering::Release);
+        startup_auxv::initialize(envp);
         pthread::startup(envp);
 
         extern "C" {

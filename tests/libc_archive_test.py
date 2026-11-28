@@ -61,6 +61,28 @@ _ZN17compiler_builtins4math9libm_math7table: .byte 0
         with patch.object(sys, 'argv', ['audit', '--arch', 'aarch64']):
             self.assertEqual(audit.main(), 1)
 
+    def test_shared_cleanup_preserves_builtin_frames(self):
+        src = self.dir / 'unwind.s'
+        src.write_text("""
+.section .text.memcpy,"ax",@progbits
+.weak memcpy
+.hidden memcpy
+memcpy:
+.cfi_startproc
+ret
+.cfi_endproc
+""")
+        obj = self.dir / 'compiler_builtins-unwind.o'
+        subprocess.run([TOOLS / 'clang', '--target=aarch64-unknown-linux-gnu',
+                        '-c', src, '-o', obj], check=True)
+        subprocess.run([TOOLS / 'llvm-ar', 'r', self.archive, obj], check=True)
+        cleaner.clean(self.archive, TOOLS, shared_libc='aarch64')
+        subprocess.run([TOOLS / 'llvm-ar', 'x', self.archive, obj.name],
+                       cwd=self.dir, check=True)
+        frames = subprocess.check_output([TOOLS / 'llvm-dwarfdump', '--eh-frame', obj], text=True)
+        self.assertIn('FDE', frames)
+        self.assertIn(('memcpy', 't'), cleaner.symbols(TOOLS / 'llvm-nm', obj))
+
     def test_linked_elf_rejects_weak_math(self):
         cleaner.clean(self.archive, TOOLS)
         src = self.dir / 'linked.s'

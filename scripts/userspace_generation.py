@@ -64,6 +64,14 @@ def verify_inputs(root, target, inputs):
     target_path = checked_file(root, spec, target_record['sha256'])
     if digest(TARGETS / spec.name) != target_record['sha256']:
         raise ValueError(f'{target_path} differs from the repository E6 target')
+    input_target = target
+    if target == 'x86_64-breenix-c':
+        # E6 has one x86 static ABI. The two target names may use the
+        # same artifacts only when their verified specifications agree.
+        input_target = 'x86_64-breenix'
+        ordinary, _ = verify_inputs(root, input_target, [])
+        if json.loads(target_path.read_text()) != json.loads(ordinary.read_text()):
+            raise ValueError('E6 x86 C and ordinary target specifications differ')
     paths = []
     for path in inputs:
         path = Path(path).absolute()
@@ -77,12 +85,12 @@ def verify_inputs(root, target, inputs):
         if relative in checked:
             continue
         artifact = record['artifacts'].get(relative)
-        if artifact is None or artifact['target'] != target:
+        if artifact is None or artifact['target'] != input_target:
             raise ValueError(f'unrecorded E6 input for {target}: {relative}')
         checked[relative] = checked_file(root, relative, artifact['sha256'])
         for name, sha256 in artifact['link_inputs'].items():
             dependency = record['artifacts'].get(name)
-            if dependency is None or dependency['target'] != target or dependency['sha256'] != sha256:
+            if dependency is None or dependency['target'] != input_target or dependency['sha256'] != sha256:
                 raise ValueError(f'unrecorded E6 dependency for {target}: {name}')
             remaining.append(name)
     return target_path, [checked[name] for name in paths]
