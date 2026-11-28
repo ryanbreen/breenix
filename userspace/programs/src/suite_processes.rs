@@ -70,8 +70,32 @@ fn frame_read<T: Copy>(addr: usize) -> T {
 }
 
 fn cow_signal_stack() -> CaseResult {
+    // On x86 the fixed ucontext prefix is below the runtime state image.
+    // Preserve the exact cross-page geometry for the CoW assertions.
+    #[cfg(target_arch = "x86_64")]
+    let image_growth = {
+        use core::arch::x86_64::{__cpuid, __cpuid_count};
+        // An older kernel or an x87/SSE-only kernel emits the legacy image.
+        let mut image = 512;
+        if unsafe { __cpuid(1) }.ecx & (1 << 27) != 0 {
+            let lo: u32;
+            let hi: u32;
+            unsafe {
+                core::arch::asm!("xgetbv", in("ecx") 0u32, out("eax") lo, out("edx") hi,
+                    options(nomem, nostack, preserves_flags));
+            }
+            if u64::from(lo) | (u64::from(hi) << 32) > 3 {
+                image = unsafe { __cpuid_count(0xd, 0) }.ebx as usize;
+            }
+        }
+        (image - 512 + 63) & !63
+    };
+    #[cfg(target_arch = "aarch64")]
+    let image_growth = 0;
+    let size = 16384.max(signal::sigstksz() + image_growth);
+    let alt_size = 8896 + image_growth;
     let stack = memory::mmap(
-        core::ptr::null_mut(), 16384, PROT_READ | PROT_WRITE,
+        core::ptr::null_mut(), size, PROT_READ | PROT_WRITE,
         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0,
     )?;
     // Populate before fork; the parent leaves these pages untouched until delivery.
@@ -79,9 +103,8 @@ fn cow_signal_stack() -> CaseResult {
     // (rt_sigframe) crosses from the second page into the third with a known field
     // on each side: on x86-64 uc_stack before the boundary and uc_sigmask and the
     // siginfo after it, on ARM64 the siginfo before it and the frame record after.
-    const ALT_SIZE: usize = 8896;
-    unsafe { core::ptr::write_bytes(stack, 0xa5, 16384) };
-    let alt = StackT { ss_sp: stack as u64, ss_flags: 0, _pad: 0, ss_size: ALT_SIZE };
+    unsafe { core::ptr::write_bytes(stack, 0xa5, size) };
+    let alt = StackT { ss_sp: stack as u64, ss_flags: 0, _pad: 0, ss_size: alt_size };
     signal::sigaltstack(Some(&alt), None)?;
     let mut action = Sigaction::new(child_exited);
     action.handler = child_exited_info as usize as u64;
@@ -94,7 +117,7 @@ fn cow_signal_stack() -> CaseResult {
         ForkResult::Child => {
             let _ = io::close(release_w);
             let _ = io::read(release_r, &mut [0; 1]);
-            let bytes = unsafe { core::slice::from_raw_parts(stack as *const u8, 16384) };
+            let bytes = unsafe { core::slice::from_raw_parts(stack as *const u8, size) };
             process::exit(if bytes.iter().all(|&byte| byte == 0xa5) { 0 } else { 1 })
         }
         ForkResult::Parent(sharer) => sharer,
@@ -110,7 +133,7 @@ fn cow_signal_stack() -> CaseResult {
                 "CoW signal stack: wrong exit status")?;
             check(SIGNALS.load(Ordering::Relaxed) == 1, "CoW signal stack: missing handler")?;
             let base = stack as usize;
-            let top = base + ALT_SIZE;
+            let top = base + alt_size;
             let local = HANDLER_STACK.load(Ordering::Relaxed);
             check(local >= base && local < top, "handler did not run on the alternate stack")?;
             // Validate the installed frame itself, a field on each of the two pages
@@ -135,7 +158,7 @@ fn cow_signal_stack() -> CaseResult {
             // interrupted on its own stack.
             check(frame_read::<u64>(uc + 16) == base as u64
                 && frame_read::<i32>(uc + 24) == 0
-                && frame_read::<u64>(uc + 32) == ALT_SIZE as u64,
+                && frame_read::<u64>(uc + 32) == alt_size as u64,
                 "the frame's uc_stack does not describe the alternate stack")?;
             check(frame_read::<u64>(sigmask) == 0, "the frame's saved signal mask is wrong")?;
             #[cfg(target_arch = "x86_64")]
@@ -163,7 +186,7 @@ fn cow_signal_stack() -> CaseResult {
     check(process::wifexited(status) && process::wexitstatus(status) == 0,
         "signal frame write changed the other sharer's stack")?;
     signal::sigaltstack(Some(&StackT::default()), None)?;
-    memory::munmap(stack, 16384)?;
+    memory::munmap(stack, size)?;
     Ok(())
 }
 
@@ -1764,7 +1787,7 @@ fn exec_long_arg() -> CaseResult {
     check(argv.len() == 4 && argv[3] == long, &format!("a 65536-byte argument arrived as {got} bytes"))?;
     // Leave 64 bytes for three short strings and the argument pointer table.
     let near_limit = "x".repeat(max as usize - 64);
-    let mut old_alt_stack = [0u8; 8192];
+    let mut old_alt_stack = vec![0u8; signal::sigstksz()];
     let out = exec_output(HELPER, &["helper", "stack", FD_ARG, &near_limit], &[], || {
         let alt = StackT { ss_sp: old_alt_stack.as_mut_ptr() as u64, ss_flags: 0, _pad: 0, ss_size: old_alt_stack.len() };
         signal::sigaltstack(Some(&alt), None).map_err(|e| format!("enable old alternate stack: {e:?}"))?;

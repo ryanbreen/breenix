@@ -9024,6 +9024,25 @@ where
     })
 }
 
+/// Borrow an off-CPU thread's saved state for a fork of a published row.
+/// Use a try-lock because the caller may hold PROCESS_MANAGER.
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn with_off_cpu_thread<R>(
+    tid: u64,
+    read: impl FnOnce(&super::thread::Thread) -> R,
+) -> Option<R> {
+    without_interrupts(|| {
+        let guard = try_lock_scheduler()?;
+        let sched = guard.as_ref()?;
+        if sched.is_current_on_any_cpu(tid)
+            || LEAVING_STACK.iter().any(|owner| owner.load(Ordering::Acquire) == tid)
+        {
+            return None;
+        }
+        sched.get_thread(tid).map(read)
+    })
+}
+
 /// An exec by a thread other than its process's first one moved the thread's
 /// row to the process's ID, `pid` (`ProcessManager::exec_take_over_group`):
 /// the thread's scheduler copy, its kernel stack and its index entry name
@@ -10527,6 +10546,8 @@ pub fn switch_to_idle() {
         let old_val = sched.cpu_state[cpu_id].current_thread.unwrap_or(0xDEAD);
         #[cfg(target_arch = "aarch64")]
         record_cpu_state_change(cpu_id, 2, old_val, idle_id);
+        #[cfg(target_arch = "x86_64")]
+        crate::arch_impl::x86_64::fpu::hand_over(sched, sched.cpu_state[cpu_id].current_thread, idle_id);
         let _ = old_val; // suppress unused warning on non-aarch64
         sched.cpu_state[cpu_id].current_thread = Some(idle_id);
 
@@ -10787,7 +10808,7 @@ pub mod tests {
             VirtAddr::new(0x1000),
             VirtAddr::new(0),
             ThreadPrivilege::Kernel,
-        );
+        ).expect("scheduler fixture xstate");
         thread.state = state;
         Box::new(thread)
     }

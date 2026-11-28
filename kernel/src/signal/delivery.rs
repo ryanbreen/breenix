@@ -551,9 +551,8 @@ fn fault_address(sig: u32, info: &SigInfo) -> u64 {
 ///
 /// The frame is Linux's: the handler is called as
 /// `handler(sig, &frame.info, &frame.uc)` with RSP pointing at the return
-/// address, so RSP + 8 is 16-byte aligned. The FXSAVE image of the
-/// interrupted x87/SSE state lies above the frame, and the handler starts
-/// with the initial x87/SSE state, as on Linux. On the thread's own stack the
+/// address, so RSP + 8 is 16-byte aligned. The interrupted FP/vector image
+/// lies above the frame. The handler starts with architectural defaults. On the thread's own stack the
 /// 128-byte red zone below the interrupted RSP is left alone.
 /// What installing a handler frame reads and writes: the process row, under
 /// PROCESS_MANAGER (`RowTarget`), or the thread's own copies of its row's
@@ -884,72 +883,37 @@ fn install_user_handler_x86_64(
 ) -> Result<(), PrepareWriteError> {
     use crate::arch_impl::x86_64::fpu;
 
-    const RED_ZONE: u64 = 128;
+    use crate::arch_impl::x86_64::xstate_layout::signal_placement;
+
     let original_rsp = user_return.rsp;
     let alt = target.alt_stack();
-
-    // Check if we should use the alternate signal stack
-    // SA_ONSTACK flag means use alt stack if one is configured and enabled
-    // A handler interrupting code already on the alternate stack nests below
-    // it there, as one without SA_ONSTACK does on any stack.
-    let use_alt_stack = (action.flags & SA_ONSTACK) != 0
-        && (alt.flags & super::constants::SS_DISABLE as u32) == 0
-        && alt.size > 0
+    let alt_enabled = alt.flags & super::constants::SS_DISABLE as u32 == 0 && alt.size != 0;
+    let alt_top = if alt_enabled {
+        alt.base.checked_add(alt.size as u64).ok_or(PrepareWriteError::Fault)?
+    } else {
+        alt.base
+    };
+    let use_alt = alt_enabled
+        && action.flags & SA_ONSTACK != 0
         && !alt.on_stack(original_rsp);
-
-    let top = if use_alt_stack {
-        // Use alternate stack - stack grows down, so start at top (base + size)
-        match alt.base.checked_add(alt.size as u64) {
-            Some(alt_top) => alt_top,
-            None => return Err(PrepareWriteError::Fault),
-        }
-    } else {
-        match original_rsp.checked_sub(RED_ZONE) {
-            Some(top) => top,
-            None => return Err(PrepareWriteError::Fault),
-        }
-    };
-
-    // The FXSAVE image, 64-byte aligned, at the top.
-    let Some(fp_addr) = top.checked_sub(core::mem::size_of::<fpu::FpuState>() as u64) else {
-        return Err(PrepareWriteError::Fault);
-    };
-    let fp_addr = fp_addr & !63;
-
-    // Check if the handler provides a restorer function (SA_RESTORER flag).
-    // Without one the trampoline is written to the stack, which works when
-    // the stack is executable.
     let use_restorer = (action.flags & super::constants::SA_RESTORER) != 0 && action.restorer != 0;
-    let (below, trampoline_addr) = if use_restorer {
-        (fp_addr, None)
-    } else {
-        let size = super::trampoline::SIGNAL_TRAMPOLINE_SIZE as u64;
-        let Some(addr) = fp_addr.checked_sub(size) else {
-            return Err(PrepareWriteError::Fault);
-        };
-        let addr = addr & !0xF;
-        (addr, Some(addr))
-    };
-    let Some(frame_rsp) = below
-        .checked_sub(SignalFrame::SIZE as u64)
-        .map(|base| base & !0xF)
-        .and_then(|base| base.checked_sub(8))
-    else {
-        return Err(PrepareWriteError::Fault);
-    };
-    // A frame on the alternate stack, first or nested, must fit on it.
-    if (use_alt_stack || alt.on_stack(original_rsp)) && !alt.on_stack(frame_rsp) {
-        return Err(PrepareWriteError::Fault);
-    }
+    let frame_size = fpu::frame_size();
+    let placement = signal_placement(
+        original_rsp, alt.base, alt_top, use_alt, frame_size as u64, SignalFrame::SIZE as u64,
+        (!use_restorer).then_some(super::trampoline::SIGNAL_TRAMPOLINE_SIZE as u64),
+    ).ok_or(PrepareWriteError::Fault)?;
+    let frame_rsp = placement.rsp;
+    let fp_addr = placement.image;
+    let trampoline_addr = placement.trampoline;
     if x86_64::VirtAddr::try_new(handler_addr).is_err()
-        || x86_64::VirtAddr::try_new(frame_rsp).is_err()
+        || !crate::memory::layout::is_valid_user_range(
+            frame_rsp, (fp_addr - frame_rsp) as usize + frame_size,
+        )
     {
         return Err(PrepareWriteError::Fault);
     }
     let return_addr = trampoline_addr.unwrap_or(action.restorer);
-
-    let thread_id = target.thread_id();
-    let fp_state = thread_id.map_or_else(fpu::FpuState::initial, fpu::user_state);
+    let thread_id = target.thread_id().ok_or(PrepareWriteError::Retry)?;
     let info = target.info(sig);
     let blocked = target.frame_mask();
 
@@ -957,7 +921,11 @@ fn install_user_handler_x86_64(
         // When the handler does 'ret', it pops this and jumps there.
         pretcode: return_addr,
         uc: UContext {
-            uc_flags: 0,
+            uc_flags: if frame_size == 512 {
+                0
+            } else {
+                super::constants::UC_BREENIX_XSTATE_V1
+            },
             uc_link: 0,
             uc_stack: alt.stack_t(original_rsp),
             uc_mcontext: SigContext {
@@ -996,7 +964,8 @@ fn install_user_handler_x86_64(
     if let Some(addr) = trampoline_addr {
         target.write(addr, &super::trampoline::SIGNAL_TRAMPOLINE)?;
     }
-    target.write(fp_addr, fp_state.as_bytes())?;
+    fpu::export_signal(thread_id, |image| target.write(fp_addr, image))
+        .ok_or(PrepareWriteError::Retry)??;
     // SAFETY: SignalFrame is repr(C) plain data with no padding (types.rs
     // checks each size against its fields), and every field is initialized.
     let bytes = unsafe {
@@ -1007,9 +976,7 @@ fn install_user_handler_x86_64(
     };
     target.write(frame_rsp, bytes)?;
     target.enter_handler(sig, action);
-    if let Some(thread_id) = thread_id {
-        fpu::set_user_state(thread_id, &fpu::FpuState::initial());
-    }
+    fpu::reset_current();
 
     // The complete frame is installed before changing the return context.
     user_return.rip = handler_addr;
@@ -1032,7 +999,7 @@ fn install_user_handler_x86_64(
         "Signal {} delivered to handler at {:#x}{}, RSP={:#x}->{:#x}, return={:#x}",
         sig,
         handler_addr,
-        if use_alt_stack { " on ALTERNATE STACK" } else { "" },
+        if use_alt { " on ALTERNATE STACK" } else { "" },
         original_rsp,
         frame_rsp,
         return_addr
@@ -1115,7 +1082,10 @@ fn deliver_to_user_handler_aarch64(
     };
     // A frame on the alternate stack, first or nested, must fit on it.
     let alt = process.signals.alt_stack();
-    if (use_alt_stack || alt.on_stack(original_sp)) && !alt.on_stack(frame_sp) {
+    if (use_alt_stack || alt.on_stack(original_sp))
+        && (!alt.on_stack(frame_sp)
+            || alt.base.checked_add(alt.size as u64).is_none_or(|end| top > end))
+    {
         return Err(PrepareWriteError::Fault);
     }
     let return_addr = trampoline_addr.unwrap_or(action.restorer);

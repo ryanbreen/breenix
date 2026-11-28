@@ -393,6 +393,12 @@ pub fn sys_clone_thread(
         ctx
     };
 
+    #[cfg(target_arch = "x86_64")]
+    let fpu = match crate::arch_impl::x86_64::fpu::FpuState::inherit(thread_id, None) {
+        Ok(fpu) => fpu,
+        Err(_) => return SyscallResult::Err(super::errno::ENOMEM as u64),
+    };
+
     // Set up TLS for child
     #[cfg(target_arch = "x86_64")]
     let tls_block = x86_64::VirtAddr::new(0x10000 + child_thread_id * 0x1000);
@@ -456,7 +462,7 @@ pub fn sys_clone_thread(
         kernel_stack_top: Some(kernel_stack_top),
         kernel_stack_allocation: Some(kernel_stack),
         #[cfg(target_arch = "x86_64")]
-        fpu: crate::arch_impl::x86_64::fpu::FpuState::capture(),
+        fpu: Some(fpu),
         #[cfg(target_arch = "aarch64")]
         fpsimd: crate::arch_impl::aarch64::fpsimd::capture(),
         tls_block,

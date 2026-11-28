@@ -62,12 +62,11 @@ typedef __breenix_sigset_t sigset_t;
 #define SA_RESETHAND 0x80000000U
 #define SS_ONSTACK 1
 #define SS_DISABLE 2
-#ifdef __aarch64__
-#define MINSIGSTKSZ 5120
-#define SIGSTKSZ 16384
-#else
-#define MINSIGSTKSZ 2048
-#define SIGSTKSZ 8192
+#include <unistd.h>
+#define MINSIGSTKSZ ((size_t)sysconf(_SC_MINSIGSTKSZ))
+#define SIGSTKSZ ((size_t)sysconf(_SC_SIGSTKSZ))
+#ifdef __x86_64__
+#define UC_BREENIX_XSTATE_V1 (1ULL << 32)
 #endif
 #define SI_USER 0
 #define SI_QUEUE (-1)

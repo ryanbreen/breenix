@@ -1258,8 +1258,9 @@ const REQUIRED_RFLAGS: u64 = 0x0000_0200;
 /// restores the interrupted context from the `ucontext_t` of the signal frame
 /// delivery pushed (`SignalFrame`, Linux's rt_sigframe), including any
 /// changes the handler made to it: the general registers, RIP, RSP and the
-/// arithmetic flags, the signal mask, and the x87/SSE state from the FXSAVE
-/// image `uc_mcontext.fpstate` points to (the initial state when it is null).
+/// arithmetic flags, the signal mask, and the FP/vector state from the
+/// legacy or Intel standard image at `uc_mcontext.fpstate`. A null pointer
+/// requests architectural defaults.
 ///
 /// The handler's `ret` popped the frame's return address, so the frame
 /// starts 8 bytes below the current RSP.
@@ -1272,7 +1273,7 @@ const REQUIRED_RFLAGS: u64 = 0x0000_0200;
 /// as on Linux.
 #[cfg(target_arch = "x86_64")]
 pub fn sys_sigreturn_with_frame(frame: &mut super::handler::SyscallFrame) -> SyscallResult {
-    use crate::arch_impl::x86_64::fpu::{self, FpuState};
+    use crate::arch_impl::x86_64::fpu;
     use crate::signal::types::SignalFrame;
 
     let current_thread_id = match crate::task::scheduler::current_thread_id() {
@@ -1290,13 +1291,15 @@ pub fn sys_sigreturn_with_frame(frame: &mut super::handler::SyscallFrame) -> Sys
         if ctx.rip >= USER_SPACE_END || ctx.rsp >= USER_SPACE_END {
             return None;
         }
-        let fp_state = match ctx.fpstate {
-            0 => FpuState::initial(),
-            addr => FpuState::from_signal_frame(copy_from_user(addr as *const [u8; 512]).ok()?),
-        };
-        Some((ctx, signal_frame.uc.uc_sigmask, signal_frame.uc.uc_stack, fp_state))
+        let flags = signal_frame.uc.uc_flags;
+        if !fpu::import_signal(
+            current_thread_id, ctx.fpstate, flags & UC_BREENIX_XSTATE_V1 != 0,
+        ) {
+            return None;
+        }
+        Some((ctx, signal_frame.uc.uc_sigmask, signal_frame.uc.uc_stack))
     });
-    let Some((ctx, sigmask, uc_stack, fp_state)) = restored else {
+    let Some((ctx, sigmask, uc_stack)) = restored else {
         log::error!("sys_sigreturn: bad signal frame at {:#x}", frame.rsp);
         force_sigreturn_segv(current_thread_id);
         return SyscallResult::Err(14); // EFAULT
@@ -1334,8 +1337,6 @@ pub fn sys_sigreturn_with_frame(frame: &mut super::handler::SyscallFrame) -> Sys
     frame.r13 = ctx.r13;
     frame.r14 = ctx.r14;
     frame.r15 = ctx.r15;
-
-    fpu::set_user_state(current_thread_id, &fp_state);
 
     {
         // This is a userspace syscall with no PM guard held. Contention must
@@ -1514,11 +1515,12 @@ fn alt_stack_from(new_stack: &StackT) -> Result<crate::signal::types::AltStack, 
     }
 
     // POSIX: ENOMEM for a stack smaller than MINSIGSTKSZ
-    if new_stack.ss_size < MINSIGSTKSZ {
+    let minimum = crate::signal::minimum_alt_stack();
+    if new_stack.ss_size < minimum {
         log::warn!(
             "sys_sigaltstack: ss_size {} < MINSIGSTKSZ {}",
             new_stack.ss_size,
-            MINSIGSTKSZ
+            minimum
         );
         return Err(12); // ENOMEM
     }

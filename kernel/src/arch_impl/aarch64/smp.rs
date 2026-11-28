@@ -555,6 +555,13 @@ pub extern "C" fn secondary_cpu_entry_rust(cpu_id: u64) -> ! {
     crate::serial_line::Line::new().char(b'0' + cpu_id as u8);
     set_bringup_stage(cpu_id as usize, BRINGUP_STAGE_RUST_ENTRY);
 
+    if !super::user_cpu::init() {
+        log::warn!("[smp] CPU {} refused by the EL0 capability contract", cpu_id);
+        loop {
+            unsafe { core::arch::asm!("wfi", options(nomem, nostack)) };
+        }
+    }
+
     // Initialize per-CPU data (sets TPIDR_EL1 for this CPU)
     crate::per_cpu_aarch64::init_cpu(cpu_id as usize);
     set_bringup_stage(cpu_id as usize, BRINGUP_STAGE_PER_CPU_DATA_INITIALIZED);

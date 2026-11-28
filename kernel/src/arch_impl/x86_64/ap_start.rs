@@ -128,7 +128,8 @@ pub fn start_application_processors() {
     };
 
     BSP_CR0.store(Cr0::read_raw(), Ordering::Relaxed);
-    BSP_CR4.store(Cr4::read_raw(), Ordering::Relaxed);
+    // OSXSAVE is enabled locally only after checking this CPU’s CPUID.
+    BSP_CR4.store(Cr4::read_raw() & !(1 << 18), Ordering::Relaxed);
     MASTER_CR3.store(master.start_address().as_u64(), Ordering::Release);
 
     let phys = crate::memory::physical_memory_offset().as_u64();
@@ -365,8 +366,18 @@ extern "C" fn ap_entry(cpu: u64) -> ! {
     }
     let cpu = cpu as usize;
 
-    super::cpu_init::init_cpu(cpu);
-    register_idle_thread(cpu);
+    if let Err(reason) = super::cpu_init::init_cpu(cpu) {
+        log::warn!("[smp] CPU {} refused before admission: {}", cpu, reason);
+        loop {
+            x86_64::instructions::hlt();
+        }
+    }
+    if let Err(reason) = register_idle_thread(cpu) {
+        log::warn!("[smp] CPU {} failed idle allocation: {}", cpu, reason);
+        loop {
+            x86_64::instructions::hlt();
+        }
+    }
     smp::mark_online(cpu);
 
     log::info!("[smp] CPU {} online (APIC id {})", cpu, apic::id());
@@ -380,7 +391,7 @@ extern "C" fn ap_entry(cpu: u64) -> ! {
 
 /// Create this processor's idle thread on the stack it is running on, make it
 /// the processor's current thread and register it with the scheduler.
-fn register_idle_thread(cpu: usize) {
+fn register_idle_thread(cpu: usize) -> Result<(), &'static str> {
     use crate::task::thread::{Thread, ThreadPrivilege, ThreadState};
     use alloc::boxed::Box;
 
@@ -393,19 +404,21 @@ fn register_idle_thread(cpu: usize) {
         VirtAddr::new(STACK_BOTTOM[cpu].load(Ordering::Relaxed)),
         VirtAddr::zero(),
         ThreadPrivilege::Kernel,
-    ));
+    )?);
     idle.state = ThreadState::Running;
     idle.has_started = true;
     idle.kernel_stack_top = Some(stack_top);
     idle.context.rip = crate::interrupts::context_switch::idle_loop as *const () as u64;
     idle.context.rflags = 0x202;
 
+    super::fpu::start_idle(&mut idle);
     let idle_ptr = &mut *idle as *mut Thread;
     crate::per_cpu::set_current_thread(idle_ptr);
     crate::per_cpu::set_idle_thread(idle_ptr);
     crate::per_cpu::set_kernel_stack_top(stack_top.as_u64());
     crate::per_cpu::update_tss_rsp0(stack_top.as_u64());
     crate::task::scheduler::register_cpu_idle_thread(cpu, idle);
+    Ok(())
 }
 
 /// The idle thread's nominal entry point. An application processor's idle

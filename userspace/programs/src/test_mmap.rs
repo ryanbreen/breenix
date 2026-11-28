@@ -318,9 +318,11 @@ extern "C" fn on_signal(_: i32) {
 }
 fn untouched_signal_stack() {
     use libbreenix::signal::{self, Sigaction, StackT};
+    let alt_size = 8320.max(signal::sigstksz());
+    let map_size = 16384.max(alt_size);
     let stack = mmap(
         null_mut(),
-        16384,
+        map_size,
         PROT_READ | PROT_WRITE,
         MAP_PRIVATE | MAP_ANONYMOUS,
         -1,
@@ -331,7 +333,7 @@ fn untouched_signal_stack() {
         ss_sp: stack as u64,
         ss_flags: 0,
         _pad: 0,
-        ss_size: 8320,
+        ss_size: alt_size,
     };
     signal::sigaltstack(Some(&alternate), None).unwrap();
     let mut action = Sigaction::new(on_signal);
@@ -341,7 +343,7 @@ fn untouched_signal_stack() {
     let address = SIGNAL_STACK.load(std::sync::atomic::Ordering::SeqCst);
     assert!(address >= stack as usize && address < stack as usize + alternate.ss_size);
     signal::sigaltstack(Some(&StackT::default()), None).unwrap();
-    munmap(stack, 16384).unwrap();
+    munmap(stack, map_size).unwrap();
     println!("  Untouched alternate signal stack: PASS");
 }
 
