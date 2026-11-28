@@ -1940,6 +1940,21 @@ impl<W: Wait + 'static> BreenFs<W> {
             }
             let claim = MountedRoot::claim(device.clone(), id)?;
             state.files.files.include_staging_tree(id).map_err(errno)?;
+            // Read the draft's root directory now, so an unreadable one is
+            // refused here rather than at the first lookup after a mount
+            // reports success. Read past `observed`: a draft's damage does
+            // not latch the booted writer failed.
+            let root = state.files.inode(ops::STAGING_TREE | 2);
+            if let Err(error) = root.map_err(errno).and_then(|inode| match inode.mode & 0o170000 {
+                0o040000 => Ok(()),
+                _ => Err(Errno(ENOTDIR)),
+            }) {
+                state.files.files.exclude_staging_tree().map_err(errno)?;
+                let pins = state.forget_staged()?;
+                drop(state);
+                drop(pins);
+                return Err(error);
+            }
             state.staging = Some(Staging { id, _claim: claim });
             return Ok(ops::STAGING_TREE | 2);
         }
