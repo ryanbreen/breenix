@@ -2016,6 +2016,11 @@ E1-7 implementation decisions (DEV-39(2)):
   `NoVa { window: vmap }`, the cause 7.1 names for VA; E1-9 points `GlobalAlloc` at it.
 - The init self-check runs on both architectures after E1-5's and prints `[boot] Span and vmap self-check
   passed`, which `docs/boot-path.json` lists as an ARM64 arch-bring-up stage, so E1-8's boot checks it.
+  Its steps live in `memory/large_check.rs`, which the host tests run over the real layers with each request
+  failed in turn, and each exit frees its live blocks. It holds one 2 MiB span and 7 vmap pages of data frames
+  at most, using 8 KiB vmap blocks aligned to 8 KiB (6.1 row 3 routes them by alignment) in place of 4 MiB
+  ones, because its frames come from the frame frontier at boot, from which 32-bit DMA drivers later take
+  contiguous runs (PR #3307 review: about 16 MiB before).
 
 ### E1-8: buddy allocator, zones and per-CPU page caches
 

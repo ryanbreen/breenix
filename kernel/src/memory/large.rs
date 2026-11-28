@@ -502,7 +502,11 @@ impl large_check::Layers for KernelLayers {
 pub fn self_check() -> Result<SelfCheck, &'static str> {
     let spans_before = SPANS_MAPPED.load(Ordering::Relaxed);
     let moves_before = VMAP_MOVES.load(Ordering::Relaxed);
-    large_check::run(&mut KernelLayers)?;
+    let checked = large_check::run(&mut KernelLayers);
+    // Give the checks' frames back now rather than at the next flush.
+    kva::flush(WindowId::Span);
+    kva::flush(WindowId::Vmap);
+    checked?;
 
     let frame = frame_allocator::allocate_frame_for(FrameOwner::Other).ok_or("no frame for the DMA check")?;
     let pa = frame.start_address().as_u64();
@@ -516,9 +520,6 @@ pub fn self_check() -> Result<SelfCheck, &'static str> {
     if bus != Ok(expected) {
         return Err("dma::bus_address refused or mistranslated a direct-map frame");
     }
-    // Give the checks' frames back now rather than at the next flush.
-    kva::flush(WindowId::Span);
-    kva::flush(WindowId::Vmap);
     Ok(SelfCheck {
         spans: SPANS_MAPPED.load(Ordering::Relaxed) - spans_before,
         vmap_moves: VMAP_MOVES.load(Ordering::Relaxed) - moves_before,
