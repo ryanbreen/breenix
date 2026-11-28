@@ -1017,3 +1017,31 @@ fn mapped_writeback_setup_waits_with_no_mount_lock() {
     bounded("i7-mapping", move || worker.mapping_io(&node).map(|_| ())).unwrap();
     assert_guarded(&disk.take_log(), "mapped writeback setup");
 }
+
+/// Review M6 (#3310): one directory reply comes from one generation even when
+/// it spans several passes' batches. A rename between two batches would show
+/// the renamed entry under both names; the reply ends at the batch instead.
+#[test]
+fn a_directory_reply_across_batches_shows_a_rename_once() {
+    let (disk, _) = image();
+    let fs = mount(&disk, 153);
+    let dir = fs.create(2, b"long", NewNode::Directory { attrs: InodeAttrs::new(0o040755, 0, 0) }).unwrap();
+    let name = |i: usize| format!("{i:04}-{}", "n".repeat(200)).into_bytes();
+    for i in 0..400 {
+        fs.create(dir, &name(i), regular()).unwrap();
+    }
+    let renamer = fs.clone();
+    let mut renamed = false;
+    let mut got = Vec::new();
+    fs.readdir(dir, 0, &mut |entry, _| {
+        if !renamed {
+            // The first batch is collected; the next pass has not run.
+            renamed = true;
+            renamer.rename(dir, &name(0), dir, b"renamed", RenameMode::Replace, &|_, _, _, _| Ok(())).unwrap();
+        }
+        got.push((entry.name, entry.ino));
+        Ok(true)
+    }).unwrap();
+    let inos: BTreeSet<_> = got.iter().map(|(_, ino)| *ino).collect();
+    assert_eq!(inos.len(), got.len(), "one reply named an inode twice across a rename");
+}
