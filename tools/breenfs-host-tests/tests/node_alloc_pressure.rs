@@ -64,23 +64,34 @@ impl NodeStore for RangeStore {
     }
 }
 
+/// #3228: promotion read 8,192 PENDING records into one range Vec, and a
+/// refused 384 KiB growth of it aborted the commit. A range read still reports
+/// that refusal; promotion streams found records without asking for it.
 #[test]
-fn pending_promotion_reports_failed_384_kib_range_growth() {
+fn pending_promotion_streams_without_the_384_kib_range_growth() {
     let mut store = RangeStore::default();
     let mut root = btree::create(&mut store, 2, [1; 16], 2).unwrap();
     let pending = Pending { length: 1, released_generation: 1 }.encode();
+    let key = |offset| Key { object: 0xffff_ffff_ffff_ff30, item_type: PENDING, offset };
     for offset in 1_000..1_000 + 4_097 {
-        let key = Key { object: 0xffff_ffff_ffff_ff30, item_type: PENDING, offset };
-        btree::insert(&mut store, &mut root, key, &pending).unwrap();
+        btree::insert(&mut store, &mut root, key(offset), &pending).unwrap();
     }
     let before = root;
     REFUSE_RANGE_GROWTH.set(true);
-    let result = space::promote_pending(&mut store, &mut root, 2);
-    assert!(matches!(result, Err(space::Error::Tree(Error::Read(ReadFailure {
+    let result = btree::range(&store, root, key(0), key(u64::MAX));
+    assert!(matches!(result, Err(Error::Read(ReadFailure {
         cause: ReadCause::Allocation, addr,
-    }))) if addr == before.addr));
-    assert_eq!(root, before);
-    assert_eq!(space::promote_pending(&mut store, &mut root, 2).unwrap().census(), Some((4_097, 1)));
+    })) if addr == before.addr));
+
+    let (mut free, mut quarantine) = space::open(&store, root).unwrap();
+    assert_eq!(quarantine.summary().census(), Some((4_097, 1)));
+    REFUSE_RANGE_GROWTH.set(true);
+    let promotion = quarantine.promote(&store, root, 3, &mut free).unwrap();
+    promotion.apply(&mut store, &mut root).unwrap();
+    assert!(REFUSE_RANGE_GROWTH.replace(false), "promotion asked for the 384 KiB range");
+    assert_eq!(free.ranges().collect::<Vec<_>>(), vec![(1_000, 4_097)]);
+    assert_eq!(quarantine.summary().census(), Some((0, 0)));
+    assert!(btree::range(&store, root, key(0), key(u64::MAX)).unwrap().is_empty());
 }
 
 #[derive(Default)]

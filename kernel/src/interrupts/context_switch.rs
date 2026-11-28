@@ -253,7 +253,7 @@ pub extern "C" fn check_need_resched_and_switch(
     // either preempt_count is already zero or we entered from userspace --
     // never mid-brake. Every x86 producer of BlockedOnIO (the
     // WaitQueueHead-based `prepare_to_wait(BlockedOnIO)` sites in
-    // drivers/virtio/{block,block_mmio,sound,sound_mmio,gpu_pci}.rs and
+    // drivers/virtio/{block,block_mmio,sound,sound_mmio}.rs and
     // syscall/graphics.rs, and the scheduler-internal
     // `block_current_for_io_with_timeout()` the Completion-based device
     // waits use, task/scheduler.rs) sets the state only immediately before
