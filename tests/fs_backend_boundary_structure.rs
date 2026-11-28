@@ -181,6 +181,18 @@ fn visit(directory: &Path, ext2_dir: &Path, tally: &mut Vec<(PathBuf, usize)>) {
         } else if path.extension().is_some_and(|extension| extension == "rs") {
             let source = fs::read_to_string(&path)
                 .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+            // The boot-test-only re-export bridges a backend's deterministic
+            // race oracle into the boot profile. Keep all production references
+            // under the same ceiling, including any unguarded re-export.
+            let source = if path == ext2_dir.with_file_name("mod.rs") {
+                source.replacen(
+                    "#[cfg(feature = \"ext2_lock_race\")]\npub use ext2::lock_race::run_ext2_lock_race_leg;",
+                    "",
+                    1,
+                )
+            } else {
+                source
+            };
             let count = source
                 .lines()
                 .filter(|line| line.contains("fs::ext2") || line.contains("ext2::"))
@@ -1011,7 +1023,14 @@ fn boot_mounts_probe_by_magic() {
     let parsed = syn::parse_file(&declarations).unwrap();
     assert!(!parsed.items.iter().any(|i| matches!(i, syn::Item::Mod(m) if m.ident == "ext2")),
         "backends must be declared by filesystems!");
-    assert!(declarations.contains("filesystems! { ext2 }"));
+    let formats = parsed.items.iter().find_map(|item| match item {
+        syn::Item::Macro(item) if item.mac.path.is_ident("filesystems") => Some(&item.mac.tokens),
+        _ => None,
+    }).expect("boot format registry");
+    let formats = formats.to_string();
+    let formats: Vec<_> = formats.split(',').map(str::trim).filter(|name| !name.is_empty()).collect();
+    assert!(formats.contains(&"ext2") && formats.contains(&"breenfs"),
+        "both disk formats must be discoverable by magic: {formats:?}");
     for file in ["fs/vfs/boot.rs", "fs/vfs/format.rs"] {
         let source = fs::read_to_string(root.join(file)).unwrap();
         let mut b = Boundary::default();

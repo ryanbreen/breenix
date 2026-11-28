@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Kernel and command use one scrub wire definition."""
 from pathlib import Path
+import re
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,12 +22,16 @@ class ScrubAbi(unittest.TestCase):
 
     def test_scrub_mutations_require_root_before_filesystem_dispatch(self):
         text = (ROOT / 'kernel/src/syscall/ioctl.rs').read_text()
-        gate = text.index('if matches!(request, SCRUB_START | SCRUB_CANCEL)')
         dispatch = text.index('node.filesystem.ioctl(&node, request, arg)')
-        self.assertLess(gate, dispatch)
-        check = text[gate:dispatch]
-        self.assertIn('!matches!(super::handlers::sys_geteuid(), SyscallResult::Ok(0))', check)
-        self.assertIn('return SyscallResult::Err(EPERM)', check)
+        gate = re.search(
+            r'if matches!\(request, ([^)]+)\)\s*&&\s*'
+            r'!matches!\(super::handlers::sys_geteuid\(\), SyscallResult::Ok\(0\)\)\s*'
+            r'\{\s*return SyscallResult::Err\(EPERM\);\s*\}',
+            text[:dispatch],
+        )
+        self.assertIsNotNone(gate, 'missing root-only ioctl guard before dispatch')
+        guarded = {request.strip() for request in gate[1].split('|')}
+        self.assertTrue({'SCRUB_START', 'SCRUB_CANCEL'} <= guarded)
 
 if __name__ == '__main__':
     unittest.main()

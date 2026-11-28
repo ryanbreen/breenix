@@ -597,17 +597,22 @@ fn small_read_mount() -> (Arc<BreenFs<NoWait>>, Arc<BufferCache<NoWait>>, u64, u
 fn readonly_mapping_reads_holes_and_zero_fills_the_partial_tail() {
     let (fs, _, ino, _) = small_read_mount();
     let node = fs.open(ino).unwrap();
-    let transfer = fs
-        .mapping_io(&node)
-        .expect("read-only mmap needs a transfer");
+    use crate::memory::file_map::{bind_populated, populate};
+
+    let Ok(transfer) = populate(&node, 0, 3) else {
+        panic!("read-only mmap population failed");
+    };
+    let binding = bind_populated(node.clone(), &*transfer, 3 * 4096);
+    assert!((4096..8192).all(|i| binding.load(i) == Ok(0)));
+    let tail: Vec<_> = (8192..8196).map(|i| binding.load(i).unwrap()).collect();
+    assert_eq!(tail, b"tail");
+    assert!((8196..3 * 4096).all(|i| binding.load(i) == Ok(0)));
+    drop(binding);
     drop(node);
     drop(fs);
     assert_eq!(transfer.size(), 8196);
     assert_eq!(transfer.read(4096, 4096).unwrap(), vec![0; 4096]);
-    let bytes = transfer.read(8192, 4096).unwrap();
-    assert_eq!(bytes.len(), 4096);
-    assert_eq!(&bytes[..4], b"tail");
-    assert!(bytes[4..].iter().all(|&byte| byte == 0));
+    assert_eq!(transfer.read(8192, 4096).unwrap(), b"tail");
     assert!(!transfer.needs_flush());
     assert_eq!(transfer.sync(0, u64::MAX), Ok(()));
     let mut published = 0;
