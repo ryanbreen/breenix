@@ -30,7 +30,13 @@ const ENOTRECOVERABLE: i32 = 131;
 const ENOTSUP: i32 = 95;
 const PAGE: usize = 4096;
 const KEYS: usize = 128;
-const STACK_MIN: usize = 16384;
+#[cfg(not(feature = "e6"))]
+const fn minimum_stack_size() -> usize {
+    16384
+}
+
+#[cfg(feature = "e6")]
+use crate::conf::minimum_thread_stack as minimum_stack_size;
 const FUTEX_WAIT: u64 = 0;
 const FUTEX_WAKE: u64 = 1;
 const FUTEX_LOCK_PI: u64 = 6;
@@ -1193,7 +1199,7 @@ attr_field!(
     pthread_attr_getstacksize,
     size,
     usize,
-    |v| v >= STACK_MIN && v <= isize::MAX as usize
+    |v| v >= minimum_stack_size() && v <= isize::MAX as usize
 );
 attr_field!(
     pthread_attr_setguardsize,
@@ -1236,7 +1242,7 @@ pub unsafe extern "C" fn pthread_attr_getschedparam(a: *const u8, p: *mut i32) -
 pub unsafe extern "C" fn pthread_attr_setstack(a: *mut u8, addr: *mut u8, size: usize) -> i32 {
     if a.is_null()
         || addr.is_null()
-        || size < STACK_MIN
+        || size < minimum_stack_size()
         || (addr as usize).checked_add(size).is_none()
     {
         return EINVAL;

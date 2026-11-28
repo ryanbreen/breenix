@@ -8,9 +8,27 @@
 
 mod errtext;
 mod mem_asm;
+#[cfg(feature = "e6")]
+mod dispatch;
+#[cfg(feature = "e6")]
+pub(crate) use dispatch::initialize;
 
 pub(crate) use errtext::error_text;
-pub(crate) use mem_asm::{memcpy, memset};
+pub(crate) use mem_asm::memset;
+#[cfg(not(feature = "e6"))]
+pub(crate) use mem_asm::{memcpy, memmove};
+
+#[cfg(feature = "e6")]
+#[no_mangle]
+pub unsafe extern "C" fn memcpy(dst: *mut u8, src: *const u8, n: usize) -> *mut u8 {
+    (dispatch::table().copy)(dst, src, n)
+}
+
+#[cfg(feature = "e6")]
+#[no_mangle]
+pub unsafe extern "C" fn memmove(dst: *mut u8, src: *const u8, n: usize) -> *mut u8 {
+    (dispatch::table().move_bytes)(dst, src, n)
+}
 
 use core::ptr::null_mut;
 
@@ -52,6 +70,13 @@ fn lower(c: u8) -> u8 {
 
 #[no_mangle]
 pub unsafe extern "C" fn memcmp(a: *const u8, b: *const u8, n: usize) -> i32 {
+    #[cfg(feature = "e6")]
+    return (dispatch::table().compare)(a, b, n);
+    #[cfg(not(feature = "e6"))]
+    memcmp_scalar(a, b, n)
+}
+
+unsafe extern "C" fn memcmp_scalar(a: *const u8, b: *const u8, n: usize) -> i32 {
     let mut i = 0;
     while n - i >= WORD {
         let x = load_word(a.add(i));
@@ -80,6 +105,13 @@ pub unsafe extern "C" fn bcmp(a: *const u8, b: *const u8, n: usize) -> i32 {
 
 #[no_mangle]
 pub unsafe extern "C" fn memchr(s: *const u8, c: i32, n: usize) -> *mut u8 {
+    #[cfg(feature = "e6")]
+    return (dispatch::table().find)(s, c, n);
+    #[cfg(not(feature = "e6"))]
+    memchr_scalar(s, c, n)
+}
+
+unsafe extern "C" fn memchr_scalar(s: *const u8, c: i32, n: usize) -> *mut u8 {
     let c = c as u8;
     let mut i = 0;
     // memchr stops at the first match, and n may exceed the object. Step to a
@@ -138,7 +170,7 @@ pub unsafe extern "C" fn memccpy(dst: *mut u8, src: *const u8, c: i32, n: usize)
 
 #[no_mangle]
 pub unsafe extern "C" fn mempcpy(dst: *mut u8, src: *const u8, n: usize) -> *mut u8 {
-    mem_asm::memcpy(dst, src, n).add(n)
+    memcpy(dst, src, n).add(n)
 }
 
 #[no_mangle]
@@ -173,7 +205,7 @@ pub unsafe extern "C" fn explicit_bzero(s: *mut u8, n: usize) {
 
 #[no_mangle]
 pub unsafe extern "C" fn bcopy(src: *const u8, dst: *mut u8, n: usize) {
-    mem_asm::memmove(dst, src, n);
+    memmove(dst, src, n);
 }
 
 // ----------------------------------------------------------------------------
@@ -182,6 +214,13 @@ pub unsafe extern "C" fn bcopy(src: *const u8, dst: *mut u8, n: usize) {
 
 #[no_mangle]
 pub unsafe extern "C" fn strlen(s: *const u8) -> usize {
+    #[cfg(feature = "e6")]
+    return (dispatch::table().len)(s);
+    #[cfg(not(feature = "e6"))]
+    strlen_scalar(s)
+}
+
+unsafe extern "C" fn strlen_scalar(s: *const u8) -> usize {
     let mut i = 0;
     while s.wrapping_add(i).addr() % WORD != 0 {
         if byte(s, i) == 0 {
@@ -212,7 +251,7 @@ pub unsafe extern "C" fn strnlen(s: *const u8, max: usize) -> usize {
 #[no_mangle]
 pub unsafe extern "C" fn stpcpy(dst: *mut u8, src: *const u8) -> *mut u8 {
     let n = strlen(src);
-    mem_asm::memcpy(dst, src, n + 1);
+    memcpy(dst, src, n + 1);
     dst.add(n)
 }
 
@@ -225,7 +264,7 @@ pub unsafe extern "C" fn strcpy(dst: *mut u8, src: *const u8) -> *mut u8 {
 #[no_mangle]
 pub unsafe extern "C" fn stpncpy(dst: *mut u8, src: *const u8, n: usize) -> *mut u8 {
     let len = strnlen(src, n);
-    mem_asm::memcpy(dst, src, len);
+    memcpy(dst, src, len);
     mem_asm::memset(dst.add(len), 0, n - len);
     dst.add(len)
 }
@@ -246,7 +285,7 @@ pub unsafe extern "C" fn strcat(dst: *mut u8, src: *const u8) -> *mut u8 {
 pub unsafe extern "C" fn strncat(dst: *mut u8, src: *const u8, n: usize) -> *mut u8 {
     let end = dst.add(strlen(dst));
     let len = strnlen(src, n);
-    mem_asm::memcpy(end, src, len);
+    memcpy(end, src, len);
     *end.add(len) = 0;
     dst
 }
@@ -257,7 +296,7 @@ pub unsafe extern "C" fn strlcpy(dst: *mut u8, src: *const u8, size: usize) -> u
     let len = strlen(src);
     if size > 0 {
         let n = len.min(size - 1);
-        mem_asm::memcpy(dst, src, n);
+        memcpy(dst, src, n);
         *dst.add(n) = 0;
     }
     len
@@ -283,7 +322,7 @@ pub unsafe extern "C" fn strndup(s: *const u8, n: usize) -> *mut u8 {
     let len = strnlen(s, n);
     let p = crate::stdlib::malloc::malloc(len + 1);
     if !p.is_null() {
-        mem_asm::memcpy(p, s, len);
+        memcpy(p, s, len);
         *p.add(len) = 0;
     }
     p
@@ -341,7 +380,7 @@ pub unsafe extern "C" fn strcoll(a: *const u8, b: *const u8) -> i32 {
 pub unsafe extern "C" fn strxfrm(dst: *mut u8, src: *const u8, n: usize) -> usize {
     let len = strlen(src);
     if len < n {
-        mem_asm::memcpy(dst, src, len + 1);
+        memcpy(dst, src, len + 1);
     }
     len
 }
@@ -578,7 +617,7 @@ pub unsafe extern "C" fn strerror_r(errnum: i32, buf: *mut u8, len: usize) -> i3
         return super::stdlib::ERANGE;
     }
     let n = text.len().min(len - 1);
-    mem_asm::memcpy(buf, text.as_ptr(), n);
+    memcpy(buf, text.as_ptr(), n);
     *buf.add(n) = 0;
     if n < text.len() { super::stdlib::ERANGE } else { status }
 }

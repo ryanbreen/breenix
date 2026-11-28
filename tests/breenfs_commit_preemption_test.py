@@ -155,35 +155,44 @@ class CommitPreemption(unittest.TestCase):
             self.assertIn('schedule_current_wait()', code)
         waitqueue = (ROOT / 'kernel/src/task/waitqueue.rs').read_text()
         source = strip_comments(waitqueue)
-        self.assertRegex(waitqueue, r'(?m)^\s*"b \{wait\}",')
-        self.assertIn('wait = sym schedule_current_wait_at', source)
-        self.assertIn('run_current_wait(return_pc);', function(source, 'schedule_current_wait_at'))
+        # ARM64 enters through a naked stub that hands the caller's return
+        # address to the sleep, so the lockup capture names the wait site.
+        self.assertIn('naked_asm!("mov x0, x30", "b {}", sym sleep_from);', waitqueue)
+        self.assertIn('sleep_while_blocked(return_pc);', function(source, 'sleep_from'))
         non_arm_entry = re.search(r'\bpub\s+fn\s+schedule_current_wait\s*\(\)\s*\{', source)
         self.assertIsNotNone(non_arm_entry)
-        self.assertIn('run_current_wait();', function(source[non_arm_entry.start():], 'schedule_current_wait'))
-        wait = function(source, 'run_current_wait')
-        for cfg, cpu, park in (
-            ('target_arch = "aarch64"', 'per_cpu_aarch64', 'schedule_from_kernel();'),
-            ('not(target_arch = "aarch64")', 'per_cpu', 'halt_blocked_current();'),
-        ):
-            with self.subTest(cpu=cpu):
+        self.assertIn('sleep_while_blocked();', function(source[non_arm_entry.start():], 'schedule_current_wait'))
+        wait = function(source, 'sleep_while_blocked')
+        # The level the caller holds is released for the sleep and taken back
+        # after it; a caller at level 0 has no level to release.
+        self.assertIn('let release = crate::per_cpu::preempt_count() & '
+                      'crate::arch_impl::current::constants::PREEMPT_MASK != 0;', wait)
+        enable = re.escape('if release {') + r'\s*' + re.escape('crate::per_cpu::preempt_enable();')
+        disable = re.escape('if release {') + r'\s*' + re.escape('crate::per_cpu::preempt_disable();')
+        # ARM64 switches through the native scheduler, with no reclamation
+        # while the blocked state is published; x86 halts.
+        parks = (
+            ('target_arch = "aarch64"',
+             re.escape('crate::arch_impl::aarch64::context_switch::schedule_from_kernel();')),
+            ('not(target_arch = "aarch64")', re.escape('halt_blocked_current();')),
+        )
+
+        def assert_park_releases_count(code):
+            loop = re.search(r'\bloop\s*\{', code)
+            self.assertIsNotNone(loop)
+            end = block_end(code, loop.end())
+            self.assertRegex(code[:loop.start()], enable)
+            self.assertNotIn('preempt_disable()', code[:loop.start()])
+            for cfg, park in parks:
                 prefix = re.escape(strip_comments(f'#[cfg({cfg})]')) + r'\s*'
-                enable = prefix + re.escape(f'crate::{cpu}::preempt_enable();')
-                disable = prefix + re.escape(f'crate::{cpu}::preempt_disable();')
+                self.assertRegex(code[loop.end():end], prefix + park)
+            self.assertNotRegex(code[loop.end():end], r'\bpreempt_(?:enable|disable)\(')
+            self.assertNotIn('run_deferred_reclamation', code[loop.end():end])
+            self.assertRegex(code[end + 1:], disable)
 
-                def assert_park_releases_count(code):
-                    loop = re.search(r'\bloop\s*\{', code)
-                    self.assertIsNotNone(loop)
-                    end = block_end(code, loop.end())
-                    self.assertRegex(code[:loop.start()], enable)
-                    self.assertNotIn('preempt_disable()', code[:loop.start()])
-                    self.assertIn(park, code[loop.end():end])
-                    self.assertNotRegex(code[loop.end():end], r'\bpreempt_(?:enable|disable)\(')
-                    self.assertRegex(code[end + 1:], disable)
-
-                assert_park_releases_count(wait)
-                with self.assertRaises(AssertionError):
-                    assert_park_releases_count(re.sub(enable, '', wait, count=1))
+        assert_park_releases_count(wait)
+        with self.assertRaises(AssertionError):
+            assert_park_releases_count(re.sub(enable, '', wait, count=1))
         # Ruling 488 retains the driver's existing sleepable entry contract.
         ahci = (ROOT / 'kernel/src/drivers/ahci/mod.rs').read_text()
         self.assertIn('schedule_current_wait()', function(strip_comments(ahci), 'begin_port_io'))

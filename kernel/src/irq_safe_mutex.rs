@@ -11,7 +11,7 @@ pub struct IrqSafeMutex<T> {
     inner: Mutex<T>,
 }
 
-struct IrqState {
+pub(crate) struct IrqState {
     #[cfg(target_arch = "aarch64")]
     daif: u64,
     /// The interval's start when it is timed for `gpu_irq_masked_max_us`, else 0.
@@ -23,7 +23,7 @@ struct IrqState {
 impl IrqState {
     #[inline(always)]
     #[track_caller]
-    fn save_and_mask() -> Self {
+    pub(crate) fn save_and_mask() -> Self {
         #[cfg(target_arch = "aarch64")]
         {
             let daif: u64;
@@ -48,7 +48,7 @@ impl IrqState {
     }
 
     #[inline(always)]
-    fn restore(&self) {
+    pub(crate) fn restore(&self) {
         crate::tracing::providers::gpu::masked_end(self.gauge);
         #[cfg(target_arch = "aarch64")]
         {

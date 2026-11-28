@@ -79,9 +79,11 @@ pub const UC_BREENIX_XSTATE_V1: u64 = 1 << 32;
 
 pub const SC_MINSIGSTKSZ: i32 = 254;
 pub const SC_SIGSTKSZ: i32 = 255;
+pub const SC_THREAD_STACK_MIN: i32 = 75;
 
 /// Minimum kernel frame space for the current process.
 #[cfg(target_os = "breenix")]
+#[inline]
 pub fn minsigstksz() -> usize {
     extern "C" {
         fn sysconf(name: i32) -> i64;
@@ -92,8 +94,19 @@ pub fn minsigstksz() -> usize {
 
 /// Alternate-stack allocation with the original handler headroom.
 #[cfg(target_os = "breenix")]
+#[inline]
 pub fn sigstksz() -> usize {
-    minsigstksz() + (SIGSTKSZ_FLOOR - MINSIGSTKSZ_FLOOR)
+    minsigstksz().saturating_add(SIGSTKSZ_FLOOR - MINSIGSTKSZ_FLOOR)
+}
+
+/// Minimum pthread stack size for this process's libc generation.
+#[inline]
+pub fn pthread_stack_min() -> usize {
+    extern "C" {
+        fn sysconf(name: i32) -> i64;
+    }
+    // SAFETY: this option takes no additional arguments.
+    (unsafe { sysconf(SC_THREAD_STACK_MIN) }).try_into().unwrap_or(16384)
 }
 
 // Interval timer types

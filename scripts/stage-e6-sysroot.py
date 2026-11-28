@@ -20,6 +20,7 @@ from userspace_generation import ARCHES, MARKER, TARGETS, digest, verify_inputs
 
 ROOT = Path(__file__).resolve().parents[1]
 PROFILE = {'abort': 'release/abort', 'unwind': 'release/unwind'}
+STD_PATCH = TARGETS / 'std-thread-stack-min.patch'
 
 
 def command(*args, **kwargs):
@@ -101,10 +102,16 @@ def stage(arch, snapshot, output):
         manifest.write_text('{"generation":"e6"}\n')
         env = clean_environment(work)
         ordinary_library, hosted_library = fork_libraries(work, snapshot, env)
+        # Apply only to the E6 copies, after verifying the pinned snapshots.
+        std_patch = digest(STD_PATCH)
+        for library in (ordinary_library, hosted_library):
+            subprocess.run(['git', 'apply', '--no-index', STD_PATCH],
+                           cwd=library, env=env, check=True)
         rustc = Path(command('rustup', 'which', 'rustc', env=env))
         cargo = Path(command('rustup', 'which', 'cargo', env=env))
         compiler = {'version': command(rustc, '-vV', env=env), 'sha256': digest(rustc)}
         record = {'generation': 'e6', 'arch': arch, 'compiler': compiler,
+                  'std_patch_sha256': std_patch,
                   'targets': {}, 'artifacts': {}}
         pins = tomllib.loads((ROOT / 'rust-fork.toml').read_text())
         crate = work / 'probe'
@@ -131,7 +138,7 @@ def stage(arch, snapshot, output):
                              CARGO_PROFILE_RELEASE_PANIC=panic)
             build_env['CARGO_ENCODED_RUSTFLAGS'] = '\x1f'.join((
                 '-Dwarnings', '-Cembed-bitcode=yes',
-                f'-Cmetadata=breenix_e6_{arch}_{target_hash}_{commit}',
+                f'-Cmetadata=breenix_e6_{arch}_{target_hash}_{commit}_{std_patch}',
                 f'--remap-path-prefix={work}=/breenix-e6',
                 f'--remap-path-prefix={ROOT}=/breenix-src',
             ))

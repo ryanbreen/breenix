@@ -7748,6 +7748,116 @@ fn test_stale_timer_entry_cannot_end_later_wait() -> TestResult {
     TestResult::Pass
 }
 
+/// The owed-wake waiter's own deadline. It is far longer than any wake
+/// handoff, so a wait that lasts until the deadline was ended by no wake.
+const OWED_WAKE_WAITER_DEADLINE_NS: u64 = 3_000_000_000;
+
+/// An interrupt-context wake that finds the queue lock held is not lost (E2.1,
+/// brief B1 requirements 1 and 4).
+///
+/// It drives only the caller-facing queue operations, so the same case runs
+/// against any implementation of them. A waiter thread is registered and
+/// published blocked on a private queue, with a 3 s deadline. This thread then
+/// makes the waiter's condition true and, inside its own checked registration
+/// on that queue (whose condition runs under the queue lock, requirement 2),
+/// issues the hard-IRQ wake (`try_wake_up_n_from_irq`) with the per-CPU
+/// hard-IRQ count raised. The wake finds the lock held and returns 0. The
+/// waiter's wait must still end through that wake once the lock is released,
+/// not at its own deadline.
+fn test_irq_wake_under_held_queue_lock_is_not_lost() -> TestResult {
+    use crate::task::thread::ThreadState;
+    use crate::task::waitqueue::{PrepareOutcome, WaitQueueHead};
+    use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    static QUEUE: WaitQueueHead = WaitQueueHead::new();
+    static RAISED: AtomicBool = AtomicBool::new(false);
+    static QUEUED: AtomicBool = AtomicBool::new(false);
+    static DEADLINE: AtomicU64 = AtomicU64::new(0);
+    static ENDED_AT: AtomicU64 = AtomicU64::new(0);
+    RAISED.store(false, Ordering::SeqCst);
+    QUEUED.store(false, Ordering::SeqCst);
+    DEADLINE.store(0, Ordering::SeqCst);
+    ENDED_AT.store(0, Ordering::SeqCst);
+
+    let waiter = || {
+        let deadline = monotonic_now_ns().saturating_add(OWED_WAKE_WAITER_DEADLINE_NS);
+        DEADLINE.store(deadline, Ordering::SeqCst);
+        let outcome = QUEUE.prepare_to_wait_checked(ThreadState::BlockedOnIO, Some(deadline), || {
+            !RAISED.load(Ordering::SeqCst)
+        });
+        if outcome == PrepareOutcome::Queued {
+            QUEUED.store(true, Ordering::SeqCst);
+            crate::task::waitqueue::schedule_current_wait();
+        }
+        QUEUE.finish_wait();
+        ENDED_AT.store(monotonic_now_ns().max(1), Ordering::SeqCst);
+    };
+    let handle = match crate::task::kthread::kthread_run(waiter, "owed_wake_waiter") {
+        Ok(handle) => handle,
+        Err(_) => return TestResult::Fail("could not start the waiter thread"),
+    };
+    let tid = handle.tid();
+
+    // The fixed state: the waiter is registered and published blocked before
+    // the wake is raised.
+    let published = loop {
+        if ENDED_AT.load(Ordering::SeqCst) != 0 {
+            break false;
+        }
+        if QUEUED.load(Ordering::SeqCst)
+            && QUEUE.contains_waiter(tid)
+            && crate::task::scheduler::thread_state(tid) == Some(ThreadState::BlockedOnIO)
+        {
+            break true;
+        }
+        crate::task::scheduler::yield_current();
+    };
+    if !published {
+        let _ = crate::task::kthread::kthread_join(&handle);
+        return TestResult::Fail("the waiter's wait ended before the wake was raised");
+    }
+
+    let mut irq_woke = u32::MAX;
+    let raised_at = monotonic_now_ns();
+    let outcome = QUEUE.prepare_to_wait_checked(ThreadState::BlockedOnIO, None, || {
+        RAISED.store(true, Ordering::SeqCst);
+        crate::per_cpu::irq_enter();
+        irq_woke = QUEUE.try_wake_up_n_from_irq(1);
+        crate::per_cpu::irq_exit();
+        false
+    });
+    QUEUE.finish_wait();
+    let registered_after_release = QUEUE.contains_waiter(tid);
+
+    if crate::task::kthread::kthread_join(&handle).is_err() {
+        return TestResult::Fail("could not join the waiter thread");
+    }
+    let ended_at = ENDED_AT.load(Ordering::SeqCst);
+    let deadline = DEADLINE.load(Ordering::SeqCst);
+
+    if outcome != PrepareOutcome::Mismatch {
+        return TestResult::Fail("the lock holder's checked registration did not end as a mismatch");
+    }
+    if irq_woke != 0 {
+        return TestResult::Fail("the interrupt wake found the queue lock free: the case did not reach a held lock");
+    }
+    if ended_at >= deadline {
+        if registered_after_release {
+            return TestResult::Fail(
+                "an interrupt wake under the held queue lock was lost: after the release the waiter was still registered, and it stayed blocked until its own deadline",
+            );
+        }
+        return TestResult::Fail(
+            "an interrupt wake under the held queue lock was lost: the waiter stayed blocked until its own deadline",
+        );
+    }
+    if ended_at < raised_at {
+        return TestResult::Fail("the waiter's wait ended before the wake was raised");
+    }
+
+    TestResult::Pass
+}
+
 // =============================================================================
 // ProcessContext Stage Tests
 // =============================================================================
@@ -9188,12 +9298,31 @@ fn test_tty_foreground_pgrp() -> TestResult {
             }
         }
         let both = || pending(member_pid) && pending(second_member_pid);
+        let (_, passes_before, _) = crate::tty::driver::foreground_signal_progress();
         let deadline = crate::time::get_monotonic_time().saturating_add(2_000);
         while accepted && !both() && crate::time::get_monotonic_time() < deadline {
             crate::task::scheduler::yield_current();
             crate::arch_halt_with_interrupts();
         }
         let signalled = (accepted && both(), pending(live_pid));
+        if !signalled.0 {
+            // Which stage the Ctrl+C stopped at: not queued, queued but not
+            // admitted to the line discipline, generated but not sent by the
+            // worker, or sent without reaching a member.
+            let (worker, passes_after, signals_queued) = crate::tty::driver::foreground_signal_progress();
+            let keys = crate::tty::driver::pending_key_count(1);
+            crate::serial_println!(
+                "[TTY_FG_SIGNAL_MISS:accepted={}:keys_pending={:?}:signals_queued={}:worker_tid={}:worker_passes={}:worker_state={:?}:member1={}:member2={}]",
+                accepted,
+                keys,
+                signals_queued,
+                worker,
+                passes_after.wrapping_sub(passes_before),
+                crate::task::scheduler::thread_state(worker),
+                pending(member_pid),
+                pending(second_member_pid),
+            );
+        }
         tty.flush_input();
         tty.set_termios(&termios);
         let mut manager = crate::process::manager();
@@ -10712,6 +10841,13 @@ static SCHEDULER_TESTS: &[TestDef] = &[
     TestDef {
         name: "stale_timer_entry_cannot_end_later_wait",
         func: test_stale_timer_entry_cannot_end_later_wait,
+        arch: Arch::Any,
+        timeout_ms: 10000,
+        stage: TestStage::PostScheduler,
+    },
+    TestDef {
+        name: "irq_wake_under_held_queue_lock_is_not_lost",
+        func: test_irq_wake_under_held_queue_lock_is_not_lost,
         arch: Arch::Any,
         timeout_ms: 10000,
         stage: TestStage::PostScheduler,

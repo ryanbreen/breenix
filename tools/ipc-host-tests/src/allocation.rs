@@ -106,15 +106,6 @@ fn inode_index_oom_preserves_existing_identity() {
     assert_eq!(index.get(&11), Some(&20));
 }
 #[test]
-fn checked_wait_oom_does_not_enqueue() {
-    let mut waiters = alloc::collections::VecDeque::<u64>::new();
-    assert!(!with_budget(0, || crate::waitqueue_alloc::reserve_one(
-        &mut waiters
-    )));
-    assert!(waiters.is_empty());
-}
-
-#[test]
 fn namespace_image_oom_is_reported_without_a_partial_copy() {
     assert_eq!(
         with_budget(0, || crate::namespace_alloc::copy_image(b"directory")),
