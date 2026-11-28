@@ -498,16 +498,19 @@ fn umount(target: u64, flags: u64) -> Result<(), u64> {
         return Err(EINVAL as u64);
     }
     let raw = userptr::copy_path_bytes_from_user(target)?;
-    let point =
-        crate::syscall::metadata::resolve_at(crate::syscall::at_path::AT_FDCWD, &raw, true, &cred)?;
-    if let Some(result) = crate::fs::breenfs::mount::unmount(&point.target, flags) {
-        return result;
+    // Only the target is needed. The walk's pin on a staging root would
+    // count as a staged node in use, which refuses the unmount.
+    let target =
+        crate::syscall::metadata::resolve_at(crate::syscall::at_path::AT_FDCWD, &raw, true, &cred)?
+            .target;
+    if let Some(result) = crate::fs::breenfs::mount::unmount(&target, flags) {
+        return result?.map_or(Ok(()), |staging| staging.finish());
     }
     let mount = {
         let mut mounts = MOUNTS.lock();
         let index = mounts
             .iter()
-            .position(|m| matches!(point.target, crate::fs::namei::Target::User { mount, node: ufs_abi::payload::ROOT, .. } if mount == m.id))
+            .position(|m| matches!(target, crate::fs::namei::Target::User { mount, node: ufs_abi::payload::ROOT, .. } if mount == m.id))
             .ok_or(EINVAL as u64)?;
         let mut state = mounts[index].state.lock();
         if flags == 0 && !state.dead && state.open_files != 0 {

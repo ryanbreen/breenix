@@ -80,3 +80,24 @@ pub struct SnapshotNext {
 
 const _: () = assert!(core::mem::size_of::<SnapshotRename>() == 528);
 const _: () = assert!(core::mem::size_of::<SnapshotNext>() == 272);
+
+/// The booted tree's change epoch (docs/metal/paired-generations.md 3.3).
+/// Each takes a `RootEpoch` to fill. `ROOT_FREEZE` and `ROOT_THAW` need euid 0.
+pub const ROOT_EPOCH: u64 = 0xb824_1406;
+pub const ROOT_FREEZE: u64 = 0xb824_1407;
+pub const ROOT_THAW: u64 = 0xb824_1408;
+
+/// `epoch` counts the changes the booted tree admitted since this mount.
+/// `writable_mappings` counts shared mappings of booted-tree files that can
+/// store without filesystem admission, and `dirty_files` the booted-tree files
+/// whose mapped stores are not yet written back. `ROOT_FREEZE` refuses with
+/// `EBUSY` while either is nonzero and fills them in (ruling DEV-44(2a)).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RootEpoch {
+    pub epoch: u64,
+    pub writable_mappings: u64,
+    pub dirty_files: u64,
+}
+
+const _: () = assert!(core::mem::size_of::<RootEpoch>() == 24);

@@ -419,12 +419,20 @@ impl DirectoryCookies {
 // In a persistent mount, default-root inodes are tagged only in memory.
 // Both trees retain their on-disk inode numbers and share one SPACE transaction.
 pub(super) const DEFAULT_TREE: u64 = 1 << 63;
+// A writable clone attached to the live writer for a paired deploy
+// (docs/metal/paired-generations.md 3.1). The tag is the two-bit field
+// `ino & TREE_TAGS`, with three valid values: 0, DEFAULT_TREE and STAGING_TREE.
+pub const STAGING_TREE: u64 = 1 << 62;
+pub(super) const TREE_TAGS: u64 = DEFAULT_TREE | STAGING_TREE;
 
 pub struct Files<'a, S: NodeStore + 'a> {
     txn: Transaction<'a, S>,
     root: Root,
     root_id: u64,
     default: Option<Root>,
+    // The attached staging tree's root id and ROOT item (3.1). It has no
+    // on-disk record of its attachment.
+    staging: Option<(u64, Root)>,
     // Shared copy-on-write with a scratch fork, so freeze copies no set.
     roots: Arc<BTreeMap<u64, Root>>,
     next_root_id: u64,
@@ -464,6 +472,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             },
             root_id: 1,
             default: None,
+            staging: None,
             roots: Arc::default(),
             next_root_id: sb.next_root_id,
             changed_roots: BTreeSet::new(),
@@ -527,6 +536,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             root,
             root_id,
             default: None,
+            staging: None,
             roots: Arc::new(roots),
             next_root_id: sb.next_root_id,
             changed_roots: BTreeSet::new(),
@@ -548,40 +558,117 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             return Err(Error::EINVAL);
         }
         let default = self.roots.get(&1).ok_or(Error::ENOENT)?.clone();
-        if default.flags & 1 != 0 || default.next_inode >= DEFAULT_TREE
-            || self.root.next_inode >= DEFAULT_TREE
+        if default.flags & 1 != 0 || default.next_inode >= STAGING_TREE
+            || self.root.next_inode >= STAGING_TREE
         {
             return Err(Error::EIO);
         }
-        let orphans = btree::range(&self.txn.view(), default.root,
+        self.include_orphans(&default, DEFAULT_TREE)?;
+        self.default = Some(default);
+        Ok(())
+    }
+
+    /// Index a tree's ORPHAN items under its namespace tag.
+    fn include_orphans(&mut self, root: &Root, tag: u64) -> Result<(), Error> {
+        let orphans = btree::range(&self.txn.view(), root.root,
             key(ORPHAN_OBJECT, format::ORPHAN, 0),
             key(ORPHAN_OBJECT, format::ORPHAN, u64::MAX))?;
         for (record, _) in orphans {
-            if record.offset >= DEFAULT_TREE { return Err(Error::EIO); }
-            let ino = record.offset | DEFAULT_TREE;
+            if record.offset >= STAGING_TREE { return Err(Error::EIO); }
+            let ino = record.offset | tag;
             Arc::make_mut(&mut self.orphans).insert(ino);
             Arc::make_mut(&mut self.orphan_work).insert(ino);
             Arc::make_mut(&mut self.unvalidated_orphans).insert(ino);
         }
-        self.default = Some(default);
         Ok(())
     }
 
     pub fn includes_default_tree(&self) -> bool { self.default.is_some() }
 
+    /// Serve writable root `id` as the staging tree, tagged STAGING_TREE
+    /// (docs/metal/paired-generations.md 3.1). The root must be committed:
+    /// a clone made in this transaction would share nodes the booted tree
+    /// already holds privately.
+    pub fn include_staging_tree(&mut self, id: u64) -> Result<(), Error> {
+        self.require_writable()?;
+        if id == 1 || id == self.root_id || self.staging.is_some() || self.changed_roots.contains(&id) {
+            return Err(Error::EBUSY);
+        }
+        let root = self.roots.get(&id).ok_or(Error::ENOENT)?.clone();
+        if root.flags & 1 != 0 {
+            return Err(Error::EROFS);
+        }
+        if root.next_inode >= STAGING_TREE || self.root.next_inode >= STAGING_TREE {
+            return Err(Error::EIO);
+        }
+        self.forget_staged();
+        self.include_orphans(&root, STAGING_TREE)?;
+        self.staging = Some((id, root));
+        Ok(())
+    }
+
+    /// Stop serving the staging tree; returns its root id. Refused while a
+    /// staged orphan awaits reclaim or the tree has changes not yet committed.
+    pub fn exclude_staging_tree(&mut self) -> Result<u64, Error> {
+        let (id, root) = self.staging.as_ref().ok_or(Error::EINVAL)?;
+        if self.orphans.range(STAGING_TREE..DEFAULT_TREE).next().is_some()
+            || self.roots.get(id) != Some(root)
+        {
+            return Err(Error::EBUSY);
+        }
+        let id = *id;
+        self.staging = None;
+        self.forget_staged();
+        Ok(id)
+    }
+
+    /// Drop per-inode state of the staging tag. The next attach reuses the
+    /// tag for a root whose local inode numbers name other files.
+    fn forget_staged(&mut self) {
+        let staged = |ino: u64| ino & TREE_TAGS == STAGING_TREE;
+        if self.open_inodes.iter().any(|&ino| staged(ino)) {
+            Arc::make_mut(&mut self.open_inodes).retain(|&ino| !staged(ino));
+        }
+        let maps = self.extent_maps.get_mut();
+        while let Some(at) = maps.maps.iter().position(|map| staged(map.ino)) {
+            maps.bytes -= maps.maps.swap_remove(at).bytes;
+        }
+        if self.cookies.as_ref().is_some_and(|cache| staged(cache.dir)) {
+            self.cookies = None;
+        }
+    }
+
+    pub fn includes_staging_tree(&self) -> bool { self.staging.is_some() }
+
+    /// The namespace tag of `ino`: 0 (the booted tree), DEFAULT_TREE or
+    /// STAGING_TREE. A tag whose tree is not included selects the booted tree,
+    /// whose stored inode numbers stay below STAGING_TREE (namespace_ino), so
+    /// its lookups return ENOENT.
     pub(super) fn tag(&self, ino: u64) -> u64 {
-        if self.default.is_some() { ino & DEFAULT_TREE } else { 0 }
+        match ino & TREE_TAGS {
+            DEFAULT_TREE if self.default.is_some() => DEFAULT_TREE,
+            STAGING_TREE if self.staging.is_some() => STAGING_TREE,
+            _ => 0,
+        }
+    }
+
+    fn tagged(&self) -> bool {
+        self.default.is_some() || self.staging.is_some()
     }
 
     fn tree(&self, ino: u64) -> &Root {
-        if self.tag(ino) == 0 { &self.root } else { self.default.as_ref().unwrap() }
+        match self.tag(ino) {
+            0 => &self.root,
+            DEFAULT_TREE => self.default.as_ref().unwrap(),
+            _ => &self.staging.as_ref().unwrap().1,
+        }
     }
 
     fn tree_mut(&mut self, ino: u64) -> (&mut Transaction<'a, S>, &mut Root) {
-        if self.tag(ino) == 0 {
-            (&mut self.txn, &mut self.root)
-        } else {
-            (&mut self.txn, self.default.as_mut().unwrap())
+        match self.tag(ino) {
+            0 => (&mut self.txn, &mut self.root),
+            DEFAULT_TREE => (&mut self.txn, self.default.as_mut().unwrap()),
+            _ => (&mut self.txn, &mut self.staging.as_mut().unwrap().1),
         }
     }
 
@@ -609,7 +696,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
     }
 
     fn namespace_ino(&self, context: u64, local: u64) -> Result<u64, Error> {
-        if self.default.is_some() && local >= DEFAULT_TREE {
+        if self.tagged() && local >= STAGING_TREE {
             return Err(Error::EIO);
         }
         Ok(local | self.tag(context))
@@ -637,6 +724,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             root: self.root.clone(),
             root_id: self.root_id,
             default: self.default.clone(),
+            staging: self.staging.clone(),
             roots: self.roots.clone(),
             next_root_id: self.next_root_id,
             changed_roots: BTreeSet::new(),
@@ -679,6 +767,9 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             let root = persisted_root(&store, sb, id)?;
             if id == self.root_id { self.root = root.clone(); }
             if id == 1 && self.default.is_some() { self.default = Some(root.clone()); }
+            if let Some((_, current)) = self.staging.as_mut().filter(|(staged, _)| *staged == id) {
+                *current = root.clone();
+            }
             Arc::make_mut(&mut self.roots).insert(id, root);
         }
         let state = self.txn.take_space_state()?;
@@ -751,7 +842,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         valid_root_name(to)?;
         let (&id, root) = self.roots.iter().find(|(_, root)| root.name == from)
             .ok_or(Error::ENOENT)?;
-        if id == 1 || id == self.root_id {
+        if id == 1 || id == self.root_id || self.staging.as_ref().is_some_and(|(staged, _)| *staged == id) {
             return Err(Error::EBUSY);
         }
         if self.roots.values().any(|root| root.name == to) {
@@ -774,7 +865,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         }
         let (&id, root) = self.roots.iter().find(|(_, root)| root.name == name)
             .ok_or(Error::ENOENT)?;
-        if id == 1 {
+        if id == 1 || self.staging.as_ref().is_some_and(|(staged, _)| *staged == id) {
             return Err(Error::EBUSY);
         }
         self.txn.release(root.root.addr, 4, true)?;
@@ -832,6 +923,10 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         Ok(value)
     }
     #[cfg(test)]
+    pub fn staging_pointer_for_test(&self) -> Option<BlockPtr> {
+        self.staging.as_ref().map(|(_, root)| root.root)
+    }
+    #[cfg(test)]
     pub fn read_node_for_test(&self, ptr: BlockPtr) -> Result<Arc<btree::Node>, btree::Error> {
         self.txn.view().read_node(ptr)
     }
@@ -876,10 +971,12 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         Ok(self.metadata_estimate()?.blocks().map_err(txn::Error::from)?)
     }
     pub(super) fn metadata_estimate(&self) -> Result<super::reserve::Estimate, Error> {
-        let root = self.default.as_ref().filter(|root| root.root.level > self.root.root.level)
-            .unwrap_or(&self.root);
+        // The deepest of the included trees, and each extra tree's ROOT update.
+        let extra = [self.default.as_ref(), self.staging.as_ref().map(|(_, root)| root)];
+        let root = extra.iter().flatten().copied()
+            .fold(&self.root, |deepest, root| if root.root.level > deepest.root.level { root } else { deepest });
         let mut estimate = self.txn.metadata_estimate(root.root, self.orphan_count)?;
-        if self.default.is_some() {
+        for _ in extra.iter().flatten() {
             estimate.space_changes = estimate.space_changes.checked_add(3).ok_or(Error::ENOSPC)?;
         }
         Ok(estimate)
@@ -1168,7 +1265,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         let ino = local | self.tag(dir);
         let next = local
             .checked_add(1)
-            .filter(|&next| local >= 16 && (self.default.is_none() || next < DEFAULT_TREE))
+            .filter(|&next| local >= 16 && (!self.tagged() || next < STAGING_TREE))
             .ok_or(Error::EMLINK)?;
         inode.nlink = if kind == 2 { 2 } else { 1 };
         inode.parent = if kind == 2 { dir } else { 0 };
@@ -1910,6 +2007,10 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         if let Some(default) = &self.default {
             self.txn.update_root(1, default.clone())?;
             self.changed_roots.insert(1);
+        }
+        if let Some((id, staging)) = &self.staging {
+            self.txn.update_root(*id, staging.clone())?;
+            self.changed_roots.insert(*id);
         }
         self.txn.settle()?;
         Ok(&mut self.txn)

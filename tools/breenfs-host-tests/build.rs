@@ -51,8 +51,14 @@ fn main() {
         .replace("impl Drop for Binding", "impl Drop for HostBindingOwner")
         .replace("self.handle", "self.node"));
     out.push('\n');
+    // The refusal error that bind and mprotect report as EBUSY (DEV-44).
+    let marker = "pub(crate) const ROOT_FROZEN";
+    let start = source.find(marker).unwrap_or_else(|| panic!("missing {marker}"));
+    let end = start + source[start..].find(";\n").unwrap();
+    out.push_str(&source[start..=end]);
+    out.push('\n');
     out.push_str("impl MapInner {\n");
-    for marker in ["    fn bound(", "    fn mark_populating(", "    fn holes(", "    fn reserve_poison(", "    fn poison("] {
+    for marker in ["    fn bound(", "    fn gain_writable_shared(", "    fn mark_populating(", "    fn holes(", "    fn reserve_poison(", "    fn poison("] {
         out.push_str(&item(&source, marker));
         out.push('\n');
     }
@@ -81,6 +87,7 @@ fn main() {
         "    pub(crate) fn transition(",
         "    pub(crate) fn repair(",
         "    pub(crate) fn abandon_population(",
+        "    pub(crate) fn writable_shared(",
         "    pub(crate) fn has_dirty(",
         "    pub(crate) fn nonempty(",
         "    pub(crate) fn request_writeback(",
