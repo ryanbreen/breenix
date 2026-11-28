@@ -452,8 +452,17 @@ The invariant is checked by the model test of E3-8 after every step (19.2). <!--
 
 The block device interface is synchronous on contiguous slices (`block/mod.rs`). Until E4:
 
-- A run is read into a per-CPU bounce buffer and copied into its frames, which is one copy, as population
-  does today. The buffer's size is the device's maximum transfer.
+- A run is read into a bounce buffer and copied into its frames, which is one copy, as population does
+  today. The buffer's size is the device's maximum transfer.
+- **A bounce buffer belongs to one request,** from the device read through CRC verification to the last
+  copy into a frame. A fill sleeps in the device wait and can migrate, so a per-CPU buffer could be reused
+  by another fill between its verification and its copy, and publish another file's bytes as verified.
+  Population today owns its staging buffer for the call (`memory/file_map.rs:1589-1648`), and E3 keeps that
+  ownership: a fill takes a buffer from a mount-wide pool of frame-backed buffers as an owned token, and
+  returns it after its copies. A fill that finds the pool empty waits on the pool's channel (4.5) in a
+  sleepable context, and fails the claim with `Error(EAGAIN)` in one that is not (9.2, step 3). The pool
+  holds one buffer per CPU at mount and grows on demand within the readahead budget (8.2). The drain's
+  write bounce (11.3) uses the same pool.
 - The fill runs synchronously in the calling thread. An asynchronous readahead runs it in the readahead
   worker (8.2).
 
@@ -1307,8 +1316,8 @@ waits for E3-6 (it needs pages retained by the cache to be worth anything), so t
   - BreenFS's fill:
     - seeks the extent map;
     - classifies holes;
-    - reads each physically contiguous run, up to the device's maximum transfer, into a per-CPU bounce
-      buffer;
+    - reads each physically contiguous run, up to the device's maximum transfer, into a bounce buffer
+      the request owns (6.4);
     - verifies each block's CRC and copies the blocks into their frames (6.2-6.4).
   - The block cache is no longer used for population's data (section 14, first part).
   - ext2 and the others get the trait default.
@@ -1320,6 +1329,10 @@ waits for E3-6 (it needs pages retained by the cache to be worth anything), so t
   - A sparse file's hole pages come back `Hole`, with no device read.
   - A CRC failure in one block makes exactly that run's pages `Error(EIO)`, and the others `Data`.
   - A device that returns a short run gives `Error(EIO)` for the pages it did not reach, never 00. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+  - Two fills of different files share a bounce pool of one buffer, as a fixed interleaving: fill A
+    verifies its run and pauses before its copy, then fill B asks for a buffer. B waits for A's token, and
+    A's frames hold file A's bytes. Today's staging is per call, so this guards the ownership the PR keeps
+    and is not red on the old tree; the PR says so.
 - **Rows.** `memory.driver-mmap` and `memory.driver-map-touch` (fewer, larger requests and no block-cache
   churn), `compile.rustc-vv`, `process.rustc-first-output`, `compile.hello-object`.
 - **Boot.** None. The recording device settles the request shapes, and the bounce path uses the existing
@@ -1731,7 +1744,7 @@ cache frame 100. Process B stored to the page, so its PTE now maps B's private c
 buffer, then sleeps before copying. Fill B runs on the same CPU and reads file B's run.
 
 ```pycon
->>> RULE = 'per-cpu'
+>>> RULE = 'owned-token'
 >>> buffers = {}
 >>> def acquire(request):
 ...     key = 'cpu0' if RULE == 'per-cpu' else request
