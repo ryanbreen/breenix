@@ -98,5 +98,4 @@ pub mod widget_references;
 pub mod widgets;
 
 #[cfg(test)]
-#[path = "../../../tests/ui_wm_scenarios.rs"]
 mod ui_wm_scenarios;

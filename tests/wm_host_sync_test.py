@@ -130,14 +130,19 @@ pub mod host_input {
         with tempfile.TemporaryDirectory(prefix='wm-wire-ack-') as directory:
             temp = Path(directory)
             (temp / 'wire').write_text('\n'.join(driver.wire) + '\n')
-            program = r'''use std::sync::Mutex;
+            program = r'''use std::sync::{atomic::Ordering, Mutex};
 #[path = "HOST_PATH"] pub mod host;
+use host::diagnostics::{self, Count, Site, INPUT};
 static SERIAL: Mutex<Vec<String>> = Mutex::new(Vec::new());
 static KMSG: Mutex<Vec<String>> = Mutex::new(Vec::new());
 #[macro_export] macro_rules! serial_println { ($($arg:tt)*) => { crate::SERIAL.lock().unwrap().push(format!($($arg)*)); } }
 #[macro_export] macro_rules! diag_println { ($($arg:tt)*) => { crate::KMSG.lock().unwrap().push(format!($($arg)*)); } }
 mod window { pub mod events { pub fn now_ns() -> u64 { 2150000000 } } }
-fn emit(ack: host::Ack) { let ack = Some(ack); EMISSION }
+fn emit(ack: host::Ack) {
+    let at = INPUT.enter(Site::Service);
+    let ack = Some(ack);
+    EMISSION
+}
 #[test] fn watcher_wire_guest_ack_round_trip() {
     let mut channel = host::Channel::new();
     let mut lines = host::SerialLines::new();

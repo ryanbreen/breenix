@@ -81,6 +81,11 @@ git clone --no-checkout "$(awk -F '"' '/^repo = / {print $2}' rust-fork.toml)" .
 BREENIX_RUST_FORK_SOURCE=../breenix-rust scripts/rust-fork.sh sync
 ```
 
+Userspace and SDK builds use `rust-fork/library` by default. Set
+`BREENIX_RUST_FORK_LIBRARY` to the `library` directory of a prepared fork to
+override that path. The fork's Cargo patch for the Rust `libc` bindings must
+resolve to this checkout's `libs/libc`.
+
 ### QEMU
 
 Build the production kernel and userspace image without starting a VM, then
