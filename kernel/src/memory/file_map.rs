@@ -1061,7 +1061,7 @@ impl MapState {
     /// mmap's refusal of a shared mapping with write authority of a running
     /// image (`TEXT_BUSY`), made before it replaces anything. Under the
     /// binding gate the answer holds until `bind`: `deny_write` rises from 0
-    /// only while an exec holds the gate exclusively.
+    /// only while an exec holds the gate as its writer (`fs/vfs/exec.rs`).
     pub(crate) fn refuse_text_busy(&self, shared: bool, may_write: bool) -> Result<(), &'static str> {
         self.state.inner.lock().refuse_text_busy(shared, may_write)
     }
@@ -2085,7 +2085,7 @@ impl<'a> ExecImage<'a> {
     }
 
     /// Read file pages `[first, first + count)` into the cache and hold them,
-    /// with every run populated before, until this load ends. A second exec
+    /// with the runs populated before, until this load ends. A second exec
     /// of a resident image finds its pages resident and does not read them.
     pub(crate) fn populate(&mut self, first: u64, count: u64) -> Result<(), MapError> {
         self.population.try_reserve(1).map_err(|_| MapError::NoMemory)?;

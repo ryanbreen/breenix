@@ -8,7 +8,7 @@
 //!
 //! The binding gate makes the early check final: mmap holds it shared from
 //! before the check through `bind`, and `deny_write` rises from 0 only while
-//! an exec holds it exclusively (`fs/vfs/exec.rs`, `with_image`).
+//! an exec holds it as its writer (`fs/vfs/exec.rs`, `with_image`).
 const MMAP: &str = include_str!("../../../kernel/src/syscall/mmap.rs");
 
 /// The item that starts at `start`, through its closing brace at column 0.

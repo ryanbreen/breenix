@@ -582,7 +582,7 @@ impl Headers {
             return Ok(false);
         };
         // Populate only the file pages a piece maps or copies, one run per
-        // stretch of adjacent pages: a gap between two loads is never read.
+        // stretch of adjacent pages, so a gap between two loads is not read.
         let page = PAGE as u64;
         let mut runs: Vec<(u64, u64)> = Vec::new();
         runs.try_reserve(pieces.len()).map_err(|_| Errno(ENOMEM))?;
