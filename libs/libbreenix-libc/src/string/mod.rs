@@ -82,6 +82,15 @@ pub unsafe extern "C" fn bcmp(a: *const u8, b: *const u8, n: usize) -> i32 {
 pub unsafe extern "C" fn memchr(s: *const u8, c: i32, n: usize) -> *mut u8 {
     let c = c as u8;
     let mut i = 0;
+    // memchr stops at the first match, and n may exceed the object. Step to a
+    // word boundary first: an aligned word never straddles a page, so the
+    // word holding a match reads nothing from a later page.
+    while i < n && s.wrapping_add(i).addr() % WORD != 0 {
+        if byte(s, i) == c {
+            return s.add(i).cast_mut();
+        }
+        i += 1;
+    }
     let repeated = usize::from(c) * BYTE_ONES;
     while n - i >= WORD {
         let matches = zero_bytes(load_word(s.add(i)) ^ repeated);
