@@ -626,7 +626,7 @@ class Rig:
                                    (BREENIX_RELEASE / "bbench-exit", "bbench-exit"),
                                    (BREENIX_OZ / "bbench", "bbench-oz"),
                                    (BREENIX_O3 / "bbench", "bbench-o3")):
-                # The run's verified clone, on every boot (snapshot_inputs).
+                # The run's verified clone, on the first boot and each restart.
                 source = self.inputs[artifact]
                 result = guest.scp(source, guest.remote(f"{home}/bbench/bin/{name}"))
                 if result.returncode:
@@ -800,7 +800,7 @@ class Rig:
                                                     self.workload(system, case, seed), case=case))
             warmup = self.warmup_failure(system, seed)
         if warmup:
-            # Without a built target the next build does the real work: never time it.
+            # Without a built target the next build does the real work, so it is not timed.
             receipt = failure_receipt(name, [case], warmup)
         else:
             receipt = self.bbench(system, name, self.workload(system, case, name),
@@ -961,8 +961,8 @@ class Rig:
         note += f" Samples alternate Linux then Breenix. {tcp_summary(system, before, after)}."
         if self.notes[system]:
             note += f" {len(self.notes[system])} VM restart(s)."
-        # Each boot's launch profile; boot() refuses guests launched with different ones,
-        # and every boot of a run inherits the same environment.
+        # Each boot's launch profile. boot() refuses guests launched with different ones,
+        # and a restart inherits the environment of the run's first boot.
         profiles = self.guests[system].profiles
         provenance = {
             "system": system, "commit": commit, "vmShape": vm_shape(profiles[0]),

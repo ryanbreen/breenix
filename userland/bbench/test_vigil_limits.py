@@ -98,7 +98,7 @@ class CredentialRedaction(unittest.TestCase):
     """Text that looks like a credential is removed whole, never just its first
     character or opening marker, from the series and from its sidecar."""
 
-    # Dummy values: none of these is a real credential.
+    # Dummy values, made up for this test.
     TOKEN = "dummyTOKENvalue0123456789abcdef"
     WORDS = "two dummy words"
     KEY_BODY = ("b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAAB",

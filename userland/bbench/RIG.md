@@ -11,8 +11,12 @@ ratio judges the kernel mechanism behind it.
 Both guests use the repository's standard ARM64 configuration (`run.sh` and the
 production-profile boot test), at the memory the compile rows' suites declare:
 
-- `qemu-system-aarch64 -M virt,gic-version=3`, accelerated by HVF with
-  `-cpu host` through `scripts/qemu-arm64.py`, with 4 vCPUs;
+- `qemu-system-aarch64 -M virt,gic-version=3` through `scripts/qemu-arm64.py`,
+  with 4 vCPUs. On Apple Silicon the launcher picks HVF with `-cpu host`;
+  `BREENIX_ARM64_QEMU_ACCEL=tcg` gives TCG with `-cpu max`. The rig asks the
+  launcher (`--print-profile`) for each boot's profile, writes it into the
+  series' hardware field and the sidecar, and refuses guests launched with
+  different profiles (`test_rig.LaunchProfile`);
 - 2048 MiB. The default boot has 512 MiB, but `docs/suites/*.json` declare a
   `minimumGuestMemory` of 1024 MiB for rustc and cargo and 2048 MiB for the
   toolchain effort's self-host acceptance. The rig takes the largest of the
@@ -68,8 +72,12 @@ Docker on macOS). The result is
 SHA-256 of the kernel, the BreenFS image and the four bbench binaries. `run`
 refuses to start unless that stamp names HEAD and each
 artifact still has its stamped digest; the series' kernel and userland commit is
-the stamped one (`test_rig.BuildIdentity`). Linux builds bbench from the same
-commit (`git archive` of the stamped commit).
+the stamped one. Before the first boot the run clones each artifact into
+`runs/<run>/inputs/` and checks the clones against the stamp, read once. The
+first boot and each restart use those clones, and the sidecar records
+that verified stamp, so a `build-breenix` in another worktree during the run
+leaves the run's inputs and record as verified (`test_rig.BuildIdentity`).
+Linux builds bbench from the same commit (`git archive` of the stamped commit).
 
 The key directory keeps the image's test-only SSH key, so the rig can log in as
 `sshtest`. `--bbench` builds `bbench` and `bbench-exit` as shipped (opt-level z,
@@ -102,6 +110,18 @@ samples per case (default 5), `--cases` selects a subset, and `--headed` shows
 the VMs in windows. Receipts, serial logs and QEMU command lines go to
 `~/Library/Caches/breenix-bench/runs/<run>/`. The rig stops only the QEMU
 processes it started, by the pid it recorded.
+
+The run ID must make two series IDs Vigil accepts (`<run>-linux` and
+`<run>-breenix`, each at most 120 characters), a note reference to each sidecar
+with no host name, and a valid session field. The rig checks those three before it
+reads inputs or boots a guest (`test_rig.RunIds`).
+
+A guest that stops or stops answering SSH is booted again, at most twice. A
+restart that fails setup (the root check, an upload or the fixture) stops that
+guest, and its remaining samples are recorded as lost
+(`test_rig.RestartThatFailsSetup`). The Cargo no-op row times a build only after
+its warm-up build succeeded. After a failed warm-up, each sample records the
+warm-up error and runs no build (`test_rig.CargoNoopWarmup`).
 
 ## Rows
 
@@ -147,9 +167,16 @@ toolchain 200, session 120, note 400, a row's title 200, cache 300 and reason
 400, each a single line with no IPv4 literal, host name, URL or credential-like
 text. `vigil_rules.py` ports those checks and `series.write_series` fits the 9
 text fields to them, replacing addresses and hosts and shortening with an ellipsis.
+Credential-like text is removed whole, from the series and the sidecar: a private
+key through its END marker, an assigned value to its closing quote or the next
+space, and a bearer or GitHub token to the next space.
 The full provenance goes to `<id>.provenance.json` beside each series: the image
-URL and SHA-256, the full `uname`, the full VM shape, the root's mount
-line, the TCP retransmission counters at boot and after the network rows, the
-restart notes, and the original of any shortened field. The note names that file.
+URL and SHA-256, the full `uname`, the full VM shape, each boot's launch profile,
+the root's mount line for each boot whose setup passed, the TCP retransmission
+counters at boot and after the network rows, the restart notes, the distinct
+errors of each row's failed attempts (`failures`), and the original of any
+shortened field. The note names that file. A row measured on some attempts and
+not on others gives the number that failed and their errors as its reason.
 `test_vigil_limits` writes both series from a run with long provenance and
-checks them against those rules.
+checks them against those rules, and checks that a dummy token, quoted password
+and private-key body appear in neither file.

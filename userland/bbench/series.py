@@ -18,7 +18,7 @@ import vigil_rules
 
 ELLIPSIS = "…"
 # What to remove for each kind of text vigil_rules.CREDENTIALS detects. Detection only
-# needs a credential's start; removal takes all of it: a private key through its END
+# needs a credential's start; removal takes the whole of it: a private key through its END
 # marker (or the end of the text), an assigned value to its closing quote or the next
 # space, and a bearer or GitHub token to the next space.
 CREDENTIAL_TEXT = re.compile(
@@ -183,7 +183,7 @@ def write_series(directory, series_id, at, metadata, groups, deferred=None, prov
                                  cache)),
     }
     sidecar_name = f"{series_id}.provenance.json"
-    # Every failed attempt's error, by row, in full: a measured row's too.
+    # The distinct errors of each row's failed attempts, in full, measured rows included.
     failed = {row.id: failures(groups.get(row.case, [])) for row in ROWS}
     failed = {row_id: errors for row_id, errors in failed.items() if errors}
     shortened = fit_series(series, sidecar_name, provenance is not None or bool(failed))
