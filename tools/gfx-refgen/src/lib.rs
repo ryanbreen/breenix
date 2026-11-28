@@ -1,6 +1,5 @@
-//! Host widget reference rendering: production libbui geometry and text, CPU raster.
-//! The aliases bind included widget sources to the reference surface in this crate;
-//! production libbui continues to use GPU surfaces.
+//! Host reference rendering for widgets and icons on the CPU raster.
+//! The aliases bind the included libbui and libicon sources to the reference surface.
 extern crate alloc;
 #[cfg(test)]
 extern crate self as breengel;
@@ -27,6 +26,22 @@ pub mod surface {
         }
         pub fn ui_scale(&self) -> u32 {
             self.scale
+        }
+        pub fn from_frame(frame: FrameBuf) -> Self {
+            Self { frame, scale: 1 }
+        }
+        pub fn into_frame(self) -> FrameBuf {
+            self.frame
+        }
+        pub fn width(&self) -> usize {
+            self.frame.width
+        }
+        pub fn height(&self) -> usize {
+            self.frame.height
+        }
+        pub fn batch(&mut self, draw: impl FnOnce(&mut Self)) {
+            // The CPU raster draws each shape immediately.
+            draw(self);
         }
     }
     impl std::ops::Deref for Surface {
@@ -61,6 +76,16 @@ pub mod theme;
 pub mod tree;
 #[path = "../../../libs/libbui/src/widget/mod.rs"]
 pub mod widget;
+#[path = "../../../libs/libicon/src/easing.rs"]
+pub mod easing;
+#[path = "../../../libs/libicon/src/icon.rs"]
+pub mod icon;
+#[path = "../../../libs/libicon/src/icons/mod.rs"]
+pub mod icons;
+#[path = "../../../libs/libicon/src/particles.rs"]
+pub mod particles;
+#[path = "../../../libs/libicon/src/physics.rs"]
+pub mod physics;
 pub use input::{InputState, Key, KeyInput, WidgetEvent};
 pub use rect::Rect;
 pub use theme::Theme;

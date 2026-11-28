@@ -11,7 +11,6 @@ publish = false
 [dependencies]
 libgfx-ref = { path = "../../libs/libgfx-ref" }
 libfont = { path = "../../libs/libfont" }
-libicon = { path = "../../libs/libicon" }
 libimg = { path = "../../libs/libimg" }
 libimg-encode = { path = "../../libs/libimg-encode" }
 serde_json = "=1.0.154"
