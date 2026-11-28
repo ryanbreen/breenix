@@ -1415,6 +1415,19 @@ The E9.1 implementation records these details.
 - **The rig has no idle-wake case** because its standard workload list has no independent wake
   latency measurement. The before and after series can compare process timings and cannot measure
   the one-tick bound directly.
+- **DEV-51 couples ARM64 steal admission to the run-queue lock word** because a separate summary
+  can still advertise a queue after the owner consumes its last candidate and releases the lock.
+- **The DEV-51 host check interleaves a local dispatch at successful peer lock acquisition** because
+  a failed speculative try-lock cannot mark a dispatch owed, while a peer holding an empty queue can
+  make the owner miss its own lock and trigger a retry SGI on release.
+- **ARM64 peer timer expiry uses a separate published heap minimum** because the tick's claim
+  advances its retry timestamp even when the underlying timer already needs service.
+
+The ready hint excludes the current and selected next threads. Affinity, liveness, and
+stack custody still govern candidate selection under the lock. A failed steal try-lock
+has no notification side effects. The unlock handshake in §3.5 still wakes a local
+dispatch deferred by a peer which acquired the lock for work. DEV-46's release-only
+exception tail and enqueuer wake protocol in §3.4 apply.
 
 ## 15. Decisions for the coordinator
 
