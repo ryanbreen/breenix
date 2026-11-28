@@ -957,6 +957,12 @@ The builder resolved these details against the code. Each has one sentence of re
   `tests/park_contract_structure.rs` (`HALT_CLASSIFIED`), the list may only shrink, and each moves in a
   later PR with its own boot. In main's baseline boot its own `test_deferral` probe did not run on CPU 1
   (verdict `starved` after 15 s), which that later PR has to account for.
+- **Three more `park::Braked` sites.** The pty hangup daemon, the x86 console input clock and xHCI's
+  `wait_console_ready` took a bare `preempt_disable()` so that `Completion` would sleep as in a syscall.
+  Since E2.2 that is `LocksHeld(1)`, and the wait spins its CPU for its timeout. On this PR's first two
+  ARM64 boots the hangup daemon held CPU 2 that way and the soft-lockup watchdog fired. They hold the
+  guard now, as E2.2's list of `Braked` sites does, and a BRAKE census in
+  `tests/park_contract_structure.rs` finds the shape.
 - **The kernel test's feature.** It is a `boot_tests` case, because the test registry is built under that
   feature.
 - **E2.2's publication check.** Its host check that a baseline-0 publication reads depth 1 or more is
