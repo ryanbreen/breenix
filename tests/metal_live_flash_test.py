@@ -2,15 +2,18 @@ import argparse
 from pathlib import Path
 import runpy
 import subprocess
+import sys
 import threading
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 
 class PairedFlashTest(unittest.TestCase):
     def setUp(self):
-        self.flash = runpy.run_path(str(Path(__file__).resolve().parents[1] /
-                                       'scripts/metal/metal_live_flash.py'))
+        tools = Path(__file__).resolve().parents[1] / 'scripts/metal'
+        sys.path.insert(0, str(tools))
+        self.addCleanup(sys.path.remove, str(tools))
+        self.flash = runpy.run_path(str(tools / 'metal_live_flash.py'))
         self.current = '20261127T230258Z-metal'
         self.previous = '20261127T224742Z-metal'
         self.trial = '20261127T235000Z-metal'
@@ -66,6 +69,32 @@ class PairedFlashTest(unittest.TestCase):
         args.recovery = True
         with self.assertRaises(SystemExit):
             runner['install_persistent'](args)
+
+    def test_forced_rollback_waits_for_both_halves_of_the_old_pair(self):
+        for trial_boot in (None, '4-5-6'):
+            with self.subTest(trial_boot=trial_boot):
+                rollback = (
+                    'breenix-manager: started: test\n'
+                    f'breenix-manager: live flash: rollback {self.token}\n'
+                    f'breenix-manager: booting current {self.commit}\n'
+                    '[init] log boot-id=7-8-9\n'
+                )
+                facts = Mock(side_effect=[('7-8-9', 'gen-' + self.trial, 'rw'),
+                                          ('7-8-9', 'gen-' + self.current, 'rw')])
+                read_serial = Mock(side_effect=['', rollback, rollback])
+                reboot = Mock()
+                reset = Mock()
+                with patch('time.monotonic', side_effect=range(30)), patch('time.sleep'):
+                    self.assertEqual(self.flash['force_rollback'](
+                        self.token, '1-2-3', trial_boot, self.commit, 'gen-' + self.current,
+                        read_serial, facts, reboot, reset), '7-8-9')
+                self.assertEqual(facts.call_count, 2)
+                if trial_boot:
+                    reboot.assert_called_once_with(trial_boot)
+                    reset.assert_not_called()
+                else:
+                    reboot.assert_not_called()
+                    reset.assert_called_once_with(self.token)
 
 
 class FlashPathTest(unittest.TestCase):
