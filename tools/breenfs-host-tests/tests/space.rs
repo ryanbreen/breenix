@@ -223,6 +223,29 @@ fn cancelled_ref_changes_leave_space_unedited() {
     assert_eq!(space::reference(&t.view(), root, 104, 4).unwrap().unwrap().refcount, 2);
 }
 
+/// A sparse write aims at the block its preceding extent would map it to,
+/// which can fall inside a FREE range. Taking one block from the middle of a
+/// seven-block range leaves two three-block holes, too small for a node, so
+/// such writes can use up every node-sized range while most of the space is
+/// still free, and settlement then has nowhere to copy a SPACE node.
+#[test]
+fn goal_inside_a_free_range_leaves_room_for_nodes() {
+    let (mut store, mut root) = tree();
+    let runs: Vec<u64> = (0..8).map(|i| 1_000 + 16 * i).collect();
+    for &start in &runs {
+        put(&mut store, &mut root, FREE, format::FREE, start, &format::Free { length: 7 }.encode());
+    }
+    seal(&mut store, &mut root);
+    let mut t = Transaction::new(&store, root, 5).unwrap();
+    for &start in &runs {
+        t.allocate_data_run(&[9], Some(start + 3)).unwrap();
+    }
+    let state = (|| { t.settle().ok()?; t.space_state().ok() })();
+    let state = state.expect("settlement found no four-block range for a SPACE node copy");
+    let free: u64 = state.free().ranges().map(|(_, l)| l).sum();
+    assert!(free >= 40, "{free} blocks left free");
+}
+
 #[test]
 fn refcount_overflow_is_emlink() {
     let r = Ref { refcount: u32::MAX - 1, kind: 1, alloc_generation: 1, crcs: vec![] };
