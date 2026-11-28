@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "scan": "tools/kmem-host-tests/tests/oom_inventory.rs",
+  "rows": []
+}
