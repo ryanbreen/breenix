@@ -9298,12 +9298,31 @@ fn test_tty_foreground_pgrp() -> TestResult {
             }
         }
         let both = || pending(member_pid) && pending(second_member_pid);
+        let (_, passes_before, _) = crate::tty::driver::foreground_signal_progress();
         let deadline = crate::time::get_monotonic_time().saturating_add(2_000);
         while accepted && !both() && crate::time::get_monotonic_time() < deadline {
             crate::task::scheduler::yield_current();
             crate::arch_halt_with_interrupts();
         }
         let signalled = (accepted && both(), pending(live_pid));
+        if !signalled.0 {
+            // Which stage the Ctrl+C stopped at: not queued, queued but not
+            // admitted to the line discipline, generated but not sent by the
+            // worker, or sent without reaching a member.
+            let (worker, passes_after, signals_queued) = crate::tty::driver::foreground_signal_progress();
+            let keys = crate::tty::driver::pending_key_count(1);
+            crate::serial_println!(
+                "[TTY_FG_SIGNAL_MISS:accepted={}:keys_pending={:?}:signals_queued={}:worker_tid={}:worker_passes={}:worker_state={:?}:member1={}:member2={}]",
+                accepted,
+                keys,
+                signals_queued,
+                worker,
+                passes_after.wrapping_sub(passes_before),
+                crate::task::scheduler::thread_state(worker),
+                pending(member_pid),
+                pending(second_member_pid),
+            );
+        }
         tty.flush_input();
         tty.set_termios(&termios);
         let mut manager = crate::process::manager();
