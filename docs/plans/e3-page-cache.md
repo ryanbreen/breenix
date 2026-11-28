@@ -618,9 +618,9 @@ The fault runs `resolve_fault(as, addr, access, ctx)` (E2.9). For a file VMA:
    index past `mapped_size` with SIGBUS, keeping today's in-transition retry.
 2. Look the index up under `tree_lock`:
    - **Uptodate, Dirty or Writeback:** take a reference. Fault around it (9.3). Take `as.pt`, recheck the
-     PTE, and install it with the VMA's rights: a private writable mapping is copy-on-write, as
-     `entry_flags` does today, and a store into a shared mapping of a `Writeback` page follows 11.2.
-     Return.
+     PTE, and, under `tree_lock`, recheck that the entry still holds the page (12.5). Then install it with
+     the VMA's rights: a private writable mapping is copy-on-write, as `entry_flags` does today, and a store
+     into a shared mapping of a `Writeback` page follows 11.2. Return.
    - **Hole:** map the shared zero frame read-only. A store into a private mapping copies, as for any COW
      page. A store into a shared writable mapping allocates a zeroed frame, inserts it `MAPPED_DIRTY` (11.2a), and maps it
      writable. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
@@ -981,9 +981,21 @@ section 7.3). <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-ca
 
 For E3-13, the FileCache's binding interval tree (4.1) gives the bindings that cover a page.
 
-- For each binding, under its address space's `as.pt`, clear the PTE (or the accessed bit) and add the
-  flush to a `LeafBatch`.
-- The frame is freed only after the batch flushes (2.3).
+A covering binding does not mean its PTE maps the cache frame. A private binding's PTE for the index may map <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+the process's own copy-on-write copy, which holds data that exists nowhere else. So:
+
+- **Exact frame.** For each binding, under its address space's `as.pt` (taken with `try_lock`; a busy one
+  puts the page back), read the PTE. Clear it, or harvest its accessed bit, only if it maps this page's
+  pfn, and add the flush to a `LeafBatch`. A PTE that maps another frame, or is absent, is left alone.
+- **Coordination with installs.** A fault or fault-around installs a PTE for a cache page only while
+  holding `as.pt` and, inside it, `tree_lock`, after rechecking that the tree entry still holds that pfn,
+  and it raises `leaf_refs` there (as.pt → tree_lock is the order of section 15). After clearing the PTEs,
+  reclaim takes `tree_lock` (with `try_lock`) and removes the entry only if the page is still clean, not
+  `Filling` or `Writeback`, and its `leaf_refs` is 0. So an install either lands first and keeps the page
+  (reclaim puts it back), or sees the entry gone and retries the fault.
+- **Frame custody.** Reclaim holds its isolation reference until the `LeafBatch` flush has completed on <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+  every CPU and no I/O holds the frame (a fill or writeback holds a page reference, 4.4). The frame returns
+  to E1 only when the last reference goes after that (2.3).
 - Anonymous pages are not reached this way: E3 does not reclaim them.
 
 ### 12.6 Room for swap
@@ -1519,6 +1531,11 @@ waits for E3-6 (it needs pages retained by the cache to be worth anything), so t
     refills it. On the old code mapped pages are never reclaimed, and the allocation fails, which is red. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
   - A hot mapped page, whose accessed bit is set, outlives a cold unmapped page.
   - The frame is freed only after the flush (the existing flush-before-free model).
+  - A private binding whose PTE maps its own copy-on-write copy keeps that PTE and its bytes when reclaim
+    takes the cache page: store through a `MAP_PRIVATE` mapping, reclaim the cache page, then read the
+    store back. A second fixed interleaving pauses a fault between its lookup and its install while
+    reclaim clears the PTEs: the fault sees the entry gone and refills, and no PTE maps the freed frame.
+    Mapped pages are not reclaimed on the old tree, so both guard the mechanism the PR adds; the PR says so.
   - A sleepable allocation under pressure parks and succeeds after the daemon frees pages. An atomic one
     fails without parking.
 - **Rows.** No row is expected to move on the 2048 MiB rig, where the compile rows do not run out of
@@ -1698,7 +1715,7 @@ Reclaim runs on page 5 in that interval, and a read refills it from the open vie
 cache frame 100. Process B stored to the page, so its PTE now maps B's private copy, frame 200.
 
 ```pycon
->>> RULE = 'clear-covering-pte'
+>>> RULE = 'exact-frame'
 >>> ptes = {'A': 100, 'B': 200}
 >>> def reclaim(ptes, pfn):
 ...     for vma, frame in list(ptes.items()):
