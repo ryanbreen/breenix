@@ -15,7 +15,7 @@ const MAX_ITEMS: u64 = (format::NODE_SIZE as u64 - 48) / 21;
 const ITEM_VISITS_PER_EDIT_LEVEL: u64 = DECODES_PER_EDIT_LEVEL * MAX_ITEMS;
 const FIXED_ROOTS: u64 = 16;
 
-struct Disk(HostMutex<Vec<u8>>);
+pub(super) struct Disk(pub(super) HostMutex<Vec<u8>>);
 impl BlockDevice for Disk {
     fn block_size(&self) -> usize { BLOCK_SIZE }
     fn num_blocks(&self) -> u64 { self.0.lock().unwrap().len() as u64 / BLOCK_SIZE as u64 }
@@ -52,38 +52,48 @@ fn key(object: u64, item_type: u8, offset: u64) -> Key { Key { object, item_type
 pub(super) fn image(files: usize) -> &'static Vec<u8> {
     static SMALL: OnceLock<Vec<u8>> = OnceLock::new();
     static LARGE: OnceLock<Vec<u8>> = OnceLock::new();
-    (if files == 1100 { &SMALL } else { &LARGE }).get_or_init(|| {
-        let mut seed = Seed { nodes: BTreeMap::new(), next: 20 + files as u64 };
-        let uuid = [0x75; 16]; let hash = [0x31; 16];
-        let mut fs = btree::create(&mut seed, 1, uuid, 1).unwrap();
-        let root_inode = format::Inode { mode: 0o40755, nlink: 2, parent: 2,
-            size: files as u64, next_index: files as u64 + 2, created_generation: 1,
-            ..format::Inode::default() };
-        btree::insert(&mut seed, &mut fs, key(2, format::INODE, 0), &root_inode.encode()).unwrap();
-        for i in 0..files {
-            let ino = 16 + i as u64; let name = alloc::format!("file-{i:04}").into_bytes();
-            let entry = format::DirRecord { ino, kind: 1, name: name.clone() };
-            btree::insert(&mut seed, &mut fs, key(2, format::DIR_ENTRY,
-                super::super::siphash::hash(&hash, &name)), &entry.encode()).unwrap();
-            btree::insert(&mut seed, &mut fs, key(2, format::DIR_INDEX, i as u64 + 2), &entry.encode()).unwrap();
-            let inode = format::Inode { mode: 0o100644, nlink: 1, size: 1, nblocks: 1,
-                created_generation: 1, ..format::Inode::default() };
-            btree::insert(&mut seed, &mut fs, key(ino, format::INODE, 0), &inode.encode()).unwrap();
-            btree::insert(&mut seed, &mut fs, key(ino, format::EXTENT, 0),
-                &format::Extent { phys_start: 20 + i as u64, phys_len: 1,
-                    extent_offset: 0, num_blocks: 1, flags: 0 }.encode()).unwrap();
-        }
-        finish_image(seed, Root { root: fs, next_inode: files as u64 + 16, source_root: 0,
-            created_generation: 1, ctime: Time { seconds: 0, nanos: 0 }, flags: 0,
-            name: b"default".to_vec() }, uuid, hash, files)
-    })
+    (if files == 1100 { &SMALL } else { &LARGE }).get_or_init(|| populated_image(files, 1, 16384))
 }
 
-fn finish_image(mut seed: Seed, root: Root, uuid: [u8; 16], hash: [u8; 16], files: usize) -> Vec<u8> {
+/// `files` files in the root directory of a `total_blocks` volume, each of
+/// `extents` one-block extents at distinct physical blocks from block 20.
+pub(super) fn populated_image(files: usize, extents: usize, total_blocks: u64) -> Vec<u8> {
+    let blocks = files * extents;
+    let mut seed = Seed { nodes: BTreeMap::new(), next: 20 + blocks as u64 };
+    let uuid = [0x75; 16]; let hash = [0x31; 16];
+    let mut fs = btree::create(&mut seed, 1, uuid, 1).unwrap();
+    let root_inode = format::Inode { mode: 0o40755, nlink: 2, parent: 2,
+        size: files as u64, next_index: files as u64 + 2, created_generation: 1,
+        ..format::Inode::default() };
+    btree::insert(&mut seed, &mut fs, key(2, format::INODE, 0), &root_inode.encode()).unwrap();
+    for i in 0..files {
+        let ino = 16 + i as u64; let name = alloc::format!("file-{i:04}").into_bytes();
+        let entry = format::DirRecord { ino, kind: 1, name: name.clone() };
+        btree::insert(&mut seed, &mut fs, key(2, format::DIR_ENTRY,
+            super::super::siphash::hash(&hash, &name)), &entry.encode()).unwrap();
+        btree::insert(&mut seed, &mut fs, key(2, format::DIR_INDEX, i as u64 + 2), &entry.encode()).unwrap();
+        let size = if extents == 1 { 1 } else { (extents * BLOCK_SIZE) as u64 };
+        let inode = format::Inode { mode: 0o100644, nlink: 1, size, nblocks: extents as u64,
+            created_generation: 1, ..format::Inode::default() };
+        btree::insert(&mut seed, &mut fs, key(ino, format::INODE, 0), &inode.encode()).unwrap();
+        for j in 0..extents {
+            btree::insert(&mut seed, &mut fs, key(ino, format::EXTENT, (j * BLOCK_SIZE) as u64),
+                &format::Extent { phys_start: (20 + i * extents + j) as u64, phys_len: 1,
+                    extent_offset: 0, num_blocks: 1, flags: 0 }.encode()).unwrap();
+        }
+    }
+    finish_image(seed, Root { root: fs, next_inode: files as u64 + 16, source_root: 0,
+        created_generation: 1, ctime: Time { seconds: 0, nanos: 0 }, flags: 0,
+        name: b"default".to_vec() }, uuid, hash, blocks, total_blocks)
+}
+
+/// `data` one-block data references start at block 20.
+fn finish_image(mut seed: Seed, root: Root, uuid: [u8; 16], hash: [u8; 16], data: usize,
+    total_blocks: u64) -> Vec<u8> {
     let mut space = btree::create(&mut seed, 2, uuid, 1).unwrap();
     btree::insert(&mut seed, &mut space, key(0xffff_ffff_ffff_ff10, format::ROOT, 1), &root.encode()).unwrap();
     let crc = super::super::crc32c::checksum(&vec![0; BLOCK_SIZE]);
-    for i in 0..files {
+    for i in 0..data {
         btree::insert(&mut seed, &mut space, key(20 + i as u64, format::REF, 1),
             &format::Ref { refcount: 1, kind: 3, alloc_generation: 1, crcs: vec![crc] }.encode()).unwrap();
     }
@@ -102,13 +112,13 @@ fn finish_image(mut seed: Seed, root: Root, uuid: [u8; 16], hash: [u8; 16], file
             free_start = seed.next;
         }
         btree::insert(&mut seed, &mut space, key(0xffff_ffff_ffff_ff20, format::FREE, free_start),
-            &format::Free { length: 16384 - 4 - free_start }.encode()).unwrap();
+            &format::Free { length: total_blocks - 4 - free_start }.encode()).unwrap();
         if accounted.len() == seed.nodes.len() && free_start == seed.next { break; }
     }
-    let sb = Superblock { fs_uuid: uuid, generation: 1, slot: 1, total_blocks: 16384,
+    let sb = Superblock { fs_uuid: uuid, generation: 1, slot: 1, total_blocks,
         global_reserve: 4096, next_root_id: 2, dirhash_key: hash, space_root: space,
-        free_blocks: 16384 - 4 - seed.next, ..Superblock::default() };
-    let mut bytes = vec![0; 16384 * BLOCK_SIZE];
+        free_blocks: total_blocks - 4 - seed.next, ..Superblock::default() };
+    let mut bytes = vec![0; total_blocks as usize * BLOCK_SIZE];
     for (addr, node) in seed.nodes { let at = addr as usize * BLOCK_SIZE;
         bytes[at..at + node.len()].copy_from_slice(&node); }
     for ring in 0..2 { let mut copy = sb.clone(); copy.ring = ring;
@@ -177,7 +187,7 @@ pub(super) fn full_height_one_image() -> Vec<u8> {
         root: format::BlockPtr { addr, csum, level: 1, generation: 1 },
         next_inode: 17, source_root: 0, created_generation: 1,
         ctime: Time { seconds: 0, nanos: 0 }, flags: 0, name: b"default".to_vec(),
-    }, uuid, hash, 0)
+    }, uuid, hash, 0, 16384)
 }
 
 fn publication(files: usize) {
