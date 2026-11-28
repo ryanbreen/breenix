@@ -6,13 +6,14 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 const USAGE: &str =
-    "usage: bsync [--dry-run] [--delete] [--sudo] [--exclude GLOB ...] SRC USER@HOST:DEST";
+    "usage: bsync [--dry-run] [--delete] [--sudo] [--exclude GLOB ...] [--ssh-config FILE] SRC USER@HOST:DEST";
 
 fn run() -> Result<()> {
     let mut dry_run = false;
     let mut delete = false;
     let mut sudo = false;
     let mut patterns = Vec::new();
+    let mut ssh_config = None;
     let mut operands = Vec::new();
     let mut positional = false;
     let mut args = std::env::args_os().skip(1);
@@ -26,6 +27,13 @@ fn run() -> Result<()> {
             (false, Some("--dry-run")) => dry_run = true,
             (false, Some("--delete")) => delete = true,
             (false, Some("--sudo")) => sudo = true,
+            (false, Some("--ssh-config")) if ssh_config.is_none() => {
+                ssh_config = Some(
+                    args.next()
+                        .and_then(|arg| arg.into_string().ok())
+                        .ok_or("--ssh-config requires a UTF-8 file path")?,
+                );
+            }
             (false, Some("--exclude")) => {
                 let pattern = args
                     .next()
@@ -43,6 +51,9 @@ fn run() -> Result<()> {
         return Err(USAGE.into());
     };
     let mut destination = Destination::parse(remote.to_str().ok_or("destination must be UTF-8")?)?;
+    if let Some(config) = ssh_config {
+        destination = destination.with_ssh_args(&["-F".into(), config]);
+    }
     let excludes = Excludes::new(&patterns)?;
     let source: PathBuf = std::path::Path::new(source).components().collect();
     let local = scan(&source, &excludes)?;

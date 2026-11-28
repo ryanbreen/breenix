@@ -8,6 +8,7 @@ description = "Userspace programs and utilities for Breenix"
 # It links against libbreenix-libc (libc.a) for system calls
 
 [features]
+paired-host-test = []
 # B42: the remaining v1 framebuffer stress subject is built only for x86-64.
 framebuffer-v1 = []
 hosted-link-probe = []
