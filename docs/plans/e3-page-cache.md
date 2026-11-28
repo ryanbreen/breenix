@@ -1950,6 +1950,20 @@ queued window whose pages it had claimed.
 
 ```
 
+**Every readahead window obeys one cap (8.1).** `max` is 512 pages (2 MiB). A 1 GiB `read` at offset 0 <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+(262,144 pages), a random 1 GiB read and a 1 GiB `WILLNEED` each ask for a window.
+
+```pycon
+>>> RULE = 'per-path'
+>>> MAX = 512
+>>> def window(kind, request):
+...     raw = {'first': 2 * request, 'reset': -(-request // 4) * 4, 'willneed': request}[kind]
+...     return min(raw, MAX) if RULE == 'uniform-cap' else raw
+>>> [window(k, 262144) for k in ('first', 'reset', 'willneed')]
+[512, 512, 512]
+
+```
+
 ## 20. bbench rows (DEV-31)
 
 | Row | Ratio (28668b28) | Expected to move in | Parity reachable from E3 alone |
