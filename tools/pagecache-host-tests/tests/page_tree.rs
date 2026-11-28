@@ -53,7 +53,7 @@ fn store(tree: &mut PageTree, source: &mut Source, index: u64, entry: Entry) -> 
     let needed = tree.nodes_needed(index);
     let before = tree.nodes();
     let mut reserved = NodeList::new();
-    reserved.reserve(source, needed).unwrap();
+    reserved.fill_from(source, needed).unwrap();
     let old = tree.store(index, entry, &mut reserved).unwrap();
     assert_eq!(reserved.len(), 0, "store at {index:#x} left reserved nodes");
     assert_eq!(tree.nodes(), before + needed, "store at {index:#x}");
@@ -254,7 +254,7 @@ fn a_failed_reservation_or_a_short_one_changes_nothing() {
 
         // A reservation one short is refused before anything changes.
         let mut short = NodeList::new();
-        short.reserve(&mut source, needed - 1).unwrap();
+        short.fill_from(&mut source, needed - 1).unwrap();
         assert_eq!(
             tree.store(index, page(7), &mut short),
             Err(TreeError::NeedNodes {
@@ -272,7 +272,7 @@ fn a_failed_reservation_or_a_short_one_changes_nothing() {
             let live = source.live;
             source.fail_at = Some(source.calls + nth);
             let mut reserved = NodeList::new();
-            assert!(reserved.reserve(&mut source, needed).is_err(), "nth {nth}");
+            assert!(reserved.fill_from(&mut source, needed).is_err(), "nth {nth}");
             assert_eq!(reserved.len(), 0);
             assert_eq!(source.live, live, "nth {nth} kept nodes");
             source.fail_at = None;
@@ -281,9 +281,9 @@ fn a_failed_reservation_or_a_short_one_changes_nothing() {
 
         // An existing reservation is not lost when a later top-up fails.
         let mut reserved = NodeList::new();
-        reserved.reserve(&mut source, 1).unwrap();
+        reserved.fill_from(&mut source, 1).unwrap();
         source.fail_at = Some(source.calls);
-        assert!(reserved.reserve(&mut source, needed - 1).is_err());
+        assert!(reserved.fill_from(&mut source, needed - 1).is_err());
         assert_eq!(reserved.len(), 1);
         source.fail_at = None;
         reserved.release(&mut source);

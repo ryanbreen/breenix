@@ -148,33 +148,33 @@ impl NodeList {
 
     /// Take `count` more nodes from `source`. On failure the nodes this call
     /// took go back to the source and the list is as it was.
-    pub fn reserve<S: NodeSource>(&mut self, source: &mut S, count: usize) -> Result<(), ReserveError> {
+    pub fn fill_from<S: NodeSource>(&mut self, source: &mut S, count: usize) -> Result<(), ReserveError> {
         let mut taken = NodeList::new();
         for _ in 0..count {
             match source.alloc_node() {
-                Some(node) => taken.push(node),
+                Some(node) => taken.put(node),
                 None => {
                     taken.release(source);
                     return Err(ReserveError);
                 }
             }
         }
-        while let Some(node) = taken.pop() {
-            self.push(node);
+        while let Some(node) = taken.get() {
+            self.put(node);
         }
         Ok(())
     }
 
     /// Return the list's nodes to `source`.
     pub fn release<S: NodeSource>(&mut self, source: &mut S) {
-        while let Some(node) = self.pop() {
+        while let Some(node) = self.get() {
             // SAFETY: the nodes on a list came from a source's `alloc_node`,
             // and only the list refers to them.
             unsafe { source.free_node(node) };
         }
     }
 
-    fn push(&mut self, node: NonNull<Node>) {
+    fn put(&mut self, node: NonNull<Node>) {
         let next = self.head.map_or(0, |n| n.as_ptr() as u64);
         // SAFETY: the node is valid for writes and owned by this list.
         unsafe { ptr::addr_of_mut!((*node.as_ptr()).slots[0]).write(next) };
@@ -182,7 +182,7 @@ impl NodeList {
         self.len += 1;
     }
 
-    fn pop(&mut self) -> Option<NonNull<Node>> {
+    fn get(&mut self) -> Option<NonNull<Node>> {
         let node = self.head?;
         // SAFETY: `push` wrote the link into the node's first slot.
         let next = unsafe { ptr::addr_of!((*node.as_ptr()).slots[0]).read() };
@@ -407,7 +407,7 @@ impl PageTree {
 
     fn take(&mut self, reserved: &mut NodeList) -> *mut Node {
         let node = reserved
-            .pop()
+            .get()
             .expect("store checked the reservation before changing the tree");
         // SAFETY: a reserved node is valid for writes and owned by the list,
         // whose ownership now passes to the tree.
@@ -467,7 +467,7 @@ impl PageTree {
             self.nodes -= 1;
             // SAFETY: the node is unlinked below (or is the root, cleared
             // below), so only the list refers to it.
-            freed.push(unsafe { NonNull::new_unchecked(path[level as usize]) });
+            freed.put(unsafe { NonNull::new_unchecked(path[level as usize]) });
             if level + 1 == self.height {
                 self.root = KIND_EMPTY;
                 self.height = 0;
@@ -498,7 +498,7 @@ impl PageTree {
             self.height -= 1;
             self.nodes -= 1;
             // SAFETY: the root was just replaced by its only child.
-            freed.push(unsafe { NonNull::new_unchecked(root) });
+            freed.put(unsafe { NonNull::new_unchecked(root) });
         }
     }
 
@@ -526,7 +526,7 @@ impl PageTree {
             }
         }
         // SAFETY: its parent is being freed with it.
-        freed.push(unsafe { NonNull::new_unchecked(node) });
+        freed.put(unsafe { NonNull::new_unchecked(node) });
     }
 
     /// Whether any page carries `tag`: the root's bit, so O(1).
