@@ -1210,7 +1210,7 @@ fn scheduler_lock_acquisitions_are_irq_safe_by_shape() {
 fn a_fatal_el1_redirect_cannot_abandon_its_scheduler_guard() {
     let source = repo_text("kernel/src/task/scheduler.rs");
     let body = function_body(&source, "switch_to_idle_best_effort");
-    let park_with_local_guard = r#"if SCHEDULER_HELD_BY[cpu].load(Ordering::Relaxed) {
+    let park_with_local_guard = r#"if SCHEDULER_HELD[cpu].load(Ordering::Relaxed) != 0 {
         crate::gpu::panic::park();
     }"#;
     let park = body.find(park_with_local_guard).expect(
@@ -4324,15 +4324,15 @@ const BLOCKING_PRIMITIVES: &[(&str, &str, usize)] = &[
     ("kernel/src/task/scheduler/rq.rs", "fn block_current", 1),
     // #1649: a job stop parks a Ready user thread under the lock of the CPU
     // that owns it (`scheduler::park_for_stop`), not the whole scheduler.
-    ("kernel/src/task/scheduler/rq.rs", "fn block_ready_user_thread", 1),
-    ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=x86_64)] impl CurrentSched<'_>::fn block_current", 1),
-    ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=x86_64)] impl CurrentSched<'_>::fn block_current_for_child_exit", 1),
-    ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=x86_64)] impl CurrentSched<'_>::fn block_current_for_io", 1),
-    ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=x86_64)] impl CurrentSched<'_>::fn block_current_for_io_with_timeout", 1),
-    ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=x86_64)] impl CurrentSched<'_>::fn block_current_for_signal", 1),
-    ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=x86_64)] impl CurrentSched<'_>::fn block_current_for_signal_with_context", 1),
-    ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=x86_64)] impl CurrentSched<'_>::fn block_current_for_timer", 1),
-    ("kernel/src/task/scheduler.rs", "#[cfg(target_arch=x86_64)] impl CurrentSched<'_>::fn block_current_in_syscall", 1),
+    ("kernel/src/task/scheduler/rq.rs", "#[cfg(target_arch=x86_64)] fn block_ready_user_thread", 1),
+    ("kernel/src/task/scheduler.rs", "impl CurrentSched<'_>::fn block_current", 1),
+    ("kernel/src/task/scheduler.rs", "impl CurrentSched<'_>::fn block_current_for_child_exit", 1),
+    ("kernel/src/task/scheduler.rs", "impl CurrentSched<'_>::fn block_current_for_io", 1),
+    ("kernel/src/task/scheduler.rs", "impl CurrentSched<'_>::fn block_current_for_io_with_timeout", 1),
+    ("kernel/src/task/scheduler.rs", "impl CurrentSched<'_>::fn block_current_for_signal", 1),
+    ("kernel/src/task/scheduler.rs", "impl CurrentSched<'_>::fn block_current_for_signal_with_context", 1),
+    ("kernel/src/task/scheduler.rs", "impl CurrentSched<'_>::fn block_current_for_timer", 1),
+    ("kernel/src/task/scheduler.rs", "impl CurrentSched<'_>::fn block_current_in_syscall", 1),
 ];
 /// Census A: every right-hand-side publication of a `ThreadState::Blocked*`
 /// value under `kernel/src`. The production rows are all blocking-family
@@ -4351,7 +4351,7 @@ const BLOCKED_STATE_PUBLICATIONS: &[(&str, &str, usize)] = &[
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn block_ready_user_thread", 1),
     // #1649: the x86_64 run-queue-lock block publishes each of its five kinds.
     ("kernel/src/task/scheduler/rq.rs", "fn block_current", 5),
-    ("kernel/src/task/scheduler/rq.rs", "fn block_ready_user_thread", 1),
+    ("kernel/src/task/scheduler/rq.rs", "#[cfg(target_arch=x86_64)] fn block_ready_user_thread", 1),
 ];
 /// Census B: stores into a field named `state` whose right-hand side is opaque
 /// (not a path), the shape that would launder a blocked publication past census
@@ -4424,7 +4424,7 @@ const THREAD_STATE_CONSTRUCTIONS: &[(&str, &str, usize)] = &[
     ("kernel/src/task/thread.rs", "impl Thread::#[cfg(target_arch=aarch64)] fn new_kernel => Ready", 1),
     ("kernel/src/task/thread.rs", "impl Thread::#[cfg(target_arch=aarch64)] fn new_userspace => Ready", 1),
     ("kernel/src/task/thread.rs", "impl Thread::#[cfg(target_arch=aarch64)] fn new_with_id => Ready", 1),
-    ("kernel/src/task/thread.rs", "impl Thread::#[cfg(target_arch=x86_64)] fn new => Ready", 1),
+    ("kernel/src/task/thread.rs", "impl Thread::#[cfg(target_arch=x86_64)] fn new_prepared => Ready", 1),
     ("kernel/src/task/thread.rs", "impl Thread::#[cfg(target_arch=x86_64)] fn new_kernel => Ready", 1),
     ("kernel/src/task/thread.rs", "impl Thread::#[cfg(target_arch=x86_64)] fn new_userspace => Ready", 1),
     ("kernel/src/task/thread.rs", "impl Thread::#[cfg(target_arch=x86_64)] fn new_with_id => Ready", 1),
@@ -4591,7 +4591,7 @@ const INIT_GROUP_REFUSAL_CONSULTATIONS: &[(&str, &str, usize)] = &[
 /// readers and `boot_tests`-only oracle readers remain separate shape anchors.
 #[rustfmt::skip]
 const DESIGNATED_INIT_READS: &[(&str, &str, usize)] = &[
-    ("kernel/src/main_aarch64.rs", "#[cfg(target_arch=aarch64)] fn launch_init_from_elf", 1),
+    ("kernel/src/main_aarch64.rs", "#[cfg(target_arch=aarch64)] fn start_init_from_elf", 1),
     ("kernel/src/syscall/clone.rs", "fn refuses_init_group_clone", 1),
     // #2629 repairs a395d3ec's literal-PID shutdown authority. Pin the one
     // designation read used for both caller authorization and survivor checks.
@@ -4683,9 +4683,11 @@ const REMOVE_FROM_READY_QUEUE_CALL_SITES: &[(&str, &str, usize)] = &[
     // stop parks a Ready user thread off its queue, reclamation drops a freed
     // thread from it, and a new pin moves a thread queued on a CPU it no
     // longer allows to its home.
-    ("kernel/src/task/scheduler/rq.rs", "fn block_ready_user_thread", 1),
-    ("kernel/src/task/scheduler/rq.rs", "fn reclaim", 1),
-    ("kernel/src/task/scheduler/rq.rs", "fn repin", 1),
+    ("kernel/src/task/scheduler/rq.rs", "#[cfg(target_arch=x86_64)] fn block_ready_user_thread", 1),
+    ("kernel/src/task/scheduler/rq.rs", "#[cfg(target_arch=x86_64)] fn reclaim", 1),
+    ("kernel/src/task/scheduler/rq.rs", "#[cfg(target_arch=x86_64)] fn repin", 1),
+    ("kernel/src/task/scheduler/rq/arm64.rs", "impl Dispatch::fn fix_stale_idle_cpu_state", 1),
+    ("kernel/src/task/scheduler/rq/arm64.rs", "impl Dispatch::fn remove_from_ready_queue", 1),
     // Ruling S26: the busy-CPU reclaim oracle (boot_tests; module gated in
     // kernel/src/task/mod.rs).
     ("kernel/src/task/reclaim_busy_oracle.rs", "fn retire_through_exit_path", 1),
@@ -5113,8 +5115,10 @@ fn known_non_thread_state_field(source: &str, mask: &[bool], offset: usize) -> b
         ty == *spelling || ty.ends_with(&format!("::{spelling}"))) {
         return false;
     }
+    // Option<ThreadState> is a sampled value, as in ThreadSample::state.
+    // Assigning it cannot publish a scheduler Thread's state.
     matches!(ty.as_str(), "bool" | "u8" | "u16" | "u32" | "u64" | "usize" |
-        "i8" | "i16" | "i32" | "i64" | "isize")
+        "i8" | "i16" | "i32" | "i64" | "isize" | "Option<ThreadState>")
         || struct_item_header_and_body(source, &ty).is_some()
 }
 
@@ -13813,8 +13817,7 @@ fn validate_rust_fork_library_override(build_script: &str, xtask: &str) -> Resul
     if !build_script.contains(ENV)
         || !build_script.contains(&shell_assignment)
         || !build_script.contains("__CARGO_TESTS_ONLY_SRC_ROOT=\"$RUST_FORK_LIBRARY\"")
-        || !build_script.contains("forked Rust library not found at $RUST_FORK_LIBRARY")
-        || !build_script.contains(&format!("Set {ENV} to the forked Rust library path"))
+        || !build_script.contains("\"$RUST_FORK_TOOL\" verify")
         || !xtask.contains(&format!("const RUST_FORK_LIBRARY_ENV: &str = \"{ENV}\";"))
         || !xtask.contains(&rust_env_lookup)
         || !xtask.contains(".map(PathBuf::from)")
@@ -18066,7 +18069,7 @@ fn console_cursor_state_is_not_scheduler_thread_state() {
 
 #[test]
 fn nested_state_fields_resolve_the_written_type_and_fail_closed() {
-    for (field_type, expected) in [("u32", 0), ("ThreadState", 1), ("Missing", 1)] {
+    for (field_type, expected) in [("u32", 0), ("Option<ThreadState>", 0), ("ThreadState", 1), ("Missing", 1)] {
         let fixture = format!(
             "struct Identity {{ state: {field_type} }} \
              struct Report {{ identity: Identity }} \

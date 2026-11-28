@@ -352,6 +352,7 @@
    "rollback": "before the request is submitted; no partial request",
    "functions": [
     "report_first_sectors",
+    "spawn_completion_poller",
     "start_completion_pollers"
    ]
   },
@@ -552,7 +553,11 @@
    "rollback": "before the process, thread or signal is published",
    "functions": [
     "Headers::append_image_regions",
+    "Headers::cache_plan",
+    "Headers::load_image",
     "Headers::read",
+    "KernelImage::map_file",
+    "KernelImage::zero",
     "MappedElf::with_interpreter",
     "map_interpreted_arm_page",
     "read_interpreter_path",
@@ -1131,6 +1136,7 @@
     "generate_cowinfo",
     "generate_cpuinfo",
     "generate_frames",
+    "generate_interrupts",
     "generate_meminfo",
     "generate_pid_cmdline",
     "generate_pid_dir",
@@ -2629,7 +2635,8 @@
     "InitLaunch::new",
     "init_scheduler",
     "launch_init_from_elf",
-    "load_test_binaries_from_ext2"
+    "load_test_binaries_from_ext2",
+    "start_init_from_elf"
    ]
   },
   {
@@ -2666,6 +2673,7 @@
    "rollback": "before the VMA or page-table change is published",
    "functions": [
     "Binding::fork",
+    "ExecImage::populate",
     "MapInner::add_holes",
     "MapInner::poison",
     "MapState::prepare_write",
@@ -2678,6 +2686,7 @@
     "fork_vmas",
     "isolate",
     "populate",
+    "populate_through",
     "protect",
     "revoke_entry",
     "unmap",
@@ -2913,12 +2922,24 @@
     "TcpConnection::queue_tx",
     "TcpConnection::receive_payload",
     "build_tcp_packet",
+    "handle_syn_for_listener",
     "proc_net_tcp",
     "tcp_bind_port",
+    "tcp_connect",
     "tcp_listen",
     "tcp_register_recv_waiter",
     "try_build_offload_segment",
     "try_build_segment"
+   ]
+  },
+  {
+   "file": "kernel/src/net/tcp/buckets.rs",
+   "owner": "E1-16",
+   "error": "ENOBUFS on send; a counted drop on receive",
+   "rollback": "before the segment is queued",
+   "functions": [
+    "Buckets::push_reserved",
+    "Buckets::try_reserve_one"
    ]
   },
   {

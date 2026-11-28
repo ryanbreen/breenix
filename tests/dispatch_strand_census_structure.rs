@@ -266,15 +266,30 @@ fn replacement_census_is_wired_to_save_restore_exit_heartbeat_and_completion() {
             .count(),
         1
     );
-    let pump_start = main
-        .find("crate::net::init_loopback_pump();")
-        .expect("main.rs must still spawn kloopbackd");
-    let census_start = main
-        .find("task::start_dispatch_strand_census_kthread()")
-        .expect("main.rs must spawn kstrandd");
+    // Find both as unconditional statements in the boot continuation. Other
+    // network workers can be initialized between the pump and the census.
+    let main = syn::parse_file(&main).unwrap();
+    let boot = main.items.iter().find_map(|item| match item {
+        syn::Item::Fn(function) if function.sig.ident == "kernel_main_on_kernel_stack_checked" => {
+            Some(&function.block)
+        }
+        _ => None,
+    }).expect("x86 boot continuation");
+    let position = |name| {
+        boot.stmts.iter().position(|statement| {
+            let syn::Stmt::Expr(syn::Expr::Call(call), _) = statement else {
+                return false;
+            };
+            let syn::Expr::Path(function) = call.func.as_ref() else {
+                return false;
+            };
+            call.attrs.is_empty() && function.attrs.is_empty()
+                && function.path.segments.last().is_some_and(|segment| segment.ident == name)
+        }).unwrap_or_else(|| panic!("{name} must run unconditionally in x86 boot"))
+    };
     assert!(
-        census_start > pump_start && census_start - pump_start < 400,
-        "kstrandd is no longer spawned beside kloopbackd"
+        position("init_loopback_pump") < position("start_dispatch_strand_census_kthread"),
+        "kstrandd must start after kloopbackd"
     );
     assert!(census.contains("static LEDGER: [AtomicU8; LEDGER_CAPACITY]"));
 }
