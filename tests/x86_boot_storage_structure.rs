@@ -2,26 +2,26 @@
 //! storage read after `start_application_processors`.
 //!
 //! From that call on the APs dispatch, so the boot continuation is CPU 0's
-//! idle thread running beside a live scheduler. A storage read from there
-//! waits as idle: Completion's idle branch, AHCI admission's `CannotPark`
+//! idle thread running beside a scheduler that dispatches. A storage read from
+//! there waits as idle: Completion's idle branch, AHCI admission's `CannotPark`
 //! against a port a `breenfs-commit` worker owns (DEV-24), or the mount lock's
-//! spin. E2.4 removes those idle waits (design §6, I8), so every storage read
-//! the continuation made moves to the `boot_storage` kernel thread, which is
+//! spin. E2.4 removes those idle waits (design §6, I8), so the storage reads
+//! the continuation made move to the `boot_storage` kernel thread, which is
 //! pinned to CPU 0 and may sleep.
 //!
 //! The check reads `kernel/src/main.rs` with comments and string literals
 //! blanked. It takes the continuation, the body of
 //! `kernel_main_on_kernel_stack_checked` after its
-//! `start_application_processors()` call, and adds the body of every
-//! `main.rs` function that text calls, transitively. A function handed to a
+//! `start_application_processors()` call, and adds the bodies of the
+//! `main.rs` functions that text calls, transitively. A function handed to a
 //! kernel thread is named without a call (`kthread_run_on_cpu(f, ..)`), so it
-//! is not part of the continuation. None of that text may call a storage
-//! entry point.
+//! is not part of the continuation. That text may call 0 of the storage entry
+//! points.
 //!
 //! Scope: the entry points are named calls. A storage read hidden inside a
 //! library function the continuation calls is outside what a source scan can
-//! see; the list covers every storage call `main.rs` made after AP start
-//! before E2.4x.
+//! see; the list names 17 storage entry points, 10 of which the continuation
+//! called on 5aa428fc.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -161,7 +161,7 @@ fn braced_body(code: &str, from: usize) -> (usize, usize) {
     panic!("unbalanced body at {from}");
 }
 
-/// Every `fn name(` defined in the file, with all of its bodies (cfg variants
+/// The `fn name(` items defined in the file, each with its bodies (cfg variants
 /// share a name).
 fn functions(code: &str) -> BTreeMap<String, Vec<String>> {
     let mut found: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -215,7 +215,7 @@ fn calls_as(text: &str, name: &str, methods: bool) -> bool {
     })
 }
 
-/// The x86 boot continuation after AP start, with every main.rs function it
+/// The x86 boot continuation after AP start, with the main.rs functions it
 /// reaches by a call.
 fn continuation(code: &str) -> (String, BTreeSet<String>) {
     let entry = code
