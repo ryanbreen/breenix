@@ -352,3 +352,42 @@ impl Root {
         Ok((address as *mut u8, length))
     }
 }
+
+/// Publish a paired manager image, resuming an interrupted install when possible.
+pub fn publish_paired_manager(
+    _referenced: bool,
+    matches: impl FnOnce() -> Result<bool, Status>,
+    write: impl FnOnce() -> Result<(), Status>,
+) -> Result<(), Status> {
+    match matches() {
+        Err(NOT_FOUND) => write(),
+        Ok(_) => Err(VOLUME_CORRUPTED),
+        Err(status) => Err(status),
+    }
+}
+
+#[cfg(test)]
+mod paired_manager_tests {
+    use super::*;
+    use core::cell::Cell;
+
+    #[test]
+    fn paired_manager_publication_resumes_without_replacing_a_referenced_image() {
+        for (referenced, readback, expected, rewritten) in [
+            (false, Err(NOT_FOUND), Ok(()), true),
+            (false, Ok(false), Ok(()), true),
+            (false, Ok(true), Ok(()), false),
+            (true, Ok(true), Ok(()), false),
+            (true, Ok(false), Err(VOLUME_CORRUPTED), false),
+            (true, Err(NOT_FOUND), Err(VOLUME_CORRUPTED), false),
+            (false, Err(DEVICE_ERROR), Err(DEVICE_ERROR), false),
+        ] {
+            let wrote = Cell::new(false);
+            let result = publish_paired_manager(referenced, || readback, || {
+                wrote.set(true);
+                Ok(())
+            });
+            assert_eq!((result, wrote.get()), (expected, rewritten), "{referenced:?}, {readback:?}");
+        }
+    }
+}
