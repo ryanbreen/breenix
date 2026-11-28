@@ -740,6 +740,24 @@ of their steps, keeping each CPU's program order. The steps are sequentially con
     completes them while CPU 1 is held. On the old tree CPU 2 cannot
     take `SCHEDULER` until CPU 1 releases, so it completes none in the window: red. The hook is a named
     fixed point, so the outcome is decided by the state, not by timing. <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
+  - **A peer stopped on this CPU's lock.** A second hook stops CPU 2 for 50 ms of counter time, with
+    interrupts masked, as a paused vCPU appears. CPU 2 stops inside a remote section that has try-locked
+    CPU 1's run-queue lock, or on the old tree inside a section that holds `SCHEDULER`. CPU 1 runs a pinned kthread that increments a counter. The check is that
+    during the hold CPU 1 keeps taking its timer interrupts and its kthread's counter keeps advancing.
+    Once CPU 2 releases, CPU 1 dispatches at the next kick. The first independence test holds only the
+    stopped CPU's own lock, so it does not reach this case. Red on the old tree: CPU 1's next
+    interrupt-return dispatch waits for `SCHEDULER` with interrupts masked. It is also red on §3.5 as
+    first written, where `rq::local` waits for its own lock with interrupts masked (`rq.rs:602-615`).
+
+    ```pycon
+    >>> def local_dispatch(own_lock_holder, me):
+    ...     if own_lock_holder not in (None, me):
+    ...         return 'wait with interrupts masked'
+    ...     return 'dispatch'
+    >>> local_dispatch(own_lock_holder=2, me=1)
+    'keep the current thread, interrupts enabled, dispatch owed'
+
+    ```
   - **The ownership protocol, host tests** in a new `tools/sched-host-tests` that `#[path]`-includes the
     architecture-neutral `rq.rs` with a test `RqArch`:
     - a wake that reads owner A, while the thread moves to B before A's lock is tried, revalidates, is
