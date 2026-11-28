@@ -1,5 +1,5 @@
-//! Repository hygiene oracle: no tracked symlink may name an absolute path,
-//! and the forked-Rust escape hatch must stay documented (#678).
+//! Repository hygiene oracle: Rust module files and directories must resolve,
+//! as must the relative paths in tracked symlinks (#678).
 //!
 //! `rust-fork` was committed as a symlink to
 //! `/Users/wrb/fun/code/breenix-parallels/rust-fork`. An absolute path into one
@@ -13,8 +13,11 @@
 //! offenders: any newly committed absolute symlink is caught the moment it is
 //! written.
 
-use std::path::PathBuf;
+use proc_macro2::{Delimiter, TokenStream, TokenTree};
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use syn::{punctuated::Punctuated, visit::Visit, Expr, Item, ItemMod, Lit, Meta, Token};
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -26,9 +29,13 @@ fn repo_text(relative: &str) -> String {
 }
 
 fn git(args: &[&str]) -> String {
+    git_at(&repo_root(), args)
+}
+
+fn git_at(root: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
         .args(args)
-        .current_dir(repo_root())
+        .current_dir(root)
         .output()
         .unwrap_or_else(|e| panic!("run git {args:?}: {e}"));
     assert!(
@@ -43,15 +50,15 @@ fn git(args: &[&str]) -> String {
 const SYMLINK_MODE: &str = "120000";
 
 /// Every tracked symlink, as `(path, link target)`.
-fn tracked_symlinks() -> Vec<(String, String)> {
-    let index = git(&["ls-files", "-s"]);
+fn tracked_symlinks(root: &Path) -> Vec<(String, String)> {
+    let index = git_at(root, &["ls-files", "-s", "-z"]);
     assert!(
         !index.trim().is_empty(),
         "git index listing is empty - the oracle would be vacuous"
     );
 
     index
-        .lines()
+        .split('\0')
         .filter_map(|line| {
             // "<mode> <object> <stage>\t<path>"
             let (meta, path) = line.split_once('\t')?;
@@ -62,9 +69,399 @@ fn tracked_symlinks() -> Vec<(String, String)> {
                 return None;
             }
             // A symlink blob's contents are its target.
-            Some((path.to_owned(), git(&["cat-file", "blob", object])))
+            Some((path.to_owned(), git_at(root, &["cat-file", "blob", object])))
         })
         .collect()
+}
+
+fn collect_paths(meta: &Meta, paths: &mut Vec<String>) {
+    if meta.path().is_ident("path") {
+        let Meta::NameValue(value) = meta else {
+            panic!("expected a path attribute with a string value");
+        };
+        let Expr::Lit(value) = &value.value else {
+            panic!("expected a literal module path");
+        };
+        let Lit::Str(path) = &value.lit else {
+            panic!("expected a string module path");
+        };
+        paths.push(path.value());
+    } else if let Meta::List(list) = meta {
+        if list.path.is_ident("cfg_attr") {
+            let args = list
+                .parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+                .expect("parse cfg_attr on a module");
+            for attr in args.iter().skip(1) {
+                collect_paths(attr, paths);
+            }
+        }
+    }
+}
+
+fn has_path_attribute(tokens: TokenStream) -> bool {
+    tokens.into_iter().any(|token| match token {
+        TokenTree::Group(group) if group.delimiter() == Delimiter::Bracket => {
+            let tokens = group.stream();
+            matches!(tokens.into_iter().next(), Some(TokenTree::Ident(name))
+                if name == "path" || name == "cfg_attr" && group.stream().to_string().contains("path"))
+                || has_path_attribute(group.stream())
+        }
+        TokenTree::Group(group) => has_path_attribute(group.stream()),
+        _ => false,
+    })
+}
+
+struct ModulePaths<'a> {
+    source: &'a str,
+    // An explicit path uses the containing directory. Plain declarations and
+    // unannotated inline modules also inherit the stem of a flat module file.
+    path_dir: PathBuf,
+    module_dir: PathBuf,
+    children: &'a mut Vec<(PathBuf, bool)>,
+    missing: &'a mut Vec<String>,
+}
+
+impl<'ast> Visit<'ast> for ModulePaths<'_> {
+    fn visit_item_mod(&mut self, module: &'ast ItemMod) {
+        let mut paths = Vec::new();
+        for attr in &module.attrs {
+            collect_paths(&attr.meta, &mut paths);
+        }
+        let ident = module.ident.to_string();
+        let name = ident.trim_start_matches("r#");
+        if module.content.is_some() {
+            for path in &paths {
+                let dir = self.path_dir.join(path);
+                if dir.is_dir() {
+                    self.visit_inline(module, dir);
+                } else {
+                    self.missing.push(format!(
+                        "{}: mod {name} has #[path = {path:?}] with no directory",
+                        self.source
+                    ));
+                }
+            }
+            if !module.attrs.iter().any(|attr| attr.path().is_ident("path")) {
+                self.visit_inline(module, self.module_dir.join(name));
+            }
+        } else if paths.is_empty() {
+            let flat = self.module_dir.join(format!("{name}.rs"));
+            let directory = self.module_dir.join(name).join("mod.rs");
+            match (flat.is_file(), directory.is_file()) {
+                (true, false) => self.children.push((flat, true)),
+                (false, true) => self.children.push((directory, false)),
+                (false, false) => self.missing.push(format!(
+                    "{}: mod {name} has neither {name}.rs nor {name}/mod.rs",
+                    self.source
+                )),
+                (true, true) => self.missing.push(format!(
+                    "{}: mod {name} has both {name}.rs and {name}/mod.rs",
+                    self.source
+                )),
+            }
+        } else {
+            for path in paths {
+                let file = self.path_dir.join(&path);
+                if file.is_file() {
+                    self.children.push((file, false));
+                } else {
+                    self.missing.push(format!(
+                        "{}: mod {name} has #[path = {path:?}] with no file",
+                        self.source
+                    ));
+                }
+            }
+        }
+    }
+}
+
+impl ModulePaths<'_> {
+    fn visit_inline(&mut self, module: &ItemMod, dir: PathBuf) {
+        let mut nested = ModulePaths {
+            source: self.source,
+            path_dir: dir.clone(),
+            module_dir: dir,
+            children: self.children,
+            missing: self.missing,
+        };
+        syn::visit::visit_item_mod(&mut nested, module);
+    }
+}
+
+struct ModuleCheck<'a> {
+    root: &'a Path,
+    sources: BTreeMap<PathBuf, syn::File>,
+    visited: BTreeSet<(PathBuf, bool)>,
+    missing: &'a mut Vec<String>,
+}
+
+impl ModuleCheck<'_> {
+    fn check_file(&mut self, file: PathBuf, flat_module: bool) {
+        // Canonicalize the directory to match indexed paths reached via "..".
+        // Keep the file name because a symlink can be loaded as a module.
+        let parent = file.parent().unwrap().canonicalize().unwrap();
+        let file = parent.join(file.file_name().unwrap());
+        let Some(parsed) = self.sources.get(&file) else {
+            return;
+        };
+        if !self.visited.insert((file.clone(), flat_module)) {
+            return;
+        }
+        let mut children = Vec::new();
+        let module_dir = if flat_module {
+            parent.join(file.file_stem().unwrap())
+        } else {
+            parent.clone()
+        };
+        ModulePaths {
+            source: &file.strip_prefix(self.root).unwrap().display().to_string(),
+            path_dir: parent,
+            module_dir,
+            children: &mut children,
+            missing: self.missing,
+        }
+        .visit_file(parsed);
+        for (child, flat_module) in children {
+            self.check_file(child, flat_module);
+        }
+    }
+}
+
+// These templates are written to a build directory after their paths have
+// been substituted or their modules generated by the owning host checks.
+const GENERATED_SOURCES: &[&str] = &[
+    "scripts/metal/sha512-crypt-linux.rs",
+    "tests/fixtures/arena_call_timing.rs",
+    "tests/fixtures/bld_allocation_probe.rs",
+    "tests/fixtures/breenfs_wait_retry.rs",
+    "tests/fixtures/breengel_inflight_screen.rs",
+    "tests/fixtures/bterm_render_host.rs",
+    "tests/fixtures/bterm_screen_selection_host.rs",
+    "tests/fixtures/bwm_spawn.rs",
+    "tests/fixtures/completion_killable.rs",
+    "tests/fixtures/gt710_constant_retirement.rs",
+    "tests/fixtures/gt710_contexts_orchestration.rs",
+    "tests/fixtures/gt710_contexts_submission.rs",
+    "tests/fixtures/gt710_core_producer.rs",
+    "tests/fixtures/gt710_display_crc.rs",
+    "tests/fixtures/gt710_display_evidence.rs",
+    "tests/fixtures/gt710_frame_retirement.rs",
+    "tests/fixtures/gt710_gr_probe_unwind.rs",
+    "tests/fixtures/gt710_gr_two_channel.rs",
+    "tests/fixtures/gt710_observation_path.rs",
+    "tests/fixtures/gt710_output_perturb.rs",
+    "tests/fixtures/gt710_panic_transport.rs",
+    "tests/fixtures/gt710_retained_acceptance.rs",
+    "tests/fixtures/gt710_source_alias.rs",
+    "tests/fixtures/gt710_stream_overflow.rs",
+    "tests/fixtures/gt710_trap_ack_capture.rs",
+    "tests/fixtures/gt710_window_front.rs",
+    "tests/fixtures/gt710_window_lifetime.rs",
+    "tests/fixtures/gt710_window_residency.rs",
+    "tests/fixtures/guskit_async_file.rs",
+    "tests/fixtures/panic_capture_complete.rs",
+    "tests/fixtures/wm_native_input.rs",
+    "tests/libc-string-words-cases.rs",
+    "tests/stdio-host/support.rs",
+    "tools/regular-read-host-tests/tests/fixtures/shared_offset.rs",
+];
+
+fn source_reference_errors(root: &Path) -> Vec<String> {
+    let root = &root.canonicalize().unwrap();
+    let mut missing = Vec::new();
+    for (name, target) in tracked_symlinks(root) {
+        let link = root.join(&name);
+        let indexed_target = link.parent().unwrap().join(&target);
+        if !link.is_symlink()
+            || !(link.is_file() || link.is_dir())
+            || !(indexed_target.is_file() || indexed_target.is_dir())
+        {
+            missing.push(format!(
+                "{name}: tracked symlink -> {target:?} has no file or directory"
+            ));
+        }
+    }
+
+    let sources = git_at(
+        root,
+        &[
+            "ls-files",
+            "-z",
+            "--",
+            "*.rs",
+            // Skip vendored sources and the fork of Rust's libc FFI bindings.
+            ":(exclude)vendor/**",
+            ":(exclude)libs/libc/**",
+        ],
+    );
+    let mut parsed_sources = BTreeMap::new();
+    for source in sources.split('\0').filter(|source| !source.is_empty()) {
+        if GENERATED_SOURCES.contains(&source) {
+            continue;
+        }
+        let file = root.join(source);
+        if file.is_symlink() && !file.is_file() {
+            continue; // Already reported by the symlink check.
+        }
+        let text = std::fs::read_to_string(&file)
+            .unwrap_or_else(|_| panic!("read repository file {source}"));
+        if !text.contains("mod") && !text.contains("path") {
+            continue;
+        }
+        let parsed = match syn::parse_file(&text) {
+            Ok(parsed) => parsed,
+            // Some checked-in test fragments are tokens inserted into a
+            // generated file. A fragment with a path needs a resolution context.
+            Err(_) if text.parse().is_ok_and(|tokens| !has_path_attribute(tokens)) => continue,
+            Err(error) => {
+                missing.push(format!("{source}: cannot check module paths: {error}"));
+                continue;
+            }
+        };
+        parsed_sources.insert(file, parsed);
+    }
+
+    // Start at entry points so each child inherits the context of the mod
+    // declaration that loads it. Check remaining files as standalone sources,
+    // with parent directories and their mod.rs files before their children.
+    let mut files: Vec<_> = parsed_sources
+        .iter()
+        .map(|(file, parsed)| {
+            let entry = matches!(
+                file.file_name().unwrap().to_str(),
+                Some("lib.rs" | "main.rs" | "build.rs")
+            ) || file.parent().unwrap().ends_with("tests")
+                || parsed
+                    .attrs
+                    .iter()
+                    .any(|attr| attr.path().is_ident("no_main"))
+                || parsed
+                    .items
+                    .iter()
+                    .any(|item| matches!(item, Item::Fn(f) if f.sig.ident == "main"));
+            (file.clone(), entry)
+        })
+        .collect();
+    files.sort_by_key(|(file, entry)| {
+        (!entry, file.components().count(), !file.ends_with("mod.rs"))
+    });
+    let mut check = ModuleCheck {
+        root,
+        sources: parsed_sources,
+        visited: BTreeSet::new(),
+        missing: &mut missing,
+    };
+    for (file, entry) in files {
+        if entry || !check.visited.contains(&(file.clone(), true)) {
+            check.check_file(file, false);
+        }
+    }
+    missing
+}
+
+#[test]
+fn tracked_source_references_resolve() {
+    let missing = source_reference_errors(&repo_root());
+    assert!(
+        missing.is_empty(),
+        "invalid repository source references:\n{}",
+        missing.join("\n")
+    );
+}
+
+struct SourceFixture(PathBuf);
+
+impl SourceFixture {
+    fn new(name: &str, sources: &[(&str, &str)]) -> Self {
+        let target = repo_root().join("target");
+        std::fs::create_dir_all(&target).unwrap();
+        let root = target.join(format!("hygiene-{name}-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        let fixture = Self(root);
+        git_at(&fixture.0, &["init", "--quiet"]);
+        for (path, source) in sources {
+            let file = fixture.0.join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, source).unwrap();
+        }
+        git_at(&fixture.0, &["add", "."]);
+        fixture
+    }
+
+    fn errors(&self) -> Vec<String> {
+        source_reference_errors(&self.0)
+    }
+}
+
+impl Drop for SourceFixture {
+    fn drop(&mut self) {
+        std::fs::remove_dir_all(&self.0).unwrap();
+    }
+}
+
+#[test]
+fn source_fixture_checks_plain_modules_in_both_file_layouts() {
+    let fixture = SourceFixture::new(
+        "plain",
+        &[
+            ("src/lib.rs", "mod flat; mod directory;"),
+            ("src/flat.rs", "mod missing;"),
+            ("src/directory/mod.rs", ""),
+        ],
+    );
+    let errors = fixture.errors();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(errors[0].contains("src/flat.rs: mod missing"), "{errors:?}");
+}
+
+#[test]
+fn source_fixture_checks_inline_path_without_external_children() {
+    let fixture = SourceFixture::new(
+        "inline",
+        &[("src/lib.rs", r#"#[path = "absent"] mod inline {}"#)],
+    );
+    let errors = fixture.errors();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(errors[0].contains("src/lib.rs: mod inline"), "{errors:?}");
+}
+
+#[test]
+fn source_fixture_rejects_paths_found_only_in_the_other_context() {
+    let fixture = SourceFixture::new(
+        "context",
+        &[
+            (
+                "src/lib.rs",
+                r#"mod normal; #[path = "explicit.rs"] mod alias;"#,
+            ),
+            (
+                "src/normal.rs",
+                r#"mod inline { #[path = "normal_only.rs"] mod wrong; }"#,
+            ),
+            ("src/inline/normal_only.rs", ""),
+            (
+                "src/explicit.rs",
+                r#"mod inline { #[path = "wrong.rs"] mod wrong; }"#,
+            ),
+            ("src/explicit/inline/wrong.rs", ""),
+        ],
+    );
+    let errors = fixture.errors();
+    assert_eq!(errors.len(), 2, "{errors:?}");
+    assert!(errors
+        .iter()
+        .any(|e| e.contains("src/normal.rs: mod wrong")));
+    assert!(errors
+        .iter()
+        .any(|e| e.contains("src/explicit.rs: mod wrong")));
+}
+
+#[test]
+fn source_fixture_accepts_a_tracked_directory_symlink() {
+    let fixture = SourceFixture::new("symlink", &[("src/lib.rs", "")]);
+    std::os::unix::fs::symlink("src", fixture.0.join("alias")).unwrap();
+    git_at(&fixture.0, &["add", "alias"]);
+    assert_eq!(fixture.errors(), Vec::<String>::new());
 }
 
 /// A symlink target is portable when it does not begin at the filesystem root.
@@ -74,7 +471,7 @@ fn target_is_absolute(target: &str) -> bool {
 
 #[test]
 fn tracked_symlinks_name_no_absolute_path() {
-    let offenders: Vec<String> = tracked_symlinks()
+    let offenders: Vec<String> = tracked_symlinks(&repo_root())
         .into_iter()
         .filter(|(_, target)| target_is_absolute(target))
         .map(|(path, target)| format!("{path} -> {target}"))

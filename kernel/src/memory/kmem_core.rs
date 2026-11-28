@@ -144,6 +144,14 @@ pub trait Pool {
     ///
     /// `ptr` came from this pool's `take` and is not freed twice.
     unsafe fn give(&self, ptr: NonNull<u8>);
+    /// Resize a block `take` gave to hold `new_size` bytes without moving
+    /// it (`heap_index`'s `grow_in_place` and `shrink_in_place`). Returns
+    /// false, with the block unchanged, when it cannot.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` came from this pool's `take` and is live.
+    unsafe fn resize(&self, ptr: NonNull<u8>, new_size: usize) -> bool;
 }
 
 /// The CPU an allocation runs on.
@@ -191,15 +199,59 @@ impl Shrinker {
     }
 }
 
-/// The shrinkers in cost order. Registration links a shrinker in with a
-/// compare-exchange, and a linked shrinker stays linked, so a walk needs no lock.
+/// A layer's share of 7.2 step 2 beyond the magazines: the per-CPU memory
+/// it holds as whole frames, given back from each CPU under that CPU's lock
+/// taken with `try_lock`, skipping a CPU whose lock is busy. The span arenas'
+/// kept empty spans are one (6.4). `run` returns the frames free now; frames
+/// a flush still has to cover are counted by the shrinker that flushes them.
+pub struct Drain {
+    pub name: &'static str,
+    pub run: fn() -> usize,
+    next: AtomicPtr<Drain>,
+}
+
+impl Drain {
+    pub const fn new(name: &'static str, run: fn() -> usize) -> Self {
+        Self { name, run, next: AtomicPtr::new(core::ptr::null_mut()) }
+    }
+}
+
+/// The shrinkers in cost order, and the step-2 drains. Registration links a
+/// hook in with a compare-exchange, and a linked hook stays linked, so a walk
+/// needs no lock.
 pub struct Registry {
     head: AtomicPtr<Shrinker>,
+    drains: AtomicPtr<Drain>,
 }
 
 impl Registry {
     pub const fn new() -> Self {
-        Self { head: AtomicPtr::new(core::ptr::null_mut()) }
+        Self { head: AtomicPtr::new(core::ptr::null_mut()), drains: AtomicPtr::new(core::ptr::null_mut()) }
+    }
+
+    /// Link a step-2 drain in. A drain is registered once.
+    pub fn register_drain(&self, drain: &'static Drain) {
+        let new = drain as *const Drain as *mut Drain;
+        let mut head = self.drains.load(Ordering::Acquire);
+        loop {
+            drain.next.store(head, Ordering::Relaxed);
+            match self.drains.compare_exchange(head, new, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => return,
+                Err(current) => head = current,
+            }
+        }
+    }
+
+    /// Run each step-2 drain; returns the frames they gave back.
+    pub fn drain_cpus(&self) -> usize {
+        let mut freed = 0;
+        let mut next = self.drains.load(Ordering::Acquire);
+        // SAFETY: linked drains are `&'static` and stay linked.
+        while let Some(drain) = unsafe { next.as_ref() } {
+            freed += (drain.run)();
+            next = drain.next.load(Ordering::Acquire);
+        }
+        freed
     }
 
     /// Link `shrinker` in after each registered shrinker of equal or lower
@@ -380,6 +432,58 @@ pub fn reserve_frames(heap_frames: usize) -> usize {
     (heap_frames / 1024).max(128).min(heap_frames / 16) / 2
 }
 
+/// The largest request the slab layer serves (6.1 row 1).
+pub const SLAB_MAX: usize = PAGE;
+/// The largest request a span arena serves (6.1 row 2).
+pub const SPAN_MAX: usize = 512 << 10;
+/// The largest alignment the slab layer and the span arenas serve.
+pub const SMALL_ALIGN_MAX: usize = PAGE;
+/// `kva_window::WindowId::Vmap`'s number, for `NoVa`.
+const VMAP_WINDOW: u8 = 1;
+
+/// The layer that serves a layout (6.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Layer {
+    /// Row 1: size and alignment at most 4096.
+    Slab,
+    /// Row 2: size at most 512 KiB, alignment at most 4096.
+    Span,
+    /// Row 3: a larger size, or an alignment above 4096 at any size.
+    Vmap,
+}
+
+/// The one layer `layout` routes to (6.1): the first of the three rows it
+/// matches. Alignment above 4096 is the VA's, which only the vmap window
+/// aligns, up to its own size `vmap_bytes`; a larger alignment, which no
+/// window can meet, is `NoVa`.
+pub fn route(layout: Layout, vmap_bytes: u64) -> Result<Layer, AllocError> {
+    let (size, align) = (layout.size(), layout.align());
+    if align <= SMALL_ALIGN_MAX {
+        if size <= SLAB_MAX {
+            return Ok(Layer::Slab);
+        }
+        if size <= SPAN_MAX {
+            return Ok(Layer::Span);
+        }
+    }
+    if align as u64 <= vmap_bytes && (size as u64) <= vmap_bytes {
+        Ok(Layer::Vmap)
+    } else {
+        Err(AllocError::NoVa { window: VMAP_WINDOW })
+    }
+}
+
+/// The layer a span or vmap block that cannot resize in place moves to, as
+/// a block of `layout` (6.6): `large::reallocate`'s fallback. A layout of
+/// row 1 moves to a span, which serves it, rather than to the slab layer,
+/// so the result stays one `large::deallocate` frees by its window.
+pub fn moved_layer(layout: Layout, vmap_bytes: u64) -> Result<Layer, AllocError> {
+    match route(layout, vmap_bytes)? {
+        Layer::Slab => Ok(Layer::Span),
+        layer => Ok(layer),
+    }
+}
+
 /// The slab caches and per-CPU magazines in front of the heap (6.1 row 1,
 /// 6.2, 6.3). Each call masks the CPU's interrupts and reads the CPU's
 /// identity itself, so the identity cannot go stale by migration.
@@ -486,6 +590,7 @@ impl<M: Pool, R: Pool, S: Small> Front<'_, M, R, S> {
         for other in 0..self.small.cpus() {
             self.small.drain(other);
         }
+        self.shrinkers.drain_cpus();
         if ctx.may_shrink() {
             self.reclaim(layout, cpu);
         } else {
@@ -564,7 +669,8 @@ impl<M: Pool, R: Pool, S: Small> Front<'_, M, R, S> {
         for other in 0..self.small.cpus() {
             self.small.drain(other);
         }
-        self.reclaim_pages(frames + RECLAIM_BATCH_FRAMES, cpu)
+        let drained = self.shrinkers.drain_cpus();
+        drained + self.reclaim_pages(frames.saturating_sub(drained) + RECLAIM_BATCH_FRAMES, cpu)
     }
 
     /// Run the shrinkers with interrupts masked, holding no pool lock, for
@@ -617,5 +723,47 @@ impl<M: Pool, R: Pool, S: Small> Front<'_, M, R, S> {
     /// `new`: a slab object whose class serves both (6.6).
     pub fn resizes_in_place(&self, ptr: NonNull<u8>, old: Layout, new: Layout) -> bool {
         !self.reserve.contains(ptr) && !self.main.contains(ptr) && self.small.same_object(old, new)
+    }
+
+    /// `GlobalAlloc::realloc`: `ptr`, allocated for `layout`, as a block of
+    /// `new_size` bytes with the same alignment. A block that keeps its place
+    /// is returned as is; otherwise a new block is allocated in `Normal`, the
+    /// bytes both sizes hold are copied, and the old block is freed.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` came from `allocate` for `layout`, is not freed twice, and
+    /// `new_size` rounded up to `layout.align()` does not overflow `isize`.
+    pub unsafe fn reallocate<C: Cpu>(
+        &self,
+        ptr: NonNull<u8>,
+        layout: Layout,
+        new_size: usize,
+        cpu: &C,
+    ) -> Result<NonNull<u8>, AllocError> {
+        let new_layout = unsafe { Layout::from_size_align_unchecked(new_size, layout.align()) };
+        if self.resizes_in_place(ptr, layout, new_layout) {
+            return Ok(ptr);
+        }
+        // A heap_index block grows into a free block after it, or gives its
+        // tail back, in place (6.4, 6.6). It stays in its pool, whose free
+        // takes any layout.
+        let resized = if self.main.contains(ptr) {
+            unsafe { self.main.resize(ptr, new_size) }
+        } else if self.reserve.contains(ptr) {
+            unsafe { self.reserve.resize(ptr, new_size) }
+        } else {
+            false
+        };
+        if resized {
+            return Ok(ptr);
+        }
+        let new_ptr = self.allocate(new_layout, Ctx::Normal, cpu)?;
+        // The copy is private to the caller; it holds no allocator lock.
+        unsafe {
+            core::ptr::copy_nonoverlapping(ptr.as_ptr(), new_ptr.as_ptr(), layout.size().min(new_size));
+            self.deallocate(ptr, layout);
+        }
+        Ok(new_ptr)
     }
 }

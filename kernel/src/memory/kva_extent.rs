@@ -476,6 +476,71 @@ impl Extents {
         }
     }
 
+    /// Grow an allocation's `extent` by `extra` bytes in place, taking them
+    /// from the front of the free extent that starts where it ends. Returns
+    /// the grown extent, or `NoVa` with the trees unchanged when that extent
+    /// is absent or shorter than `extra`. The growth holds one spare node
+    /// until `settle` keeps it or `retract` undoes it, so the undo cannot
+    /// fail for want of a node; a free extent taken whole gives its node back
+    /// for that, and otherwise a spare no allocation holds is needed, else
+    /// `NoNode` with the trees unchanged.
+    pub fn extend(&mut self, extent: Extent, extra: u64) -> Result<Extent, ExtentError> {
+        self.check(extent)?;
+        if extra == 0 || extra & (self.granule - 1) != 0 {
+            return Err(ExtentError::BadRequest);
+        }
+        let (_, above) = self.neighbours(extent.end());
+        // SAFETY: `above` is a free node of this allocator.
+        unsafe {
+            if above.is_null() || (*above).start != extent.end() || (*above).len < extra {
+                return Err(ExtentError::NoVa);
+            }
+            if (*above).len != extra && self.spare_nodes() == 0 {
+                return Err(ExtentError::NoNode);
+            }
+            self.remove(above, BY_SIZE);
+            self.remove(above, BY_START);
+            if (*above).len == extra {
+                self.put_spare(above);
+            } else {
+                (*above).start += extra;
+                (*above).len -= extra;
+                self.insert(above, BY_START);
+                self.insert(above, BY_SIZE);
+            }
+        }
+        self.free_bytes -= extra;
+        self.held += 1;
+        Ok(Extent { start: extent.start, len: extent.len + extra })
+    }
+
+    /// Keep a growth `extend` made, once its pages are mapped: the node the
+    /// growth held is a spare again.
+    pub fn settle(&mut self) {
+        assert!(self.held != 0, "a settle with no growth outstanding");
+        self.held -= 1;
+    }
+
+    /// Undo a growth `extend` made, whose pages could not be mapped: the last
+    /// `extra` bytes of `extent` go back to the free trees, joined to a free
+    /// extent after them, with the node the growth held. Returns the extent
+    /// as it was before the growth.
+    pub fn retract(&mut self, extent: Extent, extra: u64) -> Result<Extent, ExtentError> {
+        self.check(extent)?;
+        if extra == 0 || extra >= extent.len || extra & (self.granule - 1) != 0 {
+            return Err(ExtentError::BadRequest);
+        }
+        if self.held == 0 {
+            return Err(ExtentError::Overlap);
+        }
+        self.held -= 1;
+        if let Err(error) = self.free(Extent { start: extent.end() - extra, len: extra }) {
+            self.held += 1;
+            return Err(error);
+        }
+        Ok(Extent { start: extent.start, len: extent.len - extra })
+    }
+
     /// Hold `extent` out of the free trees until a TLB flush covers it.
     /// `extent` is an allocation's, and the retirement uses the node the
     /// allocation holds, so it needs no spare. With no allocation

@@ -231,3 +231,67 @@ fn open_sized_request_finds_larger_extent_in_a_later_class() {
     }
     assert_eq!(heap.free_shape(), (1, REGION as u32));
 }
+
+/// E1-7's in-place resizes in the mixed workload: a live block grown with
+/// `grow_in_place` or shrunk with `shrink_in_place` keeps its address and
+/// its bytes, its usable size stays within `RESIZE_SLACK` of what it was
+/// last sized for, no live block is overwritten, and the heap coalesces
+/// whole once each block is freed.
+#[test]
+fn in_place_resizes_preserve_live_bytes_and_coalesce() {
+    let mut backing = vec![0u64; HEAP_BYTES / 8];
+    let mut heap = indexed::Heap::empty();
+    unsafe { heap.init(backing.as_mut_ptr().cast(), HEAP_BYTES) };
+    let mut live: [Option<(NonNull<u8>, usize, u8)>; 512] = [None; 512];
+    let mut seed = 0x1e7u64;
+    let mut next = || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed as usize
+    };
+    let (mut grown, mut shrunk) = (0, 0);
+
+    for _ in 0..20_000 {
+        let slot = next() % live.len();
+        match live[slot].take() {
+            Some((ptr, len, value)) if next() % 2 == 0 => {
+                let new_len = 1 + next() % 16384;
+                let before = unsafe { heap.usable_size(ptr) };
+                if unsafe { heap.resize_in_place(ptr, new_len) } {
+                    let usable = unsafe { heap.usable_size(ptr) };
+                    assert!(usable >= new_len && usable - new_len < indexed::RESIZE_SLACK, "usable {usable} for {new_len}");
+                    let kept = len.min(new_len);
+                    let bytes = unsafe { std::slice::from_raw_parts(ptr.as_ptr(), kept) };
+                    assert!(bytes.iter().all(|&byte| byte == value), "a resize lost its bytes");
+                    unsafe { ptr.as_ptr().write_bytes(value, new_len) };
+                    if new_len > before {
+                        grown += 1;
+                    } else if usable < before {
+                        shrunk += 1;
+                    }
+                    live[slot] = Some((ptr, new_len, value));
+                } else {
+                    assert!(new_len > before, "a shrink was refused");
+                    live[slot] = Some((ptr, len, value));
+                }
+            }
+            Some((ptr, len, value)) => check_and_free(&mut heap, ptr, len, value),
+            None => {
+                let len = 1 + next() % 8192;
+                let layout = Layout::from_size_align(len, 1 << (next() % 13)).unwrap();
+                if let (Some(ptr), _) = heap.allocate(layout) {
+                    let value = (1 + next() % 255) as u8;
+                    unsafe { ptr.as_ptr().write_bytes(value, len) };
+                    live[slot] = Some((ptr, len, value));
+                }
+            }
+        }
+    }
+    assert!(grown > 100 && shrunk > 100, "the workload grew {grown} and shrank {shrunk} blocks in place");
+    for (ptr, len, value) in live.into_iter().flatten() {
+        check_and_free(&mut heap, ptr, len, value);
+    }
+    assert_eq!(heap.used(), 0);
+    assert_eq!(heap.free_shape(), (1, HEAP_BYTES as u32));
+}

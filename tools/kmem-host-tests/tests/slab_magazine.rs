@@ -64,6 +64,10 @@ impl Pool for Arena {
     unsafe fn give(&self, ptr: NonNull<u8>) {
         unsafe { self.locked().deallocate(ptr) }
     }
+
+    unsafe fn resize(&self, ptr: NonNull<u8>, new_size: usize) -> bool {
+        unsafe { self.locked().resize_in_place(ptr, new_size) }
+    }
 }
 
 /// The page layer: page-aligned host pages, at most `limit` at once, and the

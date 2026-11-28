@@ -721,6 +721,16 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
                 ),
                 Err(reason) => serial_println!("[boot] Kernel VA windows self-check FAILED: {}", reason),
             }
+            // Span arenas and vmap allocations (E1 plan 6.4, 6.5): only this
+            // check uses them until E1-9 routes the heap to them.
+            kernel::memory::large::init();
+            match kernel::memory::large::self_check() {
+                Ok(check) => serial_println!(
+                    "[boot] Span and vmap self-check passed: spans={} vmap_moves={}",
+                    check.spans, check.vmap_moves,
+                ),
+                Err(reason) => serial_println!("[boot] Span and vmap self-check FAILED: {}", reason),
+            }
         }
         Err(error) => serial_println!("[boot] Kernel VA windows unavailable: {:?}", error),
     }

@@ -63,6 +63,10 @@
             "name": "Kernel VA windows self-check",
             "marker": "[boot] Kernel VA windows self-check passed"
           },
+          {
+            "name": "Span and vmap self-check",
+            "marker": "[boot] Span and vmap self-check passed"
+          },
           "Memory management ready"
         ],
         "x86_64": [

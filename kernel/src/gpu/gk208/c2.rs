@@ -175,6 +175,7 @@ pub fn program(io:&mut impl Access,p:&Plan)->Result<(),&'static str> {
 pub mod observe;
 
 #[cfg(all(target_os="none", feature="gt710_clock_probe"))]
+#[path = "c2/runtime.rs"]
 mod runtime;
 #[cfg(all(target_os="none", feature="gt710_clock_probe"))]
 pub use runtime::{read_status,descriptor};
