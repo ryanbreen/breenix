@@ -698,15 +698,19 @@ mod tests {
         };
         let started = Instant::now();
         let create = |name: &[u8]| Action::Create { dir: 2, name: name.to_vec(), mode: 0o644 };
-        let write = |ino, blocks: usize, byte| Action::Write { ino, offset: 0, bytes: vec![byte; blocks * 4096] };
+        let write = |ino, at: usize, blocks: usize, byte| Action::Write { ino,
+            offset: (at * 4096) as u64, bytes: vec![byte; blocks * 4096] };
         // Inodes are numbered from 16 in creation order (model and writer).
+        // k's data comes first and a's and b's follow it, so k's append at
+        // operation 15 aims at a's first block (Files::data_goal).
         let actions = [
-            create(b"a"), write(16, 8, 1), create(b"b"), write(17, 8, 2), Action::Fsync { ino: 16 },
+            create(b"k"), write(16, 0, 4, 9), create(b"a"), write(17, 0, 8, 1),
+            create(b"b"), write(18, 0, 8, 2), Action::Fsync { ino: 16 },
             Action::Unlink { dir: 2, name: b"a".to_vec() }, Action::Unlink { dir: 2, name: b"b".to_vec() },
-            Action::Fsync { ino: 2 },                                   // 7: G, the releases
-            create(b"c"), Action::Fsync { ino: 18 },                    // 9: G+1
-            create(b"d"), write(19, 4, 3), Action::Fsync { ino: 19 },   // 12: G+2, promotion
-            create(b"e"), write(20, 16, 4), Action::Fsync { ino: 20 },  // 15: reuse
+            Action::Fsync { ino: 2 },                                     // 9: G, the releases
+            create(b"c"), Action::Fsync { ino: 19 },                      // 11: G+1
+            create(b"d"), write(20, 0, 4, 3), Action::Fsync { ino: 20 },  // 14: G+2, promotion
+            write(16, 4, 16, 4), Action::Fsync { ino: 16 },               // 16: k's append
         ];
         let operations: Vec<_> = actions.into_iter().enumerate()
             .map(|(i, action)| (i, Operation { at: Time { seconds: 100 + i as i64, nanos: 0 }, action }))
@@ -714,17 +718,33 @@ mod tests {
         let end = operations.len();
         let seed = 0x13_13;
         let recorded = record_with(crate::test_image::image(), seed, operations.into_iter(), end, true).unwrap();
-        let first = |operation| recorded.windows.iter().position(|w| w.operation == operation).unwrap();
-        // The durable image when G+1 starts writing holds G's quarantine.
-        let g_plus_1 = &recorded.windows[first(9)];
+        let first = |operation| recorded.windows.iter().position(|w| w.operation >= operation).unwrap();
+        // a's and b's data blocks, by their contents, in the durable image
+        // when the unlinks start.
+        let before = &recorded.windows[first(7)].durable;
+        let data: BTreeSet<u64> = (0..before.sector_count / 8).filter(|&block| {
+            let sectors: Vec<_> = (0..8).map(|s| before.read_sector(block * 8 + s)).collect();
+            [1u8, 2].iter().any(|&byte| sectors.iter().all(|s| s.iter().all(|&b| b == byte)))
+        }).collect();
+        assert_eq!(data.len(), 16, "a's and b's data blocks");
+        let contains = |ranges: &[(u64, u64)], block: u64| ranges.iter().any(|&(s, l)| (s..s + l).contains(&block));
+        // G released each of them; G+1 still holds them in PENDING.
+        let g_plus_1 = &recorded.windows[first(10)];
         let released = released_in(&g_plus_1.durable, g_plus_1.acknowledged);
-        assert!(!released.is_empty(), "G released the unlinked files' blocks");
-        let written_into_release = |operation| recorded.windows.iter()
-            .filter(|w| w.operation == operation)
-            .flat_map(|w| &w.writes)
-            .any(|(sector, _)| released.iter().any(|&(s, l)| (s..s + l).contains(&(sector / 8))));
-        assert!(!written_into_release(9), "G+1 wrote a block G released");
-        assert!(written_into_release(12) || written_into_release(15), "released blocks were reused after G+2");
+        assert!(data.iter().all(|&block| contains(&released, block)), "G released {data:?}: {released:?}");
+        let written = |operations: core::ops::RangeInclusive<usize>| -> BTreeSet<u64> {
+            recorded.windows.iter().filter(|w| operations.contains(&w.operation))
+                .flat_map(|w| &w.writes).map(|(sector, _)| sector / 8)
+                .filter(|block| data.contains(block)).collect()
+        };
+        assert!(written(7..=11).is_empty(), "G or G+1 wrote a released data block");
+        // G+2's publication makes them FREE: no PENDING of G remains, and
+        // nothing allocates them before it.
+        let g_plus_2 = &recorded.windows[first(15)];
+        assert_eq!(g_plus_2.acknowledged, g_plus_1.acknowledged + 2);
+        assert!(released_in(&g_plus_2.durable, g_plus_1.acknowledged).is_empty(), "G's PENDING promoted at G+2");
+        // The first data write after it, k's append, reuses all of them.
+        assert_eq!(written(15..=16), data, "k's append rewrote a's and b's blocks");
 
         let path = std::env::temp_dir().join(alloc::format!("breenfs-promotion-crash-{}.img", std::process::id()));
         let mut file = OpenOptions::new().create_new(true).write(true).open(&path).unwrap();
