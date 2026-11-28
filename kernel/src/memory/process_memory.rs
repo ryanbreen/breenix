@@ -602,9 +602,6 @@ impl crate::memory::table_reclaim::TableOps for ReclaimTables<'_> {
             ReturnOutcome::Returned => {
                 crate::trace_count!(crate::tracing::providers::teardown::PT_TABLE_FRAMES_RETURNED);
             }
-            ReturnOutcome::LostContended => {
-                crate::trace_count!(crate::tracing::providers::teardown::PT_RETIRE_FRAMES_LOST);
-            }
             ReturnOutcome::RefusedDoubleRelease
             | ReturnOutcome::RefusedStale
             | ReturnOutcome::RefusedNeverAllocated
@@ -2427,9 +2424,6 @@ impl ProcessPageTable {
                         ReturnOutcome::Returned => {
                             crate::tracing::providers::teardown::record_pt_frame_returned(pid)
                         }
-                        ReturnOutcome::LostContended => {
-                            crate::tracing::providers::teardown::record_pt_frame_lost(pid)
-                        }
                         ReturnOutcome::RefusedDoubleRelease
                         | ReturnOutcome::RefusedStale
                         | ReturnOutcome::RefusedNeverAllocated
@@ -2444,9 +2438,6 @@ impl ProcessPageTable {
             match outcome {
                 ReturnOutcome::Returned => {
                     crate::tracing::providers::teardown::record_pt_frame_returned(pid)
-                }
-                ReturnOutcome::LostContended => {
-                    crate::tracing::providers::teardown::record_pt_frame_lost(pid)
                 }
                 ReturnOutcome::RefusedDoubleRelease
                 | ReturnOutcome::RefusedStale
@@ -2828,37 +2819,9 @@ pub fn page_table_custody_disposition_gate_test() -> crate::test_framework::regi
 
     let start = disposition_gate_counters();
 
-    // O2/E: hold the real reuse-pool lock across real retirement. The ledger
-    // transition commits ST_FREE, retirement reports loss rather than a
-    // corruption refusal, and the fixture repairs the deliberately lost root.
     #[cfg(target_arch = "aarch64")]
     {
         use crate::tracing::providers::teardown;
-
-        let mut contended = match ProcessPageTable::new() {
-            Ok(page_table) => page_table,
-            Err(_) => return TestResult::Fail("E: page-table construction failed"),
-        };
-        let root = contended.level_4_frame();
-        let free_before = crate::memory::frame_allocator::free_list_len_for_gate();
-        let returned_before = teardown::PT_TABLE_FRAMES_RETURNED.aggregate();
-        let lost_before = teardown::PT_RETIRE_FRAMES_LOST.aggregate();
-        let retired_before = teardown::PT_ROOTS_RETIRED.aggregate();
-        let mut budget = RETIRE_FRAME_BUDGET;
-        if crate::memory::frame_allocator::retire_with_free_list_contended(
-            &mut contended,
-            u64::MAX - 1,
-            &mut budget,
-        ) != RetireProgress::Complete
-            || teardown::PT_TABLE_FRAMES_RETURNED.aggregate() != returned_before
-            || teardown::PT_RETIRE_FRAMES_LOST.aggregate() != lost_before + 1
-            || teardown::PT_ROOTS_RETIRED.aggregate() != retired_before + 1
-            || crate::memory::frame_allocator::free_list_len_for_gate() != free_before
-            || !crate::memory::frame_allocator::republish_frame_for_gate(root)
-            || crate::memory::frame_allocator::free_list_len_for_gate() != free_before + 1
-        {
-            return TestResult::Fail("E: retirement contention was not isolated and repaired");
-        }
 
         let used_before = {
             let stats = crate::memory::frame_allocator::memory_stats();

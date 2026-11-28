@@ -163,7 +163,7 @@ fi
 # on the same port as kernel and userspace output, so any marker line can carry
 # a prefix. The markers are self-delimiting (`[...]` or a unique sentence), so
 # a substring match is still exact; do not re-anchor these.
-FRAME_CUSTODY_PATTERN='\[FRAME_CUSTODY_COUNTERS:x86:double=1:stale=1:never=1:untracked=1:duplicate=3:contended=[1-9][0-9]*\]'
+FRAME_CUSTODY_PATTERN='\[FRAME_CUSTODY_COUNTERS:x86:double=1:stale=1:never=1:untracked=1:duplicate=3\]'
 # The x86 failed-exec release oracle records one three-table hierarchy and retires it:
 # recorded rises by the hierarchy, returned by the hierarchy plus its root, and undecided deliberately does not move.
 PT_CUSTODY_LITERAL='[PT_CUSTODY_COUNTERS:x86:recorded=14:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=2:returned=14:lost=0:requeued=0]'

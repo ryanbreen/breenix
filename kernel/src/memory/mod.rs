@@ -8,6 +8,7 @@ pub mod cow_stats;
 pub mod file_map;
 pub mod fork_copy;
 pub mod frame_allocator;
+pub mod frame_meta;
 pub mod frame_metadata;
 pub mod heap;
 #[cfg(target_arch = "x86_64")]
@@ -140,8 +141,6 @@ pub fn init(physical_memory_offset: VirtAddr, memory_regions: &'static MemoryReg
         log::info!("Initializing heap allocator...");
         heap::init(&mapper).expect("heap initialization failed");
     }
-    frame_allocator::init_frame_ledger();
-
     // Initialize slab caches (must be after heap)
     slab::init();
 

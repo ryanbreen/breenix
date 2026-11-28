@@ -941,12 +941,19 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         "[boot] Initializing memory management ({} MiB in {} ranges)...",
         frame_pool.ranges.total_bytes() >> 20, frame_pool.ranges.len(),
     );
-    kernel::memory::frame_allocator::init_aarch64(&frame_pool.ranges);
+    let frame_metadata = frame_pool.metadata.as_ref()
+        .unwrap_or_else(|error| panic!("boot: frame metadata: {}", error.as_str()));
+    let meta_stats = frame_metadata.stats();
+    serial_println!(
+        "[boot] Frame metadata: metadata_pages={} sections={} descriptor_pages={} leaf_pages={} root_pages={} spare_pages={}",
+        meta_stats.metadata_pages, meta_stats.sections, meta_stats.descriptor_pages,
+        meta_stats.leaf_pages, meta_stats.root_pages, meta_stats.spare_pages,
+    );
+    kernel::memory::frame_allocator::init_aarch64(&frame_pool.ranges, frame_metadata);
     kernel::memory::init_aarch64_heap();
     // Per-address-space ASIDs: chooses 8 or 16 bits and sets TCR_EL1 before
     // any process exists and before secondaries copy CPU 0's TCR_EL1.
     kernel::arch_impl::aarch64::ttbr0::init_asids();
-    kernel::memory::frame_allocator::init_frame_ledger();
     kernel::memory::kernel_stack::init();
     serial_println!("[boot] Memory management ready");
     splash::stage(Stage::MemoryReady);

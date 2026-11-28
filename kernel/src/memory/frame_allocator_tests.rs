@@ -1,82 +1,93 @@
 use super::*;
 use crate::test_framework::registry::TestResult;
 
-fn inject_duplicate_candidates(frame: PhysFrame, count: usize) -> bool {
-    let mut free = FREE_FRAMES.lock();
-    if free.try_reserve(count).is_err() {
-        return false;
-    }
-    FREE_FRAME_CAPACITY.store(free.capacity(), Ordering::Release);
-    for _ in 0..count {
-        free.push(frame);
-    }
-    true
-}
-
-fn remove_duplicate_candidates(frame: PhysFrame) {
-    FREE_FRAMES.lock().retain(|candidate| *candidate != frame);
-}
-
-fn republish_lost_frame(frame: PhysFrame) -> bool {
-    let mut free = FREE_FRAMES.lock();
-    if free.len() == free.capacity() {
-        return false;
-    }
-    free.push(frame);
-    true
-}
-
-pub(crate) fn republish_frame_for_gate(frame: PhysFrame) -> bool {
-    republish_lost_frame(frame)
-}
-
-pub(crate) fn retire_with_free_list_contended(
-    page_table: &mut crate::memory::process_memory::ProcessPageTable,
-    pid: u64,
-    budget: &mut u32,
-) -> crate::memory::process_memory::RetireProgress {
-    with_free_list_held(|| page_table.retire_bounded(pid, budget))
-}
-
-/// Run `f` with the free list held by this CPU, so a frame returned inside `f`
-/// finds it busy. A return waits for a holder on another CPU and only gives up
-/// when this CPU is the holder, so the hold goes through `with_free_frames` and
-/// records this CPU as the owner.
-fn with_free_list_held<R>(f: impl FnOnce() -> R) -> R {
-    with_free_frames(|_| f())
-}
-
-fn restore_lease(lease: FrameLease) -> bool {
-    match return_lease(lease) {
-        ReturnOutcome::Returned => true,
-        ReturnOutcome::LostContended => republish_lost_frame(lease.frame),
-        _ => false,
+/// Take every frame off the free list, in list order. The buffer is reserved
+/// before the list is held, so nothing allocates under the hold.
+fn drain_free_list() -> Option<Vec<u64>> {
+    let meta = frame_meta()?;
+    loop {
+        let wanted = with_free_frames(|list| list.len()) + 64;
+        let mut frames = Vec::new();
+        frames.try_reserve_exact(wanted).ok()?;
+        let drained = with_free_frames(|list| {
+            if list.len() > frames.capacity() {
+                return false;
+            }
+            while let Some(frame) = list.pop(meta) {
+                frames.push(frame);
+            }
+            true
+        });
+        if drained {
+            return Some(frames);
+        }
     }
 }
 
-fn free_frame_count(frame: PhysFrame) -> usize {
-    FREE_FRAMES
-        .lock()
-        .iter()
-        .filter(|candidate| **candidate == frame)
-        .count()
+/// Put drained frames back in their original order, less `except`.
+fn refill_free_list(frames: &[u64], except: Option<u64>) {
+    let Some(meta) = frame_meta() else {
+        return;
+    };
+    with_free_frames(|list| {
+        for &frame in frames.iter().rev() {
+            if Some(frame) != except {
+                list.push(meta, frame);
+            }
+        }
+    });
 }
 
 pub fn free_list_len_for_gate() -> usize {
-    FREE_FRAMES.lock().len()
+    with_free_frames(|list| list.len())
+}
+
+fn free_frame_count(frame: PhysFrame) -> usize {
+    let Some(frames) = drain_free_list() else {
+        return usize::MAX;
+    };
+    let count = frames.iter().filter(|&&candidate| candidate == pfn(frame)).count();
+    refill_free_list(&frames, None);
+    count
+}
+
+/// Put live frames at the head of the free list, as a corrupt return would.
+fn inject_live_candidates(frames: &[PhysFrame]) -> bool {
+    let Some(meta) = frame_meta() else {
+        return false;
+    };
+    with_free_frames(|list| frames.iter().all(|&frame| list.push(meta, pfn(frame))))
+}
+
+/// Remove any injected candidate the allocator has not consumed.
+fn remove_candidates(frames: &[PhysFrame]) {
+    let Some(drained) = drain_free_list() else {
+        return;
+    };
+    let Some(meta) = frame_meta() else {
+        return;
+    };
+    with_free_frames(|list| {
+        for &frame in drained.iter().rev() {
+            if !frames.iter().any(|&injected| pfn(injected) == frame) {
+                list.push(meta, frame);
+            }
+        }
+    });
 }
 
 fn take_free_frame(frame: PhysFrame) -> Option<FrameLease> {
-    let candidate = {
-        let mut free = FREE_FRAMES.lock();
-        let index = free.iter().position(|candidate| *candidate == frame)?;
-        free.swap_remove(index)
-    };
-    claim_frame(candidate).ok().flatten()
+    let frames = drain_free_list()?;
+    let found = frames.contains(&pfn(frame));
+    refill_free_list(&frames, Some(pfn(frame)));
+    if !found {
+        return None;
+    }
+    claim_frame(frame, 0, 0)
 }
 
-/// A frame above every usable region. This forces the production ordinal
-/// lookup to reject the address rather than merely indexing past the ledger.
+/// A frame above every usable region. This forces the production lookup to
+/// reject the address rather than merely indexing past the metadata.
 fn above_top_of_ram_frame() -> Option<PhysFrame> {
     let info = MEMORY_INFO.get()?;
     let top = info.iter()
@@ -86,16 +97,13 @@ fn above_top_of_ram_frame() -> Option<PhysFrame> {
     Some(PhysFrame::containing_address(PhysAddr::new(aligned)))
 }
 
-/// Atomically consume one sequential ordinal without claiming its ledger slot.
+/// Atomically consume one sequential ordinal without claiming its metadata.
 /// The successful frontier CAS makes the returned frame permanently never-issued,
 /// so exercising the production deallocation wrapper cannot race a live owner.
 fn reserve_never_allocated_frame() -> Option<PhysFrame> {
     loop {
         let index = NEXT_FREE_FRAME.load(Ordering::Acquire);
         let frame = BootInfoFrameAllocator::get_usable_frame(index)?;
-        if !matches!(prepare_frame_for_allocation(index), PrepareFrame::Ready) {
-            return None;
-        }
         if NEXT_FREE_FRAME
             .compare_exchange(index, index + 1, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
@@ -106,28 +114,18 @@ fn reserve_never_allocated_frame() -> Option<PhysFrame> {
 }
 
 fn stale_lease_fixture() -> Option<(FrameLease, FrameLease)> {
-    for _ in 0..3 {
-        let stale = allocate_frame_leased()?;
-        match return_lease(stale) {
-            ReturnOutcome::Returned => {
-                let current = take_free_frame(stale.frame)?;
-                if current.index != stale.index || current.generation == stale.generation {
-                    return None;
-                }
-                return Some((stale, current));
-            }
-            ReturnOutcome::LostContended => {
-                if !republish_lost_frame(stale.frame) {
-                    return None;
-                }
-            }
-            _ => return None,
-        }
+    let stale = allocate_frame_leased()?;
+    if return_lease(stale) != ReturnOutcome::Returned {
+        return None;
     }
-    None
+    let current = take_free_frame(stale.frame)?;
+    if current.frame != stale.frame || current.generation == stale.generation {
+        return None;
+    }
+    Some((stale, current))
 }
 
-fn counters() -> [u64; 6] {
+fn counters() -> [u64; 5] {
     use crate::tracing::providers::teardown;
     [
         teardown::FRAME_RETURN_REFUSED_DOUBLE.aggregate(),
@@ -135,7 +133,6 @@ fn counters() -> [u64; 6] {
         teardown::FRAME_RETURN_REFUSED_NEVER_ALLOCATED.aggregate(),
         teardown::FRAME_RETURN_REFUSED_UNTRACKED.aggregate(),
         teardown::FRAME_DUPLICATE_ALLOC_REFUSED.aggregate(),
-        teardown::FRAME_LOST_CONTENDED.aggregate(),
     ]
 }
 
@@ -144,13 +141,18 @@ fn healthy_round_trip() -> bool {
     let Some(lease) = allocate_frame_leased() else {
         return false;
     };
-    return_lease(lease) == ReturnOutcome::Returned && counters()[..5] == before[..5]
+    return_lease(lease) == ReturnOutcome::Returned && counters() == before
+}
+
+fn frame_state(frame: PhysFrame) -> Option<(u32, u32)> {
+    let entry = frame_meta()?.entry(pfn(frame))?;
+    Some((entry.state(), entry.generation()))
 }
 
 pub fn frame_custody_refusal_gate_test() -> TestResult {
     let start = counters();
-    if start[..5] != [0; 5] {
-        return TestResult::Fail("A-E: unexpected refusal preceded injection gate");
+    if start != [0; 5] {
+        return TestResult::Fail("A-D: unexpected refusal preceded injection gate");
     }
 
     // A: one committed return followed by one refused double return.
@@ -158,10 +160,10 @@ pub fn frame_custody_refusal_gate_test() -> TestResult {
         Some(lease) => lease,
         None => return TestResult::Fail("A: lease allocation failed"),
     };
-    let free_before = FREE_FRAMES.lock().len();
+    let free_before = free_list_len_for_gate();
     if return_lease(lease) != ReturnOutcome::Returned
         || return_lease(lease) != ReturnOutcome::RefusedDoubleRelease
-        || FREE_FRAMES.lock().len() != free_before + 1
+        || free_list_len_for_gate() != free_before + 1
         || free_frame_count(lease.frame) != 1
         || !healthy_round_trip()
     {
@@ -176,13 +178,7 @@ pub fn frame_custody_refusal_gate_test() -> TestResult {
     if return_lease(stale) != ReturnOutcome::RefusedStale {
         return TestResult::Fail("B: stale lease was not refused");
     }
-    let state = FRAME_LEDGER
-        .get()
-        .and_then(|ledger| ledger.get(current.index as usize))
-        .map(|slot| slot.load(Ordering::Acquire));
-    if state
-        .is_none_or(|state| state & STATE_MASK != ST_ALLOCATED || state >> 2 != current.generation)
-    {
+    if frame_state(current.frame) != Some((ST_ALLOCATED, current.generation)) {
         return TestResult::Fail("B: stale return changed the current owner");
     }
     if return_lease(current) != ReturnOutcome::Returned || !healthy_round_trip() {
@@ -194,13 +190,11 @@ pub fn frame_custody_refusal_gate_test() -> TestResult {
         Some(frame) => frame,
         None => return TestResult::Fail("C: above-RAM frame fixture unavailable"),
     };
-    let free_before = FREE_FRAMES.lock().len();
+    let free_before = free_list_len_for_gate();
     let before_untracked = counters();
     deallocate_frame(untracked);
-    let free_after_untracked = FREE_FRAMES.lock().len();
     let after_untracked = counters();
-    remove_duplicate_candidates(untracked);
-    if after_untracked[3] != before_untracked[3] + 1 || free_after_untracked != free_before {
+    if after_untracked[3] != before_untracked[3] + 1 || free_list_len_for_gate() != free_before {
         return TestResult::Fail("C: untracked frame return was not isolated");
     }
     let never_frame = match reserve_never_allocated_frame() {
@@ -210,42 +204,49 @@ pub fn frame_custody_refusal_gate_test() -> TestResult {
     let before_never = counters();
     deallocate_frame(never_frame);
     if counters()[2] != before_never[2] + 1
-        || FREE_FRAMES.lock().len() != free_before
+        || free_list_len_for_gate() != free_before
         || !healthy_round_trip()
     {
         return TestResult::Fail("C: refusal taxonomy or recovery was not exact");
     }
 
-    // D: every injected live duplicate is withheld before escaping.
-    let live = match allocate_frame_leased() {
-        Some(lease) => lease,
-        None => return TestResult::Fail("D: live lease allocation failed"),
+    // D: three live frames put on the free list are each withheld before
+    // escaping, and the allocation still succeeds with a distinct frame.
+    let mut live = [None; 3];
+    for slot in live.iter_mut() {
+        *slot = allocate_frame_leased();
+    }
+    let [Some(first), Some(second), Some(third)] = live else {
+        for lease in live.into_iter().flatten() {
+            let _ = return_lease(lease);
+        }
+        return TestResult::Fail("D: live lease allocation failed");
     };
-    let live_before = FRAME_LEDGER
-        .get()
-        .and_then(|ledger| ledger.get(live.index as usize))
-        .map(|slot| slot.load(Ordering::Acquire));
+    let live = [first, second, third];
+    let frames = live.map(FrameLease::frame);
+    let live_before = frames.map(frame_state);
     let duplicate_before = counters()[4];
-    if !inject_duplicate_candidates(live.frame, 3) {
-        let _ = restore_lease(live);
-        return TestResult::Fail("D: duplicate fixture reservation failed");
+    if !inject_live_candidates(&frames) {
+        remove_candidates(&frames);
+        live.into_iter().for_each(|lease| { let _ = return_lease(lease); });
+        return TestResult::Fail("D: duplicate fixture injection failed");
     }
     let replacement = allocate_frame_leased();
-    remove_duplicate_candidates(live.frame);
-    let live_after = FRAME_LEDGER
-        .get()
-        .and_then(|ledger| ledger.get(live.index as usize))
-        .map(|slot| slot.load(Ordering::Acquire));
+    remove_candidates(&frames);
+    let live_after = frames.map(frame_state);
     let replacement_is_distinct = replacement
         .as_ref()
-        .is_some_and(|replacement| replacement.frame != live.frame);
+        .is_some_and(|replacement| !frames.contains(&replacement.frame));
     let replacement_missing = replacement.is_none();
-    let replacement_returned = replacement.is_none_or(restore_lease);
-    let live_returned = restore_lease(live);
+    let replacement_returned =
+        replacement.is_none_or(|lease| return_lease(lease) == ReturnOutcome::Returned);
+    let live_returned = live
+        .into_iter()
+        .all(|lease| return_lease(lease) == ReturnOutcome::Returned);
     if !replacement_returned || !live_returned {
         return TestResult::Fail("D: failure cleanup could not restore frame owners");
     }
-    if live_before.is_none()
+    if live_before.contains(&None)
         || live_after != live_before
         || !replacement_is_distinct
         || counters()[4] != duplicate_before + 3
@@ -259,51 +260,20 @@ pub fn frame_custody_refusal_gate_test() -> TestResult {
         return TestResult::Fail("D: healthy allocation failed after duplicate refusal");
     }
 
-    // E: hold the real lock across a real return, then repair the lost frame.
-    let contended = match allocate_frame_leased() {
-        Some(lease) => lease,
-        None => return TestResult::Fail("E: contended lease allocation failed"),
-    };
-    let outcome = with_free_list_held(|| return_lease(contended));
-    if outcome != ReturnOutcome::LostContended {
-        return TestResult::Fail("E: real free-list contention was not reported");
-    }
-    let lost_state = FRAME_LEDGER
-        .get()
-        .and_then(|ledger| ledger.get(contended.index as usize))
-        .map(|slot| slot.load(Ordering::Acquire));
-    if lost_state.is_none_or(|state| state & STATE_MASK != ST_FREE)
-        || free_frame_count(contended.frame) != 0
-    {
-        return TestResult::Fail("E: contended frame was not isolated as a loss");
-    }
-    let repaired = match claim_frame(contended.frame).ok().flatten() {
-        Some(lease) => lease,
-        None => return TestResult::Fail("E: lost-frame repair failed"),
-    };
-    let before_healthy = counters();
-    if return_lease(repaired) != ReturnOutcome::Returned
-        || counters()[..5] != before_healthy[..5]
-        || !healthy_round_trip()
-    {
-        return TestResult::Fail("E: healthy return did not recover after contention");
-    }
-
     let end = counters();
     if end[0] != start[0] + 1
         || end[1] != start[1] + 1
         || end[2] != start[2] + 1
         || end[3] != start[3] + 1
         || end[4] != start[4] + 3
-        || end[5] < start[5] + 1
     {
-        return TestResult::Fail("A-E: refusal counter deltas were not exact");
+        return TestResult::Fail("A-D: refusal counter deltas were not exact");
     }
     TestResult::Pass
 }
 
 pub fn frame_custody_healthy_counters_test() -> TestResult {
-    if counters()[..5] != [1, 1, 1, 1, 3] {
+    if counters() != [1, 1, 1, 1, 3] {
         return TestResult::Fail("late guard read found an unexpected production refusal");
     }
     TestResult::Pass
@@ -323,8 +293,8 @@ pub fn run_x86_frame_custody_gate() {
     }
     let values = counters();
     crate::serial_println!(
-        "[FRAME_CUSTODY_COUNTERS:x86:double={}:stale={}:never={}:untracked={}:duplicate={}:contended={}]",
-        values[0], values[1], values[2], values[3], values[4], values[5]
+        "[FRAME_CUSTODY_COUNTERS:x86:double={}:stale={}:never={}:untracked={}:duplicate={}]",
+        values[0], values[1], values[2], values[3], values[4]
     );
     assert!(result.is_pass(), "x86 frame custody refusal gate failed");
 }

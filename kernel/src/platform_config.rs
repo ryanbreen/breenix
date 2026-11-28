@@ -145,8 +145,11 @@ fn with_kernel_pools(mut ranges: RangeSet, source: FramePoolSource, stats: MapSt
             let direct_map = arm64_direct_map::extend(
                 &mut ranges, &LiveBootMemory, &LiveBootMemory, ttbr1_root(),
             );
+            // The extended direct map now covers every page the set holds,
+            // so the metadata may come from any of them (E1 plan 4.4).
+            let metadata = crate::memory::frame_meta::build(&mut ranges, &LiveBootMemory);
             KERNEL_POOLS.call_once(|| pools);
-            FramePool { ranges, source, stats, direct_map }
+            FramePool { ranges, source, stats, direct_map, metadata }
         }
         Err(error) => unavailable_pool(MapError::Ranges(error)),
     }
@@ -227,6 +230,8 @@ pub struct FramePool {
     pub source: FramePoolSource,
     pub stats: MapStats,
     pub direct_map: Result<Extension, ExtensionError>,
+    /// The frame metadata, carved from `ranges` after the direct map grew.
+    pub metadata: Result<crate::memory::frame_meta::FrameMetaMap, boot_ranges::RangeError>,
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -241,6 +246,7 @@ fn unavailable_pool(reason: MapError) -> FramePool {
         source: FramePoolSource::Unavailable(reason),
         stats: MapStats::default(),
         direct_map: Ok(Extension::default()),
+        metadata: Ok(crate::memory::frame_meta::FrameMetaMap::empty()),
     }
 }
 
