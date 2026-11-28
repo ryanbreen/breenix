@@ -2,7 +2,9 @@
 //! BXKEY keeps the original HID 1.11 wire format, sequencing and IEEE CRC-32.
 //! BXPTR carries exact pixel coordinates and the mode that gives them meaning.
 
+#[path = "host/progress.rs"]
 pub mod progress;
+#[path = "host/diagnostics.rs"]
 pub mod diagnostics;
 
 /// Whether the declared host-key transport uses the serial host channel.
@@ -464,6 +466,7 @@ impl Channel {
 }
 
 #[cfg(not(test))]
+#[path = "host/runtime.rs"]
 mod runtime;
 #[cfg(not(test))]
 pub(super) use runtime::drain_one;
