@@ -6210,8 +6210,10 @@ impl Scheduler {
     /// node at this CPU and records `queue` in its wait-site record.
     ///
     /// Returns the thread's ID. It publishes no state and returns no ID when
-    /// there is no current thread, the current thread is this CPU's idle
-    /// thread, or it must not sleep (`Thread::must_not_sleep`).
+    /// there is no current thread or it must not sleep
+    /// (`Thread::must_not_sleep`). The ARM64 boot continuation is CPU 0's
+    /// idle thread (`main_aarch64.rs`, `init_with_current`), and its disk
+    /// waits publish here like any other thread's.
     pub(crate) fn block_current_for_io_publish(
         &mut self,
         wake_time_ns: Option<u64>,
@@ -6219,9 +6221,6 @@ impl Scheduler {
     ) -> Option<u64> {
         let cpu = Self::current_cpu_id();
         let current_id = self.cpu_state[cpu].current_thread?;
-        if current_id == self.cpu_state[cpu].idle_thread {
-            return None;
-        }
         let thread = self.get_thread_mut(current_id)?;
         #[cfg(target_arch = "aarch64")]
         if let Some(wake) = &thread.wake {
