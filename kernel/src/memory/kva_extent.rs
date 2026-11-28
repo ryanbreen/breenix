@@ -254,14 +254,14 @@ impl Extents {
         (below, above)
     }
 
-    /// The smallest free extent of at least `len` bytes.
-    fn smallest_fitting(&self, len: u64) -> *mut Node {
+    /// The free extent with the smallest (length, start) at or above `at`.
+    fn smallest_from(&self, at: Key) -> *mut Node {
         let mut best = null_mut();
         let mut node = self.roots[BY_SIZE];
         // SAFETY: the tree's nodes are this allocator's.
         unsafe {
             while !node.is_null() {
-                if (*node).len >= len {
+                if key(node, BY_SIZE) >= at {
                     best = node;
                     node = (*node).link[BY_SIZE][LEFT];
                 } else {
@@ -360,8 +360,10 @@ impl Extents {
     /// same allocation. Each is a multiple of the granule, and `align` is a
     /// power of two.
     ///
-    /// The search asks for the extent that fits even at the worst alignment,
-    /// so it is one descent of the size tree.
+    /// The search takes the smallest free extent the request fits in at its
+    /// actual alignment: it visits extents from `len` plus the guards upward
+    /// in (length, start) order. Any extent of at least that plus
+    /// `align - granule` bytes fits, so the walk stops there at the latest.
     pub fn allocate(
         &mut self,
         len: u64,
@@ -378,15 +380,29 @@ impl Extents {
             .checked_add(len)
             .and_then(|bytes| bytes.checked_add(guard_after))
             .ok_or(ExtentError::BadRequest)?;
-        let search = total.checked_add(align - self.granule).ok_or(ExtentError::NoVa)?;
-        let node = self.smallest_fitting(search);
-        if node.is_null() {
-            return Err(ExtentError::NoVa);
-        }
+        // The aligned start of the request in `node`, if it fits there.
+        let fit = |node: *mut Node| -> Option<u64> {
+            // SAFETY: `node` is a free node of this allocator.
+            let (node_start, node_len) = unsafe { ((*node).start, (*node).len) };
+            let start = node_start.checked_add(guard_before)?.checked_add(align - 1)? & !(align - 1);
+            let end = (start - guard_before).checked_add(total)?;
+            (end <= node_start + node_len).then_some(start)
+        };
+        let mut at = (total, 0);
+        let (node, start) = loop {
+            let node = self.smallest_from(at);
+            if node.is_null() {
+                return Err(ExtentError::NoVa);
+            }
+            if let Some(start) = fit(node) {
+                break (node, start);
+            }
+            // SAFETY: as in `fit`.
+            at = unsafe { ((*node).len, (*node).start + 1) };
+        };
         // SAFETY: `node` is a free node of this allocator.
         unsafe {
             let (node_start, node_end) = ((*node).start, (*node).start + (*node).len);
-            let start = (node_start + guard_before + (align - 1)) & !(align - 1);
             let extent = Extent { start: start - guard_before, len: total };
             let head = extent.start - node_start;
             let tail = node_end - extent.end();
