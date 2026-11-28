@@ -410,3 +410,48 @@ fn a_stopped_queue_publishes_no_staged_chain() {
     assert!(mem.borrow().idx_stores.is_empty(), "the stopped queue stored avail.idx");
     assert!(dev.take().is_empty(), "the device was given a write its caller saw fail");
 }
+
+#[test]
+fn a_small_ring_gets_a_shorter_chain_instead_of_no_device() {
+    // Budget: 512 KiB of frames, as both drivers give a device.
+    const BUDGET_FRAMES: usize = 128;
+    // A 16-frame chain needs 18 descriptors, so a 16-entry ring fits none
+    // of them: attach used to refuse the device on exactly this count.
+    assert_eq!(MODERN.chains_for(16, MAX_SEGMENTS), 0);
+    // The plan shortens the chain until one fits, and adds no frame that
+    // could carry no data.
+    assert_eq!(MODERN.chain_plan(16, MAX_SEGMENTS, BUDGET_FRAMES), Some((1, 14)));
+    assert_eq!(MODERN.chain_plan(4, MAX_SEGMENTS, BUDGET_FRAMES), Some((1, 2)));
+    assert_eq!(Limits { size_max: 2048, ..MODERN }.chain_plan(16, MAX_SEGMENTS, BUDGET_FRAMES), Some((1, 7)));
+    assert_eq!(Limits { seg_max: 1, ..MODERN }.chain_plan(16, MAX_SEGMENTS, BUDGET_FRAMES), Some((5, 1)));
+    // A large ring keeps 8 chains of 64 KiB.
+    assert_eq!(MODERN.chain_plan(256, MAX_SEGMENTS, BUDGET_FRAMES), Some((8, MAX_SEGMENTS)));
+    // Header, one data descriptor and status: a 2-entry ring fits nothing.
+    assert_eq!(MODERN.chain_plan(2, MAX_SEGMENTS, BUDGET_FRAMES), None);
+
+    // The planned chain runs a full-length write and read on the 16-entry ring.
+    let (chains, frames) = MODERN.chain_plan(SIZE, MAX_SEGMENTS, BUDGET_FRAMES).unwrap();
+    let mut chain = ChainStorage::EMPTY;
+    chain.header = 0x1000;
+    chain.status = 0x2000;
+    for (index, frame) in chain.frames[..frames].iter_mut().enumerate() {
+        *frame = 0x100_000 + 0x2000 * index as u64;
+    }
+    chain.frame_count = frames;
+    let mem = device::shared(SIZE);
+    let mut dev = Device::new(&mem, DISK_SECTORS);
+    let mut queue = BlkQueue::new(Ring(mem.clone()), SIZE, MODERN, &vec![chain; chains]).expect("the planned chain fits");
+    let mut dma = Dma(mem.clone());
+    let len = queue.chain_bytes();
+    assert_eq!(len, 14 * 4096);
+    let data = pattern(9, 0, len);
+    let slot = queue.reserve(1).unwrap();
+    let head = queue.submit(&mut dma, slot, request_type::OUT, 0, Some(&data), len).unwrap();
+    queue.publish();
+    let taken = dev.take();
+    dev.complete(by_head(&taken, head), status::OK, None);
+    assert_eq!(queue.drain(&mut dma, |_, _| {}), Drain::Completed(1));
+    assert_eq!(queue.finish(&mut dma, slot, None), Ok(()));
+    assert_eq!(queue.free_descriptors(), SIZE);
+    assert_eq!(&dev.disk[..len], &data[..]);
+}
