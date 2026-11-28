@@ -1963,8 +1963,8 @@ impl<W: Wait + 'static> BreenFs<W> {
     /// a staged node is in use (3.2). A working directory holds a node, not
     /// a registry pin. The check and the removal share this mount exclusion,
     /// and a staged node is opened only under it (a held node is counted), so
-    /// none appears between them and the detach that follows can release
-    /// the tree. The caller holds no walk into the tree.
+    /// no new one appears between them and the detach that follows can
+    /// release the tree. The caller holds no walk into the tree.
     pub fn unpublish_staging(&self, remove: impl FnOnce() -> Result<(), Errno>) -> Result<(), Errno> {
         let state = self.foreground_lock()?;
         if state.staging.is_none() {
@@ -2082,7 +2082,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         // Raise the flag before counting: a binding counted after this read
         // sees the flag and is refused (MapInner::gain_writable_shared), and
         // so does a FIFO stamp (touch(), whose count and flag read pair with
-        // this store and root_epoch's load, all SeqCst).
+        // this store and root_epoch's load; the four accesses are SeqCst).
         let was = self.inner.root_frozen.swap(true, Ordering::SeqCst);
         let epoch = self.root_epoch(&state);
         if busy(epoch) {
@@ -3832,7 +3832,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                         .map_err(|error| Errno(error as i32))
                 };
                 // The flag changes only for a caller that is given the
-                // result: an unwritable output (EFAULT) changes nothing.
+                // result: an unwritable output (EFAULT) leaves it as it was.
                 match request {
                     ROOT_EPOCH => report(&self.foreground_lock().map(|state| self.root_epoch(&state))?)?,
                     ROOT_THAW => self.root_thaw(&report)?,

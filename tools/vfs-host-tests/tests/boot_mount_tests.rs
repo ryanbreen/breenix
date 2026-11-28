@@ -344,7 +344,7 @@ fn root_volume_unmount_releases_staging_custody() {
     drop(pinned);
     // A real working directory holds the staged directory's VNode, not a
     // registry pin. A forced unmount is refused for it too: detach could not
-    // release the tree, and with the mount gone nothing could again.
+    // release the tree, and with the mount gone no later unmount could.
     let cwd = draft.open(staged_root).unwrap();
     for flags in [0, 1] {
         assert!(matches!(unmount(&target, flags), Some(Err(error)) if error == EBUSY as u64),
