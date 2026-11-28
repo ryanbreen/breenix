@@ -516,10 +516,26 @@ filters it in one place. No fixed array sits between the two.
 - Release.
   - The buffer's type is not conventional memory, so it is outside the usable set while the kernel reads
     it. The kernel treats it as reserved until it has consumed it.
-  - The last step of the range-set build adds the pages of each `BOOT_MAP_MEMORY_TYPE` descriptor to the
-    set. That comes after the second pass (4.1) and before the first carve.
-  - Only the one map allocation has that type, so no other live data is in those pages. The
-    firmware's pool bookkeeping in them died at exit.
+  - What is released is only the buffer's proven backing: the pages of the one `BOOT_MAP_MEMORY_TYPE`
+    descriptor that rule 6 of 4.5.5 found covering `[map_phys, map_phys + map_size)`. Any other
+    descriptor of that type is not released. It stays reserved and is counted, because the map does not show
+    what it holds. Within that one pool allocation, no other live data is in those pages. The firmware's pool
+    bookkeeping in them died at exit.
+  - Those pages pass through the same filters as a conventional descriptor before they enter the set.
+    Being the buffer's own does not make a page usable:
+    - the descriptor's attributes: `EFI_MEMORY_RUNTIME` or `EFI_MEMORY_SP` set means no page is released;
+    - the overlap sweep: a page that another descriptor also describes stays out, for example one that
+      overlaps `EfiACPIMemoryNVS`;
+    - the kernel's fixed ranges (`kernel_fixed_ranges`, `platform_config.rs:116-119, 217-221`), relocated
+      by `ram_base_offset`. They include the per-CPU stacks at `0x4300_0000..0x4400_0000`, which the
+      loader does not reserve from firmware. Only the loader stack below them is reserved
+      (`main.rs:449-457`), so a pool allocation can land in the per-CPU stacks. Reading the map there is
+      safe, because no secondary CPU has started. Releasing those pages would let the carve or the
+      buddy hand out a page that a CPU later uses as its stack;
+    - the address-width window (4.1), and E1-1's 4 GiB clip until E1-2 removes it.
+  - The release is an insert into the range set of what survives, in its own step after the second pass
+    (4.1) and before the first carve. It comes after the last access to the buffer, the sort included. Its
+    count is the released bytes, and the bytes the filters held back are counted by reason.
   - No code reads the buffer after that. The runtime ranges the kernel keeps are in `HardwareConfig`'s
     own array (`firmware_rtc::configure`), and the kernel takes each count it reports during the passes.
   - `HardwareConfig` itself stays in loader data and is not released, as today.
@@ -1297,6 +1313,18 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
   - Check first, release: the simulated memory records each read and write. The
     `BOOT_MAP_MEMORY_TYPE` pages enter the set only after the last access to the buffer, and the first
     carve after the build may return them. The old code does not release them, which is red.
+    - Release filters, compared by address. Each fixture lists the expected usable pages and released
+      pages as exact sorted intervals, and the test compares the sets themselves, not their counts or
+      byte totals:
+      - the buffer's descriptor inside the per-CPU stack interval: no page of `0x4300_0000..0x4400_0000`
+        is usable or released, and the boot line counts them as held back by a fixed range;
+      - the buffer's descriptor overlapping an `EfiACPIMemoryNVS` descriptor by one page: that page is
+        held back, and the rest are released;
+      - a second `BOOT_MAP_MEMORY_TYPE` descriptor elsewhere in the map: it is not released;
+      - the buffer's descriptor with `EFI_MEMORY_RUNTIME` set: no page is released.
+      A release that adds each descriptor of the type after the build, as the plan first proposed, fails
+      the first three. The fixtures are check-first in the sense of section 12: they are written before
+      the release step and run against a release step without the filters.
   - Check first, x86: the existing region-extraction logic, moved unchanged into the pure module, is given
     200 usable regions. It keeps 128, which is red. After the change it keeps 200 of 200.
   - Check first, device tree: `frame_pool_from_fdt` on a device tree with 40 disjoint memory ranges keeps
