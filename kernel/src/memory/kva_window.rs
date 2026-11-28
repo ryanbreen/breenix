@@ -88,16 +88,49 @@ pub enum PlaceError {
 /// `first..end`, in span, vmap, stack order, each in the lowest run of entries
 /// above the previous window for which `free` holds. Each window takes
 /// ceil(size / 512 GiB) entries of its own.
+///
+/// When the RAM-sized windows do not fit, each window is halved, keeping
+/// their 1 : 4 : 1 proportion down to 1 GiB each, until they do: RAM larger
+/// than the kernel half holds leaves smaller windows, which run out of VA
+/// first, rather than none. `NoSlots` means not even 1 GiB windows fit.
 pub fn place(
     ram_bytes: u64,
     first: usize,
     end: usize,
     free: impl Fn(usize) -> bool,
 ) -> Result<[Placement; 3], PlaceError> {
+    let mut shift = 0;
+    loop {
+        match place_at(ram_bytes, shift, first, end, &free) {
+            Ok(placed) => return Ok(placed),
+            Err(error) if scaled_bytes(WindowId::Vmap, ram_bytes, shift) == GIB => return Err(error),
+            Err(_) => shift += 1,
+        }
+    }
+}
+
+/// Window `id`'s size for `ram_bytes`, divided by 2^`shift` and rounded up
+/// to 1 GiB.
+fn scaled_bytes(id: WindowId, ram_bytes: u64, shift: u32) -> u64 {
+    id.bytes(ram_bytes)
+        .checked_shr(shift)
+        .unwrap_or(0)
+        .max(1)
+        .div_ceil(GIB)
+        .saturating_mul(GIB)
+}
+
+fn place_at(
+    ram_bytes: u64,
+    shift: u32,
+    first: usize,
+    end: usize,
+    free: &impl Fn(usize) -> bool,
+) -> Result<[Placement; 3], PlaceError> {
     let mut next = first;
     let mut placed = [Placement { id: WindowId::Span, first_slot: 0, slots: 0, base: 0, bytes: 0 }; 3];
     for (place, id) in placed.iter_mut().zip(WindowId::ALL) {
-        let bytes = id.bytes(ram_bytes);
+        let bytes = scaled_bytes(id, ram_bytes, shift);
         let slots = bytes.div_ceil(SLOT_BYTES) as usize;
         let mut start = next;
         loop {
