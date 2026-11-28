@@ -226,8 +226,8 @@ fn cancelled_ref_changes_leave_space_unedited() {
 /// A sparse write aims at the block its preceding extent would map it to,
 /// which can fall inside a FREE range. Taking one block from the middle of a
 /// seven-block range leaves two three-block holes, too small for a node, so
-/// such writes can use up every node-sized range while most of the space is
-/// still free, and settlement then has nowhere to copy a SPACE node.
+/// such writes can use up the node-sized ranges while most of the space is
+/// still free, and settlement then finds no range for a SPACE node copy.
 #[test]
 fn goal_inside_a_free_range_leaves_room_for_nodes() {
     let (mut store, mut root) = tree();

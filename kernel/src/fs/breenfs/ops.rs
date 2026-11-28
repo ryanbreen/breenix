@@ -648,10 +648,11 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             space_root: self.space_root,
             data: BTreeMap::new(),
             open_inodes: self.open_inodes.clone(),
-            // The orphan sets only decide which orphans preparation
-            // reclaims. The scratch view never prepares, and N+1's unlinks,
-            // opens and closes reach these sets in N's view by replay. Shared
-            // here, N's reclaim would copy each set it edits.
+            // The orphan sets decide which orphans preparation reclaims.
+            // The publication loop replays N+1 into N's view before it
+            // freezes again, so the scratch view is not prepared, and N+1's
+            // unlinks, opens and closes reach these sets in N's view by
+            // replay. Shared here, N's reclaim would copy each set it edits.
             orphans: Inodes::default(),
             orphan_work: Inodes::default(),
             unvalidated_orphans: Inodes::default(),

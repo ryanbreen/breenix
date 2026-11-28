@@ -738,12 +738,12 @@ mod tests {
                 .filter(|block| data.contains(block)).collect()
         };
         assert!(written(7..=11).is_empty(), "G or G+1 wrote a released data block");
-        // G+2's publication makes them FREE: no PENDING of G remains, and
-        // nothing allocates them before it.
+        // G+2's publication makes them FREE: G's PENDING is gone from its
+        // durable image.
         let g_plus_2 = &recorded.windows[first(15)];
         assert_eq!(g_plus_2.acknowledged, g_plus_1.acknowledged + 2);
         assert!(released_in(&g_plus_2.durable, g_plus_1.acknowledged).is_empty(), "G's PENDING promoted at G+2");
-        // The first data write after it, k's append, reuses all of them.
+        // The first data write after it, k's append, rewrites the 16 blocks.
         assert_eq!(written(15..=16), data, "k's append rewrote a's and b's blocks");
 
         let path = std::env::temp_dir().join(alloc::format!("breenfs-promotion-crash-{}.img", std::process::id()));

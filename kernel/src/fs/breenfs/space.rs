@@ -348,8 +348,9 @@ impl FreeIndex {
     ///
     /// A goal inside a range would split it in two. It is taken only when
     /// both pieces left free can still hold a node: otherwise sparse writes
-    /// could turn every node-sized range into smaller holes while most of the
-    /// space is free, and settlement could not copy a node.
+    /// could turn the node-sized ranges into smaller holes while most of the
+    /// space is free, and settlement could not copy a node
+    /// (tests/space.rs goal_inside_a_free_range_leaves_room_for_nodes).
     pub fn choose(&self, length: u64, goal: Option<u64>, short: bool) -> Option<(u64, u64)> {
         if length == 0 {
             return None;

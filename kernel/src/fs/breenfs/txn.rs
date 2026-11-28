@@ -945,8 +945,8 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
     }
     /// Host oracle after each settlement: the FREE index equals the FREE
     /// items, and each quarantine run this mount wrote is stored as such.
-    /// It compares in step and collects nothing, so host heap measurements
-    /// see only the code under test.
+    /// It compares in step, with no vector, so host heap measurements are
+    /// not charged for the oracle's own copies.
     #[cfg(test)]
     fn check_space_state(&self) {
         let view = self.view();

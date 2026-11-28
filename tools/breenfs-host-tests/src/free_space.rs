@@ -261,8 +261,8 @@ fn later_data_lands_after_the_files_existing_extent() {
         "a closer free range was skipped: {free:?}");
 }
 
-/// Audit R13 with fragmented releases: unlinking every other file leaves one
-/// PENDING run per file. Promotion at G+2 moves the runs it already holds to
+/// Audit R13 with fragmented releases: unlinking the even-numbered half of
+/// 10,000 files leaves one PENDING run per file. Promotion at G+2 moves the runs it already holds to
 /// FREE and makes no allocation in proportion to them: a copy of the runs
 /// would be one buffer of 16 bytes per run. Its other heap is the SPACE
 /// tree work of deleting those PENDING items and adding as many FREE items,
