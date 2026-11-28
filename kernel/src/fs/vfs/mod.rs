@@ -3,7 +3,7 @@
 //! Backends take their own locks; inode numbers crossing this boundary are u64.
 
 use crate::fs::{attrs::InodeAttrs, errno::Errno};
-use crate::memory::file_map::MapState;
+use crate::memory::file_map::{FillBatch, MapState};
 use crate::syscall::errno::EOPNOTSUPP;
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::{any::Any, sync::atomic::AtomicU64};
@@ -302,6 +302,18 @@ pub enum Xattr<'a> {
     },
 }
 
+/// How a filesystem's file data reaches the page cache
+/// (docs/plans/e3-page-cache.md 6.5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CachePolicy {
+    /// The backend fills cache frames itself (`FileSystem::fill`); from E3-7
+    /// its `read` and `write` go through the cache.
+    Native,
+    /// `read` and `write` call the backend, and the cache holds only the
+    /// pages mappings and exec need, filled through the transfer's reads.
+    MappedOnly,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StatFs {
     pub magic: u64,
@@ -430,6 +442,18 @@ pub trait FileSystem: core::any::Any + Send + Sync {
     }
     fn mapping_io(&self, _node: &VNode) -> Result<Box<dyn MappingIo>, Errno> {
         Err(Errno(EOPNOTSUPP))
+    }
+    fn cache_policy(&self) -> CachePolicy {
+        CachePolicy::MappedOnly
+    }
+    /// Fill `pages`, consecutive file pages of `node` that a population
+    /// claimed, and report each one Data, Hole or Error; a page left
+    /// unreported is EIO (docs/plans/e3-page-cache.md 6.1). Called with no
+    /// page-cache or VM lock held, with the transfer `io` its caller holds;
+    /// the backend may sleep and take its own locks. An error fails the
+    /// whole batch. The default reads through `io` (`CachePolicy::MappedOnly`).
+    fn fill(&self, _node: &VNode, io: &dyn MappingIo, pages: &mut FillBatch) -> Result<(), Errno> {
+        crate::memory::file_map::fill_by_reads(io, pages)
     }
     fn clear_mapping_privilege(&self, _node: &VNode) -> Result<(), Errno> {
         Err(Errno(EOPNOTSUPP))

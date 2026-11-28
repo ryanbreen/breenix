@@ -375,28 +375,28 @@ fn populated_pages_survive_eviction_until_the_binding_is_published() {
 // read may then see the truncated read's zeros.
 #[test]
 fn population_does_not_publish_a_page_read_while_the_file_was_truncated() {
-    use crate::memory::file_map::{bind_populated, on_cache_allocation, populate};
+    use crate::memory::file_map::{bind_populated, fill_window, on_cache_allocation, populate};
     let (fs, _disk, node) = fixture();
     let bytes = expected(0x5a);
     let length = bytes.len() as u64;
     let req = WriteReq { at: WriteAt::Offset(0), limit: u64::MAX, clear_setid: false };
     assert_eq!(fs.write(&node, req, &bytes).unwrap().bytes, bytes.len());
     fs.fsync(&node, false).unwrap();
-    // Population allocates the frames of each run of pages before the run's one
-    // read: the first allocation precedes run 0's read and the first of run 1
-    // (frame RUN + 1, RUN pages per run) follows it.
-    const RUN: usize = crate::block::cache::RUN_BYTES / 4096;
-    let (writer, file, restored) = (fs.clone(), node.clone(), bytes.clone());
-    on_cache_allocation(Some(Box::new(move |count| match count {
-        1 => writer.resize(&file, 0, false, &|_| Ok(())).unwrap(),
-        n if n == RUN + 1 => {
-            let req = WriteReq { at: WriteAt::Offset(0), limit: u64::MAX, clear_setid: false };
-            assert_eq!(writer.write(&file, req, &restored).unwrap().bytes, restored.len());
-        }
-        _ => {}
+    // Population allocates a fill batch's frames before the fill reads (the
+    // first allocation precedes it), and `on_filled` runs after the fill,
+    // before the merge.
+    let (writer, file) = (fs.clone(), node.clone());
+    on_cache_allocation(Some(Box::new(move |count| if count == 1 {
+        writer.resize(&file, 0, false, &|_| Ok(())).unwrap();
+    })));
+    let (writer, file, mut restored) = (fs.clone(), node.clone(), Some(bytes.clone()));
+    fill_window::on_filled(Some(Box::new(move |_| if let Some(restored) = restored.take() {
+        let req = WriteReq { at: WriteAt::Offset(0), limit: u64::MAX, clear_setid: false };
+        assert_eq!(writer.write(&file, req, &restored).unwrap().bytes, restored.len());
     })));
     let population = populate(&node, 0, length / 4096);
     on_cache_allocation(None);
+    fill_window::on_filled(None);
     let Ok(population) = population else {
         panic!("population failed");
     };

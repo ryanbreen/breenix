@@ -208,6 +208,22 @@ pub(crate) fn etxtbsy_refusals() -> u64 {
     ETXTBSY_REFUSALS.load(Ordering::Relaxed)
 }
 
+/// Fill batches population ran (`fills` in `/proc/breenix/pagecache`).
+static FILLS: AtomicU64 = AtomicU64::new(0);
+/// Pages fills reported Data or Hole (`fill_pages`).
+static FILL_PAGES: AtomicU64 = AtomicU64::new(0);
+/// Pages fills reported Error (`fill_errors`).
+static FILL_ERRORS: AtomicU64 = AtomicU64::new(0);
+/// Filled pages a merge dropped because a change marked their claim
+/// (`fill_discarded`, docs/plans/e3-page-cache.md 6.1a).
+static FILL_DISCARDED: AtomicU64 = AtomicU64::new(0);
+
+/// The fill counts of `/proc/breenix/pagecache`: fills, fill pages, fill
+/// errors and discarded fill pages.
+pub(crate) fn fill_counts() -> [u64; 4] {
+    [&FILLS, &FILL_PAGES, &FILL_ERRORS, &FILL_DISCARDED].map(|count| count.load(Ordering::Relaxed))
+}
+
 /// The error `bind` returns for a shared mapping with write authority of a
 /// running image; mmap reports it as ETXTBSY.
 pub(crate) const TEXT_BUSY: &str = "Text file busy";
@@ -1861,6 +1877,234 @@ impl Drop for PageClaim {
     }
 }
 
+/// One page's outcome in a fill (docs/plans/e3-page-cache.md 6.1). A page
+/// the backend did not reach is `Error(EIO)`: no outcome reads as success
+/// unless the backend gave it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FillPage {
+    /// The frame holds the file's verified bytes, then 00 past EOF.
+    Data,
+    /// No extent covers the page, and it is below EOF: its bytes are 00.
+    Hole,
+    Error(Errno),
+}
+
+/// The frame-vector type of docs/plans/e1-kernel-memory.md section 8: an
+/// ordered list of leased frames, each with the byte range of it in use.
+/// E3-4 builds it over the page cache's frame leases (`CachePage`); E4's
+/// vectored requests serve it from the same frames.
+pub struct FrameVec {
+    segments: Vec<FrameSegment>,
+}
+
+struct FrameSegment {
+    page: CachePage,
+    offset: usize,
+    len: usize,
+}
+
+impl FrameVec {
+    /// `count` fresh cleared frames, each used whole; a failed allocation
+    /// frees the ones already taken.
+    fn whole_pages(count: usize) -> Result<Self, &'static str> {
+        let mut segments = Vec::new();
+        segments
+            .try_reserve_exact(count)
+            .map_err(|_| "Out of memory for file mapping")?;
+        for _ in 0..count {
+            let page = CachePage::allocate()?;
+            segments.push(FrameSegment { page, offset: 0, len: PAGE_SIZE as usize });
+        }
+        Ok(Self { segments })
+    }
+
+    fn len(&self) -> usize {
+        self.segments.len()
+    }
+
+    /// The bytes of segment `n`.
+    fn bytes_mut(&mut self, n: usize) -> &mut [u8] {
+        let segment = &self.segments[n];
+        // SAFETY: the segment's frame is leased to this vector, which is
+        // reached only through `&mut self`; `offset + len` is within the page.
+        unsafe {
+            core::slice::from_raw_parts_mut(segment.page.ptr().add(segment.offset), segment.len)
+        }
+    }
+}
+
+/// The frames of consecutive file pages from `first` that a population
+/// claimed, handed to `FileSystem::fill`, and each page's outcome
+/// (docs/plans/e3-page-cache.md 6.1). `new` clears each frame.
+pub struct FillBatch {
+    first: u64,
+    size: u64,
+    frames: FrameVec,
+    outcomes: Vec<Option<FillPage>>,
+}
+
+impl FillBatch {
+    /// Cleared frames for pages `[first, first + count)` of a file whose
+    /// mapped size, as the cache sampled it, is `size`.
+    pub fn new(first: u64, size: u64, count: usize) -> Result<Self, &'static str> {
+        let mut outcomes = Vec::new();
+        outcomes
+            .try_reserve_exact(count)
+            .map_err(|_| "Out of memory for file mapping")?;
+        outcomes.resize(count, None);
+        Ok(Self { first, size, frames: FrameVec::whole_pages(count)?, outcomes })
+    }
+
+    /// The file page of the batch's first frame.
+    pub fn first(&self) -> u64 {
+        self.first
+    }
+
+    /// The number of pages.
+    pub fn len(&self) -> usize {
+        self.frames.len()
+    }
+
+    /// The file size the cache clipped the batch at.
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+
+    /// The frame of page `n` of the batch, for a backend that reads into it
+    /// in place. Its outcome is the backend's to `report`.
+    pub fn page_mut(&mut self, n: usize) -> &mut [u8] {
+        self.frames.bytes_mut(n)
+    }
+
+    /// Copy `bytes` into page `n` of the batch at `offset`.
+    pub fn copy_in(&mut self, n: usize, offset: usize, bytes: &[u8]) {
+        #[cfg(test)]
+        fill_window::copying(self.first + n as u64);
+        self.frames.bytes_mut(n)[offset..offset + bytes.len()].copy_from_slice(bytes);
+    }
+
+    /// Record `outcome` for page `n`. A page whose bytes came from several
+    /// places keeps the strongest outcome told: an error over data, and data
+    /// over a hole, so a page that is part hole and part data is `Data`.
+    pub fn report(&mut self, n: usize, outcome: FillPage) {
+        let slot = &mut self.outcomes[n];
+        *slot = Some(match (*slot, outcome) {
+            (Some(FillPage::Error(errno)), _) => FillPage::Error(errno),
+            (Some(FillPage::Data), FillPage::Hole) => FillPage::Data,
+            (_, outcome) => outcome,
+        });
+    }
+
+    /// Page `n`'s outcome; `Error(EIO)` while the backend has not reported it.
+    pub fn outcome(&self, n: usize) -> FillPage {
+        self.outcomes[n].unwrap_or(FillPage::Error(Errno(crate::syscall::errno::EIO)))
+    }
+
+    /// Each page's index, frame and outcome, in order.
+    fn into_pages(self) -> impl Iterator<Item = (u64, CachePage, FillPage)> {
+        let first = self.first;
+        let unreached = FillPage::Error(Errno(crate::syscall::errno::EIO));
+        self.frames.segments.into_iter().zip(self.outcomes).enumerate().map(move |(n, (segment, outcome))| {
+            (first + n as u64, segment.page, outcome.unwrap_or(unreached))
+        })
+    }
+}
+
+/// `FileSystem::fill` for a backend with no fill of its own
+/// (`CachePolicy::MappedOnly`, docs/plans/e3-page-cache.md 6.5): read the
+/// pages through the transfer `file`, at most one block-layer request
+/// (`RUN_BYTES`) per call, as population read them before E3-4. A page
+/// whose bytes the read did not reach, below the size the cache sampled,
+/// is `Error(EIO)` rather than 00 bytes.
+pub fn fill_by_reads(file: &dyn MappingIo, pages: &mut FillBatch) -> Result<(), Errno> {
+    const PAGE: usize = PAGE_SIZE as usize;
+    const RUN_PAGES: usize = crate::block::cache::RUN_BYTES / PAGE;
+    let no_memory = || Errno(crate::syscall::errno::ENOMEM);
+    let mut staging: Vec<u8> = Vec::new();
+    let mut n = 0;
+    while n < pages.len() {
+        let count = (pages.len() - n).min(RUN_PAGES);
+        let first = pages.first() + n as u64;
+        let offset = first.checked_mul(PAGE_SIZE).ok_or(Errno(crate::syscall::errno::EINVAL))?;
+        let length = if count == 1 {
+            file.read_into(offset, pages.page_mut(n))?
+        } else {
+            let bytes = count * PAGE;
+            if staging.len() < bytes {
+                staging.try_reserve_exact(bytes - staging.len()).map_err(|_| no_memory())?;
+                staging.resize(bytes, 0);
+            }
+            let length = file.read_into(offset, &mut staging[..bytes])?;
+            for k in 0..count {
+                let from = k * PAGE;
+                let take = length.saturating_sub(from).min(PAGE);
+                pages.copy_in(n + k, 0, &staging[from..from + take]);
+            }
+            length
+        };
+        for k in 0..count {
+            let page = first + k as u64;
+            let have = length.saturating_sub(k * PAGE).min(PAGE) as u64;
+            let want = pages.size().saturating_sub(page * PAGE_SIZE).min(PAGE_SIZE);
+            let outcome = if have < want { FillPage::Error(Errno(crate::syscall::errno::EIO)) } else { FillPage::Data };
+            pages.report(n + k, outcome);
+        }
+        n += count;
+    }
+    Ok(())
+}
+
+/// Host checks step into a population's fill (docs/plans/e3-page-cache.md
+/// 19.2): `on_copy` runs before each copy into a batch's frame, and
+/// `on_filled` between a fill's report and the merge that publishes it, the
+/// window a claim's mark covers (6.1a). `discarded` counts this thread's
+/// filled pages that a merge dropped because a change marked their claim.
+#[cfg(test)]
+pub mod fill_window {
+    extern crate std;
+    use alloc::boxed::Box;
+    use core::cell::{Cell, RefCell};
+    type Hook = Option<Box<dyn FnMut(u64)>>;
+    std::thread_local! {
+        static COPY: RefCell<Hook> = const { RefCell::new(None) };
+        static FILLED: RefCell<Hook> = const { RefCell::new(None) };
+        static DISCARDED: Cell<u64> = const { Cell::new(0) };
+    }
+    /// Run `hook(page)` before each copy into the frame of file page `page`.
+    pub fn on_copy(hook: Hook) {
+        COPY.with(|slot| *slot.borrow_mut() = hook);
+    }
+    /// Run `hook(first)` after each fill of a batch from file page `first`.
+    pub fn on_filled(hook: Hook) {
+        FILLED.with(|slot| *slot.borrow_mut() = hook);
+    }
+    pub fn discarded() -> u64 {
+        DISCARDED.with(Cell::get)
+    }
+    /// The hook runs out of its slot, so a fill it starts runs no hook.
+    fn run(slot: &'static std::thread::LocalKey<RefCell<Hook>>, page: u64) {
+        let hook = slot.with(|slot| slot.borrow_mut().take());
+        if let Some(mut hook) = hook {
+            hook(page);
+            slot.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                if slot.is_none() {
+                    *slot = Some(hook);
+                }
+            });
+        }
+    }
+    pub(super) fn copying(page: u64) {
+        run(&COPY, page);
+    }
+    pub(super) fn filled(first: u64) {
+        run(&FILLED, first);
+    }
+    pub(super) fn discard(pages: u64) {
+        DISCARDED.with(|count| count.set(count.get() + pages));
+    }
+}
+
 /// A population's transfer lease and its claim (`PageClaim`).
 pub(crate) struct Population {
     file: Box<dyn MappingIo>,
@@ -1888,16 +2132,19 @@ pub(crate) fn populate(
     Ok(Population { file, _claim: claim })
 }
 
-/// Claim pages `[first, first + count)` and read the absent ones through the
-/// transfer `file`, which the caller holds (exec holds its image's). File
-/// bytes are read without a mount guard; the map lock publishes the cache.
+/// Claim pages `[first, first + count)` and fill the absent ones through the
+/// file's `FileSystem::fill`, with the transfer `file`, which the caller
+/// holds (exec holds its image's). Each maximal run of absent pages is one
+/// fill batch of fresh frames; the fill holds no map lock, and the map lock
+/// publishes its Data pages as cache pages and its Hole pages as Holes
+/// (docs/plans/e3-page-cache.md 6.1-6.2).
 ///
-/// A mutation can change a page after population read it and before the
+/// A mutation can change a page after its fill read it and before the
 /// merge, and the mutation hooks update only cached pages. They mark the
-/// claim instead (`mark_populating`), and population drops its copies of the
-/// marked pages and reads them again, until a round merges with no mark. A
-/// read shorter than the size it was sampled against with no mark is an
-/// error rather than 00 bytes in the cache.
+/// claim instead (`mark_populating`, 6.1a), and population drops what the
+/// fill gave for the marked pages and fills them again, until a round merges
+/// with no mark. A page the fill reports as an error, outside a mark, fails
+/// the population with its errno rather than leaving 00 bytes in the cache.
 pub(crate) fn populate_through(
     handle: &VNode,
     file: &dyn MappingIo,
@@ -1905,8 +2152,6 @@ pub(crate) fn populate_through(
     count: u64,
 ) -> Result<PageClaim, MapError> {
     static NEXT_CLAIM: AtomicU64 = AtomicU64::new(0);
-    // The block cache's per-request limit, in pages.
-    const POPULATE_RUN_PAGES: u64 = crate::block::cache::RUN_BYTES as u64 / PAGE_SIZE;
     let map = &handle.map;
     let id = NEXT_CLAIM.fetch_add(1, Ordering::Relaxed);
     let end = first.saturating_add(count);
@@ -1925,7 +2170,6 @@ pub(crate) fn populate_through(
         id,
     };
     let mut range = (first, end);
-    let mut staging: Vec<u8> = Vec::new();
     loop {
         let (size, last, wanted) = {
             let inner = map.state.inner.lock();
@@ -1938,11 +2182,12 @@ pub(crate) fn populate_through(
         };
         let mut read = Vec::new();
         read.try_reserve(wanted).map_err(|_| MapError::NoMemory)?;
-        let mut short = None;
+        let mut holes: Vec<(u64, ())> = Vec::new();
+        // The lowest and highest page the fills failed, and the lowest's errno.
+        let mut failed: Option<(u64, u64, Errno)> = None;
         let mut index = range.0;
         while index < last {
-            // A run of absent pages, at most one device request long
-            // (Phase 1.1, the audit's R6 interim): one read for the run.
+            // A run of absent pages: one fill batch.
             let (low, high) = {
                 let inner = map.state.inner.lock();
                 let mut low = index;
@@ -1950,7 +2195,7 @@ pub(crate) fn populate_through(
                     low += 1;
                 }
                 let mut high = low;
-                while high < last && high - low < POPULATE_RUN_PAGES && !inner.pages.contains(high) {
+                while high < last && !inner.pages.contains(high) {
                     high += 1;
                 }
                 (low, high)
@@ -1958,42 +2203,33 @@ pub(crate) fn populate_through(
             if low == high {
                 break;
             }
-            let pages = (high - low) as usize;
-            if read.capacity() - read.len() < pages {
-                read.try_reserve(pages).map_err(|_| MapError::NoMemory)?;
+            let mut batch =
+                FillBatch::new(low, size, (high - low) as usize).map_err(|_| MapError::NoMemory)?;
+            handle.filesystem.fill(handle, file, &mut batch).map_err(MapError::Io)?;
+            FILLS.fetch_add(1, Ordering::Relaxed);
+            #[cfg(test)]
+            fill_window::filled(low);
+            if read.capacity() - read.len() < batch.len() {
+                read.try_reserve(batch.len()).map_err(|_| MapError::NoMemory)?;
             }
-            let start = read.len();
-            for page in low..high {
-                read.push((page, CachePage::allocate().map_err(|_| MapError::NoMemory)?));
-            }
-            let length = if pages == 1 {
-                // SAFETY: a fresh cache frame, reached only through `read`.
-                let frame = unsafe { core::slice::from_raw_parts_mut(read[start].1.ptr(), PAGE_SIZE as usize) };
-                file.read_into(low * PAGE_SIZE, frame).map_err(MapError::Io)?
-            } else {
-                // One staging buffer for the population's multi-page runs.
-                let bytes = pages * PAGE_SIZE as usize;
-                if staging.len() < bytes {
-                    staging.try_reserve_exact(bytes - staging.len()).map_err(|_| MapError::NoMemory)?;
-                    staging.resize(bytes, 0);
+            for (page, frame, outcome) in batch.into_pages() {
+                match outcome {
+                    FillPage::Data => read.push((page, frame)),
+                    // A Hole holds no frame (E3-2's Hole set).
+                    FillPage::Hole => {
+                        holes.try_reserve(1).map_err(|_| MapError::NoMemory)?;
+                        holes.push((page, ()));
+                    }
+                    FillPage::Error(errno) => {
+                        FILL_ERRORS.fetch_add(1, Ordering::Relaxed);
+                        failed = Some(match failed {
+                            None => (page, page, errno),
+                            Some((lowest, _, first_errno)) => (lowest, page, first_errno),
+                        });
+                        continue;
+                    }
                 }
-                let length = file
-                    .read_into(low * PAGE_SIZE, &mut staging[..bytes])
-                    .map_err(MapError::Io)?;
-                for (n, (_, page)) in read[start..].iter().enumerate() {
-                    let from = n * PAGE_SIZE as usize;
-                    let take = length.saturating_sub(from).min(PAGE_SIZE as usize);
-                    // SAFETY: a fresh cache frame; `take` is at most one page.
-                    unsafe { core::ptr::copy_nonoverlapping(staging[from..].as_ptr(), page.ptr(), take) };
-                }
-                length
-            };
-            for page in low..high {
-                let from = ((page - low) * PAGE_SIZE) as usize;
-                let have = length.saturating_sub(from).min(PAGE_SIZE as usize);
-                if (have as u64) < (size - page * PAGE_SIZE).min(PAGE_SIZE) {
-                    short = short.or(Some(page));
-                }
+                FILL_PAGES.fetch_add(1, Ordering::Relaxed);
             }
             index = high;
         }
@@ -2004,25 +2240,46 @@ pub(crate) fn populate_through(
             .find(|claim| claim.id == id)
             .and_then(|claim| claim.stale.take());
         let marked = |index: u64| stale.is_some_and(|(low, high)| low <= index && index < high);
-        if short.is_some_and(|index| !marked(index)) {
-            return Err(MapError::Io(Errno(crate::syscall::errno::EIO)));
+        // The mark is one range: it covers the failed pages exactly when it
+        // covers the lowest and the highest of them.
+        if let Some((lowest, highest, errno)) = failed {
+            if !(marked(lowest) && marked(highest)) {
+                return Err(MapError::Io(errno));
+            }
         }
         let valid = pages(inner.mapped_size);
-        // A page that became resident while this round read (a fault on a
+        let discarded = read.iter().map(|(index, _)| *index).chain(holes.iter().map(|(index, _)| *index))
+            .filter(|index| marked(*index))
+            .count() as u64;
+        FILL_DISCARDED.fetch_add(discarded, Ordering::Relaxed);
+        #[cfg(test)]
+        fill_window::discard(discarded);
+        // A page that became resident while this round filled (a fault on a
         // Hole, or `prepare_write`'s frame for a claimed page) is the cache's
         // own: the mutation hooks keep it, so this round's copy is dropped.
         read.retain(|(index, _)| {
             !marked(*index) && *index < valid && !inner.pages.contains(*index)
         });
+        holes.retain(|(index, _)| {
+            !marked(*index) && *index < valid && !inner.pages.contains(*index) && !inner.holes.contains(*index)
+        });
         inner
             .pages
             .try_reserve(read.len())
+            .map_err(|_| MapError::NoMemory)?;
+        inner
+            .holes
+            .try_reserve(holes.len())
             .map_err(|_| MapError::NoMemory)?;
         for (index, _) in &read {
             inner.poisoned.remove(*index);
             inner.holes.remove(*index);
         }
+        for (index, _) in &holes {
+            inner.poisoned.remove(*index);
+        }
         inner.pages.merge_reserved(read);
+        inner.holes.merge_reserved(holes);
         map.state.resident.store(
             !inner.pages.is_empty() || !inner.poisoned.is_empty(),
             Ordering::Release,

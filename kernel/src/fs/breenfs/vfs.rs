@@ -224,6 +224,10 @@ mod frozen_review;
 mod extent_runs;
 
 #[cfg(test)]
+#[path = "../../../../tools/breenfs-host-tests/src/fill_interface.rs"]
+mod fill_interface;
+
+#[cfg(test)]
 #[path = "../../../../tools/breenfs-host-tests/src/free_space.rs"]
 mod free_space;
 
