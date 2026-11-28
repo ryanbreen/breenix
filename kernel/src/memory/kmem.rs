@@ -17,7 +17,7 @@ use super::slab_cache::{class_of, Backing, Short, Slab, SlabCache, CLASSES, CLAS
 
 #[path = "kmem_core.rs"]
 mod core_impl;
-pub use core_impl::{route, AllocError, Ctx, Drain, Layer, ReclaimCtx, Shrinker};
+pub use core_impl::{moved_layer, route, AllocError, Ctx, Drain, Layer, ReclaimCtx, Shrinker};
 pub(super) use core_impl::{reserve_frames, Cpu, Front, Miss, Pool, Reclaim, Registry, Small, Stats};
 
 pub(super) static SHRINKERS: Registry = Registry::new();

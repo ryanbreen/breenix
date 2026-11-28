@@ -473,6 +473,12 @@ pub fn route(layout: Layout, vmap_bytes: u64) -> Result<Layer, AllocError> {
     }
 }
 
+/// The layer a span or vmap block that cannot resize in place moves to, as
+/// a block of `layout` (6.6): `large::reallocate`'s fallback.
+pub fn moved_layer(layout: Layout, vmap_bytes: u64) -> Result<Layer, AllocError> {
+    route(layout, vmap_bytes)
+}
+
 /// The slab caches and per-CPU magazines in front of the heap (6.1 row 1,
 /// 6.2, 6.3). Each call masks the CPU's interrupts and reads the CPU's
 /// identity itself, so the identity cannot go stale by migration.

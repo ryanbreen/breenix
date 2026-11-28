@@ -717,6 +717,26 @@ fn every_layout_routes_to_exactly_one_layer_that_holds_it() {
     assert_eq!(kmem_core::route(huge, vmap_bytes), Err(AllocError::NoVa { window: 1 }), "an alignment no window can meet");
 }
 
+/// `large::reallocate`'s fallback (6.6) keeps a moved block in a layer
+/// `large::deallocate` frees, the span or vmap window, at each size and
+/// alignment of the routing grid, including a span block grown to 4 KiB
+/// at 4096 alignment, which the slab layer would serve as a fresh request.
+#[test]
+fn a_moved_large_block_stays_in_a_layer_large_frees() {
+    let sizes = [1, 16, 4096, 4097, 512 << 10, (512 << 10) + 1, 4 << 20];
+    let aligns = [1, 16, 4096, 8192, 2 << 20];
+    for &size in &sizes {
+        for &align in &aligns {
+            let layout = Layout::from_size_align(size, align).unwrap();
+            let layer = kmem_core::moved_layer(layout, 4 << 30).unwrap();
+            assert_ne!(layer, Layer::Slab, "({size}, {align}) moves to the slab layer, which large::deallocate cannot free");
+            if layer == Layer::Span {
+                assert!(span_arena::serves(layout), "({size}, {align}) moves to a span that cannot hold it");
+            }
+        }
+    }
+}
+
 /// Span search (6.4): a request whose worst case is above every free extent
 /// is still served from an extent that holds it at its actual alignment.
 /// One span is filled with 5000-byte blocks aligned to 4096, the gaps their

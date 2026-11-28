@@ -314,9 +314,10 @@ pub unsafe fn reallocate(ptr: NonNull<u8>, layout: Layout, new_size: usize, ctx:
         _ => panic!("large: resize of {:#x}, which is in neither the span nor the vmap window", ptr.as_ptr() as usize),
     }
     let new_layout = unsafe { Layout::from_size_align_unchecked(new_size, layout.align()) };
-    let new_ptr = match kmem::route(new_layout, vmap_bytes())? {
+    let new_ptr = match kmem::moved_layer(new_layout, vmap_bytes())? {
         Layer::Slab => kmem::try_alloc(new_layout, ctx)?,
-        _ => allocate(new_layout, ctx)?,
+        Layer::Span => span_allocate(new_layout, ctx)?,
+        Layer::Vmap => vmap_allocate(new_layout, ctx)?,
     };
     // SAFETY: both blocks are live and distinct, each at least the length copied.
     unsafe {
