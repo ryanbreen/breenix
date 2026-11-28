@@ -71,6 +71,20 @@ mod fs {
     }
 }
 
+mod boot {
+    pub mod intent {
+        pub fn explicit_mounts_requested() -> bool { false }
+    }
+}
+
+fn mount_explicit() -> Result<(), Errno> {
+    panic!("legacy selection must not mount an explicit volume")
+}
+
+fn root_mount_receipt(_: Option<&dyn BlockDevice>, _: core::fmt::Arguments<'_>) {
+    panic!("the root fixture must be present")
+}
+
 @FUNCTIONS@
 
 #[test]

@@ -64,12 +64,16 @@ fn init_does_not_start_telnetd() {
 CONSOLE_TEST = r"""
 #[cfg(test)]
 mod console_mode {
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     static PID: AtomicU64 = AtomicU64::new(1);
     struct Pid(u64);
     impl Pid { fn raw(self) -> u64 { self.0 } }
     fn getpid() -> Result<Pid, ()> { Ok(Pid(PID.load(Ordering::Relaxed))) }
     fn detach_console() {}
+    static RECONCILED: AtomicBool = AtomicBool::new(false);
+    fn reconcile_machine_state() {
+        assert!(!RECONCILED.swap(true, Ordering::Relaxed));
+    }
     #[cfg(target_arch = "x86_64")]
     fn console_text_mode() {}
     mod init_services {
@@ -77,7 +81,11 @@ mod console_mode {
         pub enum Scope { All, Logins }
         pub struct Supervisor(Scope, bool);
         impl Supervisor {
-            pub fn load(scope: Scope, publish: bool) -> Self { Self(scope, publish) }
+            pub fn load(scope: Scope, publish: bool) -> Self {
+                assert_eq!(RECONCILED.load(Ordering::Relaxed), publish,
+                           "only PID 1 reconciles machine state before loading services");
+                Self(scope, publish)
+            }
             pub fn run(self) -> ! { std::panic::panic_any((self.0, self.1)) }
         }
     }
@@ -86,6 +94,7 @@ mod console_mode {
     fn production_console_starts_daemons_without_changing_child_login_fixtures() {
         for (pid, scope) in [(1, init_services::Scope::All), (42, init_services::Scope::Logins)] {
             PID.store(pid, Ordering::Relaxed);
+            RECONCILED.store(false, Ordering::Relaxed);
             let stopped = std::panic::catch_unwind(run_console_mode).expect_err("supervisor runs forever");
             let actual = *stopped.downcast::<(init_services::Scope, bool)>().expect("supervisor selection");
             assert_eq!(actual, (scope, pid == 1), "console init PID {pid}");

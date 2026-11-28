@@ -48,7 +48,7 @@ def layout(root):
     stride = number(rust_expr(constants, 'PERCPU_STACK_STRIDE'))
     count = number(rust_expr(constants, 'MAX_CPUS'))
     dma = number(rust_expr(loader, 'NC_DMA_BASE'))
-    dma_size_expr = rust_expr(loader, 'NC_DMA_SIZE')
+    dma_size_expr = rust_expr(loader, 'L2_BLOCK_SIZE')
     dma_size = number(rust_expr(loader, dma_size_expr)) if re.fullmatch(r'[A-Za-z_]\w*', dma_size_expr) else number(dma_size_expr)
     dma_link = number(match(r'\.dma\s*\(NOLOAD\)\s*:\s*AT\((0x[\da-fA-F_]+)\)', linker, 'linker DMA address')[1])
     if dma != dma_link:

@@ -42,7 +42,8 @@ use target::{parse, Target};
 fn suite(text: &str) -> (String, Option<String>) {
     match parse(text) {
         Ok(Target::Suite(suite)) => (suite.id, suite.case),
-        Ok(Target::Probe | Target::Default | Target::Persistent | Target::PersistentInstall | Target::Desktop
+        Ok(Target::Probe | Target::Default | Target::Persistent | Target::PersistentInstall | Target::PersistentMigrate
+            | Target::Desktop
             | Target::Shell | Target::Console { .. } | Target::Program { .. }) => {
             panic!("{text:?} parsed as another mode")
         }

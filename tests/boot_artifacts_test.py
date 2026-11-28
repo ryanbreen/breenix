@@ -47,8 +47,10 @@ class BootArtifactsTest(unittest.TestCase):
                                 {item['path']: item for item in changed}[str(bundle)]['sha256'])
             launcher = (ROOT / 'scripts/boot-interactive.sh').read_text()
             target_paths = set(re.findall(r'\$ROOT/(target/[A-Za-z0-9_./-]+)', launcher))
-            sdk_suite_only = {'target/ext2-aarch64-sdk.img'}
-            self.assertEqual(target_paths, {item['destination'] for item in items if item['destination'].startswith('target/')} | sdk_suite_only)
+            suite_only = {'target/ext2-aarch64-sdk.img', 'target/qemu-breenfs-faults'}
+            self.assertEqual(target_paths, {item['destination'] for item in items if item['destination'].startswith('target/')} | suite_only)
+            self.assertRegex(launcher, r'if \[ "\$BREENFS_DIAGNOSTIC" -eq 1 \]; then\s+'
+                                       r'KERNEL_TARGET="\$ROOT/target/qemu-breenfs-faults"')
             self.assertRegex(launcher, r'(?s)\[ -f "\$KERNEL" \].*\[ -f "\$DISK" \].*if \[ "\$BUILD_ONLY" -eq 1 \]; then\s+exit 0\s+fi.*host_slot_acquire mac-boot')
             self.assertRegex(launcher, r'--build-only\) BUILD_ONLY=1; shift ;;')
 
