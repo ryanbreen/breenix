@@ -2182,6 +2182,21 @@ True
 
 ```
 
+**A shared binding with write authority counts as a writer (10.3).** A process maps the image `MAP_SHARED`
+from a read-write descriptor, then closes the descriptor; the VMA keeps write authority. The image is then
+executed.
+
+```pycon
+>>> RULE = 'open-writers-only'
+>>> cache = {'write_opens': 0, 'shared_may_write_bindings': 1}
+>>> def writers(c):
+...     extra = c['shared_may_write_bindings'] if RULE == 'opens-and-bindings' else 0
+...     return c['write_opens'] + extra
+>>> 'copy fallback' if writers(cache) else 'shared text'
+'copy fallback'
+
+```
+
 ## 20. bbench rows (DEV-31)
 
 | Row | Ratio (28668b28) | Expected to move in | Parity reachable from E3 alone |
