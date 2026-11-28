@@ -106,6 +106,8 @@ impl<T> MountLock<T> {
             .ok()
             .map(|_| {
                 #[cfg(test)]
+                HELD.with(|held| held.set(held.get() + 1));
+                #[cfg(test)]
                 super::preempt::context::observe(super::preempt::context::Event::Acquire(self as *const Self as usize));
                 MountGuard {
                     lock: self,
@@ -119,6 +121,8 @@ impl<T> MountLock<T> {
     fn release(&self) {
         #[cfg(test)]
         super::preempt::context::observe(super::preempt::context::Event::Release(self as *const Self as usize));
+        #[cfg(test)]
+        HELD.with(|held| held.set(held.get() - 1));
         self.held.store(false, Ordering::SeqCst);
         #[cfg(not(test))]
         let parked = crate::task::park::should_wake(&self.parked);
@@ -205,6 +209,19 @@ impl<T> MountLock<T> {
     pub fn is_held(&self) -> bool {
         self.held.load(Ordering::SeqCst)
     }
+}
+
+// Host checks: the MountLock guards this thread holds, counted where the
+// Acquire and Release events are observed (the I7 guard, design §8 E2.5).
+#[cfg(test)]
+std::thread_local! {
+    static HELD: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
+}
+
+/// Host checks: how many MountLock guards the current thread holds.
+#[cfg(test)]
+pub fn held_by_current_thread() -> u32 {
+    HELD.with(core::cell::Cell::get)
 }
 
 #[cfg(test)]

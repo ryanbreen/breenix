@@ -154,13 +154,65 @@ pub mod measurement {
     pub fn service<W: crate::block::cache::Wait + 'static>(
         fs: &super::BreenFs<W>,
     ) -> Result<bool, crate::fs::errno::Errno> {
-        fs.commit_due(0)
+        as_worker(fs, || fs.commit_due(0))
+    }
+    /// Run `run` as the mount's commit worker, as its kthread runs each pass.
+    pub fn as_worker<W: crate::block::cache::Wait + 'static, T>(
+        _fs: &super::BreenFs<W>, run: impl FnOnce() -> T,
+    ) -> T {
+        let was = super::i7::set_worker(true);
+        let result = run();
+        super::i7::set_worker(was);
+        result
     }
     pub fn service_at<W: crate::block::cache::Wait + 'static>(
         fs: &super::BreenFs<W>, now_ns: u64,
     ) -> Result<(bool, bool), crate::fs::errno::Errno> {
         let observed = fs.inner.signal.worker.epoch();
-        fs.commit_due(now_ns).map(|worked| (worked, fs.inner.signal.worker.epoch() != observed))
+        as_worker(fs, || fs.commit_due(now_ns)).map(|worked| (worked, fs.inner.signal.worker.epoch() != observed))
+    }
+}
+
+/// I7's named exceptions (design §7, ruling DEV-53): the tree-edit paths that
+/// may still wait on the device under the mount state lock until E5 closes
+/// the list. A scope names the path for the host I7 guard; in the kernel it
+/// is an empty type.
+mod i7 {
+    #[cfg(test)]
+    std::thread_local! {
+        static SCOPES: core::cell::RefCell<alloc::vec::Vec<&'static str>> =
+            const { core::cell::RefCell::new(alloc::vec::Vec::new()) };
+        static WORKER: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+    }
+    #[cfg(test)]
+    static PUBLISHERS: std::sync::Mutex<alloc::vec::Vec<(std::thread::ThreadId, bool)>> =
+        std::sync::Mutex::new(alloc::vec::Vec::new());
+
+    /// Host checks: the innermost exception scope on this thread.
+    #[cfg(test)]
+    pub(super) fn current() -> Option<&'static str> {
+        SCOPES.with(|scopes| scopes.borrow().last().copied())
+    }
+    /// Host checks: this thread stands in for a mount's commit worker.
+    #[cfg(test)]
+    pub(super) fn set_worker(worker: bool) -> bool {
+        WORKER.with(|cell| cell.replace(worker))
+    }
+    #[cfg(test)]
+    pub(super) fn is_worker() -> bool {
+        WORKER.with(core::cell::Cell::get)
+    }
+    /// Host checks: a thread took the device's publication exclusion.
+    #[inline]
+    pub(super) fn publisher() {
+        #[cfg(test)]
+        PUBLISHERS.lock().unwrap().push((std::thread::current().id(), is_worker()));
+    }
+    /// Host checks: the threads that took publication exclusion, and whether
+    /// each stood in for the commit worker when it did.
+    #[cfg(test)]
+    pub(super) fn take_publishers() -> alloc::vec::Vec<(std::thread::ThreadId, bool)> {
+        core::mem::take(&mut *PUBLISHERS.lock().unwrap())
     }
 }
 
@@ -234,6 +286,9 @@ pub(super) mod staging_tree;
 #[cfg(test)]
 #[path = "../../../../tools/breenfs-host-tests/src/clone_reservation.rs"]
 mod clone_reservation;
+#[cfg(test)]
+#[path = "../../../../tools/breenfs-host-tests/src/lock_order.rs"]
+mod lock_order;
 
 // Extended attributes use ABI errno 61 for an absent attribute.
 const ENODATA: i32 = 61;
@@ -3237,6 +3292,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         );
         let mut publication = {
             let _wait = self.inner.costs.span(CostOp::Commit, CostPhase::Wait);
+            i7::publisher();
             self.inner.mounted_root.device.publication.lock()
         };
         #[cfg(any(feature = "breenfs_commit_window", feature = "breenfs_corrupt_inject"))]
@@ -3503,7 +3559,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             // Host conformance drives the same worker pass explicitly. Kernel
             // callers only sleep; the mount's commit kthread performs the I/O.
             #[cfg(test)]
-            self.commit_due(monotonic_ns())?;
+            measurement::as_worker(self, || self.commit_due(monotonic_ns()))?;
             if waiter.result().is_none() {
                 self.mutation_wait(CostOp::Fsync, observed, deadline)?;
             }
