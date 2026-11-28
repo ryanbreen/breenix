@@ -165,7 +165,7 @@ from its page cache. Breenix's 3.72 s is device reads through an 8 MiB cache. <!
 5. Exec maps text and rodata shared and read-only from the cache, data private copy-on-write, and BSS
    demand-zero (section 10). <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
 6. Dirty is a page flag. The dirty limit is relative to RAM, with background writeback, writer throttling
-   and pipelined BreenFS commits (section 11).
+   and BreenFS commits that keep G+1 open while G commits (section 11; overlap with the device waits for E4).
 7. Reclaim: an LRU approximation and a page daemon (section 12), and an OOM policy that picks its victim by
    size (section 13).
 8. The block cache shrinks to metadata only (section 14).
@@ -960,11 +960,13 @@ Preparation drains G's batch list in index order per inode, in runs of up to 1 M
 - Its writes are submitted from the frames. Until E4 they go through a bounded bounce buffer, as the
   population read does. Data writes no longer create block-cache entries: today each 512-byte sector
   entry is charged 1,280 bytes (audit R27). E4 replaces the bounce with scatter-gather from the frames.
-- **Pipelined within the generation.** The drain submits run k with the block cache's existing `submit`,
-  which returns a batch to wait on, and drains run k+1 while k is in flight. It waits for all of them
-  before the generation's FLUSH (step 4 of design 2.5). <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
-  - Before E4 this overlaps the CPU work (allocation, CRC, extent edits) with the device.
-  - With E4 it also keeps several requests in flight.
+- **Within the generation, sequential until E4.** `BlockCache::submit` drives the device writes itself and
+  returns a completed `Batch` (`block/cache.rs:94-105`, `:803-807`), so before E4 the drain cannot have run
+  k+1 in flight while it prepares k+2: it submits run k, which completes inside the call, then prepares
+  run k+1. E3 claims no overlap of CPU work with the device before E4, and it waits for every batch
+  before the generation's FLUSH (step 4 of design 2.5). E4's queued submission makes `submit` return
+  before completion, and the drain's order (prepare k+1 while k is in flight) then overlaps without an
+  E3 change. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
 - **Pipelined across generations.** G+1 is open and accepts writes during all of G's commit, as today. The
   next freeze still waits for G's install (one generation in flight). Two generations committing at once
   needs N+1 to COW over N without replay, which is E5's. E3 keeps the design 2.5 ordering untouched. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
@@ -1367,7 +1369,7 @@ route file faults to `file_map` (expected: no edit).
 | E3-6 | The FileCache: radix tree storage, FrameMeta page fields, the per-mount cache index, pages outlive close and munmap, zone LRU lists, the page-cache shrinker and the page daemon for clean unmapped pages | E3-1, E3-4; E1-9 | Yes | No | L |
 | E3-7 | `read` through the cache for Native files: one source per byte, readahead on read, block cache out of the clean read path; `io` as a `SleepRwLock`; cached reads take no `MountLock` | E3-5, E3-6; E2.5, E2.6 | Yes | No | M |
 | E3-8 | Dirty as a page flag: BreenFS dirty pages become cache frames, COW under writeback, mapped write-protect at freeze, drain from frames, written pages stay cached, per-file fsync shortcut and writeback errors | E3-7 | Yes | No | L |
-| E3-9 | The RAM-relative dirty limit, background freezes, writer throttling, no inline commit, the pipelined drain | E3-8 | Yes | No | M |
+| E3-9 | The RAM-relative dirty limit, background freezes, writer throttling, no inline commit | E3-8 | Yes | No | M |
 | E3-10 | The block cache keeps metadata only: RAM/32, frame-backed buffers, no data entries | E3-7, E3-8 | Yes | No | S |
 | E3-11 | Lazy mmap: no population, fills from faults, Filling waits, read-around, fault-around, poison refills | E3-6; E2.9 | Yes | Yes | M |
 | E3-12 | Lazy exec: exec bindings stop populating | E3-3, E3-11 | Yes | Yes | S |
@@ -1384,6 +1386,9 @@ leased frames with offsets), over today's frame leases, because no E1 PR before 
 allocator later backs it unchanged. E3-1 to E3-6 wait on no page channel, so none needs E2.2's `park`.
 E3-7 needs E2.5 (fills release `MountLock` before the device wait) and E2.6 (`io` as a sleeping lock),
 because it is the first PR whose readers wait on fills (7.3).
+
+**What waits for E4:** the drain's overlap with the device (11.3). E3 needs no E4 PR, and builds the
+drain so that E4's asynchronous `submit` overlaps it without an E3 change.
 
 **What waits for E1-9:** E3-6 to E3-10, with E3-7 to E3-10 also after E2.5 and E2.6. Retaining file data, and raising the dirty limit, by RAM is
 safe only once per-page metadata is in FrameMeta (E1-3), tree nodes come from slab caches (E1-6), the buddy
@@ -1675,14 +1680,14 @@ waits for E3-6 (it needs pages retained by the cache to be worth anything), so t
 - **Boot.** None. The crash-image harness settles ordering, and the host model settles the fault and the
   write-protect. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
 
-### E3-9: the dirty limit, throttling and the pipelined drain (needs E1-9)
+### E3-9: the dirty limit and throttling (needs E1-9)
 
 - **Change.**
   - 11.4 and 11.5: `DIRTY_BUDGET` and `DIRTY_LIMIT` are removed, and the global `limit` and `background`
     apply.
   - Background freezes. Writers charge before dirtying, throttle and never commit inline. Parts join the
     open generation with a hold (11.5a). <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
-  - 11.3's overlapped drain.
+  - 11.3's drain from frames, sequential until E4.
   - A latched mount's pages leave the dirty count.
 - **Tests (host), check first.**
   - With RAM fixed in the model at 2048 MiB, a 1 GiB sequential write makes at most 8 publications. The old
@@ -1700,8 +1705,11 @@ waits for E3-6 (it needs pages retained by the cache to be worth anything), so t
     freeze requested during the first part's copy waits for its hold, and a crash image taken after that
     generation recovers the first part whole and none of the second. This guards today's split rule, so
     it is not red; the PR says so.
-  - The drain submits run k+1 before waiting for run k, as recorded by the recording device's submission
-    order. The old code waits each run, which is red.
+  - No overlap check: before E4 `submit` completes inside the call, so a check that run k+1 is submitted
+    before run k completes cannot be red or green on the device's behaviour, and one that only reorders
+    the collection of a completed result would pass on any code. The overlap is checked in E4.8 (E3
+    generation writeback, `docs/plans/e4-block-layer.md`), with a
+    recording device whose completions the test releases.
   - A latched mount does not throttle a writer to another mount.
 - **Rows.** `disk.sequential-write` (expected to move most), `disk.sequential-read`, `compile.yes-dev-box`
   and `compile.yes-release` (object and rlib writes), `disk.create` (watch).
@@ -2160,7 +2168,7 @@ writes and returns a completed `Batch` (`block/cache.rs:94-105`, `:803-807`). Th
 which the drain submits runs and the device finishes them, and compares it with what the design claims.
 
 ```pycon
->>> RULE = 'overlap-before-e4'
+>>> RULE = 'sequential-before-e4'
 >>> def drain(runs):
 ...     trace = []
 ...     for k in runs:
