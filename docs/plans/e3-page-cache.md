@@ -1843,6 +1843,27 @@ Before it completes, a write changes page 0 (DEV-29(3) 0.1's second interleaving
 
 ```
 
+**Replacing a page's frame revokes the old frame's PTEs (7.2).** Another process maps a `Hole` page through <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+the shared zero frame. A `write()` then gives the page a frame of its own.
+
+```pycon
+>>> RULE = 'replace-entry'
+>>> ZERO = 0
+>>> tree, ptes = {4: ZERO}, {'reader': ZERO}
+>>> frames = {ZERO: b'\x00\x00', 9: b'hi'}
+>>> def write_hole(index, pfn):
+...     old = tree[index]
+...     tree[index] = pfn
+...     if RULE == 'replace-and-revoke':
+...         for who, frame in list(ptes.items()):
+...             if frame == old:
+...                 del ptes[who]
+>>> write_hole(4, 9)
+>>> frames[ptes.get('reader', tree[4])]
+b'hi'
+
+```
+
 ## 20. bbench rows (DEV-31)
 
 | Row | Ratio (28668b28) | Expected to move in | Parity reachable from E3 alone |
