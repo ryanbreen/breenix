@@ -817,6 +817,12 @@ impl VirtioBlockDevice {
         let (mut head, mut count) = (0usize, 0usize);
         let mut next = 0usize;
         let mut failure: Option<&'static str> = None;
+        // Set before any chain is built: another caller's publish can make
+        // this write visible, so our own publish result does not tell whether
+        // the device has it. Admission keeps a flush out until we return.
+        if kind == request_type::OUT {
+            self.writes_pending.store(true, Ordering::Release);
+        }
 
         loop {
             let mut published = false;
@@ -861,9 +867,6 @@ impl VirtioBlockDevice {
                 }
             }
             if published && self.with_engine(|engine| engine.publish()) {
-                if kind == request_type::OUT {
-                    self.writes_pending.store(true, Ordering::Release);
-                }
                 self.device.notify_queue(0);
             }
             if count == 0 {
@@ -968,8 +971,8 @@ impl VirtioBlockDevice {
             return Err("Block IRQ completion unavailable before interrupts are enabled");
         }
         let guard = self.request_gate.admit(0, u64::MAX, true)?;
-        // Writes publish this flag before their notification; admission
-        // excludes them while it is read.
+        // A write sets this flag before it builds a chain; admission
+        // excludes writes while it is read.
         if !self.writes_pending.load(Ordering::Acquire) { return Ok(()); }
         self.transfer(guard, 0, Data::Flush)
     }
