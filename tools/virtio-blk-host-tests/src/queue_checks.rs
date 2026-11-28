@@ -367,3 +367,32 @@ fn a_slot_reports_the_tag_of_the_owner_whose_chain_completed() {
     queue.stop();
     assert_eq!(queue.tag(l), 0x4444);
 }
+
+#[test]
+fn a_used_entry_naming_a_staged_chain_stops_the_queue_and_keeps_the_chain() {
+    // Chain A is published; chain B is built and its available entry
+    // written, but `avail.idx` does not cover it yet. A device that returns
+    // B's head has named a chain it was never given (section 2.7.8): the
+    // driver must not complete B, wake its owner or recycle its
+    // descriptors while the staged entry still points at them.
+    let (mem, mut dev, mut queue, mut dma) = setup(MODERN);
+    let a = queue.reserve(0xa).unwrap();
+    let b = queue.reserve(0xb).unwrap();
+    let head_a = queue.submit(&mut dma, a, request_type::IN, 0, None, 512).unwrap();
+    queue.publish();
+    let taken = dev.take();
+    let head_b = queue.submit(&mut dma, b, request_type::OUT, 8, Some(&[0x5a; 512]), 512).unwrap();
+    let descriptors_staged = queue.free_descriptors();
+    dev.post_raw(u32::from(head_b), 1);
+    let mut drained = Vec::new();
+    assert_eq!(queue.drain(&mut dma, |slot, tag| drained.push((slot, tag))), Drain::Broken);
+    assert!(drained.is_empty(), "the staged chain's owner was woken as if it completed");
+    assert_eq!(queue.free_descriptors(), descriptors_staged, "the staged chain's descriptors were recycled");
+    assert_eq!(queue.finish(&mut dma, b, None), Err(RequestError::Lost));
+    assert!(!queue.publish(), "the stopped queue published the staged chain");
+    assert_eq!(mem.borrow().avail_idx, 1);
+    // The published chain the device really holds is lost with it.
+    dev.complete(by_head(&taken, head_a), status::OK, None);
+    assert_eq!(queue.finish(&mut dma, a, Some(&mut [0; 512])), Err(RequestError::Lost));
+}
+
