@@ -142,9 +142,22 @@ after the clone would exist only in the old generation. PR A adds `ROOT_EPOCH` (
   `/tmp`, `/run`), or for writes to the staging tree.
 - It is in memory only and restarts at 0 on each mount.
 
-The installer reads the epoch before it clones, and again before it publishes (section 4.6). An unchanged value
-means the running root had no change after the clone, because the clone contains the running root as of the
-first read. A change in between is reported conservatively, as a refusal.
+The installer reads the epoch before it clones (E1). An unchanged value later means the running root had no change
+after the clone, because the clone contains the running root as of E1. A change in between is reported
+conservatively, as a refusal.
+
+A last read alone leaves a window: an edit admitted after it and before the reboot would land only in the old root,
+the new pair would commit without it, and reclamation would later delete it. PR A therefore adds two more ioctls
+beside `ROOT_EPOCH`, for euid 0 only:
+- `ROOT_FREEZE` sets an in-memory `frozen` flag on the booted tree and returns the epoch at that instant (E2).
+  The flag is checked at the same admission point that advances the epoch, under the same lock, so each change is
+  either counted in E2 or refused. While frozen, each change the epoch counts returns `EROFS`. Atime touches, the
+  default tree and the staging tree are not frozen. Logs in `/var` and the flash records in `/root` keep working.
+- `ROOT_THAW` clears the flag. Only `paired abort` calls it. A reboot also clears it, because it is in memory.
+
+Publish (4.6) freezes the running root and compares E2 with E1. From then until the reboot, no edit can land in
+the old root. If the trial rolls back, the old root boots again unfrozen, and the refused edits were refused, not
+lost.
 
 ### 3.4 What PR A does not add
 
@@ -271,10 +284,13 @@ Only the selection moves into the generation:
 
 `paired publish <id>`:
 1. Unmount the staging mount (detach syncs the draft).
-2. Read the epoch (E2) and compare it with E1. If they differ, delete the draft and exit with
-   `running root changed during the deploy (epoch E1 -> E2); rerun`.
+2. `ROOT_FREEZE` the running root and take E2 from it (3.3). If E2 differs from E1, thaw, delete the draft and
+   exit with `running root changed during the deploy (epoch E1 -> E2); rerun`.
 3. `SNAPSHOT_RENAME` `<id>.new` → `gen-<id>`, one committed transaction. A root named `gen-<id>` exists only after
    apply, verify and the toolchain check have passed.
+
+The running root stays frozen through the kernel and manifest publication and the reboot (4.7). If the host
+stops arming after the freeze (a failed `bput`, a lost connection), it runs `paired abort <id>`, which thaws.
 
 ### 4.7 The manifest, the manager and the kernel
 
@@ -443,7 +459,7 @@ other-family review.
 Scope: sections 3.1 to 3.3.
 - `kernel/src/fs/breenfs/ops.rs`: the staging tree.
 - `vfs.rs`: attach, detach and the epoch.
-- `abi.rs`: `ROOT_EPOCH`.
+- `abi.rs`: `ROOT_EPOCH`, `ROOT_FREEZE` and `ROOT_THAW`.
 - `mount.rs`: the `root-volume` source and unmount detach.
 - `docs/fs/breenfs-design.md` 2.6: one paragraph naming the interface.
 
@@ -454,7 +470,7 @@ behavior: `EBUSY`, a second writer refused. The tests then fail at run time.
 |---|---|---|---|
 | T-A1 staging write isolation | `tools/breenfs-host-tests/tests/snapshot.rs` | A persistent writer (`gen-A` plus the default tree) clones `gen-A` to `B.new` and attaches it. It then creates, overwrites, truncates, unlinks, hard-links, symlinks and chmods in the staging tree, interleaved with booted-root and default-tree writes, across several commits. After a fresh recovery mount, `B.new`'s migration manifest equals the model, and `gen-A` and the default tree equal their own models. | Attach returns `EBUSY` |
 | T-A2 crash images | `tools/breenfs-host-tests/tests/crash_images.rs` | The same stream, through detach and the rename to `gen-B`, under the recording device. Each crash image recovers and passes `breenfs-check --full`. `gen-A` and the default tree match the model at the recovered commit. The second root is absent, a `B.new` that equals some prefix of the staged stream, or a complete `gen-B`. | The stream stops at attach |
-| T-A3 refusals and epoch | `tools/breenfs-host-tests/tests/snapshot.rs` | Attach is refused for the booted root, root 1, a read-only root and a second staging tree. Delete and rename of the attached root return `EBUSY`. Detach with an open staged file returns `EBUSY`. The epoch does not change for reads (atime), default-tree writes or staging writes, and does change for a booted-root write. | No attach and no epoch |
+| T-A3 refusals and epoch | `tools/breenfs-host-tests/tests/snapshot.rs` | Attach is refused for the booted root, root 1, a read-only root and a second staging tree. Delete and rename of the attached root return `EBUSY`. Detach with an open staged file returns `EBUSY`. The epoch does not change for reads (atime), default-tree writes or staging writes, and does change for a booted-root write. After `ROOT_FREEZE`, a booted-root create, write, rename and setattr return `EROFS` and the epoch stays at the frozen value, while default-tree writes and atime touches still succeed. `ROOT_THAW` admits writes again. A booted-root write racing the freeze, driven by a fixed interleaving, is either counted in the returned epoch or refused. | No attach, no epoch and no freeze |
 | T-A4 unmount keeps the writer | `tools/vfs-host-tests/tests/boot_mount_tests.rs`, which already mounts and unmounts through the registry | Unmounting the staging mount detaches it, and `/` stays registered, writable and committing. A failed detach leaves the staging mount registered. | Today's non-bind unmount path calls `shutdown` |
 
 No boot belongs to PR A. Its live effect is the staging mount PR B uses on the R240. The kernel reaches the box
