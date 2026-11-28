@@ -161,7 +161,7 @@ pub fn mount_root_volume(
         registry::register(entry)
     })();
     if let Err(error) = published {
-        // Nothing reached the tree; a refused detach leaves it claimed until reboot.
+        // No path reached the tree yet. A refused detach leaves it claimed until reboot.
         writer.detach_staging().map_err(|e| e.0 as u64)?;
         return Err(error.0 as u64);
     }

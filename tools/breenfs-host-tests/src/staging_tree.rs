@@ -206,7 +206,8 @@ fn staging_refusals_epoch_and_freeze() {
 /// T-A5: two clones whose local inodes alias (a file in A is a directory in
 /// B at the same number; the next number has different bytes and extents).
 /// After A's inodes are stat'ed, read, listed and mapped, detaching A and
-/// attaching B serves B's inode, entries and bytes from every cache.
+/// attaching B serves B's inode, entries and bytes from the inode cache, the
+/// directory view and the mapping cache.
 #[test]
 fn reattach_serves_the_new_root_not_cached_inodes() {
     let fs = persistent();

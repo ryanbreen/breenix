@@ -995,7 +995,7 @@ impl InodeCache {
             .any(|slot| slot.is_some_and(|(ino, _)| matches(ino)))
     }
 
-    /// Visit every cached inode once; `keep` returning false drops it.
+    /// Visit each cached inode once; `keep` returning false drops it.
     /// Bounded by the cache's RAM budget (at most INODE_HEAP_CAP).
     fn retain(&mut self, mut keep: impl FnMut(u64) -> bool) -> usize {
         let mut dropped = 0;
@@ -1953,7 +1953,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                 if state.staging.is_none() {
                     return Err(Errno(EINVAL));
                 }
-                // Apply every queued close, so the open-inode snapshot the
+                // Apply the queued closes, so the open-inode snapshot the
                 // commit reclaims orphans against is current.
                 while {
                     state.retain_open()?;

@@ -642,7 +642,8 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
 
     /// The namespace tag of `ino`: 0 (the booted tree), DEFAULT_TREE or
     /// STAGING_TREE. A tag whose tree is not included selects the booted tree,
-    /// whose keys never carry a tag bit, so its lookups find nothing.
+    /// whose stored inode numbers stay below STAGING_TREE (namespace_ino), so
+    /// its lookups return ENOENT.
     pub(super) fn tag(&self, ino: u64) -> u64 {
         match ino & TREE_TAGS {
             DEFAULT_TREE if self.default.is_some() => DEFAULT_TREE,

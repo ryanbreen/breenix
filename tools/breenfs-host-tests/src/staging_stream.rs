@@ -1,9 +1,9 @@
 //! A persistent writer's staging-tree stream (docs/metal/paired-generations.md
 //! 3.1, checks T-A1 and T-A2). One writer serves `gen-A` (the booted tree),
 //! root 1 (the default tree) and the writable clone `B.new` (the staging
-//! tree). A fixed sequence edits all three across several commits, then
+//! tree). A fixed sequence edits the three roots across several commits, then
 //! detaches the staging tree and renames `B.new` to `gen-B`. A model of each
-//! root, kept beside the writer, gives the expected state at every commit.
+//! root, kept beside the writer, gives the expected state at each commit.
 use crate::{
     block::{BlockDevice, BlockError},
     commit::{Committer, DeviceStore},
@@ -30,7 +30,7 @@ pub enum Entry {
     Symlink(Vec<u8>),
 }
 pub type Manifest = BTreeMap<Vec<u8>, Entry>;
-/// Every root on the volume by name, with its read-only flag and manifest.
+/// The volume's roots by name, each with its read-only flag and manifest.
 pub type State = BTreeMap<Vec<u8>, (bool, Manifest)>;
 
 #[derive(Clone, Copy, Debug)]
@@ -50,7 +50,8 @@ pub enum Step {
 use Step::*;
 use Tree::*;
 
-/// Staging edits of every kind, interleaved with booted-root and default-tree
+/// Staging creates, writes, truncates, links, symlinks, chmods, unlinks and
+/// renames, interleaved with booted-root and default-tree
 /// writes, across five commits.
 pub const STREAM: &[Step] = &[
     Mkdir(Staging, "usr/lib/breenix"),
@@ -354,7 +355,7 @@ fn walk<S: crate::btree::NodeStore>(
     Ok(())
 }
 
-/// Every root of the volume's newest valid generation, read by a fresh mount.
+/// The roots of the volume's newest valid generation, read by a fresh mount.
 pub fn recovered(device: &dyn BlockDevice) -> Result<State, Error> {
     let sb = recover::recover(device, false)?;
     let store = DeviceStore(device);

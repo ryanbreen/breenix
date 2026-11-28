@@ -259,7 +259,7 @@ fn persistent_root_is_writable_with_existing_data_binds() {
 /// `root-volume` source on the persistent writer, then unmounted through the
 /// native entry the umount syscall calls (`breenfs::mount::unmount`). A cwd
 /// inside the mount refuses the unmount before any change. Once it succeeds,
-/// the syscall's own walk is dropped and detach releases every custody: the
+/// the syscall's own walk is dropped and detach releases its custodies: the
 /// draft can be deleted, another root attached, its inodes are gone and the
 /// covered directory can be removed. `/` stays writable and committing.
 #[test]

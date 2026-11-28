@@ -169,7 +169,7 @@ fn masks_cover_both_regimes() {
 
 /// T-A2 (docs/metal/paired-generations.md 9): the staging stream of T-A1,
 /// through detach and the rename of `B.new` to `gen-B`, under the recording
-/// device. Every crash image taken after attach recovers writably and passes
+/// device. Each sampled crash image taken after attach recovers writably and passes
 /// `breenfs-check --full`, and its roots (gen-A, the default tree and the
 /// second root) equal the models at the commit before or after the crash:
 /// the second root is a `B.new` holding a committed prefix of the staged
