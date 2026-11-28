@@ -41,6 +41,14 @@ fn corruption_and_device_errors_are_eio() {
     assert_eq!(classified("unrecognized ext2 failure"), None);
 }
 
+#[test]
+fn sector_geometry_is_a_classified_mount_error() {
+    assert_eq!(
+        classified("ext2 requires 512-byte device sectors"),
+        Some(Errno(EIO)),
+    );
+}
+
 #[derive(Default)]
 struct ErrorLiterals(BTreeSet<String>);
 

@@ -1,78 +1,37 @@
 use std::env;
-use std::path::PathBuf;
 use std::process::Command;
 
-/// Test that the kernel builds successfully with our custom target
+/// Build the same x86 target artifact as the UEFI launcher.
+fn build_x86_kernel(features: Option<&str>) {
+    let root = env::var_os("CARGO_MANIFEST_DIR").expect("Cargo manifest directory");
+    let mut cargo = Command::new("cargo");
+    cargo.current_dir(root).args([
+        "build", "-p", "kernel", "--bin", "kernel", "--target", "x86_64-unknown-none",
+    ]);
+    if let Some(features) = features {
+        cargo.args(["--features", features]);
+    }
+    let result = cargo.output().expect("run the x86 kernel build");
+    assert!(
+        result.status.success(),
+        "x86 kernel build ({features:?}) failed:\n{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
 #[test]
 fn test_kernel_builds() {
-    println!("Testing kernel build with custom target...");
-
-    // Get the workspace root directory
-    let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
-    let workspace_root = PathBuf::from(&manifest_dir);
-    let kernel_dir = workspace_root.join("kernel");
-    let target_json = workspace_root.join("x86_64-breenix.json");
-
-    // Build just the kernel crate with the custom target
-    // We need to use nightly and build-std for custom targets
-    let result = Command::new("cargo")
-        .current_dir(&kernel_dir)
-        .args(&[
-            "build",
-            "-Zbuild-std=core,compiler_builtins,alloc",
-            "-Zbuild-std-features=compiler-builtins-mem",
-            "--target",
-            target_json.to_str().unwrap(),
-            "--bin",
-            "kernel",
-        ])
-        .output()
-        .expect("Failed to run cargo build");
-
-    if !result.status.success() {
-        eprintln!("Build failed with stderr:");
-        eprintln!("{}", String::from_utf8_lossy(&result.stderr));
-    }
-
-    assert!(result.status.success(), "Kernel build failed");
-    println!("✅ Kernel builds successfully with custom target");
+    build_x86_kernel(None);
 }
 
 #[test]
 fn test_kernel_builds_with_testing_feature() {
-    println!("Testing kernel build with testing feature...");
+    build_x86_kernel(Some("testing"));
+}
 
-    let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
-    let workspace_root = PathBuf::from(&manifest_dir);
-    let kernel_dir = workspace_root.join("kernel");
-    let target_json = workspace_root.join("x86_64-breenix.json");
-
-    let result = Command::new("cargo")
-        .current_dir(&kernel_dir)
-        .args(&[
-            "build",
-            "-Zbuild-std=core,compiler_builtins,alloc",
-            "-Zbuild-std-features=compiler-builtins-mem",
-            "--target",
-            target_json.to_str().unwrap(),
-            "--features",
-            "testing",
-            "--bin",
-            "kernel",
-        ])
-        .output()
-        .expect("Failed to run cargo build");
-
-    if !result.status.success() {
-        eprintln!("Build failed with stderr:");
-        eprintln!("{}", String::from_utf8_lossy(&result.stderr));
-    }
-
-    assert!(
-        result.status.success(),
-        "Kernel build with testing feature failed"
-    );
-    println!("✅ Kernel builds successfully with testing feature");
+#[test]
+fn test_kernel_builds_with_boot_tests_feature() {
+    build_x86_kernel(Some("boot_tests"));
 }
 
 mod kernel_build {

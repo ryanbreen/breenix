@@ -35,6 +35,7 @@
     mrs x17, currentel
     mrs x18, MPIDR_EL1
     mrs x19, ctr_el0
+    mrs x1, ID_AA64MMFR0_EL1
     mrs x20, ID_AA64MMFR1_EL1
     msr DAIFSet, #15
     msr daifclr, #3

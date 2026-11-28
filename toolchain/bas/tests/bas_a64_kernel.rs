@@ -162,6 +162,7 @@ fn unsupported_a64_system_register_is_located() {
         ("msr CurrentEL, x0", 7, "read-only system register"),
         ("msr MPIDR_EL1, x0", 7, "read-only system register"),
         ("msr CTR_EL0, x0", 7, "read-only system register"),
+        ("msr ID_AA64MMFR0_EL1, x0", 7, "read-only system register"),
         ("msr ID_AA64MMFR1_EL1, x0", 7, "read-only system register"),
     ] {
         let source = format!("nop\n  {instruction}\n");
