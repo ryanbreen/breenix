@@ -1,7 +1,7 @@
 # E3: unified page cache and pager (design and PR plan)
 
-Status: design and PR sequence. No E3 code has landed. Builders append the detail deviations they make
-under DEV-39(2) to section 22.
+Status: design and PR sequence. E3-1 adds the pure modules, which no kernel path calls yet. Builders
+append the detail deviations they make under DEV-39(2) to section 22.
 
 Rulings. DEV-41(2) starts this design and orders implementation to begin as soon as its E1 and E2
 prerequisites land (E1-9 and E2.9). It also asks the design to say which E3 PRs need neither. DEV-29 adopted
@@ -2318,4 +2318,46 @@ Each entry names the PR, the detail, the resolution chosen, and one sentence of 
 conflicts (a data structure, a subsystem interface, an on-disk or ABI format, a lock order, a phase
 boundary) are not recorded here: the builder stops and asks the coordinator.
 
-None yet. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+- **E3-1, the tree's reservation bound (4.3).** `worst_case_nodes(height, leaves)` is the height times
+  `leaves + 1`, not times `leaves`, because a store above the tree's range needs new roots for each level
+  it grows by as well as a new path below the top root. `store` also checks the exact need
+  (`nodes_needed`) before it changes anything, and refuses with `NeedNodes` when the reservation is short.
+- **E3-1, the tree's lookup (4.3).** `lookup` returns the entry and takes no page reference, because page
+  references are E3-6's FrameMeta `refs`; the kernel glue takes the reference under `tree_lock`.
+- **E3-1, the tree's root tag.** `any_tagged` reads the root's tag bit, so "does this file have a dirty
+  page" is O(1); 11.6's fsync shortcut needs exactly that question.
+- **E3-1, readahead's `prev` (8.1).** It records the last page of the window issued, not of the pages
+  demanded, because hits inside a window are not reported to the state, so a reader that consumes a
+  window and misses at its end must count as sequential.
+- **E3-1, the state table (5.2): adoption.** `Writeback --adopted-->` gives `Uptodate` only. 5.1's "and
+  maybe `DIRTY`" and 5.2's "or Dirty" are the replacement frame: the three events that redirty a
+  `Writeback` page (`write()`, a shrink's tail and a shared store) each replace its frame, so the frame
+  under writeback keeps G's bytes.
+- **E3-1, the state table: a shared store into a `Writeback` page** copies into a new `MAPPED_DIRTY` frame
+  (`Replace`), the copy-on-writeback rule 11.2 gives `write()`, because 5.1 says the store faults and no
+  rule changes G's stable copy in place.
+- **E3-1, the state table: rows inferred from sections 7, 12 and 6.1a.** Legal: `Absent --write()-->
+  Dirty` inserting 7.2's prepared frame; `Dirty --write()--> Dirty` in place (7.2, step 2) when the page
+  is in the open generation or not yet admitted; `Dirty --shared store--> Dirty` keeping its generation;
+  `Hole --reclaim--> Absent` (7.5, 12.2). Refused: a `write()` into a `Filling` page (it waits, 6.1a), into
+  a page dirty in an older generation than the open one (a freeze missed it), or into a `Writeback` page
+  of a generation not older than the open one. A shrink's tail zeroing is the `Write` event, as 5.2
+  groups it with `write()`. Generation 0 is refused as an open, frozen or adopted generation.
+- **E3-1, the OOM tie-break (13).** A candidate's pid is the highest pid among the address space's
+  processes, because a candidate is an address space and "the higher pid" needs one number per candidate.
+- **E3-1, an added check.** The dirty charge has one host check (charge first, the one part allowed past
+  `limit` for a mount that holds no charge), because its compare-and-add is the part of 11.5 that could
+  plausibly break; section 18 lists no dirty-limit check for E3-1.
+- **E3-1 review, the tree's node source (4.3).** `NodeList<S>` and `PageTree<S>` carry their node source
+  type, and `NodeSource`'s contract is type-wide (any instance frees a node any instance of the type
+  allocated), because a safe `release` that accepted any source let safe code free a node to an allocator
+  other than the one that allocated it; the kernel's source is the one slab cache (E3-6), which meets the type-wide rule.
+- **E3-1 review, the hit's write (12.1).** `PageLinks` gains `compare_exchange_bits`, and a hit sets
+  `REFERENCED` only through it, because a lock-free write of the whole link record restored stale links
+  over a scan's isolation; a list operation's store can still drop a racing hit's `REFERENCED`, which loses
+  one reference hint and no list change.
+- **E3-1 review, the mount's charge (11.5).** Each mount has a `MountCharge` count that `try_charge`,
+  `charge_unchecked` and `release` update with the global count, and the lone part past `limit` claims it
+  by exchanging it from 0, because a caller's snapshot of the mount's charge let two writers on one mount,
+  overlapping under per-file `io` locks, both take the exception. 11.5's "one compare-and-add" is now
+  that compare-and-add on the global count, or, past `limit`, the claim on the mount's count.
