@@ -2,8 +2,10 @@
 """E24 ledger 520(r): force pending SIGKILL during an ARM request-gate wait.
 
 Compile the production gate, kill-custody atomic transitions and no-sleep
-predicate. The host scheduler double applies that predicate at publication;
-the device owner releases the gate at the modeled park, without a timing race.
+predicate. Since E2.4 the gate waits on `park::wait`, whose publication is the
+scheduler's `block_current_for_io_publish`; the park double applies that
+predicate at publication, and the device owner releases the gate at the
+modeled park, without a timing race.
 """
 from pathlib import Path
 import re
@@ -29,15 +31,21 @@ class VirtioReadContext(unittest.TestCase):
         predicate = function(thread, 'must_not_sleep')
         custody = function(thread, 'try_enter')
         custody_drop = block(thread, thread.index('impl Drop for KillCustody'))
-        can_sleep = function(source, 'block_mmio_request_gate_can_sleep')
-        # The model's refusal is the production scheduler's actual predicate.
+        errors = '\n'.join(re.findall(
+            r'const (?:NOT_SLEEPABLE_ERROR|EARLY_BOOT_BUSY_ERROR|PUBLICATION_REFUSED_ERROR): &str = [^;]+;', source))
+        self.assertEqual(errors.count('const '), 3, 'the gate error constants moved')
+        # The model's refusal is the production scheduler's actual predicate,
+        # reached from park's publication.
         scheduler = (ROOT / 'kernel/src/task/scheduler.rs').read_text()
         self.assertIn('if thread.must_not_sleep()', function(scheduler, 'block_current_for_io_publish'))
+        waitqueue = (ROOT / 'kernel/src/task/waitqueue.rs').read_text()
+        self.assertIn('block_current_for_io_publish', function(waitqueue, 'publish_blocked'))
         harness = r'''
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 #[path = "@BLK_QUEUE@"] mod blk_queue;
 use blk_queue::{Admission, RangeTable};
 const MAX_ADMITTED: usize = 32;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)] pub enum IoContext { Sleepable, EarlyBoot }
 const BLOCK_MMIO_WEDGED_ERROR: &str = "Block MMIO device wedged after an abandoned request";
 mod spin {
     pub struct Mutex<T>(std::sync::Mutex<T>);
@@ -67,22 +75,31 @@ mod task {
         #[derive(PartialEq, Eq)] pub enum ThreadState { BlockedOnIO }
     }
     pub mod scheduler { pub fn current_thread_id() -> Option<u64> { Some(73) } }
-    pub mod waitqueue {
-        pub fn schedule_current_wait() {
-            crate::PARKS.fetch_add(1, crate::Ordering::Relaxed);
-            // Completion of the other owner's already-issued overlapping write.
-            crate::GATE.release(crate::OWNER.load(crate::Ordering::Relaxed));
+    pub mod park {
+        pub use crate::IoContext;
+        #[derive(Debug)] pub enum WaitEnd { Condition, Woken, Killed, NoMemory }
+        pub enum WaitMode { Uninterruptible }
+        pub fn io_context() -> Result<IoContext, ()> { Ok(IoContext::Sleepable) }
+        /// park_core::wait's order: the condition under the queue, then
+        /// publication, which the scheduler refuses when the thread must not
+        /// sleep, then the sleep.
+        pub fn wait(_: &crate::WaitQueueHead, mut done: impl FnMut() -> bool, _: Option<u64>, _: WaitMode)
+            -> Result<WaitEnd, ()> {
+            let mut parked = false;
+            loop {
+                if done() { return Ok(if parked { WaitEnd::Woken } else { WaitEnd::Condition }); }
+                if crate::THREAD.must_not_sleep() { return Ok(WaitEnd::Killed); }
+                crate::PARKS.fetch_add(1, crate::Ordering::Relaxed);
+                parked = true;
+                // Completion of the other owner's already-issued overlapping write.
+                crate::GATE.release(crate::OWNER.load(crate::Ordering::Relaxed));
+            }
         }
     }
 }
 struct WaitQueueHead;
 impl WaitQueueHead {
     const fn new() -> Self { Self }
-    fn prepare_to_wait(&self, _: task::thread::ThreadState) -> Option<u64> {
-        if THREAD.must_not_sleep() { None } else { Some(73) }
-    }
-    fn finish_wait(&self) {}
-    fn wake_up_one(&self) {}
     fn wake_up(&self) {}
 }
 static PARKS: AtomicU32 = AtomicU32::new(0);
@@ -99,6 +116,7 @@ fn main() {
         Ok(guard) => guard,
         Err(reason) => panic!("context refusal would latch metadata device-read: {reason}"),
     };
+    assert_eq!(guard.io, IoContext::Sleepable);
     assert_eq!(PARKS.load(Ordering::Relaxed), 1);
     assert!(!THREAD.must_not_sleep(), "request ownership lost its nested custody");
     // The read is issued once only after the gate is acquired. The nested
@@ -114,7 +132,7 @@ fn main() {
         # Unused production helpers and doubles are expected in this one-path model.
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)
-            (path / 'model.rs').write_text(constants + '\n' + gate + '\n' + can_sleep + '\n' + harness)
+            (path / 'model.rs').write_text(constants + '\n' + errors + '\n' + gate + '\n' + harness)
             subprocess.run(['taskpolicy', '-b', 'rustc', '--edition=2021', '-Adead_code',
                             str(path / 'model.rs'), '-o', str(path / 'model')], check=True, timeout=45)
             subprocess.run([str(path / 'model')], check=True, timeout=5)
