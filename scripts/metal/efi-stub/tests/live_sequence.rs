@@ -10,8 +10,9 @@ mod fixture_crc;
 use crate::live_sequence::{process, Media, Outcome};
 use crate::sha256::sha256;
 use crate::slot_transaction::{self, RecordStore, Records, Store, RECORD_PATHS, RECORD_SIZE};
-use crate::uefi::{Status, DEVICE_ERROR, LOAD_ERROR, NOT_FOUND, VOLUME_CORRUPTED};
+use crate::uefi::{Status, DEVICE_ERROR, ERROR, LOAD_ERROR, NOT_FOUND, VOLUME_CORRUPTED};
 
+const VOLUME_FULL: Status = ERROR | 11;
 const CURRENT: &[u8] = &disk(1);
 const PREVIOUS: &[u8] = &disk(2);
 const CANDIDATE: &[u8] = &disk(3);
@@ -37,13 +38,17 @@ fn hex(digest: [u8; 32]) -> String {
 }
 
 fn manifest(token: Token) -> Vec<u8> {
+    manifest_for_base(token, BASE)
+}
+
+fn manifest_for_base(token: Token, base: &[u8]) -> Vec<u8> {
     format!(
         "BREENIX-FLASH 1\n{}\n{}\n{}\n{}\n{}\n",
         std::str::from_utf8(&token).unwrap(),
         "a".repeat(40),
         CANDIDATE.len(),
         hex(sha256(CANDIDATE)),
-        hex(sha256(BASE)),
+        hex(sha256(base)),
     )
     .into_bytes()
 }
@@ -57,6 +62,7 @@ struct Volume {
     steps: Cell<usize>,
     lost_power: Cell<bool>,
     rename_order: Option<bool>,
+    image_budget: usize,
     root_flags: Option<u32>,
     intent: &'static [u8],
 }
@@ -70,6 +76,7 @@ impl Volume {
             steps: Cell::new(0),
             lost_power: Cell::new(false),
             rename_order: None,
+            image_budget: usize::MAX,
             root_flags: None,
             intent: b"",
         }
@@ -201,10 +208,22 @@ impl RecordStore for Volume {
 
     fn write_new_image(&self, name: &str, bytes: &[u8]) -> Result<(), Status> {
         assert!(!self.exists(name), "immutable image name was reused");
+        let used = self
+            .files
+            .borrow()
+            .iter()
+            .filter(|(name, _)| name.ends_with(".IMG"))
+            .map(|(_, image)| image.len())
+            .sum();
+        let written = bytes.len().min(self.image_budget.saturating_sub(used));
         self.change(|files| {
-            files.insert(name.into(), vec![0; bytes.len()].into());
+            files.insert(name.into(), vec![0; written].into());
         })?;
-        self.sectors(name, bytes, true)
+        self.sectors(name, &bytes[..written], written == bytes.len())?;
+        if written != bytes.len() {
+            return Err(VOLUME_FULL);
+        }
+        Ok(())
     }
 
     fn visit_images(&self, visit: &mut dyn FnMut(&str)) -> Result<(), Status> {
@@ -593,6 +612,68 @@ fn t_c1_each_esp_write_preserves_a_pair() {
         .unwrap();
     records.collect(&volume).unwrap();
     assert!(!volume.exists(first.as_str()));
+}
+
+#[test]
+fn esp_capacity_allows_repeated_live_flashes_after_import() {
+    let mut volume = Volume::new(imported(), None);
+    volume.image_budget = 4 * CANDIDATE.len();
+    let mut base = BASE.to_vec();
+    for digit in b'1'..=b'4' {
+        let token = [digit; 32];
+        let armed = manifest_for_base(token, &base);
+        let mut ack = [digit; 33];
+        ack[32] = b'\n';
+        assert!(matches!(
+            run(&volume, Some(&armed), CANDIDATE, None, true).unwrap(),
+            Outcome::Trial(m, _) if m.token == token
+        ));
+        assert!(matches!(
+            run(&volume, None, CANDIDATE, Some(&ack), false).unwrap(),
+            Outcome::Promoted(m) if m.token == token
+        ));
+        let records = Records::read(&volume);
+        for record in [records.latest(), records.older()].into_iter().flatten() {
+            for image in [record.current, record.previous, record.trial].into_iter().flatten() {
+                image.verified(&volume).unwrap();
+            }
+        }
+        base = records.latest().unwrap().current.unwrap().note().to_vec();
+    }
+    for name in ["CURRENT.IMG", "CURRENT.TXT", "PREVIOUS.IMG", "PREVIOUS.TXT", "TRY.IMG"] {
+        assert!(!volume.exists(name), "{name} outlived its slot reference");
+    }
+}
+
+#[test]
+fn esp_capacity_recovers_bytes_after_failed_or_interrupted_write() {
+    let mut files = imported();
+    files.remove("TRY.IMG");
+    files.insert("RESCUE.IMG".into(), CANDIDATE[..512].into());
+    let mut volume = Volume::new(files, None);
+    volume.image_budget = 3 * CANDIDATE.len();
+    let armed = manifest(TOKEN);
+    assert!(matches!(
+        run(&volume, Some(&armed), CANDIDATE, None, true),
+        Err(VOLUME_FULL)
+    ));
+    let mut failed = volume.snapshot();
+    failed.remove("RESCUE.IMG");
+    let mut interrupted = failed.clone();
+    interrupted.insert("K0000002.IMG".into(), CANDIDATE[..512].into());
+
+    for files in [failed, interrupted] {
+        let mut reboot = Volume::new(files, None);
+        reboot.image_budget = volume.image_budget;
+        assert_trial_ready(
+            run(&reboot, Some(&armed), CANDIDATE, None, true).unwrap(),
+            &reboot,
+            &armed,
+        );
+        assert!(reboot.exists("K0000003.IMG"));
+        assert!(!reboot.exists("K0000002.IMG"));
+    }
+    assert_eq!(volume.snapshot()["K0000002.IMG"].len(), 0);
 }
 
 #[test]
