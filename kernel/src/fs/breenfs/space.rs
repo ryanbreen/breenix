@@ -32,6 +32,8 @@ pub const PROMOTE_BATCH: usize = 64;
 /// Free ranges examined on each side of an allocation goal before falling
 /// back to the best fit by length.
 const GOAL_PROBE: usize = 16;
+/// Blocks in one FS or SPACE node allocation (design 2.4).
+const NODE_BLOCKS: u64 = 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
@@ -343,13 +345,22 @@ impl FreeIndex {
     /// the nearest range after it that fits, else the nearest before it, each
     /// within GOAL_PROBE ranges. Otherwise the smallest range that fits, lowest
     /// address first. `short` falls back to the largest range.
+    ///
+    /// A goal inside a range would split it in two. It is taken only when
+    /// both pieces left free can still hold a node: otherwise sparse writes
+    /// could turn every node-sized range into smaller holes while most of the
+    /// space is free, and settlement could not copy a node.
     pub fn choose(&self, length: u64, goal: Option<u64>, short: bool) -> Option<(u64, u64)> {
         if length == 0 {
             return None;
         }
         if let Some(goal) = goal {
             if let Some((&s, &l)) = self.by_start.range(..=goal).next_back() {
-                if s.checked_add(l).and_then(|e| e.checked_sub(goal)).is_some_and(|room| room >= length) {
+                let room = s.checked_add(l).and_then(|e| e.checked_sub(goal));
+                let node_sized = |piece: u64| piece == 0 || piece >= NODE_BLOCKS;
+                if room.is_some_and(|room| room >= length
+                    && (goal == s || (node_sized(goal - s) && node_sized(room - length))))
+                {
                     return Some((goal, length));
                 }
             }
