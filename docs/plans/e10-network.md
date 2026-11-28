@@ -582,3 +582,29 @@ concurrency, loss or RTT named in the prediction.
   `tools/virtio-net-host-tests` against a fake virtio-mmio device written from
   the specification, one test binary per scenario because the driver keeps its
   device in statics. The TCP batch is checked in `tools/tcp-host-tests`.
+
+### PR 3 details (DEV-39(2))
+
+- The three indexes use dense storage with chained buckets and separate keys
+  from the kernel random pool, because the timer worker and proc reporting
+  still need to iterate the live connections until the timer-wheel PR.
+- Move BreenFS's existing SipHash-2-4 primitive into the kernel random module
+  because TCP can reuse the same implementation without depending on a filesystem.
+- Store the endpoint with the existing listener generation in its opaque
+  handle because option updates and unlisten used the generation alone to scan
+  the whole listener list.
+- Check expiry in the requested port's bucket, and retire the closed connection
+  directly on close, because forcing the old sweep before each bind and connect
+  would leave those lookups linear in the total connection count.
+- Retire only the matching expired tuple on receive because the old once-a-second
+  sweep made that packet visit unrelated connections; the timer still reaps globally.
+- Read a connected bind owner's reuse and lifetime from its tuple entry because
+  socket options and TCP transitions already update that state under the same lock.
+- Reuse existing memberships for an eligible same-tuple active open because the
+  tuple and owning port retain their keys when the connection is replaced.
+- The deterministic receive fixture seeds an exact and a wildcard listener for
+  the same port because the public listen path rejects overlapping listeners.
+- The bind collision fixture matches nine hash bits because its 96 unrelated
+  owners of each kind grow the combined bind index to 512 buckets.
+- Run the default QEMU matrix for this A/B pair because DEV-45 and DEV-49
+  require at least 31 measured Breenix rows per series.
