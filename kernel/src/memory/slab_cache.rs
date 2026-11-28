@@ -493,16 +493,18 @@ impl SlabCache {
     /// Return checked objects to their slabs. An emptied slab is kept if
     /// the cache has no empty slab, and goes back to the page layer if it has
     /// one.
-    pub fn put<B: Backing>(&self, objects: &[*mut u8], backing: &B, descriptors: &SlabCache) {
+    /// Returns the pages it gave back to the page layer.
+    pub fn put<B: Backing>(&self, objects: &[*mut u8], backing: &B, descriptors: &SlabCache) -> usize {
         if objects.is_empty() {
-            return;
+            return 0;
         }
         let mut lists = self.lists.lock();
-        self.put_locked(&mut lists, objects, backing, descriptors);
+        self.put_locked(&mut lists, objects, backing, descriptors)
     }
 
     /// `put`, with this cache's lock already held as `lists`.
-    fn put_locked<B: Backing>(&self, lists: &mut Lists, objects: &[*mut u8], backing: &B, descriptors: &SlabCache) {
+    fn put_locked<B: Backing>(&self, lists: &mut Lists, objects: &[*mut u8], backing: &B, descriptors: &SlabCache) -> usize {
+        let mut pages = 0;
         for &object in objects {
             let page = object as usize & !(PAGE - 1);
             // SAFETY: the caller checked the object, so its page records a
@@ -522,25 +524,29 @@ impl SlabCache {
                         lists.empty.link(slab, EMPTY);
                         self.empty.fetch_add(1, Ordering::Relaxed);
                     } else {
-                        self.release(slab, backing, descriptors);
+                        pages += self.release(slab, backing, descriptors);
                     }
                 }
             }
         }
         self.objects.fetch_sub(objects.len(), Ordering::Relaxed);
+        pages
     }
 
     /// Give an empty slab's page back, and its descriptor. The caller holds
-    /// this cache's lock and has unlinked the slab.
-    unsafe fn release<B: Backing>(&self, slab: *mut Slab, backing: &B, descriptors: &SlabCache) {
+    /// this cache's lock and has unlinked the slab. Returns the pages given
+    /// back: the slab's, and a descriptor slab's that the descriptor emptied.
+    unsafe fn release<B: Backing>(&self, slab: *mut Slab, backing: &B, descriptors: &SlabCache) -> usize {
         // SAFETY: the slab is unlinked and empty, so it is the caller's.
         let page = unsafe { NonNull::new_unchecked((*slab).base) };
         backing.set_slab(page, ptr::null_mut());
+        let mut pages = 1;
         if self.reserved == 0 {
-            descriptors.put(&[slab.cast()], backing, descriptors);
+            pages += descriptors.put(&[slab.cast()], backing, descriptors);
         }
         backing.give_page(page);
         self.slabs.fetch_sub(1, Ordering::Relaxed);
+        pages
     }
 
     /// Give each empty slab back, the one kept included (the shrinker, 6.2),
@@ -555,10 +561,9 @@ impl SlabCache {
             // SAFETY: the slab is on the empty list, which the lock guards.
             unsafe {
                 lists.empty.remove(slab);
-                self.release(slab, backing, descriptors);
+                pages += self.release(slab, backing, descriptors);
             }
             self.empty.fetch_sub(1, Ordering::Relaxed);
-            pages += 1;
         }
         pages
     }

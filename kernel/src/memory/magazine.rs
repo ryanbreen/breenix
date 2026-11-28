@@ -40,6 +40,9 @@ pub const CONTENTION_LIMIT: u64 = 16;
 /// Surplus magazines of each kind one update returns, so an exchange's work
 /// stays bounded; the rest stay unused and are counted again next interval.
 const TRIM_BATCH: usize = 8;
+/// Magazines one shrinker call may retire beyond its target in pages, as
+/// 7.2's fixed batch (the allocator's `RECLAIM_BATCH_FRAMES`).
+const SHRINK_BATCH: usize = 8;
 
 const fn magazine_bytes(rounds: usize) -> usize {
     HEADER + rounds * core::mem::size_of::<*mut u8>()
@@ -175,6 +178,30 @@ impl DepotState {
         self.empty_min = self.empty.len;
         self.updated_at = now;
         surplus
+    }
+
+    /// Detach at most `limit` magazines for the shrinker: pending surplus
+    /// first, then filled, then empty ones.
+    unsafe fn detach(&mut self, limit: usize) -> (Surplus, usize) {
+        let mut surplus = Surplus::new();
+        let mut count = 0;
+        while count < limit {
+            // SAFETY: the magazines are the depot's, under its lock.
+            unsafe {
+                let filled = if self.pending.filled.head.is_null() { self.pop_filled() } else { self.pending.filled.pop() };
+                if filled.is_null() {
+                    let empty = if self.pending.empty.head.is_null() { self.pop_empty() } else { self.pending.empty.pop() };
+                    if empty.is_null() {
+                        break;
+                    }
+                    surplus.empty.link(empty);
+                } else {
+                    surplus.filled.link(filled);
+                }
+            }
+            count += 1;
+        }
+        (surplus, count)
     }
 
     /// Detach the filled and the empty stacks, and the pending surplus (the
@@ -513,15 +540,17 @@ impl<B: Backing> Kmem<B> {
         Some(magazine)
     }
 
-    unsafe fn free_magazine(&self, magazine: *mut Magazine) {
+    /// Returns the pages given back.
+    unsafe fn free_magazine(&self, magazine: *mut Magazine) -> usize {
         let capacity = unsafe { (*magazine).capacity } as usize;
         let size = ROUNDS.iter().position(|&rounds| rounds == capacity).expect("magazine size");
-        self.magazines[size].put(&[magazine.cast()], &self.backing, &self.descriptors);
+        self.magazines[size].put(&[magazine.cast()], &self.backing, &self.descriptors)
     }
 
     /// Return detached magazines' rounds to the slabs, and the magazines to
-    /// their caches.
-    unsafe fn retire(&self, class: usize, mut surplus: Surplus) {
+    /// their caches. Returns the pages given back.
+    unsafe fn retire(&self, class: usize, mut surplus: Surplus) -> usize {
+        let mut pages = 0;
         loop {
             let magazine = unsafe { surplus.filled.pop() };
             if magazine.is_null() {
@@ -532,8 +561,8 @@ impl<B: Backing> Kmem<B> {
                 let held = rounds(magazine);
                 self.depots[class].rounds.fetch_sub(held, Ordering::Relaxed);
                 let objects = core::slice::from_raw_parts(round(magazine, 0), held);
-                self.classes[class].put(objects, &self.backing, &self.descriptors);
-                self.free_magazine(magazine);
+                pages += self.classes[class].put(objects, &self.backing, &self.descriptors);
+                pages += self.free_magazine(magazine);
             }
         }
         loop {
@@ -541,8 +570,9 @@ impl<B: Backing> Kmem<B> {
             if magazine.is_null() {
                 break;
             }
-            unsafe { self.free_magazine(magazine) };
+            pages += unsafe { self.free_magazine(magazine) };
         }
+        pages
     }
 
     /// Free an object of `class` on CPU `cpu`. The object is checked against
@@ -631,14 +661,31 @@ impl<B: Backing> Kmem<B> {
         }
     }
 
-    /// The slab shrinker (7.3, first): return each depot's magazines to the
-    /// slabs and each empty slab to the page layer, the one kept per cache
-    /// included, until `target` pages are back. A busy depot is skipped.
-    /// Returns the pages given back.
+    /// The slab shrinker (7.3, first): return depot magazines to the slabs
+    /// and empty slabs to the page layer, the one kept per cache included,
+    /// until `target` pages are back. It runs with interrupts masked, so its
+    /// work is bounded (7.2): it retires at most `target` plus
+    /// `SHRINK_BATCH` magazines, `TRIM_BATCH` per depot lock hold. A busy
+    /// depot is skipped. Returns the pages given back, including the slabs
+    /// that emptied while the rounds went back.
     pub fn shrink(&self, target: usize) -> usize {
+        let mut budget = target.saturating_add(SHRINK_BATCH);
         let mut pages = 0;
         for class in 0..CLASS_COUNT {
-            self.trim_depot(class);
+            while pages < target && budget > 0 {
+                let Some(mut state) = self.depots[class].state.try_lock() else {
+                    break;
+                };
+                // SAFETY: the magazines are detached under the depot's lock.
+                let (surplus, count) = unsafe { state.detach(budget.min(TRIM_BATCH)) };
+                drop(state);
+                if count == 0 {
+                    break;
+                }
+                budget -= count;
+                // SAFETY: the magazines were detached from the depot.
+                pages += unsafe { self.retire(class, surplus) };
+            }
             pages += self.classes[class].release_empty(&self.backing, &self.descriptors);
             if pages >= target {
                 break;
