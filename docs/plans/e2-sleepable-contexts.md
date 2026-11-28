@@ -483,11 +483,31 @@ fault(addr, access):
   as = current thread's AddressSpace                                (no PROCESS_MANAGER, no root scan)
   ctx = park::context()
   take as.mapping shared: Sleepable -> park on contention; Atomic -> try once, else take the nofault exit
-  look up the VMA, check permissions, find or allocate the page:
-    resolved             -> install the entry under as.pt; return (the access re-executes and succeeds)
-    must wait for X      -> drop as.mapping; park on X (killable); return (re-executes, faults again)
-    permanent failure    -> SIGSEGV or SIGBUS, or the uaccess fixup and EFAULT
+  look up the VMA, check access, find or allocate the page:
+    resolved          -> take as.pt; recheck that the PTE is still the one the lookup saw;
+                         install, or leave the other fault's entry; return (the access re-executes)
+    must wait for X   -> take a reference to X and read X.seq, both under as.mapping;
+                         drop as.mapping;
+                         end = park::wait(X.queue, || X.seq != seen, None, Killable)
+    permanent failure -> SIGSEGV or SIGBUS, or the uaccess fixup and EFAULT
+  after a park, by its end:
+    Condition, Woken  -> return; the access re-executes and the fault starts again from the top
+    Killed            -> install nothing; a user-mode fault returns to the kill at the exit, and a
+                         kernel user copy takes the uaccess fixup, so its syscall unwinds with EFAULT
+    NoMemory          -> the waiter node could not be reserved: a permanent failure, as above
+    NotSleepable      -> cannot follow a Sleepable check; receipt, then the nofault exit
 ```
+
+- **Owned wait target.** X's reference and its sequence number are taken while the mapping lock is still
+  held, so X cannot be freed and its progress cannot be missed. `park::wait` checks `X.seq != seen`
+  under X's queue lock (§3.3 step 2), so a fill that completes, an exclusive holder that leaves, or an
+  unmap that happens between dropping `as.mapping` and registering is seen and ends the wait at once
+  as `Condition`. Each target bumps its `seq` whenever it changes: a fill completing or failing, the
+  exclusive mapping lock being released, an allocation retry being worth making.
+- **Memory waits.** For frame allocation, X is the E1 reclaimer's progress sequence. When E1 reports that
+  reclaim cannot make progress for this request, the fault fails as permanent (SIGBUS, or EFAULT for a
+  kernel copy) instead of waiting again. A request that can never be satisfied therefore ends, rather
+  than looping. <!-- claim-lint:ok: normative requirement of docs/plans/e2-sleepable-contexts.md under ruling DEV-37(2), not a measured result. -->
 
 - **Wait targets.** X is one of:
   - an exclusive holder of the mapping lock (munmap, mprotect, fork copy, exec teardown);
@@ -495,9 +515,15 @@ fault(addr, access):
     mapping cache's in-flight pin from #3232);
   - frame allocation waiting for memory (E1 returns allocation failure as an error, and its reclaim
     wakes).
-- **Revalidation.** A fault that slept keeps nothing from before the sleep. The re-executed access faults
-  afresh, takes the lock again and repeats the whole lookup, so an unmap, protection change or exec in
-  between is seen. A counter of retries per fault feeds the receipts, so a livelock shows up by name. <!-- claim-lint:ok: normative requirement of docs/plans/e2-sleepable-contexts.md under ruling DEV-37(2), not a measured result. -->
+- **Revalidation.** A fault that slept carries no lookup result across the sleep, and it drops its
+  reference to X when the wait ends. The re-executed access faults afresh and repeats the whole lookup under `as.mapping` shared:
+  - the VMA that covers the address;
+  - the access against the VMA's current protection;
+  - the mapping's identity: the VMA's backing object and its generation, so a VMA replaced by a new
+    mapping at the same address is not taken for the old one;
+  - the PTE, read again under `as.pt` immediately before the install.
+  An unmap, protection change, remap or exec in between is therefore seen. A counter of retries per
+  fault feeds the receipts, so a livelock shows up by name. <!-- claim-lint:ok: normative requirement of docs/plans/e2-sleepable-contexts.md under ruling DEV-37(2), not a measured result. -->
 - **Atomic contexts.** A kernel access to user memory from an atomic context must use the nofault copy,
   which turns any fault that would need to wait into EFAULT (`write_user_bytes_nofault` today). It never
   parks. <!-- claim-lint:ok: normative requirement of docs/plans/e2-sleepable-contexts.md under ruling DEV-37(2), not a measured result. -->
@@ -877,7 +903,16 @@ should own each, not several agents on one PR (DEV-30(3)).
   - a fault sleeps; mprotect changes the protection; the retried access gets the new protection;
   - a fault sleeps during a fork copy, and no entry is written into the copying address space before the
     copy completes;
-  - SIGKILL during a fault's sleep: the thread exits, and no entry is installed;
+  - SIGKILL during a fault's sleep: the thread exits, and no entry is installed. The same during a
+    kernel user copy: the syscall returns EFAULT and unwinds;
+  - completion before registration: a fill completes, or a munmap ends, after the fault drops
+    `as.mapping` and before it registers. The wait ends as `Condition` without sleeping, and the retry
+    sees the new state;
+  - a failed park: waiter reservation fails, and the fault fails as permanent and does not re-execute;
+  - an allocation that reclaim reports it cannot satisfy: the fault ends in SIGBUS after a bounded
+    number of waits, and the retry counter shows the count;
+  - a VMA replaced at the same address while the fault sleeps: the retry finds the new mapping's
+    identity and does not install the old one's page;
   - two faults on one page: one frame, and the second fault sees it;
   - an atomic-context user access that would need to wait takes the EFAULT fixup and does not park;
   - a signal posted during an interrupt taken in user mode: the interrupt return sets `user_work` and
