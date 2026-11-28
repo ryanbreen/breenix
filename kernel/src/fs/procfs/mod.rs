@@ -89,6 +89,9 @@ pub enum ProcEntryType {
     SlabInfo,
     /// /proc/stat - kernel activity counters
     Stat,
+    /// /proc/interrupts - interrupts per CPU per source, in proc(5)'s layout
+    #[cfg(target_arch = "aarch64")]
+    Interrupts,
     /// /proc/cowinfo - copy-on-write statistics
     CowInfo,
     /// /proc/mounts - mounted filesystems
@@ -231,6 +234,8 @@ impl ProcEntryType {
             ProcEntryType::TraceTeardownPid(_) => "pid",
             ProcEntryType::SlabInfo => "slabinfo",
             ProcEntryType::Stat => "stat",
+            #[cfg(target_arch = "aarch64")]
+            ProcEntryType::Interrupts => "interrupts",
             ProcEntryType::CowInfo => "cowinfo",
             ProcEntryType::Mounts => "mounts",
             ProcEntryType::BreenixDir => "breenix",
@@ -325,6 +330,8 @@ impl ProcEntryType {
             ProcEntryType::TraceTeardownPid(_) => "/proc/trace/teardown/<pid>",
             ProcEntryType::SlabInfo => "/proc/slabinfo",
             ProcEntryType::Stat => "/proc/stat",
+            #[cfg(target_arch = "aarch64")]
+            ProcEntryType::Interrupts => "/proc/interrupts",
             ProcEntryType::CowInfo => "/proc/cowinfo",
             ProcEntryType::Mounts => "/proc/mounts",
             ProcEntryType::BreenixDir => "/proc/breenix",
@@ -420,6 +427,8 @@ impl ProcEntryType {
             ProcEntryType::TraceTeardownPid(pid) => pid_inode(*pid, 3),
             ProcEntryType::SlabInfo => 5,
             ProcEntryType::Stat => 6,
+            #[cfg(target_arch = "aarch64")]
+            ProcEntryType::Interrupts => 12,
             ProcEntryType::CowInfo => 7,
             ProcEntryType::Mounts => 8,
             ProcEntryType::BreenixDir => 200,
@@ -584,6 +593,8 @@ pub fn init() {
     procfs.entries.push(ProcEntry::new(ProcEntryType::CpuInfo));
     procfs.entries.push(ProcEntry::new(ProcEntryType::SlabInfo));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Stat));
+    #[cfg(target_arch = "aarch64")]
+    procfs.entries.push(ProcEntry::new(ProcEntryType::Interrupts));
     procfs.entries.push(ProcEntry::new(ProcEntryType::CowInfo));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Mounts));
 
@@ -1067,6 +1078,8 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         }
         ProcEntryType::SlabInfo => text(generate_slabinfo()),
         ProcEntryType::Stat => text(generate_stat()),
+        #[cfg(target_arch = "aarch64")]
+        ProcEntryType::Interrupts => text(generate_interrupts()),
         ProcEntryType::CowInfo => text(generate_cowinfo()),
         ProcEntryType::Pids => text(generate_pids()),
         ProcEntryType::KmsgSequence => {
@@ -1599,7 +1612,27 @@ fn generate_stat() -> String {
             "net_msi_irqs {}\n",
             crate::drivers::virtio::net_pci::msi_interrupt_count()
         );
+        // proc(5): the total, which also counts spurious acknowledges, then
+        // each numbered source (the GIC INTID) summed over the online CPUs.
+        let _ = crate::arch_impl::aarch64::exception::IRQ_SOURCES.write_intr_line(
+            &mut out,
+            num_cpus,
+            IRQ_TOTAL.aggregate(),
+        );
     }
+    out
+}
+
+/// Generate /proc/interrupts: a column per online CPU and a row per GIC INTID
+/// taken, with its controller and device.
+#[cfg(target_arch = "aarch64")]
+fn generate_interrupts() -> String {
+    let mut out = String::with_capacity(1024);
+    let _ = crate::arch_impl::aarch64::exception::IRQ_SOURCES.write_table(
+        &mut out,
+        procfs_online_cpus(),
+        crate::arch_impl::aarch64::exception::irq_source_label,
+    );
     out
 }
 
