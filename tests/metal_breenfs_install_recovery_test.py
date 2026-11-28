@@ -260,5 +260,97 @@ class StoppedUpgradeTest(upgrade.BreenfsUpgradeFixture):
             self.assertEqual(driver.persist['slot']['installedBy'], args.id)
 
 
+class ManagerReplacementTest(existing.StateTest):
+    def test_upgrade_live_manager_preserves_slots_and_advertises_verified_version(self):
+        import metal_live_flash
+
+        layout = persist.reclaimed_layout(persist.add_breenfs_layout(persist.new_layout()))
+        generation = '20261121T172024Z-metal'
+        slots = dict(
+            current=dict(commit='a' * 40, installedBy=generation, userland=generation, writableRoot=True),
+            previous=dict(commit='b' * 40, installedBy=generation, userland=generation, writableRoot=True),
+        )
+        legacy = dict(boot='20261128T054000Z-metal', sha256='c' * 64)
+        persist.update_disk(layout=layout, slots=slots, liveManager=legacy)
+        args = SimpleNamespace(id='20261128T055000Z-metal', mode='persistent-install', payload='image',
+                               kernel_only=True, replace_manager=True, inject=None, commit='d' * 40)
+        with patch.object(m, 'load_site', return_value={}):
+            driver = boot.Driver(args)
+        inputs = driver.dir / 'inputs'
+        inputs.mkdir(parents=True)
+        manager = inputs / 'manager.efi'
+        manager.write_bytes(b'paired manager')
+        digest = boot.metal_image.sha256(manager)
+        build = dict(manager=dict(sha256=digest, manifestVersion=2, sourceCommit=args.commit))
+        driver.phase = driver.event = Mock()
+
+        with patch.object(migration, 'require_closed', return_value={'closed': '20261121T172024Z-metal'}), \
+             patch.object(boot.metal_image, 'extract_esp', return_value={}), \
+             patch.object(m, 'read_lease', return_value=dict(id=args.id, kind='persistent', state='powered')), \
+             patch.object(m, 'load_site', return_value={}):
+            with self.assertRaises(boot.Finish):
+                driver.prepare_install(inputs, dict(manager=dict(sha256=digest)))
+            for wrong_receipt in (
+                'metal-stub: paired live manager installed; prior boot options retained',
+                'metal-stub: paired live manager installed; sha256=' + '0' * 64,
+            ):
+                with self.subTest(receipt=wrong_receipt):
+                    persist.update_disk(liveManager=legacy)
+                    driver.prepare_install(inputs, build)
+                    driver.seen = {'stub'}
+                    driver.slot_userlands.clear()
+                    driver.on_persist_line(f'metal-stub: slot userland: CURRENT {generation}', 1)
+                    with self.assertRaises(boot.Finish) as rejected:
+                        driver.on_persist_line(wrong_receipt, 2)
+                        driver.on_persist_line(boot.PERSIST_DONE, 3)
+                    self.assertEqual(rejected.exception.status, m.EXIT_SHORT)
+                    self.assertEqual(persist.read_disk()['liveManager'], legacy)
+
+            files, _ = driver.prepare_install(inputs, build)
+            self.assertIn(r'esp-file \EFI\BREENIX\PAIR-' + digest.upper() + '.EFI ',
+                          files['persist.cfg'].read_text())
+            self.assertIn(f'manager-replacement {digest}\n', files['persist.cfg'].read_text())
+            self.assertEqual(persist.read_disk()['liveManager'], legacy)
+            self.assertEqual(metal_live_flash.site(m)['manifestVersion'], 1)
+
+            driver.seen = {'stub'}
+            driver.slot_userlands.clear()
+            driver.on_persist_line(f'metal-stub: slot userland: CURRENT {generation}', 1)
+            driver.on_persist_line(f'metal-stub: paired live manager installed; sha256={digest}', 2)
+            with self.assertRaises(boot.Finish) as completed:
+                driver.on_persist_line(boot.PERSIST_DONE, 3)
+            self.assertEqual(completed.exception.status, m.EXIT_DONE)
+            self.assertEqual(persist.read_disk()['slots'], slots)
+            self.assertEqual(persist.read_disk()['liveManager'],
+                             dict(boot=args.id, sha256=digest, manifestVersion=2, sourceCommit=args.commit))
+            self.assertEqual(metal_live_flash.site(m)['manifestVersion'], 2)
+            with self.assertRaises(boot.Finish):
+                driver.prepare_install(inputs, build)
+
+            previous = persist.read_disk()['liveManager']
+            args.commit = 'e' * 40
+            manager.write_bytes(b'revised paired manager')
+            revised_digest = boot.metal_image.sha256(manager)
+            for unpinned in ({}, {'sourceCommit': 'f' * 40}):
+                with self.assertRaises(boot.Finish):
+                    driver.prepare_install(inputs, dict(manager=dict(
+                        sha256=revised_digest, manifestVersion=2, **unpinned)))
+            revised = dict(manager=dict(sha256=revised_digest, manifestVersion=2, sourceCommit=args.commit))
+            files, _ = driver.prepare_install(inputs, revised)
+            self.assertIn(r'esp-file \EFI\BREENIX\PAIR-' + revised_digest.upper() + '.EFI ',
+                          files['persist.cfg'].read_text())
+            self.assertEqual(persist.read_disk()['liveManager'], previous)
+            driver.seen = {'stub'}
+            driver.slot_userlands.clear()
+            driver.on_persist_line(f'metal-stub: slot userland: CURRENT {generation}', 1)
+            driver.on_persist_line(f'metal-stub: paired live manager installed; sha256={revised_digest}', 2)
+            with self.assertRaises(boot.Finish) as completed:
+                driver.on_persist_line(boot.PERSIST_DONE, 3)
+            self.assertEqual(completed.exception.status, m.EXIT_DONE)
+            self.assertEqual(persist.read_disk()['slots'], slots)
+            self.assertEqual(persist.read_disk()['liveManager'],
+                             dict(boot=args.id, sha256=revised_digest, manifestVersion=2, sourceCommit=args.commit))
+
+
 if __name__ == '__main__':
     unittest.main()

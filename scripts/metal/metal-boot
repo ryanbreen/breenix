@@ -1095,7 +1095,8 @@ class Driver:
         """The install boot: the request, the new kernel slot, the new userland on the
         test root, and the migration's intent. Returns the boot disk's files."""
         the_layout = metal_persist.layout()
-        slots = metal_persist.read_disk().get('slots') or {}
+        disk = metal_persist.read_disk()
+        slots = disk.get('slots') or {}
         kernel_only = getattr(self.args, 'kernel_only', False)
         replace_usr = getattr(self.args, 'replace_usr', False)
         current = slots.get('current') or {}
@@ -1138,8 +1139,9 @@ class Driver:
             the_layout = metal_persist.new_layout()
             expect = metal_disk.record(previous)
         manager = inputs / 'manager.efi'
+        manager_build = build.get('manager', {})
         replace_manager = getattr(self.args, 'replace_manager', False)
-        if (not kernel_only or replace_manager) and (not manager.is_file() or build.get('manager', {}).get('sha256') != metal_image.sha256(manager)):
+        if (not kernel_only or replace_manager) and (not manager.is_file() or manager_build.get('sha256') != metal_image.sha256(manager)):
             raise Finish(m.EXIT_CANCELLED, 'the boot manager differs from its build record')
         self.phase('Assembling the ' + action)
         extracted = self.stage / 'esp'
@@ -1147,12 +1149,20 @@ class Driver:
         scratch = self.stage / 'persist'
         scratch.mkdir(parents=True, exist_ok=True)
         if replace_manager:
-            if (the_layout['version'] != 3 or not current.get('writableRoot')
-                    or slots.get('next') or metal_persist.read_disk().get('liveManager')):
-                raise Finish(m.EXIT_CANCELLED, 'manager replacement requires an unbootstrapped writable format-3 CURRENT')
-            config, request = metal_persist.manager_replacement_request(scratch, the_layout, generation, manager)
-            self.persist = {'managerReplacement': True, 'sha256': metal_image.sha256(manager),
-                            'userland': generation}
+            installed = disk.get('liveManager') or {}
+            if the_layout['version'] != 3 or not current.get('writableRoot') or slots.get('next'):
+                raise Finish(m.EXIT_CANCELLED, 'manager replacement requires a writable format-3 CURRENT and empty NEXT')
+            if manager_build.get('manifestVersion') != 2 or manager_build.get('sourceCommit') != self.args.commit:
+                raise Finish(m.EXIT_CANCELLED, 'manager replacement requires a version-2 manager built from the requested commit')
+            installed_version = installed.get('manifestVersion', 1)
+            if installed_version == 2 and installed.get('sourceCommit') == self.args.commit:
+                raise Finish(m.EXIT_CANCELLED, 'the paired live manager from this commit is already installed')
+            if installed_version not in (1, 2) or (installed_version == 1 and manager_build['sha256'] == installed.get('sha256')):
+                raise Finish(m.EXIT_CANCELLED, 'manager replacement requires a different, supported manager build')
+            config, request = metal_persist.manager_replacement_request(
+                scratch, the_layout, generation, manager, manager_build['sha256'])
+            self.persist = {'managerReplacement': True, 'sha256': manager_build['sha256'], 'manifestVersion': 2,
+                            'sourceCommit': manager_build['sourceCommit'], 'userland': generation}
             m.write_json(self.dir / 'persist.json', self.persist)
             return {'persist.cfg': config, 'persist.dat': request.data}, extracted
         slot = scratch / 'next.img'
@@ -2083,15 +2093,17 @@ class Driver:
             if INSTALL_DONE in line and not {'replace-usr-verified', 'replace-usr-fence'} <= self.seen:
                 raise Finish(m.EXIT_SHORT, '/usr replacement lacks CURRENT or the system-only write fence receipt')
         if getattr(self.args, 'replace_manager', False) and self.persist:
-            if line == 'metal-stub: live manager installed; the prior boot option is retained':
+            if line == f"metal-stub: paired live manager installed; sha256={self.persist['sha256']}":
                 self.seen.add('live-manager-installed')
             if line == PERSIST_DONE:
                 if ('stub' not in self.seen or 'live-manager-installed' not in self.seen
                         or self.kernel_started is not None
                         or self.slot_userlands != {'CURRENT': self.persist['userland']}):
                     raise Finish(m.EXIT_SHORT, 'firmware did not confirm the manager replacement and CURRENT')
-                metal_persist.update_disk(liveManager=dict(boot=self.id, sha256=self.persist['sha256']))
-                raise Finish(m.EXIT_DONE, 'live boot manager installed; original boot option retained')
+                metal_persist.update_disk(liveManager=dict(boot=self.id, sha256=self.persist['sha256'],
+                                                          manifestVersion=self.persist['manifestVersion'],
+                                                          sourceCommit=self.persist['sourceCommit']))
+                raise Finish(m.EXIT_DONE, 'paired live boot manager installed; prior boot options retained')
         if self.persist and PERSIST_DONE in line and 'persist-written' not in self.seen:
             slot = self.persist['slot']
             if self.persist.get('kernelOnly') and (line != PERSIST_DONE or 'stub' not in self.seen

@@ -888,3 +888,7 @@ Review of PR #3273 (the same rule):
   Until then, a missing root costs one failed trial, ended by `force_rollback` (section 5) at the 600 s deadline.
 - **DEV-47 approves the ESP slot layout change.** The coordinator schedules the manager replacement after
   PR B, PR C and the DEV-45 fix merge. The ordering in DEV-47(4) governs the live run.
+- The replacement builds both EFI applications from `--sha`, including the delivery stub that verifies the
+  manager's SHA-256. It uses a digest-named executable and boot option to preserve earlier managers.
+  A retry can reuse an exact staged file if publication outlived the host's receipt. The installer rewrites
+  a partial file only while it has no boot option.
