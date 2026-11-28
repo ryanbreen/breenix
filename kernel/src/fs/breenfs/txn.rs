@@ -945,17 +945,20 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
     }
     /// Host oracle after each settlement: the FREE index equals the FREE
     /// items, and each quarantine run this mount wrote is stored as such.
+    /// It compares in step and collects nothing, so host heap measurements
+    /// see only the code under test.
     #[cfg(test)]
     fn check_space_state(&self) {
         let view = self.view();
-        let mut stored = Vec::new();
+        let generation = self.generation;
+        let mut indexed = self.state.free.ranges();
         let free = |offset| Key { object: 0xffff_ffff_ffff_ff20, item_type: format::FREE, offset };
         btree::visit_range(&view, self.space_root, free(0), free(u64::MAX), &mut |key, bytes| {
-            stored.push((key.offset, Free::decode(bytes)?.length));
+            let stored = (key.offset, Free::decode(bytes)?.length);
+            assert_eq!(indexed.next(), Some(stored), "FREE index diverged from SPACE at generation {generation}");
             Ok::<_, Error>(true)
         }).unwrap();
-        let indexed: Vec<_> = self.state.free.ranges().collect();
-        assert_eq!(indexed, stored, "FREE index diverged from SPACE at generation {}", self.generation);
+        assert_eq!(indexed.next(), None, "FREE index has ranges SPACE lacks at generation {generation}");
         for (start, length, released) in self.state.quarantine.runs() {
             let key = Key { object: 0xffff_ffff_ffff_ff30, item_type: format::PENDING, offset: start };
             let bytes = btree::search(&view, self.space_root, key).unwrap()
