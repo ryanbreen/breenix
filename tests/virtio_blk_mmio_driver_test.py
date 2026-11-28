@@ -60,7 +60,7 @@ ITEMS = [
     'pub fn write_sectors(', 'pub fn flush(', 'fn report_queue_state(', 'pub fn handle_interrupt(',
 ]
 # Present on some heads only.
-OPTIONAL = ['fn owner_tags(', 'fn try_with_engine<R>(', 'fn complete_token(', 'fn wake_all_slots(']
+OPTIONAL = ['fn owner_tags(', 'fn drain_after_release(', 'fn complete_token(', 'fn wake_all_slots(']
 CONSTANTS = r'^(?:pub )?const (?:BLOCK_MMIO_WEDGED_ERROR|BLOCK_MMIO_WAIT_SLICE_NS|BLOCK_MMIO_BOOTSTRAP_WAIT_LIMIT_NS|MAX_ADMITTED|CHAIN_FRAMES|SECTOR_SIZE):[^;]+;'
 
 HARNESS = r'''

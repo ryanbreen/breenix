@@ -637,11 +637,17 @@ static QUEUES: [DeviceQueue; MAX_BLOCK_DEVICES] = [const { DeviceQueue::new() };
 fn with_engine<R>(device_index: usize, f: impl FnOnce(&mut BlkQueue<MmioRing>) -> R) -> Option<R> {
     let queue = &QUEUES[device_index];
     let result = crate::arch_without_interrupts(|| queue.engine.lock().as_mut().map(f));
+    drain_after_release(device_index);
+    result
+}
+
+/// Every thread-side holder of the engine lock calls this after releasing
+/// it: an interrupt handler that found the lock held left its drain here.
+fn drain_after_release(device_index: usize) {
     fence(Ordering::SeqCst);
-    if queue.drain_pending.load(Ordering::SeqCst) {
+    if QUEUES[device_index].drain_pending.load(Ordering::SeqCst) {
         drain_device(device_index);
     }
-    result
 }
 
 /// Take the chains the device has returned and wake their waiters. Callable
@@ -1401,6 +1407,10 @@ fn report_queue_state(device_index: usize) {
             })
         })
     });
+    // As sampled; the drain below then takes what an interrupt left while
+    // the sample held the lock.
+    let pending = queue.drain_pending.load(Ordering::Acquire);
+    drain_after_release(device_index);
     let base = block_mmio_virt_base(state);
     let (interrupt_status, device_status) = unsafe {
         (
@@ -1408,7 +1418,6 @@ fn report_queue_state(device_index: usize) {
             crate::arch_impl::aarch64::mmio::read32((base + 0x70) as *const u32),
         )
     };
-    let pending = queue.drain_pending.load(Ordering::Acquire);
     match sample {
         Some(Some((used, last_used, published, outstanding, free, stopped, slots, tags))) => {
             log::warn!(
