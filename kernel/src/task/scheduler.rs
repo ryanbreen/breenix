@@ -6773,6 +6773,9 @@ impl Scheduler {
                 // manages this flag itself when it detects the state change.
                 if let Some(thread) = self.get_thread_mut(tid) {
                     let was_blocked_on_io = thread.state == ThreadState::BlockedOnIO;
+                    if was_blocked_on_io {
+                        crate::task::park::arrive_timeout(thread);
+                    }
                     #[cfg(target_arch = "aarch64")]
                     thread.wait_site.clear();
                     thread.state = ThreadState::Ready;
@@ -6816,6 +6819,9 @@ impl Scheduler {
 
             if let Some(thread) = self.get_thread_mut(tid) {
                 let was_blocked_on_io = thread.state == ThreadState::BlockedOnIO;
+                if was_blocked_on_io {
+                    crate::task::park::arrive_timeout(thread);
+                }
                 #[cfg(target_arch = "aarch64")]
                 thread.wait_site.clear();
                 thread.state = ThreadState::Ready;
@@ -10389,6 +10395,19 @@ fn publish_irq_wake(tid: u64, bits: u64) -> Option<u64> {
         let count = if previous == 0 { &ENQUEUE_ISR_BUFFER } else { &ENQUEUE_ISR_BUFFER_DEDUP };
         count.fetch_add(1, Ordering::Relaxed);
         Some(previous)
+    })
+}
+
+/// Run `f` on `tid`'s park wait word (`task::park`) without the scheduler
+/// lock, through the same lock-free index wakes use. Returns no value when
+/// the index cannot reach the thread.
+pub(crate) fn with_park_word<R>(tid: u64, f: impl FnOnce(&crate::task::park_core::WaitWord) -> R) -> Option<R> {
+    crate::arch_without_interrupts(|| {
+        #[cfg(target_arch = "x86_64")]
+        let pin = rq::Pin::new();
+        #[cfg(target_arch = "aarch64")]
+        let pin = wake_index::Pin::new();
+        pin.thread(tid).map(|thread| f(&thread.park.word))
     })
 }
 

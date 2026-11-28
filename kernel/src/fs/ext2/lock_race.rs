@@ -16,8 +16,9 @@
 //! This leg constructs that shape directly, in-kernel, deterministically:
 //!
 //!  1. A "holder" kthread acquires `root_fs_read()` (or `home_fs_read()`)
-//!     under an explicit `preempt_disable()` bracket — mirroring exactly what
-//!     a real syscall dispatch does around a filesystem call — and then
+//!     under a `park::Braked` level — mirroring exactly what a real syscall
+//!     dispatch does around a filesystem call (E2.2 records that level as
+//!     the thread's park baseline, so the park contract admits it) — and then
 //!     deliberately parks *while still holding the guard* via
 //!     `Completion::wait_timeout_uninterruptible()` on a scratch `Completion`
 //!     that is never completed, so the wait always runs its full deadline.
@@ -29,7 +30,7 @@
 //!     its guard — a handful of instructions — not a race-sensitive value:
 //!     the hold window below is three seconds), `CONTENDER_COUNT` "contender"
 //!     kthreads each attempt `root_fs_write()`/`home_fs_write()` under the
-//!     same preempt-disable bracket and, on success, create a small
+//!     same braked level and, on success, create a small
 //!     directory (the write-family's own #728 shape — `sys_mkdir` was the
 //!     observed repro's own call site). `CONTENDER_COUNT` matches each gate
 //!     profile's known `-smp` value (1 on x86, 4 on aarch64) rather than
@@ -91,22 +92,6 @@ const HEAD_START_MS: u64 = 100;
 
 static HOLDER_SCRATCH: Completion = Completion::new();
 
-#[inline]
-fn preempt_disable() {
-    #[cfg(target_arch = "aarch64")]
-    crate::per_cpu_aarch64::preempt_disable();
-    #[cfg(not(target_arch = "aarch64"))]
-    crate::per_cpu::preempt_disable();
-}
-
-#[inline]
-fn preempt_enable() {
-    #[cfg(target_arch = "aarch64")]
-    crate::per_cpu_aarch64::preempt_enable();
-    #[cfg(not(target_arch = "aarch64"))]
-    crate::per_cpu::preempt_enable();
-}
-
 fn now_ns() -> u64 {
     let (secs, nanos) = crate::time::get_monotonic_time_ns();
     secs as u64 * 1_000_000_000 + nanos as u64
@@ -122,7 +107,9 @@ fn sleep_ms(ms: u64) {
 }
 
 fn holder_fn(is_home: bool) {
-    preempt_disable();
+    // The syscall-shaped level (E2.2, design §3.2): depth and baseline rise
+    // together, so the park contract lets the Completion wait sleep.
+    let _braked = crate::task::park::Braked::new();
     if is_home {
         let guard = crate::fs::ext2::home_fs_read().expect("unkilled ext2 lock test worker");
         let _ = HOLDER_SCRATCH.wait_timeout_uninterruptible(1, HOLD_TIMEOUT_NS);
@@ -132,11 +119,11 @@ fn holder_fn(is_home: bool) {
         let _ = HOLDER_SCRATCH.wait_timeout_uninterruptible(1, HOLD_TIMEOUT_NS);
         drop(guard);
     }
-    preempt_enable();
 }
 
 fn contender_fn(is_home: bool, index: usize) {
-    preempt_disable();
+    // As in `holder_fn`: the ext2 gate parks only at the braked baseline.
+    let _braked = crate::task::park::Braked::new();
     let prefix = if is_home { "home" } else { "root" };
     let path = alloc::format!("/lockrace_{}_{}", prefix, index);
     // This leg exercises lock exclusion, including on read-only gate disks.
@@ -152,7 +139,6 @@ fn contender_fn(is_home: bool, index: usize) {
             let _ = fs.create_directory(&path, 0o755);
         }
     }
-    preempt_enable();
 }
 
 #[cfg(target_arch = "aarch64")]

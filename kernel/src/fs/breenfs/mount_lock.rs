@@ -12,7 +12,7 @@ use crate::{fs::errno::Errno, syscall::errno::EINTR};
 use core::{
     cell::UnsafeCell,
     ops::{Deref, DerefMut},
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, Ordering},
 };
 
 /// One park round. A missed wake becomes a retry at this granularity rather
@@ -24,9 +24,11 @@ pub struct MountLock<T> {
     held: AtomicBool,
     // Contenders between announcing a park and finishing it. Release wakes
     // only when this is nonzero. The release's store-then-load and the
-    // contender's increment-then-recheck are SeqCst, so either the release
-    // sees the contender or the contender's recheck sees the lock free.
-    parked: AtomicUsize,
+    // contender's increment-then-recheck are the store-buffering shape, so
+    // each side has a full barrier between them (`task::park::announce` and
+    // `should_wake`, design §3.4): either the release sees the contender or
+    // the contender's recheck sees the lock free.
+    parked: AtomicU32,
     #[cfg(not(test))]
     queue: crate::task::waitqueue::WaitQueueHead,
     #[cfg(test)]
@@ -64,7 +66,7 @@ impl<T> MountLock<T> {
     pub fn new(value: T) -> Self {
         Self {
             held: AtomicBool::new(false),
-            parked: AtomicUsize::new(0),
+            parked: AtomicU32::new(0),
             #[cfg(not(test))]
             queue: crate::task::waitqueue::WaitQueueHead::new(),
             #[cfg(test)]
@@ -118,53 +120,44 @@ impl<T> MountLock<T> {
         #[cfg(test)]
         super::preempt::context::observe(super::preempt::context::Event::Release(self as *const Self as usize));
         self.held.store(false, Ordering::SeqCst);
-        if self.parked.load(Ordering::SeqCst) != 0 {
+        #[cfg(not(test))]
+        let parked = crate::task::park::should_wake(&self.parked);
+        #[cfg(test)]
+        let parked = self.parked.load(Ordering::SeqCst) != 0;
+        if parked {
             self.wake();
         }
     }
 
+    /// Park until the lock is released or a round ends. False when an
+    /// interruptible acquisition must unwind for a kill. A context that may
+    /// not park (`task::park::context`) spins instead, with a receipt; the
+    /// boot continuation keeps its pre-E2.2 sleep until E2.4.
     #[cfg(not(test))]
     fn park(&self, interruptible: bool) -> bool {
         use crate::task::{
-            thread::{current_wait_must_unwind, ThreadState},
-            waitqueue::{schedule_current_wait, PrepareOutcome},
+            park::{self, WaitEnd, WaitMode},
+            thread::current_wait_must_unwind,
         };
-        #[cfg(target_arch = "x86_64")]
-        use crate::per_cpu as cpu;
-        #[cfg(target_arch = "aarch64")]
-        use crate::per_cpu_aarch64 as cpu;
-        if !can_sleep() {
-            core::hint::spin_loop();
-            return true;
-        }
-        // schedule_current_wait releases exactly one preemption brake.
-        let add_brake = cpu::preempt_count() == 0;
-        if add_brake {
-            cpu::preempt_disable();
-        }
-        self.parked.fetch_add(1, Ordering::SeqCst);
+        park::announce(&self.parked);
         let deadline = super::commit_signal::monotonic_ns().saturating_add(PARK_ROUND_NS);
         // The recheck runs under the queue lock, atomically with publishing
         // the wait, so a release before the enqueue is seen here.
-        match self
-            .queue
-            .prepare_to_wait_checked(ThreadState::BlockedOnIO, Some(deadline), || {
-                self.held.load(Ordering::SeqCst)
-            }) {
-            PrepareOutcome::Queued => {
-                schedule_current_wait();
-                self.queue.finish_wait();
-            }
-            PrepareOutcome::Mismatch => {}
-            PrepareOutcome::PublishFailed | PrepareOutcome::OutOfMemory => {
+        let end = park::wait_allowing_boot_idle(
+            &self.queue,
+            || !self.held.load(Ordering::SeqCst),
+            Some(deadline),
+            WaitMode::Uninterruptible,
+        );
+        park::withdraw(&self.parked);
+        match end {
+            Err(_) => core::hint::spin_loop(),
+            Ok(WaitEnd::Killed | WaitEnd::NoMemory) => {
                 if !interruptible || !current_wait_must_unwind() {
                     crate::block::cache_kernel::park_for_wait_retry();
                 }
             }
-        }
-        self.parked.fetch_sub(1, Ordering::SeqCst);
-        if add_brake {
-            cpu::preempt_enable();
+            Ok(_) => {}
         }
         !interruptible || !current_wait_must_unwind()
     }
@@ -211,28 +204,6 @@ impl<T> MountLock<T> {
     #[cfg(test)]
     pub fn is_held(&self) -> bool {
         self.held.load(Ordering::SeqCst)
-    }
-}
-
-/// A contended acquisition may park only from a thread, outside interrupt
-/// context, with at most the one preemption brake a syscall or the commit
-/// worker holds and, on aarch64, with IRQs unmasked once the timer runs (the
-/// conditions of ext2's #728 park).
-#[cfg(not(test))]
-fn can_sleep() -> bool {
-    if crate::task::scheduler::current_thread_id().is_none() {
-        return false;
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        !crate::per_cpu_aarch64::in_interrupt()
-            && crate::arch_impl::aarch64::cpu::interrupts_enabled()
-            && crate::per_cpu_aarch64::preempt_count() <= 1
-            && crate::arch_impl::aarch64::timer_interrupt::is_initialized()
-    }
-    #[cfg(target_arch = "x86_64")]
-    {
-        !crate::per_cpu::in_interrupt() && crate::per_cpu::preempt_count() <= 1
     }
 }
 
