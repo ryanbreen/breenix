@@ -952,6 +952,18 @@ of their steps, keeping each CPU's program order. The steps are sequentially con
     of one per pass never fail admission and never panic. Red on the old tree: fork and clone get EAGAIN
     once 3,840 slots are indexed or reserved (`rq.rs:127-133`), and an insert that finds no slot panics
     (`rq.rs:270`). That is #1712's class. <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
+
+    The red claim, checked against the old admission limit. `reserve` refuses once `TAKEN` reaches
+    `SLOTS - KERNEL_RESERVE`, and `TAKEN` falls as threads are reclaimed (`rq.rs:116`, `:127-133`). So
+    the old tree refuses only when more threads are live, or reserved, at once than that limit.
+
+    ```pycon
+    >>> OLD_LIMIT = 4096 - 256
+    >>> CHURN_PEAK_LIVE = 2
+    >>> CHURN_PEAK_LIVE > OLD_LIMIT
+    True
+
+    ```
   - A structure test that nothing outside the registry scans threads to find dead ones. <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
 - **Rows.** `process.fork-exec` and the compile rows (cargo spawns many short processes).
 - **Boot.** Not needed: the registry and reclamation are host-tested, and dispatch does not change.
