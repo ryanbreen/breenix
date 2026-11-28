@@ -127,7 +127,6 @@ pub enum ProcEntryType {
     Ext2,
     /// /proc/breenix/frames - allocated physical frames by allocation site
     Frames,
-    #[cfg(target_arch = "aarch64")]
     Kmem,
     WindowPipeline,
     WindowPipelineFull,
@@ -250,7 +249,6 @@ impl ProcEntryType {
             ProcEntryType::FsMutationCosts => "fs-mutation-costs",
             ProcEntryType::MappingCache => "mapping-cache",
             ProcEntryType::Frames => "frames",
-            #[cfg(target_arch = "aarch64")]
             ProcEntryType::Kmem => "kmem",
             ProcEntryType::WindowPipeline => "window-pipeline",
             ProcEntryType::WindowPipelineFull => "window-pipeline-full",
@@ -344,7 +342,6 @@ impl ProcEntryType {
             ProcEntryType::FsMutationCosts => "/proc/breenix/fs-mutation-costs",
             ProcEntryType::MappingCache => "/proc/breenix/mapping-cache",
             ProcEntryType::Frames => "/proc/breenix/frames",
-            #[cfg(target_arch = "aarch64")]
             ProcEntryType::Kmem => "/proc/breenix/kmem",
             ProcEntryType::WindowPipeline => "/proc/breenix/window-pipeline",
             ProcEntryType::WindowPipelineFull => "/proc/breenix/window-pipeline-full",
@@ -439,7 +436,6 @@ impl ProcEntryType {
             ProcEntryType::FsMutationCosts => 223,
             ProcEntryType::MappingCache => 225,
             ProcEntryType::Frames => 203,
-            #[cfg(target_arch = "aarch64")]
             ProcEntryType::Kmem => 226,
             ProcEntryType::WindowPipeline => 220,
             ProcEntryType::WindowPipelineFull => 221,
@@ -607,7 +603,6 @@ pub fn init() {
     procfs.entries.push(ProcEntry::new(ProcEntryType::Composites));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Ext2));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Frames));
-    #[cfg(target_arch = "aarch64")]
     procfs.entries.push(ProcEntry::new(ProcEntryType::Kmem));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Filesystems));
     procfs.entries.push(ProcEntry::new(ProcEntryType::FsMutationCosts));
@@ -769,7 +764,6 @@ pub fn list_entries() -> Result<Vec<String>, i32> {
     {
         let procfs = PROCFS.lock();
         for e in procfs.entries.iter().filter(|e| {
-            #[cfg(target_arch = "aarch64")]
             if e.entry_type == ProcEntryType::Kmem {
                 return false;
             }
@@ -948,7 +942,6 @@ pub fn list_breenix_entries() -> Vec<String> {
         .entries
         .iter()
         .filter(|e| {
-            #[cfg(target_arch = "aarch64")]
             if e.entry_type == ProcEntryType::Kmem {
                 return true;
             }
@@ -1099,16 +1092,20 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
             text(report)
         }
         ProcEntryType::Frames => generate_frames().map(String::into_bytes),
-        #[cfg(target_arch = "aarch64")]
         ProcEntryType::Kmem => {
-            use core::fmt::Write;
-
-            let pool = crate::platform_config::frame_pool();
+            // 3 frame-pool lines and 14 allocator lines, each at most 48 bytes.
             let mut report = String::new();
-            report.try_reserve_exact(192).map_err(|_| -12)?;
-            let _ = writeln!(report, "excluded_pa_bytes {}", pool.stats.excluded_pa_bytes);
-            let _ = writeln!(report, "excluded_va_bytes {}", pool.stats.excluded_va_bytes);
-            let _ = writeln!(report, "allocated_high_frames {}", crate::memory::frame_allocator::allocated_high_frames());
+            report.try_reserve_exact(17 * 48).map_err(|_| -12)?;
+            #[cfg(target_arch = "aarch64")]
+            {
+                use core::fmt::Write;
+
+                let pool = crate::platform_config::frame_pool();
+                let _ = writeln!(report, "excluded_pa_bytes {}", pool.stats.excluded_pa_bytes);
+                let _ = writeln!(report, "excluded_va_bytes {}", pool.stats.excluded_va_bytes);
+                let _ = writeln!(report, "allocated_high_frames {}", crate::memory::frame_allocator::allocated_high_frames());
+            }
+            let _ = crate::memory::kmem::write_stats(&mut report);
             text(report)
         }
         ProcEntryType::InputLedger => text(crate::input::stream::ledger()),

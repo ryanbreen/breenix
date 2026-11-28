@@ -19,7 +19,9 @@ artifact helpers are the deployed tools' copies beside this file, not the commit
 way. The container runs on the host's shared CPUs, outside the x86 gate VM, so no x86 lease covers it. Writes
 <root>/breenix-metal-<id>-out/ with uefi.img, ext2.img, stub.efi, definition/ and build.json (and test-binaries.img for the
 testing kernel), and removes the clone. Every build also writes manager.efi, the boot manager the same crate builds
-(docs/metal/README.md, "Boot manager and persistent install"). `--stub-only` builds only the deployed EFI applications,
+(docs/metal/README.md, "Boot manager and persistent install"). For `--replace-manager`, build both EFI
+applications from the requested clone and record the manager's source commit and declared manifest version.
+`--stub-only` builds only the deployed EFI applications,
 for a cold readback or a boot manager probe, under a metal-build slot without a kernel or userspace build.
 For `--suite llvm`, the Mac prebuilt builder takes the K4 cross-builds from BREENIX_LLVM_BUILDS and the K3
 runtime from BREENIX_CXX_RUNTIME_BUILDS. `build.json` names the staged fixture digests by guest path.
@@ -45,6 +47,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 
 from metal_root import require_e2fsprogs
 import transfer_fixture
@@ -143,6 +146,8 @@ def outer(args):
              '--stub', args.stub, '--guard-target', target, '--features', args.features, '--suite', args.suite]
     if args.kernel_only:
         inner.append('--kernel-only')
+    if getattr(args, 'replace_manager', False):
+        inner.append('--replace-manager')
     if getattr(args, 'paired_tools', False):
         inner.append('--paired-tools')
     if args.milestone:
@@ -198,6 +203,18 @@ def kernel_assembly_artifacts(messages, clone):
 
 def inner(args):
     clone, out, tmp = paths(args)
+    efi_source = Path(args.stub)
+    manager_provenance = {}
+    if getattr(args, 'replace_manager', False):
+        efi_source = clone / 'scripts/metal/efi-stub'
+        manifest = efi_source / 'Cargo.toml'
+        source_commit = git('rev-parse', 'HEAD', cwd=clone)
+        package = tomllib.loads(manifest.read_text()).get('package', {}) if manifest.is_file() else {}
+        version = package.get('metadata', {}).get('breenix', {}).get('manager-manifest-version')
+        if source_commit != args.sha or version != 2:
+            print('[metal-build] the requested commit must declare a version-2 replacement manager', flush=True)
+            return 1
+        manager_provenance = {'sourceCommit': source_commit, 'manifestVersion': version}
     require_legacy(clone, out, tmp, clone / 'testdata/ext2.img', clone / 'userspace/programs',
                    *(os.environ.get(name) for name in (
                        'BREENIX_HOSTED_LIBC', 'BREENIX_KD_BUILD_DIR', 'BREENIX_RUSTC_PORT_BUILDS',
@@ -372,7 +389,7 @@ def inner(args):
                                           '-Zbuild-std=core,compiler_builtins',
                                           '-Zbuild-std-features=compiler-builtins-mem',
                                           '--target-dir', str(tmp / 'stub-target')],
-                                         cwd=args.stub, stdout=output, stderr=subprocess.STDOUT)
+                                         cwd=efi_source, stdout=output, stderr=subprocess.STDOUT)
             timings['stub'] = round(time.time() - started)
             if not clean_build(status, log, 'stub', logs, out):
                 return 1
@@ -617,7 +634,8 @@ def inner(args):
                  'cargoJobs': int(os.environ['CARGO_BUILD_JOBS']),
                  'uefi': {'size': (out / 'uefi.img').stat().st_size, 'sha256': sha256(out / 'uefi.img')},
                  'stub': {'size': (out / 'stub.efi').stat().st_size, 'sha256': sha256(out / 'stub.efi')},
-                 'manager': {'size': (out / 'manager.efi').stat().st_size, 'sha256': sha256(out / 'manager.efi')}}
+                 'manager': {'size': (out / 'manager.efi').stat().st_size, 'sha256': sha256(out / 'manager.efi'),
+                             **manager_provenance}}
         breenfs_vfs = clone / 'kernel/src/fs/breenfs/vfs.rs'
         build['writablePersistentRoot'] = (
             breenfs_vfs.is_file() and 'fn mount_persistent_cached' in breenfs_vfs.read_text())
@@ -725,6 +743,7 @@ def main():
     parser.add_argument('--catchup', action='store_true', help='request catch-up under the policy from origin/main')
     parser.add_argument('--inner', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--kernel-only', action='store_true', help='build the production kernel without userland')
+    parser.add_argument('--replace-manager', action='store_true', help='build the EFI applications from the selected commit')
     parser.add_argument('--paired-tools', action='store_true', help='include the paired flash host uploader')
     parser.add_argument('--stub-only', action='store_true', help='build only the deployed EFI applications')
     parser.add_argument('--tools-profile', choices=('disk-readback', 'boot-manager', 'persistent-export', 'reclaim-ext2'),
@@ -745,6 +764,8 @@ def main():
         parser.error('--suite must be a suite id or ids joined by commas')
     if args.kernel_only and (args.stub_only or args.features or args.suite or args.milestone):
         parser.error('--kernel-only needs a production kernel without suite inputs')
+    if args.replace_manager and not args.kernel_only:
+        parser.error('--replace-manager requires --kernel-only')
     if args.paired_tools and (args.kernel_only or args.stub_only or args.features or args.suite or args.milestone):
         parser.error('--paired-tools needs a production kernel and userspace without suite inputs')
     if args.stub_only:

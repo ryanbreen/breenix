@@ -2204,6 +2204,28 @@ pub(crate) enum FaultOutcome {
     Resolved,
     /// The access cannot complete; a user access raises this signal.
     Signal(u32),
+    /// No frame could back the page. Until E3 chooses a victim by size, the
+    /// faulting process gets SIGKILL, as before (E1 plan, 7.4).
+    OutOfMemory,
+}
+
+impl FaultOutcome {
+    /// The signal a user access raises for this outcome, if any.
+    pub(crate) fn raised(self) -> Option<u32> {
+        match self {
+            FaultOutcome::Signal(signal) => Some(signal),
+            FaultOutcome::OutOfMemory => Some(crate::signal::constants::SIGKILL),
+            FaultOutcome::NotFile | FaultOutcome::Resolved => None,
+        }
+    }
+
+    /// The outcome the fault handlers act on: `OutOfMemory` is SIGKILL.
+    pub(crate) fn delivered(self) -> Self {
+        match self {
+            FaultOutcome::OutOfMemory => FaultOutcome::Signal(crate::signal::constants::SIGKILL),
+            other => other,
+        }
+    }
 }
 
 /// As on Linux, a writable mapping is also readable.
