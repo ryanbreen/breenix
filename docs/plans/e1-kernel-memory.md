@@ -368,12 +368,18 @@ Zone, order and per-CPU cache counts go in a new `/proc/breenix/kmem`.
 
 ### 5.4 Per-CPU page caches
 
-- Each CPU keeps, per zone, a list of order-0 frames. This is the magazine idea of Bonwick and Adams 2001
-  applied to frames.
-  - `batch` = clamp(zone frames / (1024 × CPUs), 8, 64).
-  - `high` = 4 × `batch`.
-  - Allocation pops; an empty list refills `batch` frames from the buddy under one zone-lock hold.
-  - A free pushes; above `high`, `batch` frames go back to the buddy.
+- Each CPU keeps, per zone and per mobility class (5.5), a list of order-0 frames. This is the magazine
+  idea of Bonwick and Adams 2001 applied to frames.
+  - The lists are per class so that a frame refilled from a `MOVABLE` pageblock cannot be handed to an
+    `UNMOVABLE` request. One mixed list per zone would let a single cache scatter slabs and page tables
+    across movable pageblocks, which undoes 5.5's grouping.
+  - `batch` = clamp(zone frames / (1024 × CPUs), 8, 64), shared by the zone's three lists.
+  - `high` = 4 × `batch` per list.
+  - Allocation pops from its own class's list; an empty list refills `batch` frames of that class from the
+    buddy under one zone-lock hold.
+  - A free goes to the list of the class recorded in the frame's `FrameMeta.flags`, which is the class
+    of the pageblock it was allocated from, not the class the freeing caller names. Above `high`,
+    `batch` frames go back to the buddy.
 - Each per-CPU list has its own spin lock, taken with interrupts masked.
   - On the owner it is uncontended, one atomic.
   - It lets any CPU drain another CPU's cache without an IPI.
@@ -652,18 +658,25 @@ Bonwick and Adams 2001.
 
 The slow path is entered when a zone would go below `min`, or when a layer cannot be refilled:
 
-1. Drain this CPU's page cache and magazines into the shared layers.
-2. Drain other CPUs' page caches, under their per-CPU locks.
-3. Run the registered shrinkers in cost order (7.3), asking for the shortfall plus `batch`. Stop as soon as
-   the target is met.
-4. Retry the allocation once.
-5. If the context is `Atomic`, allow the emergency reserve. Otherwise return `AllocError`.
+1. Drain this CPU's page caches and magazines into the shared layers.
+2. Drain the other CPUs' per-CPU memory, each under that CPU's per-CPU lock, taken with `try_lock` so an
+   owner in its fast path is skipped rather than waited for:
+   - their page caches, into the buddy;
+   - their loaded and previous magazines, into each cache's depot. A magazine holds objects, not frames,
+     so the step that frees memory is the next one;
+   - their span arenas' retained empty span (6.4), which is unmapped onto the pending-flush list.
+3. Return depot surplus to slabs and empty slabs to the page layer (the slab shrinker, first in 7.3), so
+   that magazine rounds drained in step 2 become free frames.
+4. Run the remaining registered shrinkers in cost order (7.3), asking for the shortfall plus `batch`. Stop
+   as soon as the target is met.
+5. Retry the allocation once.
+6. If the context is `Atomic`, allow the emergency reserve. Otherwise return `AllocError`.
 
 - The slow path holds no allocator lock while it runs shrinkers.
 - A per-CPU `in_reclaim` flag makes any allocation a shrinker makes `Atomic`, and stops reclaim from
   recursing.
 - The work is bounded: each shrinker scans at most its target plus a fixed batch.
-- There is no sleeping and no waiting in E1. E2 adds a sleeping step 3b for contexts that may sleep, and E3
+- There is no sleeping and no waiting in E1. E2 adds a sleeping step 4b for contexts that may sleep, and E3
   adds waking the page daemon.
 
 ### 7.3 The reclaim registry
@@ -1019,6 +1032,10 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
     if any operation touches a slot before its owner publishes it.
   - Drain: after `drain(cpu)` for each CPU and a depot trim, each slab is empty and returned except the
     one kept per cache.
+  - Pressure: the page layer is empty, and the only free objects of a class are in CPU 1's magazines,
+    which fill whole slabs. A page allocation on CPU 0 succeeds after the slow path drains CPU 1's
+    magazines (step 2) and returns the emptied slabs (step 3). A slow path that drains only its own CPU,
+    as the first draft did, returns `AllocError`, which is red.
   - Alignment: each object meets its layout's alignment, and no object crosses its slab's page.
   - Each class's objects per page and leftover tail match section 6.2's arithmetic, and each class is a
     multiple of 16.
@@ -1047,7 +1064,9 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
   - The existing `tools/heap-host-tests` fixture runs unchanged against `heap_index` with the two new
     operations. The algorithm's visit bound still holds.
   - Span lifecycle: a span is mapped when no span fits and unmapped when its `used()` reaches 0, keeping
-    one empty span per arena. The frames are returned only after the flush (fake TLB as in E1-5).
+    one empty span per arena. The frames are returned only after the flush (fake TLB as in E1-5). Under
+    pressure, the slow path unmaps each CPU's retained empty span, and its frames are free after the
+    flush.
   - vmap: a 4 MiB allocation is backed by discontiguous frames; a `realloc` with free VA after it grows in
     place; one without moves the PTEs, and the bytes are unchanged with no copy (the model counts byte
     copies).
@@ -1125,6 +1144,14 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
   - Per-CPU caches: refill and drain move `batch` frames per zone-lock hold; a remote drain under the
     per-CPU lock empties another CPU's cache; cached frames are not merged. Frames allocated before a CPU's
     slot is published come from the zone directly (5.4a).
+  - Classes in the per-CPU caches: on one CPU, free a `MOVABLE` frame (filling the `MOVABLE` list), then
+    make an `UNMOVABLE` request. It is served from an `UNMOVABLE` pageblock, not from the cached `MOVABLE`
+    frame. A frame freed by a caller naming another class returns to its own pageblock's list. With one
+    list per zone, the first case hands out the `MOVABLE` frame, which is red against the design's first
+    draft; the old allocator has no classes.
+  - Pressure across CPUs: the zone is empty except for frames in CPU 1's page caches. An allocation on
+    CPU 0 succeeds after the slow path's step 2, and with CPU 1's lock held in the fixed schedule, it
+    skips CPU 1 without waiting and returns `AllocError`.
   - Watermarks: an ordinary allocation stops at `min` and enters the slow path; an `Atomic` one may use
     half of `min`.
   - OOM: with each frame allocated, `alloc_pages` returns `AllocError` after draining and shrinking, and
