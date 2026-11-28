@@ -6,6 +6,8 @@ engine lock and drain, transfer, flush, the queue report and the interrupt
 handler) with the production blk_queue engine against a fake device over host
 memory, then drives interleavings in a fixed order:
 
+- report: an interrupt arrives while the slow-request report holds the
+  engine lock; the completion must still reach its waiter.
 - late_clear: owner P takes its result on slot 0; owner X reserves slot 0
   before P's code has finished; P then finishes. X's chain completion must
   still wake X.
@@ -354,6 +356,26 @@ fn setup(device_features: u64) {
     *DEVICE.lock().unwrap() = Some(Device { base: base as usize, size: SIZE, avail: layout.avail, used: layout.used, seen: 0, taken: Vec::new(), used_idx: 0, disk: vec![0; 4096 * 512], log: Vec::new() });
 }
 
+fn report() {
+    setup(features::FLUSH);
+    let token = 0x51;
+    let slot = with_engine(0, |engine| {
+        let slot = engine.@RESERVE@.unwrap();
+        COMPLETIONS[0].slots[slot].completion.reset();
+        engine.submit(&mut DirectMap, slot, request_type::IN, 0, None, 512).unwrap();
+        engine.publish();
+        slot
+    }).unwrap();
+    device_take();
+    // The report samples the queue; the device's interrupt lands on another
+    // CPU while the report holds the engine lock.
+    IRQ_IN_BARRIER.store(true, Ordering::SeqCst);
+    report_queue_state(0);
+    assert!(!IRQ_IN_BARRIER.load(Ordering::SeqCst), "the interrupt did not arrive during the report");
+    assert_eq!(COMPLETIONS[0].slots[slot].completion.completed_token(), token,
+        "the report released the engine and left the completed chain's waiter stranded");
+}
+
 fn late_clear() {
     setup(features::FLUSH);
     // Owner P writes sector 0 on slot 0.
@@ -391,6 +413,7 @@ fn late_clear() {
 
 fn main() {
     match std::env::args().nth(1).as_deref() {
+        Some("report") => report(),
         Some("late_clear") => late_clear(),
         other => panic!("unknown scenario {other:?}"),
     }
@@ -427,6 +450,9 @@ class VirtioBlkMmioDriver(unittest.TestCase):
     def run_case(self, name):
         result = subprocess.run([str(self.model), name], capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_report_keeps_an_interrupt_completion(self):
+        self.run_case('report')
 
     def test_a_late_owner_does_not_clear_the_next_owner(self):
         self.run_case('late_clear')
