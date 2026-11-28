@@ -281,9 +281,27 @@ are already in it. The rules come from `LocalFiles` (local.rs), applied in place
 | matches the old baseline | yes | no | removed (the image dropped it) |
 | differs from the old baseline | yes | no | kept, and listed as an on-box path |
 | absent from the baseline | no | no | kept (a pet addition) |
+| absent (deleted on the box) | yes | yes | installed from the object, because verify requires each inventory row. It is listed in the receipt's `deletedOnBox`, with a `[persistent] restored on-box deletion: <path>` line, so the deletion is not undone silently. |
+| absent (deleted on the box) | yes | no | left absent; the image dropped it too. It is listed in `deletedOnBox`. |
 
-With no baseline (a generation that predates `.breenix-image`), a payload path that differs from the inventory
-is treated as an on-box change: it is carried, not lost.
+**What "matches" means.** The two comparisons use different encodings, and each uses its own:
+- *Against the inventory*: the draft path's manifest row, encoded as `paired verify` encodes it (4.4), equals the
+  inventory row apart from mtime. Mtime is not compared, because the clone keeps its own and apply sets the row's.
+- *Against the old baseline*: `local.rs`'s `fingerprint` of the draft path (SHA-256 over mode, uid, gid and the file
+  bytes or symlink target; `directory` for a directory) equals the baseline's entry. That is the same function
+  `local::record` wrote the baseline with, so the two sides are comparable without converting either.
+
+**Which baselines.**
+- A `BREENIX-IMAGE-1` baseline is parsed by `read_baseline` and compared as above.
+- A baseline file with another header, or a truncated one, is refused with `read_baseline`'s error and the deploy
+  stops before the clone. A baseline the parser cannot read gives no safe answer about which paths are pet changes.
+- No baseline (a generation that predates `.breenix-image`): each payload path that differs from the inventory is
+  treated as an on-box change and carried, not lost. This is stricter than `LocalFiles::inspect`'s `legacy_image`
+  rule, which treats a BreenFS image's payload paths as image-owned when no baseline exists. The paired deploy does
+  not adopt that rule, because a pet edit on such a root would otherwise be replaced without a copy.
+
+After apply, the new baseline is written by `local::record` over the finished draft, in the same
+`BREENIX-IMAGE-1` format, so the next deploy compares against it the same way.
 
 Construction uses the existing `Copier` rules, with an inode plan worked out from the inventory first:
 - Directories are created first.
@@ -303,7 +321,7 @@ Construction uses the existing `Copier` rules, with an inode plan worked out fro
 
 Finally the installer writes:
 - `usr/share/factory/generation` = `<id>`;
-- a new `.breenix-image` baseline from the inventory;
+- a new `.breenix-image` baseline, by `local::record` over the finished draft (above);
 - `.complete` = `layout::record(id)`.
 
 Then it removes `.breenix-incoming`. Apply is idempotent: a rerun after an interruption finds finished paths
@@ -422,7 +440,7 @@ metal_live_flash.py:246-263) gains three conditions:
 Only then does the host publish `committed` (the token) with `bput` to `/root/.breenix-flash`. That boot stays up
 as the persistent session. The manager's next startup promotes the trial to CURRENT, and the old CURRENT, still
 naming the old root, becomes PREVIOUS. `live-flash.json` gains `root`, `previousRoot`, `inventorySha256`,
-`carried` (the on-box changes moved aside) and `onBox` (the on-box paths kept).
+`carried` (the on-box changes moved aside), `deletedOnBox` (managed paths deleted on the box) and `onBox` (the on-box paths kept).
 
 **Rollback.** If `committed` does not become durable (no SSH or a failed check within 600 s, a reset, a power cut,
 or a loader that returns), the next boot finds an unacknowledged attempt. The manager boots CURRENT, which names the
@@ -579,7 +597,7 @@ Scope: sections 4 to 6.
 
 | Test | Where | Checks | Red on the old code because |
 |---|---|---|---|
-| T-B1 apply over a fixture clone | `tests/persistent_install/` host test, beside `tests/metal_replace_usr_host.rs` | A fixture clone with a baseline, an inventory and objects. After apply and verify: the payload rows equal the inventory; a pet file at an unmanaged path is kept; a locally changed managed file is moved to `.breenix-carried/<prev>/` with set-ID cleared; a dropped, unchanged managed file is removed; a BusyBox hard-link group across `/bin` and `/sbin`, a symlink and set-ID `su` are exact; a symlink whose target the clone lacks is rebuilt from its object; two independent rows with one SHA-256 end as two inodes; a group whose members match on their own but are two inodes in the clone, and a group one of whose members is linked to a pet path, are each rebuilt as one inode with the group's link count; `paired have` reports neither group as satisfied; mount points are untouched; a rerun after a cut at each file is idempotent. Path safety (4.0): with a pet symlink at `usr/lib` pointing outside the tree, at `usr/lib/breenix/rust-current`, and at `opt/breenix/rust`, the conversion and apply refuse, and the symlinks' targets (a fixture file standing in for one in `/home`) are byte-for-byte unchanged. Epoch custody: begin, apply and publish run in sequence, and publish compares the E1 that begin recorded after apply has removed `.breenix-incoming` and the unmount has run; a recorded boot ID that differs from the fixture's refuses publish. | The check commit's stub routes `apply` to today's only in-place path, `replace_usr`, which leaves `/bin`, `/sbin` and `/lib` unchanged |
+| T-B1 apply over a fixture clone | `tests/persistent_install/` host test, beside `tests/metal_replace_usr_host.rs` | A fixture clone with a baseline, an inventory and objects. After apply and verify: the payload rows equal the inventory; a pet file at an unmanaged path is kept; a locally changed managed file is moved to `.breenix-carried/<prev>/` with set-ID cleared; a dropped, unchanged managed file is removed; a BusyBox hard-link group across `/bin` and `/sbin`, a symlink and set-ID `su` are exact; a symlink whose target the clone lacks is rebuilt from its object; two independent rows with one SHA-256 end as two inodes; a group whose members match on their own but are two inodes in the clone, and a group one of whose members is linked to a pet path, are each rebuilt as one inode with the group's link count; `paired have` reports neither group as satisfied; mount points are untouched; a rerun after a cut at each file is idempotent. Path safety (4.0): with a pet symlink at `usr/lib` pointing outside the tree, at `usr/lib/breenix/rust-current`, and at `opt/breenix/rust`, the conversion and apply refuse, and the symlinks' targets (a fixture file standing in for one in `/home`) are byte-for-byte unchanged. Deletions and baselines: a managed file deleted on the box and still in the inventory is restored and listed in `deletedOnBox`; with no baseline, a pet edit to a payload file is carried; a baseline with an unknown header refuses before the clone. Epoch custody: begin, apply and publish run in sequence, and publish compares the E1 that begin recorded after apply has removed `.breenix-incoming` and the unmount has run; a recorded boot ID that differs from the fixture's refuses publish. | The check commit's stub routes `apply` to today's only in-place path, `replace_usr`, which leaves `/bin`, `/sbin` and `/lib` unchanged |
 | T-B2 manager version 2 | `scripts/metal/efi-stub/tests/live_sequence.rs` | The trial is refused for a missing root, a read-only root, or an image intent naming another userland. It is accepted when the three agree. Version 1 behaves exactly as today. | `Manifest::parse` rejects a seventh line |
 | T-B3 host flow | `tests/metal_live_flash_test.py` | `prepare --paired`: the slot intent names the new generation; the manifest carries the root line only for a version-2 manager. The retained set keeps the physical PREVIOUS's root when an acknowledged trial is not promoted (a stale base or a foreign NEXT), and drops a root only after a `promoted` line removes it from both physical slots. The commit check needs `/` to be `gen-<new>` `rw` plus the verify digest. A rollback receipt needs the old commit and `gen-<old>`. Staging order: the tool and the inventory are published, and `paired protocol` answers, before `paired begin`; the eight box subcommands and the cold verify invoke the staged tool path, not `/sbin/persistent-install`. | Today's `prepare` names CURRENT's userland (metal_live_flash.py:100) |
 
