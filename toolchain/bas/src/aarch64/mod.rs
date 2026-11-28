@@ -143,6 +143,7 @@ fn system_register(p: &Parser<'_, '_>, name: Token<'_>, write: bool) -> Result<u
         "currentel" => (0, 4, 2, 2, false),        // C5.2.2
         "mpidr_el1" => (0, 0, 0, 5, false),        // D24.2.137
         "ctr_el0" => (3, 0, 0, 1, false),          // D24.2.41
+        "id_aa64mmfr0_el1" => (0, 0, 7, 0, false), // S3_0_C0_C7_0
         "id_aa64mmfr1_el1" => (0, 0, 7, 1, false), // D24.2.88
         "tpidr_el0" if !write => (3, 13, 0, 2, true), // D24.2.203
         "fpcr" if !write => (3, 4, 4, 0, true),       // C5.2.8
