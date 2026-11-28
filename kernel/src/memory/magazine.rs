@@ -115,6 +115,10 @@ impl Stack {
 struct DepotState {
     filled: Stack,
     empty: Stack,
+    /// Surplus an exchange that may not wait detached: returning it takes
+    /// waiting locks, so the next exchange that may wait, or the shrinker,
+    /// returns it. Its rounds stay in `Depot::rounds` until then.
+    pending: Surplus,
     /// The fewest filled and empty magazines held since the last update.
     filled_min: usize,
     empty_min: usize,
@@ -137,8 +141,21 @@ impl DepotState {
 
     /// At the first exchange after an interval: detach the working set's
     /// surplus, grow the magazine size (`size`, an index in `ROUNDS`) if the
-    /// lock was contended, and start the next interval.
-    unsafe fn update(&mut self, now: u64, contentions: u64, size: &AtomicUsize) -> Surplus {
+    /// lock was contended, and start the next interval. An exchange that may
+    /// wait (`wait`) gets the surplus to return, with any pending surplus;
+    /// one that may not leaves the surplus pending and gets none (6.6).
+    unsafe fn update(&mut self, now: u64, contentions: u64, size: &AtomicUsize, wait: bool) -> Surplus {
+        let mut surplus = self.interval(now, contentions, size);
+        if wait {
+            unsafe { surplus.absorb(&mut self.pending) };
+            surplus
+        } else {
+            unsafe { self.pending.absorb(&mut surplus) };
+            Surplus::new()
+        }
+    }
+
+    unsafe fn interval(&mut self, now: u64, contentions: u64, size: &AtomicUsize) -> Surplus {
         let mut surplus = Surplus::new();
         if now.wrapping_sub(self.updated_at) < UPDATE_MS {
             return surplus;
@@ -160,12 +177,15 @@ impl DepotState {
         surplus
     }
 
-    /// Detach the filled and the empty stacks (the shrinker).
+    /// Detach the filled and the empty stacks, and the pending surplus (the
+    /// shrinker).
     fn take_all(&mut self) -> Surplus {
-        let surplus = Surplus {
+        let mut surplus = Surplus {
             filled: core::mem::replace(&mut self.filled, Stack::new()),
             empty: core::mem::replace(&mut self.empty, Stack::new()),
         };
+        // SAFETY: the pending magazines are the depot's, under its lock.
+        unsafe { surplus.absorb(&mut self.pending) };
         self.filled_min = 0;
         self.empty_min = 0;
         surplus
@@ -181,6 +201,26 @@ struct Surplus {
 impl Surplus {
     const fn new() -> Self {
         Self { filled: Stack::new(), empty: Stack::new() }
+    }
+
+    /// Move `other`'s magazines into this surplus.
+    unsafe fn absorb(&mut self, other: &mut Surplus) {
+        unsafe {
+            loop {
+                let magazine = other.filled.pop();
+                if magazine.is_null() {
+                    break;
+                }
+                self.filled.link(magazine);
+            }
+            loop {
+                let magazine = other.empty.pop();
+                if magazine.is_null() {
+                    break;
+                }
+                self.empty.link(magazine);
+            }
+        }
     }
 }
 
@@ -200,6 +240,7 @@ impl Depot {
             state: SpinLock::new(DepotState {
                 filled: Stack::new(),
                 empty: Stack::new(),
+                pending: Surplus::new(),
                 filled_min: 0,
                 empty_min: 0,
                 updated_at: 0,
@@ -397,7 +438,7 @@ impl<B: Backing> Kmem<B> {
     unsafe fn refill(&self, class: usize, pair: &mut Loaded, wait: bool) -> Result<NonNull<u8>, Short> {
         let depot = &self.depots[class];
         let mut state = depot.state.lock_if(wait).ok_or(Short::Busy)?;
-        let surplus = unsafe { state.update(self.backing.now_ms(), depot.state.contentions(), &depot.size) };
+        let surplus = unsafe { state.update(self.backing.now_ms(), depot.state.contentions(), &depot.size, wait) };
         let filled = unsafe { state.pop_filled() };
         if !filled.is_null() {
             depot.rounds.fetch_sub(unsafe { rounds(filled) }, Ordering::Relaxed);
@@ -527,7 +568,7 @@ impl<B: Backing> Kmem<B> {
             // holds rounds or is absent: trade for an empty magazine.
             let depot = &self.depots[class];
             let mut state = depot.state.lock();
-            let surplus = state.update(self.backing.now_ms(), depot.state.contentions(), &depot.size);
+            let surplus = state.update(self.backing.now_ms(), depot.state.contentions(), &depot.size, true);
             let mut empty = state.pop_empty();
             let size = depot.size.load(Ordering::Relaxed);
             drop(state);

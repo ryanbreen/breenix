@@ -84,18 +84,21 @@ fn page_layout() -> Layout {
 }
 
 impl Backing for SimPages {
-    fn take_page(&self) -> Option<NonNull<u8>> {
+    fn take_page(&self, wait: bool) -> Result<NonNull<u8>, Short> {
         if self.frame_lock_held.get() {
-            // The kernel's page request waits for the free-list lock; the
-            // holder is modelled as releasing it.
+            if !wait {
+                return Err(Short::Busy);
+            }
+            // A waiting request waits for the free-list lock; the holder is
+            // modelled as releasing it.
             self.frame_waits.set(self.frame_waits.get() + 1);
         }
         if self.in_use.borrow().len() >= self.limit.get() {
-            return None;
+            return Err(Short::NoPage);
         }
-        let page = NonNull::new(unsafe { std::alloc::alloc(page_layout()) })?;
+        let page = NonNull::new(unsafe { std::alloc::alloc(page_layout()) }).ok_or(Short::NoPage)?;
         self.in_use.borrow_mut().insert(page.as_ptr() as usize);
-        Some(page)
+        Ok(page)
     }
 
     fn give_page(&self, page: NonNull<u8>) {

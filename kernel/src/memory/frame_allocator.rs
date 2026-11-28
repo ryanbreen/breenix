@@ -139,6 +139,21 @@ fn with_free_frames<R>(f: impl FnOnce(&mut FreeList) -> R) -> R {
     crate::arch_without_interrupts(|| f(&mut FREE_FRAMES.lock()))
 }
 
+/// `with_free_frames` with one `try_lock`: `None` when another CPU holds the
+/// free list.
+fn try_with_free_frames<R>(f: impl FnOnce(&mut FreeList) -> R) -> Option<R> {
+    crate::arch_without_interrupts(|| FREE_FRAMES.try_lock().map(|mut list| f(&mut list)))
+}
+
+/// Why the slab layer's page request got no frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SlabFrameMiss {
+    /// The free list's lock was held, and the memory map had no frame left.
+    Busy,
+    /// No frame.
+    Exhausted,
+}
+
 /// Test-only flag to simulate OOM conditions
 ///
 /// When set to true, allocate_frame() will return None to simulate out-of-memory.
@@ -413,24 +428,34 @@ fn publish(ranges: &'static RangeSet, meta: &'static FrameMetaMap) {
 /// - **Other kernel code**: Should propagate the error or use fallback paths.
 ///
 /// The slab layer's pages pass `simulated_oom_applies` false (see
-/// `allocate_slab_frame`).
-fn allocate_candidate(simulated_oom_applies: bool) -> Option<PhysFrame> {
+/// `allocate_slab_frame`). With `wait` false the free list's lock is taken
+/// with one `try_lock`; when it is held, the memory map's lock-free
+/// sequential allocator is tried, and a miss there is `Busy`.
+fn allocate_candidate(simulated_oom_applies: bool, wait: bool) -> Result<PhysFrame, SlabFrameMiss> {
     // Test-only: simulate OOM if flag is set
     if simulated_oom_applies && simulated_oom() {
         log::trace!("Frame allocator: OOM simulation active, returning None");
-        return None;
+        return Err(SlabFrameMiss::Exhausted);
     }
 
     // Try to reuse a frame from the free list (all architectures).
+    let mut miss = SlabFrameMiss::Exhausted;
     if let Some(meta) = frame_meta() {
-        if let Some(pfn) = with_free_frames(|free_list| free_list.pop(meta)) {
-            return Some(frame_at(pfn));
+        let popped = if wait {
+            Some(with_free_frames(|free_list| free_list.pop(meta)))
+        } else {
+            try_with_free_frames(|free_list| free_list.pop(meta))
+        };
+        match popped {
+            Some(Some(pfn)) => return Ok(frame_at(pfn)),
+            Some(None) => {}
+            None => miss = SlabFrameMiss::Busy,
         }
     }
 
     // Fall back to sequential allocation from memory map
     let mut allocator = BootInfoFrameAllocator::new();
-    allocator.allocate_frame()
+    allocator.allocate_frame().ok_or(miss)
 }
 
 /// Claim `frame`'s next generation for an allocation at `site`.
@@ -468,14 +493,14 @@ fn simulated_oom() -> bool {
 /// A candidate the metadata refuses to claim is skipped: it is live, mapped
 /// or untracked, so handing it out could give it two owners.
 fn allocate_claimed(site: u16, owner: u8) -> Option<FrameLease> {
-    claimed_from(true, site, owner)
+    claimed_from(true, true, site, owner).ok()
 }
 
-fn claimed_from(simulated_oom_applies: bool, site: u16, owner: u8) -> Option<FrameLease> {
+fn claimed_from(simulated_oom_applies: bool, wait: bool, site: u16, owner: u8) -> Result<FrameLease, SlabFrameMiss> {
     loop {
-        let frame = allocate_candidate(simulated_oom_applies)?;
+        let frame = allocate_candidate(simulated_oom_applies, wait)?;
         if let Some(lease) = claim_frame(frame, site, owner) {
-            return Some(lease);
+            return Ok(lease);
         }
     }
 }
@@ -484,10 +509,11 @@ fn claimed_from(simulated_oom_applies: bool, site: u16, owner: u8) -> Option<Fra
 /// (`enable_oom_simulation`) models user pages running out, and the fixed
 /// heap the slab layer replaces did not see it, so this path does not either.
 /// No logging, formatting or allocation: the slab layer calls it with its
-/// cache lock held and interrupts masked.
+/// cache lock held and interrupts masked. With `wait` false it waits for no
+/// lock (E1 plan 6.6), and a held free list is `SlabFrameMiss::Busy`.
 #[track_caller]
-pub(crate) fn allocate_slab_frame() -> Option<PhysFrame> {
-    claimed_from(false, frame_site(Location::caller()), 0).map(FrameLease::frame)
+pub(crate) fn allocate_slab_frame(wait: bool) -> Result<PhysFrame, SlabFrameMiss> {
+    claimed_from(false, wait, frame_site(Location::caller()), 0).map(FrameLease::frame)
 }
 
 #[track_caller]

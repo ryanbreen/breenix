@@ -168,8 +168,10 @@ impl<T> Drop for Guard<'_, T> {
 
 /// What the page layer underneath the caches provides.
 pub trait Backing {
-    /// One page, mapped writable at a page-aligned kernel address.
-    fn take_page(&self) -> Option<NonNull<u8>>;
+    /// One page, mapped writable at a page-aligned kernel address. With
+    /// `wait` false the page layer's lock is taken with one `try_lock`, and a
+    /// held lock is `Short::Busy`; no page is `Short::NoPage`.
+    fn take_page(&self, wait: bool) -> Result<NonNull<u8>, Short>;
     /// Return a page `take_page` gave, after its slab record is cleared.
     fn give_page(&self, page: NonNull<u8>);
     /// Record `slab` as the descriptor of `page`; null clears the record.
@@ -341,6 +343,18 @@ impl SlabCache {
         descriptors: &SlabCache,
     ) -> Result<usize, Short> {
         let mut lists = self.lists.lock_if(wait).ok_or(Short::Busy)?;
+        self.take_locked(&mut lists, out, wait, backing, descriptors)
+    }
+
+    /// `take`, with this cache's lock already held as `lists`.
+    fn take_locked<B: Backing>(
+        &self,
+        lists: &mut Lists,
+        out: &mut [*mut u8],
+        wait: bool,
+        backing: &B,
+        descriptors: &SlabCache,
+    ) -> Result<usize, Short> {
         let mut taken = 0;
         let mut short = Short::NoPage;
         while taken < out.len() {
@@ -392,18 +406,37 @@ impl SlabCache {
     }
 
     /// A slab over a new page. The caller holds this cache's lock.
+    ///
+    /// The descriptor comes first, and the descriptor cache's lock stays held
+    /// until the page is had, so a page that cannot be had returns the
+    /// descriptor under that held lock. With `wait` false the step therefore
+    /// waits for no lock: the descriptor cache's lock and the page layer's
+    /// are each one `try_lock` (6.6). The descriptor goes back to the slab it
+    /// came from, which holds another object, or is the cache's only empty
+    /// slab, so returning it gives no page back.
     fn grow<B: Backing>(&self, wait: bool, backing: &B, descriptors: &SlabCache) -> Result<*mut Slab, Short> {
-        let page = backing.take_page().ok_or(Short::NoPage)?;
-        let slab: *mut Slab = if self.reserved == 1 {
-            page.as_ptr().cast()
-        } else {
-            let mut one = [ptr::null_mut(); 1];
-            if let Err(reason) = descriptors.take(&mut one, wait, backing, descriptors) {
-                backing.give_page(page);
-                return Err(reason);
+        if self.reserved == 1 {
+            let page = backing.take_page(wait)?;
+            return Ok(self.format(page, page.as_ptr().cast(), backing));
+        }
+        let mut held = descriptors.lists.lock_if(wait).ok_or(Short::Busy)?;
+        let mut one = [ptr::null_mut(); 1];
+        descriptors.take_locked(&mut held, &mut one, wait, backing, descriptors)?;
+        match backing.take_page(wait) {
+            Ok(page) => {
+                drop(held);
+                Ok(self.format(page, one[0].cast(), backing))
             }
-            one[0].cast()
-        };
+            Err(reason) => {
+                descriptors.put_locked(&mut held, &one, backing, descriptors);
+                Err(reason)
+            }
+        }
+    }
+
+    /// Lay `page`'s objects out on a free list under the descriptor `slab`,
+    /// and record the slab for the page.
+    fn format<B: Backing>(&self, page: NonNull<u8>, slab: *mut Slab, backing: &B) -> *mut Slab {
         let base = page.as_ptr();
         // SAFETY: the page and the descriptor are this cache's alone.
         unsafe {
@@ -426,7 +459,7 @@ impl SlabCache {
         }
         backing.set_slab(page, slab);
         self.slabs.fetch_add(1, Ordering::Relaxed);
-        Ok(slab)
+        slab
     }
 
     /// Check that `object` is an object of this cache: its page's slab is
@@ -465,6 +498,11 @@ impl SlabCache {
             return;
         }
         let mut lists = self.lists.lock();
+        self.put_locked(&mut lists, objects, backing, descriptors);
+    }
+
+    /// `put`, with this cache's lock already held as `lists`.
+    fn put_locked<B: Backing>(&self, lists: &mut Lists, objects: &[*mut u8], backing: &B, descriptors: &SlabCache) {
         for &object in objects {
             let page = object as usize & !(PAGE - 1);
             // SAFETY: the caller checked the object, so its page records a

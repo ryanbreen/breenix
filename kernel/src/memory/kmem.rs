@@ -103,10 +103,14 @@ fn frame_of(page: NonNull<u8>) -> Option<PhysFrame> {
 }
 
 impl Backing for KernelPages {
-    fn take_page(&self) -> Option<NonNull<u8>> {
-        let offset = super::direct_map_offset()?;
-        let frame = super::frame_allocator::allocate_slab_frame()?;
-        NonNull::new((offset + frame.start_address().as_u64()) as *mut u8)
+    fn take_page(&self, wait: bool) -> Result<NonNull<u8>, Short> {
+        use super::frame_allocator::SlabFrameMiss;
+        let offset = super::direct_map_offset().ok_or(Short::NoPage)?;
+        let frame = super::frame_allocator::allocate_slab_frame(wait).map_err(|miss| match miss {
+            SlabFrameMiss::Busy => Short::Busy,
+            SlabFrameMiss::Exhausted => Short::NoPage,
+        })?;
+        NonNull::new((offset + frame.start_address().as_u64()) as *mut u8).ok_or(Short::NoPage)
     }
 
     fn give_page(&self, page: NonNull<u8>) {
