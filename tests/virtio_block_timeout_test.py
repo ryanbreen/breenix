@@ -38,7 +38,8 @@ struct BlockDeviceState;
 fn device_has_failed(_: &BlockDeviceState) -> bool { false }
 struct Transport;
 impl Transport { fn has_failed(&self) -> bool { false } }
-struct Waiter { completion: Completion, device: Transport }
+struct Waiter { completion: Completion, completions: [Slot; 1], device: Transport }
+struct Slot { completion: Completion }
 """
 
 
@@ -51,13 +52,14 @@ class VirtioBlockTimeout(unittest.TestCase):
                 consts = re.findall(r"(?m)^const BLOCK_[A-Z_]+: u64 = [^;]+;", source)
                 mmio = driver == "block_mmio"
                 signature = "_: u32, _: u64" if mmio else "_: &Waiter, _: u32, _: u64"
-                args = "1, &BlockDeviceState, 0" if mmio else "1, 0"
+                # MMIO waits on its chain slot's completion; PCI names the slot.
+                args = "1, &BlockDeviceState, 0" if mmio else "0, 1, 0"
                 harness = HARNESS + "\n".join(consts) + f"""
 fn report_slow_request({signature}) {{}}
 impl Waiter {{ {wait} }}
 
 fn main() {{
-    let waiter = Waiter {{ completion: Completion, device: Transport }};
+    let waiter = Waiter {{ completion: Completion, completions: [Slot {{ completion: Completion }}], device: Transport }};
     assert!(waiter.wait_for_completion({args}).unwrap_err().contains("before the kernel could sleep"));
     assert_eq!(monotonic_now_ns(), 30_000_000_000);
 

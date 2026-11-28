@@ -249,8 +249,13 @@ impl Virtqueue {
         self.phys_addr + (self.used as u64 - self.desc as u64)
     }
 
+    /// The ring parts, for a driver that keeps its own chain bookkeeping
+    /// (virtio-blk's request queue) instead of `add_chain`/`get_used`.
+    pub fn raw_rings(&self) -> (*mut VirtqDesc, *mut VirtqAvail, *mut VirtqUsed) {
+        (self.desc, self.avail, self.used)
+    }
+
     /// Get the queue size
-    #[allow(dead_code)] // Part of public virtqueue API
     pub fn queue_size(&self) -> u16 {
         self.queue_size
     }
