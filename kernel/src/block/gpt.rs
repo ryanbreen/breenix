@@ -2,11 +2,13 @@
 //! (docs/metal/README.md, "Boot intents and root selection").
 //!
 //! Only the primary table is read: its header must have the `EFI PART` signature, revision 1.0, a header size of 92
-//! to 512 bytes, its own LBA 1, and a matching header CRC32; its entries must be 128 bytes or a larger power of two
-//! and match the header's entry-array CRC32. A partition is named by its unique GUID, in the on-disk (mixed-endian)
-//! byte order. No allocation: entries are read one sector at a time into the caller's buffer.
+//! to the logical sector size, its own LBA 1, and a matching header CRC32.
+//! Entries are 128 bytes or a larger power of two and match the entry-array CRC32.
+//! A partition is named by its unique GUID in on-disk (mixed-endian) byte order.
+//! The parser reads one logical sector at a time using a fixed buffer.
 
 pub const SECTOR: usize = 512;
+pub const MAX_SECTOR: usize = 4096;
 pub type Guid = [u8; 16];
 
 /// The partition roles of a Breenix disk, by their type GUIDs.
@@ -116,6 +118,7 @@ impl Partition {
 /// The primary header's fields this module uses.
 #[derive(Clone, Copy, Debug)]
 pub struct Header {
+    sector_size: usize,
     pub first_usable: u64,
     pub last_usable: u64,
     pub disk_guid: Guid,
@@ -137,26 +140,29 @@ fn u64_at(bytes: &[u8], at: usize) -> u64 {
 
 /// The primary header from LBA 1 of a disk of `sectors` sectors.
 pub fn header(lba1: &[u8], sectors: u64) -> Result<Header, &'static str> {
-    if lba1.len() < SECTOR || &lba1[..8] != b"EFI PART" {
+    let sector_size = lba1.len();
+    if !matches!(sector_size, SECTOR | MAX_SECTOR) || &lba1[..8] != b"EFI PART" {
         return Err("no GPT header in LBA 1");
     }
     if u32_at(lba1, 8) != 0x0001_0000 {
         return Err("the GPT header revision is not 1.0");
     }
     let size = u32_at(lba1, 12) as usize;
-    if !(92..=SECTOR).contains(&size) {
+    if !(92..=sector_size).contains(&size) {
         return Err("the GPT header size is out of range");
     }
-    let mut copy = [0u8; SECTOR];
-    copy[..size].copy_from_slice(&lba1[..size]);
-    copy[16..20].fill(0);
-    if crc32(&copy[..size]) != u32_at(lba1, 16) {
+    let mut crc = Crc32::new();
+    crc.update(&lba1[..16]);
+    crc.update(&[0; 4]);
+    crc.update(&lba1[20..size]);
+    if crc.finish() != u32_at(lba1, 16) {
         return Err("the GPT header CRC32 does not match");
     }
     if u64_at(lba1, 24) != 1 {
         return Err("the GPT header is not the primary one");
     }
     let header = Header {
+        sector_size,
         first_usable: u64_at(lba1, 40),
         last_usable: u64_at(lba1, 48),
         disk_guid: lba1[56..72].try_into().unwrap(),
@@ -166,14 +172,14 @@ pub fn header(lba1: &[u8], sectors: u64) -> Result<Header, &'static str> {
         entries_crc: u32_at(lba1, 88),
     };
     let entry_size = header.entry_size as usize;
-    if entry_size < 128 || !entry_size.is_power_of_two() || entry_size > SECTOR {
+    if entry_size < 128 || !entry_size.is_power_of_two() || entry_size > sector_size {
         return Err("the GPT entry size is not supported");
     }
     if header.entries == 0 || header.entries > 1024 {
         return Err("the GPT entry count is out of range");
     }
-    let entry_sectors = (header.entries as u64 * entry_size as u64).div_ceil(SECTOR as u64);
-    if header.entries_lba < 2 || header.entries_lba.saturating_add(entry_sectors) > sectors
+    let entry_sectors = (header.entries as u64 * entry_size as u64).div_ceil(sector_size as u64);
+    if header.entries_lba < 2 || header.entries_lba.checked_add(entry_sectors).is_none_or(|end| end > sectors)
         || header.first_usable > header.last_usable || header.last_usable >= sectors
     {
         return Err("the GPT header's ranges do not fit the disk");
@@ -186,23 +192,25 @@ pub fn header(lba1: &[u8], sectors: u64) -> Result<Header, &'static str> {
 pub fn find(
     header: &Header,
     unique: &Guid,
-    mut read: impl FnMut(u64, &mut [u8; SECTOR]) -> Result<(), &'static str>,
+    mut read: impl FnMut(u64, &mut [u8]) -> Result<(), &'static str>,
 ) -> Result<Option<Partition>, &'static str> {
     let entry_size = header.entry_size as usize;
-    let per_sector = SECTOR / entry_size;
+    let sector_size = header.sector_size;
+    let per_sector = sector_size / entry_size;
     let total = header.entries as usize * entry_size;
-    let sectors = total.div_ceil(SECTOR);
+    let sectors = total.div_ceil(sector_size);
     let mut crc = Crc32::new();
     let mut found = None;
     let mut matches = 0;
-    let mut sector = [0u8; SECTOR];
+    let mut buffer = [0u8; MAX_SECTOR];
+    let sector = &mut buffer[..sector_size];
     for index in 0..sectors {
-        read(header.entries_lba + index as u64, &mut sector)?;
-        let covered = (total - index * SECTOR).min(SECTOR);
+        read(header.entries_lba + index as u64, sector)?;
+        let covered = (total - index * sector_size).min(sector_size);
         crc.update(&sector[..covered]);
         for slot in 0..per_sector {
             let at = slot * entry_size;
-            if index * SECTOR + at >= total {
+            if index * sector_size + at >= total {
                 break;
             }
             let entry = &sector[at..at + 128];
@@ -266,7 +274,7 @@ mod tests {
         bytes
     }
 
-    fn reader(bytes: &[u8]) -> impl FnMut(u64, &mut [u8; SECTOR]) -> Result<(), &'static str> + '_ {
+    fn reader(bytes: &[u8]) -> impl FnMut(u64, &mut [u8]) -> Result<(), &'static str> + '_ {
         move |lba, out| {
             let at = lba as usize * SECTOR;
             out.copy_from_slice(bytes.get(at..at + SECTOR).ok_or("past the end")?);

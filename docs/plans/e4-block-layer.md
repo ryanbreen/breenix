@@ -449,6 +449,28 @@ checked native-LBA translation end to end.
 - **QEMU rows.** Correctness PR. No QEMU speedup expected on the current
   geometry. Use `disk.sequential-read` and `disk.sequential-write` as the
   affected-path reference.
+- **Details resolved in E4.2 (DEV-39(2)).**
+  - AHCI rejects a drive without valid LBA48 support because its read and
+    write commands use DMA EXT, and treats drives without FLUSH CACHE EXT
+    as read-only because that is its durability command.
+  - AHCI compares the IDENTIFY serial, model and geometry before reopening
+    after COMRESET because the existing port can resume with the same
+    software identity even if the medium changed.
+  - NVMe keeps its one-page transfer limit because the supported controllers
+    have a 4 KiB minimum page and even the smallest nonzero MDTS exceeds one
+    page.
+  - GPT reads entries in the disk's validated logical-sector size and passes
+    those same LBAs to the partition and write fence because the GPT range
+    and the device command address the same units.
+  - Native 4 KiB SATA and NVMe sectors can carry a full BreenFS block through
+    the existing I/O and flush path. Ext2 and the install record keep their
+    512-byte requirement because they still use fixed sector offsets.
+  - Virtio reads two matching configuration samples on legacy transports
+    because they lack a generation counter, and retains 512-byte capacity
+    and command units even with a larger block or topology hint.
+  - The protocol host fixture compiles the attach parsers and the existing
+    request encoder because it can feed malformed values and force a
+    configuration generation change without hardware.
 
 ### E4.3 Whole BreenFS superblock slots
 
