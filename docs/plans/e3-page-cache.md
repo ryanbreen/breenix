@@ -305,7 +305,7 @@ follows:
 | E1's 32 bytes | 32 | `state_gen`, `leaf_refs` (the PTE count), `site`, `owner` = `PageCache`, `flags`, `order` and `zone` as E1 defines them. `use: [u64; 2]` holds the LRU list's previous and next pfn while the page is on a list |
 | `cache: u64` | 8 | The owning FileCache's address. It is valid while the page is in the tree or isolated (12.3) |
 | `index: u64` | 8 | The page index in the file |
-| `pflags: AtomicU32` | 4 | `FILLING`, `UPTODATE`, `DIRTY`, `WRITEBACK`, `REFERENCED`, `ACTIVE`, `ON_LRU`, `ISOLATED`, `ICACHE_CLEAN`, `READAHEAD` (the async trigger of 8.2) and `SHARED_WRITE` (has writable shared PTEs) |
+| `pflags: AtomicU32` | 4 | `FILLING`, `UPTODATE`, `DIRTY`, `WRITEBACK`, `REFERENCED`, `ACTIVE`, `ON_LRU`, `ISOLATED`, `ICACHE_CLEAN`, `READAHEAD` (the async trigger of 8.2), `SHARED_WRITE` (has writable shared PTEs) and `MAPPED_DIRTY` (stored through a mapping, not yet admitted to a generation, 11.2a) |
 | `refs: AtomicU32` | 4 | Page references: one for the tree, one per in-flight fill or writeback, one per isolation, and one per lookup that copies or maps it. Distinct from `leaf_refs` |
 | `dirty_gen: u64` | 8 | The BreenFS generation that owns the page's dirty bytes (11.1). 0 for a clean page |
 
@@ -360,8 +360,9 @@ Filling --fill completed, CRC verified (clear FILLING, set UPTODATE; release; bu
 Filling --fill reports a hole (remove the frame; insert Hole; bump channel)--> Hole
 Filling --fill failed (remove the frame; insert Error(errno, seq); bump channel)--> Error
 Error   --a later access (not a waiter of seq)--> treated as Absent
-Hole    --write() or a store into a shared writable mapping (allocate, zero, DIRTY)--> Dirty
-Uptodate --write() or a shared store (DIRTY, dirty_gen = open G; tag DIRTY)--> Dirty
+Hole    --write() (allocate, zero, DIRTY, dirty_gen = open G), or a shared store (allocate, zero, MAPPED_DIRTY; 11.2a)--> Dirty
+Uptodate --write() (DIRTY, dirty_gen = open G; tag DIRTY), or a shared store (MAPPED_DIRTY, dirty_gen = 0; tag DIRTY)--> Dirty
+Dirty with MAPPED_DIRTY --mapped admission (11.2a: reserve, changed set, dirty_gen = open G)--> Dirty
 Dirty   --freeze of G = dirty_gen (WRITEBACK; tag WRITEBACK; the frame is G's stable copy)--> Writeback
 Writeback --G durable (clear WRITEBACK; clear DIRTY unless redirtied in G+1)--> Uptodate or Dirty
 Writeback --write(), or a shrink's tail zeroing (7.5), while WRITEBACK (copy into a new frame, replace the entry; the old frame stays G's)--> Dirty (new frame)
@@ -621,7 +622,7 @@ The fault runs `resolve_fault(as, addr, access, ctx)` (E2.9). For a file VMA:
      `entry_flags` does today, and a store into a shared mapping of a `Writeback` page follows 11.2.
      Return.
    - **Hole:** map the shared zero frame read-only. A store into a private mapping copies, as for any COW
-     page. A store into a shared writable mapping allocates a zeroed frame, inserts it `Dirty`, and maps it
+     page. A store into a shared writable mapping allocates a zeroed frame, inserts it `MAPPED_DIRTY` (11.2a), and maps it
      writable. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
    - **Filling:** take a reference, read the page's channel `seq`, drop `as.mapping`, and park (E2 section
      5.2, "must wait for X"). When it wakes, return; the access re-executes.
@@ -756,7 +757,7 @@ view.
 
 - BreenFS's `DirtyPages` maps (`dirty.rs`) are replaced by the cache's `DIRTY` tag and each page's
   `dirty_gen`.
-- A generation's dirty set is "the pages tagged `DIRTY` with `dirty_gen = G`".
+- A generation's dirty set is "the pages tagged `DIRTY` with `dirty_gen = G`". A page stored only through a mapping joins it through mapped admission (11.2a), never from the fault. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
   - The freeze finds them by tagged iteration over the FileCaches of G's changed-inode set, which BreenFS
     already keeps.
   - It marks them `WRITEBACK` and records them in G's publication as a batch list of (cache, index, pfn),
@@ -778,20 +779,48 @@ E3 keeps the same rule with frames:
   - Readers see the new bytes at once.
   - Writers never wait for writeback. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
   - No PTE maps the old frame, because a `Writeback` page with PTEs takes the next path instead.
-- **A page mapped writable and shared at the freeze** (`SHARED_WRITE`):
-  1. the freeze revokes write permission from its PTEs through the reverse map, with the TLB flush;
-  2. it copies the frame into a bounce frame for G, as today's rule does ("Mapped pages are copied to a
-     bounce buffer before checksumming", design 2.5);
-  3. it clears `DIRTY`, unless the page was also written through `write()` in G+1.
+- **A page mapped writable and shared at the freeze** (`SHARED_WRITE`), once admitted to G (11.2a):
+  1. the freeze revokes write permission from its PTEs through the reverse map, and waits for the TLB
+     flush to complete;
+  2. it then copies the frame into a bounce frame for G, as today's rule does ("Mapped pages are copied to
+     a bounce buffer before checksumming", design 2.5);
+  3. under `tree_lock`, it clears `DIRTY` if `dirty_gen` is still G and the page has not become
+     `MAPPED_DIRTY` again, and if it was not also written through `write()` in G+1.
 
-  The page's next store faults on a present read-only PTE in a shared writable VMA. That fault needs no
-  I/O, so it works before E2.9: it re-enables the write permission, sets `DIRTY` with `dirty_gen` = G+1,
-  and re-executes. A mapped page therefore changes only in the cache's frame, never in G's copy. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+  A store that lands before step 1 completes is in G's copy. A store after it faults on a present
+  read-only PTE in a shared writable VMA, and becomes `MAPPED_DIRTY` for a later generation (11.2a). A
+  mapped page therefore changes only in the cache's frame, never in G's copy. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
 - **At G's install** each batch page clears `WRITEBACK`. A page that is still in the tree and was not
   redirtied becomes clean `Uptodate`.
 
   This is the change behind `disk.sequential-read`: data just written stays cached after fsync, instead of
   being dropped and re-read from the device.
+
+### 11.2a Mapped stores enter a generation through admission
+
+A store fault cannot take BreenFS's admission, which may sleep and takes the mount exclusion. If the fault
+chose a generation itself, it could read G as open, lose the race with G's freeze, and mark a page dirty
+in a generation whose batch is already chosen. The page would then be in no batch, and G's install would
+clean it. Today's mapped writeback avoids that by entering each page through `writeback_pages`
+(`fs/breenfs/vfs.rs:4324-4376`), which reserves space (`reserve_data`) and records the inode as changed
+(`edited`) under the mount exclusion. E3 keeps that admission and moves only where the bytes live:
+
+- **The fault picks no generation.** A store fault on a shared writable page sets `MAPPED_DIRTY` and the <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+  tree's `DIRTY` tag, leaves `dirty_gen` at 0 (not admitted), makes the PTE writable and sets
+  `SHARED_WRITE`, all under `as.pt` and `tree_lock`. It links the FileCache onto its mount's mapped-dirty
+  list through a link the FileCache owns, so it allocates nothing. It needs no BreenFS lock and no I/O, so
+  it works before E2.9.
+- **Mapped admission** runs in process context under the mount exclusion. For each FileCache on the list it <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+  reserves BreenFS's worst-case space for the `MAPPED_DIRTY` pages, as `writeback_pages` does, records
+  the inode in the open generation's changed set, then under `tree_lock` sets `dirty_gen` to the open
+  generation and clears `MAPPED_DIRTY`. It runs before every freeze, from `msync` and `fsync`, and from the
+  writeback service when the dirty count passes `background` (11.4).
+- **The handoff.** The freeze holds the mount exclusion from that admission until G's changed set and
+  batch are chosen. So a page admitted to G is in G's batch, and a page that is still `MAPPED_DIRTY` waits
+  for the next admission. No page can be dirty in a generation whose batch has been chosen.
+- **ENOSPC.** If admission cannot reserve space, the page stays `MAPPED_DIRTY` and keeps its bytes, and the
+  FileCache's `wb_err` (11.6) records `ENOSPC` for `msync` and `fsync`, as a failed `writeback_pages`
+  reports it today.
 
 ### 11.3 The drain, from frames
 
@@ -841,7 +870,7 @@ limit. They are not RAM ceilings. Section 21 Q4 names the fsync trade-off they c
 
 ### 11.5 Writer throttling
 
-After `write` releases `io`, and after a store fault marks a page dirty (counted, not checked per store):
+After `write` releases `io`, and after a store fault marks a page `MAPPED_DIRTY` (counted, not checked per store):
 
 - **Below `limit`:** return.
 - **Above `limit`:** request the mount's commit, then park, Killable, on the writeback-progress channel
@@ -1367,6 +1396,12 @@ waits for E3-6 (it needs pages retained by the cache to be worth anything), so t
     says so.
   - A shared mapped page stored after a freeze faults once, is redirtied in G+1, and G's image has the
     bytes from before the store.
+  - Mapped admission, as a fixed interleaving: a store fault on a clean page of a file no `write()` has
+    touched pauses after its lookup; G's freeze and install run; the fault completes; then G+1 freezes and
+    installs. G+1's image holds the stored bytes, G+1's changed set holds the inode, and the space
+    reservation is charged once. A variant fills the volume first: admission returns `ENOSPC` through
+    `fsync`, and the page keeps its bytes. Today's `writeback_pages` admits mapped pages already, so this
+    guards the admission the PR moves and is not red on the old tree; the PR says so.
   - A page that is never stored again after a freeze is not written in G+1 (red on the old code, which
     copies every mapped dirty page each time). <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
   - A failed write keeps earlier writes. Write page 0, then write pages 0 and 1 with an allocation-failure
@@ -1593,7 +1628,7 @@ G = 7 is open, the freeze of G runs, then the fault finishes. Two freezes follow
 in one of their batches, with its space reserved and its inode in that generation's changed set.
 
 ```pycon
->>> RULE = 'fault-assigns-generation'
+>>> RULE = 'admit-before-freeze'
 >>> mount = {'open': 7, 'changed': set(), 'reserved': 0}
 >>> page = {'dirty_gen': 0, 'mapped_dirty': False}
 >>> def fault_begin():
