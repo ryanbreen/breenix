@@ -402,6 +402,79 @@ fn every_halt_classification_still_matches_a_site() {
     assert!(stale.is_empty(), "halt classifications that match nothing (remove them): {stale:?}");
 }
 
+/// The `Completion` waits, which sleep only at a braked baseline
+/// (`park::sleepable_braked`) and otherwise poll the CPU until their deadline.
+const COMPLETION_WAITS: [&str; 3] = [".wait_timeout(", ".wait_timeout_uninterruptible(", ".wait_for_completion("];
+
+/// Functions that take a bare `preempt_disable()` and then wait on a
+/// `Completion`: a kernel thread faking a syscall's brake to select the
+/// sleeping wait. Since E2.2 that level is `LocksHeld(1)` at baseline 0, so the
+/// wait polls its CPU for its whole timeout instead of sleeping; a kernel
+/// thread that keeps its CPU except while it sleeps holds `park::Braked`
+/// (design §3.2).
+fn bare_brake_census(root: &Path) -> Vec<Site> {
+    let mut files = Vec::new();
+    rust_files(&root.join("kernel/src"), &mut files);
+    let mut sites = Vec::new();
+    for path in files {
+        let rel = path.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/");
+        if excluded(&rel) || rel == "kernel/src/task/completion.rs" {
+            continue;
+        }
+        let code = strip_comments(&fs::read_to_string(&path).unwrap());
+        let fns = functions(&code);
+        for (name, open, end) in &fns {
+            let brakes = own_calls(&code, &fns, *open, *end, "preempt_disable()");
+            let first_brake = brakes.iter().min();
+            let waits_after = COMPLETION_WAITS
+                .iter()
+                .flat_map(|wait| own_calls(&code, &fns, *open, *end, &wait[1..]))
+                .filter(|w| code.as_bytes()[w - 1] == b'.')
+                .any(|w| first_brake.is_some_and(|b| w > *b));
+            if waits_after {
+                sites.push(Site { rule: "BRAKE", file: rel.clone(), function: name.clone() });
+            }
+        }
+    }
+    sites.sort();
+    sites.dedup();
+    sites
+}
+
+/// A kernel thread that waits on a `Completion` as a syscall does holds a
+/// `park::Braked` guard, not a bare `preempt_disable()`.
+#[test]
+fn no_kernel_thread_fakes_a_brake_for_a_completion_wait() {
+    let sites = bare_brake_census(&repo_root());
+    assert!(
+        sites.is_empty(),
+        "bare preempt_disable() before a Completion wait (hold park::Braked instead):\n{}",
+        sites.iter().map(|s| format!("  {}::{}", s.file, s.function)).collect::<Vec<_>>().join("\n")
+    );
+}
+
+#[test]
+fn the_brake_census_sees_each_shape() {
+    let code = "fn a() { crate::per_cpu::preempt_disable(); let _ = k.wait_timeout_uninterruptible(1, 2); }\n\
+                fn b() { let _g = crate::task::park::Braked::new(); let _ = k.wait_timeout_uninterruptible(1, 2); }\n\
+                fn c() { let _ = k.wait_timeout(1, 2); preempt_disable(); }\n\
+                fn d() { preempt_disable(); c.wait_for_completion(); }\n";
+    let fns = functions(code);
+    let hits: Vec<_> = fns
+        .iter()
+        .filter(|(_, open, end)| {
+            let first_brake = own_calls(code, &fns, *open, *end, "preempt_disable()").into_iter().min();
+            COMPLETION_WAITS
+                .iter()
+                .flat_map(|wait| own_calls(code, &fns, *open, *end, &wait[1..]))
+                .filter(|w| code.as_bytes()[w - 1] == b'.')
+                .any(|w| first_brake.is_some_and(|b| w > b))
+        })
+        .map(|(name, _, _)| name.as_str())
+        .collect();
+    assert_eq!(hits, ["a", "d"], "a bare brake before a Completion wait is found; a Braked guard or a wait before the brake is not");
+}
+
 /// `arch_halt_while_blocked` is where halting as current survives. Each of
 /// its halts (x86's HLT, ARM64's WFI) is preceded, after the previous halt,
 /// by `task::park::halt_as_current`, which records a non-preemptible
