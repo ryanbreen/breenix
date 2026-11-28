@@ -15,7 +15,10 @@ pub mod kmem;
 #[cfg(target_arch = "x86_64")]
 pub mod kernel_page_table;
 pub mod kernel_walk;
+pub mod kva;
+pub mod kva_extent;
 pub mod kva_map;
+pub mod kva_window;
 pub mod kernel_stack;
 pub mod layout;
 pub mod paging;
@@ -162,6 +165,27 @@ pub fn init(physical_memory_offset: VirtAddr, memory_regions: &'static MemoryReg
     // secondary CPU's per-CPU init finds its IST stacks already present.
     let _emergency_stacks = per_cpu_stack::init_per_cpu_stacks(crate::task::scheduler::MAX_CPUS)
         .expect("Failed to initialize per-CPU stacks");
+
+    // Kernel VA windows (E1 plan 6.5), in PML4 slots of their own.
+    match kva::init() {
+        Ok(placements) => {
+            for window in placements.iter() {
+                log::info!(
+                    "Kernel VA window {}: base={:#x} bytes={:#x} slots={}..{}",
+                    window.id.name(), window.base, window.bytes,
+                    window.first_slot, window.first_slot + window.slots,
+                );
+            }
+            match kva::self_check() {
+                Ok(check) => log::info!(
+                    "Kernel VA windows self-check passed: mappings={} table_pages={}",
+                    check.mappings, check.table_pages,
+                ),
+                Err(reason) => log::error!("Kernel VA windows self-check FAILED: {}", reason),
+            }
+        }
+        Err(error) => log::error!("Kernel VA windows unavailable: {:?}", error),
+    }
 
     log::info!("Memory management initialized");
 

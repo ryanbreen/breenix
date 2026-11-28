@@ -955,6 +955,26 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // any process exists and before secondaries copy CPU 0's TCR_EL1.
     kernel::arch_impl::aarch64::ttbr0::init_asids();
     kernel::memory::kernel_stack::init();
+    // Kernel VA windows (E1 plan 6.5) in TTBR1 L0 entries of their own.
+    match kernel::memory::kva::init() {
+        Ok(placements) => {
+            for window in placements.iter() {
+                serial_println!(
+                    "[boot] Kernel VA window {}: base={:#x} bytes={:#x} slots={}..{}",
+                    window.id.name(), window.base, window.bytes,
+                    window.first_slot, window.first_slot + window.slots,
+                );
+            }
+            match kernel::memory::kva::self_check() {
+                Ok(check) => serial_println!(
+                    "[boot] Kernel VA windows self-check passed: mappings={} table_pages={}",
+                    check.mappings, check.table_pages,
+                ),
+                Err(reason) => serial_println!("[boot] Kernel VA windows self-check FAILED: {}", reason),
+            }
+        }
+        Err(error) => serial_println!("[boot] Kernel VA windows unavailable: {:?}", error),
+    }
     serial_println!("[boot] Memory management ready");
     splash::stage(Stage::MemoryReady);
 

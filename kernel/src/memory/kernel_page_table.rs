@@ -16,41 +16,8 @@ use x86_64::{
 mod x86_kernel_half;
 pub(crate) use x86_kernel_half::inherit_master_slots;
 
+use crate::memory::kva::KernelTables;
 use crate::memory::kva_map::{self, Format, TableMemory, X86};
-
-/// The kernel's page tables, reached through the physical-memory mapping.
-pub(crate) struct DirectMapTables(pub(crate) VirtAddr);
-
-impl DirectMapTables {
-    fn entry(&self, table: u64, index: usize) -> &AtomicU64 {
-        // SAFETY: page-table frames are RAM the physical-memory mapping
-        // covers, and `index` is below 512, so this is one aligned entry.
-        unsafe { &*((self.0.as_u64() + table + 8 * index as u64) as *const AtomicU64) }
-    }
-}
-
-impl TableMemory for DirectMapTables {
-    fn load(&self, table: u64, index: usize) -> u64 {
-        self.entry(table, index).load(Ordering::Acquire)
-    }
-    fn store(&self, table: u64, index: usize, value: u64) {
-        self.entry(table, index).store(value, Ordering::Release);
-    }
-    fn compare_exchange(&self, table: u64, index: usize, current: u64, new: u64) -> Result<u64, u64> {
-        self.entry(table, index)
-            .compare_exchange(current, new, Ordering::AcqRel, Ordering::Acquire)
-    }
-    fn zero(&self, page: u64) {
-        for index in 0..512 {
-            self.entry(page, index).store(0, Ordering::Relaxed);
-        }
-    }
-    fn publish_table(&self) {
-        // x86 stores are seen in program order (SDM vol. 3A §9.2.2), and
-        // the table walker reads the coherent tables.
-        core::sync::atomic::fence(Ordering::Release);
-    }
-}
 
 /// The master kernel PML4 frame (Phase 2), published as a physical address in a
 /// lock-free cell rather than as a `Mutex<Option<PhysFrame>>`.
@@ -101,7 +68,7 @@ pub fn init(phys_mem_offset: VirtAddr) {
 /// The child table under entry `index` of the table at `table`, installed from a
 /// new frame when the entry is empty. Both must be mapped by the physical offset.
 fn ensure_child_table(
-    mem: &DirectMapTables,
+    mem: &KernelTables,
     table: u64,
     index: usize,
 ) -> Result<u64, &'static str> {
@@ -154,7 +121,7 @@ pub unsafe fn map_kernel_page(
     let pd_index = usize::from(virt.p2_index());
     let pt_index = usize::from(virt.p1_index());
 
-    let mem = DirectMapTables(phys_mem_offset);
+    let mem = KernelTables;
     let pd = ensure_child_table(&mem, pdpt_frame.start_address().as_u64(), pdpt_index)?;
     let pt = ensure_child_table(&mem, pd, pd_index)?;
     let pt = &mut *table_ptr(phys_mem_offset, PhysFrame::containing_address(PhysAddr::new(pt)));
@@ -193,7 +160,7 @@ pub unsafe fn unmap_kernel_page(virt: VirtAddr) -> Result<Option<PhysFrame>, &'s
     }
 
     let pml4_frame = master_kernel_pml4().ok_or("Master kernel PML4 not initialized")?;
-    let mem = DirectMapTables(crate::memory::physical_memory_offset());
+    let mem = KernelTables;
     let unmapped =
         kva_map::unmap_page::<X86, _>(&mem, pml4_frame.start_address().as_u64(), virt.as_u64())?;
     Ok(unmapped.map(|phys| PhysFrame::containing_address(PhysAddr::new(phys))))
@@ -216,7 +183,7 @@ pub fn build_master_kernel_pml4() {
         // Prebuild the existing 128 MiB kernel-stack and 16 MiB IST-stack
         // ranges so their runtime mappers do not race to install a PD or PT.
         // Use their boot-owned PDPTs and leave any existing entries intact.
-        let mem = DirectMapTables(phys_mem_offset);
+        let mem = KernelTables;
         for (slot, pt_count) in [(402, 64), (403, 8)] {
             let pdpt_frame = master[slot].frame().expect("Stack PDPT not installed");
             let pd = ensure_child_table(&mem, pdpt_frame.start_address().as_u64(), 0)

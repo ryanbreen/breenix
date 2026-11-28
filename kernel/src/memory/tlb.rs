@@ -189,9 +189,9 @@ pub fn flush_all() {
 }
 
 /// Invalidate the kernel pages `pages`, global translations included, on
-/// every CPU, before the frames behind them are released (E1 plan, 6.5).
+/// each CPU, before the frames behind them are released (E1 plan, 6.5).
 ///
-/// x86: `tlb_request::kernel_unmap_request` on this CPU and every other
+/// x86: `tlb_request::kernel_unmap_request` on this CPU and each other
 /// online CPU, which `invlpg`s each page, or for more than 32 clears and
 /// restores CR4.PGE. A CR3 reload, `flush_all`, would keep the global ones.
 /// ARM64: `dsb ishst`, `tlbi vaae1is` per page and `dsb ish; isb`; the
@@ -208,6 +208,19 @@ pub fn flush_kernel_pages(pages: &[u64]) {
     }
     #[cfg(target_arch = "aarch64")]
     tlb::flush_pages(pages);
+}
+
+/// Invalidate each translation, global ones included, on each CPU: the
+/// kernel-unmap flush of a batch too large to name page by page.
+pub fn flush_kernel_all() {
+    #[cfg(target_arch = "x86_64")]
+    {
+        use crate::memory::tlb_request::Request;
+        shootdown::execute_here(Request::GlobalAll);
+        shootdown::request(Request::GlobalAll);
+    }
+    #[cfg(target_arch = "aarch64")]
+    tlb::flush_all();
 }
 
 /// Ensure TLB consistency after page table switch

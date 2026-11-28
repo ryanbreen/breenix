@@ -8,11 +8,11 @@
 
 /// `invlpg` this address.
 pub const KIND_PAGE: u8 = 1;
-/// Reload CR3: every non-global translation.
+/// Reload CR3, which drops the non-global translations.
 pub const KIND_ALL: u8 = 2;
 /// Leave this page-table root if it is loaded and this CPU is not returning to it.
 pub const KIND_RELEASE_ROOT: u8 = 3;
-/// Clear and restore CR4.PGE: every translation, global ones included.
+/// Clear and restore CR4.PGE, which drops global translations too.
 pub const KIND_GLOBAL_ALL: u8 = 4;
 /// `invlpg` each of the pages in a list. The kind is this base plus the
 /// page count, 1 to `MAX_GLOBAL_PAGES`, and the argument is the list's address.
@@ -27,7 +27,7 @@ pub const MAX_GLOBAL_PAGES: usize = 32;
 pub enum Request {
     /// `invlpg` this address.
     Page(u64),
-    /// Reload CR3: every non-global translation.
+    /// Reload CR3, which drops the non-global translations.
     All,
     /// Leave this page-table root if it is loaded and this CPU is not
     /// returning to it.
@@ -45,7 +45,7 @@ pub trait TlbOps {
     fn invlpg(&mut self, va: u64);
     /// Reload CR3 with its current value: each non-global translation.
     fn reload_cr3(&mut self);
-    /// Clear CR4.PGE and restore it, which invalidates every translation,
+    /// Clear CR4.PGE and restore it, which invalidates each translation,
     /// global ones included. With PGE already clear no translation is
     /// global, and a CR3 reload does the same.
     fn toggle_global_pages(&mut self);
@@ -94,7 +94,7 @@ pub unsafe fn execute(kind: u8, arg: u64, cpu: &mut impl TlbOps) {
 /// §4.10.4.1), so the flush is `invlpg` per page for up to
 /// `MAX_GLOBAL_PAGES` pages and a CR4.PGE toggle above that.
 ///
-/// The request names `pages`, which the caller keeps live until every CPU
+/// The request names `pages`, which the caller keeps live until each CPU
 /// has acknowledged it.
 pub fn kernel_unmap_request(pages: &[u64]) -> Request {
     match pages.len() {
