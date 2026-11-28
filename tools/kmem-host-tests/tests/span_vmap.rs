@@ -699,6 +699,30 @@ fn bus_address_takes_only_physically_contiguous_direct_map_or_image_ranges() {
     assert_eq!(bus_address(&space, IMAGE + PAGE + 0x80, PAGE), Err(DmaError::Discontiguous { offset: PAGE - 0x80 }));
 }
 
+/// The ARM64 image ranges the DMA check accepts (5.6) are the loaded image
+/// and the `.dma` section, laid out as `linker.ld` places them: the gap
+/// between `__kernel_writable_end` and `.dma` at physical `0x5000_0000`,
+/// which holds the loader's boot stack and which the boot direct map
+/// translates, is not image memory.
+#[test]
+fn the_arm64_image_ranges_leave_out_the_gap_before_dma() {
+    let va = |pa: u64| arm64_boot_contract::HHDM_BASE + pa;
+    let image = dma_core::ImageLayout {
+        start: va(0x4020_0000),
+        loaded_end: va(0x4280_0000),
+        dma_start: va(0x5000_0000),
+        dma_end: va(0x5000_4000),
+        end: va(0x5000_4000),
+    };
+    let ranges = dma_core::image_ranges(image);
+    let image_at = |pa: u64| dma_core::in_ranges(&ranges, va(pa));
+    assert!(image_at(0x4020_0000) && image_at(0x427f_f000), "the loaded image");
+    assert!(image_at(0x5000_0000) && image_at(0x5000_3fff), "the .dma section");
+    let stack = arm64_boot_contract::LOADER_BOOT_STACK_BOTTOM_PHYS..arm64_boot_contract::LOADER_BOOT_STACK_TOP_PHYS;
+    assert!(stack.clone().step_by(PAGE as usize).all(|pa| !image_at(pa)), "the loader boot stack counts as image memory");
+    assert!(!image_at(0x4280_0000) && !image_at(0x4fff_f000), "the gap before .dma counts as image memory");
+}
+
 /// Routing (6.1): over each size in {1, 16, 4096, 4097, 512 KiB,
 /// 512 KiB + 1, 4 MiB} and each alignment in {1, 16, 4096, 8192, 2 MiB,
 /// 1 GiB}, the layout reaches one layer whose limits hold it: the slab

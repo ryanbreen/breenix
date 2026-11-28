@@ -13,21 +13,42 @@ use core_impl::{AddressSpace, Region};
 /// the IPA a device sees in a virtual machine, and a table walk on x86).
 struct KernelSpace;
 
-/// The kernel image's VA range, from its linker symbols.
-fn image() -> (u64, u64) {
+/// The kernel image's VA ranges, from its linker symbols.
+#[cfg(target_arch = "aarch64")]
+fn image() -> [(u64, u64); 2] {
     extern "C" {
-        #[cfg(target_arch = "aarch64")]
         static __kernel_virt_start: u8;
-        #[cfg(target_arch = "x86_64")]
+        static __kernel_writable_end: u8;
+        static __dma_start: u8;
+        static __dma_end: u8;
+        static _end: u8;
+    }
+    // Only the symbols' addresses are taken, which needs no `unsafe`.
+    core_impl::image_ranges(core_impl::ImageLayout {
+        start: core::ptr::addr_of!(__kernel_virt_start) as u64,
+        loaded_end: core::ptr::addr_of!(__kernel_writable_end) as u64,
+        dma_start: core::ptr::addr_of!(__dma_start) as u64,
+        dma_end: core::ptr::addr_of!(__dma_end) as u64,
+        end: core::ptr::addr_of!(_end) as u64,
+    })
+}
+
+/// The kernel image's VA ranges, from its linker symbols.
+#[cfg(target_arch = "x86_64")]
+fn image() -> [(u64, u64); 2] {
+    extern "C" {
         static __ehdr_start: u8;
         static _end: u8;
     }
     // Only the symbols' addresses are taken, which needs no `unsafe`.
-    #[cfg(target_arch = "aarch64")]
-    let start = core::ptr::addr_of!(__kernel_virt_start) as u64;
-    #[cfg(target_arch = "x86_64")]
-    let start = core::ptr::addr_of!(__ehdr_start) as u64;
-    (start, core::ptr::addr_of!(_end) as u64)
+    let end = core::ptr::addr_of!(_end) as u64;
+    core_impl::image_ranges(core_impl::ImageLayout {
+        start: core::ptr::addr_of!(__ehdr_start) as u64,
+        loaded_end: end,
+        dma_start: end,
+        dma_end: end,
+        end,
+    })
 }
 
 impl AddressSpace for KernelSpace {
@@ -35,8 +56,7 @@ impl AddressSpace for KernelSpace {
         if let Some(id) = super::kva::window_of(va) {
             return Region::Window { window: id as u8 };
         }
-        let (start, end) = image();
-        if va >= start && va < end {
+        if core_impl::in_ranges(&image(), va) {
             return Region::Image;
         }
         // Direct-map RAM is the RAM the frame allocator tracks: each such
