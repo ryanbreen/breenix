@@ -1567,7 +1567,8 @@ aarch64_ret_to_kernel_context:
 .type aarch64_enter_exception_frame, @function
 aarch64_enter_exception_frame:
     // aarch64_enter_exception_frame(frame) -> !
-    //   x0 = *const Aarch64ExceptionFrame
+    //   x0 = *const Aarch64ExceptionFrame, 16-byte aligned: SP points at it
+    //   below and SCTLR_EL1.SA is set (`sp_frame_slot.rs`).
     //
     // Reuse the same restore/ERET rules as the IRQ return path by treating
     // the prepared frame as if it had been produced by an exception entry.
@@ -2982,9 +2983,17 @@ fn inline_schedule_breadcrumb(cpu_id: usize, site: u8, extra: u16) {
     INLINE_SCHEDULE_BREADCRUMB_TRAIL[cpu_id][idx].store(value, Ordering::Relaxed);
 }
 
-static mut INLINE_SCHEDULE_ERET_FRAMES: [MaybeUninit<Aarch64ExceptionFrame>;
+// `aarch64_enter_exception_frame` moves SP onto a CPU's slot, and SCTLR_EL1.SA
+// is set, so each element must be a 16-byte-aligned stack address.
+const _: () = {
+    use super::sp_frame_slot::SpFrameSlot;
+    assert!(core::mem::align_of::<SpFrameSlot<Aarch64ExceptionFrame>>() % 16 == 0);
+    assert!(core::mem::size_of::<SpFrameSlot<Aarch64ExceptionFrame>>() % 16 == 0);
+};
+
+static mut INLINE_SCHEDULE_ERET_FRAMES: [super::sp_frame_slot::SpFrameSlot<Aarch64ExceptionFrame>;
     crate::arch_impl::aarch64::constants::MAX_CPUS] =
-    [const { MaybeUninit::zeroed() }; crate::arch_impl::aarch64::constants::MAX_CPUS];
+    [const { super::sp_frame_slot::SpFrameSlot::zeroed() }; crate::arch_impl::aarch64::constants::MAX_CPUS];
 
 /// Per-CPU staging for a ret-based kernel dispatch.
 ///
@@ -5402,11 +5411,13 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     // When deferred_tid was non-zero, we already processed it above under
     // the lock and can treat it as "done" for fast-path eligibility.
     if !exception_cleanup_context && !need_resched && (deferred_tid == 0 || deferred_already_processed) {
+        // No reschedule is pending, so only a thread the exit must switch
+        // out (`task::park::exit_switch_for`) takes the lock.
         let current_blocked = {
             let thread_ptr = Aarch64PerCpu::current_thread_ptr();
             if !thread_ptr.is_null() {
                 let thread = unsafe { &*(thread_ptr as *const Thread) };
-                thread.state.is_blocked() || thread.state == ThreadState::Terminated
+                crate::task::park::exit_switch_for(thread, false) == crate::task::park::ExitSwitch::SwitchOut
             } else {
                 false
             }
@@ -5517,15 +5528,17 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     // the ISR-triggered unblock_for_io(). Including BlockedOnIO here ensures
     // the scheduler switches away from a blocked thread even when need_resched
     // is not yet set, matching the behaviour of all other Blocked* states.
-    let current_blocked_or_terminated = if let Some(current) = sched.current_thread_mut() {
-        // ThreadState::is_blocked() (#673 review, m4); Terminated stays a
-        // separate arm since it is not one of is_blocked()'s five variants.
-        current.state.is_blocked() || current.state == ThreadState::Terminated
-    } else {
-        false
+    //
+    // The decision is `task::park::apply_exit_switch`, the one the x86 exit
+    // makes too (E2.3, design §3.5). The exception to the note above is a
+    // wait on `task::park` that is published but not committed: it is
+    // runnable, so it is returned to running here and requeued by the switch
+    // below, or resumed when no reschedule is pending.
+    let exit = match sched.current_thread_mut() {
+        Some(current) => crate::task::park::apply_exit_switch(current, need_resched),
+        None => crate::task::park::exit_switch(crate::task::park::ExitThread::Runnable, need_resched),
     };
-
-    if !need_resched && !current_blocked_or_terminated {
+    if exit == crate::task::park::ExitSwitch::Resume {
         // No reschedule needed — fix cpu_state and return
         fix_eret_cpu_state_locked(sched, frame);
         drop(guard);

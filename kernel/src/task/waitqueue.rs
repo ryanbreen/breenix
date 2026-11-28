@@ -201,16 +201,16 @@ impl WaitQueueHead {
     }
 }
 
-/// x86-64: halt a thread that is published blocked, letting another thread
-/// queued on this CPU run first. The blocked check is redone with interrupts
-/// masked before the halt, so a wake that lands after it ends the halt
-/// (B1 requirement 11). Callers loop until they are no longer blocked.
+/// x86-64: sleep a thread that is published blocked. `arch_halt_while_blocked`
+/// switches away whenever the thread may be switched and another thread is
+/// queued here or the thread is not pinned here, so the reschedule this used
+/// to request first is gone (E2.3: a committed park switches away). The
+/// blocked check is redone with interrupts masked before any halt, so a wake
+/// that lands after it ends the halt (B1 requirement 11). Callers loop until
+/// they are no longer blocked.
 #[cfg(not(target_arch = "aarch64"))]
+#[track_caller]
 pub(crate) fn halt_blocked_current() {
-    let others_ready = crate::task::scheduler::with_current(|sched| sched.has_queued_work_here()).unwrap_or(false);
-    if others_ready {
-        crate::task::scheduler::yield_current();
-    }
     crate::arch_halt_while_blocked();
 }
 
