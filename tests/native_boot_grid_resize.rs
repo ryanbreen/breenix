@@ -2,6 +2,8 @@
 extern crate alloc;
 #[path = "../kernel/src/console/boxdraw.rs"] pub mod boxdraw;
 #[path = "../kernel/src/console/grid.rs"] pub mod grid;
+#[path = "../kernel/src/console/status.rs"]
+pub mod status;
 #[path = "../kernel/src/console/raster.rs"] pub mod raster;
 use grid::{Grid,BLANK};
 fn text(g:&Grid,row:usize)->String {

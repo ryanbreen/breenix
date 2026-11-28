@@ -14,14 +14,13 @@ NC='\033[0m'
 
 # Build kernel
 echo -e "${YELLOW}Building kernel...${NC}"
-cd kernel && cargo +nightly build --target ../x86_64-breenix.json -Zbuild-std=core,compiler_builtins,alloc -Zbuild-std-features=compiler-builtins-mem --quiet 2>/dev/null
+cargo build -p kernel --bin kernel --target x86_64-unknown-none --quiet
 if [ $? -eq 0 ]; then
     echo -e "${GREEN}✅ Kernel build successful${NC}"
 else
     echo -e "${RED}❌ Kernel build failed${NC}"
     exit 1
 fi
-cd ..
 
 # Build QEMU runners  
 echo -e "${YELLOW}Building QEMU runners...${NC}"

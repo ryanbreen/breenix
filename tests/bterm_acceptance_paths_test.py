@@ -91,7 +91,10 @@ fn main() {
 
     def test_type_line_survives_a_command_opening_another_window(self):
         app = (ROOT / "libs/libuitest/src/app.rs").read_text()
-        methods = app[app.index("        pub fn type_line("):app.index("        pub fn tree(")]
+        methods = "\n".join(
+            re.search(rf"(?ms)^        pub fn {name}\(.*?^        }}", app)[0]
+            for name in ("type_line", "key")
+        )
         keyboard = (ROOT / "libs/libuitest/src/input.rs").read_text()
         chord = keyboard[keyboard.index("    pub fn chord("):keyboard.index("    pub fn type_text(")]
         execute("""

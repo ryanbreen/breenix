@@ -135,6 +135,8 @@ impl std::fmt::Display for Level {
 #[path = "../kernel/src/console/grid.rs"]
 mod grid;
 #[allow(dead_code)]
+#[path = "../kernel/src/console/status.rs"]
+pub mod status;
 #[path = "../kernel/src/console/raster.rs"]
 mod raster;
 #[allow(dead_code)]

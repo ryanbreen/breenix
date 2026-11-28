@@ -3,6 +3,11 @@ extern crate alloc;
 extern crate self as spin;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 static LOCK_DEPTH:AtomicU32=AtomicU32::new(0);
+
+fn arch_without_interrupts<T>(body: impl FnOnce() -> T) -> T {
+    body()
+}
+
 #[derive(Debug)]
 pub struct Mutex<T>(std::sync::Mutex<T>);
 impl<T> Mutex<T> {
