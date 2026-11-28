@@ -104,7 +104,6 @@ pub(crate) fn register_volatile_mounts(tmp: MountPoint, mut run: MountPoint) -> 
     result
 }
 
-#[cfg(not(test))]
 pub(crate) fn is_bind(id: usize) -> bool {
     MOUNT_TABLE.lock().get(id).is_some_and(|entry| entry.bind.is_some())
 }

@@ -436,6 +436,10 @@ pub trait FileSystem: core::any::Any + Send + Sync {
     }
     /// Must be nonblocking and safe under PROCESS_MANAGER, including on drop.
     fn request_eviction(&self) {}
+    /// Whether a new shared mapping of `node` may not gain write authority
+    /// now, because a store through it would bypass a freeze. Called under
+    /// the file's map lock: nonblocking and safe under PROCESS_MANAGER.
+    fn refuses_shared_write(&self, _node: &VNode) -> bool { false }
     // Xattrs (no syscall consumer yet).
     fn xattr(&self, _ino: u64, _op: Xattr<'_>) -> Result<usize, Errno> {
         Err(Errno(EOPNOTSUPP))

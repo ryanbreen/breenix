@@ -38,6 +38,7 @@ pub mod model;
 pub mod ops;
 pub mod recording;
 pub mod stream;
+pub mod staging_stream;
 
 #[path = "../../../kernel/src/block/read_failure.rs"]
 pub mod read_failure;
