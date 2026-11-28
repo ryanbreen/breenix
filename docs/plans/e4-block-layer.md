@@ -107,12 +107,27 @@ A request moves from queued to issued to retired to completed. An error can
 end a caller's wait while its issued request is still with the device. After
 issue, the queue retains the DMA mapping, frame pins, bounce buffers and
 per-command descriptors until validated completion or a confirmed stop or reset of
-the DMA engine. Signals, timeout and queue teardown share that rule. A reset
+the DMA engine. A signal may detach a passive waiter when another owner is
+responsible for completing the operation and cleaning up. Detaching leaves
+the request's result and the queue's obligations intact. A reset
 puts outstanding requests in a retirement set. A software generation protects
 against deferred work from an old queue. DMA retirement requires hardware
 evidence.
 If the stop cannot be confirmed, take the device offline and keep the affected
 memory quarantined. The memory bound comes from the credits held at issue.
+
+**Design detail for E4.4 synchronous waits:** Keep `KillCustody` and E2's
+uninterruptible waits for commit and cache I/O because a signal returned
+as an I/O error can latch a healthy BreenFS mount read-only.
+The commit or cache operation acquires custody before it assumes work that
+must be finished. Keep custody across admission, completion and cleanup,
+including between requests, until the generation is installed or abandoned,
+or the cache result is finalized and cache ownership released. `SIGKILL`
+stays pending throughout. Device failures and recovery deadlines still
+follow their normal error paths.
+See the [MMIO request gate](../../kernel/src/drivers/virtio/block_mmio.rs#L41),
+its [completion wait](../../kernel/src/drivers/virtio/block_mmio.rs#L410), and
+the [BreenFS publication error path](../../kernel/src/fs/breenfs/vfs.rs#L2972).
 
 Use a bounded, device-owned bounce pool only for ranges the device cannot
 address or encode directly after legitimate splits, such as on a 32-bit AHCI
@@ -419,7 +434,7 @@ needed.
   >>> def wait_for_commit_data(events):
   ...     for event in events:
   ...         if event == 'SIGKILL':
-  ...             return 'interrupted'
+  ...             continue
   ...         return event
   ...     return 'pending'
   >>> wait_for_commit_data(['SIGKILL'])
