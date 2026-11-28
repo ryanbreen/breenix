@@ -434,6 +434,8 @@ filters it in one place. No fixed array sits between the two.
     `descriptor_size` and `descriptor_version` in `HardwareConfig` (4.5.3), and leaks the owner with
     `core::mem::forget`.
   - The code between the exit and the jump does not allocate, as today.
+  - The exit and these steps are one function, `handoff::exit_and_encode(config)`, which `main.rs`
+    calls. E1-1's host test runs that same function over a fake firmware table.
 - Before exiting, while it can still print, the loader checks that the kernel accepts v8 (4.5.3).
 
 #### 4.5.3 `HardwareConfig` v8, and compatibility in both directions
@@ -1246,7 +1248,8 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
     `find_object_symbol` it reads the version with (4.5.3).
 - Change, `parallels-loader`:
   - `exit_boot_services` with `BOOT_MAP_MEMORY_TYPE`;
-  - `encode_uefi_map`, and `ram_region_count = 0`;
+  - `handoff::exit_and_encode`, which runs the exit, the runtime-region loop and `encode_uefi_map`, and
+    writes `ram_region_count = 0`;
   - the buffer's pages mapped in TTBR0 only, writable with PXN and UXN set, splitting a block whose
     attributes are not writable normal memory (4.5.4);
   - `handoff_decision` before exit;
@@ -1263,10 +1266,24 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
     E1-1 before it exits boot services.
 - Tests (host, new crate `tools/kmem-host-tests`). It depends on `arm64-boot-contract` as a crate and
   includes `boot_ranges.rs` by `#[path]`.
-  - The boundary tests call the functions production calls on each side: the loader's `encode_uefi_map`,
-    and the kernel's `from_hardware_config`. They are joined only by bytes, a `HardwareConfig` and a map
-    buffer placed at fixed addresses in a simulated physical memory. The simulated memory implements
-    `BootMemory`, and its unmapped pages do not translate.
+  - The boundary tests run the code production runs on each side. They are joined only by bytes: a
+    `HardwareConfig` and a map buffer in a simulated physical memory. The simulated memory implements
+    `BootMemory`, and its pages translate only as the loader-built tables map them (the walker of the
+    mapping check below).
+    - The loader side is its whole post-exit sequence, not the encoder alone. In production, `main.rs`
+      calls one function, `handoff::exit_and_encode(config)`, for everything from the exit to the
+      encoded handoff. That covers `uefi::boot::exit_boot_services(MemoryType::custom(BOOT_MAP_MEMORY_TYPE))`,
+      the runtime-region loop and `encode_uefi_map`. The early map read,
+      `populate_ram_regions`, runs before it, as in production.
+    - The firmware under it is a fake. The test crate depends on `uefi` 0.33, without the loader's
+      `panic_handler` and `global_allocator` features, and installs a fake system table with the crate's
+      public `uefi::table::set_system_table`. The fake boot-services table implements the entries the
+      crate calls: `GetMemoryMap`, `AllocatePool`, `FreePool` and `ExitBootServices`. Any other entry
+      panics with its name. The pool it hands out is host memory, and its physical address is its host
+      address, as under UEFI's AArch64 identity mapping (§2.3.6).
+    - The fake keeps the specification's key rule: `ExitBootServices` accepts only the key of the latest
+      `GetMemoryMap`, and each `AllocatePool` changes the key.
+    - The kernel side is `from_hardware_config`, reading through `BootMemory`.
   - The first commit holds the checks. It also moves today's code, unchanged, into callable form, and
     switches the production callers to it, so each red result is the old code's:
     - the loader's filter-and-copy (`main.rs:376-387`), as `encode_v7_ram_regions(config, descriptors)`;
@@ -1282,8 +1299,20 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
   - Check first, the boundary:
     - The old code gets the fixture's descriptors as tuples, as the `uefi` crate's iterator yields them.
       It passes 32 ranges, the pool is 16 MiB short, and no truncation is reported, which is red.
-    - The new loader and kernel keep 40 of 40 with the exact byte total. The same fixture at
-      `DescriptorSize` 40 gives the identical set.
+    - The new loader and kernel keep 40 of 40. The test compares the kernel's usable set, as a sorted
+      list of `[start, end)` intervals, with the 40 intervals the fixture writes out, and the excluded
+      intervals with the expected list for each reason. Counts and byte totals alone would pass with one
+      interval dropped and another of the same size in its place. The same fixture at `DescriptorSize` 40
+      gives the identical lists.
+    - Stale key, one retry. The fake's first `ExitBootServices` returns `EFI_INVALID_PARAMETER`, so the
+      exit is retried, as the specification requires. The test uses three maps that differ in their
+      conventional ranges: the early map that `populate_ram_regions` reads, the map from the first exit
+      attempt, and the map from the retry. The second and third both contain the buffer's
+      `BOOT_MAP_MEMORY_TYPE` descriptor, so rule 6 alone cannot tell them apart. Only the retry's map is
+      the reference fixture. The kernel's intervals must equal the retry map's exactly, and
+      `UefiMapHandoff.map_size` must equal the retry's `meta().map_size`. A loader that encodes the early
+      map or the first attempt's map fails on the interval lists. One that sends the length of the
+      pool's whole `buffer()` fails the `map_size` check.
   - Check first, versions:
     - A v8 config is accepted, which is red on the old check.
     - A v7 config from `encode_v7_ram_regions` is accepted with at most 32 ranges under source
@@ -1834,7 +1863,8 @@ The caller inventory comes first, in E1-4, so no runtime caller is left without 
   for the reason given in each PR, and only for the cases named. The other PRs need no boot. No PR runs an
   effort's suites (DEV-30).
 - The ARM64 QEMU boot script does not run `parallels-loader` (1.5). So the loader-to-kernel boundary is
-  tested on the host, by calling the production encoder and decoder on each side of a byte image (E1-1).
+  tested on the host: the loader's post-exit sequence runs over a fake firmware table, and the kernel's
+  decoder reads the bytes it produced (E1-1).
   A QEMU boot is not evidence for it.
 - Kernel `boot_tests` that assume the old allocator are rewritten in the PR that removes what they test:
   `frame_allocator_tests.rs`, `retire_with_free_list_contended` and `free_list_len_for_gate`. They are
