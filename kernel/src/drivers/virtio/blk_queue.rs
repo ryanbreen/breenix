@@ -191,6 +191,26 @@ impl Limits {
         }
         (size as usize / (descriptors + 2)).min(MAX_CHAINS)
     }
+
+    /// The chains a device gets, as (chains, frames per chain): the longest
+    /// chain of up to `frames` frames that fits a ring of `size` and a budget
+    /// of `budget_frames` frames, without a frame that could carry no data,
+    /// and as many chains of that length as fit. None when not even a
+    /// one-frame chain (three descriptors) fits.
+    pub fn chain_plan(self, size: u16, frames: usize, budget_frames: usize) -> Option<(usize, usize)> {
+        let mut plan = None;
+        let mut carried = 0;
+        for length in 1..=frames.min(MAX_SEGMENTS) {
+            let chains = self.chains_for(size, length).min(budget_frames / length);
+            let (_, bytes) = self.chain_shape(length);
+            if chains == 0 || bytes <= carried {
+                break;
+            }
+            plan = Some((chains, length));
+            carried = bytes;
+        }
+        plan
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

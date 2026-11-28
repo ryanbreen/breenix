@@ -730,10 +730,10 @@ fn virt_to_phys(addr: u64) -> u64 {
     addr - crate::memory::physical_memory_offset().as_u64()
 }
 
-/// Chain storage for a device: its static headers and status bytes, and data
-/// frames allocated one by one, within the budget and the ring. A device that
-/// gets no frames runs one chain over its static page.
-fn chain_storage(device_index: usize, chains: usize, out: &mut [ChainStorage; MAX_CHAINS]) -> usize {
+/// Chain storage for a device: its static headers and status bytes, and
+/// `frames` data frames per chain allocated one by one. A device that gets no
+/// frames runs one chain over its static page.
+fn chain_storage(device_index: usize, chains: usize, frames: usize, out: &mut [ChainStorage; MAX_CHAINS]) -> usize {
     use crate::memory::frame_allocator::{allocate_frame, deallocate_frame};
     let (header_base, status_base, page) = unsafe {
         (
@@ -747,22 +747,22 @@ fn chain_storage(device_index: usize, chains: usize, out: &mut [ChainStorage; MA
         let mut storage = ChainStorage::EMPTY;
         storage.header = virt_to_phys(header_base + 16 * index as u64);
         storage.status = virt_to_phys(status_base + 16 * index as u64);
-        let mut frames = [None; CHAIN_FRAMES];
-        for count in 0..CHAIN_FRAMES {
+        let mut taken = [None; CHAIN_FRAMES];
+        for count in 0..frames {
             match allocate_frame() {
                 Some(allocated) => {
                     storage.frames[count] = allocated.start_address().as_u64();
-                    frames[count] = Some(allocated);
+                    taken[count] = Some(allocated);
                 }
                 None => {
                     // Chains carry equal bytes: a short one is
                     // given back rather than shrinking the others.
-                    frames.iter().flatten().for_each(|frame| deallocate_frame(*frame));
+                    taken.iter().flatten().for_each(|frame| deallocate_frame(*frame));
                     break 'chains;
                 }
             }
         }
-        storage.frame_count = CHAIN_FRAMES;
+        storage.frame_count = frames;
         *chain = storage;
         made += 1;
     }
@@ -924,15 +924,14 @@ fn init_device(
         device.set_queue_ready(true);
     }
 
-    let budget_chains = DATA_BUDGET_BYTES / (CHAIN_FRAMES * 4096);
-    let chains = limits.chains_for(queue_size, CHAIN_FRAMES).min(budget_chains);
-    if chains == 0 {
-        return Err("VirtIO block queue too small for one request");
-    }
+    // A small ring gets a shorter chain rather than no device.
+    let (chains, frames) = limits
+        .chain_plan(queue_size, CHAIN_FRAMES, DATA_BUDGET_BYTES / 4096)
+        .ok_or("VirtIO block queue too small for one request")?;
 
     // Taken after the queue checks, so a refused device holds no frames.
     let mut storage = [ChainStorage::EMPTY; MAX_CHAINS];
-    let made = chain_storage(device_index, chains, &mut storage);
+    let made = chain_storage(device_index, chains, frames, &mut storage);
     let ring = MmioRing { base: queue_mem, avail: layout.avail, used: layout.used };
     let engine = BlkQueue::new(ring, queue_size, limits, &storage[..made])
         .map_err(|_| "VirtIO block chain storage does not fit the queue")?;

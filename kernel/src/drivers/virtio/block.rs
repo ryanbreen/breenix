@@ -576,31 +576,29 @@ impl VirtioBlockDevice {
         // by one, within the budget and the ring.
         let control = Self::alloc_dma_page()?;
         let queue_size = queue.queue_size();
-        let chains = limits
-            .chains_for(queue_size, CHAIN_FRAMES)
-            .min(DATA_BUDGET_BYTES / (CHAIN_FRAMES * 4096));
-        if chains == 0 {
-            return Err("VirtIO block queue too small for one request");
-        }
+        // A small ring gets a shorter chain rather than no device.
+        let (chains, frames) = limits
+            .chain_plan(queue_size, CHAIN_FRAMES, DATA_BUDGET_BYTES / 4096)
+            .ok_or("VirtIO block queue too small for one request")?;
         let mut storage = [ChainStorage::EMPTY; MAX_CHAINS];
         let mut made = 0;
         'chains: for (index, chain) in storage.iter_mut().enumerate().take(chains) {
-            let mut frames = [None; CHAIN_FRAMES];
+            let mut taken = [None; CHAIN_FRAMES];
             chain.header = control + 16 * index as u64;
             chain.status = control + 2048 + 16 * index as u64;
-            for count in 0..CHAIN_FRAMES {
+            for count in 0..frames {
                 match frame_allocator::allocate_frame() {
                     Some(frame) => {
                         chain.frames[count] = frame.start_address().as_u64();
-                        frames[count] = Some(frame);
+                        taken[count] = Some(frame);
                     }
                     None => {
-                        frames.iter().flatten().for_each(|frame| frame_allocator::deallocate_frame(*frame));
+                        taken.iter().flatten().for_each(|frame| frame_allocator::deallocate_frame(*frame));
                         break 'chains;
                     }
                 }
             }
-            chain.frame_count = CHAIN_FRAMES;
+            chain.frame_count = frames;
             made += 1;
         }
         if made == 0 {
