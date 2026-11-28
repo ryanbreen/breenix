@@ -15,54 +15,18 @@ thread_local! {
     static RELEASED_DURING_WRITE: Cell<Option<bool>> = const { Cell::new(None) };
 }
 
-fn arch_without_interrupts<R>(f: impl FnOnce() -> R) -> R { f() }
-
-mod task {
-    pub mod scheduler {
-        pub fn current_thread_id() -> Option<u64> { Some(1) }
-    }
-}
-
-// The process row a second descriptor lookup reads: a clone of the table's
-// descriptor that lives as long as the guard.
-mod process {
-    pub mod limits {
-        pub const FSIZE: usize = 1;
-        pub struct Limit { pub soft: u64 }
-        pub struct Limits;
-        impl Limits {
-            pub fn get(&self, _: usize) -> Limit { Limit { soft: u64::MAX } }
-        }
-    }
-    pub struct Cred;
-    impl Cred {
-        pub fn privileged(&self) -> bool { false }
-    }
-    pub struct FdTable(Option<crate::ipc::fd::FileDescriptor>);
-    impl FdTable {
-        pub fn get(&self, _: i32) -> Option<&crate::ipc::fd::FileDescriptor> { self.0.as_ref() }
-    }
-    pub struct Process { pub fd_table: FdTable, pub cred: Cred, pub limits: limits::Limits }
-    pub struct Manager(Process);
-    impl Manager {
-        pub fn find_process_by_thread(&self, _: u64) -> Option<(u64, &Process)> { Some((1, &self.0)) }
-    }
-    pub struct Guard(Option<Manager>);
-    impl core::ops::Deref for Guard {
-        type Target = Option<Manager>;
-        fn deref(&self) -> &Self::Target { &self.0 }
-    }
-    pub fn manager() -> Guard {
-        let entry = crate::TABLE.with(|table| table.borrow().clone());
-        Guard(Some(Manager(Process { fd_table: FdTable(entry), cred: Cred, limits: limits::Limits })))
-    }
-}
-
 mod fs {
     pub mod errno {
         pub struct Errno(pub i32);
         impl From<Errno> for u64 {
             fn from(value: Errno) -> Self { value.0 as u64 }
+        }
+    }
+    pub mod permissions {
+        pub struct Credentials;
+        impl Credentials {
+            pub fn current(_: bool) -> Result<Self, u64> { Ok(Self) }
+            pub fn privileged(&self) -> bool { false }
         }
     }
     pub mod ufs {
@@ -159,6 +123,7 @@ mod syscall {
         }
     }
     pub mod resource {
+        pub fn current_fsize() -> u64 { u64::MAX }
         pub fn write_length(_: u64, count: usize, _: u64) -> Result<usize, u64> { Ok(count) }
         pub fn signal_fsize() {}
     }
