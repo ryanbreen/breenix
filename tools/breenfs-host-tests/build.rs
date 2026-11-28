@@ -57,8 +57,16 @@ fn main() {
     let end = start + source[start..].find(";\n").unwrap();
     out.push_str(&source[start..=end]);
     out.push('\n');
+    // The fault's page choice and its absent-page count (E3-2) are production.
+    let marker = "static ABSENT_BOUND";
+    let start = source.find(marker).unwrap_or_else(|| panic!("missing {marker}"));
+    let end = start + source[start..].find(";\n").unwrap();
+    out.push_str(&source[start..=end]);
+    out.push('\n');
+    out.push_str(&item(&source, "pub(crate) fn absent_bound("));
+    out.push('\n');
     out.push_str("impl MapInner {\n");
-    for marker in ["    fn bound(", "    fn gain_writable_shared(", "    fn mark_populating(", "    fn holes(", "    fn reserve_poison(", "    fn poison("] {
+    for marker in ["    fn bound(", "    fn gain_writable_shared(", "    fn mark_populating(", "    fn holes(", "    fn reserve_poison(", "    fn poison(", "    fn fault_frame("] {
         out.push_str(&item(&source, marker));
         out.push('\n');
     }

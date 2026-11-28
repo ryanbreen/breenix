@@ -161,6 +161,15 @@ const SIGSEGV: u32 = crate::signal::constants::SIGSEGV;
 
 static NEXT_BINDING: AtomicU64 = AtomicU64::new(1);
 
+/// Faults refused because a bound page below EOF had no cache entry
+/// (`absent_bound` in `/proc/breenix/pagecache`). Any count is a bug report.
+static ABSENT_BOUND: AtomicU64 = AtomicU64::new(0);
+
+/// The `absent_bound` count of `/proc/breenix/pagecache`.
+pub(crate) fn absent_bound() -> u64 {
+    ABSENT_BOUND.load(Ordering::Relaxed)
+}
+
 fn pages(size: u64) -> u64 {
     size.div_ceil(PAGE_SIZE)
 }
@@ -656,6 +665,23 @@ impl MapInner {
             }
         });
         poisoned.entries.sort_unstable_by_key(|(index, _)| *index);
+    }
+
+    /// The cache frame a fault maps for the bound index `index` below EOF.
+    /// An error is SIGBUS for the access. Called under the map lock with
+    /// PROCESS_MANAGER held, so it does no I/O.
+    fn fault_frame(&mut self, index: u64) -> Result<PhysFrame, &'static str> {
+        if self.poisoned.contains(index) {
+            return Err("Unknown mapped file bytes");
+        }
+        if let Some(page) = self.pages.get(index) {
+            return Ok(page.frame);
+        }
+        // A hole: its file bytes are zero (see the module invariant).
+        let page = CachePage::allocate()?;
+        let frame = page.frame;
+        self.pages.try_insert(index, page)?;
+        Ok(frame)
     }
 
     fn rec_mut(&mut self, id: u64) -> Option<&mut BindingRec> {
@@ -2354,22 +2380,8 @@ pub(crate) fn resolve_page(
         drop(parked);
         return FaultOutcome::Resolved;
     }
-    if inner.poisoned.contains(index) {
+    let Ok(frame) = inner.fault_frame(index) else {
         return FaultOutcome::Signal(SIGBUS);
-    }
-    let frame = match inner.pages.get(index) {
-        Some(page) => page.frame,
-        None => match CachePage::allocate() {
-            // A hole: its file bytes are zero (see the module invariant).
-            Ok(page) => {
-                let frame = page.frame;
-                if inner.pages.try_insert(index, page).is_err() {
-                    return FaultOutcome::Signal(SIGBUS);
-                }
-                frame
-            }
-            Err(_) => return FaultOutcome::Signal(SIGBUS),
-        },
     };
     object.map.state.resident.store(true, Ordering::Release);
     if prot.contains(Protection::EXEC) {

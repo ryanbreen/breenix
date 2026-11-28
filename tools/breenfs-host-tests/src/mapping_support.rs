@@ -282,18 +282,17 @@ impl HostBinding {
         let map = &self.0.node.map;
         let mut inner = map.state.inner.lock();
         let index = offset / PAGE_SIZE;
-        if index >= pages(inner.mapped_size) || inner.poisoned.contains(index) {
+        if index >= pages(inner.mapped_size) {
             return Err(HostFault::Sigbus);
         }
         let slot = inner.bindings.iter().position(|r| r.id == self.0.id).unwrap();
         assert!(inner.bindings[slot].covers(index));
         assert!(store.is_none() || inner.bindings[slot].writable);
-        // Absent pages in these fixtures are holes, already read as 0 by
-        // the production MappingIo, or pages made valid by a bound extension.
-        inner.pages.try_insert(index, CachePage::allocate().unwrap()).unwrap();
+        // The page a fault maps is production's choice (`fault_frame`, which
+        // `resolve_page` calls); only the page-table install is modeled.
+        let frame = inner.fault_frame(index).map_err(|_| HostFault::Sigbus)?;
         let shared = inner.bindings[slot].shared;
         let cache = inner.pages.get_mut(index).unwrap();
-        let frame = cache.frame;
         if store.is_some() && shared {
             cache.dirty = true;
             cache.gen += 1;
