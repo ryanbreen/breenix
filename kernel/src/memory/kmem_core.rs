@@ -134,6 +134,14 @@ pub trait Pool {
     /// One allocation. With `wait` false the pool's lock is taken with one
     /// `try_lock`, and a held lock is `Miss::Busy`.
     fn take(&self, layout: Layout, wait: bool) -> Result<NonNull<u8>, Miss>;
+    /// Whether `ptr` lies in this pool.
+    fn contains(&self, ptr: NonNull<u8>) -> bool;
+    /// Free a block `take` gave.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` came from this pool's `take` and is not freed twice.
+    unsafe fn give(&self, ptr: NonNull<u8>);
 }
 
 /// The CPU an allocation runs on.
@@ -418,5 +426,18 @@ impl<M: Pool, R: Pool> Front<'_, M, R> {
         self.main
             .take(layout, true)
             .map_err(|_| self.stats.fail(layout, ctx, AllocError::HeapExhausted))
+    }
+
+    /// Free `ptr` to the pool that holds it: the reserve, or else the heap.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` came from `allocate` and is not freed twice.
+    pub unsafe fn deallocate(&self, ptr: NonNull<u8>) {
+        if self.reserve.contains(ptr) {
+            unsafe { self.reserve.give(ptr) }
+        } else {
+            unsafe { self.main.give(ptr) }
+        }
     }
 }

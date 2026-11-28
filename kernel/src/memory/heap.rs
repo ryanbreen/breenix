@@ -102,6 +102,9 @@ pub fn heap_size() -> u64 {
 /// waiting masked.
 struct IrqSafeLockedHeap {
     inner: Mutex<Inner>,
+    /// The pool's address range, set once at `init`.
+    start: AtomicUsize,
+    end: AtomicUsize,
 }
 
 impl IrqSafeLockedHeap {
@@ -111,6 +114,8 @@ impl IrqSafeLockedHeap {
                 heap: Heap::empty(),
                 counts: case::Counts::new(),
             }),
+            start: AtomicUsize::new(0),
+            end: AtomicUsize::new(0),
         }
     }
 
@@ -164,6 +169,8 @@ impl IrqSafeLockedHeap {
             heap.init(heap_bottom, heap_size);
             ((), 0)
         });
+        self.start.store(heap_bottom as usize, Ordering::Relaxed);
+        self.end.store(heap_bottom as usize + heap_size, Ordering::Relaxed);
     }
 }
 
@@ -189,6 +196,18 @@ impl kmem::Pool for IrqSafeLockedHeap {
         };
         ptr.ok_or(kmem::Miss::Exhausted)
     }
+
+    fn contains(&self, ptr: NonNull<u8>) -> bool {
+        let address = ptr.as_ptr() as usize;
+        address >= self.start.load(Ordering::Relaxed) && address < self.end.load(Ordering::Relaxed)
+    }
+
+    unsafe fn give(&self, ptr: NonNull<u8>) {
+        self.with_inner(|heap| unsafe {
+            heap.deallocate(ptr);
+            ((), 0)
+        });
+    }
 }
 
 /// The fixed kernel heap and, at its top, the emergency reserve that only
@@ -197,8 +216,6 @@ impl kmem::Pool for IrqSafeLockedHeap {
 struct KernelHeap {
     main: IrqSafeLockedHeap,
     reserve: IrqSafeLockedHeap,
-    reserve_start: AtomicUsize,
-    reserve_end: AtomicUsize,
 }
 
 impl KernelHeap {
@@ -209,17 +226,6 @@ impl KernelHeap {
             shrinkers: &kmem::SHRINKERS,
             reclaim: &kmem::RECLAIM,
             stats: &kmem::STATS,
-        }
-    }
-
-    fn pool_of(&self, ptr: *mut u8) -> &IrqSafeLockedHeap {
-        let address = ptr as usize;
-        if address >= self.reserve_start.load(Ordering::Relaxed)
-            && address < self.reserve_end.load(Ordering::Relaxed)
-        {
-            &self.reserve
-        } else {
-            &self.main
         }
     }
 }
@@ -237,10 +243,7 @@ unsafe impl GlobalAlloc for KernelHeap {
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
-        self.pool_of(ptr).with_inner(|heap| unsafe {
-            heap.deallocate(NonNull::new_unchecked(ptr));
-            ((), 0)
-        });
+        unsafe { self.front().deallocate(NonNull::new_unchecked(ptr)) }
     }
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
@@ -274,8 +277,6 @@ unsafe impl GlobalAlloc for KernelHeap {
 static ALLOCATOR: KernelHeap = KernelHeap {
     main: IrqSafeLockedHeap::empty(),
     reserve: IrqSafeLockedHeap::empty(),
-    reserve_start: AtomicUsize::new(0),
-    reserve_end: AtomicUsize::new(0),
 };
 
 /// Initialize the heap allocator
@@ -348,12 +349,6 @@ pub fn init(mapper: &OffsetPageTable<'static>) -> Result<(), &'static str> {
             .reserve
             .init((heap_base + main_bytes) as *mut u8, reserve_bytes as usize);
     }
-    ALLOCATOR
-        .reserve_start
-        .store((heap_base + main_bytes) as usize, Ordering::Relaxed);
-    ALLOCATOR
-        .reserve_end
-        .store((heap_base + heap_size) as usize, Ordering::Relaxed);
 
     log::info!(
         "Heap initialized at {:#x} with size {} KiB ({} KiB emergency reserve)",
