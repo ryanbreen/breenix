@@ -675,6 +675,15 @@ A foreground operation runs in passes (an optimistic read with validation: Kung 
 4. Progress: after a bounded number of passes, the operation takes a publication hold. The commit worker
    waits for the holder's next pass before it publishes, so a stream of commits cannot starve a reader.
    The limit is a constant in the PR, chosen by the host test's interleavings.
+5. Output: a pass exposes nothing to its caller until it completes. Today `read_directory` calls its
+   sink for each entry as the walk reaches it (`vfs.rs:4645-4662`), and `getdents64` appends each record
+   to its reply and advances its cookie in that callback (`kernel/src/syscall/fs.rs:1171-1199`). A pass
+   that emitted entries and then hit a cold node would, on restart from the root, emit them again,
+   possibly from a different generation. So a pass collects its results (directory entries with their
+   cookies, a stat result, a lookup's inode) in a per-pass buffer. A pass that ends in `NeedsIo` throws
+   its buffer away. Only the pass that completes hands its buffer to the caller's sink, in order, so one
+   reply comes from one generation and has no duplicates. The buffer is bounded by the caller's request:
+   for `getdents64`, the record bytes that fit the user buffer. <!-- claim-lint:ok: normative requirement of docs/plans/e2-sleepable-contexts.md under ruling DEV-37(2), not a measured result. -->
 
 ### 7.3 Write paths and the commit worker
 
@@ -886,6 +895,13 @@ should own each, not several agents on one PR (DEV-30(3)).
       writer's device;
   - **the write path:** a full dirty budget makes the writer park on commit progress without holding the
     lock;
+  - **a late miss in readdir:** a `getdents64`-shaped sink reads a directory whose first leaf is
+    cached and whose second is cold, so the pass emits at least one entry before it needs the device.
+    A commit that adds an entry lands while the read is out. The reply has no duplicate names or
+    cookies, and every entry in it comes from one generation. Today's tree never restarts a walk, so
+    this check passes there: it guards the new mechanism, not an old defect. In E2.5 it goes in after
+    the commit that adds passes and before the commit that adds the per-pass buffer, and it is red
+    between the two; <!-- claim-lint:ok: normative requirement of docs/plans/e2-sleepable-contexts.md under ruling DEV-37(2), not a measured result. -->
   - **the worker path:** a full budget reached while the commit worker stages mapped dirty pages. In
     one case the worker owns the detached generation, and in the other another publisher does. In both,
     a concurrent fsync completes and the worker is never parked on commit progress. A variant of the
