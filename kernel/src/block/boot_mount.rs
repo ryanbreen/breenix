@@ -49,14 +49,16 @@ pub fn find_partition(
     let mut found = None;
     let mut matches = 0;
     for disk in disks {
-        if disk.block_size() != gpt::SECTOR {
+        let size = disk.block_size();
+        if !matches!(size, gpt::SECTOR | gpt::MAX_SECTOR) {
             continue;
         }
-        let mut lba1 = [0u8; gpt::SECTOR];
-        if disk.read_block(1, &mut lba1).is_err() {
+        let mut lba1 = [0u8; gpt::MAX_SECTOR];
+        let lba1 = &mut lba1[..size];
+        if disk.read_block(1, lba1).is_err() {
             continue;
         }
-        let Ok(header) = gpt::header(&lba1, disk.num_blocks()) else {
+        let Ok(header) = gpt::header(lba1, disk.num_blocks()) else {
             continue;
         };
         let entry = gpt::find(&header, &unique, |lba, sector| {

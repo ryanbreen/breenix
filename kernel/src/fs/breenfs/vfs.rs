@@ -2130,6 +2130,9 @@ impl<W: Wait + 'static> BreenFs<W> {
         boot: bool,
         with_default: bool,
     ) -> Result<Arc<Self>, Errno> {
+        if writable && device.is_read_only() {
+            return Err(Errno(EROFS));
+        }
         let report = |details: core::fmt::Arguments<'_>| {
             #[cfg(any(target_os = "none", target_os = "breenix"))]
             if boot {
