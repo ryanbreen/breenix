@@ -691,3 +691,28 @@ fn an_interrupt_refill_at_the_interval_waits_for_no_slab_lock() {
     world.on(0);
     world.free(held, layout);
 }
+
+/// 7.2: the slab shrinker runs with interrupts masked, so its work is bounded
+/// by its target plus a fixed batch, and the count it reports is the pages it
+/// gave back, which the slow path compares with its target.
+#[test]
+fn the_slab_shrinker_does_bounded_work_and_counts_the_pages_it_returns() {
+    let world = World::registered(2);
+    let page_object = bytes(4096);
+    let class = class_of(4096, 8).unwrap();
+    world.on(1);
+    let objects: Vec<_> = (0..40 * 15).map(|_| world.alloc(page_object)).collect();
+    for object in objects {
+        world.free(object, page_object);
+    }
+    let depot_before = world.kmem.class_stats(class).depot_rounds;
+    assert!(depot_before >= 30 * 15, "the depot holds {depot_before} rounds");
+    let pages_before = world.pages_in_use();
+    let reported = world.kmem.shrink(1);
+    let returned = pages_before - world.pages_in_use();
+    assert_eq!(reported, returned, "the shrinker reported {reported} pages and gave back {returned}");
+    let retired = depot_before - world.kmem.class_stats(class).depot_rounds;
+    let bound = (1 + kmem_core::RECLAIM_BATCH_FRAMES) * 15;
+    assert!(retired <= bound, "a target of 1 page retired {retired} rounds, past the bound of {bound}");
+    assert!(reported >= 1);
+}
