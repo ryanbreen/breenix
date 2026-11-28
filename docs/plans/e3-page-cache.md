@@ -843,9 +843,15 @@ writing.
 
 E3-3 adopts it:
 
-- Each FileCache counts its exec bindings (`deny_write`) and its descriptions open for writing (`writers`).
-- `open` with write access, `truncate`, and a shared writable `mmap` of a file with `deny_write > 0` fail
-  with ETXTBSY.
+- Each FileCache counts its exec bindings (`deny_write`) and its writers (`writers`): descriptions open
+  for writing, plus shared bindings with write authority. A shared binding has write authority when it was
+  mapped from a descriptor open for writing, whether or not it is writable now, because `mprotect` can
+  add `PROT_WRITE` later. That is today's `shared && may_write` test (`may_change_exec_image`,
+  `memory/file_map.rs:795-801`). Such a binding keeps write authority after its descriptor closes, so
+  counting only open descriptions would let its stores change a running image's shared text.
+  `writers` drops when the description closes or the binding goes. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+- `open` with write access, `truncate`, and a shared `mmap` with write authority of a file with
+  `deny_write > 0` fail with ETXTBSY.
 - An exec of a file with `writers > 0` does not fail: it takes the copying fallback of 10.1 for that image,
   so no build that writes a binary and runs it at once is refused.
 - `rename` and `unlink` of a running image are allowed. The incarnation stays alive until its last binding
@@ -1478,6 +1484,11 @@ waits for E3-6 (it needs pages retained by the cache to be worth anything), so t
   - A store to data copies; a store to text faults with SIGSEGV.
   - `open(O_WRONLY)` of a running image is ETXTBSY. It succeeds on the old code, which is red.
   - Exec of a file open for writing takes the fallback and runs.
+  - A shared binding with write authority whose descriptor is closed: map the image `MAP_SHARED` from an <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+    `O_RDWR` descriptor with `PROT_READ`, close the descriptor, exec the image, then `mprotect` the
+    mapping writable and store to the text page. The running image's text is unchanged, because the exec
+    took the copying fallback. The old tree copies every image, so this guards the rule the PR adds and is
+    not red there; the PR says so.
   - A non-congruent segment takes the fallback.
 - **Rows.** `process.fork-exec` (BSS and copies), `process.rustc-first-output` and `compile.rustc-vv` (the
   rustc launcher's own image), `compile.cargo-noop` (every rustc probe). These are expected to move a
@@ -2187,7 +2198,7 @@ from a read-write descriptor, then closes the descriptor; the VMA keeps write au
 executed.
 
 ```pycon
->>> RULE = 'open-writers-only'
+>>> RULE = 'opens-and-bindings'
 >>> cache = {'write_opens': 0, 'shared_may_write_bindings': 1}
 >>> def writers(c):
 ...     extra = c['shared_may_write_bindings'] if RULE == 'opens-and-bindings' else 0
