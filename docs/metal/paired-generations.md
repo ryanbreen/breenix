@@ -110,6 +110,15 @@ to the default tree. PR A adds a third slot:
   outlived the mount), then excludes the tree and drops the claim. A refusal at that point leaves the tree
   attached and claimed with no mount: the draft cannot be deleted or renamed until a reboot drops the attachment,
   and `paired abort` reports that. That direction loses no data.
+- **Detach purges the staging tag from the caches.** The tag is reused by the next attach, which may be a
+  different root whose local inode numbers name different files. The mount's per-inode state is keyed by the
+  tagged number: `InodeCache` (vfs.rs:874, indexed by `ino ^ ino >> 32` and matched on the full number),
+  `MountState::nodes` and the `touches` set. `memory::file_map`'s mapping state for those nodes is the fourth; how
+  it is keyed was not traced for this design, so PR A's builder records its key in the plan and purges it the same
+  way. After the sync, detach removes each entry whose tag is `STAGING_TREE` from those four, walking `InodeCache`'s
+  slots once (bounded by its RAM budget, at most 2 MiB). Attach then checks those four for a staging-tagged entry, and
+  refuses with `EBUSY` otherwise. The decoded-node cache is keyed by block address and node generation (#3245) and
+  the block cache by block address, so these two do not alias across roots.
 - The staging attachment has no on-disk record. After a crash or reboot, no tree is attached, and the draft is
   just a root.
 
@@ -532,6 +541,7 @@ behavior: `EBUSY`, a second writer refused. The tests then fail at run time.
 | T-A2 crash images | `tools/breenfs-host-tests/tests/crash_images.rs` | The same stream, through detach and the rename to `gen-B`, under the recording device. Each crash image recovers and passes `breenfs-check --full`. `gen-A` and the default tree match the model at the recovered commit. The second root is absent, a `B.new` that equals some prefix of the staged stream, or a complete `gen-B`. | The stream stops at attach |
 | T-A3 refusals and epoch | `tools/breenfs-host-tests/tests/snapshot.rs` | Attach is refused for the booted root, root 1, a read-only root and a second staging tree. Delete and rename of the attached root return `EBUSY`. Detach with an open staged file returns `EBUSY`. The epoch does not change for reads (atime), default-tree writes or staging writes, and does change for a booted-root write. After `ROOT_FREEZE`, a booted-root create, write, rename and setattr return `EROFS` and the epoch stays at the frozen value, while default-tree writes and atime touches still succeed. `ROOT_THAW` admits writes again. A booted-root write racing the freeze, driven by a fixed interleaving, is either counted in the returned epoch or refused. | No attach, no epoch and no freeze |
 | T-A4 unmount keeps the writer | `tools/vfs-host-tests/tests/boot_mount_tests.rs`, which already mounts and unmounts through the registry | Unmounting the staging mount detaches it, and `/` stays registered, writable and committing. Order: with a process's working directory inside the staging mount, unmount returns `EBUSY` and the mount is still registered and still attached (a staged write still succeeds); after that directory is left, unmount succeeds with no reference from its own walk blocking detach. Access: a non-root credential's lookup of `/run/breenix/paired/stage/usr` returns `EACCES`. | Today's non-bind unmount path calls `shutdown` |
+| T-A5 reattach sees the new root | `tools/breenfs-host-tests/tests/snapshot.rs` | Two clones, `A.new` and `B.new`, made so that local inode 300 is a regular file in A and a directory in B, and inode 301 has different bytes and extents in each. Attach A, stat and read 300 and 301 and mmap 301, so each cache holds them. Detach, attach B. Stat, readdir and read of 300 and 301 return B's inode, entries and bytes. | Attach returns `EBUSY`; an attach without the purge returns A's cached inode |
 
 No boot belongs to PR A. Its live effect is the staging mount PR B uses on the R240. The kernel reaches the box
 through a kernel-only one-reboot flash (#3247) of a main that contains PR A, before PR B's live run (below).
