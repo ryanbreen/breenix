@@ -1656,6 +1656,31 @@ in one of their batches, with its space reserved and its inode in that generatio
 
 ```
 
+**Pages stay until the open view has G's extents (11.2).** G installs, but until N+1's replay completes the
+open view is still the scratch view, whose extent for page 5 is G-1's (`fs/breenfs/vfs.rs:1159-1166`).
+Reclaim runs on page 5 in that interval, and a read refills it from the open view.
+
+```pycon
+>>> RULE = 'clean-at-install'
+>>> open_view = {5: 'G-1'}
+>>> page = {'bytes': 'G', 'writeback': True}
+>>> def install():
+...     if RULE == 'clean-at-install':
+...         page['writeback'] = False
+>>> def materialized():
+...     open_view[5] = 'G'
+...     page['writeback'] = False
+>>> def reclaim_then_read():
+...     return page['bytes'] if page['writeback'] else open_view[5]
+>>> install()
+>>> reclaim_then_read()
+'G'
+>>> materialized()
+>>> reclaim_then_read()
+'G'
+
+```
+
 ## 20. bbench rows (DEV-31)
 
 | Row | Ratio (28668b28) | Expected to move in | Parity reachable from E3 alone |
