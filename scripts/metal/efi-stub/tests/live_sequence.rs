@@ -7,9 +7,21 @@ use crate::sha256::sha256;
 use crate::slot_transaction::{self, Store};
 use crate::uefi::{Status, DEVICE_ERROR, NOT_FOUND, VOLUME_CORRUPTED};
 
-const CURRENT: &[u8] = b"known-good image";
+const CURRENT: &[u8] = &disk(1);
+const PREVIOUS: &[u8] = &disk(2);
+const CANDIDATE: &[u8] = &disk(3);
+const DAMAGED: &[u8] = &disk(4);
+
+const fn disk(tag: u8) -> [u8; 1024] {
+    let mut bytes = [tag; 1024];
+    let mut i = 0;
+    while i < 8 {
+        bytes[512 + i] = b"EFI PART"[i];
+        i += 1;
+    }
+    bytes
+}
 const BASE: &[u8] = b"known-good note";
-const CANDIDATE: &[u8] = b"candidate image";
 const TOKEN: Token = [b'1'; 32];
 const STALE: Token = [b'2'; 32];
 const ACK: &[u8] = b"11111111111111111111111111111111\n";
@@ -40,6 +52,9 @@ struct Volume {
     pending_marker: RefCell<Option<Vec<u8>>>,
     cut: Option<(usize, bool)>,
     steps: Cell<usize>,
+    rename_order: Option<bool>,
+    root_flags: Option<u32>,
+    intent: &'static [u8],
 }
 
 impl Volume {
@@ -50,6 +65,9 @@ impl Volume {
             pending_marker: RefCell::new(None),
             cut,
             steps: Cell::new(0),
+            rename_order: None,
+            root_flags: None,
+            intent: b"",
         }
     }
 
@@ -107,6 +125,16 @@ impl Store for Volume {
     }
 
     fn rename(&self, from: &str, to: &str) -> Result<(), Status> {
+        if let Some(both_first) = self.rename_order {
+            let contents = self.files.borrow()[from].clone();
+            let add = |files: &mut Files| assert!(files.insert(to.into(), contents).is_none());
+            let remove = |files: &mut Files| { files.remove(from).unwrap(); };
+            return if both_first {
+                self.change(add).and_then(|()| self.change(remove))
+            } else {
+                self.change(remove).and_then(|()| self.change(add))
+            };
+        }
         self.change(|files| {
             let contents = files.remove(from).unwrap();
             assert!(!files.contains_key(to));
@@ -206,7 +234,7 @@ fn initial() -> Files {
     [
         ("CURRENT.IMG".into(), CURRENT.to_vec()),
         ("CURRENT.TXT".into(), BASE.to_vec()),
-        ("PREVIOUS.IMG".into(), b"older image".to_vec()),
+        ("PREVIOUS.IMG".into(), PREVIOUS.to_vec()),
         ("PREVIOUS.TXT".into(), b"older note".to_vec()),
         ("LIVE.ID".into(), manifest(STALE)),
         ("TRY.IMG".into(), b"leftover trial".to_vec()),
@@ -244,7 +272,7 @@ fn manager_tries_once_and_requires_matching_acknowledgement() {
     for (manifest, image) in [
         (Some(&armed[..armed.len() - 1]), CANDIDATE),
         (stage, &CANDIDATE[..CANDIDATE.len() - 1]),
-        (stage, b"damaged!! image".as_slice()),
+        (stage, DAMAGED),
     ] {
         assert!(matches!(
             run(&clean, manifest, image, None, true),
@@ -359,4 +387,168 @@ fn manager_resumes_acknowledged_promotion_after_power_loss() {
             }
         }
     }
+}
+
+
+// These adapters run the old manager's operations until the record implementation
+// takes over. The test observations are the bytes offered to the loader.
+fn startup(volume: &Volume) -> Result<([u8; 32], Option<[u8; 32]>), Status> {
+    slot_transaction::recover(volume)?;
+    let files = volume.files.borrow();
+    let verify = |name| files.get(name).filter(|bytes| {
+        // SAFETY: the fixture exposes the whole image to the production shape check.
+        unsafe { crate::bootdisk::looks_like_disk(bytes.as_ptr(), bytes.len()) }
+    }).map(|bytes| sha256(bytes));
+    Ok((verify("CURRENT.IMG").ok_or(NOT_FOUND)?, verify("PREVIOUS.IMG")))
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Transition {
+    Import,
+    Try,
+    Promote,
+    Commit,
+    Rollback,
+}
+
+fn apply(volume: &Volume, transition: Transition, armed: &[u8]) -> Result<(), Status> {
+    match transition {
+        Transition::Import => startup(volume).map(|_| ()),
+        Transition::Try => run(volume, Some(armed), CANDIDATE, None, true).map(|_| ()),
+        Transition::Promote => run(volume, Some(armed), CANDIDATE, Some(ACK), false).map(|_| ()),
+        Transition::Commit => slot_transaction::begin(volume, false),
+        Transition::Rollback => slot_transaction::begin(volume, true),
+    }
+}
+
+fn with_next(mut files: Files) -> Files {
+    files.insert("NEXT.IMG".into(), CANDIDATE.to_vec());
+    files.insert("NEXT.TXT".into(), b"candidate note".to_vec());
+    files
+}
+
+#[test]
+fn t_c1_each_esp_write_preserves_a_pair() {
+    let armed = manifest(TOKEN);
+    let imported = Volume::new(initial(), None);
+    apply(&imported, Transition::Import, &armed).unwrap();
+    let tried = Volume::new(imported.snapshot(), None);
+    apply(&tried, Transition::Try, &armed).unwrap();
+    let old = (sha256(CURRENT), Some(sha256(PREVIOUS)));
+    let promoted = (sha256(CANDIDATE), Some(sha256(CURRENT)));
+    let swapped = (sha256(PREVIOUS), Some(sha256(CURRENT)));
+    let mut failures = Vec::new();
+    for (transition, source, expected) in [
+        (Transition::Import, initial(), old),
+        (Transition::Try, imported.snapshot(), old),
+        (Transition::Promote, tried.snapshot(), promoted),
+        (Transition::Commit, with_next(imported.snapshot()), promoted),
+        (Transition::Rollback, imported.snapshot(), swapped),
+    ] {
+        for both_first in [true, false] {
+            let mut complete = Volume::new(source.clone(), None);
+            complete.rename_order = Some(both_first);
+            apply(&complete, transition, &armed).unwrap();
+            assert_eq!(startup(&complete), Ok(expected), "{transition:?}");
+            for step in 0..complete.steps.get() {
+                for after in [false, true] {
+                    let mut cut = Volume::new(source.clone(), Some((step, after)));
+                    cut.rename_order = Some(both_first);
+                    let _ = apply(&cut, transition, &armed);
+                    let reboot = Volume::new(cut.snapshot(), None);
+                    match startup(&reboot) {
+                        Ok(pair) if pair == old || pair == expected => {}
+                        result => failures.push(format!("{transition:?}, write {step}, after={after}, both first={both_first}: {result:?}")),
+                    }
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn t_c2_failed_import_boots_without_writing() {
+    for both in [true, false] {
+        let mut files = with_next(initial());
+        files.insert("SLOT.TXN".into(), b"commit\n".to_vec());
+        files.insert("SLOT0.OK".into(), b"done\n".to_vec());
+        if both {
+            files.insert("PREVIOUS.IMG".into(), CURRENT.to_vec());
+        } else {
+            files.remove("CURRENT.IMG");
+            files.remove("PREVIOUS.IMG");
+        }
+        let volume = Volume::new(files.clone(), None);
+        let expected = if both { CURRENT } else { CANDIDATE };
+        assert_eq!(startup(&volume).map(|pair| pair.0), Ok(sha256(expected)), "both={both}");
+        assert_eq!(volume.snapshot(), files);
+        assert_eq!(volume.steps.get(), 0);
+    }
+}
+
+const ROOT: &str = "gen-20261127T123456Z-metal";
+const INTENT: &[u8] = b"BREENIX-BOOT 3\ntarget x86-metal\nuserland 20261127T123456Z-metal\n";
+
+fn host_manifest(digest: [u8; 32], size: usize) -> Vec<u8> {
+    let hex = |bytes: [u8; 32]| bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    std::fs::create_dir_all("target").unwrap();
+    let output = std::process::Command::new("python3")
+        .args(["-B", "-c", r"
+import sys
+sys.path.insert(0, '../')
+from metal_live_flash import encode_manifest
+with open(sys.argv[1], 'wb') as manifest:
+    manifest.write(encode_manifest('1' * 32, 'a' * 40, int(sys.argv[2]), *sys.argv[3:]))
+"])
+        .arg(format!("target/t-c3-{}-{size}.manifest", std::process::id()))
+        .args([&size.to_string(), &hex(digest), &hex(sha256(BASE)), ROOT])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let path = format!("target/t-c3-{}-{size}.manifest", std::process::id());
+    let bytes = std::fs::read(&path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    bytes
+}
+
+fn attempt_text(volume: &Volume) -> Option<Vec<u8>> {
+    volume.files.borrow().get("LIVE.ID").cloned()
+}
+
+#[test]
+fn t_c3_host_version_two_manifest_round_trips_and_checks_the_pair() {
+    for (size, length) in [(10_000_000, 256), (536_870_912, 257)] {
+        let mut data = vec![0; size];
+        data[..CANDIDATE.len()].copy_from_slice(CANDIDATE);
+        let armed = host_manifest(sha256(&data), size);
+        assert_eq!(armed.len(), length);
+        assert_eq!(Manifest::parse(&armed).map(|m| m.size), Some(size));
+        let mut volume = Volume::new(initial(), None);
+        volume.root_flags = Some(0);
+        volume.intent = INTENT;
+        assert!(matches!(run(&volume, Some(&armed), &data, None, true), Ok(Outcome::Trial(..))));
+        assert_eq!(attempt_text(&volume).as_deref(), Some(armed.as_slice()));
+        assert!(matches!(run(&volume, Some(&armed), &[], Some(ACK), false), Ok(Outcome::Promoted(..))));
+    }
+    let armed = host_manifest(sha256(CANDIDATE), CANDIDATE.len());
+    for (flags, intent) in [
+        (None, INTENT),
+        (Some(1), INTENT),
+        (Some(0), b"userland 20261127T123457Z-metal\n".as_slice()),
+    ] {
+        let mut volume = Volume::new(initial(), None);
+        volume.root_flags = flags;
+        volume.intent = intent;
+        assert!(run(&volume, Some(&armed), CANDIDATE, None, true).is_err());
+        assert_eq!(volume.steps.get(), 0);
+    }
+    let mut volume = Volume::new(initial(), None);
+    volume.root_flags = Some(0);
+    volume.intent = INTENT;
+    let mut too_long = armed;
+    too_long.resize(513, b'x');
+    assert!(run(&volume, Some(&too_long), CANDIDATE, None, true).is_err());
+    assert_eq!(volume.steps.get(), 0);
+    assert!(matches!(run(&volume, Some(&manifest(TOKEN)), CANDIDATE, None, true), Ok(Outcome::Trial(..))));
 }
