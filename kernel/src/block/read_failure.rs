@@ -80,9 +80,12 @@ impl VirtioReadFailure {
 
     /// The request was refused before it was issued, so it establishes no
     /// failure of the sector: a kill, or the block I/O caller rule (design
-    /// §6), which refuses a context that may not sleep with EIO.
+    /// §6), which refuses a context that may not sleep with EIO, or a device
+    /// with no armed completion source (`irq-unavailable`), which
+    /// `read_sectors` refuses before `transfer` issues anything.
     pub fn pre_issue(self) -> bool {
-        self.context_refused() || matches!(self.stage, "gate-not-sleepable" | "gate-early-boot-busy")
+        self.context_refused()
+            || matches!(self.stage, "gate-not-sleepable" | "gate-early-boot-busy" | "irq-unavailable")
     }
 }
 impl fmt::Display for VirtioReadFailure {

@@ -890,8 +890,11 @@ impl BlockSource {
 /// slot (`drivers::virtio::block_mmio::MAX_BLOCK_DEVICES`, which asserts it).
 pub const VIRTIO_BLK_MMIO_COMPLETION_SOURCES: usize = 32;
 
-/// The capacity of the kernel's completion-source table.
-pub const BLOCK_COMPLETION_SOURCES: usize = 16;
+/// The capacity of the kernel's completion-source table: one slot for each
+/// source the block drivers can attach. AHCI attaches one, for its single
+/// controller; virtio-blk-pci one, for its single device; and VirtIO MMIO
+/// one per block device.
+pub const BLOCK_COMPLETION_SOURCES: usize = 1 + 1 + VIRTIO_BLK_MMIO_COMPLETION_SOURCES;
 
 /// The completion sources of the attached block devices (design §6,
 /// "Completion readiness before revocation"). A sleeping caller can park on
