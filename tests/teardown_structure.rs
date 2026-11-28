@@ -2047,7 +2047,8 @@ fn closure_literals(body: &str, mask: &[bool]) -> Vec<(BTreeSet<String>, usize, 
 }
 
 /// Whether the call whose argument list encloses `site` hands the free list
-/// over: a call of `with_free_frames`, or a method called on an alias.
+/// over: a call of `with_free_frames` or `try_with_free_frames`, or a method
+/// called on an alias.
 fn call_hands_over_free_list(
     body: &str,
     mask: &[bool],
@@ -2079,7 +2080,7 @@ fn call_hands_over_free_list(
     let Some(callee) = preceding_identifier(body, mask, open) else {
         return false;
     };
-    if callee == "with_free_frames" {
+    if callee == "with_free_frames" || callee == "try_with_free_frames" {
         return true;
     }
     let Some(callee_start) = (0..open)
@@ -6708,6 +6709,9 @@ fn validate_frame_return_choke_point(
     // E1-3: the free list is threaded through the frame metadata. Only
     // with_free_frames names it, under a plain lock with interrupts masked;
     // no capacity is reserved, and the boot fixtures go through that helper.
+    // E1-6: try_with_free_frames takes the same lock with one try_lock, for
+    // the slab layer's page request that may not wait (E1 plan 6.6), and only
+    // allocate_candidate calls it, to pop.
     let allocator = source(sources, "kernel/src/memory/frame_allocator.rs");
     record_unit(
         &mut failures,
@@ -6715,7 +6719,7 @@ fn validate_frame_return_choke_point(
         validate_free_frame_capabilities(
             "kernel/src/memory/frame_allocator.rs",
             allocator,
-            &["with_free_frames"],
+            &["with_free_frames", "try_with_free_frames"],
         ),
     );
     record_unit(
@@ -6723,15 +6727,23 @@ fn validate_frame_return_choke_point(
         "with_free_frames alias methods changed",
         validate_alias_methods(function_body(allocator, "with_free_frames"), &["lock"], &[]),
     );
-    for (user, methods) in [
-        ("allocate_candidate", &["pop"][..]),
-        ("return_lease", &["push"][..]),
-        ("memory_stats", &["len"][..]),
+    record_unit(
+        &mut failures,
+        "try_with_free_frames alias methods changed",
+        validate_alias_methods(function_body(allocator, "try_with_free_frames"), &["try_lock"], &[]),
+    );
+    for (user, helpers, methods) in [
+        ("allocate_candidate", &["with_free_frames", "try_with_free_frames"][..], &["pop"][..]),
+        ("return_lease", &["with_free_frames"][..], &["push"][..]),
+        ("memory_stats", &["with_free_frames"][..], &["len"][..]),
     ] {
         let body = function_body(allocator, user);
         let mask = code_mask(body);
-        let pinned = code_offsets(body, &mask, "with_free_frames(|free_list|").len() == 1
-            && methods.iter().all(|method| body.contains(&format!("free_list.{method}(")))
+        let pinned = ["with_free_frames", "try_with_free_frames"].iter().all(|helper| {
+            let calls = identifier_offsets(body, &mask, helper);
+            calls.len() == usize::from(helpers.contains(helper))
+                && calls.iter().all(|&call| body[call + helper.len()..].starts_with("(|free_list|"))
+        }) && methods.iter().all(|method| body.contains(&format!("free_list.{method}(")))
             && ["push(", "pop(", "len("]
                 .iter()
                 .filter(|call| !methods.iter().any(|method| call.starts_with(method)))
@@ -8769,6 +8781,11 @@ fn frame_metadata_ratchets_reject_broken_variants() {
     for (path, anchor, replacement) in [
         (ALLOCATOR, "with_free_frames(|free_list| free_list.pop(meta))",
             "with_free_frames(|free_list| { free_list.push(meta, 0); free_list.pop(meta) })"),
+        (ALLOCATOR, "try_with_free_frames(|free_list| free_list.pop(meta))",
+            "try_with_free_frames(|free_list| { free_list.push(meta, 0); free_list.pop(meta) })"),
+        (ALLOCATOR, "Some(f(&mut *FREE_FRAMES.try_lock()?))", "Some(f(&mut *FREE_FRAMES.lock()))"),
+        (ALLOCATOR, "let free_list_frames = with_free_frames(|free_list| free_list.len());",
+            "let free_list_frames = try_with_free_frames(|free_list| free_list.len()).unwrap_or(0);"),
         (ALLOCATOR, "with_free_frames(|free_list| free_list.push(meta, frame));",
             "with_free_frames(|free_list| { free_list.pop(meta); free_list.push(meta, frame) });"),
         (ALLOCATOR, "let free_list_frames = with_free_frames(|free_list| free_list.len());",

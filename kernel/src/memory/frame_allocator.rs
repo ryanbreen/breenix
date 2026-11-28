@@ -142,7 +142,7 @@ fn with_free_frames<R>(f: impl FnOnce(&mut FreeList) -> R) -> R {
 /// `with_free_frames` with one `try_lock`: `None` when another CPU holds the
 /// free list.
 fn try_with_free_frames<R>(f: impl FnOnce(&mut FreeList) -> R) -> Option<R> {
-    crate::arch_without_interrupts(|| FREE_FRAMES.try_lock().map(|mut list| f(&mut list)))
+    crate::arch_without_interrupts(|| Some(f(&mut *FREE_FRAMES.try_lock()?)))
 }
 
 /// Why the slab layer's page request got no frame.
