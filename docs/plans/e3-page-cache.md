@@ -1895,6 +1895,37 @@ b'hi'
 
 ```
 
+**A waiter gets the outcome of the fill it waited on (9.2a).** A fault waits on page 0's fill, which fails.
+Before the waiter runs, a later access claims a new fill of page 0. Separately, the readahead worker drops a
+queued window whose pages it had claimed.
+
+```pycon
+>>> RULE = 'error-entry'
+>>> tree = {}
+>>> waited = {'state': 'filling'}
+>>> tree[0] = waited
+>>> def fill_fails(frame):
+...     frame.update(state='failed', errno='EIO')
+...     tree[0] = ('Error', 'EIO') if RULE == 'error-entry' else None
+>>> fill_fails(waited)
+>>> tree[0] = {'state': 'filling'}
+>>> def waiter_resumes(frame):
+...     if RULE == 'frame-outcome':
+...         return frame.get('errno', 'retry')
+...     entry = tree[0]
+...     return entry[1] if isinstance(entry, tuple) else 'retry'
+>>> waiter_resumes(waited)
+'EIO'
+>>> queued = {'state': 'filling'}
+>>> def drop_window(frame):
+...     if RULE == 'frame-outcome':
+...         frame['state'] = 'canceled'
+>>> drop_window(queued)
+>>> queued['state']
+'canceled'
+
+```
+
 ## 20. bbench rows (DEV-31)
 
 | Row | Ratio (28668b28) | Expected to move in | Parity reachable from E3 alone |
