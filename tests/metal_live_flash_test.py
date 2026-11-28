@@ -1,5 +1,7 @@
 import argparse
 import contextlib
+import importlib.machinery
+import importlib.util
 import json
 from pathlib import Path
 import runpy
@@ -439,6 +441,36 @@ class FlashPathTest(unittest.TestCase):
             quiet = runner['in_metal']({'METAL_INSTANCE': 'metal'}, 'cat', capture_output=True, check=True)
             self.assertEqual(quiet.stdout, b'')
         self.assertEqual(seen, ['absent', subprocess.DEVNULL])
+
+    def test_paired_tools_build_pushes_only_stub_sources_that_resolve(self):
+        # metal-deploy packs the stub with tar -h, which keeps a dangling link
+        # as a link, and `incus file push` of that link fails. That stopped the
+        # paired deploy of 3a903a57 before it reached the box: #3291 moved the
+        # SipHash source that efi-stub/src/breenfs_siphash.rs links to.
+        path = Path(__file__).resolve().parents[1] / 'scripts/metal/metal-run'
+        loader = importlib.machinery.SourceFileLoader('metal_run', str(path))
+        runner = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+        loader.exec_module(runner)
+        env = dict(BUILD_ROOT='/fixture', BUILD_INSTANCE='builder', METAL_INSTANCE='service',
+                   BUILD_REPO='/repo', BUILD_RUST_FORK='/rust', BUILD_CACHE='/cache')
+        pushed = []
+
+        def incus(*words, **options):
+            if words[:2] == ('file', 'push'):
+                pushed.append(Path(words[2]))
+            return subprocess.CompletedProcess(words, 0)
+
+        done = lambda *words, **options: subprocess.CompletedProcess(words, 0)
+        sender = Mock(stdout=Mock(), wait=Mock(return_value=0))
+        with patch.object(runner, 'host_env', return_value=env), \
+             patch.object(runner, 'in_build', done), patch.object(runner, 'in_metal', done), \
+             patch.object(runner, 'incus', incus), \
+             patch.object(runner.subprocess, 'Popen', return_value=sender), \
+             patch.object(runner.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)):
+            self.assertEqual(runner.build('20261128T000000Z-metal', 'a' * 40, live=True, paired_tools=True), 0)
+        stub = [path for path in pushed if 'efi-stub' in path.parts]
+        self.assertIn('breenfs_siphash.rs', [path.name for path in stub])
+        self.assertEqual([str(path) for path in pushed if not path.is_file()], [])
 
 
 if __name__ == '__main__':

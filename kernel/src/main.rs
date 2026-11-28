@@ -242,6 +242,11 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     // processor: see kernel/src/arch_impl/x86_64/smp.rs for what `online=1` in
     // the marker it emits does and does not claim.
     kernel::arch_impl::x86_64::smp::init(rsdp_addr, physical_memory_offset.as_u64());
+    // The slab layer's per-CPU slot table is sized from the MADT's processor
+    // entries, unclamped, and the boot CPU publishes its magazines (E1 plan,
+    // 5.4a). No other processor has started.
+    memory::kmem::init_cpu_slots(kernel::arch_impl::x86_64::smp::madt_cpu_count() as usize);
+    memory::kmem::register_cpu();
 
     // Initialize BTRT (requires memory for virt_to_phys and serial for output)
     #[cfg(feature = "btrt")]
