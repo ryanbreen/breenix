@@ -19,7 +19,7 @@ pub mod probe;
 pub mod recover;
 pub mod reserve;
 pub mod scrub;
-pub mod siphash;
+pub(crate) use crate::random::siphash;
 pub mod space;
 pub mod txn;
 pub mod vfs;

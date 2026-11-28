@@ -31,6 +31,7 @@ pub(crate) mod erase;
 mod generator;
 mod health;
 mod jitter;
+pub(crate) mod siphash;
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 
