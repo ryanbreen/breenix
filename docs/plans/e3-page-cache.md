@@ -500,23 +500,31 @@ For a Native file, `write(fd, buf, n)`:
 2. Take `io` exclusive. For `O_APPEND`, take the offset from the size under it.
 3. Let BreenFS admit and reserve the write: its worst-case space reservation (`reserve.rs`) and the generation
    bookkeeping. Only the byte budget changes (11.4).
-4. For each page the chunk covers:
-   - **Absent, with the write not covering the whole page below EOF:** fill first (read-modify-write).
-     Never hold a page in `Filling` across a user copy: the fill completes before the copy. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
-   - **Absent and fully overwritten, or past EOF, or Hole:** allocate a frame. Zero the parts not written. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
-   - **Writeback:** the COW-on-writeback step of 11.2.
-   - Copy the bytes and mark the page `DIRTY` with `dirty_gen` set to the open generation. Tag it.
-5. Publish the new size, if it grew, through BreenFS's inode update, then through `mapped_size`, as
+4. **Prepare** every page the chunk covers. This step may fail, and it changes no page the tree holds: <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+   - **Absent, with the write not covering the whole page below EOF:** fill a new, unpublished frame first
+     (read-modify-write). Never hold a page in `Filling` across a user copy: the fill completes before the
+     copy. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+   - **Absent and fully overwritten, or past EOF, or Hole:** allocate a new, unpublished frame and zero the
+     parts not written. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+   - **Writeback:** allocate the copy frame of 11.2's COW-on-writeback step and copy the stable bytes into it.
+   - **Uptodate or Dirty:** nothing; the page is changed in place in step 5. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+   - Reserve the tree nodes that publishing the new frames needs (4.3).
+5. **Publish**, which cannot fail. Copy the chunk's bytes into the page or its prepared frame, insert the
+   prepared frames into the tree, and mark each page `DIRTY` with `dirty_gen` set to the open generation. Tag
+   it.
+6. Publish the new size, if it grew, through BreenFS's inode update, then through `mapped_size`, as
    `transition` does today.
-6. Release `io`. Throttle if the dirty limit says so (11.5), with no lock held.
-
+7. Release `io`. Throttle if the dirty limit says so (11.5), with no lock held.
 Atomicity:
 
 - A write of n bytes changes every byte or none. This is BreenFS's existing all-or-nothing rule across a
   crash, and E3 keeps the generation discipline that provides it. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
-- If step 4 fails for want of memory, the pages it changed are invalidated back to `Absent` from reserved
-  capacity, as `invalidate` does today. The write returns the count of whole chunks completed before it, or
-  `ENOMEM`.
+- If step 4 fails for want of memory, it frees the frames it prepared and changes nothing, so the bytes of
+  earlier writes stay in the tree. Invalidating changed pages back to `Absent`, as `invalidate` does today,
+  would lose them: a dirty page's bytes are on no disk, and a refill would read older bytes. The write
+  returns the count of whole chunks completed before it, or `ENOMEM`. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+- From E3-15, step 5 copies from user memory. A user copy that ends in `EFAULT` ends the write at the bytes
+  it copied, a short write; the prepared frames it did not reach are freed, and no earlier byte is undone.
 
 ### 7.3 The I/O lock, and POSIX atomicity
 
@@ -1353,6 +1361,10 @@ waits for E3-6 (it needs pages retained by the cache to be worth anything), so t
     bytes from before the store.
   - A page that is never stored again after a freeze is not written in G+1 (red on the old code, which
     copies every mapped dirty page each time). <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+  - A failed write keeps earlier writes. Write page 0, then write pages 0 and 1 with an allocation-failure
+    seam that fails page 1's frame. The second write returns `ENOMEM`, and a read of page 0 returns the
+    first write's bytes, with 0 device reads. Today's dirty pages are not in the cache, so this guards the
+    prepare-then-publish rule the PR adds and cannot be red on the old tree; the PR says so. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
   - Fsync of a clean file whose last change is durable joins no generation (red: the old code joins one).
   - Two descriptions of a file whose generation fails: each sees EIO once from fsync, and a description
     opened after the failure sees none. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
@@ -1533,7 +1545,7 @@ not implementation tests: section 18 names the production check for each.
 A later write changes page 0, then needs a frame for page 1, and that allocation fails.
 
 ```pycon
->>> RULE = 'invalidate-to-absent'
+>>> RULE = 'prepare-then-publish'
 >>> def write(cache, disk, data, frames_free):
 ...     if RULE == 'prepare-then-publish' and frames_free < 1:
 ...         return 'ENOMEM'
