@@ -286,8 +286,22 @@ to the extent/fill path. Turning mmap lazy is E3 work.
 
 **Writes.** Copy once from user memory into the E3 dirty frame. On freeze,
 retain immutable frame leases for generation G and compute its checksums
-from those bytes. Later writes to the same logical page get a writable
-successor version, leaving the bytes being checksummed and DMAed stable.
+from those bytes. Later `write()` calls to the same logical page get a
+writable successor version. E4.8 retains a private snapshot copy for a page
+with a writable `MAP_SHARED` binding. Take the copy before computing the CRC
+and use that same request-owned frame for DMA. The live page stays writable
+and eligible for later writeback. Installing G cannot clear its dirty state
+while a writable binding can still store to it. Use a cache frame directly
+only if its E3 lease excludes writable aliases for the lifetime of the lease,
+including new bindings and permission upgrades. Otherwise take the same
+snapshot copy.
+
+**Design detail relative to direct writeback:** E4.8 keeps the mapped-page copy
+used by `FileMap::writeback_snapshot` and BreenFS `writeback_pages` because
+stores through existing writable PTEs bypass `write()`'s successor path.
+See [file-map writeback](../../kernel/src/memory/file_map.rs#L875) and
+[BreenFS writeback](../../kernel/src/fs/breenfs/vfs.rs#L4324).
+
 Use the existing frozen generation, reservation and G+2 reuse rules. Prepare
 disjoint physical runs with data-frame vectors and encoded metadata buffers.
 Submit a bounded window across runs, bypassing native-sector cache staging,
@@ -479,7 +493,7 @@ FUA write path.
 
   ```pycon
   >>> live_frame = bytearray(b'before')
-  >>> frozen_source = live_frame
+  >>> frozen_source = bytes(live_frame)
   >>> checksummed = bytes(frozen_source)
   >>> live_frame[:] = b'after!'
   >>> (bytes(frozen_source) == checksummed, bytes(live_frame))
