@@ -12,8 +12,8 @@
 //! An arena keeps its spans in bins by the size of each span's largest free
 //! extent: bin `b` holds spans whose largest extent is in `[2^b, 2^(b+1))`.
 //! An allocation takes the first span of the lowest bin each of whose spans
-//! fits it, else tries the first span of the bin below, else asks for a new
-//! span.
+//! fits it, else tries each span of the bins below that whose largest extent
+//! can hold the block unpadded, else asks for a new span.
 //! A span whose last block is freed is given back, except one empty span
 //! the arena keeps.
 
@@ -91,7 +91,13 @@ fn bin_of(largest: u32) -> usize {
 /// The block bytes, header and worst-case alignment padding included: a free
 /// extent of at least that size fits `layout` at any address.
 fn worst_case(layout: Layout) -> usize {
-    layout.size().next_multiple_of(8) + 8 + layout.align().saturating_sub(8)
+    unpadded(layout) + layout.align().saturating_sub(8)
+}
+
+/// The block bytes with its header and no padding, at least `heap_index`'s
+/// 16-byte block: no free extent smaller than that holds `layout`.
+fn unpadded(layout: Layout) -> usize {
+    (layout.size().next_multiple_of(8) + 8).max(16)
 }
 
 /// Whether a span arena serves `layout` (6.1 row 2, after row 1).
@@ -183,28 +189,36 @@ impl<T: Copy> Arena<T> {
     }
 
     /// A block for `layout` from the arena's spans. A span in a bin at or
-    /// above the request's worst case fits it at any address; the first span of
-    /// the bin below may. Visits at most one span per bin.
+    /// above the request's worst case fits it at any address, so the head of
+    /// the lowest such bin is taken. Below that, a span whose largest extent
+    /// holds the unpadded block may still fit it at its alignment, so each
+    /// span of those bins is tried before a new span is asked for. The worst
+    /// case exceeds the unpadded block by under 4 KiB, the largest padding.
     pub fn allocate(&mut self, layout: Layout) -> Result<NonNull<u8>, Miss> {
         if !serves(layout) {
             return Err(Miss::TooLarge);
         }
         let worst = worst_case(layout);
         let fits = worst.next_power_of_two().trailing_zeros() as usize;
-        let mut bins = self.nonempty & (u32::MAX << fits.min(31));
-        while bins != 0 {
-            let span = self.bins[bins.trailing_zeros() as usize];
+        let guaranteed = self.nonempty & (u32::MAX << fits.min(31));
+        if guaranteed != 0 {
+            let span = self.bins[guaranteed.trailing_zeros() as usize];
             // SAFETY: a binned span is this arena's and mapped.
             if let Some(ptr) = unsafe { self.take_from(span, layout) } {
                 return Ok(ptr);
             }
-            bins &= bins - 1;
         }
-        if fits > 0 && self.nonempty & (1 << (fits - 1)) != 0 {
-            let span = self.bins[fits - 1];
-            // SAFETY: as above.
-            if let Some(ptr) = unsafe { self.take_from(span, layout) } {
-                return Ok(ptr);
+        let least = bin_of(unpadded(layout) as u32);
+        for bin in least..fits.min(BINS) {
+            let mut span = self.bins[bin];
+            while !span.is_null() {
+                // SAFETY: as above; `take_from` may rebin `span`, so its
+                // successor is read first.
+                let next = unsafe { (*span).next };
+                if let Some(ptr) = unsafe { self.take_from(span, layout) } {
+                    return Ok(ptr);
+                }
+                span = next;
             }
         }
         Err(Miss::NeedSpan)

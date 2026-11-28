@@ -1979,8 +1979,11 @@ E1-7 implementation decisions (DEV-39(2)):
   table indexed by `(va - window base) >> 21`, because the span window is 2 MiB aligned, so both are O(1) and
   the record needs no table sized to the window.
 - An arena keeps its spans in bins by the binary logarithm of each span's largest free extent, instead of a
-  list ordered by free space, because a span in a bin at or above the request's worst case fits it and the
-  lookup probes at most one span per bin, where an ordered list is re-sorted on each change.
+  list ordered by free space, because a span in a bin at or above the request's worst case fits it, where an
+  ordered list is re-sorted on each change. Below that bin, each span of the bins from the unpadded block's
+  size up is tried before a new span is mapped, because an extent smaller than the worst case can hold the
+  block at its alignment (PR #3307 review: a 4097-byte request aligned to 4096 mapped a span beside a 5 KiB
+  hole that held it).
 - Each arena's kept empty span is given back by a registered 7.2 step-2 drain (`kmem::Drain`), run after the
   remote magazine drains, rather than by a 7.3 shrinker, because step 2 runs before each shrinker pass. The
   drain takes the arena's and the span window's locks with `try_lock`, because a frame request made under
