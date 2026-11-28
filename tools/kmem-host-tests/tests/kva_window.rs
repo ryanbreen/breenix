@@ -636,3 +636,27 @@ fn windows_are_placed_when_ram_outgrows_the_kernel_half() {
         }
     }
 }
+
+/// Check first (review of E1-5): a free extent that is already aligned and
+/// exactly as long as the request satisfies it. The window's one free extent
+/// is 2 MiB at a 2 MiB boundary (a span), and 2 MiB plus its 4 KiB guard at
+/// a 2 MiB boundary (a vmap allocation with its guard after). Asking for
+/// 2 MiB at 2 MiB alignment must take it, not return `NoVa` because the
+/// extent is shorter than the request padded for the worst alignment.
+#[test]
+fn an_aligned_extent_that_fits_exactly_is_not_refused() {
+    let base = kva_window::slot_va(300);
+    for id in [WindowId::Span, WindowId::Vmap] {
+        let (granule, before, after) = id.shape();
+        let mut extents = Extents::new(granule);
+        let mut nodes = vec![0u64; 512];
+        unsafe { extents.add_nodes(nodes.as_mut_ptr() as *mut u8, nodes.len() * 8) };
+        let len = 2 << 20;
+        extents.free(Extent { start: base, len: before + len + after }).unwrap();
+        let allocation = extents
+            .allocate(len, 2 << 20, before, after)
+            .unwrap_or_else(|error| panic!("{} window: {error:?}", id.name()));
+        assert_eq!((allocation.start, allocation.len), (base + before, len));
+        assert_eq!(extents.free_bytes(), 0);
+    }
+}
