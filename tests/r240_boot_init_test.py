@@ -32,7 +32,9 @@ class BootInitTest(unittest.TestCase):
                           r"run_x86_boot_storage,\s*\"boot_storage\",\s*0,?\s*\)", source)
         self.assertIsNotNone(spawn, "submit the loader as a schedulable thread on the boot CPU")
         storage = source.split("fn run_x86_boot_storage() {", 1)[1].split("\n}", 1)[0]
-        self.assertIn("run_x86_boot_programs();", storage)
+        # The program phase runs at the thread's park::Braked level, so its
+        # PID 1 read sleeps on the block wait (#3283 review).
+        self.assertIn("braked(run_x86_boot_programs);", storage)
         programs = source.split("fn run_x86_boot_programs() {", 1)[1].split("\n}\n", 1)[0]
         self.assertIn("run_x86_production_init();", programs)
         handoff = re.search(r"release_x86_boot_storage\(\);", boot)
