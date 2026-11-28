@@ -1317,7 +1317,7 @@ fn ext2_preallocate_reserves_the_hole_room_before_the_size_changes() {
     let ino = regular(&fs, fs.root().unwrap(), b"prealloc");
     let node = fs.open(ino).unwrap();
     let map = bind_unpopulated(node.clone(), PAGES * 4096);
-    // The growth's Holes are every bound page: one allocation of their room.
+    // The growth's Holes are the PAGES bound pages: one allocation of their room.
     let room = PAGES as usize * core::mem::size_of::<(u64, ())>();
     let result = crate::breenfs::vfs::measurement::fail_allocation(room, 1, || {
         fs.preallocate(&node, 0, PAGES * 4096, false)

@@ -2381,7 +2381,7 @@ boundary) are not recorded here: the builder stops and asks the coordinator.
   because mmap publishes its binding after population returns and without the filesystem guard in
   between, so a growth in that gap would otherwise leave the new binding's grown pages absent. A
   population's merge drops its copy of a page that became resident while it read, and Holes only a
-  claim holds keep eviction pending, so a failed mmap leaves none behind.
+  claim holds keep eviction pending, so the pass after a failed mmap retires them.
 - **E3-2 review, ext2's preallocation.** ext2's fallocate calls `prepare_resize` before each batch,
   under the guard that batch holds, because its last batch publishes the larger size and a Hole
   reservation that failed after that was lost, leaving the newly valid pages absent under a successful

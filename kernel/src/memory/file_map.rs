@@ -389,7 +389,7 @@ fn held_runs(
     let mut cursor = first;
     while cursor < last {
         // The run starts at the lowest covered index at or after the cursor
-        // and extends over every range that overlaps or abuts it.
+        // and extends while some range overlaps or abuts its end.
         let Some(low) = ranges()
             .filter(|(from, to)| *to > cursor && *from < last)
             .map(|(from, _)| from.max(cursor))
