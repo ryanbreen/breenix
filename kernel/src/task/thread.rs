@@ -743,6 +743,9 @@ pub struct Thread {
     /// Thread ID
     pub id: u64,
     pub(crate) wake: Option<alloc::sync::Arc<ThreadWake>>,
+    /// The park contract's per-thread state: the wait word and the baseline
+    /// (`task::park`, E2.2).
+    pub(crate) park: super::park::ParkState,
 
     /// Thread name (for debugging)
     pub name: alloc::string::String,
@@ -1290,6 +1293,10 @@ impl KillCustody {
                 if let Some(thread) = current_cpu_thread() {
                     thread.switch_timer_mode(false);
                 }
+                // The syscall brake taken before this call is the thread's
+                // park baseline until the return to user mode
+                // (`resume_user_time`).
+                super::park::enter_syscall();
                 return custody;
             }
             crate::per_cpu::preempt_enable();
@@ -1306,6 +1313,9 @@ impl KillCustody {
 /// A thread that has exited is left alone: its clock was stopped when it was
 /// terminated, and a fault that killed it may still return through here.
 pub fn resume_user_time() {
+    // User mode holds no syscall brake: clear the park baseline that
+    // `KillCustody::enter_syscall` recorded.
+    super::park::leave_syscall();
     if let Some(thread) = current_cpu_thread() {
         if thread.state != ThreadState::Terminated && !thread.signals.in_user.load(Ordering::Relaxed) {
             thread.switch_timer_mode(true);
@@ -1373,6 +1383,7 @@ impl Clone for Thread {
         Thread {
             id: self.id,
             wake: None,
+            park: super::park::ParkState::new(),
             name: self.name.clone(),
             state: self.state,
             #[cfg(target_arch = "aarch64")]
@@ -1524,6 +1535,7 @@ impl Thread {
         Ok(Self {
             id,
             wake: None,
+            park: super::park::ParkState::new(),
             name,
             state: ThreadState::Ready,
             context,
@@ -1602,6 +1614,7 @@ impl Thread {
         Ok(Self {
             id,
             wake: None,
+            park: super::park::ParkState::new(),
             name,
             state: ThreadState::Ready,
             wait_site: WaitSite::default(),
@@ -1687,6 +1700,7 @@ impl Thread {
         Ok(Self {
             id,
             wake: None,
+            park: super::park::ParkState::new(),
             name,
             state: ThreadState::Ready,
             context,
@@ -1751,6 +1765,7 @@ impl Thread {
         Self {
             id,
             wake: None,
+            park: super::park::ParkState::new(),
             name,
             state: ThreadState::Ready,
             wait_site: WaitSite::default(),
@@ -1831,6 +1846,7 @@ impl Thread {
         Ok(Self {
             id,
             wake: None,
+            park: super::park::ParkState::new(),
             name,
             state: ThreadState::Ready,
             context,
@@ -1903,6 +1919,7 @@ impl Thread {
         Self {
             id,
             wake: None,
+            park: super::park::ParkState::new(),
             name,
             state: ThreadState::Ready,
             wait_site: WaitSite::default(),
@@ -2025,6 +2042,7 @@ impl Thread {
         Ok(Self {
             id,
             wake: None,
+            park: super::park::ParkState::new(),
             name,
             state: ThreadState::Ready,
             context,
@@ -2085,6 +2103,7 @@ impl Thread {
         Self {
             id,
             wake: None,
+            park: super::park::ParkState::new(),
             name,
             state: ThreadState::Ready,
             wait_site: WaitSite::default(),

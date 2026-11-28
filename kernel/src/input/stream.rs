@@ -1113,7 +1113,9 @@ fn release_service() {
         crate::per_cpu::current_thread_id_lock_free().unwrap_or(0), Ordering::Relaxed);
     loop {
         let at = INPUT.enter(Site::Service);
-        crate::per_cpu::preempt_disable();
+        // A syscall-shaped pass that keeps its CPU except while it sleeps: a
+        // `park::Braked` guard (E2.2, design §3.2).
+        let braked = crate::task::park::Braked::new();
         let generation = SERVICE_GENERATION.load(Ordering::Acquire);
         retire_descriptors();
         at.at(Site::Hardware);
@@ -1233,7 +1235,7 @@ fn release_service() {
                 panic!("Input release service could not publish its wait")
             }
         }
-        crate::per_cpu::preempt_enable();
+        drop(braked);
     }
 }
 

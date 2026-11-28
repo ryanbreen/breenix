@@ -3222,16 +3222,11 @@ impl<W: Wait + 'static> BreenFs<W> {
                     let Some(inner) = mount.upgrade() else { break; };
                     let fs = Self { inner };
                     // Match the commit worker's I/O context on both arches.
-                    #[cfg(target_arch = "x86_64")]
-                    crate::per_cpu::preempt_disable();
-                    #[cfg(target_arch = "aarch64")]
-                    crate::per_cpu_aarch64::preempt_disable();
+                    // As the commit worker, a park::Braked pass (E2.2, design §3.2).
+                    let braked = crate::task::park::Braked::new();
                     let pass = fs.scrub_pass(super::format::NODE_SIZE);
                     drop(fs);
-                    #[cfg(target_arch = "x86_64")]
-                    crate::per_cpu::preempt_enable();
-                    #[cfg(target_arch = "aarch64")]
-                    crate::per_cpu_aarch64::preempt_enable();
+                    drop(braked);
                     let Ok((true, bytes)) = pass else { break; };
                     // Charge raw I/O at decimal 50 MB/s, with at least one
                     // scheduling interval after releasing exclusion, even on a
@@ -3578,10 +3573,9 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                             break;
                         };
                         let fs = Self { inner };
-                        #[cfg(target_arch = "x86_64")]
-                        crate::per_cpu::preempt_disable();
-                        #[cfg(target_arch = "aarch64")]
-                        crate::per_cpu_aarch64::preempt_disable();
+                        // A park::Braked pass (E2.2, design §3.2): the worker keeps its CPU except
+                        // while it sleeps, as a syscall does, and its waits are sleepable.
+                        let braked = crate::task::park::Braked::new();
                         let result = fs.commit_due(monotonic_ns());
                         let (failed, deadline) = {
                             let state = fs.inner.state.lock();
@@ -3593,10 +3587,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                             } else { state.policy.deadline() })
                         };
                         drop(fs);
-                        #[cfg(target_arch = "x86_64")]
-                        crate::per_cpu::preempt_enable();
-                        #[cfg(target_arch = "aarch64")]
-                        crate::per_cpu_aarch64::preempt_enable();
+                        drop(braked);
                         if result.is_err() && !failed {
                             break;
                         }
