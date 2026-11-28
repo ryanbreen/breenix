@@ -16,8 +16,42 @@ GUEST = '/root/.breenix-flash'
 TOKEN = re.compile(r'[0-9a-f]{32}')
 COMMIT = re.compile(r'[0-9a-f]{40}')
 BOOT_ID = re.compile(r'[0-9a-f]+-[0-9a-f]+-[0-9a-f]+')
+BUILD_ID = re.compile(r'[0-9]{8}T[0-9]{6}Z-metal')
+ROOT_NAME = re.compile(r'gen-[A-Za-z0-9-]{1,64}')
 HEALTH = 'test "$(sudo -n /bin/readlink /proc/1/exe)" = /sbin/init && cat /run/breenix/boot-id'
 DEADLINE = 600
+MAX_IMAGE = 512 * 1024 * 1024
+MANIFEST_MAX = {1: 255, 2: 512}
+
+
+def retained_roots(slots, attempts, booted):
+    """Keep the physical slot roots even when an acknowledged trial is running."""
+    import metal_persist
+    if not ROOT_NAME.fullmatch(booted):
+        raise ValueError('the running root does not identify a generation')
+    return {booted} | {
+        'gen-' + generation for slot in [slots.get('current'), slots.get('previous'), *attempts]
+        if (generation := metal_persist.slot_userland(slot))
+    }
+
+
+def manifest(token, entry, version):
+    size = entry['size']
+    if not TOKEN.fullmatch(token) or not 0 < size <= MAX_IMAGE:
+        raise ValueError('invalid live flash manifest token or image size')
+    if not COMMIT.fullmatch(entry['commit']) or any(
+            not re.fullmatch(r'[0-9a-f]{64}', entry[field]) for field in ('sha256', 'baseNoteSha256')):
+        raise ValueError('invalid live flash commit or digest')
+    lines = [f'BREENIX-FLASH {version}', token, entry['commit'], str(size),
+             entry['sha256'], entry['baseNoteSha256']]
+    if version == 2:
+        if not BUILD_ID.fullmatch(entry['userland']):
+            raise ValueError('invalid paired generation')
+        lines.append('gen-' + entry['userland'])
+    text = ('\n'.join(lines) + '\n').encode('ascii')
+    if version not in MANIFEST_MAX or len(text) > MANIFEST_MAX[version]:
+        raise ValueError('manifest does not fit the installed manager')
+    return text
 
 
 def record_path(m, token):
@@ -74,16 +108,17 @@ def site(m):
     keys = ('SERVER_SSH_HOST', 'SERVER_SSH_PORT', 'OPERATOR_USER', 'OPERATOR_SSH_PUBLIC_KEY')
     return dict(lease=lease['id'], current=slots['current'],
                 partition=metal_persist.persistent_partition_guids(layout)[0],
+                manifestVersion=disk['liveManager'].get('manifestVersion', 1),
                 **{key: fields.get(key) for key in keys})
 
 
-def prepare(m, inputs_id, token, commit, lease_id, broken, acknowledged):
+def prepare(m, inputs_id, token, commit, lease_id, broken, acknowledged, paired=False):
     import metal_image
     import metal_persist
     context = site(m)
     if context['lease'] != lease_id:
         raise ValueError('the persistent lease changed while building')
-    if not re.fullmatch(r'\d{8}T\d{6}Z-metal', inputs_id) or not COMMIT.fullmatch(commit):
+    if not BUILD_ID.fullmatch(inputs_id) or not COMMIT.fullmatch(commit):
         raise ValueError('invalid flash build identity')
     state = record_path(m, token)
     state.parent.mkdir(parents=True, exist_ok=True)
@@ -97,9 +132,10 @@ def prepare(m, inputs_id, token, commit, lease_id, broken, acknowledged):
     session = m.read_json(m.boot_dir(lease_id) / 'run.json') or {}
     if acknowledged and session.get('entry') == 'trial' and session.get('liveFlash') == acknowledged:
         current = candidate(m, acknowledged, session['bootedCommit'])
-    generation = metal_persist.slot_userland(current)
-    if not generation:
+    previous = metal_persist.slot_userland(current)
+    if not previous:
         raise ValueError('CURRENT has no userland generation')
+    generation = inputs_id if paired else previous
     layout = metal_persist.layout()
     slot = stage / 'trial.img'
     files = metal_image.extract_esp(inputs / 'uefi.img', stage / 'esp')
@@ -109,7 +145,7 @@ def prepare(m, inputs_id, token, commit, lease_id, broken, acknowledged):
         files['efi/boot/bootx64.efi'] = loader
     metal_persist.slot_image(slot, files, layout, stage, generation, writable_root=True, compact=True)
     record = dict(metal_persist.file_facts(slot), commit=commit, installedBy=token, liveFlash=token,
-                  userland=generation, writableRoot=True, baseCommit=current['commit'],
+                  userland=generation, writableRoot=True, previousRoot='gen-' + previous, baseCommit=current['commit'],
                   baseInstall=current['installedBy'])
     metal_persist.store_definition(inputs / 'definition', commit)
     m.write_json(state, record)
@@ -168,6 +204,7 @@ def monitor(serial, token, previous_boot):
     for line in serial.splitlines():
         if 'breenix-manager: started:' in line:
             selected = None
+            rolled_back = False
         elif f'breenix-manager: live flash: trial {token} ' in line:
             selected = ('trial', None)
         elif f'breenix-manager: live flash: rollback {token}' in line:
@@ -178,6 +215,39 @@ def monitor(serial, token, previous_boot):
             if found[1] != previous_boot and BOOT_ID.fullmatch(found[1]):
                 selected = (*selected[:2], found[1])
     return selected if selected and len(selected) == 3 else None
+
+
+def force_rollback(token, previous_boot, trial_boot, previous_commit, previous_root,
+                   read_serial, guest_facts, reboot, reset):
+    """Wait for the manager's selection and an independent SSH root receipt."""
+    serial = None
+    if trial_boot:
+        start = len(read_serial())
+        if reboot(trial_boot) is not False:
+            deadline = time.monotonic() + 120
+            while time.monotonic() < deadline:
+                output = read_serial()
+                if 'breenix-manager: started:' in output[start:]:
+                    serial = output
+                    break
+                time.sleep(2)
+            else:
+                reset(token)
+        else:
+            reset(token)
+    else:
+        reset(token)
+
+    deadline = time.monotonic() + DEADLINE
+    while time.monotonic() < deadline:
+        observed = monitor(serial if serial is not None else read_serial(), token, previous_boot)
+        serial = None
+        if observed and observed[:2] == ('rollback', previous_commit):
+            boot_id = observed[2]
+            if guest_facts() == (boot_id, previous_root, 'rw'):
+                return boot_id
+        time.sleep(2)
+    raise ValueError('rollback did not return the previous kernel and root; use the documented network recovery route')
 
 
 def run(runner, args):
@@ -195,6 +265,8 @@ def run(runner, args):
     state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     inputs_id = None
     try:
+        if getattr(args, 'paired', False):
+            raise ValueError('paired deployment requires the staged paired installer')
         with (state_dir / 'live-flash.lock').open('a') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             query = operation('site', capture_output=True, text=True)
@@ -233,11 +305,10 @@ def run(runner, args):
                 # Use a file descriptor for SSH stdin so a large image stays off the host Python heap.
                 with tempfile_image(service, entry['image']) as image:
                     publish(guest, 'kernel.img', image, entry['size'], entry['sha256'], guard)
-                manifest = (f"BREENIX-FLASH 1\n{token}\n{commit}\n{entry['size']}\n{entry['sha256']}\n"
-                            f"{entry['baseNoteSha256']}\n").encode()
+                manifest_body = manifest(token, entry, 1)
                 capture = service('stat', '-c', '%s', directory + '/serial.txt', capture_output=True, check=True)
                 offset = int(capture.stdout)
-                publish(guest, 'manifest', manifest, guard=guard)
+                publish(guest, 'manifest', manifest_body, guard=guard)
                 print(f'[metal-run] armed {token} for {commit} on {lease}', flush=True)
                 from_reboot = time.monotonic()
                 reboot = guest(guard + 'sudo -n /sbin/reboot', timeout=70)

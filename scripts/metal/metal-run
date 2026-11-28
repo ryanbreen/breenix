@@ -266,16 +266,20 @@ def install_persistent(args):
                   serve_as=None, content_type=None, linux_directory=None, catchup=False, run=None, verify=False,
                   entry=None, slot_action=None, persistent=False)
     replace_usr = getattr(args, 'replace_usr', False)
+    paired = getattr(args, 'paired', False)
     migration_image = getattr(args, 'migration_image', False)
     carry_local = getattr(args, 'carry_local', False)
     kernel_only = not (replace_usr or migration_image)
-    explicit_flash = replace_usr or migration_image or getattr(args, 'kernel_only', False)
+    explicit_flash = paired or replace_usr or migration_image or getattr(args, 'kernel_only', False)
     if (explicit_flash and (args.rollback or getattr(args, 'add_breenfs', False))
             or carry_local and not migration_image
             or args.inject == 'upgrade-service-down' and not migration_image
             or args.inject and replace_usr):
         raise SystemExit('invalid persistent flash options')
     replace_manager = getattr(args, 'replace_manager', False)
+    if (paired and (getattr(args, 'recovery', False) or args.inject not in (None, 'paired-no-commit'))
+            or not paired and args.inject == 'paired-no-commit'):
+        raise SystemExit('--paired uses the live flash and accepts only --inject paired-no-commit')
     if replace_manager and (not getattr(args, 'recovery', False) or not kernel_only
                             or args.rollback or args.inject or getattr(args, 'add_breenfs', False)):
         raise SystemExit('--replace-manager requires --kernel-only --recovery without another action')
@@ -848,9 +852,11 @@ def argument_parser(automatic=False):
     p.add_argument('--branch')
     p.add_argument('--add-breenfs', action='store_true', help='append the two BreenFS GPT partitions')
     p.add_argument('--rollback', action='store_true', help='swap the current and previous kernel slots')
-    p.add_argument('--inject', choices=('upgrade-no-ssh', 'upgrade-service-down'), help='stage an unbootable or bootable SSH-less candidate to exercise automatic rollback')
+    p.add_argument('--inject', choices=('upgrade-no-ssh', 'upgrade-service-down', 'paired-no-commit'),
+                   help='force a trial rollback')
     options = p.add_mutually_exclusive_group()
     options.add_argument('--kernel-only', action='store_true', help='replace the kernel (default)')
+    options.add_argument('--paired', action='store_true', help='stage and try a new kernel and system root together')
     options.add_argument('--replace-usr', action='store_true', help='replace /usr on the selected writable root')
     options.add_argument('--migration-image', action='store_true', help=argparse.SUPPRESS)
     p.add_argument('--recovery', action='store_true', help='use the powered-off network installer')
