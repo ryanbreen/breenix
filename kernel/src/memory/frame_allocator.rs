@@ -492,7 +492,17 @@ fn simulated_oom() -> bool {
 
 /// A candidate the metadata refuses to claim is skipped: it is live, mapped
 /// or untracked, so handing it out could give it two owners.
+/// With no frame, the allocator's slow path runs once (E1 plan 7.2): it
+/// drains the CPUs' magazines and runs the shrinkers, so pages the slab
+/// layer holds idle can back the request. In an interrupt handler, or inside
+/// a shrinker, it gives back nothing, and the request fails.
 fn allocate_claimed(site: u16, owner: u8) -> Option<FrameLease> {
+    if let Ok(lease) = claimed_from(true, true, site, owner) {
+        return Some(lease);
+    }
+    if super::heap::reclaim_frames(1) == 0 {
+        return None;
+    }
     claimed_from(true, true, site, owner).ok()
 }
 

@@ -301,6 +301,20 @@ impl World {
         front.allocate(layout, Ctx::Normal, &SimCpu { id: self.cpu.get().unwrap_or(0), interrupt })
     }
 
+    /// The frame allocator's slow path for `frames` frames, on this CPU.
+    fn reclaim_frames(&self, frames: usize, interrupt: bool) -> usize {
+        let small = SimSmall { kmem: &self.kmem, cpu: self.cpu.get(), remote_drains: self.remote_drains.get() };
+        let front = Front {
+            main: &self.main,
+            reserve: &self.reserve,
+            small: &small,
+            shrinkers: &self.shrinkers,
+            reclaim: &self.reclaim,
+            stats: &self.stats,
+        };
+        front.reclaim_frames(frames, &SimCpu { id: self.cpu.get().unwrap_or(0), interrupt })
+    }
+
     fn alloc(&self, layout: Layout) -> NonNull<u8> {
         self.try_alloc(layout).expect("allocation")
     }
@@ -761,4 +775,28 @@ fn buffers_a_shrinker_frees_reach_the_page_layer_before_the_retry() {
     let layout = bytes(64);
     let object = world.try_alloc(layout).expect("the freed buffers' pages meet the request");
     world.free(object, layout);
+}
+
+/// A page fault asks the frame allocator for a frame, not the slab layer.
+/// When there is none, and CPU 1's magazines hold 16 freed page-sized
+/// objects, the frame allocator's slow path on CPU 0 must give their pages
+/// back (7.2 steps 1-4). From an interrupt handler it must not run (6.6).
+#[test]
+fn a_frame_request_with_no_frame_gets_back_pages_other_cpus_magazines_hold() {
+    let world = World::registered(2);
+    let page_object = bytes(4096);
+    world.on(1);
+    let objects: Vec<_> = (0..16).map(|_| world.alloc(page_object)).collect();
+    for object in objects {
+        world.free(object, page_object);
+    }
+    world.kmem.backing().limit.set(world.pages_in_use());
+    let before = world.pages_in_use();
+    world.on(0);
+    assert_eq!(world.reclaim_frames(1, true), 0, "an interrupt handler ran reclaim");
+    assert_eq!(world.pages_in_use(), before);
+    let freed = world.reclaim_frames(1, false);
+    let returned = before - world.pages_in_use();
+    assert!(returned >= 1, "the slow path gave back {returned} pages");
+    assert!(freed >= 1, "the slow path reported {freed} frames, so the frame allocator would not retry");
 }

@@ -543,6 +543,16 @@ impl<M: Pool, R: Pool, S: Small> Front<'_, M, R, S> {
             .map_err(|_| self.stats.fail(layout, ctx, AllocError::HeapExhausted))
     }
 
+    /// 7.2 for `frames` frames asked for outside this front: a page fault's
+    /// frame, or a page table's. The frame allocator calls it when it has no
+    /// frame, and retries once when it returns a nonzero count. Returns the
+    /// frames given back.
+    pub fn reclaim_frames<C: Cpu>(&self, frames: usize, cpu: &C) -> usize {
+        // Today a frame request outside this front runs no reclaim.
+        let _ = (frames, cpu);
+        0
+    }
+
     /// Run the shrinkers with interrupts masked, holding no pool lock, for
     /// the request's frames plus the batch.
     fn reclaim<C: Cpu>(&self, layout: Layout, cpu: &C) {

@@ -239,6 +239,12 @@ pub(super) fn allocate(layout: Layout, ctx: kmem::Ctx) -> Result<NonNull<u8>, km
     ALLOCATOR.front().allocate(layout, ctx, &kmem::KernelCpu)
 }
 
+/// The slow path for `frames` frames the frame allocator could not find
+/// (`kmem::Front::reclaim_frames`). Returns the frames given back.
+pub(super) fn reclaim_frames(frames: usize) -> usize {
+    ALLOCATOR.front().reclaim_frames(frames, &kmem::KernelCpu)
+}
+
 unsafe impl GlobalAlloc for KernelHeap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         self.front()
