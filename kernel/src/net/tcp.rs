@@ -3,10 +3,15 @@
 //! Implements TCP packet parsing, construction, and connection state machine (RFC 793).
 //!
 //! Each connection keeps every byte it has not seen acknowledged in a bounded send
-//! buffer and transmits against the peer's advertised window. Bytes IP output could
-//! not take stay queued and go out again from `drain_deferred_tx`, or from the
-//! retransmission timer when nothing else runs the connection's output. Received
-//! bytes go into a bounded receive buffer whose free space is the advertised window.
+//! buffer and transmits new data only within both the peer's advertised window and
+//! its congestion window. Its congestion policy (`tcp/congestion.rs`, NewReno) sets
+//! that window; loss recovery (`tcp/recovery.rs`) fast retransmits on the third
+//! duplicate ACK and repairs each further hole a partial ACK reveals (RFC 5681,
+//! RFC 6582). A retransmission timeout resends only the oldest segment and slow
+//! start resumes. Bytes IP output could not take stay queued and go out again from
+//! `drain_deferred_tx`, or from the retransmission timer when nothing else runs the
+//! connection's output. Received bytes go into a bounded receive buffer whose free
+//! space is the advertised window.
 //!
 //! A SYN to a listener makes a child connection in SYN_RECEIVED, which retransmits
 //! its SYN+ACK on its own timer and is dropped by a reset or when its retries run
@@ -37,8 +42,12 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::Mutex;
 
+#[path = "tcp/congestion.rs"]
+mod congestion;
 #[path = "tcp/receive.rs"]
 mod receive;
+#[path = "tcp/recovery.rs"]
+mod recovery;
 
 use super::icmp::TcpMtuQuote;
 use super::ipv4::{Ipv4Packet, PROTOCOL_TCP};
@@ -56,6 +65,43 @@ static RX_ACK_OUTPUT_FAILED: AtomicU64 = AtomicU64::new(0);
 /// Retransmission timeouts that sent again: a SYN, a SYN+ACK or unacknowledged data.
 /// Zero-window probes and retries of output IP refused are not retransmissions.
 static TX_RETRANSMIT_TIMEOUTS: AtomicU64 = AtomicU64::new(0);
+/// Segments sent again: data, a FIN, a SYN or a SYN+ACK whose sequence space
+/// had already been sent, whatever the cause.
+static TX_RETRANSMITTED_SEGMENTS: AtomicU64 = AtomicU64::new(0);
+/// Of those: fast retransmits, the repair three duplicate ACKs start.
+static TX_FAST_RETRANSMITS: AtomicU64 = AtomicU64::new(0);
+/// Of those: repairs a partial ACK in fast recovery asks for (RFC 6582).
+static TX_PARTIAL_ACK_RETRANSMITS: AtomicU64 = AtomicU64::new(0);
+/// Of those: resends after a retransmission timeout, the oldest segment and
+/// what slow start sends again behind it.
+static TX_TIMEOUT_RETRANSMITS: AtomicU64 = AtomicU64::new(0);
+/// Fast recoveries begun.
+static TX_FAST_RECOVERIES: AtomicU64 = AtomicU64::new(0);
+
+/// Why `send_next` stands behind `send_max`, for counting what goes out again.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Resend {
+    /// A retransmission timeout went back to the oldest unacknowledged byte.
+    Timeout,
+    /// A shut window, or a smaller path MTU, did.
+    Other,
+}
+
+/// A repair of the first unacknowledged segment the sender owes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Repair {
+    /// The third duplicate ACK started fast retransmit.
+    Fast,
+    /// A partial ACK in fast recovery found the next hole.
+    PartialAck,
+}
+
+fn count_resend(cause: Option<Resend>) {
+    TX_RETRANSMITTED_SEGMENTS.fetch_add(1, Ordering::Relaxed);
+    if cause == Some(Resend::Timeout) {
+        TX_TIMEOUT_RETRANSMITS.fetch_add(1, Ordering::Relaxed);
+    }
+}
 
 pub struct ReceiveCounters {
     pub checksum_rejected: u64,
@@ -167,8 +213,12 @@ const MAX_BACKLOG: usize = 4096;
 
 /// The retransmission timeout before any round trip is measured (RFC 6298 2.1).
 const RTO_INITIAL_MS: u64 = 1_000;
-/// Bounds on the retransmission timeout: Linux's `TCP_RTO_MIN` and `TCP_RTO_MAX`.
-const RTO_MIN_MS: u64 = 200;
+/// The floor of a computed timeout: RFC 6298 2.4's one second.
+const RTO_MIN_MS: u64 = 1_000;
+/// The timeout data transmission starts with when the handshake's own timer
+/// expired (RFC 6298 5.7).
+const RTO_AFTER_HANDSHAKE_TIMEOUT_MS: u64 = 3_000;
+/// The ceiling of a backed-off timeout: Linux's `TCP_RTO_MAX`.
 const RTO_MAX_MS: u64 = 120_000;
 /// The clock granularity term of RFC 6298 2.2.
 const RTO_GRANULARITY_MS: u64 = 1;
@@ -256,8 +306,9 @@ const NOTICE_BATCH: usize = 16;
 
 /// Run every connection timer that is due, and reap what has expired. Returns
 /// the earliest deadline still pending, published under the table lock as the
-/// one `ktcptimerd` sleeps until so that an earlier arm finds it.
-fn run_timers() -> Option<u64> {
+/// one `ktcptimerd` sleeps until so that an earlier arm finds it. The host
+/// checks in `tools/tcp-host-tests` run it as `ktcptimerd` would.
+pub(crate) fn run_timers() -> Option<u64> {
     loop {
         let mut notices: [Option<Notice>; NOTICE_BATCH] = Default::default();
         let mut taken = 0;
@@ -920,6 +971,17 @@ pub struct TcpConnection {
     /// IP output refused a segment of queued output: the retransmission timer
     /// tries it again if nothing else does.
     tx_blocked: bool,
+    /// The congestion policy, NewReno (`tcp/congestion.rs`).
+    cc: congestion::Controller,
+    /// Duplicate-ACK counting and the fast recovery episode (`tcp/recovery.rs`).
+    recovery: recovery::Recovery,
+    /// A repair of the first unacknowledged segment not yet sent: output
+    /// sends it before new data, and keeps it owed if IP output refuses it.
+    repair: Option<Repair>,
+    /// Why `send_next` was last moved back behind `send_max`.
+    resend: Option<Resend>,
+    /// When data or a FIN last left, for the restart after idle (RFC 5681 4.1).
+    last_send_ms: u64,
     /// Retransmission timeout (RFC 6298).
     rto_ms: u64,
     /// Smoothed round-trip time and its variation, 0 before the first sample.
@@ -1072,6 +1134,11 @@ impl TcpConnection {
             send_max: initial_seq.wrapping_add(1),
             max_send_window: 0,
             tx_blocked: false,
+            cc: congestion::Controller::new_reno(),
+            recovery: recovery::Recovery::new(initial_seq),
+            repair: None,
+            resend: None,
+            last_send_ms: now_ms(),
             rto_ms: RTO_INITIAL_MS,
             srtt_ms: 0,
             rttvar_ms: 0,
@@ -1181,7 +1248,8 @@ impl TcpConnection {
         }
     }
 
-    fn send_syn_ack(&mut self) {
+    /// Send the SYN+ACK again. False when IP output refused it.
+    fn send_syn_ack(&mut self) -> bool {
         let seg = self.segment(self.send_initial, TcpFlags::syn_ack());
         let mut stack = [0; SYN_OPTION_CAPACITY];
         let options = syn_options(
@@ -1190,9 +1258,11 @@ impl TcpConnection {
             self.sack_permitted,
             &mut stack,
         );
-        if transmit(&seg, options, [&[], &[]]) {
+        let sent = transmit(&seg, options, [&[], &[]]);
+        if sent {
             self.record_window(&seg);
         }
+        sent
     }
 
     /// Reset the connection from this end (RFC 9293 3.5.2): RST at `send_next`.
@@ -1258,7 +1328,8 @@ impl TcpConnection {
         self.fin_seq.is_some_and(|fin| seq_lt(fin, self.send_next))
     }
 
-    /// True when queued data or a queued FIN has not been sent.
+    /// True when queued data or a queued FIN has not been sent, or a repair is
+    /// owed.
     fn has_output(&self) -> bool {
         let sending = matches!(
             self.state,
@@ -1270,7 +1341,15 @@ impl TcpConnection {
         );
         sending
             && (self.tx_buffer.len() > self.tx_sent
-                || (self.fin_queued && !self.fin_in_flight() && !self.fin_acked))
+                || (self.fin_queued && !self.fin_in_flight() && !self.fin_acked)
+                || self.repair.is_some())
+    }
+
+    /// Data bytes sent and not yet acknowledged: FlightSize (RFC 5681 2),
+    /// counted to the highest byte sent whatever `send_next` says, without the
+    /// SYN or FIN.
+    fn data_in_flight(&self) -> usize {
+        (self.send_max.wrapping_sub(self.send_unack) as usize).min(self.tx_buffer.len())
     }
 
     /// Queue as much of `data` as the send buffer takes: the count, 0 when the
@@ -1285,11 +1364,12 @@ impl TcpConnection {
         Ok(take)
     }
 
-    /// Send `len` queued bytes starting `offset` bytes after `send_unack`, at
-    /// `send_next`, marked urgent while they precede the urgent pointer. False
-    /// when IP output refused them.
+    /// Send `len` queued bytes starting `offset` bytes after `send_unack`, which
+    /// is sequence number `send_unack + offset`, marked urgent while they
+    /// precede the urgent pointer. False when IP output refused them.
     fn send_data(&mut self, offset: usize, len: usize) -> bool {
-        let mut seg = self.segment(self.send_next, TcpFlags::ack_psh());
+        let seq = self.send_unack.wrapping_add(offset as u32);
+        let mut seg = self.segment(seq, TcpFlags::ack_psh());
         if let Some(up) = self.snd_up {
             if seq_lt(seg.seq, up) {
                 seg.flags.urg = true;
@@ -1315,6 +1395,7 @@ impl TcpConnection {
     /// Note that sequence space up to `send_next` has been sent: time it if it is
     /// new and nothing else is being timed, and run the retransmission timer.
     fn sent_through_next(&mut self) {
+        self.last_send_ms = now_ms();
         if seq_lt(self.send_max, self.send_next) {
             self.send_max = self.send_next;
             if self.rtt_probe.is_none() && self.retries == 0 {
@@ -1337,9 +1418,27 @@ impl TcpConnection {
         sent
     }
 
+    /// Send what is owed, in order: a repair of the first unacknowledged
+    /// segment, then new data within both the peer's window and the congestion
+    /// window, then the FIN once every byte before it is out.
     fn output_now(&mut self) -> bool {
         if !self.has_output() {
             return true;
+        }
+        if let Some(repair) = self.repair {
+            if !self.send_repair(repair) {
+                return false;
+            }
+            self.repair = None;
+        }
+        let smss = u32::from(self.mss);
+        if self.tx_sent < self.tx_buffer.len()
+            && self.send_unack == self.send_max
+            && now_ms().saturating_sub(self.last_send_ms) > self.rto_ms
+        {
+            // Nothing has left for longer than a timeout: the ACK clock is gone,
+            // so start again from at most the initial window (RFC 5681 4.1).
+            self.cc.on_idle_restart(smss);
         }
         while self.tx_sent < self.tx_buffer.len() {
             let room = (self.send_window as usize).saturating_sub(self.tx_sent);
@@ -1349,11 +1448,23 @@ impl TcpConnection {
                 self.arm_retransmit();
                 return true;
             }
-            let len = (self.tx_buffer.len() - self.tx_sent)
-                .min(room)
-                .min(self.mss as usize);
+            let want = (self.tx_buffer.len() - self.tx_sent).min(self.mss as usize);
+            // `tx_sent` is what has left from `send_unack` to `send_next`: the
+            // flight the congestion window admits against. A segment goes only
+            // whole; one always may when nothing is out, so a window below the
+            // SMSS cannot stall the connection.
+            let allowance = (self.cc.cwnd() as usize).saturating_sub(self.tx_sent);
+            if allowance < want && self.tx_sent != 0 {
+                // The congestion window is full: the next ACK opens it.
+                return true;
+            }
+            let len = want.min(room);
+            let seq = self.send_next;
             if !self.send_data(self.tx_sent, len) {
                 return false;
+            }
+            if seq_lt(seq, self.send_max) {
+                count_resend(self.resend);
             }
             self.tx_sent += len;
             self.send_next = self.send_next.wrapping_add(len as u32);
@@ -1365,10 +1476,44 @@ impl TcpConnection {
                 return false;
             }
             self.record_window(&seg);
+            if seq_lt(self.send_next, self.send_max) {
+                count_resend(self.resend);
+            }
             self.fin_seq = Some(self.send_next);
             self.send_next = self.send_next.wrapping_add(1);
             self.sent_through_next();
         }
+        true
+    }
+
+    /// Retransmit the first unacknowledged segment, leaving `send_next` and
+    /// the flight as they are (RFC 5681 3.2 step 2, RFC 6582 3.2 step 3). A FIN
+    /// alone outstanding is sent again. False when IP output refused it: the
+    /// repair stays owed.
+    fn send_repair(&mut self, repair: Repair) -> bool {
+        let len = self.data_in_flight().min(self.mss as usize);
+        if len != 0 {
+            if !self.send_data(0, len) {
+                return false;
+            }
+        } else if let Some(fin) = self.fin_seq.filter(|_| !self.fin_acked) {
+            let seg = self.segment(fin, TcpFlags::fin_ack());
+            if !transmit(&seg, &[], [&[], &[]]) {
+                return false;
+            }
+            self.record_window(&seg);
+        } else {
+            return true;
+        }
+        // Karn's rule: an ACK may now answer either copy, so it is not timed.
+        self.rtt_probe = None;
+        self.last_send_ms = now_ms();
+        TX_RETRANSMITTED_SEGMENTS.fetch_add(1, Ordering::Relaxed);
+        let counter = match repair {
+            Repair::Fast => &TX_FAST_RETRANSMITS,
+            Repair::PartialAck => &TX_PARTIAL_ACK_RETRANSMITS,
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
         true
     }
 
@@ -1412,8 +1557,19 @@ impl TcpConnection {
         self.tx_sent = 0;
         self.send_shutdown = true;
         self.tx_blocked = false;
+        self.repair = None;
         self.rtx_deadline_ms = 0;
         wake_connection_waiters(self);
+    }
+
+    /// The handshake's SYN was acknowledged. If its timer expired on the way,
+    /// data starts with a three-second timeout (RFC 6298 5.7); no round trip
+    /// was timed, since a retransmitted SYN is not (Karn's rule).
+    fn handshake_done(&mut self) {
+        if self.retries > 0 {
+            self.rto_ms = RTO_AFTER_HANDSHAKE_TIMEOUT_MS;
+        }
+        self.retries = 0;
     }
 
     fn enter_time_wait(&mut self) {
@@ -1429,7 +1585,7 @@ impl TcpConnection {
         self.state = TcpState::Established;
         self.send_unack = header.ack_num;
         self.take_peer_window(header);
-        self.retries = 0;
+        self.handshake_done();
         self.restart_retransmit();
         if self.parent.is_some() {
             self.accept_order = NEXT_ACCEPT_ORDER.fetch_add(1, Ordering::Relaxed);
@@ -1460,6 +1616,9 @@ impl TcpConnection {
         self.sack_permitted = header.sack_permitted;
         self.take_peer_window(header);
         self.mss = effective_mss(self.id.remote_ip, header.mss_option);
+        // The SMSS is known: the congestion window starts at the initial
+        // window for it (RFC 5681 3.1).
+        self.cc.start(u32::from(self.mss));
     }
 
     /// Fold a round-trip sample into the timeout (RFC 6298 2.2-2.4).
@@ -1540,6 +1699,7 @@ impl TcpConnection {
             // leave the retransmission timeout as the round trips set it.
             self.send_next = self.send_unack;
             self.tx_sent = 0;
+            self.resend = Some(Resend::Other);
             self.probes = self.probes.saturating_add(1);
             let backoff = self.rto_ms.saturating_mul(1 << self.probes.min(10));
             self.rtx_deadline_ms = now + backoff.min(RTO_MAX_MS);
@@ -1566,14 +1726,36 @@ impl TcpConnection {
                     syn_options(local_mss(self.id.remote_ip), self.recv_shift, true, &mut stack);
                 if transmit(&seg, options, [&[], &[]]) {
                     self.record_window(&seg);
+                    count_resend(Some(Resend::Timeout));
                 }
             }
-            TcpState::SynReceived => self.send_syn_ack(),
+            TcpState::SynReceived => {
+                if self.send_syn_ack() {
+                    count_resend(Some(Resend::Timeout));
+                }
+            }
             _ if self.send_unack != self.send_max => {
-                // Go back to the oldest unacknowledged byte and send again what
-                // the window allows; the peer drops what it already holds.
+                // The window collapses to one segment, and the threshold falls
+                // to half the flight on the first expiry for this segment only
+                // (RFC 5681 3.1). Fast recovery ends, and `recover` marks the
+                // highest byte sent, so the duplicates the resends below draw
+                // cannot start another (RFC 6582 3.2 step 4, section 4).
+                let first = self.retries == 1;
+                let flight = self.data_in_flight() as u32;
+                self.recovery.timeout(
+                    &mut self.cc,
+                    self.send_max.wrapping_sub(1),
+                    flight,
+                    u32::from(self.mss),
+                    first,
+                );
+                self.repair = None;
+                // Go back to the oldest unacknowledged byte. The one-segment
+                // window sends only it now; slow start sends the rest again as
+                // ACKs open the window, and the peer drops what it holds.
                 self.send_next = self.send_unack;
                 self.tx_sent = 0;
+                self.resend = Some(Resend::Timeout);
                 self.push_output();
             }
             _ => self.rtx_deadline_ms = 0,
@@ -1581,14 +1763,16 @@ impl TcpConnection {
     }
 
     /// Process the acknowledgement field of a segment in a synchronized state,
-    /// once the caller has found it acceptable.
-    fn process_ack(&mut self, header: &TcpHeader) {
+    /// once the caller has found it acceptable. `payload_len` is the data the
+    /// segment carries.
+    fn process_ack(&mut self, header: &TcpHeader, payload_len: usize) {
         let ack = header.ack_num;
         if seq_lt(ack, self.send_unack) {
             // An old duplicate: it carries no window information worth taking.
             return;
         }
         let window_was = self.send_window;
+        let cwnd_was = self.cc.cwnd();
         self.take_peer_window(header);
         if self.send_window == 0 {
             // The peer answers while its window stays shut: it is alive, so the
@@ -1596,8 +1780,28 @@ impl TcpConnection {
             self.retries = 0;
         }
         let acked = ack.wrapping_sub(self.send_unack) as usize;
+        let smss = u32::from(self.mss);
         let mut freed = false;
-        if acked > 0 {
+        // A duplicate ACK in RFC 5681 section 2's sense: data is outstanding,
+        // and the segment carries no data, no SYN or FIN, and neither moves the
+        // cumulative ACK nor changes the window. A window update is not one,
+        // and neither is the answer to a zero-window probe: persist is
+        // separate from loss recovery.
+        let duplicate = acked == 0
+            && self.data_in_flight() != 0
+            && payload_len == 0
+            && !header.flags.syn
+            && !header.flags.fin
+            && self.send_window == window_was
+            && self.send_window != 0;
+        if duplicate {
+            let flight = self.data_in_flight() as u32;
+            let highest_sent = self.send_max.wrapping_sub(1);
+            if self.recovery.duplicate(&mut self.cc, ack, highest_sent, flight, smss) {
+                TX_FAST_RECOVERIES.fetch_add(1, Ordering::Relaxed);
+                self.repair = Some(Repair::Fast);
+            }
+        } else if acked > 0 {
             let data = acked.min(self.tx_buffer.len());
             self.tx_buffer.drain(..data);
             self.send_unack = ack;
@@ -1620,7 +1824,16 @@ impl TcpConnection {
                 }
             }
             self.retries = 0;
-            self.restart_retransmit();
+            let flight = self.data_in_flight() as u32;
+            let response = self.recovery.advance(&mut self.cc, ack, data as u32, flight, smss);
+            if response.repair {
+                self.repair = Some(Repair::PartialAck);
+            }
+            if response.restart_timer {
+                self.restart_retransmit();
+            } else {
+                self.arm_retransmit();
+            }
         } else if self.send_window != window_was {
             self.arm_retransmit();
         }
@@ -1631,6 +1844,7 @@ impl TcpConnection {
                 // again from the oldest unacknowledged byte now that it opened.
                 self.send_next = self.send_unack;
                 self.tx_sent = 0;
+                self.resend = Some(Resend::Other);
             }
         }
         if self.fin_acked {
@@ -1652,7 +1866,13 @@ impl TcpConnection {
                 _ => {}
             }
         }
-        if (freed || self.send_window > window_was) && self.has_output() {
+        // Output that may go now: freed or newly windowed bytes, a repair, or
+        // room a duplicate made by inflating the window in fast recovery.
+        let opened = freed
+            || self.send_window > window_was
+            || self.repair.is_some()
+            || self.cc.cwnd() > cwnd_was;
+        if opened && self.has_output() {
             TX_RETRY.store(true, Ordering::Release);
         }
         if freed {
@@ -1995,16 +2215,67 @@ fn reap_expired(connections: &mut ConnTable, force: bool) {
 }
 
 /// `/proc/net/tcp_stats`: transmit-side counters since boot, one `name: value` line each.
+/// `retransmit_timeouts` counts timer expiries; `retransmitted_segments` counts the
+/// segments actually sent again, with the share of fast retransmits, partial-ACK
+/// repairs and resends after a timeout; `fast_recoveries` counts recoveries begun.
 pub fn proc_net_tcp_stats() -> Result<alloc::string::String, i32> {
     use core::fmt::Write;
+    let counters = [
+        ("retransmit_timeouts", &TX_RETRANSMIT_TIMEOUTS),
+        ("retransmitted_segments", &TX_RETRANSMITTED_SEGMENTS),
+        ("fast_retransmits", &TX_FAST_RETRANSMITS),
+        ("partial_ack_retransmits", &TX_PARTIAL_ACK_RETRANSMITS),
+        ("timeout_retransmits", &TX_TIMEOUT_RETRANSMITS),
+        ("fast_recoveries", &TX_FAST_RECOVERIES),
+    ];
     let mut text = alloc::string::String::new();
-    text.try_reserve_exact(64).map_err(|_| ENOMEM)?;
-    let _ = writeln!(
-        text,
-        "retransmit_timeouts: {}",
-        TX_RETRANSMIT_TIMEOUTS.load(Ordering::Relaxed)
-    );
+    text.try_reserve_exact(256).map_err(|_| ENOMEM)?;
+    for (name, counter) in counters {
+        let _ = writeln!(text, "{name}: {}", counter.load(Ordering::Relaxed));
+    }
     Ok(text)
+}
+
+/// A connection's sender as congestion control and loss recovery see it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SenderInfo {
+    /// The sender's maximum segment size.
+    pub smss: u32,
+    /// The congestion window and slow-start threshold, in bytes.
+    pub cwnd: u32,
+    pub ssthresh: u32,
+    /// In fast recovery.
+    pub in_recovery: bool,
+    /// RFC 6582's `recover`.
+    pub recover: u32,
+    /// Duplicate ACKs counted since the cumulative ACK last moved.
+    pub dupacks: u32,
+    pub send_unack: u32,
+    pub send_next: u32,
+    /// The highest sequence number sent, plus one.
+    pub send_max: u32,
+    /// The retransmission timeout, and when its timer fires (0 when stopped).
+    pub rto_ms: u64,
+    pub rtx_deadline_ms: u64,
+}
+
+/// The sender state of the connection `conn_id`, for diagnostics.
+pub fn tcp_sender_info(conn_id: &ConnectionId) -> Option<SenderInfo> {
+    with_tcp_connections(|connections| {
+        connections.get(conn_id).map(|conn| SenderInfo {
+            smss: u32::from(conn.mss),
+            cwnd: conn.cc.cwnd(),
+            ssthresh: conn.cc.ssthresh(),
+            in_recovery: conn.recovery.active(),
+            recover: conn.recovery.recover(),
+            dupacks: conn.recovery.dupacks(),
+            send_unack: conn.send_unack,
+            send_next: conn.send_next,
+            send_max: conn.send_max,
+            rto_ms: conn.rto_ms,
+            rtx_deadline_ms: conn.rtx_deadline_ms,
+        })
+    })
 }
 
 /// `/proc/net/tcp`: the first four columns of Linux's format, one line per listener and
@@ -2323,6 +2594,7 @@ pub(crate) fn handle_path_mtu(quote: TcpMtuQuote) {
         conn.mss = mss;
         conn.send_next = conn.send_unack;
         conn.tx_sent = 0;
+        conn.resend = Some(Resend::Other);
         conn.rtt_probe = None;
         conn.restart_retransmit();
         TX_RETRY.store(true, Ordering::Release);
@@ -2416,7 +2688,7 @@ fn handle_syn_sent(conn: &mut TcpConnection, header: &TcpHeader) {
     }
     conn.send_unack = header.ack_num;
     conn.state = TcpState::Established;
-    conn.retries = 0;
+    conn.handshake_done();
     conn.restart_retransmit();
     conn.send_ack();
 
@@ -2509,7 +2781,7 @@ fn handle_tcp_for_connection(conn: &mut TcpConnection, header: &TcpHeader, paylo
             conn.send_ack();
             return;
         }
-        conn.process_ack(header);
+        conn.process_ack(header, payload.len());
         if conn.state == TcpState::Closed {
             return;
         }
