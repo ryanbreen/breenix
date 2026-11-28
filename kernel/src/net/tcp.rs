@@ -30,8 +30,8 @@
 //!
 //! The active closer waits in TIME_WAIT for 60 s (Linux's `TCP_TIMEWAIT_LEN`).
 //! Expired TIME_WAIT entries, orphaned FIN_WAIT_2 entries past 60 s and closed
-//! orphans are reaped by the timer worker or during packet handling. Bind checks
-//! ignore expired owners in the bucket for the requested port.
+//! orphans are reaped by the timer worker. Packet handling also retires an
+//! expired matching entry, and bind checks ignore expired owners of the port.
 //!
 //! Every table lives behind one lock, `TCP_CONNECTIONS`, and grows only through
 //! fallible reservations: a segment or call that finds no memory is dropped or
@@ -217,8 +217,6 @@ pub const TIME_WAIT_MS: u64 = 60_000;
 /// How long a connection whose owner has closed it may wait in FIN_WAIT_2 for the
 /// peer's FIN: Linux's default `tcp_fin_timeout`, 60 s.
 const ORPHAN_FIN_WAIT2_MS: u64 = 60_000;
-/// The connection table is swept for expired entries at most this often.
-const REAP_INTERVAL_MS: u64 = 1_000;
 
 /// Linux's SOMAXCONN, the largest backlog a listener takes.
 const MAX_BACKLOG: usize = 4096;
@@ -246,7 +244,6 @@ const KEEPALIVE_TIME_MS: u64 = 7_200_000;
 const KEEPALIVE_INTVL_MS: u64 = 75_000;
 const KEEPALIVE_PROBES: u32 = 9;
 
-static LAST_REAP_MS: AtomicU64 = AtomicU64::new(0);
 
 // ============================================================================
 // Timers: one kernel thread, `ktcptimerd`, sleeps until the earliest deadline of
@@ -325,8 +322,8 @@ pub(crate) fn run_timers() -> Option<u64> {
         let mut notices: [Option<Notice>; NOTICE_BATCH] = Default::default();
         let mut taken = 0;
         let next = with_tcp_connections(|connections| {
-            reap_expired(connections, true);
             let now = now_ms();
+            connections.reap(now);
             let mut next: Option<u64> = None;
             for conn in connections.values_mut() {
                 if conn.rtx_deadline_ms != 0 && now >= conn.rtx_deadline_ms {
@@ -349,7 +346,7 @@ pub(crate) fn run_timers() -> Option<u64> {
                     next = Some(next.map_or(deadline, |n: u64| n.min(deadline)));
                 }
             }
-            reap_expired(connections, true);
+            connections.reap(now_ms());
             TIMER_SLEEP_UNTIL_MS.store(next.unwrap_or(u64::MAX), Ordering::Release);
             next
         });
@@ -2191,20 +2188,20 @@ struct Binding {
 
 /// The connections and their bind memberships, under the same TCP table lock.
 pub(crate) struct ConnTable {
-    conns: Buckets<TcpConnection>,
+    established: Buckets<TcpConnection>,
     binds: Buckets<Binding>,
 }
 
 impl ConnTable {
     const fn new() -> Self {
         Self {
-            conns: Buckets::new(),
+            established: Buckets::new(),
             binds: Buckets::new(),
         }
     }
 
     fn position(&self, id: &ConnectionId) -> Option<usize> {
-        self.conns.position(&tuple_key(id), |conn| {
+        self.established.position(&tuple_key(id), |conn| {
             #[cfg(test)]
             lookup_probe::visit(lookup_probe::Index::Established);
             conn.id == *id
@@ -2212,12 +2209,12 @@ impl ConnTable {
     }
 
     pub fn get(&self, id: &ConnectionId) -> Option<&TcpConnection> {
-        self.position(id).map(|index| self.conns.get(index))
+        self.position(id).map(|index| self.established.get(index))
     }
 
     pub fn get_mut(&mut self, id: &ConnectionId) -> Option<&mut TcpConnection> {
         let index = self.position(id)?;
-        Some(self.conns.get_mut(index))
+        Some(self.established.get_mut(index))
     }
 
     pub fn contains_key(&self, id: &ConnectionId) -> bool {
@@ -2225,15 +2222,15 @@ impl ConnTable {
     }
 
     fn len(&self) -> usize {
-        self.conns.len()
+        self.established.len()
     }
 
     pub fn values(&self) -> impl Iterator<Item = &TcpConnection> {
-        self.conns.values()
+        self.established.values()
     }
 
     pub fn values_mut(&mut self) -> impl Iterator<Item = &mut TcpConnection> {
-        self.conns.values_mut()
+        self.established.values_mut()
     }
 
     fn reserve_binding(&mut self) -> Result<(), i32> {
@@ -2277,17 +2274,17 @@ impl ConnTable {
     fn insert(&mut self, mut conn: TcpConnection) -> Result<(), i32> {
         #[cfg(test)]
         lookup_probe::reserve(lookup_probe::Index::Established)?;
-        self.conns.try_reserve_one()?;
+        self.established.try_reserve_one()?;
         self.reserve_binding()?;
         let id = conn.id;
         conn.arm_retransmit();
-        self.conns.push_reserved(&tuple_key(&id), conn);
+        self.established.push_reserved(&tuple_key(&id), conn);
         self.push_binding(id.local_port, BindOwner::Connection(id));
         Ok(())
     }
 
     fn remove_at(&mut self, index: usize) {
-        let conn = self.conns.remove(index);
+        let conn = self.established.remove(index);
         self.remove_binding(
             conn.id.local_port,
             |owner| matches!(owner, BindOwner::Connection(id) if id == conn.id),
@@ -2302,10 +2299,10 @@ impl ConnTable {
 
     fn reap(&mut self, now: u64) {
         let mut index = 0;
-        while index < self.conns.len() {
+        while index < self.established.len() {
             #[cfg(test)]
             lookup_probe::visit(lookup_probe::Index::Established);
-            if self.conns.get(index).expired(now) {
+            if self.established.get(index).expired(now) {
                 self.remove_at(index);
             } else {
                 index += 1;
@@ -2440,17 +2437,6 @@ pub(crate) fn with_tcp_connections<R>(f: impl FnOnce(&mut ConnTable) -> R) -> R 
     with_tcp(|tables| f(&mut tables.conns))
 }
 
-/// Remove the connections whose time is up. `force` sweeps even if the last
-/// sweep was less than a second ago.
-fn reap_expired(connections: &mut ConnTable, force: bool) {
-    let now = now_ms();
-    if !force && now.saturating_sub(LAST_REAP_MS.load(Ordering::Relaxed)) < REAP_INTERVAL_MS {
-        return;
-    }
-    LAST_REAP_MS.store(now, Ordering::Relaxed);
-    connections.reap(now);
-}
-
 /// `/proc/net/tcp_stats`: transmit-side counters since boot, one `name: value` line each.
 /// `retransmit_timeouts` counts timer expiries; `retransmitted_segments` counts the
 /// segments actually sent again, with the share of fast retransmits, partial-ACK
@@ -2528,7 +2514,7 @@ pub fn tcp_sender_info(conn_id: &ConnectionId) -> Option<SenderInfo> {
 pub fn proc_net_tcp() -> Result<alloc::string::String, i32> {
     use core::fmt::Write;
     with_tcp(|tables| {
-        reap_expired(&mut tables.conns, true);
+        tables.conns.reap(now_ms());
         let rows = tables.listeners.len() + tables.conns.len();
         let mut text = alloc::string::String::new();
         // A row is at most 40 bytes; the header 36.
@@ -2862,14 +2848,17 @@ pub fn handle_tcp(ip: &Ipv4Packet, data: &[u8]) {
 
     // A connection takes the segment if one matches it, else a listener.
     let (notice, listener_found) = with_tcp(|tables| {
-        reap_expired(&mut tables.conns, false);
-        if let Some(conn) = tables.conns.get_mut(&conn_id) {
-            handle_tcp_for_connection(conn, &header, payload);
-            let notice = take_notice(conn);
-            if conn.expired(now_ms()) {
-                tables.conns.remove(&conn_id);
+        if let Some(index) = tables.conns.position(&conn_id) {
+            let conn = tables.conns.established.get_mut(index);
+            if !conn.expired(now_ms()) {
+                handle_tcp_for_connection(conn, &header, payload);
+                let notice = take_notice(conn);
+                if conn.expired(now_ms()) {
+                    tables.conns.remove_at(index);
+                }
+                return (notice, true);
             }
-            return (notice, true);
+            tables.conns.remove_at(index);
         }
         let Some(index) = tables.listener_for(local_ip, header.dst_port) else {
             return (None, false);
@@ -3401,7 +3390,7 @@ pub fn tcp_unlisten(id: ListenerId) {
                 conn.orphaned = true;
             }
         }
-        reap_expired(&mut tables.conns, true);
+        tables.conns.reap(now_ms());
     });
 }
 

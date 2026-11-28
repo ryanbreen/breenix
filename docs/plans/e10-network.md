@@ -596,6 +596,8 @@ concurrency, loss or RTT named in the prediction.
 - Check expiry in the requested port's bucket, and retire the closed connection
   directly on close, because forcing the old sweep before each bind and connect
   would leave those lookups linear in the total connection count.
+- Retire only the matching expired tuple on receive because the old once-a-second
+  sweep made that packet visit unrelated connections; the timer still reaps globally.
 - Read a connected bind owner's reuse and lifetime from its tuple entry because
   socket options and TCP transitions already update that state under the same lock.
 - Reuse existing memberships for an eligible same-tuple active open because the
