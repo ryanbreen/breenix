@@ -223,3 +223,7 @@ pub fn signal_name(sig: u32) -> &'static str {
         _ => "UNKNOWN",
     }
 }
+
+/// The x86 signal frame carries an Intel standard XSAVE image.
+#[cfg(target_arch = "x86_64")]
+pub const UC_BREENIX_XSTATE_V1: u64 = 1 << 32;

@@ -109,6 +109,9 @@ fn interp_handoff_auxv() {
             (13, 2000),
             (14, 2001),
             (23, 1),
+            (16, 0),
+            (26, 0),
+            (51, 2048),
             (0, 0),
         ]
     );
@@ -219,6 +222,9 @@ fn interp_handoff_auxv_aarch64() {
             (13, 2000),
             (14, 2001),
             (23, 1),
+            (16, 0),
+            (26, 0),
+            (51, 5120),
             (0, 0),
         ]
     );
@@ -283,7 +289,7 @@ fn interpreter_machine_must_match_program() {
 }
 
 #[test]
-fn static_auxv_unchanged_aarch64() {
+fn static_auxv_aarch64() {
     let program = arm_elf(2, PROGRAM_BASE, PROGRAM_ENTRY, None);
     let headers = read(&program, EM_AARCH64).unwrap();
     assert_eq!(headers.interpreter_path(), None);
@@ -303,6 +309,9 @@ fn static_auxv_unchanged_aarch64() {
             (13, 2000),
             (14, 2001),
             (23, 1),
+            (16, 0),
+            (26, 0),
+            (51, 5120),
             (0, 0),
         ]
     );
@@ -325,7 +334,7 @@ fn pie_handoff_supplies_bias_without_pt_phdr() {
 }
 
 #[test]
-fn static_auxv_unchanged() {
+fn static_auxv() {
     let headers = read(&elf(2, PROGRAM_BASE, PROGRAM_ENTRY, None), 62).unwrap();
     assert_eq!(headers.interpreter_path(), None);
     let plan = headers.exec_plan(None).unwrap();
@@ -344,6 +353,9 @@ fn static_auxv_unchanged() {
             (13, 2000),
             (14, 2001),
             (23, 1),
+            (16, 0),
+            (26, 0),
+            (51, 2048),
             (0, 0),
         ]
     );

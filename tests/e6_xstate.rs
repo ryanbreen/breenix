@@ -1,4 +1,8 @@
 //! Host fixtures for the x86 state layouts and user signal images.
+//! The imported modules also define interfaces used only by the kernel.
+#![allow(dead_code)]
+#[path = "../libs/libbreenix/src/auxv.rs"]
+mod auxv;
 #[path = "../kernel/src/arch_impl/x86_64/xstate_layout.rs"]
 mod xstate_layout;
 
@@ -38,13 +42,28 @@ fn cpuid_layouts() {
         let wide = cpu.layout(WIDE, 0, backend).unwrap();
         assert_eq!(wide.standard_size, 2688);
         assert_eq!(wide.offset(2), 576);
-        assert_eq!(wide.offset(5), if backend == Backend::Xsaves { 832 } else { 1088 });
-        assert_eq!(wide.image_size(), if backend == Backend::Xsaves { 2432 } else { 2688 });
+        assert_eq!(
+            wide.offset(5),
+            if backend == Backend::Xsaves {
+                832
+            } else {
+                1088
+            }
+        );
+        assert_eq!(
+            wide.image_size(),
+            if backend == Backend::Xsaves {
+                2432
+            } else {
+                2688
+            }
+        );
         assert!(wide.check_reported(2688, wide.image_size()));
         assert!(!wide.check_reported(2687, wide.image_size()));
         assert!(cpu.layout(WIDE | (1 << 63), 0, backend).is_none());
     }
     let cpu = fixture(8);
+    assert!(cpu.avx_layout_known() && cpu.avx512_layout_known());
     let compacted = cpu.layout(AVX_MASK, TRACE, Backend::Xsaves).unwrap();
     assert_eq!(compacted.offset(8), 832);
     assert_eq!(compacted.image_size(), 888);
@@ -53,7 +72,7 @@ fn cpuid_layouts() {
     assert!(!fixture(1).supports(&wide));
     assert!(cpu.supports(&wide));
     assert!(CpuState::probe(AVX_MASK, 0, u32::MAX, 0, |_| (128, u32::MAX - 63, 0)).is_none());
-    assert!(CpuState::probe(AVX_MASK, 0, 832, 0, |_| (256, 576, 4)).is_none());
+    assert!(CpuState::probe(AVX_MASK, 0, 832, 0, |_| (256, 576, 8)).is_none());
 }
 
 #[test]
@@ -70,7 +89,10 @@ fn standard_frames_and_legacy_import() {
     let mut exported = vec![0; layout.standard_size];
     assert!(layout.import(&mut backing, &mut user, true, 0xffbf));
     layout.export(&mut exported, &backing);
-    assert_eq!(u64::from_le_bytes(exported[512..520].try_into().unwrap()), bv);
+    assert_eq!(
+        u64::from_le_bytes(exported[512..520].try_into().unwrap()),
+        bv
+    );
     assert!(exported[520..576].iter().all(|&byte| byte == 0));
     assert!(exported[576..832].iter().all(|&byte| byte == 0x2a));
     assert!(exported[832..1664].iter().all(|&byte| byte == 0));
@@ -107,7 +129,11 @@ fn replacement_and_rollback_preserve_optimized_saves() {
             self.modified = false;
         }
     }
-    let mut registers = Registers { user: 0, last_restore: core::ptr::null(), modified: true };
+    let mut registers = Registers {
+        user: 0,
+        last_restore: core::ptr::null(),
+        modified: true,
+    };
     let mut user = Box::new(7);
     let mut prepared = Box::new(53);
     let mut kernel = Box::new(232);
@@ -119,24 +145,75 @@ fn replacement_and_rollback_preserve_optimized_saves() {
     registers.save(&mut kernel);
     registers.restore(&user);
 
-    assert!(!replace_live(&mut user, &mut prepared, &mut registers, Registers::save,
+    assert!(!replace_live(
+        &mut user,
+        &mut prepared,
+        &mut registers,
+        Registers::save,
         |cpu, incoming| {
             cpu.restore(incoming); // Models a partial restore before #GP.
             false
-        }, Registers::restore));
+        },
+        Registers::restore
+    ));
     assert_eq!((registers.user, *user, *kernel), (7, 7, 231));
 
-    assert!(replace_live(&mut user, &mut prepared, &mut registers, Registers::save,
+    assert!(replace_live(
+        &mut user,
+        &mut prepared,
+        &mut registers,
+        Registers::save,
         |cpu, incoming| {
             cpu.restore(incoming);
             true
-        }, Registers::restore));
+        },
+        Registers::restore
+    ));
     assert_eq!(registers.last_restore, &*user as *const u8);
     registers.save(&mut user);
     registers.restore(&kernel);
     assert_eq!(registers.user, 231);
     registers.restore(&user);
     assert_eq!(registers.user, 53);
+
+    // A clone encodes the parent's snapshot into its own backing. Its
+    // handler modifies the live upper half before sigreturn restores it.
+    let mut clone = Box::new(registers.user);
+    registers.save(&mut user);
+    registers.restore(&clone);
+    registers.user = 99;
+    registers.modified = true;
+    let mut signal_frame = Box::new(53);
+    assert!(replace_live(
+        &mut clone,
+        &mut signal_frame,
+        &mut registers,
+        Registers::save,
+        |cpu, incoming| {
+            cpu.restore(incoming);
+            true
+        },
+        Registers::restore,
+    ));
+    registers.save(&mut clone);
+    assert_eq!((*clone, *signal_frame), (53, 99));
+
+    // Exec installs architectural initial state in the replacement backing.
+    let mut initial = Box::new(0);
+    assert!(replace_live(
+        &mut clone,
+        &mut initial,
+        &mut registers,
+        Registers::save,
+        |cpu, incoming| {
+            cpu.restore(incoming);
+            true
+        },
+        Registers::restore,
+    ));
+    registers.save(&mut clone);
+    registers.restore(&user);
+    assert_eq!((*clone, registers.user), (0, 53));
 }
 
 #[test]

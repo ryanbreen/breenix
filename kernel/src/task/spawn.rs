@@ -77,14 +77,17 @@ pub fn spawn_thread_with_privilege(
     let tls_block = VirtAddr::new(0);
 
     // Create the thread with specified privilege
-    let thread = Box::new(Thread::new(
+    let thread = Thread::new(
         name.to_string(),
         entry_point,
         stack.top(),
         stack.bottom(),
         tls_block,
         privilege,
-    ));
+    );
+    #[cfg(target_arch = "x86_64")]
+    let thread = thread?;
+    let thread = Box::new(thread);
 
     let tid = thread.id();
 
@@ -116,14 +119,18 @@ pub fn create_idle_thread() -> Box<Thread> {
     #[cfg(target_arch = "aarch64")]
     let tls_base = 0u64;
 
-    let mut thread = Box::new(Thread::new(
+    let thread = Thread::new(
         "idle".to_string(),
         idle_thread_fn,
         VirtAddr::new(0), // Will be set to current RSP/SP
         VirtAddr::new(0), // Will be set appropriately
         VirtAddr::new(tls_base),
         ThreadPrivilege::Kernel,
-    ));
+    );
+
+    #[cfg(target_arch = "x86_64")]
+    let thread = thread.expect("idle xstate backing");
+    let mut thread = Box::new(thread);
 
     // Mark idle thread as already running. The id stays the one `Thread::new`
     // allocated: 0 is the no-thread sentinel and is never a live thread id.

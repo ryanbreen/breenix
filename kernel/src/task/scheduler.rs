@@ -10527,6 +10527,8 @@ pub fn switch_to_idle() {
         let old_val = sched.cpu_state[cpu_id].current_thread.unwrap_or(0xDEAD);
         #[cfg(target_arch = "aarch64")]
         record_cpu_state_change(cpu_id, 2, old_val, idle_id);
+        #[cfg(target_arch = "x86_64")]
+        crate::arch_impl::x86_64::fpu::hand_over(sched, sched.cpu_state[cpu_id].current_thread, idle_id);
         let _ = old_val; // suppress unused warning on non-aarch64
         sched.cpu_state[cpu_id].current_thread = Some(idle_id);
 
@@ -10787,7 +10789,7 @@ pub mod tests {
             VirtAddr::new(0x1000),
             VirtAddr::new(0),
             ThreadPrivilege::Kernel,
-        );
+        ).expect("scheduler fixture xstate");
         thread.state = state;
         Box::new(thread)
     }

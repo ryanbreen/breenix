@@ -207,6 +207,8 @@ typedef __INTPTR_TYPE__ intptr_t;
 #define _SC_V8_ILP32_OFFBIG 251
 #define _SC_V8_LP64_OFF64 252
 #define _SC_V8_LPBIG_OFFBIG 253
+#define _SC_MINSIGSTKSZ 254
+#define _SC_SIGSTKSZ 255
 
 /* confstr names: Linux's numbers for PATH and the POSIX_V7 environments,
  * then the POSIX_V8 names, which Linux lacks. */

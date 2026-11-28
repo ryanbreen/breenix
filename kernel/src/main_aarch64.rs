@@ -1189,6 +1189,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         core::arch::asm!("mrs {}, ttbr0_el1", out(reg) boot_ttbr0, options(nomem, nostack));
     }
     kernel::per_cpu_aarch64::set_kernel_cr3(boot_ttbr0);
+    assert!(kernel::arch_impl::aarch64::user_cpu::init(), "BSP FP/SIMD contract");
     kernel::arch_impl::aarch64::cache::grant_el0_cache_maintenance();
     serial_println!("[boot] Per-CPU data initialized");
     splash::stage(Stage::PerCpu);

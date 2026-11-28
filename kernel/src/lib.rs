@@ -22,6 +22,8 @@ pub mod uart_owner;
 #[cfg(target_arch = "aarch64")]
 pub use serial_aarch64 as serial;
 pub mod arch_impl;
+#[path = "../../libs/libbreenix/src/auxv.rs"]
+pub mod auxv;
 pub mod drivers;
 #[cfg(target_arch = "x86_64")]
 pub mod gdt;

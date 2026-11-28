@@ -13,8 +13,6 @@
 //! faults are reported; `init_cpu(0)` reloads them, which every step below
 //! allows.
 
-use core::arch::x86_64::__cpuid;
-
 use super::{apic, smp};
 
 /// Initialize the executing CPU as logical CPU `cpu`.
@@ -24,7 +22,7 @@ use super::{apic, smp};
 /// FPU/SSE/XSAVE state, the page attribute table, its scheduler quantum, and
 /// the local APIC with its scheduler tick. Runs with interrupts masked and
 /// restores the caller's interrupt state.
-pub fn init_cpu(cpu: usize) {
+pub fn init_cpu(cpu: usize) -> Result<(), &'static str> {
     x86_64::instructions::interrupts::without_interrupts(|| {
         crate::gdt::load(cpu);
         crate::gdt::install_ist_stacks(cpu);
@@ -34,7 +32,7 @@ pub fn init_cpu(cpu: usize) {
 
         crate::syscall::init();
 
-        let xsave = init_fpu();
+        let xsave = super::xstate::init(cpu)?;
 
         // The same memory-type layout on each CPU before it is online.
         super::pat::program(cpu);
@@ -60,7 +58,7 @@ pub fn init_cpu(cpu: usize) {
         };
 
         log::info!(
-            "[cpu-init] cpu={} apic_id={} gs_base={:#x} tss={:#x} xsave={} tick={}",
+            "[cpu-init] cpu={} apic_id={} gs_base={:#x} tss={:#x} xsave={:?} tick={}",
             cpu,
             apic_id,
             crate::per_cpu::cpu_data(cpu) as u64,
@@ -68,45 +66,6 @@ pub fn init_cpu(cpu: usize) {
             xsave,
             if apic::active() { "lapic" } else { "pit" }
         );
-    });
-}
-
-/// Enable x87, SSE and, where the CPU has it, XSAVE for user code on the
-/// executing CPU, and load the starting register state. Returns whether XSAVE
-/// was enabled.
-///
-/// An application processor leaves its startup sequence with CR0.EM set and
-/// CR4.OSFXSR clear, where every SSE instruction raises #UD; the firmware
-/// configures the boot processor the same way this does. The kernel itself is
-/// built soft-float and executes none of these instructions.
-///
-/// XCR0 enables x87 and SSE only. Threads carry their registers across
-/// switches as an FXSAVE image (`fpu`), which holds exactly that state; AVX
-/// would add YMM upper halves no switch saves, so it stays off and user code
-/// that checks XCR0 before using AVX does not use it.
-fn init_fpu() -> bool {
-    use x86_64::registers::control::{Cr0, Cr0Flags, Cr4, Cr4Flags};
-    use x86_64::registers::xcontrol::{XCr0, XCr0Flags};
-
-    // SAFETY: CPUID leaf 1 is architecturally present on x86_64.
-    let leaf1 = unsafe { __cpuid(1) };
-    let xsave = leaf1.ecx & (1 << 26) != 0;
-
-    unsafe {
-        Cr0::update(|cr0| {
-            cr0.remove(Cr0Flags::EMULATE_COPROCESSOR | Cr0Flags::TASK_SWITCHED);
-            cr0.insert(Cr0Flags::MONITOR_COPROCESSOR | Cr0Flags::NUMERIC_ERROR);
-        });
-        Cr4::update(|cr4| {
-            cr4.insert(Cr4Flags::OSFXSR | Cr4Flags::OSXMMEXCPT_ENABLE);
-            if xsave {
-                cr4.insert(Cr4Flags::OSXSAVE);
-            }
-        });
-        if xsave {
-            XCr0::write(XCr0Flags::X87 | XCr0Flags::SSE);
-        }
-    }
-    super::fpu::reset_current();
-    xsave
+        Ok(())
+    })
 }

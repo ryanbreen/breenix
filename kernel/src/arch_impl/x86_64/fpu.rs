@@ -1,140 +1,413 @@
-//! Per-thread x87/SSE register state.
-//!
-//! The kernel is built soft-float and executes no x87 or SSE instruction, so
-//! whatever these registers hold belongs to the last thread a dispatch handed
-//! them to: the CPU's owner. Every place that changes a CPU's current thread
-//! on the way back out of an interrupt (`switch_to_thread`, and the rollback
-//! in `abort_dispatch_and_resume`) hands the registers over with `hand_over`:
-//! the owner saves them, the incoming thread loads what it saved and becomes
-//! the owner. Kernel threads and idle take part like any other thread; the
-//! state they carry is never used.
-//!
-//! Owners are thread ids, and threads are found through the scheduler, so a
-//! thread reaped since it last ran is skipped, never written.
-//!
-//! `cpu_init::init_fpu` enables x87 and SSE in XCR0 and nothing wider, which
-//! is exactly the state FXSAVE covers.
-
-use core::sync::atomic::{AtomicU64, Ordering};
-
+//! Eager CPU state ownership. The console renderer uses SSE on a kernel
+//! thread, so dispatch saves and restores their registers too.
+use super::{
+    xstate,
+    xstate_layout::{self, Backend, LEGACY_SIZE},
+};
 use crate::task::scheduler::{Scheduler, MAX_CPUS};
+use alloc::alloc::{alloc_zeroed, dealloc, Layout as AllocLayout};
+use core::{
+    arch::asm,
+    ptr::NonNull,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
-/// One FXSAVE image (Intel SDM Vol. 1, 10.5.1): 512 bytes, 16-byte aligned.
-#[derive(Clone, Copy)]
-#[repr(C, align(16))]
-pub struct FpuState([u8; 512]);
+struct Area {
+    bytes: NonNull<u8>,
+    allocation: AllocLayout,
+}
+
+impl Area {
+    fn allocate(size: usize) -> Result<Self, &'static str> {
+        let allocation =
+            AllocLayout::from_size_align(size, 64).map_err(|_| "Invalid xstate size")?;
+        // SAFETY: valid nonzero layout. The kernel allocator returns committed memory.
+        let bytes =
+            NonNull::new(unsafe { alloc_zeroed(allocation) }).ok_or("Failed to allocate xstate")?;
+        Ok(Self { bytes, allocation })
+    }
+
+    fn bytes(&self) -> &[u8] {
+        unsafe { core::slice::from_raw_parts(self.bytes.as_ptr(), self.allocation.size()) }
+    }
+
+    fn bytes_mut(&mut self) -> &mut [u8] {
+        unsafe { core::slice::from_raw_parts_mut(self.bytes.as_ptr(), self.allocation.size()) }
+    }
+}
+
+// Owning pointer with access serialized by thread custody and local IRQ exclusion.
+unsafe impl Send for Area {}
+unsafe impl Sync for Area {}
+
+impl Drop for Area {
+    fn drop(&mut self) {
+        unsafe { dealloc(self.bytes.as_ptr(), self.allocation) };
+    }
+}
+
+pub struct FpuState {
+    saved: Area,
+    replacement: Area,
+    standard: Option<Area>,
+}
+
+impl core::fmt::Debug for FpuState {
+    fn fmt(&self, out: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        out.write_str("FpuState")
+    }
+}
 
 impl FpuState {
-    /// The state a program starts with: x87 control word 0x037f, MXCSR
-    /// 0x1f80 (every exception masked, round to nearest), every register and
-    /// tag empty.
-    pub const fn initial() -> Self {
-        let mut image = [0u8; 512];
-        image[0] = 0x7f;
-        image[1] = 0x03;
-        image[24] = 0x80;
-        image[25] = 0x1f;
-        Self(image)
-    }
-
-    /// The executing CPU's live state, for a thread that starts as a copy of
-    /// the caller (fork, clone).
-    pub fn capture() -> Self {
-        let mut state = Self::initial();
-        state.save();
-        state
-    }
-
-    /// Store the executing CPU's x87/SSE registers here.
-    pub fn save(&mut self) {
-        // SAFETY: `self` is a 16-byte-aligned 512-byte buffer; FXSAVE writes
-        // exactly that and touches no other memory or register.
-        unsafe {
-            core::arch::asm!(
-                "fxsave64 [{}]",
-                in(reg) self.0.as_mut_ptr(),
-                options(nostack, preserves_flags)
-            );
-        }
-    }
-
-    /// The image's bytes, as a signal frame stores them.
-    pub fn as_bytes(&self) -> &[u8; 512] {
-        &self.0
-    }
-
-    /// An image read from a signal frame, made safe to load: MXCSR bits this
-    /// CPU does not implement, on which FXRSTOR faults, are cleared. The
-    /// supported bits are MXCSR_MASK from an FXSAVE, or 0xffbf where that
-    /// field is zero (Intel SDM Vol. 1, 11.6.6).
-    pub fn from_signal_frame(bytes: [u8; 512]) -> Self {
-        let mut state = Self(bytes);
-        let probe = Self::capture();
-        let mask = match u32::from_le_bytes([probe.0[28], probe.0[29], probe.0[30], probe.0[31]]) {
-            0 => 0xffbf,
-            mask => mask,
-        };
-        let mxcsr = u32::from_le_bytes([state.0[24], state.0[25], state.0[26], state.0[27]]) & mask;
-        state.0[24..28].copy_from_slice(&mxcsr.to_le_bytes());
-        state
-    }
-
-    /// The SIGFPE si_code of the x87 exception an #MF reports: the first of
-    /// the exceptions the status word flags that the control word leaves
-    /// unmasked (Intel SDM Vol. 1, 8.1.3 and 8.1.5).
-    pub fn x87_fault_code(&self) -> i32 {
-        let control = u16::from_le_bytes([self.0[0], self.0[1]]);
-        let status = u16::from_le_bytes([self.0[2], self.0[3]]);
-        Self::fault_code((status & !control) as u32)
-    }
-
-    /// The SIGFPE si_code of the SSE exception an #XM reports: the first of
-    /// the exceptions MXCSR flags (bits 0-5) that its masks (bits 7-12) leave
-    /// unmasked (Intel SDM Vol. 1, 10.2.3).
-    pub fn simd_fault_code(&self) -> i32 {
-        let mxcsr = u32::from_le_bytes([self.0[24], self.0[25], self.0[26], self.0[27]]);
-        Self::fault_code(mxcsr & !(mxcsr >> 7))
-    }
-
-    /// The si_code of unmasked exception flags `flags`, in the x87 status
-    /// word's and MXCSR's shared order: invalid operation, denormal operand,
-    /// divide by zero, overflow, underflow, precision.
-    fn fault_code(flags: u32) -> i32 {
-        use crate::signal::constants::*;
-        if flags & 0x01 != 0 {
-            FPE_FLTINV
-        } else if flags & 0x04 != 0 {
-            FPE_FLTDIV
-        } else if flags & 0x08 != 0 {
-            FPE_FLTOVF
-        } else if flags & 0x12 != 0 {
-            FPE_FLTUND
-        } else if flags & 0x20 != 0 {
-            FPE_FLTRES
+    pub fn allocate(user: bool) -> Result<Self, &'static str> {
+        let layout = xstate::layout();
+        // Only userspace can import and export signal images. The renderer
+        // and other kernel threads still own a persistent saved image.
+        let scratch_size = if user {
+            layout.standard_size.max(layout.image_size())
         } else {
-            // No unmasked exception is flagged: the fault is reported as an
-            // invalid operation rather than retried.
-            FPE_FLTINV
-        }
+            layout.image_size()
+        };
+        let mut saved = Area::allocate(scratch_size)?;
+        layout.initial(saved.bytes_mut());
+        let replacement = Area::allocate(scratch_size)?;
+        let standard = if user {
+            Some(Area::allocate(layout.signal_size())?)
+        } else {
+            None
+        };
+        Ok(Self {
+            saved,
+            replacement,
+            standard,
+        })
     }
 
-    /// Load the executing CPU's x87/SSE registers from here.
-    pub fn restore(&self) {
-        // SAFETY: the image is either `initial()` or an FXSAVE result, so
-        // MXCSR holds no reserved bit and FXRSTOR cannot fault.
-        unsafe {
-            core::arch::asm!(
-                "fxrstor64 [{}]",
-                in(reg) self.0.as_ptr(),
-                options(nostack, preserves_flags, readonly)
-            );
+    pub fn inherit(tid: u64, unpublished: Option<&Self>) -> Result<Self, &'static str> {
+        let mut state = Self::allocate(true)?;
+        crate::arch_without_interrupts(|| {
+            let layout = xstate::layout();
+            let user = state.standard.as_mut().unwrap().bytes_mut();
+            if crate::per_cpu::current_thread_id_lock_free() == Some(tid) && is_live(tid) {
+                snapshot(state.replacement.bytes_mut());
+                layout.export_from(user, state.replacement.bytes(), true);
+            } else if let Some(parent) = unpublished {
+                layout.export(user, parent.saved.bytes());
+            } else {
+                return Err("Cannot snapshot parent xstate without its CPU custody");
+            }
+            let extended = layout.signal_size() > LEGACY_SIZE;
+            assert!(layout.import(
+                state.saved.bytes_mut(),
+                user,
+                extended,
+                xstate::mxcsr_mask()
+            ));
+            Ok(())
+        })?;
+        Ok(state)
+    }
+
+    fn save(&mut self) {
+        save_to(&mut self.saved);
+    }
+
+    fn restore(&self) {
+        restore(self.saved.bytes.as_ptr());
+    }
+
+    fn reset(&mut self, live: bool) {
+        xstate::layout().initial(self.replacement.bytes_mut());
+        if live {
+            restore(self.replacement.bytes.as_ptr());
+        }
+        core::mem::swap(&mut self.saved, &mut self.replacement);
+    }
+
+    fn export(&mut self, live: bool) -> &[u8] {
+        let layout = xstate::layout();
+        let standard = self
+            .standard
+            .as_mut()
+            .expect("user thread xstate scratch")
+            .bytes_mut();
+        if live {
+            snapshot(self.replacement.bytes_mut());
+            layout.export_from(standard, self.replacement.bytes(), true);
+        } else {
+            layout.export(standard, self.saved.bytes());
+        }
+        standard
+    }
+
+    fn import(&mut self, addr: u64, extended: bool, live: bool) -> bool {
+        let layout = xstate::layout();
+        if addr == 0 {
+            self.reset(live);
+            return true;
+        }
+        let length = if extended {
+            layout.signal_size()
+        } else {
+            LEGACY_SIZE
+        };
+        let alignment = if extended { 64 } else { 16 };
+        if addr % alignment != 0 || !crate::memory::layout::is_valid_user_range(addr, length) {
+            return false;
+        }
+        let standard = &mut self
+            .standard
+            .as_mut()
+            .expect("user thread xstate scratch")
+            .bytes_mut()[..length];
+        if crate::syscall::userptr::read_user_bytes(standard.as_mut_ptr(), addr, length).is_err()
+            || !layout.import(
+                self.replacement.bytes_mut(),
+                standard,
+                extended,
+                xstate::mxcsr_mask(),
+            )
+        {
+            return false;
+        }
+        if !live {
+            core::mem::swap(&mut self.saved, &mut self.replacement);
+            return true;
+        }
+        xstate_layout::replace_live(
+            &mut self.saved,
+            &mut self.replacement,
+            &mut (),
+            |_, saved| save_to(saved),
+            |_, incoming| try_restore(incoming.bytes.as_ptr()),
+            |_, saved| restore(saved.bytes.as_ptr()),
+        )
+    }
+}
+
+fn save_to(area: &mut Area) {
+    let layout = xstate::layout();
+    // A standard snapshot is used for signal export. The rollback image is
+    // an ordinary persistent scheduler image and uses its matching backend.
+    let pointer = area.bytes.as_ptr();
+    unsafe {
+        match layout.backend {
+            Backend::Fxsave => {
+                asm!("fxsave64 [{}]", in(reg) pointer, options(nostack, preserves_flags))
+            }
+            Backend::Xsave => xsave(pointer, layout.user),
+            Backend::Xsaveopt => asm!("xsaveopt64 [{}]", in(reg) pointer,
+                in("eax") layout.user as u32, in("edx") (layout.user >> 32) as u32,
+                options(nostack, preserves_flags)),
+            Backend::Xsaves => asm!("xsaves64 [{}]", in(reg) pointer,
+                in("eax") layout.user as u32, in("edx") (layout.user >> 32) as u32,
+                options(nostack, preserves_flags)),
         }
     }
 }
 
-impl core::fmt::Debug for FpuState {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str("FpuState")
+unsafe fn xsave(pointer: *mut u8, mask: u64) {
+    unsafe {
+        asm!("xsave64 [{}]", in(reg) pointer, in("eax") mask as u32, in("edx") (mask >> 32) as u32,
+            options(nostack, preserves_flags));
+    }
+}
+
+fn snapshot(bytes: &mut [u8]) {
+    let layout = xstate::layout();
+    xstate_layout::initialize(bytes, false, 0);
+    unsafe {
+        if layout.backend == Backend::Fxsave {
+            asm!("fxsave64 [{}]", in(reg) bytes.as_mut_ptr(), options(nostack, preserves_flags));
+        } else {
+            xsave(bytes.as_mut_ptr(), layout.user);
+        }
+    }
+}
+
+fn restore(pointer: *const u8) {
+    restore_with(xstate::layout(), pointer);
+}
+
+fn restore_with(layout: &xstate_layout::Layout, pointer: *const u8) {
+    unsafe {
+        match layout.backend {
+            Backend::Fxsave => {
+                asm!("fxrstor64 [{}]", in(reg) pointer, options(nostack, readonly, preserves_flags))
+            }
+            Backend::Xsave | Backend::Xsaveopt => asm!("xrstor64 [{}]", in(reg) pointer,
+                in("eax") layout.user as u32, in("edx") (layout.user >> 32) as u32,
+                options(nostack, readonly, preserves_flags)),
+            Backend::Xsaves => asm!("xrstors64 [{}]", in(reg) pointer,
+                in("eax") layout.user as u32, in("edx") (layout.user >> 32) as u32,
+                options(nostack, readonly, preserves_flags)),
+        }
+    }
+}
+
+// The fault handler matches a kernel #GP(0) at one of these instruction
+// labels and redirects it to the wrapper’s failure return.
+core::arch::global_asm!(
+    r#"
+    .text
+    .global breenix_xrstor_fault
+    .global breenix_fxrstor_fault
+    .global breenix_xrstors_fault
+    .global breenix_xrestore_fixup
+    .global breenix_try_xrestore
+breenix_try_xrestore:
+    mov ecx, edx
+    mov eax, esi
+    mov rdx, rsi
+    shr rdx, 32
+    cmp ecx, 2
+    je 2f
+    test ecx, ecx
+    je 1f
+breenix_xrstor_fault:
+    xrstor64 [rdi]
+    jmp 3f
+1:
+breenix_fxrstor_fault:
+    fxrstor64 [rdi]
+    jmp 3f
+2:
+breenix_xrstors_fault:
+    xrstors64 [rdi]
+3:
+    mov eax, 1
+    ret
+breenix_xrestore_fixup:
+    xor eax, eax
+    ret
+"#
+);
+
+extern "C" {
+    fn breenix_try_xrestore(pointer: *const u8, mask: u64, backend: u32) -> u32;
+    static breenix_xrstor_fault: u8;
+    static breenix_fxrstor_fault: u8;
+    static breenix_xrstors_fault: u8;
+    static breenix_xrestore_fixup: u8;
+}
+
+fn try_restore(pointer: *const u8) -> bool {
+    let layout = xstate::layout();
+    let backend = match layout.backend {
+        Backend::Fxsave => 0,
+        Backend::Xsave | Backend::Xsaveopt => 1,
+        Backend::Xsaves => 2,
+    };
+    unsafe { breenix_try_xrestore(pointer, layout.user, backend) == 1 }
+}
+
+pub fn restore_fixup(rip: u64, code: u64) -> Option<u64> {
+    if code == 0
+        && (rip == core::ptr::addr_of!(breenix_xrstor_fault) as u64
+            || rip == core::ptr::addr_of!(breenix_fxrstor_fault) as u64
+            || rip == core::ptr::addr_of!(breenix_xrstors_fault) as u64)
+    {
+        Some(core::ptr::addr_of!(breenix_xrestore_fixup) as u64)
+    } else {
+        None
+    }
+}
+
+/// The restore operand includes storage for the enabled components
+/// (Intel SDM Vol. 1, §13.13 permits accesses throughout the operand).
+pub struct InitialState(Area);
+
+impl InitialState {
+    pub fn allocate(layout: &xstate_layout::Layout) -> Result<Self, &'static str> {
+        let mut image = Area::allocate(layout.image_size())?;
+        layout.initial(image.bytes_mut());
+        Ok(Self(image))
+    }
+
+    pub fn restore(self, layout: &xstate_layout::Layout) {
+        restore_with(layout, self.0.bytes.as_ptr());
+    }
+}
+
+pub fn start_idle(thread: &mut crate::task::thread::Thread) {
+    thread.fpu_mut().restore();
+    OWNER[crate::per_cpu::cpu_id()].store(thread.id, Ordering::Relaxed);
+}
+
+pub fn frame_size() -> usize {
+    xstate::layout().signal_size()
+}
+
+pub fn minimum_stack() -> usize {
+    use crate::signal::{
+        constants::MINSIGSTKSZ, trampoline::SIGNAL_TRAMPOLINE_SIZE, types::SignalFrame,
+    };
+    MINSIGSTKSZ
+        .max(SignalFrame::SIZE + frame_size() + 63 + SIGNAL_TRAMPOLINE_SIZE + 15 + 15 + 8 + 128)
+}
+
+pub fn export_signal<T>(tid: u64, write: impl FnOnce(&[u8]) -> T) -> Option<T> {
+    crate::arch_without_interrupts(|| {
+        let current = crate::per_cpu::current_thread().filter(|thread| thread.id == tid)?;
+        let live = is_live(tid);
+        Some(write(current.fpu_mut().export(live)))
+    })
+}
+
+pub fn import_signal(tid: u64, addr: u64, extended: bool) -> bool {
+    crate::arch_without_interrupts(|| {
+        let Some(current) = crate::per_cpu::current_thread().filter(|thread| thread.id == tid)
+        else {
+            return false;
+        };
+        current.fpu_mut().import(addr, extended, is_live(tid))
+    })
+}
+
+pub fn reset_current() {
+    crate::arch_without_interrupts(|| {
+        if let Some(current) = crate::per_cpu::current_thread() {
+            let live = is_live(current.id);
+            current.fpu_mut().reset(live);
+        }
+    });
+}
+
+fn is_live(tid: u64) -> bool {
+    let owner = OWNER[crate::per_cpu::cpu_id()].load(Ordering::Relaxed);
+    owner == tid || owner == NO_OWNER
+}
+
+pub fn x87_fault_code() -> i32 {
+    let mut control = 0u16;
+    let status: u16;
+    unsafe {
+        asm!("fnstcw [{}]", in(reg) &mut control as *mut u16, options(nostack, preserves_flags));
+        asm!("fnstsw ax", out("ax") status, options(nostack, preserves_flags));
+    }
+    fault_code(u32::from(status & !control))
+}
+
+pub fn simd_fault_code() -> i32 {
+    let mut mxcsr = 0u32;
+    unsafe { asm!("stmxcsr [{}]", in(reg) &mut mxcsr, options(nostack, preserves_flags)) }
+    fault_code(mxcsr & !(mxcsr >> 7))
+}
+
+fn fault_code(flags: u32) -> i32 {
+    use crate::signal::constants::*;
+    if flags & 0x01 != 0 {
+        FPE_FLTINV
+    } else if flags & 0x04 != 0 {
+        FPE_FLTDIV
+    } else if flags & 0x08 != 0 {
+        FPE_FLTOVF
+    } else if flags & 0x12 != 0 {
+        FPE_FLTUND
+    } else if flags & 0x20 != 0 {
+        FPE_FLTRES
+    } else {
+        FPE_FLTINV
     }
 }
 
@@ -155,7 +428,9 @@ static OWNER: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(NO_OWNER) }; MAX_C
 /// Runs under the scheduler lock, with interrupts masked.
 pub fn hand_over(sched: &mut Scheduler, outgoing: Option<u64>, incoming: u64) {
     hand_over_with(outgoing, incoming, |tid| {
-        sched.get_thread_mut(tid).map(|thread| thread as *mut crate::task::thread::Thread)
+        sched
+            .get_thread_mut(tid)
+            .map(|thread| thread as *mut crate::task::thread::Thread)
     });
 }
 
@@ -174,46 +449,13 @@ pub fn hand_over_with(
     if owner == Some(incoming) {
         return;
     }
+    let Some(next) = thread(incoming) else { return };
     if let Some(holder) = owner.and_then(&mut thread) {
         // SAFETY: the caller's lock covers the thread, and no other reference
         // to it is live here.
-        unsafe { (*holder).fpu.save() };
+        unsafe { (*holder).fpu_mut().save() };
     }
-    if let Some(incoming_thread) = thread(incoming) {
-        // SAFETY: as above.
-        unsafe { (*incoming_thread).fpu.restore() };
-        OWNER[cpu].store(incoming, Ordering::Relaxed);
-    }
-}
-
-/// The x87/SSE state thread `thread_id` returns to user mode with: this
-/// CPU's registers when it holds them, otherwise the image the thread saved
-/// when it gave them up. For the thread running on this CPU, in a syscall or
-/// on an interrupt's return to it.
-pub fn user_state(thread_id: u64) -> FpuState {
-    x86_64::instructions::interrupts::without_interrupts(|| {
-        if OWNER[crate::per_cpu::cpu_id()].load(Ordering::Relaxed) == thread_id {
-            return FpuState::capture();
-        }
-        crate::task::scheduler::with_thread_mut(thread_id, |thread| thread.fpu)
-            .unwrap_or(FpuState::initial())
-    })
-}
-
-/// Set the x87/SSE state thread `thread_id` returns to user mode with, as
-/// `user_state` reads it.
-pub fn set_user_state(thread_id: u64, state: &FpuState) {
-    x86_64::instructions::interrupts::without_interrupts(|| {
-        if OWNER[crate::per_cpu::cpu_id()].load(Ordering::Relaxed) == thread_id {
-            state.restore();
-            return;
-        }
-        crate::task::scheduler::with_thread_mut(thread_id, |thread| thread.fpu = *state);
-    })
-}
-
-/// Load the starting state into this CPU's registers, for a thread whose
-/// program image was just replaced (exec).
-pub fn reset_current() {
-    FpuState::initial().restore();
+    // SAFETY: as above.
+    unsafe { (*next).fpu_mut().restore() };
+    OWNER[cpu].store(incoming, Ordering::Relaxed);
 }
