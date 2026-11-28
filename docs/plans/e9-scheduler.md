@@ -784,6 +784,28 @@ of their steps, keeping each CPU's program order. The steps are sequentially con
     []
 
     ```
+  - **Custody registration against the clear.** A host model races a selecting CPU that finds a thread
+    marked in `switch_save` against the CPU that clears the mark. In no interleaving may the selector
+    pass the thread over and then go unkicked without seeing the mark clear. A tickless idle CPU would
+    otherwise leave the thread queued with nobody to pick it. Red on §3.4 and §3.5 as first written:
+    they skip, then register a waiter, with no recheck after the registration.
+
+    ```pycon
+    >>> SELECTOR = ['see_mark', 'register_waiter']
+    >>> LEAVER = ['clear_mark', 'take_waiters']
+    >>> def stranded(order):
+    ...     mark, waiting, saw_set, kicked, saw_clear = True, False, None, False, False
+    ...     for step in order:
+    ...         if step == 'see_mark': saw_set = mark
+    ...         if step == 'register_waiter': waiting = True
+    ...         if step == 'recheck_mark': saw_clear = not mark
+    ...         if step == 'clear_mark': mark = False
+    ...         if step == 'take_waiters': kicked = waiting
+    ...     return saw_set and not kicked and not saw_clear
+    >>> sum(stranded(order) for order in interleavings(SELECTOR, LEAVER))
+    0
+
+    ```
   - **Release by the acquired identity.** A seam test acquires CPU 1's run-queue lock and forgets the
     guard before the pivot. It then makes `CpuId::current_checked` answer 2 at the pivot. Both the
     retraction fallback and `release_after_pivot` must release CPU 1's lock and leave CPU 2's untouched.
