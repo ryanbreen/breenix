@@ -172,11 +172,19 @@ DMA references until verified completion or quiesced reset. One validated
 user-to-kernel copy fills the TX fragments. Add TCP, IP and link headers in
 headroom and submit a scatter-gather chain within the device's limits.
 Coalesce or segment in software when a device cannot accept the chain.
+For an established connection with capacity in the pools and normal virtio
+scatter-gather, take packet descriptors, heads and backing from the pools.
+The send syscall fills final fragments directly. TCP, IPv4, Ethernet and
+virtio hand off the references through submission without staging another
+copy of the payload. This steady-state segment path requires no heap
+allocation for packet storage.
 
 RX transfers ownership of completed buffers into the stack. Replenish with
 distinct frames before exposing a new descriptor to hardware. Hand fragment
 references through in-order and out-of-order receive queues, then copy directly
-to validated userspace destinations. Reuse the frame only after both device and
+to validated userspace destinations. Pool-backed RX and the receive syscall
+must avoid intermediate payload staging and packet-storage heap allocation
+when resources are available. Reuse the frame only after both device and
 stack have released it. Bounded descriptor pools and fallible refill keep
 failure local. A failed TX reservation leaves bytes with the caller or socket.
 RX exhaustion accounts for each drop and leaves capacity for refill and control
@@ -438,6 +446,10 @@ concurrency, loss or RTT named in the prediction.
 - Count all connection visits in a timer pass because today's `run_timers`
   scans live sockets and invokes forced reaping, even though
   `note_timer_deadline` already wakes the worker for an earlier arm.
+- Count payload copies and fresh packet-storage allocations on the virtio
+  scatter-gather path because today's TCP, IPv4 and Ethernet builders allocate
+  contiguous packets and virtio makes a separate DMA-buffer copy that already
+  survives an early ACK.
 - Use RFC 9438 and RFC 9937 for implementation details where they supersede
   RFC 8312 and RFC 6937 because those newer texts specify the current CUBIC and
   PRR behavior.
