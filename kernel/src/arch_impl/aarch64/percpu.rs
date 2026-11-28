@@ -318,15 +318,6 @@ fn read_tpidr_el1() -> u64 {
     val
 }
 
-/// This CPU's logical id from its per-CPU data. While TPIDR_EL1 is still 0,
-/// before `per_cpu_aarch64::init_cpu` has run on this CPU, there is no id.
-/// Unlike `cpu_id`, it does not fall back to MPIDR_EL1, whose Aff0 need not
-/// be the logical id.
-#[inline(always)]
-pub fn named_cpu_id() -> Option<u64> {
-    (read_tpidr_el1() != 0).then(|| percpu_read_u64(PERCPU_CPU_ID_OFFSET))
-}
-
 /// Write TPIDR_EL1 (per-CPU data base pointer)
 #[inline(always)]
 unsafe fn write_tpidr_el1(val: u64) {

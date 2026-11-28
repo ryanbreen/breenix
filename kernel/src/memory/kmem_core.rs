@@ -358,11 +358,17 @@ impl Default for Stats {
 
 /// The logical CPU that a per-CPU base register's value `base` names, for
 /// the slab layer's slot lookup (5.4a). The per-CPU array starts at `first`
-/// and holds `count` entries `stride` bytes apart.
+/// and holds `count` entries `stride` bytes apart. Only the address of entry
+/// `n` names CPU `n`. Any other value names no CPU and is never read
+/// through: 0, or whatever firmware left in a register whose reset value is
+/// UNKNOWN (ARM64's TPIDR_EL1).
 pub fn cpu_of_base(base: u64, first: u64, stride: u64, count: usize) -> Option<usize> {
-    // Today's rule: any nonzero value names the CPU recorded at that address.
-    let _ = count;
-    (base != 0).then(|| (base.wrapping_sub(first) / stride.max(1)) as usize)
+    let offset = base.checked_sub(first)?;
+    if stride == 0 || offset % stride != 0 {
+        return None;
+    }
+    let index = usize::try_from(offset / stride).ok()?;
+    (index < count).then_some(index)
 }
 
 /// The emergency reserve's size for a heap of `heap_frames` frames: half of

@@ -56,12 +56,17 @@ pub(super) fn cpu_number() -> usize {
 }
 
 /// The executing CPU's logical number from its own per-CPU data. A CPU
-/// cannot name itself on ARM64 before its TPIDR_EL1 is set, and on x86-64
-/// before the boot CPU's per-CPU data exists; such a CPU takes the slab
-/// layer's shared path (5.4a).
+/// cannot name itself on ARM64 before `per_cpu_aarch64::init_cpu` points its
+/// TPIDR_EL1 at its entry of the per-CPU array, and on x86-64 before the
+/// boot CPU's per-CPU data exists; such a CPU takes the slab layer's shared
+/// path (5.4a). TPIDR_EL1's reset value is UNKNOWN, so on ARM64 the value is
+/// only compared with the array's entries, never read through.
 fn named_cpu() -> Option<usize> {
     #[cfg(target_arch = "aarch64")]
-    return crate::arch_impl::aarch64::percpu::named_cpu_id().map(|cpu| cpu as usize);
+    return {
+        let (first, stride, count) = crate::per_cpu_aarch64::cpu_data_array();
+        core_impl::cpu_of_base(crate::arch_impl::aarch64::percpu::percpu_base(), first, stride, count)
+    };
     #[cfg(target_arch = "x86_64")]
     return crate::per_cpu::is_initialized().then(crate::per_cpu::cpu_id);
 }
