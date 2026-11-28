@@ -421,7 +421,18 @@
    "error": "an I/O error to the request",
    "rollback": "before the request is submitted; no partial request",
    "functions": [
+    "VirtioBlockDevice::transfer",
     "init"
+   ]
+  },
+  {
+   "file": "kernel/src/drivers/virtio/block_mmio.rs",
+   "owner": "E1-18",
+   "error": "an I/O error to the request",
+   "rollback": "before the request is submitted; no partial request",
+   "functions": [
+    "report_queue_state",
+    "transfer"
    ]
   },
   {
