@@ -618,4 +618,33 @@ impl<M: Pool, R: Pool, S: Small> Front<'_, M, R, S> {
     pub fn resizes_in_place(&self, ptr: NonNull<u8>, old: Layout, new: Layout) -> bool {
         !self.reserve.contains(ptr) && !self.main.contains(ptr) && self.small.same_object(old, new)
     }
+
+    /// `GlobalAlloc::realloc`: `ptr`, allocated for `layout`, as a block of
+    /// `new_size` bytes with the same alignment. A block that keeps its place
+    /// is returned as is; otherwise a new block is allocated in `Normal`, the
+    /// bytes both sizes hold are copied, and the old block is freed.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` came from `allocate` for `layout`, is not freed twice, and
+    /// `new_size` rounded up to `layout.align()` does not overflow `isize`.
+    pub unsafe fn reallocate<C: Cpu>(
+        &self,
+        ptr: NonNull<u8>,
+        layout: Layout,
+        new_size: usize,
+        cpu: &C,
+    ) -> Result<NonNull<u8>, AllocError> {
+        let new_layout = unsafe { Layout::from_size_align_unchecked(new_size, layout.align()) };
+        if self.resizes_in_place(ptr, layout, new_layout) {
+            return Ok(ptr);
+        }
+        let new_ptr = self.allocate(new_layout, Ctx::Normal, cpu)?;
+        // The copy is private to the caller; it holds no allocator lock.
+        unsafe {
+            core::ptr::copy_nonoverlapping(ptr.as_ptr(), new_ptr.as_ptr(), layout.size().min(new_size));
+            self.deallocate(ptr, layout);
+        }
+        Ok(new_ptr)
+    }
 }

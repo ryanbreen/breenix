@@ -334,3 +334,37 @@ fn shrinkers_run_in_cost_order_and_stop_at_the_target() {
     let order = ORDER.with(|order| order.borrow().clone());
     assert_eq!(order, [("cheap", 9), ("middle", 6)], "a shrinker ran out of cost order or after the target was met");
 }
+
+/// Check first (E1 plan, E1-7): a heap_index block with a free extent after
+/// it. `realloc` to a larger size keeps the block's address when the extent
+/// after it holds the growth, and a shrink keeps it too and gives the tail
+/// back. The old realloc allocates a new block and copies on each call, so
+/// both pointers move.
+#[test]
+fn a_block_with_free_space_after_it_is_resized_in_place() {
+    let main = Arena::new(ARENA_BYTES);
+    let reserve = Arena::new(RESERVE_BYTES);
+    let (shrinkers, reclaim, stats) = (Registry::new(), Reclaim::new(), Stats::new());
+    let front = Front { main: &main, reserve: &reserve, small: &NoSmall, shrinkers: &shrinkers, reclaim: &reclaim, stats: &stats };
+    let cpu = SimCpu { interrupt: false };
+    let layout = Layout::from_size_align(8192, 8).unwrap();
+    let ptr = front.allocate(layout, Ctx::Normal, &cpu).unwrap();
+    let bytes = |ptr: NonNull<u8>, len: usize| unsafe { std::slice::from_raw_parts(ptr.as_ptr(), len).to_vec() };
+    let pattern: Vec<u8> = (0..8192).map(|i| (i * 7 + 3) as u8).collect();
+    unsafe { std::ptr::copy_nonoverlapping(pattern.as_ptr(), ptr.as_ptr(), pattern.len()) };
+
+    let grown = unsafe { front.reallocate(ptr, layout, 3 * 8192, &cpu) }.unwrap();
+    assert_eq!(grown, ptr, "a block with a free extent after it moved when it grew");
+    assert_eq!(bytes(grown, 8192), pattern);
+    let used = main.lock.lock().used();
+
+    let grown_layout = Layout::from_size_align(3 * 8192, 8).unwrap();
+    let shrunk = unsafe { front.reallocate(grown, grown_layout, 4096, &cpu) }.unwrap();
+    assert_eq!(shrunk, ptr, "a block moved when it shrank");
+    assert_eq!(bytes(shrunk, 4096), pattern[..4096]);
+    assert_eq!(used - main.lock.lock().used(), 3 * 8192 - 4096, "the shrink gave its tail back");
+
+    unsafe { front.deallocate(shrunk, Layout::from_size_align(4096, 8).unwrap()) };
+    let heap = main.lock.lock();
+    assert_eq!((heap.used(), heap.free_shape()), (0, (1, ARENA_BYTES as u32)), "the heap coalesced whole");
+}
