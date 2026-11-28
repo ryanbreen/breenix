@@ -1978,6 +1978,26 @@ queued window whose pages it had claimed.
 
 ```
 
+**Before E3-11, reclaim keeps every page a binding or a population covers (12.2).** An eagerly populated <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+mapping has not touched page 0 yet, so its PTE count is 0. Faults cannot fill before E3-11, and an mlocked
+page must stay resident in any case.
+
+```pycon
+>>> RULE = 'leaf-refs-zero'
+>>> page = {'leaf_refs': 0, 'covered': True, 'mlocked': False}
+>>> def reclaimable(p, faults_fill):
+...     if RULE == 'leaf-refs-zero':
+...         return p['leaf_refs'] == 0
+...     if p['mlocked'] or p['leaf_refs']:
+...         return False
+...     return faults_fill or not p['covered']
+>>> (reclaimable(page, faults_fill=False), reclaimable(page, faults_fill=True))
+(False, True)
+>>> reclaimable(dict(page, mlocked=True), faults_fill=True)
+False
+
+```
+
 ## 20. bbench rows (DEV-31)
 
 | Row | Ratio (28668b28) | Expected to move in | Parity reachable from E3 alone |
