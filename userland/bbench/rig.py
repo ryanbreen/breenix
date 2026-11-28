@@ -596,10 +596,7 @@ class Rig:
         disk = self.run_dir / "breenix-disk.raw"
         # Hold off writers while taking and verifying the run's private copies.
         with cache_lock(WORKTREE_CACHE / ".lock"):
-            if not BREENIX_KEY.is_file():
-                raise ValueError(f"missing {BREENIX_KEY}: run build-breenix")
-            if BREENIX_IMAGE.exists() and BREENIX_IMAGE.stat().st_size != DISK_BYTES:
-                raise ValueError(f"{BREENIX_IMAGE} must be {DISK_BYTES // MIB} MiB: run build-breenix")
+            check_breenix_key_and_image()
             self.build, self.inputs = snapshot_inputs(BUILD_STAMP, commit, BREENIX_ARTIFACTS,
                                                       self.run_dir / "inputs")
             self.inputs.pop(BREENIX_IMAGE).rename(disk)
@@ -1136,6 +1133,17 @@ def read_build_stamp(stamp, head):
     return record
 
 
+def check_breenix_key_and_image():
+    if not BREENIX_KEY.is_file():
+        raise ValueError(f"missing {BREENIX_KEY}: run build-breenix")
+    try:
+        size = BREENIX_IMAGE.stat().st_size
+    except FileNotFoundError:
+        raise ValueError(f"missing Breenix input {BREENIX_IMAGE}: run build-breenix") from None
+    if size != DISK_BYTES:
+        raise ValueError(f"{BREENIX_IMAGE} must be {DISK_BYTES // MIB} MiB: run build-breenix")
+
+
 def check_artifacts(record, artifacts, copies=None):
     """Refuse any artifact (or its copy in `copies`) whose SHA-256 is not the record's."""
     copies = copies or {}
@@ -1287,6 +1295,9 @@ def cli(argv):
     if git("status", "--porcelain", "--untracked-files=no"):
         parser.error("commit the tree first: the series record its commit")
     commit = git("rev-parse", "HEAD")
+    # Refuse an unprepared build before reserving the run ID.
+    read_build_stamp(BUILD_STAMP, commit)
+    check_breenix_key_and_image()
     rig = Rig(args, commit)
     try:
         rig.run()

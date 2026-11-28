@@ -75,9 +75,11 @@ kernel, the BreenFS image and the four bbench binaries. The macOS converter's
 Docker build volume uses the same worktree hash. Run `build-breenix` once per
 worktree to populate this cache.
 
-Before either guest boots, `run` takes the same lock, reads the stamp, checks that
-it names the measured HEAD, clones each artifact and checks the clones against
-the stamp. The verified image copy becomes `runs/<run>/breenix-disk.raw`, so no
+Before reserving the run ID, `run` checks the stamp against HEAD and checks the
+test SSH key and image size so a refused run can reuse the ID after a build.
+Before either guest boots, `run` repeats those checks under the worktree lock,
+clones each artifact and checks the clones against the stamp.
+The verified image copy becomes `runs/<run>/breenix-disk.raw`, so no
 second image copy is needed in `inputs/`. The run releases the lock after the
 snapshot. Both the initial boot and any restart use those private inputs, and the
 sidecar records the verified stamp (`test_rig.BuildIdentity`).
