@@ -246,6 +246,38 @@ or next-deadline selection. Use the wheel's populated buckets to find the next
 deadline. Measure pacing resolution before making it the default.
 [Varghese and Lauck, Hashed and Hierarchical Timing Wheels](https://www.cs.columbia.edu/~nahum/w6998/papers/sosp87-timing-wheels.pdf).
 
+### Lock order pending coordinator ruling
+
+The current TCP table lock serializes state, index changes and listener
+admission. Splitting it introduces the order below. PRs 6, 7, 11 and 12
+require a coordinator ruling on it under DEV-39(2).
+
+- A socket owner may take its own backlog gate while holding socket state for
+  the empty-check and release handoff. RX enqueues under the gate and drops it
+  before trying state ownership or scheduling a drain.
+- A socket owner may take the timer-wheel lock while holding socket state to
+  update the entry and its generation. The wheel worker dequeues and drops
+  the wheel lock before locking the socket. The gate and wheel never nest.
+- TCP index writers take bind, listener, then established shards, in
+  ascending shard number within each table, once per distinct shard. Index
+  locks never nest with socket or listener state. Pin the identity before
+  dropping the lookup shard and revalidate its generation under state
+  ownership.
+- Listener state and child state never nest. The listener owns the queue
+  reservation and decides whether to accept or cancel it. Child promotion
+  publishes through the reservation after releasing child state and checks
+  the listener generation. Close detaches pending children under listener
+  state and then retires each detached child separately.
+- Take the global memory-budget lock and UDP bucket writer locks in isolation.
+  Reserve budget before locking state, revalidate the socket before attaching
+  it, and return unused credit after dropping state. Defer budget-release
+  wakes until all locks are dropped. Publish UDP bucket snapshots before
+  taking any socket state lock. Receive readers pin a reference from a
+  snapshot and revalidate before delivery.
+
+These are the only nestings proposed among E10 network locks. Routing,
+device submission and notifications run after the network locks are released.
+
 ### Socket memory, readiness and local delivery
 
 Charge actual frame-backed capacity and descriptor metadata to per-socket and
