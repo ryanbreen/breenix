@@ -560,26 +560,135 @@ mod tests {
         }
     }
 
+    fn wait_for(pid: i32) -> i32 {
+        assert!(pid > 0);
+        let mut status = 0;
+        assert_eq!(unsafe { waitpid(pid, &mut status, 0) }, pid);
+        status
+    }
+
+    /// Hold the lock on another thread, inside a fresh arena's mapping, until
+    /// `release` runs. Returns that thread's block and whether `release` saw a
+    /// contender reach the futex wait first.
+    fn hold_on_another_thread(
+        class: usize,
+        release: impl FnOnce() -> bool + Send + 'static,
+    ) -> (std::thread::JoinHandle<(usize, usize, bool)>, std::sync::mpsc::Receiver<()>) {
+        let (held, entered) = std::sync::mpsc::sync_channel(0);
+        let holder = std::thread::spawn(move || unsafe {
+            let mut waited = false;
+            let (p, tag) = take(class, |len| {
+                held.send(()).unwrap();
+                waited = release();
+                map(len)
+            })
+            .unwrap();
+            (p.addr(), tag, waited)
+        });
+        (holder, entered)
+    }
+
     #[test]
-    fn raw_fork_recovers_the_lock_and_preserves_live_slots() {
+    fn raw_fork_recovers_a_lock_held_by_a_parent_thread() {
         let _test = TEST_LOCK.lock().unwrap();
         let (live, tag) = unsafe { take(0, map) }.unwrap();
         unsafe { live.write(0xa5) };
-        let guard = Guard::acquire().unwrap();
+        let (go, wait) = std::sync::mpsc::sync_channel::<()>(0);
+        let held = class(2048).unwrap();
+        let (holder, entered) = hold_on_another_thread(held, move || wait.recv().is_err());
+        entered.recv().unwrap();
+        // The child's only thread did not hold the lock; its owner is gone.
         let pid = unsafe { fork() };
-        assert!(pid >= 0);
         if pid == 0 {
             let valid = unsafe { take(0, no_mapping) }.is_some_and(|(other, other_tag)| {
                 other != live && other_tag == tag && unsafe { live.read() } == 0xa5
             });
             unsafe { _exit(if valid { 0 } else { 1 }) };
         }
-        drop(guard);
-        let mut status = 0;
-        assert_eq!(unsafe { waitpid(pid, &mut status, 0) }, pid);
-        assert_eq!(status, 0);
+        assert_eq!(wait_for(pid), 0);
+        drop(go);
+        let (p, held_tag, _) = holder.join().unwrap();
+        unsafe {
+            put(held_tag, ptr::with_exposed_provenance_mut(p), unmap);
+            put(tag, live, unmap);
+            assert_eq!(drain(unmap, no_discard), 2);
+        }
+    }
+
+    #[test]
+    fn fork_from_a_handler_keeps_the_interrupted_owner() {
+        let _test = TEST_LOCK.lock().unwrap();
+        let (live, tag) = unsafe { take(0, map) }.unwrap();
+        // A signal handler interrupted this thread's own allocator call, and forks.
+        let frame = Guard::acquire().unwrap();
+        let fork_guard = before_fork();
+        assert!(fork_guard.is_none());
+        let pid = unsafe { fork() };
+        if pid == 0 {
+            // A raw fork's first allocation, then libc's child hook. Neither may
+            // enter while the interrupted call still owns the arenas.
+            let raw_kept = unsafe { take(0, no_mapping) }.is_none();
+            unsafe { after_fork(crate::getpid() as u32) };
+            let hook_kept = unsafe { take(0, no_mapping) }.is_none();
+            // The handler returns; the interrupted call finishes and releases.
+            drop(frame);
+            let resumed = unsafe { take(0, no_mapping) }.is_some();
+            unsafe { _exit(i32::from(!raw_kept) | i32::from(!hook_kept) << 1 | i32::from(!resumed) << 2) };
+        }
+        drop(frame);
+        assert_eq!(wait_for(pid), 0, "child status: 1 raw fork, 2 hook, 4 release (<<8)");
         unsafe {
             put(tag, live, unmap);
+            assert_eq!(drain(unmap, no_discard), 1);
+        }
+    }
+
+    #[test]
+    fn fork_child_releases_the_guard_that_fork_held() {
+        let _test = TEST_LOCK.lock().unwrap();
+        let (live, tag) = unsafe { take(0, map) }.unwrap();
+        let fork_guard = before_fork().unwrap();
+        let pid = unsafe { fork() };
+        if pid == 0 {
+            core::mem::forget(fork_guard);
+            unsafe { after_fork(crate::getpid() as u32) };
+            let entered = unsafe { take(0, no_mapping) }.is_some();
+            unsafe { _exit(if entered { 0 } else { 1 }) };
+        }
+        drop(fork_guard);
+        assert_eq!(wait_for(pid), 0);
+        unsafe {
+            put(tag, live, unmap);
+            assert_eq!(drain(unmap, no_discard), 1);
+        }
+    }
+
+    #[test]
+    fn stale_pid_contention_waits_for_a_live_owner() {
+        let _test = TEST_LOCK.lock().unwrap();
+        initialize_process();
+        let current = PROCESS.load(Relaxed);
+        // A raw fork child records its parent's pid until it meets contention.
+        PROCESS.store(current ^ 0x4000_0000, Relaxed);
+        let (notify, event) = std::sync::mpsc::sync_channel(0);
+        let held = class(2048).unwrap();
+        let (holder, entered) = hold_on_another_thread(held, move || event.recv().unwrap());
+        entered.recv().unwrap();
+        *crate::CONTENDED.lock().unwrap() = Some(notify);
+        let (p, tag) = unsafe {
+            take(held, |len| {
+                crate::report_contended(false);
+                map(len)
+            })
+        }
+        .unwrap();
+        let (first, first_tag, waited) = holder.join().unwrap();
+        PROCESS.store(current, Relaxed);
+        assert!(waited, "contender entered while a live thread held the lock");
+        assert_eq!(tag, first_tag);
+        unsafe {
+            put(tag, p, unmap);
+            put(first_tag, ptr::with_exposed_provenance_mut(first), unmap);
             assert_eq!(drain(unmap, no_discard), 1);
         }
     }
