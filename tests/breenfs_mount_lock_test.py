@@ -238,37 +238,46 @@ class MountLockMechanism(unittest.TestCase):
             assert_sleeping_state(spin_state)
 
     def test_kernel_park_waits_on_a_checked_bounded_queue(self):
+        # E2.2: the park goes through the park contract (task::park), which
+        # refuses a context that may not sleep; only that refusal spins.
         park = kernel_arm(self.lock, 'park')
-        self.assertIn('if !can_sleep()', park, 'park must spin only where it cannot sleep')
-        self.assertRegex(park, r'prepare_to_wait_checked\(\s*ThreadState::BlockedOnIO\s*,\s*Some\(deadline\)')
-        self.assertRegex(park, r'\|\|\s*\{?\s*self\.held\.load\(Ordering::SeqCst\)',
+        self.assertRegex(park, r'Err\(_\)\s*=>\s*core::hint::spin_loop\(\)',
+                         'park must spin only where it cannot sleep')
+        self.assertRegex(park, r'park::wait_allowing_boot_idle\(\s*&self\.queue\s*,')
+        self.assertRegex(park, r'\|\|\s*!self\.held\.load\(Ordering::SeqCst\)\s*,\s*Some\(deadline\)',
                          'the enqueue must recheck the lock under the queue lock')
         self.assertNotRegex(self.lock, r'\.prepare_to_wait\(', 'untimed prepare_to_wait')
-        self.assertIn('schedule_current_wait()', park)
-        self.assertIn('finish_wait()', park)
+        self.assertNotIn('fn can_sleep', self.lock, 'the park contract decides, not a private predicate')
         # The release can miss a contender only if the announce precedes the
         # recheck on the contender's side.
-        self.assertLess(park.index('self.parked.fetch_add(1, Ordering::SeqCst)'),
-                        park.index('prepare_to_wait_checked'))
+        self.assertLess(park.index('park::announce(&self.parked)'),
+                        park.index('park::wait_allowing_boot_idle('))
+        self.assertLess(park.index('park::wait_allowing_boot_idle('),
+                        park.index('park::withdraw(&self.parked)'))
 
     def test_release_clears_the_lock_before_waking(self):
         release = function(self.lock, 'release')
         store = release.index('self.held.store(false, Ordering::SeqCst)')
         self.assertLess(store, release.index('self.parked.load(Ordering::SeqCst)'))
+        # The kernel's release has the waker's barrier (design §3.4).
+        self.assertLess(store, release.index('crate::task::park::should_wake(&self.parked)'))
         self.assertLess(store, release.index('self.wake()'))
         drop = function(self.lock[self.lock.index('impl<T> Drop for MountGuard'):], 'drop')
         self.assertIn('self.lock.release()', drop)
 
     def test_x86_can_sleep_does_not_require_interrupts(self):
         # x86 syscalls run with IF=0; requiring interrupts would make the park
-        # unreachable there (ext2 #728 review finding B1).
-        can_sleep = kernel_arm(self.raw_lock, 'can_sleep')
-        x86 = can_sleep[can_sleep.index('#[cfg(target_arch = "x86_64")]'):]
-        aarch64 = can_sleep[:can_sleep.index('#[cfg(target_arch = "x86_64")]')]
-        self.assertNotIn('interrupts_enabled', x86)
-        self.assertIn('preempt_count() <= 1', x86)
-        self.assertIn('interrupts_enabled()', aarch64)
-        self.assertIn('preempt_count() <= 1', aarch64)
+        # unreachable there (ext2 #728 review finding B1). Under the park
+        # contract an x86 syscall's baseline masks interrupts, and a masked
+        # context is refused only when its baseline does not mask them;
+        # tools/park-host-tests checks the decision over its whole input space.
+        park = (ROOT / 'kernel/src/task/park.rs').read_text()
+        self.assertIn('baseline_irqs_masked.store(cfg!(target_arch = "x86_64"), Ordering::Relaxed)',
+                      function(park, 'enter_syscall'))
+        core = (ROOT / 'kernel/src/task/park_core.rs').read_text()
+        self.assertRegex(function(core, 'classify'),
+                         r'if inputs\.irqs_masked && !inputs\.baseline_irqs_masked \{\s*'
+                         r'return ParkContext::Atomic\(IrqsMasked\);')
 
 
 if __name__ == '__main__':

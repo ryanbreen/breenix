@@ -2106,8 +2106,10 @@ fn run_test_loader() {
     // between binaries, stretching loading to tens of seconds. The pin keeps
     // the loader on its CPU except while it sleeps on a block read, the same
     // shape as a syscall: the completion wait releases the pin while it
-    // sleeps and retakes it on wake, on whichever CPU that is.
-    kernel::per_cpu_aarch64::preempt_disable();
+    // sleeps and retakes it on wake, on whichever CPU that is. The pin is a
+    // `park::Braked` guard (E2.2, design §3.2): it raises the loader's park
+    // baseline with its depth, so its waits are a sleepable context.
+    let braked = kernel::task::park::Braked::new();
     // Tests start running and exiting while later binaries are still being
     // read, so the suite only counts as finished once loading has ended.
     #[cfg(feature = "btrt")]
@@ -2115,7 +2117,7 @@ fn run_test_loader() {
     load_test_binaries_from_ext2();
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::end_loading();
-    kernel::per_cpu_aarch64::preempt_enable();
+    drop(braked);
     splash::stage(Stage::StartingPid1);
     splash::first_process_started();
     serial_println!("[test] Test processes loaded - will run via timer interrupts");
@@ -2205,9 +2207,9 @@ fn load_test_binaries_from_ext2() {
             |#[cfg_attr(not(feature = "boot_tests"), allow(unused_variables))] pid| {
                 #[cfg(feature = "boot_tests")]
                 if core::mem::take(&mut process_context_pending) {
-                    kernel::per_cpu_aarch64::preempt_enable();
-                    let failures = kernel::test_framework::advance_to_process_context(pid);
-                    kernel::per_cpu_aarch64::preempt_disable();
+                    let failures = kernel::task::park::without_braked(|| {
+                        kernel::test_framework::advance_to_process_context(pid)
+                    });
                     if failures > 0 {
                         serial_println!("[boot_tests] {} ProcessContext test(s) failed", failures);
                     }

@@ -1,0 +1,16 @@
+[package]
+name = "park-host-tests"
+version = "0.1.0"
+edition = "2021"
+
+# Host model of the park contract (E2.2). It compiles kernel/src/task/park_core.rs
+# and event_queue.rs unchanged and drives them against a recording scheduler.
+# Run: cargo test --manifest-path tools/park-host-tests/Cargo.toml
+
+[workspace]
+
+[dependencies]
+spin = "0.9.8"
+
+[lib]
+doctest = false

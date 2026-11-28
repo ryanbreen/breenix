@@ -14,10 +14,12 @@
 //!   1. The two park-capable acquisition paths (`ext2_acquire`,
 //!      `ext2_acquire_write`) are gated by `ext2_lock_can_sleep()` and keep
 //!      a spin fallback for when it returns false (C1).
-//!   2. `ext2_lock_can_sleep()`'s x86 arm never regains an
-//!      `interrupts_enabled()` conjunct (the exact regression review B1
-//!      found: that conjunct makes the park path unreachable from every
-//!      x86 syscall), while the aarch64 arm keeps it (C3).
+//!   2. x86 syscalls, which run with IF=0, can still park, while an
+//!      IRQ-masked caller on aarch64 is refused (C3). Since E2.2,
+//!      `ext2_lock_can_sleep()` is the park contract's decision
+//!      (`task::park::sleepable_braked`), so this is pinned there: an x86
+//!      syscall's park baseline masks IRQs, and `classify` refuses a masked
+//!      context only when its baseline does not.
 //!   3. `Ext2ReadGuard`/`Ext2WriteGuard::drop` release the inner guard
 //!      before waking waiters — `EXT2_STATE` released before `WAITQUEUE`
 //!      is touched (C9).
@@ -41,12 +43,13 @@
 //!      uses, closing M3's second blind spot (a new raw `.read()`/`.write()`
 //!      call site outside `is_mounted`/`is_home_mounted`/`home_mount_id`
 //!      would not have been caught).
-//!   8. `ext2_lock_can_sleep()`'s x86 arm checks `preempt_count() == 1`
-//!      exactly, not `> 0` or `>= 1` — pinning the liveness dependency
-//!      documented in `mod.rs` (review finding M2): a parked `BlockedOnIO`
-//!      x86 thread can only be scheduled away via `can_schedule()`'s
-//!      `preempt_count == 0` clause, which only `schedule_current_wait()`'s
-//!      single `preempt_enable()` can reach from exactly 1.
+//!   8. The gate admits exactly one held level -- not `> 0` or `>= 1` --
+//!      pinning the liveness dependency documented in `mod.rs` (review
+//!      finding M2): a parked `BlockedOnIO` x86 thread can only be scheduled
+//!      away via `can_schedule()`'s `preempt_count == 0` clause, which only
+//!      `schedule_current_wait()`'s single release can reach from exactly 1.
+//!      Since E2.2 that is `sleepable_braked`'s `baseline() == 1` with
+//!      `classify`'s depth-equals-baseline rule.
 //!
 //! Added by the #748 second-best-fix round (x86 oracle pace is
 //! pathological; this gives a park-path fact an early exit, not a
@@ -74,6 +77,12 @@
 //!       reset silently reverting to whole-boot-first semantics, which
 //!       the other checks do not pin (the reset call lives outside
 //!       `mod.rs`).
+//!
+//! Added with E2.2's park contract:
+//!   12. `holder_fn()` and `contender_fn()` (`lock_race.rs`) hold a
+//!       `park::Braked` guard and take no bare `preempt_disable()` -- the
+//!       gate now admits only depth == baseline, so a bare brake turns the
+//!       oracle's park path into a poll and a spin.
 
 use std::fs;
 use std::path::PathBuf;
@@ -305,35 +314,60 @@ fn validate_park_capable_with_spin_fallback(body: &str, spin_marker: &str) -> Re
     Ok(())
 }
 
-/// B1/C3: `ext2_lock_can_sleep()`'s aarch64 arm must keep its
-/// `interrupts_enabled()` gate (load-bearing for C3's IRQ-masked site); its
-/// x86 arm must never regain one (that conjunct is unconditionally false in
-/// every x86 syscall, which is exactly the regression the review's B1
-/// finding identified as making the whole fix a no-op on x86).
-fn validate_can_sleep_arch_split(fn_body: &str) -> Result<(), String> {
-    let aarch64_block = block_after(fn_body, "#[cfg(target_arch = \"aarch64\")]");
-    let x86_block = block_after(fn_body, "#[cfg(not(target_arch = \"aarch64\"))]");
+/// E2.2: the gate asks the park contract and does not decide by hand.
+fn validate_gate_is_park_contract(fn_body: &str) -> Result<(), String> {
+    let mask = code_mask(fn_body);
+    if identifier_offsets(fn_body, &mask, "sleepable_braked").is_empty() {
+        return Err("the gate no longer asks the park contract (task::park::sleepable_braked)".to_string());
+    }
+    // Substrings, so `arch_interrupts_enabled` and the like count too.
+    for by_hand in ["preempt_count", "interrupts_enabled", "in_interrupt"] {
+        if !code_offsets(fn_body, &mask, by_hand).is_empty() {
+            return Err(format!("the gate decides by hand again ({by_hand})"));
+        }
+    }
+    Ok(())
+}
 
-    let aarch64_mask = code_mask(aarch64_block);
-    if identifier_offsets(aarch64_block, &aarch64_mask, "interrupts_enabled").is_empty() {
+/// B1/C3 at the park contract: an x86 syscall's baseline masks IRQs, so an
+/// IF=0 syscall is not refused (review B1), and a masked context is refused
+/// only when its baseline does not mask them, so an IRQ-masked aarch64
+/// caller is (C3).
+fn validate_irq_rule(enter_syscall: &str, classify: &str) -> Result<(), String> {
+    let mask = code_mask(enter_syscall);
+    if code_offsets(enter_syscall, &mask, "baseline_irqs_masked.store(cfg!(target_arch = \"x86_64\")").is_empty() {
         return Err(
-            "aarch64 arm lost its interrupts_enabled() gate — an IRQ-masked caller (C3) is \
-             no longer provably refused"
+            "x86 syscall entry no longer records an IRQ-masked baseline: every x86 syscall runs \
+             with IF=0 (syscall/entry.asm's cli), so the park path is unreachable from x86 \
+             syscalls again (#728 review round-2 B1)"
                 .to_string(),
         );
     }
-
-    let x86_mask = code_mask(x86_block);
-    if !identifier_offsets(x86_block, &x86_mask, "interrupts_enabled").is_empty() {
+    let mask = code_mask(classify);
+    if code_offsets(classify, &mask, "inputs.irqs_masked && !inputs.baseline_irqs_masked").is_empty() {
         return Err(
-            "non-aarch64 arm regained an interrupts_enabled() conjunct — RFLAGS.IF is \
-             unconditionally 0 for the duration of every x86 syscall (syscall/entry.asm's cli, \
-             no sti before rust_syscall_handler), so this makes the park path unreachable from \
-             every x86 syscall site again (#728 review round-2 B1)"
+            "classify no longer refuses a masked context whose baseline does not mask IRQs: an \
+             IRQ-masked caller (C3) is no longer provably refused"
                 .to_string(),
         );
     }
+    Ok(())
+}
 
+/// M2 at the park contract: exactly one level, the braked baseline.
+fn validate_exactly_one_level(sleepable_braked: &str, classify: &str) -> Result<(), String> {
+    let mask = code_mask(sleepable_braked);
+    if code_offsets(sleepable_braked, &mask, "baseline() == 1").is_empty() {
+        return Err(
+            "sleepable_braked no longer requires the exact one-level baseline this gate's x86 \
+             liveness argument depends on (review round-2 finding M2)"
+                .to_string(),
+        );
+    }
+    let mask = code_mask(classify);
+    if code_offsets(classify, &mask, "if inputs.depth != inputs.baseline").is_empty() {
+        return Err("classify no longer requires the depth to equal the baseline (exact, M2)".to_string());
+    }
     Ok(())
 }
 
@@ -449,25 +483,6 @@ fn validate_no_raw_ext2_rw_file_wide(source: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Closure-round property 8 (M2): the x86 arm's preempt_count check must be
-/// the exact `== 1` the predicate's x86 liveness argument depends on (see
-/// `ext2_lock_can_sleep`'s own doc comment in `mod.rs`) — `> 0`/`>= 1` would
-/// still enter the park loop but could leave `preempt_count()` at 1 on
-/// return from `schedule_current_wait()`'s single `preempt_enable()`, which
-/// `can_schedule()`'s only reachable clause for a parked `BlockedOnIO`
-/// thread requires to be exactly 0.
-fn validate_x86_preempt_count_predicate_is_exact_one(fn_body: &str) -> Result<(), String> {
-    let x86_block = block_after(fn_body, "#[cfg(not(target_arch = \"aarch64\"))]");
-    let mask = code_mask(x86_block);
-    if !code_offsets(x86_block, &mask, "preempt_count() == 1").is_empty() {
-        return Ok(());
-    }
-    Err(
-        "x86 arm's preempt_count() check is not the exact `== 1` this predicate's x86 liveness \
-         argument depends on (review round-2 finding M2)"
-            .to_string(),
-    )
-}
 
 /// #748 property 9: a park-capable function must itself call
 /// `ext2_record_park` (not a bare `EXT2_LOCK_PARKS.fetch_add`) in its
@@ -538,9 +553,46 @@ fn validate_run_one_resets_park_marker(body: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The #728 oracle's holder and contender must reach the park path. Since
+/// E2.2 the gate admits only a context whose depth equals its recorded
+/// baseline (`park::sleepable_braked`), so a worker that brakes with a bare
+/// `preempt_disable()` sits at depth 1 over baseline 0: the holder polls, the
+/// contenders spin, and `run_one` scores `no-park-observed`. The worker must
+/// hold a `park::Braked` guard, which raises depth and baseline together.
+fn validate_worker_holds_braked(body: &str) -> Result<(), String> {
+    let mask = code_mask(body);
+    if code_offsets(body, &mask, "park::Braked::new()").is_empty() {
+        return Err(
+            "does not hold a park::Braked guard -- the park contract refuses its level \
+             (depth 1 over baseline 0), so the lock gate spins instead of parking"
+                .to_string(),
+        );
+    }
+    if !identifier_offsets(body, &mask, "preempt_disable").is_empty() {
+        return Err(
+            "takes a bare preempt_disable() brake -- the park contract refuses that level, \
+             so the lock gate spins instead of parking"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Positive tests — the real source satisfies every property.
 // ---------------------------------------------------------------------------
+
+#[test]
+fn lock_race_holder_holds_a_braked_level() {
+    let source = repo_text("kernel/src/fs/ext2/lock_race.rs");
+    validate_worker_holds_braked(function_body(&source, "holder_fn")).unwrap();
+}
+
+#[test]
+fn lock_race_contender_holds_a_braked_level() {
+    let source = repo_text("kernel/src/fs/ext2/lock_race.rs");
+    validate_worker_holds_braked(function_body(&source, "contender_fn")).unwrap();
+}
 
 #[test]
 fn ext2_acquire_is_can_sleep_gated_with_a_spin_fallback() {
@@ -557,10 +609,16 @@ fn ext2_acquire_write_is_can_sleep_gated_with_a_spin_fallback() {
 }
 
 #[test]
-fn can_sleep_predicate_arch_split_is_correct() {
+fn can_sleep_gate_is_the_park_contract() {
     let source = repo_text("kernel/src/fs/ext2/mod.rs");
-    let body = function_body(&source, "ext2_lock_can_sleep");
-    validate_can_sleep_arch_split(body).unwrap();
+    validate_gate_is_park_contract(function_body(&source, "ext2_lock_can_sleep")).unwrap();
+}
+
+#[test]
+fn park_contract_keeps_the_irq_rule() {
+    let park = repo_text("kernel/src/task/park.rs");
+    let core = repo_text("kernel/src/task/park_core.rs");
+    validate_irq_rule(function_body(&park, "enter_syscall"), function_body(&core, "classify")).unwrap();
 }
 
 #[test]
@@ -629,10 +687,10 @@ fn no_raw_ext2_read_write_exists_file_wide() {
 }
 
 #[test]
-fn x86_can_sleep_preempt_count_check_is_exact_one() {
-    let source = repo_text("kernel/src/fs/ext2/mod.rs");
-    let body = function_body(&source, "ext2_lock_can_sleep");
-    validate_x86_preempt_count_predicate_is_exact_one(body).unwrap();
+fn park_contract_admits_exactly_one_level() {
+    let park = repo_text("kernel/src/task/park.rs");
+    let core = repo_text("kernel/src/task/park_core.rs");
+    validate_exactly_one_level(function_body(&park, "sleepable_braked"), function_body(&core, "classify")).unwrap();
 }
 
 #[test]
@@ -679,45 +737,43 @@ fn negative_missing_spin_fallback_is_rejected() {
 }
 
 #[test]
-fn negative_x86_regains_interrupts_enabled_is_rejected() {
-    // The exact regression review B1 found: an interrupts_enabled() check
-    // reintroduced into the x86 arm makes it unconditionally false in every
-    // x86 syscall (IF=0 throughout), silently turning the fix back into a
-    // no-op on the arch #728 was reported on.
-    let mutated = r#"
-fn ext2_lock_can_sleep() -> bool {
-    #[cfg(target_arch = "aarch64")]
-    {
-        if !crate::arch_impl::aarch64::cpu::interrupts_enabled() { return false; }
-        true
-    }
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        if !crate::arch_impl::x86_64::cpu::X86Cpu::interrupts_enabled() { return false; }
-        crate::per_cpu::preempt_count() == 1
-    }
-}
-"#;
-    let err = validate_can_sleep_arch_split(mutated).unwrap_err();
-    assert!(err.contains("regained an interrupts_enabled"), "unexpected message: {err}");
+fn negative_lock_race_worker_with_a_bare_brake_is_rejected() {
+    let bare = "{ preempt_disable(); let guard = root_fs_read(); drop(guard); preempt_enable(); }";
+    let err = validate_worker_holds_braked(bare).unwrap_err();
+    assert!(err.contains("park::Braked"), "unexpected message: {err}");
+    let both = "{ let _level = crate::task::park::Braked::new(); preempt_disable(); }";
+    let err = validate_worker_holds_braked(both).unwrap_err();
+    assert!(err.contains("bare preempt_disable"), "unexpected message: {err}");
 }
 
 #[test]
-fn negative_aarch64_loses_interrupts_enabled_is_rejected() {
-    let mutated = r#"
-fn ext2_lock_can_sleep() -> bool {
-    #[cfg(target_arch = "aarch64")]
-    {
-        crate::per_cpu_aarch64::preempt_count() == 1
-    }
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        crate::per_cpu::preempt_count() == 1
-    }
+fn negative_gate_deciding_by_hand_is_rejected() {
+    let mutated = "fn ext2_lock_can_sleep() -> bool {\n    crate::per_cpu::preempt_count() == 1\n}";
+    let err = validate_gate_is_park_contract(mutated).unwrap_err();
+    assert!(err.contains("no longer asks"), "unexpected message: {err}");
+    let mutated = "fn ext2_lock_can_sleep() -> bool {\n    crate::task::park::sleepable_braked() && crate::arch_interrupts_enabled()\n}";
+    let err = validate_gate_is_park_contract(mutated).unwrap_err();
+    assert!(err.contains("by hand again (interrupts_enabled)"), "unexpected message: {err}");
 }
-"#;
-    let err = validate_can_sleep_arch_split(mutated).unwrap_err();
-    assert!(err.contains("lost its interrupts_enabled"), "unexpected message: {err}");
+
+#[test]
+fn negative_x86_syscall_baseline_unmasked_is_rejected() {
+    // The B1 regression at its new home: an x86 syscall recorded with an
+    // unmasked baseline is refused as IrqsMasked in each x86 syscall (IF=0).
+    let core = repo_text("kernel/src/task/park_core.rs");
+    let classify = function_body(&core, "classify");
+    let enter = "fn enter_syscall() {\n    thread.park.baseline_irqs_masked.store(false, Ordering::Relaxed);\n}";
+    let err = validate_irq_rule(enter, classify).unwrap_err();
+    assert!(err.contains("B1"), "unexpected message: {err}");
+}
+
+#[test]
+fn negative_masked_context_admitted_is_rejected() {
+    let park = repo_text("kernel/src/task/park.rs");
+    let enter = function_body(&park, "enter_syscall");
+    let classify = "fn classify(inputs: ContextInputs) -> ParkContext {\n    ParkContext::Sleepable\n}";
+    let err = validate_irq_rule(enter, classify).unwrap_err();
+    assert!(err.contains("C3"), "unexpected message: {err}");
 }
 
 #[test]
@@ -824,21 +880,21 @@ fn negative_missing_raw_write_site_is_rejected() {
 }
 
 #[test]
-fn negative_x86_preempt_count_weakened_to_greater_than_zero_is_rejected() {
-    let mutated = r#"
-fn ext2_lock_can_sleep() -> bool {
-    #[cfg(target_arch = "aarch64")]
-    {
-        crate::per_cpu_aarch64::preempt_count() == 1
-    }
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        crate::per_cpu::preempt_count() > 0
-    }
-}
-"#;
-    let err = validate_x86_preempt_count_predicate_is_exact_one(mutated).unwrap_err();
+fn negative_baseline_weakened_to_at_least_one_is_rejected() {
+    let core = repo_text("kernel/src/task/park_core.rs");
+    let classify = function_body(&core, "classify");
+    let mutated = "fn sleepable_braked() -> bool {\n    context() == ParkContext::Sleepable && baseline() >= 1\n}";
+    let err = validate_exactly_one_level(mutated, classify).unwrap_err();
     assert!(err.contains("exact"), "unexpected message: {err}");
+}
+
+#[test]
+fn negative_depth_above_baseline_admitted_is_rejected() {
+    let park = repo_text("kernel/src/task/park.rs");
+    let braked = function_body(&park, "sleepable_braked");
+    let mutated = "fn classify(inputs: ContextInputs) -> ParkContext {\n    if inputs.depth < inputs.baseline { }\n}";
+    let err = validate_exactly_one_level(braked, mutated).unwrap_err();
+    assert!(err.contains("equal the baseline"), "unexpected message: {err}");
 }
 
 #[test]

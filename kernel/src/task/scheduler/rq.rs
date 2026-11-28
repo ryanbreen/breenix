@@ -1054,6 +1054,9 @@ fn expire_heap(local: &mut Held, mut source: Option<&mut Held>, now: u64) {
             continue;
         };
         let was_blocked_on_io = thread.state == ThreadState::BlockedOnIO;
+        if was_blocked_on_io {
+            crate::task::park::arrive_timeout(thread);
+        }
         thread.state = ThreadState::Ready;
         WAKE_SITE_TIMER.fetch_add(1, Ordering::Relaxed);
         record_ready_site(tid, READY_SITE_TIMER);

@@ -253,15 +253,17 @@ fn prepared_sleep_owns_no_guard_and_cleans_up_eintr() {
         2,
         "only queue and publication result may enter sleep"
     );
-    assert_eq!(body.matches("preempt_enable()").count(), 1);
-    assert_eq!(body.matches("preempt_disable()").count(), 1);
+    // E2.2: the one level release and retake are task::park's.
+    assert_eq!(body.matches("release_for_sleep()").count(), 1);
+    assert_eq!(body.matches("retake_after_sleep(released)").count(), 1);
+    assert!(!body.contains("preempt_enable()") && !body.contains("preempt_disable()"));
     let state_check = body
         .find("with_current(")
         .or_else(|| body.find("with_scheduler("))
         .expect("the sleep reads its blocked state in a scheduler acquisition");
     assert!(body.find("check_signals_for_restartable_wait()").unwrap() < state_check);
     assert!(body.contains("ThreadState::BlockedOnIO"));
-    assert!(body.find("preempt_disable()").unwrap() < body.find("take_waiter(").unwrap());
+    assert!(body.find("retake_after_sleep(released)").unwrap() < body.find("take_waiter(").unwrap());
     assert!(body.rfind("finish_wait_for(tid)").unwrap() < body.rfind("Some(error)=>Err(error)").unwrap());
     assert!(body.contains("ifletSome(error)=crate::syscall::check_signals_for_restartable_wait(){breakSome(error);}"));
     assert!(body.contains("PrepareOutcome::Mismatch=>{queue.finish_wait();returnOk(());}"));
@@ -962,7 +964,7 @@ fn retained_wait_identity(source: &str, waitqueue: &str, queue: &str) -> bool {
     let finish_for = compact(&function(queue, "finish_for"));
     let end_wait = compact(&function(waitqueue, "end_wait"));
     body.matches("current_thread_id()").count() == 1
-        && body.find("let tid=".replace(' ', "").as_str()) < body.find("preempt_enable()")
+        && body.find("let tid=".replace(' ', "").as_str()) < body.find("release_for_sleep()")
         && body.contains("queue.take_waiter(tid);queue.finish_wait_for(tid);")
         && finish.contains("self.queue.finish_for(&KernelHooks,tid)")
         && finish_for.contains("Self::unregister(locked.list(),tid)")
