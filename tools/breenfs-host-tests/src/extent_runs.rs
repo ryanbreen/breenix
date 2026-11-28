@@ -228,6 +228,44 @@ fn clean_reads_issue_one_request_per_contiguous_run_over_random_layouts() {
     }
 }
 
+/// E3-2 (docs/plans/e3-page-cache.md 18): a clean read over two extents and
+/// the gap between them reports exactly the gap as a hole range, and only the
+/// gap reads as 00 bytes. A read that starts inside the gap reports the part
+/// it covers. This guards the report E3-2 adds, so it cannot be red on the
+/// old tree.
+#[test]
+fn a_clean_read_reports_exactly_its_holes() {
+    let disk = Disk::new();
+    let sb = superblock(0x63);
+    let mut committer = Committer::format(sb.clone());
+    let mut files = Files::format(DeviceStore(&disk), &sb).unwrap();
+    let ino = files.create(2, b"sparse", 0o100644, at(1)).unwrap();
+    let bs = BLOCK_SIZE as u64;
+    let (head, tail) = (vec![0x5a; 2 * BLOCK_SIZE], vec![0xa5; BLOCK_SIZE]);
+    files.write(&Data(&disk), ino, 0, &head, at(2)).unwrap();
+    files.write(&Data(&disk), ino, 5 * bs, &tail, at(3)).unwrap();
+    let durable = commit(&mut files, &disk, &mut committer);
+    drop(files);
+    let files = Files::new(DeviceStore(&disk), &durable, 1, false).unwrap();
+    assert_eq!(files.extents(ino).unwrap().len(), 2, "the fixture needs two extents");
+    for (off, gap) in [(0, (2 * bs, 5 * bs)), (3 * bs + 100, (3 * bs + 100, 5 * bs))] {
+        let mut buf = vec![0xee; (6 * bs - off) as usize];
+        let mut holes = Vec::new();
+        let Ok(n) = files
+            .read_verified_holes(&Data(&disk), ino, off, &mut buf, &mut |lo, hi| holes.push((lo, hi)))
+        else {
+            panic!("read at {off} failed");
+        };
+        assert_eq!(n, buf.len());
+        assert_eq!(holes, [gap], "read at {off}");
+        for (i, byte) in buf.iter().enumerate() {
+            let at = off + i as u64;
+            let want = if at < 2 * bs { 0x5a } else if at < 5 * bs { 0 } else { 0xa5 };
+            assert_eq!(*byte, want, "read at {off}: byte {at}");
+        }
+    }
+}
+
 /// A partial overwrite of one extent leaves three items: the untouched head
 /// and tail referencing the old extent (bookends) and the new data.
 #[test]

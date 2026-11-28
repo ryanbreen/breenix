@@ -7,9 +7,10 @@
 //! once per window; callers whose sector ranges overlap, when either writes,
 //! wait for each other, and a flush waits for the requests in flight.
 
+use super::blk_config;
 use super::blk_queue::{
-    request_type, split_layout, split_queue_size, Admission, BlkQueue, ChainStorage, Desc,
-    DmaMemory, Drain, Limits, RangeTable, RequestError, RingMemory, SplitLayout, SubmitError,
+    self, request_type, split_layout, split_queue_size, Admission, BlkQueue, ChainStorage, Desc,
+    DmaMemory, Drain, RangeTable, RequestError, RingMemory, SplitLayout, SubmitError,
     MAX_CHAINS, MAX_SEGMENTS,
 };
 use super::mmio::{
@@ -487,23 +488,13 @@ static REQUEST_GATES: [BlockMmioRequestGate; MAX_BLOCK_DEVICES] =
 static COMPLETIONS: [BlockMmioCompletion; MAX_BLOCK_DEVICES] =
     [const { BlockMmioCompletion::new() }; MAX_BLOCK_DEVICES];
 
-/// VirtIO block feature bits
 mod features {
-    /// size_max bounds a single data descriptor (VIRTIO_BLK_F_SIZE_MAX, bit 1)
-    pub const SIZE_MAX: u64 = 1 << 1;
-    /// seg_max bounds a request's data descriptors (VIRTIO_BLK_F_SEG_MAX, bit 2)
-    pub const SEG_MAX: u64 = 1 << 2;
-    /// Device is read-only (VIRTIO_BLK_F_RO, bit 5)
     pub const RO: u64 = 1 << 5;
-    /// Device supports cache flush requests (VIRTIO_BLK_F_FLUSH, bit 9)
     pub const FLUSH: u64 = 1 << 9;
-    /// The modern interface (VIRTIO_F_VERSION_1, bit 32), which a driver must
-    /// accept when a version 2 transport offers it (virtio 1.2 section 6.1).
-    pub const VERSION_1: u64 = 1 << 32;
 }
 
 /// Sector size in bytes
-pub const SECTOR_SIZE: usize = 512;
+pub const SECTOR_SIZE: usize = blk_queue::SECTOR_BYTES;
 
 /// Size of each device's static DMA data buffer: one page. A device uses it,
 /// as a single one-frame chain, only when no data frames could be allocated.
@@ -881,9 +872,10 @@ fn init_device(
 
     // Let cached devices batch writes between filesystem durability barriers.
     // Without FLUSH negotiation, even each 512-byte bitmap write is durable.
-    let mut requested = features::RO | features::FLUSH | features::SIZE_MAX | features::SEG_MAX;
+    let mut requested = features::RO | features::FLUSH | blk_config::SIZE_MAX | blk_config::SEG_MAX
+        | blk_config::BLK_SIZE | blk_config::TOPOLOGY;
     if version != 1 {
-        requested |= features::VERSION_1;
+        requested |= blk_config::VERSION_1;
     }
     device.init(requested)?;
 
@@ -892,28 +884,16 @@ fn init_device(
         crate::serial_println!("[virtio-blk] Device {} is read-only", device_index);
     }
 
-    // Read capacity from config space
-    // For VirtIO block: offset 0 = capacity (u64)
-    let capacity = device.read_config_u64(0);
-    let limits = Limits {
-        // size_max (config offset 8) bounds a single data descriptor.
-        size_max: if device_features & features::SIZE_MAX != 0 { device.read_config_u32(8) } else { 0 },
-        // seg_max (config offset 12) bounds a request's data descriptors.
-        seg_max: if device_features & features::SEG_MAX != 0 { device.read_config_u32(12) } else { 0 },
-        exact_used_len: device_features & features::VERSION_1 != 0,
-    };
-    if limits.size_max != 0 && (limits.size_max as usize) < SECTOR_SIZE {
-        return Err("VirtIO maximum segment smaller than a sector");
-    }
-    if device_features & features::SEG_MAX != 0 && limits.seg_max == 0 {
-        return Err("VirtIO block device allows no data segments");
-    }
-    crate::serial_println!(
-        "[virtio-blk] Device {} capacity: {} sectors ({} MB)",
-        device_index,
-        capacity,
-        (capacity * SECTOR_SIZE as u64) / (1024 * 1024)
-    );
+    let config = blk_config::read_config(
+        device_features,
+        || (version != 1).then(|| device.config_generation()),
+        |offset| device.read_config_u8(offset),
+        |offset| device.read_config_u16(offset),
+        |offset| device.read_config_u32(offset),
+    )?;
+    let capacity = config.capacity;
+    let limits = config.limits;
+    crate::serial_println!("[virtio-blk] Device {} config: {:?}", device_index, config);
 
     // Set up the request queue (queue 0)
     device.select_queue(0);

@@ -160,3 +160,6 @@ mod mutation_cost;
 
 #[path = "../tests/mutation_subcost.rs"]
 mod mutation_subcost;
+
+#[path = "../tests/attach_geometry.rs"]
+mod attach_geometry;

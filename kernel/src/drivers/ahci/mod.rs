@@ -28,6 +28,7 @@ use admission::Admission;
 use crate::task::park::IoContext;
 mod command_ring;
 use command_ring::{CommandRing, Event, EventKind};
+mod geometry;
 mod identify;
 #[cfg(target_arch = "x86_64")]
 mod timeout_msi;
@@ -191,8 +192,9 @@ fn dma_cache_clean(_ptr: *const u8, _len: usize) {}
 #[inline]
 fn dma_cache_invalidate(_ptr: *const u8, _len: usize) {}
 
-/// Sector size in bytes (standard for SATA).
-pub const SECTOR_SIZE: usize = 512;
+/// IDENTIFY DEVICE transfers a fixed 512-byte payload.
+const IDENTIFY_BYTES: usize = 512;
+const DMA_BUFFER_BYTES: usize = 64 * 1024;
 
 /// Command timeout in seconds (matches Linux ata_internal_cmd_timeout).
 const AHCI_TIMEOUT_SECS: u64 = 5;
@@ -817,8 +819,8 @@ struct PortDmaMem {
     received_fis: ReceivedFis,
     /// Command tables, one per slot (slot 0 is the only active slot)
     cmd_tables: [CmdTable; AHCI_MAX_CONCURRENT],
-    /// DMA buffers for sector I/O, one per slot (up to 128 sectors = 64KB each)
-    dma_bufs: [[u8; 65536]; AHCI_MAX_CONCURRENT],
+    /// DMA buffers for sector I/O, one per slot.
+    dma_bufs: [[u8; DMA_BUFFER_BYTES]; AHCI_MAX_CONCURRENT],
 }
 
 /// Number of concurrent command slots per port. Slot 0 is the only active
@@ -863,10 +865,8 @@ struct AhciController {
 struct AhciPort {
     /// Port number (0-31)
     port_num: usize,
-    /// Device type
-    device_type: DeviceType,
-    /// Sector count (from IDENTIFY DEVICE)
-    sector_count: u64,
+    /// SATA geometry validated before the block device is exposed.
+    geometry: Option<geometry::Identify>,
     /// DMA memory index in PORT_DMA
     dma_index: usize,
 }
@@ -1041,6 +1041,7 @@ fn ensure_port_ready(abar: u64, port: usize) -> Result<(), &'static str> {
 #[cold]
 fn recover_stopped_port(abar: u64, port: usize, state: u8) -> Result<(), &'static str> {
     let ready = || port_quiescent(abar, port) && link_ready(abar, port);
+    let mut reset = false;
     let needs_reset = state == PORT_RESET_REQUIRED;
     if !crate::arch_interrupts_enabled() {
         if needs_reset || !ready() {
@@ -1062,6 +1063,7 @@ fn recover_stopped_port(abar: u64, port: usize, state: u8) -> Result<(), &'stati
             let _ = port_read(abar, port, PORT_SCTL);
             wait_for_recovery(freq.div_ceil(1000), || false);
             port_write(abar, port, PORT_SCTL, control);
+            reset = true;
             if !wait_for_recovery(freq.saturating_mul(AHCI_TIMEOUT_SECS), ready) {
                 PORT_RECOVERY[port].store(PORT_OFFLINE, Ordering::Release);
                 return Err("AHCI: port did not quiesce or link did not return");
@@ -1083,7 +1085,46 @@ fn recover_stopped_port(abar: u64, port: usize, state: u8) -> Result<(), &'stati
     port_write(abar, port, PORT_CMD, cmd | PORT_CMD_ST);
     drop(_status_guard);
     port_write(abar, port, PORT_IE, PORT_IRQ_ENABLE);
+    if reset {
+        if let Err(error) = revalidate_after_reset(abar, port) {
+            // Quarantine this attachment. A failed IDENTIFY may still own DMA.
+            let _status_guard = PORT_POLL[port].lock();
+            port_write(abar, port, PORT_IE, 0);
+            let cmd = port_read(abar, port, PORT_CMD);
+            port_write(abar, port, PORT_CMD, cmd & !PORT_CMD_ST);
+            PORT_ACTIVE_MASK[port].store(0, Ordering::Release);
+            PORT_ACTIVE_CMD_NUM[port].store(0, Ordering::Release);
+            PORT_RECOVERY[port].store(PORT_OFFLINE, Ordering::Release);
+            return Err(error);
+        }
+    }
     PORT_RECOVERY[port].store(PORT_READY, Ordering::Release);
+    Ok(())
+}
+
+/// The recovery state keeps admission closed while this command runs.
+fn revalidate_after_reset(abar: u64, port: usize) -> Result<(), &'static str> {
+    let (expected, token) = {
+        let controller = AHCI_CONTROLLER.lock();
+        let Some(controller) = controller.as_ref() else {
+            // Initial probe has no published attachment to revalidate.
+            return Ok(());
+        };
+        let attached = controller.ports[port].as_ref().ok_or("AHCI: no attached port")?;
+        let expected = attached.geometry.ok_or("AHCI: no attached disk geometry")?;
+        (expected, controller.setup_identify(port, attached.dma_index)?)
+    };
+    // Use the same completion receipt without recursively recovering an
+    // IDENTIFY failure while the port is already recovering.
+    wait_cmd_slot0_inner(&token)?;
+    command_receipt(abar, port).validate()?;
+    if read_prdbc(token.dma_index)? != token.expected_bytes {
+        return Err("AHCI: incomplete IDENTIFY after reset");
+    }
+    let (actual, _, _) = finish_identify(token.dma_index)?;
+    if !expected.matches_after_reset(actual) {
+        return Err("AHCI: attachment identity or geometry changed after reset");
+    }
     Ok(())
 }
 
@@ -1231,6 +1272,20 @@ fn record_lost_notification(port: usize, cmd_num: u32, regs: TimeoutRegisters) {
         "AHCI_LOST_NOTIFICATION port={port} token={cmd_num} CI={:#x} IS={:#x} TFD={:#x} HBA_IS={:#x}",
         regs.ci, regs.port_is, regs.tfd, regs.hba_is,
     ));
+}
+
+/// The block I/O caller rule (design §6) for a command the driver issues
+/// itself, outside `begin_port_io`: attach-time IDENTIFY and IDENTIFY after a
+/// port reset. ARM64 attaches in early boot and polls; x86 attaches on its
+/// boot_storage kernel thread, after the first dispatch, and sleeps on the
+/// completion interrupt armed before IDENTIFY. A recovery runs in the
+/// admitted caller's context or on a worker that may park.
+fn own_command_io() -> Result<IoContext, &'static str> {
+    let io = crate::task::park::io_context().map_err(|_| "AHCI: command from a context that may not sleep")?;
+    if io == IoContext::Sleepable && !completion_ready_here() {
+        return Err("AHCI: no completion source on this CPU");
+    }
+    Ok(io)
 }
 
 /// Whether a sleeping caller's command on this CPU has a completion source
@@ -1781,13 +1836,12 @@ impl AhciController {
             }
 
             if let Some(port) = controller.init_port(port_num, dma_index) {
-                crate::serial_println!(
-                    "[ahci] Port {}: {:?}, {} sectors ({} MB)",
-                    port_num,
-                    port.device_type,
-                    port.sector_count,
-                    port.sector_count * SECTOR_SIZE as u64 / (1024 * 1024),
-                );
+                if let Some(disk) = port.geometry {
+                    crate::serial_println!(
+                        "[ahci] Port {}: {} logical sectors of {} bytes, physical {} bytes, alignment {:?}",
+                        port_num, disk.sectors, disk.logical_bytes, disk.physical_bytes, disk.alignment_offset,
+                    );
+                }
                 controller.ports[port_num] = Some(port);
                 dma_index += 1;
             }
@@ -1889,27 +1943,29 @@ impl AhciController {
         };
 
         // For SATA devices, issue IDENTIFY DEVICE for capacity and cache state.
-        let sector_count = if device_type == DeviceType::Sata {
+        let geometry = if device_type == DeviceType::Sata {
             match self.identify_device(port_num, dma_index) {
-                Ok((sectors, supported, enabled)) => {
+                Ok((geometry, supported, enabled)) => {
                     crate::serial_println!(
                         "[ahci] Port {}: volatile write cache supported={} enabled={}",
                         port_num,
                         supported,
                         enabled,
                     );
-                    sectors
+                    Some(geometry)
                 }
-                Err(_) => 0,
+                Err(error) => {
+                    crate::serial_println!("[ahci] Port {} not attached: {}", port_num, error);
+                    None
+                }
             }
         } else {
-            0
+            None
         };
 
         Some(AhciPort {
             port_num,
-            device_type,
-            sector_count,
+            geometry,
             dma_index,
         })
     }
@@ -2067,24 +2123,6 @@ impl AhciController {
             has_irq,
             wait_by,
         })
-    }
-
-    /// Issue a command on slot 0 and wait for completion (combined path).
-    ///
-    /// Used by attach-time IDENTIFY where
-    /// no lock must be released before waiting.  Hot I/O callers (read_block,
-    /// write_block, flush) use setup_cmd_slot0 + wait_cmd_slot0 instead so
-    /// the AHCI lock is NOT held during the wait. The caller rule decides the
-    /// wait here too (design §6): ARM64 attaches in early boot and polls; x86
-    /// attaches on its boot_storage kernel thread, after the first dispatch,
-    /// and sleeps on the completion interrupt armed before IDENTIFY.
-    fn issue_cmd_slot0(&self, port: usize, dma_index: usize, expected_bytes: u32) -> Result<(), &'static str> {
-        let io = crate::task::park::io_context().map_err(|_| "AHCI: command from a context that may not sleep")?;
-        if io == IoContext::Sleepable && !completion_ready_here() {
-            return Err("AHCI: no completion source on this CPU");
-        }
-        let token = self.setup_cmd_slot0(port, dma_index, expected_bytes, io)?;
-        wait_cmd_slot0(token)
     }
 
     /// Dump full diagnostic state on command timeout.
@@ -2573,12 +2611,33 @@ fn ahci_gic_irq_router(spi: u32) -> u64 {
     ahci_gicd_read_u64(AHCI_GICD_IROUTER + (spi as usize * 8))
 }
 
-impl AhciController {
-    /// Issue IDENTIFY DEVICE and return sector count and write-cache support/enabled bits.
-    fn identify_device(&self, port: usize, dma_index: usize) -> Result<(u64, bool, bool), &'static str> {
-        self.wait_ready(port)?;
+fn finish_identify(dma_index: usize) -> Result<(geometry::Identify, bool, bool), &'static str> {
+    // Order completion before consuming device-written data.
+    #[cfg(target_arch = "x86_64")]
+    core::sync::atomic::fence(Ordering::SeqCst);
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+    }
 
+    let dma_lock = PORT_DMA.lock();
+    let dma = dma_lock[dma_index].as_ref().ok_or("AHCI: no DMA memory")?;
+    let data = &dma.dma_bufs[0][..IDENTIFY_BYTES];
+    dma_cache_invalidate(data.as_ptr(), IDENTIFY_BYTES);
+    let (supported, enabled) = identify::write_cache(data);
+    Ok((geometry::parse(data)?, supported, enabled))
+}
+
+impl AhciController {
+    fn identify_device(&self, port: usize, dma_index: usize) -> Result<(geometry::Identify, bool, bool), &'static str> {
         ensure_port_ready(self.abar_virt, port)?;
+        let token = self.setup_identify(port, dma_index)?;
+        wait_cmd_slot0(token)?;
+        finish_identify(dma_index)
+    }
+
+    fn setup_identify(&self, port: usize, dma_index: usize) -> Result<CmdToken, &'static str> {
+        self.wait_ready(port)?;
         let mut dma_lock = PORT_DMA.lock();
         let dma = dma_lock[dma_index].as_mut().ok_or("AHCI: no DMA memory")?;
 
@@ -2606,7 +2665,7 @@ impl AhciController {
         dma.cmd_tables[0].prdt[0].dba = dma_buf_phys as u32;
         dma.cmd_tables[0].prdt[0].dbau = (dma_buf_phys >> 32) as u32;
         dma.cmd_tables[0].prdt[0]._reserved = 0;
-        dma.cmd_tables[0].prdt[0].dbc = (SECTOR_SIZE as u32 - 1) | (1 << 31); // byte count - 1, IOC
+        dma.cmd_tables[0].prdt[0].dbc = (IDENTIFY_BYTES as u32 - 1) | (1 << 31); // byte count - 1, IOC
 
         // Ensure CPU writes are visible to the DMA device
         core::sync::atomic::fence(Ordering::SeqCst);
@@ -2617,47 +2676,7 @@ impl AhciController {
 
         drop(dma_lock);
 
-        // Issue the command
-        self.issue_cmd_slot0(port, dma_index, SECTOR_SIZE as u32)?;
-
-        // Order completion before consuming device-written data.
-        #[cfg(target_arch = "x86_64")]
-        core::sync::atomic::fence(Ordering::SeqCst);
-        #[cfg(target_arch = "aarch64")]
-        unsafe {
-            core::arch::asm!("dsb sy", options(nostack, preserves_flags));
-        }
-
-        // Invalidate cache for DMA buffer before reading device-written data
-        let dma_lock = PORT_DMA.lock();
-        let dma = dma_lock[dma_index].as_ref().ok_or("AHCI: no DMA memory")?;
-        {
-            let buf_ptr = dma.dma_bufs[0].as_ptr();
-            dma_cache_invalidate(buf_ptr, SECTOR_SIZE);
-        }
-
-        // Words 100-103 contain the 48-bit LBA sector count (u64)
-        let buf = &dma.dma_bufs[0];
-        let sectors = (buf[200] as u64)
-            | ((buf[201] as u64) << 8)
-            | ((buf[202] as u64) << 16)
-            | ((buf[203] as u64) << 24)
-            | ((buf[204] as u64) << 32)
-            | ((buf[205] as u64) << 40)
-            | ((buf[206] as u64) << 48)
-            | ((buf[207] as u64) << 56);
-
-        let sectors = if sectors == 0 {
-            // Fall back to 28-bit LBA (words 60-61)
-            (buf[120] as u64)
-                | ((buf[121] as u64) << 8)
-                | ((buf[122] as u64) << 16)
-                | ((buf[123] as u64) << 24)
-        } else {
-            sectors
-        };
-        let (supported, enabled) = identify::write_cache(buf);
-        Ok((sectors, supported, enabled))
+        self.setup_cmd_slot0(port, dma_index, IDENTIFY_BYTES as u32, own_command_io()?)
     }
 
     /// Set up a multi-sector read DMA command and issue PORT_CI.
@@ -2675,12 +2694,13 @@ impl AhciController {
         dma_index: usize,
         lba: u64,
         count: u16,
+        logical_bytes: usize,
         io: IoContext,
     ) -> Result<(CmdToken, usize), AhciReadError> {
-        if count == 0 || count > 128 {
+        let byte_count = usize::from(count) * logical_bytes;
+        if byte_count == 0 || byte_count > DMA_BUFFER_BYTES {
             return Err(AhciReadError::Setup("AHCI: invalid sector count"));
         }
-        let byte_count = count as usize * SECTOR_SIZE;
 
         self.wait_ready(port).map_err(AhciReadError::Setup)?;
 
@@ -2733,7 +2753,7 @@ impl AhciController {
         Ok((token, byte_count))
     }
 
-    /// Set up a write DMA command of 1 to 128 whole sectors and issue PORT_CI.
+    /// Set up a write DMA command of whole logical sectors and issue PORT_CI.
     ///
     /// Returns a `CmdToken`; caller waits with `wait_cmd_slot0()` after
     /// releasing the `AHCI_CONTROLLER` lock.
@@ -2743,10 +2763,11 @@ impl AhciController {
         dma_index: usize,
         lba: u64,
         buffer: &[u8],
+        logical_bytes: usize,
         io: IoContext,
     ) -> Result<CmdToken, &'static str> {
-        let count = buffer.len() / SECTOR_SIZE;
-        if count == 0 || count > 128 || buffer.len() % SECTOR_SIZE != 0 {
+        let count = buffer.len() / logical_bytes;
+        if count == 0 || buffer.len() > DMA_BUFFER_BYTES || buffer.len() % logical_bytes != 0 {
             return Err("AHCI: invalid sector count");
         }
         self.wait_ready(port)?;
@@ -2999,7 +3020,7 @@ fn probe_platform_irq(ctrl: &AhciController) {
 
     // Find the first SATA port to probe with.
     let probe_port = ctrl.ports.iter().enumerate().find_map(|(i, p)| match p {
-        Some(port) if port.device_type == DeviceType::Sata => Some((i, port.dma_index)),
+        Some(port) if port.geometry.is_some() => Some((i, port.dma_index)),
         _ => None,
     });
     let (port_num, dma_index) = match probe_port {
@@ -3063,7 +3084,7 @@ fn probe_platform_irq(ctrl: &AhciController) {
         dma.cmd_tables[0].prdt[0].dba = dma_buf_phys as u32;
         dma.cmd_tables[0].prdt[0].dbau = (dma_buf_phys >> 32) as u32;
         dma.cmd_tables[0].prdt[0]._reserved = 0;
-        dma.cmd_tables[0].prdt[0].dbc = (SECTOR_SIZE as u32 - 1) | (1 << 31);
+        dma.cmd_tables[0].prdt[0].dbc = (IDENTIFY_BYTES as u32 - 1) | (1 << 31);
 
         core::sync::atomic::fence(Ordering::SeqCst);
         let dma_ptr = &**dma as *const PortDmaMem as *const u8;
@@ -3125,7 +3146,7 @@ fn probe_platform_irq(ctrl: &AhciController) {
     );
 
     let receipt = command_receipt(abar, port_num);
-    if receipt.validate().is_err() || read_prdbc(dma_index) != Ok(SECTOR_SIZE as u32) {
+    if receipt.validate().is_err() || read_prdbc(dma_index) != Ok(IDENTIFY_BYTES as u32) {
         recover_failed_command(abar, port_num, false);
         return;
     }
@@ -3528,10 +3549,14 @@ pub fn last_irq_debug_snapshot() -> (u32, u32, u32, u32, u64) {
 pub struct AhciBlockDevice {
     port_num: usize,
     dma_index: usize,
-    sector_count: u64,
+    geometry: geometry::Identify,
 }
 
 impl BlockDevice for AhciBlockDevice {
+    fn is_read_only(&self) -> bool {
+        !self.geometry.flush_ext
+    }
+
     fn identity(&self) -> usize {
         // The driver has one fixed AHCI_CONTROLLER; ports are its disk coordinates.
         0x4148_0000_0000_0000 | self.port_num
@@ -3554,13 +3579,11 @@ impl BlockDevice for AhciBlockDevice {
         if block_count == 0 {
             return Ok(());
         }
-        if start_block >= self.sector_count
-            || start_block.saturating_add(block_count as u64) > self.sector_count
-        {
+        if start_block.checked_add(block_count as u64).is_none_or(|end| end > self.num_blocks()) {
             return Err(ReadRequest::new(self.port_num, start_block).failed(
                 AhciReadError::Range, PORT_IO_OWNER[self.port_num].load(Ordering::Acquire), None));
         }
-        if block_count.checked_mul(SECTOR_SIZE).is_none_or(|bytes| buf.len() < bytes) {
+        if block_count.checked_mul(self.block_size()).is_none_or(|bytes| buf.len() < bytes) {
             return Err(ReadRequest::new(self.port_num, start_block).failed(
                 AhciReadError::BufferSize, PORT_IO_OWNER[self.port_num].load(Ordering::Acquire), None));
         }
@@ -3570,7 +3593,7 @@ impl BlockDevice for AhciBlockDevice {
         let mut offset = 0usize;
 
         while remaining > 0 {
-            let chunk = remaining.min(128);
+            let chunk = remaining.min(DMA_BUFFER_BYTES / self.block_size());
             let request = ReadRequest::new(self.port_num, current_block);
 
             let (port_guard, io) = begin_port_io(self.port_num, true)
@@ -3582,7 +3605,7 @@ impl BlockDevice for AhciBlockDevice {
                     Err(AhciReadError::Interrupted)
                 } else {
                     ctrl.as_ref().ok_or(AhciReadError::ControllerAbsent).and_then(|ctrl| {
-                        ctrl.setup_read_sectors(self.port_num, self.dma_index, current_block, chunk as u16, io)
+                        ctrl.setup_read_sectors(self.port_num, self.dma_index, current_block, chunk as u16, self.block_size(), io)
                     })
                 }
             }; // AHCI_CONTROLLER lock released
@@ -3631,15 +3654,15 @@ impl BlockDevice for AhciBlockDevice {
             return Ok(());
         }
         // The write fence: on a physical boot only the chosen partitions' sectors take writes.
-        if !crate::block::hardware_write_allowed(crate::block::HardwareDisk::Ahci(self.port_num), start_block, block_count) {
+        if self.is_read_only()
+            || !crate::block::hardware_write_allowed(crate::block::HardwareDisk::Ahci(self.port_num), start_block, block_count)
+        {
             return Err(BlockError::IoError);
         }
-        if start_block >= self.sector_count
-            || start_block.saturating_add(block_count as u64) > self.sector_count
-        {
+        if start_block.checked_add(block_count as u64).is_none_or(|end| end > self.num_blocks()) {
             return Err(BlockError::OutOfBounds);
         }
-        let total_bytes = block_count.checked_mul(SECTOR_SIZE).ok_or(BlockError::IoError)?;
+        let total_bytes = block_count.checked_mul(self.block_size()).ok_or(BlockError::IoError)?;
         if buf.len() < total_bytes {
             return Err(BlockError::IoError);
         }
@@ -3647,7 +3670,7 @@ impl BlockDevice for AhciBlockDevice {
         let mut current_block = start_block;
         let mut offset = 0usize;
         while offset < total_bytes {
-            let byte_count = (total_bytes - offset).min(128 * SECTOR_SIZE);
+            let byte_count = (total_bytes - offset).min(DMA_BUFFER_BYTES);
             let chunk = &buf[offset..offset + byte_count];
 
             // ── PHASE 1: lock + setup ───────────────────────────────────────
@@ -3656,7 +3679,7 @@ impl BlockDevice for AhciBlockDevice {
                 let ctrl = AHCI_CONTROLLER.lock();
                 match ctrl.as_ref() {
                     Some(ctrl) => ctrl
-                        .setup_write_sectors(self.port_num, self.dma_index, current_block, chunk, io)
+                        .setup_write_sectors(self.port_num, self.dma_index, current_block, chunk, self.block_size(), io)
                         .map_err(|_| BlockError::IoError),
                     None => Err(BlockError::DeviceNotReady),
                 }
@@ -3677,21 +3700,22 @@ impl BlockDevice for AhciBlockDevice {
             let port_guard = PORT_IO_LOCK[self.port_num].lock();
             end_port_io(self.port_num, port_guard);
             wait_result?;
-            current_block += (byte_count / SECTOR_SIZE) as u64;
+            current_block += (byte_count / self.block_size()) as u64;
             offset += byte_count;
         }
         Ok(())
     }
 
     fn block_size(&self) -> usize {
-        SECTOR_SIZE
+        self.geometry.logical_bytes
     }
 
     fn num_blocks(&self) -> u64 {
-        self.sector_count
+        self.geometry.sectors
     }
 
     fn flush(&self) -> Result<(), BlockError> {
+        if self.is_read_only() { return Ok(()); }
         if crate::block::hardware_disk_read_only(crate::block::HardwareDisk::Ahci(self.port_num)) { return Ok(()); }
         // ── PHASE 1: lock + setup ───────────────────────────────────────────
         let (port_guard, io) = begin_port_io(self.port_num, false).map_err(write_admission_error)?;
@@ -3761,7 +3785,8 @@ pub fn init() -> Result<usize, &'static str> {
     let sata_count = controller
         .ports
         .iter()
-        .filter(|p| matches!(p, Some(port) if port.device_type == DeviceType::Sata))
+        .flatten()
+        .filter(|port| port.geometry.is_some())
         .count();
 
     *AHCI_CONTROLLER.lock() = Some(controller);
@@ -3774,8 +3799,8 @@ pub fn init() -> Result<usize, &'static str> {
             log::info!(
                 "[ahci] drive identified: port {}, {} sectors of {} bytes",
                 disk.port_num,
-                disk.sector_count,
-                SECTOR_SIZE
+                disk.num_blocks(),
+                disk.block_size()
             );
             report_first_sectors(&disk);
         }
@@ -3859,7 +3884,8 @@ const FIRST_SECTORS: usize = 34;
 /// of content is reported, not its bytes.
 #[cfg(target_arch = "x86_64")]
 fn report_first_sectors(disk: &AhciBlockDevice) {
-    let mut sectors = alloc::vec![0u8; FIRST_SECTORS * SECTOR_SIZE];
+    let size = disk.block_size();
+    let mut sectors = alloc::vec![0u8; FIRST_SECTORS * size];
     let completed = AHCI_ISR_COMPLETE_HIT[disk.port_num].load(Ordering::Acquire);
     let polled = AHCI_POLLED_COMPLETION_COUNT.load(Ordering::Acquire);
     if let Err(e) = disk.read_blocks(0, FIRST_SECTORS, &mut sectors) {
@@ -3870,14 +3896,14 @@ fn report_first_sectors(disk: &AhciBlockDevice) {
         && AHCI_IRQ.load(Ordering::Acquire) != 0
         && AHCI_ISR_COMPLETE_HIT[disk.port_num].load(Ordering::Acquire) != completed
         && AHCI_POLLED_COMPLETION_COUNT.load(Ordering::Acquire) == polled;
-    let table = if &sectors[SECTOR_SIZE..SECTOR_SIZE + 8] == b"EFI PART" {
+    let table = if &sectors[size..size + 8] == b"EFI PART" {
         "GPT"
     } else if sectors[510..512] == [0x55, 0xaa] {
         "MBR"
     } else {
         "none"
     };
-    let record = if crate::block::install::Record::parse(&sectors[..SECTOR_SIZE]).is_some() {
+    let record = if size == IDENTIFY_BYTES && crate::block::install::Record::parse(&sectors[..size]).is_some() {
         "present"
     } else {
         "absent"
@@ -3918,7 +3944,8 @@ pub fn init_platform(abar_phys: u64) -> Result<usize, &'static str> {
     let sata_count = controller
         .ports
         .iter()
-        .filter(|p| matches!(p, Some(port) if port.device_type == DeviceType::Sata))
+        .flatten()
+        .filter(|port| port.geometry.is_some())
         .count();
 
     *AHCI_CONTROLLER.lock() = Some(controller);
@@ -3946,13 +3973,12 @@ pub fn get_block_device_by_index(index: usize) -> Option<AhciBlockDevice> {
     ctrl.ports
         .iter()
         .flatten()
-        .filter(|port| port.device_type == DeviceType::Sata && port.sector_count > 0)
-        .nth(index)
-        .map(|port| AhciBlockDevice {
+        .filter_map(|port| Some(AhciBlockDevice {
             port_num: port.port_num,
             dma_index: port.dma_index,
-            sector_count: port.sector_count,
-        })
+            geometry: port.geometry?,
+        }))
+        .nth(index)
 }
 
 /// Return the number of SATA block devices available.
@@ -3963,7 +3989,7 @@ pub fn sata_device_count() -> usize {
             .ports
             .iter()
             .flatten()
-            .filter(|port| port.device_type == DeviceType::Sata && port.sector_count > 0)
+            .filter(|port| port.geometry.is_some())
             .count(),
         None => 0,
     }

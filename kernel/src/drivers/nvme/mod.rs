@@ -2,8 +2,8 @@
 //!
 //! One controller per PCI function (class 01, subclass 08, prog-if 02). Each
 //! controller is reset, given an admin queue pair, identified, and given one
-//! I/O queue pair. The first active namespace becomes a 512-byte-sector block
-//! device.
+//! I/O queue pair. The first active namespace becomes a block device in its
+//! validated 512-byte or 4 KiB format.
 //!
 //! # Commands
 //!
@@ -38,13 +38,10 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{fence, AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
 
-/// Sector size exposed to the block layer. Namespaces formatted with any
-/// other LBA size are rejected at init.
-pub const SECTOR_SIZE: usize = 512;
+mod identify;
 
 /// Largest transfer per command: one memory page, one PRP entry.
 const PAGE_SIZE: usize = 4096;
-const SECTORS_PER_PAGE: usize = PAGE_SIZE / SECTOR_SIZE;
 
 /// PCI class code for an NVM Express controller.
 const PCI_SUBCLASS_NVM: u8 = 0x08;
@@ -147,10 +144,6 @@ impl DmaPage {
 
     fn read_u32(&self, offset: usize) -> u32 {
         unsafe { core::ptr::read_volatile((self.virt as usize + offset) as *const u32) }
-    }
-
-    fn read_u64(&self, offset: usize) -> u64 {
-        unsafe { core::ptr::read_volatile((self.virt as usize + offset) as *const u64) }
     }
 
     fn read_u8(&self, offset: usize) -> u8 {
@@ -324,8 +317,8 @@ pub struct NvmeController {
     irq_driven: bool,
 
     nsid: u32,
-    /// Namespace size in 512-byte sectors.
-    capacity: u64,
+    /// Size and address unit of the active namespace.
+    namespace: identify::Namespace,
     /// Whether the controller has a volatile write cache to flush.
     volatile_write_cache: bool,
 
@@ -368,9 +361,19 @@ impl NvmeController {
         reg::DOORBELL_BASE + (2 * qid as usize + 1) * self.doorbell_stride
     }
 
-    /// Namespace size in 512-byte sectors.
+    /// Namespace size in its active LBA format.
     pub fn capacity(&self) -> u64 {
-        self.capacity
+        self.namespace.sectors
+    }
+
+    pub fn logical_bytes(&self) -> usize {
+        self.namespace.logical_bytes
+    }
+
+    /// This path accepts CAP.MPSMIN=0 and uses one 4 KiB data page per command.
+    /// A nonzero MDTS permits at least two minimum pages (NVMe Base 2.0).
+    pub fn blocks_per_command(&self) -> usize {
+        PAGE_SIZE / self.logical_bytes()
     }
 
     /// Reset, configure and identify one controller.
@@ -413,7 +416,7 @@ impl NvmeController {
             cq_claim: AtomicBool::new(false),
             irq_driven,
             nsid: 0,
-            capacity: 0,
+            namespace: identify::Namespace { sectors: 0, logical_bytes: 512 },
             volatile_write_cache: false,
             request_gate: RequestGate::new(),
             completion: Completion::new(),
@@ -522,16 +525,10 @@ impl NvmeController {
                 ..Command::default()
             },
         )?;
-        let namespace_size = identify.read_u64(0);
-        let format_index = (identify.read_u8(26) & 0xF) as usize;
-        let lba_format = identify.read_u32(128 + 4 * format_index);
-        let lba_shift = (lba_format >> 16) & 0xFF;
-        let metadata_size = lba_format & 0xFFFF;
-        if lba_shift != 9 || metadata_size != 0 {
-            return Err("namespace is not formatted with 512-byte sectors");
-        }
+        // Successful admin completion releases the Identify buffer to the CPU.
+        let data = unsafe { &*(identify.virt as *const [u8; PAGE_SIZE]) };
+        ctrl.namespace = identify::parse_namespace(data)?;
         ctrl.nsid = nsid;
-        ctrl.capacity = namespace_size;
 
         // One I/O submission queue and one I/O completion queue.
         ctrl.admin_command(
@@ -579,8 +576,8 @@ impl NvmeController {
             ctrl.device,
             ctrl.function,
             ctrl.nsid,
-            ctrl.capacity,
-            ctrl.capacity * SECTOR_SIZE as u64 / (1024 * 1024),
+            ctrl.capacity(),
+            ctrl.capacity() * ctrl.logical_bytes() as u64 / (1024 * 1024),
             if ctrl.volatile_write_cache {
                 "present"
             } else {
@@ -810,24 +807,24 @@ impl NvmeController {
     }
 
     fn check_range(&self, sector: u64, count: usize) -> Result<(), &'static str> {
-        if count == 0 || count > SECTORS_PER_PAGE {
+        if count == 0 || count > self.blocks_per_command() {
             return Err("Invalid sector count");
         }
         let end = sector
             .checked_add(count as u64)
             .ok_or("Sector out of range")?;
-        if end > self.capacity {
+        if end > self.capacity() {
             return Err("Sector out of range");
         }
         Ok(())
     }
 
-    /// Read up to eight consecutive sectors into `buffer`.
+    /// Read consecutive native LBAs into one data page.
     pub fn read_sectors(&self, sector: u64, buffer: &mut [u8]) -> Result<(), &'static str> {
-        if buffer.is_empty() || buffer.len() % SECTOR_SIZE != 0 {
-            return Err("Buffer size must be a non-zero multiple of 512");
+        if buffer.is_empty() || buffer.len() % self.logical_bytes() != 0 {
+            return Err("Buffer size must be a non-zero multiple of the logical block size");
         }
-        let count = buffer.len() / SECTOR_SIZE;
+        let count = buffer.len() / self.logical_bytes();
         self.check_range(sector, count)?;
 
         let guard = self.request_gate.lock()?;
@@ -854,17 +851,17 @@ impl NvmeController {
         Ok(())
     }
 
-    /// Write up to eight consecutive sectors from `buffer`.
+    /// Write consecutive native LBAs from one data page.
     pub fn write_sectors(&self, sector: u64, buffer: &[u8]) -> Result<(), &'static str> {
-        if buffer.is_empty() || buffer.len() % SECTOR_SIZE != 0 {
-            return Err("Buffer size must be a non-zero multiple of 512");
+        if buffer.is_empty() || buffer.len() % self.logical_bytes() != 0 {
+            return Err("Buffer size must be a non-zero multiple of the logical block size");
         }
+        let count = buffer.len() / self.logical_bytes();
+        self.check_range(sector, count)?;
         let disk = crate::block::HardwareDisk::Nvme(self as *const Self as usize);
-        if !crate::block::hardware_write_allowed(disk, sector, buffer.len() / SECTOR_SIZE) {
+        if !crate::block::hardware_write_allowed(disk, sector, count) {
             return Err("Hardware disks are read-only outside the chosen partitions");
         }
-        let count = buffer.len() / SECTOR_SIZE;
-        self.check_range(sector, count)?;
 
         let guard = self.request_gate.lock()?;
         unsafe {
@@ -985,8 +982,8 @@ pub fn handle_interrupt() {
 /// Read sector 0 of the first controller's namespace.
 pub fn test_read() -> Result<(), &'static str> {
     let ctrl = controller(0).ok_or("No NVMe controller attached")?;
-    let mut buffer = [0u8; SECTOR_SIZE];
-    ctrl.read_sectors(0, &mut buffer)?;
+    let mut buffer = [0u8; PAGE_SIZE];
+    ctrl.read_sectors(0, &mut buffer[..ctrl.logical_bytes()])?;
     log::info!("NVMe test: Read successful!");
     log::info!("  First 16 bytes: {:02x?}", &buffer[..16]);
     Ok(())

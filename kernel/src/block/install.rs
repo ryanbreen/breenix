@@ -117,10 +117,14 @@ impl Record {
 
 /// Discover a completed install before allowing its test root to mount or become writable.
 pub fn root_record(disk: &dyn BlockDevice) -> Result<Record, &'static str> {
+    if disk.block_size() != SECTOR {
+        return Err("the test root record requires 512-byte sectors");
+    }
+    let capacity = disk.num_blocks().checked_mul(SECTOR as u64).ok_or("disk size overflow")?;
     let mut first = [0u8; SECTOR];
     disk.read_block(0, &mut first).map_err(io)?;
     match Record::parse(&first) {
-        Some(record @ Record::Root { bytes, .. }) if bytes <= disk.num_blocks() * SECTOR as u64 => Ok(record),
+        Some(record @ Record::Root { bytes, .. }) if bytes <= capacity => Ok(record),
         _ => Err("the test root holds no valid root record"),
     }
 }

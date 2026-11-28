@@ -103,6 +103,8 @@ pub enum ProcEntryType {
     FsMutationCosts,
     /// /proc/breenix/mapping-cache - largest root mapping caches
     MappingCache,
+    /// /proc/breenix/pagecache - page-cache counters (`absent_bound`)
+    PageCache,
     /// Suite-only stage fault handoff to the userspace renderer.
     StageControl,
     /// Actual producer markers reached in boot-path order.
@@ -248,6 +250,7 @@ impl ProcEntryType {
             ProcEntryType::Filesystems => "filesystems",
             ProcEntryType::FsMutationCosts => "fs-mutation-costs",
             ProcEntryType::MappingCache => "mapping-cache",
+            ProcEntryType::PageCache => "pagecache",
             ProcEntryType::Frames => "frames",
             ProcEntryType::Kmem => "kmem",
             ProcEntryType::WindowPipeline => "window-pipeline",
@@ -341,6 +344,7 @@ impl ProcEntryType {
             ProcEntryType::Filesystems => "/proc/breenix/filesystems",
             ProcEntryType::FsMutationCosts => "/proc/breenix/fs-mutation-costs",
             ProcEntryType::MappingCache => "/proc/breenix/mapping-cache",
+            ProcEntryType::PageCache => "/proc/breenix/pagecache",
             ProcEntryType::Frames => "/proc/breenix/frames",
             ProcEntryType::Kmem => "/proc/breenix/kmem",
             ProcEntryType::WindowPipeline => "/proc/breenix/window-pipeline",
@@ -437,6 +441,7 @@ impl ProcEntryType {
             ProcEntryType::MappingCache => 225,
             ProcEntryType::Frames => 203,
             ProcEntryType::Kmem => 226,
+            ProcEntryType::PageCache => 227,
             ProcEntryType::WindowPipeline => 220,
             ProcEntryType::WindowPipelineFull => 221,
             ProcEntryType::InputLedger => 218,
@@ -604,6 +609,7 @@ pub fn init() {
     procfs.entries.push(ProcEntry::new(ProcEntryType::Ext2));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Frames));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Kmem));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::PageCache));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Filesystems));
     procfs.entries.push(ProcEntry::new(ProcEntryType::FsMutationCosts));
     procfs.entries.push(ProcEntry::new(ProcEntryType::MappingCache));
@@ -764,7 +770,7 @@ pub fn list_entries() -> Result<Vec<String>, i32> {
     {
         let procfs = PROCFS.lock();
         for e in procfs.entries.iter().filter(|e| {
-            if e.entry_type == ProcEntryType::Kmem {
+            if matches!(e.entry_type, ProcEntryType::Kmem | ProcEntryType::PageCache) {
                 return false;
             }
             !matches!(
@@ -942,7 +948,7 @@ pub fn list_breenix_entries() -> Vec<String> {
         .entries
         .iter()
         .filter(|e| {
-            if e.entry_type == ProcEntryType::Kmem {
+            if matches!(e.entry_type, ProcEntryType::Kmem | ProcEntryType::PageCache) {
                 return true;
             }
             matches!(e.entry_type, ProcEntryType::BreenixTesting|ProcEntryType::DisplayCrc|ProcEntryType::ScreenProof|ProcEntryType::ScreenCheckpoints|ProcEntryType::ShowcasePace|ProcEntryType::StageControl|ProcEntryType::BootRibbon|ProcEntryType::BootSerial|ProcEntryType::BootSerialTimed|ProcEntryType::StageComposites|ProcEntryType::CompositorStatus|ProcEntryType::Composites|ProcEntryType::WindowPipeline|ProcEntryType::WindowPipelineFull|ProcEntryType::InputLedger|ProcEntryType::InputReplay)
@@ -1092,6 +1098,13 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
             text(report)
         }
         ProcEntryType::Frames => generate_frames().map(String::into_bytes),
+        ProcEntryType::PageCache => {
+            use core::fmt::Write;
+            let mut report = String::new();
+            report.try_reserve_exact(40).map_err(|_| -12)?;
+            let _ = writeln!(report, "absent_bound {}", crate::memory::file_map::absent_bound());
+            text(report)
+        }
         ProcEntryType::Kmem => {
             // 3 frame-pool lines and 14 allocator lines, each at most 48 bytes.
             let mut report = String::new();

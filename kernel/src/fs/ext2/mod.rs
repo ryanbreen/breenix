@@ -190,7 +190,10 @@ impl Ext2Fs {
         mount_id: usize,
         cached: bool,
     ) -> Result<Self, &'static str> {
-        // Read the superblock
+        // The allocator and file mappings use 512-byte device sectors.
+        if device.block_size() != 512 {
+            return Err("ext2 requires 512-byte device sectors");
+        }
         let superblock = Ext2Superblock::read_from(device.as_ref())
             .map_err(|_| "Failed to read ext2 superblock")?;
 

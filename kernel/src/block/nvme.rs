@@ -3,11 +3,8 @@
 //! Implements the BlockDevice trait for an NVMe namespace (x86-64).
 
 use super::{BlockDevice, BlockError};
-use crate::drivers::nvme::{self, NvmeController, SECTOR_SIZE};
+use crate::drivers::nvme::{self, NvmeController};
 use alloc::sync::Arc;
-
-/// Sectors one NVMe command moves (one 4 KiB page).
-const SECTORS_PER_COMMAND: usize = 8;
 
 /// The namespace of one attached NVMe controller.
 pub struct NvmeBlockDevice {
@@ -37,15 +34,7 @@ impl BlockDevice for NvmeBlockDevice {
     }
 
     fn read_block(&self, block_num: u64, buf: &mut [u8]) -> Result<(), BlockError> {
-        if buf.len() < SECTOR_SIZE {
-            return Err(BlockError::IoError);
-        }
-        if block_num >= self.num_blocks() {
-            return Err(BlockError::OutOfBounds);
-        }
-        self.controller
-            .read_sectors(block_num, &mut buf[..SECTOR_SIZE])
-            .map_err(BlockError::from)
+        self.read_blocks(block_num, 1, buf)
     }
 
     fn read_blocks(
@@ -54,8 +43,9 @@ impl BlockDevice for NvmeBlockDevice {
         block_count: usize,
         buf: &mut [u8],
     ) -> Result<(), BlockError> {
+        let size = self.block_size();
         let len = block_count
-            .checked_mul(SECTOR_SIZE)
+            .checked_mul(size)
             .ok_or(BlockError::IoError)?;
         if buf.len() < len {
             return Err(BlockError::IoError);
@@ -69,12 +59,12 @@ impl BlockDevice for NvmeBlockDevice {
 
         let mut done = 0;
         while done < block_count {
-            let count = (block_count - done).min(SECTORS_PER_COMMAND);
-            let offset = done * SECTOR_SIZE;
+            let count = (block_count - done).min(self.controller.blocks_per_command());
+            let offset = done * size;
             self.controller
                 .read_sectors(
                     start_block + done as u64,
-                    &mut buf[offset..offset + count * SECTOR_SIZE],
+                    &mut buf[offset..offset + count * size],
                 )
                 .map_err(BlockError::from)?;
             done += count;
@@ -83,19 +73,41 @@ impl BlockDevice for NvmeBlockDevice {
     }
 
     fn write_block(&self, block_num: u64, buf: &[u8]) -> Result<(), BlockError> {
-        if buf.len() < SECTOR_SIZE {
+        let size = self.block_size();
+        if buf.len() < size {
             return Err(BlockError::IoError);
         }
         if block_num >= self.num_blocks() {
             return Err(BlockError::OutOfBounds);
         }
         self.controller
-            .write_sectors(block_num, &buf[..SECTOR_SIZE])
+            .write_sectors(block_num, &buf[..size])
             .map_err(BlockError::from)
     }
 
+    fn write_blocks(&self, start: u64, count: usize, buf: &[u8]) -> Result<(), BlockError> {
+        let size = self.block_size();
+        let bytes = count.checked_mul(size).ok_or(BlockError::IoError)?;
+        let buf = buf.get(..bytes).ok_or(BlockError::IoError)?;
+        if start.checked_add(count as u64).is_none_or(|end| end > self.num_blocks()) {
+            return Err(BlockError::OutOfBounds);
+        }
+        if count == 0 {
+            return Ok(());
+        }
+        let disk = super::HardwareDisk::Nvme(Arc::as_ptr(&self.controller) as usize);
+        if !super::hardware_write_allowed(disk, start, count) {
+            return Err(BlockError::IoError);
+        }
+        // Keep the single-LBA writer until the whole-slot publication change.
+        for (index, block) in buf.chunks_exact(size).enumerate() {
+            self.controller.write_sectors(start + index as u64, block).map_err(BlockError::from)?;
+        }
+        Ok(())
+    }
+
     fn block_size(&self) -> usize {
-        SECTOR_SIZE
+        self.controller.logical_bytes()
     }
 
     fn num_blocks(&self) -> u64 {

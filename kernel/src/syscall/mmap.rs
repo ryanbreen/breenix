@@ -544,12 +544,8 @@ fn map_file(
         object.map.abandon_population();
         errno
     };
-    let _population = file_map::populate(&handle, pgoff, vma.size() / PAGE_SIZE).map_err(
-        |error| match error {
-            MapError::NoMemory => ErrorCode::OutOfMemory as u64,
-            MapError::Io => ErrorCode::IoError as u64,
-        },
-    )?;
+    let _population = file_map::populate(&handle, pgoff, vma.size() / PAGE_SIZE)
+        .map_err(|error: MapError| error.errno() as u64)?;
     let _binding = handle.map.allow_mapping_binding().map_err(|errno| abandon(errno as u64))?;
     let mut vma = Some(vma);
     let mut result = Err(ErrorCode::IoError as u64);

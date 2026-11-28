@@ -308,3 +308,38 @@ fn virtio_caller_rule_refusal_returns_eio_without_latching() {
         assert_eq!(disk.writes.load(Ordering::Relaxed), writes);
     }
 }
+
+// E3-2 review: mmap's eager population keeps the backend's errno. A data read
+// the storage refused before issue, or that a kill interrupted, aborts
+// population with that read's errno (EAGAIN, EINTR; EIO for the E2.4 caller
+// rule's refusal), so mmap tells
+// the caller what read() on the same file would.
+#[test]
+fn population_keeps_the_backend_read_errno() {
+    use crate::block::read_failure::AhciReadError;
+    use crate::memory::file_map::populate;
+    let disk = Arc::new(Disk { bytes: HostMutex::new(vec![0; 64 * 1024 * 1024]),
+        fail_reads: core::sync::atomic::AtomicBool::new(false), read_error: HostMutex::new(None), writes: AtomicU64::new(0) });
+    let sb = Superblock { fs_uuid: [0x70; 16], generation: 1, slot: 1,
+        total_blocks: 16384, global_reserve: 4096, next_root_id: 2,
+        ..Superblock::default() };
+    let mut files = Files::format(DeviceStore(disk.as_ref()), &sb).unwrap();
+    let ino = files.create(2, b"mapped", 0o600, Time::default()).unwrap();
+    files.write(disk.as_ref(), ino, 0, &[0x5a; 4096], Time::default()).unwrap();
+    files.fsync(disk.as_ref(), &mut Committer::format(sb)).unwrap();
+    drop(files);
+    // A fresh mount: the file's data block is not in its block cache.
+    let fs = BreenFs::mount_writable(disk.clone(), Arc::new(BufferCache::new(NoWait)), 80, 1).unwrap();
+    let node = fs.open(ino).unwrap();
+    for (error, expected) in [
+        (AhciReadError::WaitPublication, EAGAIN),
+        (AhciReadError::Interrupted, EINTR),
+        (AhciReadError::NotSleepable, EIO),
+    ] {
+        *disk.read_error.lock().unwrap() = Some(BlockError::AhciRead(error));
+        let errno = populate(&node, 0, 1).err().map(|error| error.errno());
+        *disk.read_error.lock().unwrap() = None;
+        assert_eq!(errno, Some(expected), "population reported {errno:?} for {error:?}");
+    }
+    assert!(populate(&node, 0, 1).is_ok());
+}

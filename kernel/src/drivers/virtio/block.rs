@@ -18,8 +18,9 @@
 //! - geometry (at offset 16): Disk geometry
 
 
+use super::blk_config;
 use super::blk_queue::{
-    request_type, Admission, BlkQueue, ChainStorage, Desc, DmaMemory, Drain, Limits, RangeTable,
+    self, request_type, Admission, BlkQueue, ChainStorage, Desc, DmaMemory, Drain, RangeTable,
     RequestError, RingMemory, SubmitError, MAX_CHAINS, MAX_SEGMENTS,
 };
 use super::pci_transport::VirtioPciDevice;
@@ -205,18 +206,12 @@ impl Drop for BlockRequestGuard<'_> {
 
 /// VirtIO block feature bits
 mod features {
-    /// Maximum size of any single segment is in size_max
-    pub const SIZE_MAX: u32 = 1 << 1;
-    /// Maximum number of segments in a request is in seg_max
-    pub const SEG_MAX: u32 = 1 << 2;
-    /// Device is read-only.
     pub const RO: u32 = 1 << 5;
-    /// Cache flush command support
     pub const FLUSH: u32 = 1 << 9;
 }
 
 /// Sector size in bytes
-pub const SECTOR_SIZE: usize = 512;
+pub const SECTOR_SIZE: usize = blk_queue::SECTOR_BYTES;
 
 /// Sectors the sector cache holds: 512 KiB.
 const CACHE_SECTORS: usize = 1024;
@@ -496,21 +491,33 @@ pub struct VirtioBlockDevice {
 impl VirtioBlockDevice {
     /// Initialize a VirtIO block device from a PCI device
     pub fn new(pci_dev: &PciDevice) -> Result<Self, &'static str> {
-        let requested = features::SIZE_MAX | features::SEG_MAX | features::RO | features::FLUSH;
+        let requested = blk_config::SIZE_MAX | blk_config::SEG_MAX | blk_config::BLK_SIZE
+            | blk_config::TOPOLOGY | u64::from(features::RO | features::FLUSH);
         pci_dev.enable_intx();
-        let (device, queue, capacity, flush_supported) =
+        let (device, queue, config, offered) =
             if pci_dev.device_id == crate::drivers::pci::VIRTIO_BLOCK_DEVICE_ID_MODERN {
                 #[cfg(target_arch = "x86_64")]
                 if !matches!(pci_dev.interrupt_line, 10 | 11) {
                     return Err("Modern VirtIO block: unsupported PCI interrupt line");
                 }
-                const VERSION_1: u64 = 1 << 32;
                 let mut device = VirtioPciDevice::probe(pci_dev.clone())
                     .ok_or("No modern VirtIO PCI transport")?;
-                if device.read_device_features() & VERSION_1 == 0 {
+                if device.read_device_features() & blk_config::VERSION_1 == 0 {
                     return Err("Modern VirtIO requires VERSION_1");
                 }
-                device.init(VERSION_1 | requested as u64)?;
+                let requested = requested | blk_config::VERSION_1;
+                device.init(requested)?;
+                let offered = device.device_features() & requested;
+                if device.config_bytes() < blk_config::required_config_bytes(offered) {
+                    return Err("Incomplete VirtIO block configuration");
+                }
+                let config = blk_config::read_config(
+                    offered,
+                    || Some(device.config_generation()),
+                    |offset| device.read_config_u8(offset),
+                    |offset| device.read_config_u16(offset),
+                    |offset| device.read_config_u32(offset),
+                )?;
                 device.set_config_msix_vector(u16::MAX);
                 device.select_queue(0);
                 let max_size = device.get_queue_num_max();
@@ -531,33 +538,21 @@ impl VirtioBlockDevice {
                     return Err("VirtIO queue doorbell outside notify capability");
                 }
                 device.cache_queue_notify_addr(0);
-                // Capacity is a multiword config field; retry if its generation changes.
-                let mut capacity = None;
-                for _ in 0..100 {
-                    let generation = device.config_generation();
-                    let value = device.read_config_u64(0);
-                    if device.config_generation() == generation {
-                        capacity = Some(value);
-                        break;
-                    }
-                }
-                let capacity = capacity.ok_or("Unstable VirtIO block capacity")?;
-                let flush_supported = device.device_features() & features::FLUSH as u64 != 0;
-                device.driver_ok();
-                (
-                    BlockTransport::Modern(device),
-                    queue,
-                    capacity,
-                    flush_supported,
-                )
+                (BlockTransport::Modern(device), queue, config, offered)
             } else {
                 let io_bar = pci_dev.get_io_bar().ok_or("No I/O BAR found")?;
                 pci_dev.enable_bus_master();
                 pci_dev.enable_io_space();
                 let mut device = VirtioDevice::new(io_bar.address as u16);
-                device.init(requested)?;
-                let capacity = device.read_config_u64(0);
-                let flush_supported = device.read_device_features() & features::FLUSH != 0;
+                device.init(requested as u32)?;
+                let offered = u64::from(device.read_device_features()) & requested;
+                let config = blk_config::read_config(
+                    offered,
+                    || None,
+                    |offset| device.read_config_u8(offset as u16),
+                    |offset| device.read_config_u16(offset as u16),
+                    |offset| device.read_config_u32(offset as u16),
+                )?;
                 device.select_queue(0);
                 // The legacy queue-size register is read-only; use its exact size.
                 let queue = Virtqueue::new(device.get_queue_size())?;
@@ -570,43 +565,13 @@ impl VirtioBlockDevice {
                     );
                     return Err("Queue address was not set correctly");
                 }
-                device.driver_ok();
-                (
-                    BlockTransport::Legacy(device),
-                    queue,
-                    capacity,
-                    flush_supported,
-                )
+                (BlockTransport::Legacy(device), queue, config, offered)
             };
 
-        // SIZE_MAX bounds one data descriptor and SEG_MAX a request's data
-        // descriptors when negotiated; only the modern interface's used
-        // lengths are trusted (virtio 1.2 section 5.2.6.3).
-        let (offered, modern) = match &device {
-            BlockTransport::Legacy(d) => (u64::from(d.read_device_features()), false),
-            BlockTransport::Modern(d) => (d.device_features(), true),
-        };
-        let config_u32 = |offset: u16| match &device {
-            BlockTransport::Legacy(d) => d.read_config_u32(offset),
-            BlockTransport::Modern(d) => d.read_config_u32(offset as usize),
-        };
-        let limits = Limits {
-            size_max: if offered & features::SIZE_MAX as u64 != 0 { config_u32(8) } else { 0 },
-            seg_max: if offered & features::SEG_MAX as u64 != 0 { config_u32(12) } else { 0 },
-            exact_used_len: modern,
-        };
-        if limits.size_max != 0 && (limits.size_max as usize) < SECTOR_SIZE {
-            return Err("VirtIO maximum segment smaller than a sector");
-        }
-        if offered & features::SEG_MAX as u64 != 0 && limits.seg_max == 0 {
-            return Err("VirtIO block device allows no data segments");
-        }
-
-        log::info!(
-            "VirtIO block: capacity {} sectors ({} MiB)",
-            capacity,
-            capacity / 2048
-        );
+        let capacity = config.capacity;
+        let limits = config.limits;
+        let flush_supported = offered & u64::from(features::FLUSH) != 0;
+        log::info!("VirtIO block configuration: {:?}", config);
 
         // Headers and status bytes share one page; data frames are taken one
         // by one, within the budget and the ring.
@@ -657,6 +622,11 @@ impl VirtioBlockDevice {
             made,
             chain_bytes / 1024
         );
+
+        match &device {
+            BlockTransport::Legacy(device) => device.driver_ok(),
+            BlockTransport::Modern(device) => device.driver_ok(),
+        }
 
         let read_only = offered & features::RO as u64 != 0;
         Ok(VirtioBlockDevice {

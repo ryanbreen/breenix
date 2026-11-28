@@ -21,6 +21,7 @@
 #[cfg(target_arch = "x86_64")]
 pub mod block;
 pub mod blk_queue;
+mod blk_config;
 #[cfg(target_arch = "x86_64")]
 pub mod net_legacy;
 #[cfg(target_arch = "x86_64")]
@@ -208,6 +209,11 @@ impl VirtioDevice {
     /// Read a byte from device-specific configuration
     pub fn read_config_u8(&self, offset: u16) -> u8 {
         self.read_u8(regs::DEVICE_CONFIG + offset)
+    }
+
+    /// Read a 16-bit field from device-specific configuration.
+    fn read_config_u16(&self, offset: u16) -> u16 {
+        self.read_u16(regs::DEVICE_CONFIG + offset)
     }
 
     /// Read a u32 from device-specific configuration
