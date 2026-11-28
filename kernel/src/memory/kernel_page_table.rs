@@ -46,7 +46,7 @@ fn table_ptr(phys_mem_offset: VirtAddr, frame: PhysFrame) -> *mut PageTable {
     (phys_mem_offset + frame.start_address().as_u64()).as_mut_ptr()
 }
 
-/// Install a PDPT for every kernel slot before the master and process roots
+/// Install a PDPT for each of the 256 kernel slots before the master and process roots
 /// copy the boot PML4. The boot direct map remains usable through the migration.
 pub fn init(phys_mem_offset: VirtAddr) {
     let (boot_frame, _) = Cr3::read();
@@ -204,7 +204,7 @@ pub fn build_master_kernel_pml4() {
         let master = &*master;
 
         // Prebuild the existing 128 MiB kernel-stack and 16 MiB IST-stack
-        // ranges so their runtime mappers never race to install a PD or PT.
+        // ranges so their runtime mappers do not race to install a PD or PT.
         // Use their boot-owned PDPTs and leave any existing entries intact.
         for (slot, pt_count) in [(402, 64), (403, 8)] {
             let pdpt_frame = master[slot].frame().expect("Stack PDPT not installed");

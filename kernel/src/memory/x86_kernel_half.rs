@@ -3,9 +3,9 @@ use x86_64::{
     VirtAddr,
 };
 
-/// Install a boot-owned PDPT for every kernel PML4 slot.
+/// Install a boot-owned PDPT for each of the 256 kernel PML4 slots.
 ///
-/// The offset must map the boot tables and every frame returned by the allocator.
+/// The offset must map the boot tables and each frame returned by the allocator.
 /// Allocated frames must be disjoint from each other and from the boot tables.
 pub(super) unsafe fn migrate_kernel_half(
     pml4: &mut PageTable,
