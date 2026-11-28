@@ -542,6 +542,10 @@ concurrency, loss or RTT named in the prediction.
   least 1500 that the buffers or merging can hold, because without it a
   conforming device sends frames of at most 1514 bytes, which fit one 2 KiB
   receive buffer, and `MRG_RXBUF` would not merge (section 5.1.4.2 says SHOULD).
+  A merged MTU frame must fit 16 receive buffers (an MTU of at most 32742),
+  because features are fixed before the queues are sized (section 3.1.1),
+  16 is the smallest receive queue the driver sets up, and section 5.1.6.3.1
+  requires buffers for one MTU-sized packet.
 - A legacy device without `VIRTIO_F_ANY_LAYOUT` gets the header in its own
   descriptor on both queues and no `MRG_RXBUF`, because section 5.1.6.6
   requires that framing and a merged buffer begins with the header.

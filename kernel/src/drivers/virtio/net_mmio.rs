@@ -299,9 +299,14 @@ fn negotiate(offered: u64, version: u32, mtu: u16) -> Result<Negotiated, &'stati
     let hdr_len = if modern || merge { 12 } else { 10 };
     let mut max_frame = MAX_PACKET_SIZE;
     // The stack sends 1500-byte packets, so a smaller MTU is not taken; a
-    // larger one must fit the receive buffers or merge across them.
+    // larger one must fit one receive buffer or, merged, the posted buffers
+    // (section 5.1.6.3.1). Features are fixed before the queues are sized
+    // (section 3.1.1), and no receive queue is set up with fewer than
+    // MIN_DEPTH buffers (one descriptor each when merging), so a merged frame
+    // must fit that many.
     let mtu_frame = usize::from(mtu) + ETHERNET_HEADER;
-    if offered & MTU != 0 && mtu >= 1500 && (merge || hdr_len + mtu_frame <= BUF) {
+    let room = if merge { usize::from(MIN_DEPTH) * BUF } else { BUF };
+    if offered & MTU != 0 && mtu >= 1500 && hdr_len + mtu_frame <= room {
         want |= MTU;
         max_frame = mtu_frame;
     }
