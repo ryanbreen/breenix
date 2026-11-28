@@ -1,8 +1,8 @@
 """Verify a staged E6 runtime with host instruction emulation, without a boot.
 
 Requires Unicorn and pyelftools. Pass the staging parent (x86_64 and aarch64
-subdirectories), or use --headers-only to check the staged header contract
-with the source headers and the stage's generation selector.
+subdirectories). Use --headers-only to check the source headers, or
+--thread-stack-only to run just the Rust thread stack probe.
 """
 import argparse
 from io import BytesIO
@@ -125,7 +125,10 @@ class Process:
             267: "readlinkat", 302: "limit", 318: "random",
         })
         nr = self.cpu.reg_read(self.nr)
-        assert nr in numbers, f"unexpected {'ARM64' if self.arm else 'x86-64'} syscall {nr}"
+        assert nr in numbers, (
+            f"unexpected {'ARM64' if self.arm else 'x86-64'} syscall {nr}: "
+            f"{self.diagnostics.decode(errors='replace')}"
+        )
         op = numbers[nr]
         args = [self.cpu.reg_read(reg) for reg in self.args]
         self.cpu.reg_write(self.ret, self.handle(op, args) % (1 << 64))
@@ -374,13 +377,36 @@ def verify_artifacts(root, work, clang, lld, readelf, arch):
     print(f"{arch}: both static links and interpreted startup passed")
 
 
+def check_thread_stack(root, work, rust_lld, arch):
+    target = f"{arch}-breenix"
+    lib = root / "sysroot/usr/lib"
+    probe = work / "rust-thread-stack"
+    command(
+        "rustc", "--edition=2021", "-Dwarnings", "-Copt-level=2",
+        "--target", root / "targets" / f"{target}.json", "--sysroot", root / "sysroot",
+        f"-Clinker={rust_lld}", "-Cdefault-linker-libraries=no", f"-Lnative={lib}",
+        "-lstatic=c", f"-Clink-arg=-T{lib / 'linker.ld'}", "-Clink-arg=-static",
+        "-Clink-arg=--allow-multiple-definition", "-Clink-arg=--wrap=pthread_create",
+        SOURCE / "thread_stack.rs", "-o", probe,
+    )
+    files = {"/probe": probe.read_bytes()}
+    Process(arch, files).run(["/probe", "16384"])
+    if arch == "x86_64":
+        # Synthetic AVX-512-sized signal frame plus the 14336-byte pthread reserve.
+        Process(arch, files).run(["/probe", "17664"], [(51, 3328)])
+    print(f"{arch}: Rust thread builder passed the runtime minimum to pthread_create")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("root", type=Path, nargs="?")
-    parser.add_argument("--headers-only", action="store_true")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--headers-only", action="store_true")
+    modes.add_argument("--thread-stack-only", action="store_true")
     parser.add_argument("--arch", choices=("x86_64", "aarch64"))
     args = parser.parse_args()
-    clang = command(ROOT / "scripts/breenix-cc", "--arch", "aarch64", "--tool-dir").strip() + "/clang"
+    if not args.thread_stack_only:
+        clang = command(ROOT / "scripts/breenix-cc", "--arch", "aarch64", "--tool-dir").strip() + "/clang"
     if args.headers_only:
         verify_headers(clang, ROOT / "libs/libbreenix-libc/include", "-D__BREENIX_E6=1")
         return
@@ -391,8 +417,11 @@ def main():
     for arch in ((args.arch,) if args.arch else ("x86_64", "aarch64")):
         root = args.root.resolve() / arch
         with tempfile.TemporaryDirectory(prefix="e6-runtime-", dir=root.parent) as directory:
-            verify_artifacts(root, Path(directory), clang, tools / "gcc-ld/ld.lld",
-                             tools / "llvm-readobj", arch)
+            work = Path(directory)
+            if not args.thread_stack_only:
+                verify_artifacts(root, work, clang, tools / "gcc-ld/ld.lld",
+                                 tools / "llvm-readobj", arch)
+            check_thread_stack(root, work, tools / "rust-lld", arch)
 
 
 if __name__ == "__main__":
