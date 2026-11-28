@@ -145,8 +145,9 @@ impl DepotState {
     /// At the first exchange after an interval: detach the working set's
     /// surplus, grow the magazine size (`size`, an index in `ROUNDS`) if the
     /// lock was contended, and start the next interval. An exchange that may
-    /// wait (`wait`) gets the surplus to return, with any pending surplus;
-    /// one that may not leaves the surplus pending and gets none (6.6).
+    /// wait (`wait`) gets the surplus to return, plus the surplus already
+    /// pending; one that may not leaves the surplus pending and gets an empty
+    /// one (6.6).
     unsafe fn update(&mut self, now: u64, contentions: u64, size: &AtomicUsize, wait: bool) -> Surplus {
         let mut surplus = self.interval(now, contentions, size);
         if wait {
@@ -485,9 +486,10 @@ impl<B: Backing> Kmem<B> {
             core::mem::swap(&mut pair.loaded, &mut pair.previous);
         }
         if pair.loaded.is_null() {
-            // No magazine yet. The request's object comes first, so a new
-            // magazine never takes the page the request needed; the magazine
-            // is built only if a page is left, and filled as far as one goes.
+            // This CPU has no magazine for the class yet. The request's
+            // object comes first, so the request's page goes to the request;
+            // a magazine is built after it if a page is left, and filled as
+            // far as the slabs go.
             let object = self.take_one(class, wait)?;
             if let Some(magazine) = self.new_magazine(size, wait) {
                 pair.loaded = magazine;
@@ -505,7 +507,7 @@ impl<B: Backing> Kmem<B> {
     }
 
     /// Fill an empty magazine from the class's slabs; at least one round on
-    /// success. Every round slot holds an initialized pointer: `new_magazine`
+    /// success. The round slots hold initialized pointers: `new_magazine`
     /// writes them null, and a reused magazine's hold earlier rounds.
     unsafe fn fill(&self, class: usize, magazine: *mut Magazine, wait: bool) -> Result<(), Short> {
         unsafe {

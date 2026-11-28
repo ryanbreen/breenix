@@ -358,10 +358,10 @@ impl Default for Stats {
 
 /// The logical CPU that a per-CPU base register's value `base` names, for
 /// the slab layer's slot lookup (5.4a). The per-CPU array starts at `first`
-/// and holds `count` entries `stride` bytes apart. Only the address of entry
-/// `n` names CPU `n`. Any other value names no CPU and is never read
-/// through: 0, or whatever firmware left in a register whose reset value is
-/// UNKNOWN (ARM64's TPIDR_EL1).
+/// and holds `count` entries `stride` bytes apart. The address of entry `n`
+/// names CPU `n`. Other values, such as 0 or a value firmware left in a
+/// register whose reset value is UNKNOWN (ARM64's TPIDR_EL1), give an empty
+/// `Option` and are not read through.
 pub fn cpu_of_base(base: u64, first: u64, stride: u64, count: usize) -> Option<usize> {
     let offset = base.checked_sub(first)?;
     if stride == 0 || offset % stride != 0 {
@@ -549,8 +549,8 @@ impl<M: Pool, R: Pool, S: Small> Front<'_, M, R, S> {
     /// frames given back.
     ///
     /// In an interrupt handler, or inside a shrinker, the request is
-    /// `Atomic`, which runs no reclaim (6.6), so it returns 0. Otherwise it
-    /// drains this CPU's magazines and each other CPU's, all with `try_lock`
+    /// `Atomic`, which skips steps 2-4 (6.6), so it returns 0. Otherwise it
+    /// drains this CPU's magazines and then each other CPU's with `try_lock`
     /// (steps 1-2), then runs the shrinkers, the slab shrinker first, for the
     /// frames plus the batch (steps 3-4).
     pub fn reclaim_frames<C: Cpu>(&self, frames: usize, cpu: &C) -> usize {

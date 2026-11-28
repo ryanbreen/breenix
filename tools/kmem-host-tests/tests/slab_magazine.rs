@@ -633,9 +633,10 @@ fn each_class_matches_the_plans_page_arithmetic() {
 }
 
 /// ARM64 leaves TPIDR_EL1's reset value UNKNOWN, and firmware runs before the
-/// kernel, so the register may hold any value until `per_cpu_aarch64::init_cpu`
-/// sets it. Only the address of an entry of the per-CPU array names a CPU;
-/// any other value must name none, so the slab layer never reads through it.
+/// kernel, so the register may hold a leftover value until
+/// `per_cpu_aarch64::init_cpu` sets it. The address of an entry of the per-CPU
+/// array names a CPU; the 7 other values below must give an empty `Option`,
+/// so the slab layer does not read through them.
 #[test]
 fn only_a_per_cpu_array_entry_names_a_cpu() {
     let (first, stride, count) = (0xffff_0000_4010_0000u64, 0x140u64, 8usize);
@@ -778,9 +779,9 @@ fn buffers_a_shrinker_frees_reach_the_page_layer_before_the_retry() {
 }
 
 /// A page fault asks the frame allocator for a frame, not the slab layer.
-/// When there is none, and CPU 1's magazines hold 16 freed page-sized
-/// objects, the frame allocator's slow path on CPU 0 must give their pages
-/// back (7.2 steps 1-4). From an interrupt handler it must not run (6.6).
+/// With the page layer full and 16 freed page-sized objects in CPU 1's
+/// magazines, the frame allocator's slow path on CPU 0 must give their pages
+/// back (7.2 steps 1-4). From an interrupt handler it must return 0 (6.6).
 #[test]
 fn a_frame_request_with_no_frame_gets_back_pages_other_cpus_magazines_hold() {
     let world = World::registered(2);

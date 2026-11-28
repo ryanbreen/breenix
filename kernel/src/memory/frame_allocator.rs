@@ -139,8 +139,8 @@ fn with_free_frames<R>(f: impl FnOnce(&mut FreeList) -> R) -> R {
     crate::arch_without_interrupts(|| f(&mut FREE_FRAMES.lock()))
 }
 
-/// `with_free_frames` with one `try_lock`: `None` when another CPU holds the
-/// free list.
+/// `with_free_frames` with one `try_lock`, returning an empty `Option` while
+/// another CPU holds the free list.
 fn try_with_free_frames<R>(f: impl FnOnce(&mut FreeList) -> R) -> Option<R> {
     crate::arch_without_interrupts(|| Some(f(&mut *FREE_FRAMES.try_lock()?)))
 }
@@ -492,10 +492,11 @@ fn simulated_oom() -> bool {
 
 /// A candidate the metadata refuses to claim is skipped: it is live, mapped
 /// or untracked, so handing it out could give it two owners.
-/// With no frame, the allocator's slow path runs once (E1 plan 7.2): it
-/// drains the CPUs' magazines and runs the shrinkers, so pages the slab
-/// layer holds idle can back the request. In an interrupt handler, or inside
-/// a shrinker, it gives back nothing, and the request fails.
+///
+/// When the first attempt finds 0 frames, the allocator's slow path runs once
+/// (E1 plan 7.2): it drains the CPUs' magazines and runs the shrinkers, so
+/// pages the slab layer holds idle can back the request. In an interrupt
+/// handler, or inside a shrinker, it returns 0 frames, and the request fails.
 fn allocate_claimed(site: u16, owner: u8) -> Option<FrameLease> {
     if let Ok(lease) = claimed_from(true, true, site, owner) {
         return Some(lease);
