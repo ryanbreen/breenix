@@ -171,8 +171,12 @@ lost.
 The deploy runs under the existing live-flash lock on the boot host and the operator's `deploy-lock.sh` target for
 the R240. Live deliveries take the same lock, so a pet change does not race a deploy. The epoch check (4.6)
 refuses a deploy when a change skipped the lock. On the box, each step is
-`sudo -n /sbin/persistent-install paired ...` over the strict-host-key SSH session the live flash already uses.
-The exception is the first deploy, which uses a bootstrap installer (4.8).
+`sudo -n <tool> paired ...` over the strict-host-key SSH session the live flash already uses, where `<tool>` is the
+installer the host staged for this deploy (4.8), not the running generation's `/sbin/persistent-install`.
+
+The host stages before any step runs on the box: first the tool (4.8), then the inventory, with `bput` (length
+and SHA-256 checked, rename as the commit point) to `/root/.breenix-flash/<id>/inventory.tsv`. `paired begin`
+reads the inventory for its free-space check, so the inventory must be present first.
 
 ### 4.0 How the installer writes a path
 
@@ -216,8 +220,7 @@ a window, so the paired installer uses descriptors instead.
 
 ### 4.2 Upload, with checksums
 
-1. The host publishes the inventory with `bput` (length and SHA-256 checked, rename as the commit point) to
-   `/root/.breenix-flash/<id>/inventory.tsv`.
+1. The inventory is already staged (section 4's preamble).
 2. `paired have <id>` prints the inventory rows the clone already satisfies byte for byte: same type, mode, owner,
    size and SHA-256 at the same path. Only the remaining rows need bytes from the host.
 3. The host writes each remaining regular file once, as a content-addressed object, then runs
@@ -344,12 +347,25 @@ persistent boot does today.
 
 ### 4.8 The installer that runs
 
-The deploy uses the running generation's `/sbin/persistent-install` when `paired protocol` prints
-`BREENIX-PAIRED 1`. Otherwise, which means the first deploy (the running root predates PR B), the host uses the
-payload's own `sbin/persistent-install`. It runs that binary from its staged object after the box checks the
-object's SHA-256. That binary must be built for the running kernel's ABI. The host refuses an E6 payload whose
-running generation lacks protocol 1. By the E6 flip, PR B's live run will have installed a generation that speaks
-protocol 1.
+Neither installer on the box can run the first paired deploy. Before PR B, the running generation's
+`/sbin/persistent-install` has no `paired` command. The payload's own copy sits in the draft only after `begin`
+and the upload, which need an installer to run. A payload built from a main that predates PR B also carries an
+installer without `paired`, so the trial could not run the cold verify (section 5) with its own copy.
+
+So each deploy brings its own tool, built by the host from the metal tools' commit (PR B's head for the live run)
+as a static program for the box's architecture:
+1. Before any step, the host publishes it with `bput` to `/root/.breenix-flash/tools/<sha256>/persistent-install`,
+   mode 0700. `/root` is the default tree's directory, shared by both pairs (vfs/boot.rs:200), and the sudo
+   policy's `permit %wheel as root nopass` (docs/users/design.md, sudo) lets the session run it as root.
+2. The host runs `sudo -n <tool> paired protocol` and requires `BREENIX-PAIRED 1` before any other step.
+3. The steps on the running system (section 4.1 to 4.6), and the trial's cold verify after the reboot, run that same file. It is
+   still present on the trial, because `/root` is shared, and the host rechecks its SHA-256 there before using it.
+
+The tool needs only the kernel's existing syscalls and the BreenFS ioctls of PR A, so it runs on the running and
+the trial kernel alike. If it cannot run on the trial (an ABI the trial kernel refuses), the cold verify fails,
+`committed` is not written, and the pair rolls back (section 5). The payload's own `/sbin/persistent-install` is
+installed as payload, like any other file, and the deploy does not run it. A tool directory that no retained
+deploy record names is removed by `paired reclaim`.
 
 ## 5. Try once, commit, roll back
 
@@ -357,7 +373,7 @@ protocol 1.
 metal_live_flash.py:246-263) gains three conditions:
 - `/proc/mounts` shows `/` as source `gen-<id>`, `rw`;
 - `/usr/share/factory/generation` reads `<id>`;
-- `paired verify <id> --booted` returns the inventory digest. This is the cold readback after a reboot.
+- `sudo -n <tool> paired verify <id> --booted`, run with the staged tool (4.8), returns the inventory digest. This is the cold readback after a reboot.
 
 Only then does the host publish `committed` (the token) with `bput` to `/root/.breenix-flash`. That boot stays up
 as the persistent session. The manager's next startup promotes the trial to CURRENT, and the old CURRENT, still
@@ -520,7 +536,7 @@ Scope: sections 4 to 6.
 |---|---|---|---|
 | T-B1 apply over a fixture clone | `tests/persistent_install/` host test, beside `tests/metal_replace_usr_host.rs` | A fixture clone with a baseline, an inventory and objects. After apply and verify: the payload rows equal the inventory; a pet file at an unmanaged path is kept; a locally changed managed file is moved to `.breenix-carried/<prev>/` with set-ID cleared; a dropped, unchanged managed file is removed; a BusyBox hard-link group across `/bin` and `/sbin`, a symlink and set-ID `su` are exact; mount points are untouched; a rerun after a cut at each file is idempotent. Path safety (4.0): with a pet symlink at `usr/lib` pointing outside the tree, at `usr/lib/breenix/rust-current`, and at `opt/breenix/rust`, the conversion and apply refuse, and the symlinks' targets (a fixture file standing in for one in `/home`) are byte-for-byte unchanged. | The check commit's stub routes `apply` to today's only in-place path, `replace_usr`, which leaves `/bin`, `/sbin` and `/lib` unchanged |
 | T-B2 manager version 2 | `scripts/metal/efi-stub/tests/live_sequence.rs` | The trial is refused for a missing root, a read-only root, or an image intent naming another userland. It is accepted when the three agree. Version 1 behaves exactly as today. | `Manifest::parse` rejects a seventh line |
-| T-B3 host flow | `tests/metal_live_flash_test.py` | `prepare --paired`: the slot intent names the new generation; the manifest carries the root line only for a version-2 manager. The retained set keeps the physical PREVIOUS's root when an acknowledged trial is not promoted (a stale base or a foreign NEXT), and drops a root only after a `promoted` line removes it from both physical slots. The commit check needs `/` to be `gen-<new>` `rw` plus the verify digest. A rollback receipt needs the old commit and `gen-<old>`. | Today's `prepare` names CURRENT's userland (metal_live_flash.py:100) |
+| T-B3 host flow | `tests/metal_live_flash_test.py` | `prepare --paired`: the slot intent names the new generation; the manifest carries the root line only for a version-2 manager. The retained set keeps the physical PREVIOUS's root when an acknowledged trial is not promoted (a stale base or a foreign NEXT), and drops a root only after a `promoted` line removes it from both physical slots. The commit check needs `/` to be `gen-<new>` `rw` plus the verify digest. A rollback receipt needs the old commit and `gen-<old>`. Staging order: the tool and the inventory are published, and `paired protocol` answers, before `paired begin`; the eight box subcommands and the cold verify invoke the staged tool path, not `/sbin/persistent-install`. | Today's `prepare` names CURRENT's userland (metal_live_flash.py:100) |
 
 **The live run on the R240** is the only box activity. It goes through the one-reboot path, under the
 persistent lease, with no netboot and no suites. Steps:
@@ -528,7 +544,8 @@ persistent lease, with no netboot and no suites. Steps:
 0. **Prerequisite.** The running kernel contains PR A. If the coordinator's batched kernel-only flash has not
    already carried it, PR B's brief names one kernel-only live flash of main.
 1. **One paired deploy of main.** The tools come from PR B's head. The kernel and the userland inventory are built
-   from `origin/main`. The installer is PR B's own build, staged as in 4.8, because main's installer predates the
+   from `origin/main`. The tool that runs the steps and the trial's cold verify is PR B's build, staged as in 4.8,
+   because main's installer, which the payload also carries, predates the
    protocol. The pair commits. Evidence:
    - `live-flash.json` (`result=committed`, `root=gen-<id1>`, `previousRoot`, `inventorySha256`, `carried`, `onBox`);
    - the serial's `live flash: trial` line;
