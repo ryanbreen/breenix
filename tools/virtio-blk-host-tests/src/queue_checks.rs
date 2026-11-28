@@ -372,7 +372,7 @@ fn a_slot_reports_the_tag_of_the_owner_whose_chain_completed() {
 fn a_used_entry_naming_a_staged_chain_stops_the_queue_and_keeps_the_chain() {
     // Chain A is published; chain B is built and its available entry
     // written, but `avail.idx` does not cover it yet. A device that returns
-    // B's head has named a chain it was never given (section 2.7.8): the
+    // B's head has named a chain it was not yet given (section 2.7.8): the
     // driver must not complete B, wake its owner or recycle its
     // descriptors while the staged entry still points at them.
     let (mem, mut dev, mut queue, mut dma) = setup(MODERN);
@@ -400,7 +400,7 @@ fn a_used_entry_naming_a_staged_chain_stops_the_queue_and_keeps_the_chain() {
 fn a_stopped_queue_publishes_no_staged_chain() {
     // Caller W stages a write; before W publishes, another caller's wait is
     // abandoned and the queue stops, so W's chain is lost and W gets an
-    // error. The device must then never see that write.
+    // error. The device must then not be given that write.
     let (mem, mut dev, mut queue, mut dma) = setup(MODERN);
     let w = queue.reserve(0x77).unwrap();
     queue.submit(&mut dma, w, request_type::OUT, 16, Some(&[0xc3; 1024]), 1024).unwrap();
@@ -415,8 +415,8 @@ fn a_stopped_queue_publishes_no_staged_chain() {
 fn a_small_ring_gets_a_shorter_chain_instead_of_no_device() {
     // Budget: 512 KiB of frames, as both drivers give a device.
     const BUDGET_FRAMES: usize = 128;
-    // A 16-frame chain needs 18 descriptors, so a 16-entry ring fits none
-    // of them: attach used to refuse the device on exactly this count.
+    // A 16-frame chain needs 18 descriptors, so a 16-entry ring fits 0 of
+    // them: attach used to refuse the device on exactly this count.
     assert_eq!(MODERN.chains_for(16, MAX_SEGMENTS), 0);
     // The plan shortens the chain until one fits, and adds no frame that
     // could carry no data.
@@ -426,7 +426,7 @@ fn a_small_ring_gets_a_shorter_chain_instead_of_no_device() {
     assert_eq!(Limits { seg_max: 1, ..MODERN }.chain_plan(16, MAX_SEGMENTS, BUDGET_FRAMES), Some((5, 1)));
     // A large ring keeps 8 chains of 64 KiB.
     assert_eq!(MODERN.chain_plan(256, MAX_SEGMENTS, BUDGET_FRAMES), Some((8, MAX_SEGMENTS)));
-    // Header, one data descriptor and status: a 2-entry ring fits nothing.
+    // Header, one data descriptor and status: a 2-entry ring fits no chain.
     assert_eq!(MODERN.chain_plan(2, MAX_SEGMENTS, BUDGET_FRAMES), None);
 
     // The planned chain runs a full-length write and read on the 16-entry ring.

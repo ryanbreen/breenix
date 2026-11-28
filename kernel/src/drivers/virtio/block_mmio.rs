@@ -677,8 +677,8 @@ fn with_engine<R>(device_index: usize, f: impl FnOnce(&mut BlkQueue<MmioRing>) -
     result
 }
 
-/// Every thread-side holder of the engine lock calls this after releasing
-/// it: an interrupt handler that found the lock held left its drain here.
+/// Each thread-side holder of the engine lock (with_engine and the queue
+/// report) calls this after releasing it: an interrupt handler that found the lock held left its drain here.
 fn drain_after_release(device_index: usize) {
     fence(Ordering::SeqCst);
     if QUEUES[device_index].drain_pending.load(Ordering::SeqCst) {

@@ -197,9 +197,9 @@ impl Limits {
 
     /// The chains a device gets, as (chains, frames per chain): the longest
     /// chain of up to `frames` frames that fits a ring of `size` and a budget
-    /// of `budget_frames` frames, without a frame that could carry no data,
-    /// and as many chains of that length as fit. None when not even a
-    /// one-frame chain (three descriptors) fits.
+    /// of `budget_frames` frames, stopping where one more frame would add 0
+    /// bytes, and as many chains of that length as fit. The result is empty
+    /// when a one-frame chain (three descriptors) does not fit.
     pub fn chain_plan(self, size: u16, frames: usize, budget_frames: usize) -> Option<(usize, usize)> {
         let mut plan = None;
         let mut carried = 0;
@@ -538,7 +538,7 @@ impl<R: RingMemory> BlkQueue<R> {
 
     /// Make the submitted chains visible with one index store, whichever
     /// caller staged them, and issue them. Returns whether the device needs a
-    /// notification. A stopped queue publishes nothing: its staged chains are
+    /// notification. A stopped queue stores no index: its staged chains are
     /// lost, and their callers have been told so.
     pub fn publish(&mut self) -> bool {
         if self.stopped || self.avail_idx == self.published_idx {
@@ -626,8 +626,8 @@ impl<R: RingMemory> BlkQueue<R> {
 
     /// Stop the queue with requests still on the device: after an abandoned
     /// wait, or a device that stopped answering. Each chain the device holds
-    /// is lost with its memory, and so is each staged chain, which is never
-    /// published; no slot is reserved again, and later used entries are
+    /// is lost with its memory, and so is each staged chain, which stays
+    /// unpublished; no slot is reserved again, and later used entries are
     /// ignored until the device is reset and the queue rebuilt.
     pub fn stop(&mut self) {
         self.stopped = true;
