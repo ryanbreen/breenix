@@ -688,18 +688,30 @@ for the head: <!-- claim-lint:ok: normative requirement of docs/plans/e9-schedul
 
 ### 8.3 Tickless idle
 
-- **When idle arms nothing extra.** An idle CPU with an empty run queue, no pending deferred work and no
-  owed kick arms only its queue's head, which may be "no deadline". It then halts (HLT) or waits for an
-  interrupt (WFI) in the existing masked recheck. <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
+- **When idle arms nothing extra.** An idle CPU with an empty run queue, an empty wake inbox (no
+  remainder left by a budgeted drain), no pending deferred work, no resched request and no owed kick arms
+  only its queue's head, which may be "no deadline". It then halts (HLT) or waits for an interrupt (WFI)
+  in the existing masked recheck. A drain that stops at `DRAIN_BUDGET` leaves the inbox non-empty and sets
+  `need_resched` (`scheduler.rs:10458-10461`). The recheck therefore sends the CPU back through the
+  scheduler for the next batch at once, not at a later deadline. <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
 - **Waking an idle CPU.** Everything that can make an idle CPU runnable already notifies it, or is made to:
-  - a wake or deadline posted to its inbox kicks it on the empty-to-non-empty edge (S5, R17);
+  - a wake posted to its inbox kicks it on the empty-to-non-empty edge (S5, R17), and a deadline moved
+    to it by `set_owner` that becomes its head kicks it (§8.1);
   - a raise of deferred work on that CPU happens on that CPU (§5.3);
   - device interrupts are delivered to it directly.
 - **Owed kicks (S5).** A reschedule notification that cannot be sent never relies on a periodic tick: <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
-  - On x86, `try_send_reschedule` skips a busy xAPIC ICR (`apic.rs:370-373`). Under E9.6 the skipped
-    target is recorded in the sender's owed-kick set, and the sender retries at its next unlock of a
-    run-queue lock and its next interrupt exit. While any kick is owed, the sender arms a 1 ms
-    housekeeping deadline, so the retry is bounded.
+  - On x86 under x2APIC, a send is one ICR write with no busy state to refuse it (`apic.rs:355`,
+    `:387`), so nothing is owed.
+  - Under xAPIC, `try_send_reschedule` skips a busy ICR (`apic.rs:370-373`). A busy ICR means only that
+    the previous IPI is still being delivered (SDM Vol. 3A, "Interrupt Command Register (ICR)", delivery
+    status). Kicks are sent after the run-queue unlock. So under E9.6b a sender that finds the ICR
+    busy records the target in its owed-kick set and finishes the send before it returns from the path
+    that unlocked. It polls the delivery-status bit with interrupts enabled, outside every run-queue
+    lock, for at most `KICK_POLL_BOUND`, then writes the ICR. Only a poll that reaches the bound leaves
+    the kick owed. The sender then retries at its next unlock and interrupt exit, and on a
+    housekeeping deadline `KICK_POLL_BOUND` away. So a kick lands at most about two bounds after the
+    wake, not after 1 ms. The PR sets `KICK_POLL_BOUND` from the measured ICR busy time, and the check
+    holds it below the smallest wake granularity and slice. <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
   - `send_ipi`'s masked delivery wait (`wait_delivery`, `apic.rs:395`) is kept only for INIT and STARTUP during
     bring-up. Every other caller uses the non-waiting send plus the owed set. <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
 - **Liveness without ticks.** A CPU that idles tickless publishes "idle, wakeable by IPI, next deadline
@@ -1171,22 +1183,27 @@ of their steps, keeping each CPU's program order. The steps are sequentially con
 - **Tests.**
   - A host model of the idle protocol: a wake, a deadline post and a deferred-work raise at each point
     of the idle entry sequence always leave the CPU running or kicked, never halted with work pending. <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
-  - Owed kicks: a refused send is retried at the sender's next unlock and within the 1 ms bound.
+  - Owed kicks: a refused send is retried by the bounded poll, then at the sender's next unlock, and
+    lands within two `KICK_POLL_BOUND`s.
   - **Kick and drain latency.** A host model sends a kick that finds the xAPIC ICR busy for 2 µs. The
     sender has no further unlock or interrupt exit for a second, and the woken thread's CPU has a
     deadline 100 µs away. The kick must land before that deadline. A second case leaves a drain
     remainder past the R17 budget (`DRAIN_BUDGET`, `wake_inbox.rs:8`) on a CPU about to idle tickless
     with no deadline armed. The remainder must be drained before the CPU halts. Red on §8.3 as first
     written, which retries an owed kick on a 1 ms housekeeping deadline. That text also lets an idle CPU
-    halt with only its queue, deferred work and owed kicks checked.
+    halt with only its queue, deferred work and owed kicks checked. Green on §8.3's bounded poll and
+    the idle recheck that reads the inbox. `KICK_POLL_BOUND_NS` here is a fixture value; the PR sets the
+    real one from measurement.
 
     ```pycon
-    >>> RETRY_DEADLINE_NS = 1_000_000
+    >>> KICK_POLL_BOUND_NS = 20_000
     >>> def kick_latency_ns(icr_busy_ns, next_unlock_ns):
-    ...     return min(next_unlock_ns, RETRY_DEADLINE_NS) if icr_busy_ns else 0
+    ...     if icr_busy_ns <= KICK_POLL_BOUND_NS:
+    ...         return icr_busy_ns
+    ...     return min(next_unlock_ns, 2 * KICK_POLL_BOUND_NS)
     >>> kick_latency_ns(icr_busy_ns=2_000, next_unlock_ns=10**9) < 100_000
     True
-    >>> IDLE_RECHECK_READS = {'run queue', 'deferred work', 'owed kicks'}
+    >>> IDLE_RECHECK_READS = {'run queue', 'wake inbox', 'deferred work', 'resched request', 'owed kicks'}
     >>> 'wake inbox' in IDLE_RECHECK_READS
     True
 
