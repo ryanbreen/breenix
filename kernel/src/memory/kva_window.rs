@@ -213,12 +213,17 @@ pub enum FlushPolicy {
     Chunked,
 }
 
-/// One flush call of a batch.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FlushPlan<'a> {
-    Pages(&'a [u64]),
-    /// More pages than one list holds: each translation, global ones included.
-    All { leaves: usize },
+/// The flush a kernel unmap needs before its frames are released: each
+/// CPU, the initiator included, stops translating the pages, global
+/// translations included. `tlb_request::KernelUnmap` is x86's, and
+/// `tlb::Arm64KernelUnmap` ARM64's.
+pub trait KernelTlb {
+    /// How this flush wants a batch's pages.
+    const POLICY: FlushPolicy;
+    /// Flush `pages`, at most `FLUSH_LIST` of them.
+    fn flush_pages(&mut self, pages: &[u64]);
+    /// Flush each translation: a batch too large for one page list.
+    fn flush_all(&mut self);
 }
 
 /// Extents awaiting a flush, detached from their window.
@@ -236,21 +241,16 @@ impl Batch {
         self.retired.is_empty()
     }
 
-    /// Hand each invalidated leaf of the batch to `flush`, as `policy` asks.
-    pub fn flush<F: Format, M: TableMemory>(
-        self,
-        mem: &M,
-        root: u64,
-        policy: FlushPolicy,
-        mut flush: impl FnMut(FlushPlan<'_>),
-    ) -> Flushed {
+    /// Hand each invalidated leaf of the batch to `tlb`, as its policy asks.
+    pub fn flush<F: Format, M: TableMemory, T: KernelTlb>(self, mem: &M, root: u64, tlb: &mut T) -> Flushed {
+        let policy = T::POLICY;
         let mut list = [0u64; FLUSH_LIST];
         let mut listed = 0;
         let mut leaves = 0;
         for extent in self.retired.extents() {
             kva_map::invalidated_leaves::<F, M>(mem, root, extent.start, extent.len, |va| {
                 if listed == FLUSH_LIST && policy == FlushPolicy::Chunked {
-                    flush(FlushPlan::Pages(&list));
+                    tlb.flush_pages(&list);
                     listed = 0;
                 }
                 if listed < FLUSH_LIST {
@@ -261,8 +261,8 @@ impl Batch {
             });
         }
         match policy {
-            FlushPolicy::Batched if leaves > FLUSH_LIST => flush(FlushPlan::All { leaves }),
-            _ if listed != 0 => flush(FlushPlan::Pages(&list[..listed])),
+            FlushPolicy::Batched if leaves > FLUSH_LIST => tlb.flush_all(),
+            _ if listed != 0 => tlb.flush_pages(&list[..listed]),
             _ => {}
         }
         Flushed { retired: self.retired }

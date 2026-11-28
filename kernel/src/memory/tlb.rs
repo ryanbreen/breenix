@@ -188,39 +188,61 @@ pub fn flush_all() {
     shootdown::request(shootdown::Request::All);
 }
 
-/// Invalidate the kernel pages `pages`, global translations included, on
-/// each CPU, before the frames behind them are released (E1 plan, 6.5).
+/// The kernel-unmap flush (E1 plan, 6.5), which invalidates kernel pages,
+/// global translations included, on each CPU before the frames behind them
+/// are released.
 ///
-/// x86: `tlb_request::kernel_unmap_request` on this CPU and each other
-/// online CPU, which `invlpg`s each page, or for more than 32 clears and
-/// restores CR4.PGE. A CR3 reload, `flush_all`, would keep the global ones.
-/// ARM64: `dsb ishst`, `tlbi vaae1is` per page and `dsb ish; isb`; the
-/// broadcast TLBI has completed on each CPU when the last barrier does.
-pub fn flush_kernel_pages(pages: &[u64]) {
-    if pages.is_empty() {
-        return;
-    }
-    #[cfg(target_arch = "x86_64")]
-    {
-        let request = crate::memory::tlb_request::kernel_unmap_request(pages);
-        shootdown::execute_here(request);
-        shootdown::request(request);
-    }
-    #[cfg(target_arch = "aarch64")]
-    tlb::flush_pages(pages);
+/// x86: `tlb_request::KernelUnmap`, which chooses the request (`invlpg` per
+/// page, or for more than 32 a CR4.PGE toggle; a CR3 reload would keep the
+/// global ones) and runs it on this CPU and then each other online CPU.
+/// This module supplies those two deliveries.
+#[cfg(target_arch = "x86_64")]
+pub type KernelUnmapFlush = crate::memory::tlb_request::KernelUnmap<Cpus>;
+
+#[cfg(target_arch = "x86_64")]
+pub const fn kernel_unmap_flush() -> KernelUnmapFlush {
+    crate::memory::tlb_request::KernelUnmap(Cpus)
 }
 
-/// Invalidate each translation, global ones included, on each CPU: the
-/// kernel-unmap flush of a batch too large to name page by page.
-pub fn flush_kernel_all() {
-    #[cfg(target_arch = "x86_64")]
-    {
-        use crate::memory::tlb_request::Request;
-        shootdown::execute_here(Request::GlobalAll);
-        shootdown::request(Request::GlobalAll);
+/// This CPU and each other online CPU, as the shootdown reaches them.
+#[cfg(target_arch = "x86_64")]
+pub struct Cpus;
+
+#[cfg(target_arch = "x86_64")]
+impl crate::memory::tlb_request::Shootdown for Cpus {
+    fn here(&mut self, request: crate::memory::tlb_request::Request) {
+        shootdown::execute_here(request);
     }
-    #[cfg(target_arch = "aarch64")]
-    tlb::flush_all();
+    fn others(&mut self, request: crate::memory::tlb_request::Request) {
+        shootdown::request(request);
+    }
+}
+
+/// ARM64: `dsb ishst`, `tlbi vaae1is` per page and `dsb ish; isb`, or
+/// `tlbi vmalle1is` for each translation; the broadcast TLBI has completed
+/// on each CPU when the last barrier does.
+#[cfg(target_arch = "aarch64")]
+pub type KernelUnmapFlush = Arm64KernelUnmap;
+
+#[cfg(target_arch = "aarch64")]
+pub const fn kernel_unmap_flush() -> KernelUnmapFlush {
+    Arm64KernelUnmap
+}
+
+#[cfg(target_arch = "aarch64")]
+pub struct Arm64KernelUnmap;
+
+#[cfg(target_arch = "aarch64")]
+impl crate::memory::kva_window::KernelTlb for Arm64KernelUnmap {
+    /// The TLBI broadcast is per page and needs no interrupt.
+    const POLICY: crate::memory::kva_window::FlushPolicy = crate::memory::kva_window::FlushPolicy::Chunked;
+
+    fn flush_pages(&mut self, pages: &[u64]) {
+        tlb::flush_pages(pages);
+    }
+    fn flush_all(&mut self) {
+        tlb::flush_all();
+    }
 }
 
 /// Ensure TLB consistency after page table switch

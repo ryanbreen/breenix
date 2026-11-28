@@ -5,6 +5,12 @@
 //! and each CPU, local and remote alike, carries the pair out through
 //! `execute` on its own `TlbOps`. The host tests run the same `execute` on a
 //! TLB that follows Intel SDM vol. 3A §4.10.4.1.
+//!
+//! `KernelUnmap` is the kernel-unmap flush the VA windows call: which
+//! request each batch sends, and that it runs on this CPU and then on each
+//! other online CPU. `tlb.rs` supplies only those two deliveries.
+
+use super::kva_window::{FlushPolicy, KernelTlb};
 
 /// `invlpg` this address.
 pub const KIND_PAGE: u8 = 1;
@@ -85,6 +91,38 @@ pub unsafe fn execute(kind: u8, arg: u64, cpu: &mut impl TlbOps) {
             }
         }
         _ => {}
+    }
+}
+
+/// A shootdown's two deliveries: run a request on this CPU, and deliver it
+/// to each other online CPU and wait for each acknowledgement.
+pub trait Shootdown {
+    fn here(&mut self, request: Request);
+    fn others(&mut self, request: Request);
+}
+
+/// x86's kernel-unmap flush over the CPUs `S` reaches.
+pub struct KernelUnmap<S: Shootdown>(pub S);
+
+impl<S: Shootdown> KernelUnmap<S> {
+    fn everywhere(&mut self, request: Request) {
+        self.0.here(request);
+        self.0.others(request);
+    }
+}
+
+impl<S: Shootdown> KernelTlb for KernelUnmap<S> {
+    /// Each flush is a shootdown, so a batch is one.
+    const POLICY: FlushPolicy = FlushPolicy::Batched;
+
+    fn flush_pages(&mut self, pages: &[u64]) {
+        if !pages.is_empty() {
+            self.everywhere(kernel_unmap_request(pages));
+        }
+    }
+
+    fn flush_all(&mut self) {
+        self.everywhere(Request::GlobalAll);
     }
 }
 

@@ -26,7 +26,7 @@ mod x86_kernel_half;
 
 use kva_extent::{Extent, ExtentError, Extents};
 use kva_map::{Format, MapError, TableMemory, TablePages, Walk, X86};
-use kva_window::{FlushPlan, FlushPolicy, Placement, Window, WindowId};
+use kva_window::{KernelTlb, Placement, Window, WindowId};
 
 const PAGE: u64 = 4096;
 
@@ -165,11 +165,44 @@ impl tlb_request::TlbOps for FakeTlb {
     fn release_root(&mut self, _root: u64) {}
 }
 
+/// The CPUs of a fixture as `tlb_request::Shootdown` reaches them: `here`
+/// runs a request on the initiator's TLB, and `others` on every other CPU's,
+/// as `tlb.rs` does through `execute_here` and the NMI request slots. Each
+/// CPU carries a request out with the kernel's own `tlb_request::execute`.
+struct FixtureCpus<'a> {
+    tlbs: &'a mut [FakeTlb],
+    initiator: usize,
+    shootdowns: usize,
+}
+
+impl FixtureCpus<'_> {
+    fn run(tlb: &mut FakeTlb, request: tlb_request::Request) {
+        let (kind, arg) = tlb_request::encode(request);
+        // SAFETY: the page list a request names outlives the flush call.
+        unsafe { tlb_request::execute(kind, arg, tlb) };
+    }
+}
+
+impl tlb_request::Shootdown for FixtureCpus<'_> {
+    fn here(&mut self, request: tlb_request::Request) {
+        Self::run(&mut self.tlbs[self.initiator], request);
+    }
+    fn others(&mut self, request: tlb_request::Request) {
+        self.shootdowns += 1;
+        for (cpu, tlb) in self.tlbs.iter_mut().enumerate() {
+            if cpu != self.initiator {
+                Self::run(tlb, request);
+            }
+        }
+    }
+}
+
 /// Check first (E1 plan, E1-5): a kernel window page is global, so the flush
 /// that precedes its frame's release must remove global translations. The
 /// page is mapped and used on 4 CPUs, removed through `unmap_kernel_page`'s
-/// walk, which leaves the flush to its caller, and then each CPU, the
-/// initiator included, executes the kernel-unmap request. A CR3 reload
+/// walk, which leaves the flush to its caller, and then the kernel-unmap
+/// flush the windows use, `tlb_request::KernelUnmap`, runs from CPU 2,
+/// reaching each CPU through the fixture's deliveries. A CR3 reload
 /// leaves the global entry in each CPU's TLB, so 4 of 4 could still reach
 /// the frame the allocator is about to hand out again.
 #[test]
@@ -191,13 +224,9 @@ fn kernel_unmap_flush_leaves_no_cpu_holding_a_global_translation() {
     assert_eq!(unmapped, Some(frame));
     assert_eq!(translate(&tables, root, va), None);
 
-    let pages = [va];
-    let request = tlb_request::kernel_unmap_request(&pages);
-    let (kind, arg) = tlb_request::encode(request);
-    for cpu in cpus.iter_mut() {
-        // SAFETY: `pages` outlives each call.
-        unsafe { tlb_request::execute(kind, arg, cpu) };
-    }
+    let mut flush = tlb_request::KernelUnmap(FixtureCpus { tlbs: &mut cpus, initiator: 2, shootdowns: 0 });
+    flush.flush_pages(&[va]);
+    assert_eq!(flush.0.shootdowns, 1);
 
     let holding: Vec<usize> = (0..4).filter(|&cpu| cpus[cpu].holds(va)).collect();
     assert_eq!(
@@ -405,9 +434,11 @@ fn open_window(id: WindowId, slot: usize, nodes: &mut Vec<u64>) -> Window {
 /// unmap invalidates them, and they are not offered back, nor is their VA
 /// handed out, until the batch's flush has run on each CPU, after which no
 /// CPU holds a translation to any frame offered back. An unmap after the
-/// batch was taken waits for the next one. Run with 3 pages, which the
+/// flush. Run with 3 pages, which the
 /// flush names one by one, and with 40, which is past the 32-page list and
-/// clears and restores CR4.PGE.
+/// clears and restores CR4.PGE. The flush is `tlb_request::KernelUnmap`,
+/// as `kva.rs` runs it, so the request kind and the CPUs it reaches are the
+/// kernel's; the fixture supplies only the deliveries.
 #[test]
 fn pending_unmaps_give_frames_back_only_after_a_flush_on_each_cpu() {
     for pages in [3u64, 40] {
@@ -441,26 +472,11 @@ fn pending_unmaps_give_frames_back_only_after_a_flush_on_each_cpu() {
         map_window_range(&mut tables, root, late.start, late.len, &[0x9000_0000]);
         window.unmap::<X86, _>(&tables, root, &late).unwrap();
 
-        let mut plans = 0;
-        let flushed = batch.flush::<X86, _>(&tables, root, FlushPolicy::Batched, |plan| {
-            plans += 1;
-            let request = match plan {
-                FlushPlan::Pages(list) => {
-                    assert!(pages <= 32);
-                    tlb_request::kernel_unmap_request(list)
-                }
-                FlushPlan::All { leaves } => {
-                    assert_eq!(leaves as u64, pages);
-                    tlb_request::Request::GlobalAll
-                }
-            };
-            let (kind, arg) = tlb_request::encode(request);
-            for cpu in cpus.iter_mut() {
-                // SAFETY: the list outlives the call.
-                unsafe { tlb_request::execute(kind, arg, cpu) };
-            }
-        });
-        assert_eq!(plans, 1, "one shootdown per batch");
+        // The batch goes through the x86 kernel-unmap flush the windows use,
+        // from CPU 1.
+        let mut flush = tlb_request::KernelUnmap(FixtureCpus { tlbs: &mut cpus, initiator: 1, shootdowns: 0 });
+        let flushed = batch.flush::<X86, _, _>(&tables, root, &mut flush);
+        assert_eq!(flush.0.shootdowns, 1, "one shootdown per batch");
 
         let mut offered = Vec::new();
         flushed.reclaim::<X86, _>(&tables, root, |pa, bytes| {

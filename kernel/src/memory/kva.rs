@@ -9,11 +9,11 @@
 //!   whose PDPTs E1-2x preallocated and each root shares, so a mapping
 //!   below them is visible in each process at once. Window leaves are
 //!   global. An unmap's frames and VA wait on a pending list until one
-//!   `tlb::flush_kernel_pages` (or `flush_kernel_all`) covers the batch: past
+//!   `tlb::KernelUnmapFlush` (`tlb_request::KernelUnmap`) covers the batch: past
 //!   16 MiB pending, when the window has no VA left, or from the shrinker.
 //! - ARM64: each window takes TTBR1 L0 entries above the direct map and
 //!   below the ECAM reservation, whose L1 tables `init` installs. An unmap
-//!   is flushed at once with `tlb::flush_kernel_pages` (`dsb ishst`,
+//!   is flushed at once with `tlb::KernelUnmapFlush` (`dsb ishst`,
 //!   `tlbi vaae1is` per page, `dsb ish; isb`), which completes the broadcast
 //!   on each CPU, and its frames and VA come back then.
 //!
@@ -28,7 +28,8 @@ use spin::Mutex;
 use super::kmem::{self, AllocError, Ctx};
 use super::kva_extent::{Allocation, ExtentError};
 use super::kva_map::{self, MapError, TableMemory, TablePages};
-use super::kva_window::{self, FlushPlan, FlushPolicy, Placement, PlaceError, Window};
+use super::kva_window::{self, FlushPolicy, KernelTlb, Placement, PlaceError, Window};
+use super::tlb::KernelUnmapFlush;
 pub use super::kva_window::WindowId;
 
 #[cfg(target_arch = "x86_64")]
@@ -36,10 +37,7 @@ type Fmt = kva_map::X86;
 #[cfg(target_arch = "aarch64")]
 type Fmt = kva_map::Arm64;
 
-#[cfg(target_arch = "x86_64")]
-const POLICY: FlushPolicy = FlushPolicy::Batched;
-#[cfg(target_arch = "aarch64")]
-const POLICY: FlushPolicy = FlushPolicy::Chunked;
+const POLICY: FlushPolicy = <KernelUnmapFlush as KernelTlb>::POLICY;
 
 /// The kernel's page tables, reached through the direct map.
 pub(crate) struct KernelTables;
@@ -347,10 +345,7 @@ fn flush_window(id: WindowId, try_only: bool) -> usize {
         if batch.is_empty() {
             return 0;
         }
-        let flushed = batch.flush::<Fmt, _>(&KernelTables, windows.root, POLICY, |plan| match plan {
-            FlushPlan::Pages(pages) => super::tlb::flush_kernel_pages(pages),
-            FlushPlan::All { .. } => super::tlb::flush_kernel_all(),
-        });
+        let flushed = batch.flush::<Fmt, _, _>(&KernelTables, windows.root, &mut super::tlb::kernel_unmap_flush());
         let mut frames = 0;
         flushed.reclaim::<Fmt, _>(&KernelTables, windows.root, |pa, bytes| {
             for page in (pa..pa + bytes).step_by(kva_window::PAGE as usize) {
