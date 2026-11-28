@@ -73,16 +73,40 @@ impl BlockMmioRequestGate {
     }
 
     fn try_admit(&self, start: u64, end: u64, write: bool) -> Option<usize> {
+        self.attempt(start, end, write, None, true)
+    }
+
+    /// One admission attempt. A flush (`flush` is its turn) that has to wait
+    /// holds its turn; a caller that cannot sleep tries once, ahead of
+    /// waiting flushes, because it cannot wait its turn.
+    fn attempt(&self, start: u64, end: u64, write: bool, flush: Option<&mut bool>, can_sleep: bool) -> Option<usize> {
         // No interrupt path takes the table; masking keeps a holder from being
         // preempted by a thread that would then spin on it.
-        crate::arch_without_interrupts(|| match self.ranges.lock().try_admit(start, end, write) {
-            Admission::Admitted(entry) => Some(entry),
-            Admission::Wait => None,
+        crate::arch_without_interrupts(|| {
+            let mut table = self.ranges.lock();
+            let admission = match flush {
+                _ if !can_sleep => table.try_admit_ahead(start, end, write),
+                Some(queued) => table.try_admit_flush(queued),
+                None => table.try_admit(start, end, write),
+            };
+            match admission {
+                Admission::Admitted(entry) => Some(entry),
+                Admission::Wait => None,
+            }
         })
     }
 
     /// Admit the sectors `[start, end)`, waiting for conflicting requests.
     fn admit(&self, start: u64, end: u64, write: bool) -> Result<BlockMmioRequestGuard<'_>, &'static str> {
+        self.admit_claim(start, end, write, false)
+    }
+
+    /// Admit a flush for the whole device, waiting its turn.
+    fn admit_flush(&self) -> Result<BlockMmioRequestGuard<'_>, &'static str> {
+        self.admit_claim(0, u64::MAX, true, true)
+    }
+
+    fn admit_claim(&self, start: u64, end: u64, write: bool, flush: bool) -> Result<BlockMmioRequestGuard<'_>, &'static str> {
         if self.wedged.load(Ordering::Acquire) {
             return Err(BLOCK_MMIO_WEDGED_ERROR);
         }
@@ -92,12 +116,24 @@ impl BlockMmioRequestGate {
         // wait and keep it until request ownership has ended (E24 520(r)).
         let custody = crate::task::thread::KillCustody::try_enter()
             .ok_or("Block MMIO request gate refused a kill-claimed thread")?;
+        let mut queued = false;
+        let entry = self.wait_for_admission(start, end, write, flush.then_some(&mut queued));
+        if queued {
+            // A flush that gave up: requests waiting behind it go ahead.
+            crate::arch_without_interrupts(|| self.ranges.lock().cancel_flush(&mut queued));
+            self.waiters.wake_up();
+        }
+        entry.map(|entry| BlockMmioRequestGuard { gate: self, entry, release_on_drop: true, _custody: custody })
+    }
+
+    fn wait_for_admission(&self, start: u64, end: u64, write: bool, mut flush: Option<&mut bool>) -> Result<usize, &'static str> {
         loop {
-            if let Some(entry) = self.try_admit(start, end, write) {
-                return Ok(BlockMmioRequestGuard { gate: self, entry, release_on_drop: true, _custody: custody });
+            let can_sleep = block_mmio_request_gate_can_sleep();
+            if let Some(entry) = self.attempt(start, end, write, flush.as_deref_mut(), can_sleep) {
+                return Ok(entry);
             }
 
-            if !block_mmio_request_gate_can_sleep() {
+            if !can_sleep {
                 return Err("Block MMIO request already in progress (context cannot sleep)");
             }
 
@@ -115,9 +151,9 @@ impl BlockMmioRequestGate {
             }
 
             // Published before this check, so a release after it wakes us.
-            if let Some(entry) = self.try_admit(start, end, write) {
+            if let Some(entry) = self.attempt(start, end, write, flush.as_deref_mut(), can_sleep) {
                 self.waiters.finish_wait();
-                return Ok(BlockMmioRequestGuard { gate: self, entry, release_on_drop: true, _custody: custody });
+                return Ok(entry);
             }
             crate::task::waitqueue::schedule_current_wait();
             self.waiters.finish_wait();
@@ -1313,7 +1349,8 @@ pub fn write_sectors(
 
 /// Persist prior writes before reporting a filesystem durability barrier.
 /// Devices without FLUSH remain in writethrough mode. The flush holds the
-/// whole device, so it waits for the writes in flight and later requests wait for it.
+/// whole device, so it waits for the writes in flight and later requests wait
+/// for it, from the moment it starts waiting.
 pub fn flush(device_index: usize) -> Result<(), &'static str> {
     let state = block_device_state(device_index)?;
     if state.device_features & features::RO != 0 || state.device_features & features::FLUSH == 0 {
@@ -1322,7 +1359,7 @@ pub fn flush(device_index: usize) -> Result<(), &'static str> {
     if !irq_completion_available() {
         return Err("Block MMIO IRQ completion unavailable before interrupts are enabled");
     }
-    let guard = REQUEST_GATES[device_index].admit(0, u64::MAX, true)?;
+    let guard = REQUEST_GATES[device_index].admit_flush()?;
     transfer(device_index, state, guard, 0, Data::Flush).map_err(|failure| failure.reason)
 }
 

@@ -23,7 +23,10 @@
 //! The same-range table orders requests from different callers: overlapping
 //! ranges are serialized when either writes, and a flush covers the whole
 //! device, so it waits for the writes in flight (section 5.2.6.2: a flush
-//! commits the writes completed before it was sent) and holds later ones.
+//! commits the writes completed before it was sent) and holds later ones. A
+//! flush that has to wait takes its turn, and requests that arrive after it
+//! wait behind it, so a stream of requests on other sectors cannot keep it
+//! out.
 //!
 //! Pure computation over the `RingMemory` and `DmaMemory` traits, so the host
 //! tests compile this file as is.
@@ -697,6 +700,10 @@ impl<R: RingMemory> BlkQueue<R> {
 /// for each other when either writes; a flush is a write of the whole device.
 pub struct RangeTable<const N: usize> {
     entries: [Option<(u64, u64, bool)>; N],
+    /// Flushes that found the device busy and hold their turn: no new
+    /// request is admitted while one waits, so the requests in flight drain
+    /// and the flush goes next.
+    flushes_waiting: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -708,11 +715,20 @@ pub enum Admission {
 
 impl<const N: usize> RangeTable<N> {
     pub const fn new() -> Self {
-        Self { entries: [None; N] }
+        Self { entries: [None; N], flushes_waiting: 0 }
     }
 
-    /// Admit the sectors `[start, end)`.
+    /// Admit the sectors `[start, end)`, behind any flush that holds its turn.
     pub fn try_admit(&mut self, start: u64, end: u64, write: bool) -> Admission {
+        if self.flushes_waiting > 0 {
+            return Admission::Wait;
+        }
+        self.try_admit_ahead(start, end, write)
+    }
+
+    /// Admit the sectors `[start, end)` ahead of waiting flushes: only for a
+    /// caller that cannot sleep, which tries once and cannot wait its turn.
+    pub fn try_admit_ahead(&mut self, start: u64, end: u64, write: bool) -> Admission {
         let conflict = self.entries.iter().flatten().any(|&(s, e, w)| (w || write) && s < end && start < e);
         if conflict {
             return Admission::Wait;
@@ -723,6 +739,33 @@ impl<const N: usize> RangeTable<N> {
                 Admission::Admitted(index)
             }
             None => Admission::Wait,
+        }
+    }
+
+    /// Admit a flush: the whole device, as a write. One that has to wait
+    /// takes its turn, recorded in the caller's `queued`, and keeps it until
+    /// it is admitted or gives it back with `cancel_flush`.
+    pub fn try_admit_flush(&mut self, queued: &mut bool) -> Admission {
+        let admission = self.try_admit_ahead(0, u64::MAX, true);
+        match admission {
+            Admission::Admitted(_) if *queued => {
+                *queued = false;
+                self.flushes_waiting -= 1;
+            }
+            Admission::Wait if !*queued => {
+                *queued = true;
+                self.flushes_waiting += 1;
+            }
+            _ => {}
+        }
+        admission
+    }
+
+    /// Give back a waiting flush's turn.
+    pub fn cancel_flush(&mut self, queued: &mut bool) {
+        if *queued {
+            *queued = false;
+            self.flushes_waiting -= 1;
         }
     }
 
