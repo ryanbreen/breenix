@@ -16,7 +16,8 @@ its `breenfs.rs` and `local.rs`, `kernel/src/fs/vfs/boot.rs`, `kernel/src/block/
 `kernel/src/boot/intent.rs`, `libs/libbreenix/src/layout.tsv`, `scripts/metal/metal_live_flash.py`,
 `scripts/metal/metal_persist.py`, `scripts/metal/efi-stub/src/{live_flash,live_sequence,breenfs_files}.rs` and
 `manager/`, `scripts/devbox/README.md` and `docs/metal/README.md`. External references are specifications and
-papers only: UEFI 2.10 (the file and block I/O protocols), FIPS 180-4 (SHA-256), and Rodeh's reference-counted
+papers only: UEFI 2.10 (the file and block I/O protocols), the Microsoft FAT32 File System Specification (directory
+entries and long names, for section 5.1), FIPS 180-4 (SHA-256), and Rodeh's reference-counted
 copy-on-write B-trees (ACM TOS 3:4, 2008), which BreenFS already follows. No other OS, filesystem or libc source
 was read.
 
