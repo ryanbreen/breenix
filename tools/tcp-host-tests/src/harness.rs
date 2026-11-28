@@ -40,7 +40,7 @@ pub fn advance(ms: u64) {
     CLOCK_MS.fetch_add(ms, Ordering::SeqCst);
 }
 
-/// While set, IP output refuses every segment, as a full device queue does.
+/// While set, IP output refuses each segment, as a full device queue does.
 pub fn refuse_output(refuse: bool) {
     REFUSE.store(refuse, Ordering::SeqCst);
 }
@@ -78,7 +78,7 @@ pub fn ip_output(src: [u8; 4], dst: [u8; 4], segment: &[u8]) -> Result<(), &'sta
 }
 
 /// A connection this host opened to the scripted peer, which acknowledges what
-/// the check tells it to and never sends data.
+/// the check tells it to and sends no data.
 pub struct Flow {
     pub id: ConnectionId,
     /// The first sequence number of our data.

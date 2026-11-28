@@ -2,14 +2,14 @@
 //!
 //! Implements TCP packet parsing, construction, and connection state machine (RFC 793).
 //!
-//! Each connection keeps every byte it has not seen acknowledged in a bounded send
+//! Each connection keeps the bytes it has not seen acknowledged in a bounded send
 //! buffer and transmits new data only within both the peer's advertised window and
 //! its congestion window. Its congestion policy (`tcp/congestion.rs`, NewReno) sets
 //! that window; loss recovery (`tcp/recovery.rs`) fast retransmits on the third
 //! duplicate ACK and repairs each further hole a partial ACK reveals (RFC 5681,
 //! RFC 6582). A retransmission timeout resends only the oldest segment and slow
 //! start resumes. Bytes IP output could not take stay queued and go out again from
-//! `drain_deferred_tx`, or from the retransmission timer when nothing else runs the
+//! `drain_deferred_tx`, or from the retransmission timer when no other path runs the
 //! connection's output. Received bytes go into a bounded receive buffer whose free
 //! space is the advertised window.
 //!
@@ -304,7 +304,7 @@ fn note_timer_deadline(deadline: u64) {
 /// pass at once, so a notice never needs memory.
 const NOTICE_BATCH: usize = 16;
 
-/// Run every connection timer that is due, and reap what has expired. Returns
+/// Run the connection timers that are due, and reap what has expired. Returns
 /// the earliest deadline still pending, published under the table lock as the
 /// one `ktcptimerd` sleeps until so that an earlier arm finds it. The host
 /// checks in `tools/tcp-host-tests` run it as `ktcptimerd` would.
@@ -1420,7 +1420,7 @@ impl TcpConnection {
 
     /// Send what is owed, in order: a repair of the first unacknowledged
     /// segment, then new data within both the peer's window and the congestion
-    /// window, then the FIN once every byte before it is out.
+    /// window, then the FIN once the bytes before it are out.
     fn output_now(&mut self) -> bool {
         if !self.has_output() {
             return true;
@@ -1436,7 +1436,7 @@ impl TcpConnection {
             && self.send_unack == self.send_max
             && now_ms().saturating_sub(self.last_send_ms) > self.rto_ms
         {
-            // Nothing has left for longer than a timeout: the ACK clock is gone,
+            // No data or FIN has left for longer than a timeout: the ACK clock is gone,
             // so start again from at most the initial window (RFC 5681 4.1).
             self.cc.on_idle_restart(smss);
         }
@@ -1451,8 +1451,8 @@ impl TcpConnection {
             let want = (self.tx_buffer.len() - self.tx_sent).min(self.mss as usize);
             // `tx_sent` is what has left from `send_unack` to `send_next`: the
             // flight the congestion window admits against. A segment goes only
-            // whole; one always may when nothing is out, so a window below the
-            // SMSS cannot stall the connection.
+            // whole; one may whenever the flight is empty, so a window below
+            // the SMSS cannot stall the connection.
             let allowance = (self.cc.cwnd() as usize).saturating_sub(self.tx_sent);
             if allowance < want && self.tx_sent != 0 {
                 // The congestion window is full: the next ACK opens it.

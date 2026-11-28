@@ -8,7 +8,7 @@
 //! timeout and an idle restart. The policy answers with the congestion window and the
 //! slow-start threshold, the loss target recovery reduces to. Dispatch stays
 //! inside the TCP module: a connection selects its policy when it is created,
-//! and every policy answers the same events, so a later one (CUBIC) slots in
+//! and each policy answers the same events, so a later one (CUBIC) slots in
 //! beside NewReno.
 //!
 //! NewReno follows RFC 5681 sections 3.1 and 3.2 and RFC 6582 section 3.2:

@@ -36,7 +36,7 @@ pub mod process {
     }
 }
 
-/// No scheduler runs here: nothing blocks, and wakes find no thread.
+/// No scheduler runs here: a block returns at once, and wakes find no thread.
 pub mod task {
     pub mod scheduler {
         #[derive(Debug, PartialEq, Eq)]
@@ -63,7 +63,7 @@ pub mod task {
         }
     }
 
-    /// `ktcptimerd` is never started: the checks run its pass themselves.
+    /// `ktcptimerd` does not start: the checks run its pass themselves.
     pub mod kthread {
         pub struct KthreadHandle;
         impl KthreadHandle {
@@ -93,7 +93,7 @@ pub mod ipc {
     }
 }
 
-/// The checks give connections no socket, so nothing is ever notified.
+/// The checks give connections no socket, so the notices reach no waiter.
 pub mod socket {
     pub mod object {
         pub struct Socket {

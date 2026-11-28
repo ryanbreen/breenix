@@ -78,7 +78,7 @@ pub mod ipv4 {
     pub const DEFAULT_TTL: u8 = 64;
     pub const HEADER_LEN: usize = 20;
 
-    /// The addresses of a received packet, which is all TCP reads of one.
+    /// The addresses of a received packet, the fields TCP reads of one.
     pub struct Ipv4Packet<'a> {
         pub src_ip: [u8; 4],
         pub dst_ip: [u8; 4],
@@ -86,7 +86,7 @@ pub mod ipv4 {
     }
 
     impl Ipv4Packet<'_> {
-        /// A header with the addresses, then `data`; nothing reads its other fields.
+        /// A header with the addresses, then `data`; TCP reads only the addresses back.
         pub fn try_build(
             src_ip: [u8; 4],
             dst_ip: [u8; 4],
@@ -107,7 +107,7 @@ pub mod ipv4 {
 }
 
 pub mod icmp {
-    /// TCP's view of an ICMP fragmentation-needed report. These checks send none.
+    /// TCP's view of an ICMP fragmentation-needed report. These checks send no such report.
     pub struct TcpMtuQuote {
         pub src: [u8; 4],
         pub dst: [u8; 4],

@@ -2,8 +2,8 @@
 //! fast retransmit, when a recovery episode ends, and which acknowledgements
 //! may not start another (RFC 5681 section 3.2, RFC 6582 sections 3.2 and 4).
 //!
-//! This decides which range to repair (always the first unacknowledged
-//! segment here) and reports each event to the connection's congestion policy,
+//! This decides which range to repair (the first unacknowledged segment,
+//! for NewReno) and reports each event to the connection's congestion policy,
 //! which sets the window. The TCP core validates the acknowledgement first and
 //! sends what this asks for.
 use super::congestion::Controller;

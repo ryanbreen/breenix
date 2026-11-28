@@ -11,7 +11,7 @@ const RTT_MS: u64 = 10;
 
 /// Open from `port`, then grow the congestion window to `segments` SMSS in
 /// slow start by sending that many segments less the initial three and
-/// acknowledging each one alone. Every byte written is acknowledged after.
+/// acknowledging each one alone. The data written is acknowledged by the end.
 fn warmed_flow(port: u16, segments: u32) -> Flow {
     let flow = Flow::connect(port);
     let earlier = segments - 3;
@@ -38,7 +38,7 @@ fn warmed_flow(port: u16, segments: u32) -> Flow {
     let info = flow.info();
     assert_eq!((info.cwnd, info.ssthresh), (segments * SMSS, u32::MAX));
     assert_eq!(info.send_unack, flow.at(earlier));
-    // RFC 6298 2.4: a computed timeout never falls below one second.
+    // RFC 6298 2.4: a computed timeout has a one-second floor.
     assert_eq!(info.rto_ms, 1_000, "the computed timeout's floor");
     flow
 }
@@ -81,7 +81,7 @@ fn three_duplicates_repair_the_first_loss_and_partial_acks_the_next() {
     tcp::drain_deferred_tx();
     assert_eq!(data(&flow.sent()), vec![(base, SMSS as usize)], "the fast retransmit");
 
-    // Segment 6's duplicate inflates the window; with no data queued nothing goes.
+    // Segment 6's duplicate inflates the window; with no data queued, no segment goes.
     flow.ack(base);
     assert_eq!(flow.info().cwnd, 8 * SMSS);
     assert!(data(&flow.sent()).is_empty());
@@ -125,7 +125,7 @@ fn a_timeout_repairs_the_oldest_segment_and_marks_recover() {
     let deadline = flow.info().rtx_deadline_ms;
     assert_eq!(deadline, harness::now_ms() + 1_000);
 
-    // Nothing is acknowledged: the timer expires.
+    // The peer acknowledges no segment: the timer expires.
     harness::set_clock(deadline);
     tcp::run_timers();
     let info = flow.info();
@@ -186,7 +186,7 @@ fn a_timeout_repairs_the_oldest_segment_and_marks_recover() {
     assert_eq!(data(&flow.sent()), vec![(next + 2 * SMSS, SMSS as usize)], "the fresh fast retransmit");
     assert_eq!(stat("fast_retransmits") - fast_before, 1);
 
-    // The repair lands and the peer acknowledges the rest: nothing is left
+    // The repair lands and the peer acknowledges the rest: no data is left
     // outstanding, so no timer of this connection runs into another check.
     harness::advance(RTT_MS);
     flow.ack(next + 6 * SMSS);

@@ -1,5 +1,5 @@
 //! The kernel's keyed hash, at the path `tcp_ident` names it by, and a pool
-//! that is always ready.
+//! that reports ready.
 
 #[path = "../../../kernel/src/random/blake2s.rs"]
 pub mod blake2s;
