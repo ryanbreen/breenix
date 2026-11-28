@@ -2050,16 +2050,12 @@ pub(crate) struct ExecImage<'a> {
 }
 
 impl<'a> ExecImage<'a> {
-    /// Exec maps no image from its cache yet: it copies the images it loads,
-    /// so a write is not refused (today's behaviour, the E3-3 check commit).
-    const ADMIT: bool = false;
-
     /// Admit an exec of `node`, read through the transfer `file` the exec
     /// holds. A file with writers is not admitted: exec copies its pages
     /// instead (10.3), and the copy is counted.
     pub(crate) fn new(node: &'a Arc<VNode>, file: &'a dyn MappingIo) -> Option<Self> {
         let mut inner = node.map.state.inner.lock();
-        if !Self::ADMIT || inner.writers() != 0 {
+        if inner.writers() != 0 {
             drop(inner);
             note_exec_fallback();
             return None;
