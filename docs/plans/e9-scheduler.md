@@ -437,7 +437,7 @@ their callers updated in the same change, as E2.1 did for the waitqueue.
 ```
 enum DeferClass { Timer, NetRx, NetTx, Block, Sched }   // the five B3 names; nothing else
 defer::register(class, handler: fn())                    // once per class, at init
-defer::raise(class)                                      // any context
+defer::raise(class)                                      // any context except NMI (§5.3)
 defer::pending(class) -> bool
 defer::run_pending()                                     // the interrupt-exit and release entry
 defer::init_cpu(cpu)                                     // the per-CPU worker thread
@@ -525,7 +525,16 @@ preempted or may it run deferred work" are mask tests on the whole word. <!-- cl
   `deferring` set and does not re-enter.
 - **Hold-off** (requirement 4). `DeferHold` increments `hold` and its drop decrements it. The drop that
   takes `hold` to zero runs pending work if the other conditions of "interrupt exit" hold. <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
-- **NMI** (requirement 2). Never runs deferred work. <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
+- **NMI** (requirement 2). Never runs deferred work, and never raises it. <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
+  - *Why.* An NMI is taken even with interrupts masked (SDM Vol. 3A, "Nonmaskable Interrupt (NMI)").
+    One that lands after the idle loop's final masked check returns to the HLT. A bit raised there
+    would wait for whatever interrupt wakes the CPU next, and a tickless idle CPU may have none.
+  - *How it is held.* The only NMI handler is the x86 shootdown handler
+    (`tlb::shootdown_nmi_handler`, installed at `interrupts.rs:254`), and it raises no deferred work.
+    E9.7 retires that NMI. In testing builds `defer::raise` checks `nmi` and writes a receipt and
+    panics if it is set. A structure test, `tests/cpu_nest_structure.rs`, finds no path from the NMI
+    handler to `defer::raise`. ARM64 takes no non-maskable entry today. One added later, on either
+    architecture, must state its notification before it may produce deferred work.
 - **Locks shared with deferred work.** A handler runs with interrupts enabled. So a lock a handler takes is
   taken elsewhere either as an `IrqSpinLock` (E2 §4.1), which masks interrupts and so blocks the exit
   path, or under a `DeferHold`. E2.6's validator records a class taken in deferred context, and a class
@@ -1039,11 +1048,13 @@ of their steps, keeping each CPU's program order. The steps are sequentially con
     step. No placement may halt the CPU with deferred work pending. On x86 an NMI is taken with
     interrupts masked (SDM Vol. 3A, "Nonmaskable Interrupt (NMI)"). An NMI after the final masked
     check therefore returns straight to the halt. Red on §5.3 as first written: there a raise is
-    allowed "any context", an NMI never runs the work, and nothing notifies the CPU afterwards.
+    allowed "any context", an NMI never runs the work, and nothing notifies the CPU afterwards. Green
+    on §5.3's rule that an NMI never raises, which the testing-build receipt and the structure test
+    below enforce in the implementation.
 
     ```pycon
     >>> IDLE = ['mask', 'check_pending', 'halt']
-    >>> NMI_MAY_RAISE = True
+    >>> NMI_MAY_RAISE = False
     >>> def halts_with_work(nmi_after):
     ...     pending = False
     ...     for i, step in enumerate(IDLE):
@@ -1061,7 +1072,9 @@ of their steps, keeping each CPU's program order. The steps are sequentially con
     without reading the old body, so the check is written against the new seam and states that it guards
     the new mechanism.
   - The layout check is red on today's tree: a structure test that no file outside `cpu_nest` names a
-    raw nesting constant.
+    raw nesting constant. The same file checks that no path from the NMI handler reaches
+    `defer::raise`. That half guards a rule and is green on today's tree, whose NMI handler raises
+    nothing.
 - **Rows.** `network.tcp-guest-to-host` and `network.tcp-host-to-guest` (NetRx budget and hand-off),
   `network.scp-*`. Neutral checks on `process.getpid` and `process.fork-exec`.
 - **Boot.** One ARM64 QEMU boot: interrupt-exit behaviour is a hardware exception return.
@@ -1283,7 +1296,7 @@ of their steps, keeping each CPU's program order. The steps are sequentially con
 | Queue structures; selection visits one entry; x86 custody (characterisation) | `tools/sched-host-tests` | E9.2a |
 | Weights, nice shares, sleeper credit, lag on migration, placement | `tools/sched-host-tests` | E9.2b |
 | Deferred-work runner sequences, nesting-word fields, ARM64 locality model | `tools/defer-host-tests`; `kernel/src/task/softirq_tests.rs` reworded | E9.3 |
-| No raw nesting constants outside `cpu_nest` | `tests/cpu_nest_structure.rs` | E9.3 |
+| No raw nesting constants outside `cpu_nest`; no raise reachable from NMI | `tests/cpu_nest_structure.rs` | E9.3 |
 | Registry growth, TID grace, admission failure, churn | `tools/sched-host-tests` | E9.4 |
 | Quiescent-state reclamation | `tools/sched-host-tests` | E9.4 |
 | MADT, GICC and device-tree descriptors; SGI encoding; redistributor match | `tools/cpu-topology-host-tests` | E9.5 |
