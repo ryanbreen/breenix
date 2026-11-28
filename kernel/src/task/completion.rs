@@ -24,11 +24,16 @@
 //! # Caller contract
 //!
 //! `wait_timeout()` MUST be called with NO locks held (no AHCI lock,
-//! no DMA lock, no scheduler lock).  It calls `preempt_enable()` when
-//! in syscall context so the scheduler can safely context-switch the thread
-//! while it waits.  Re-enabling preemption with a lock held would allow
-//! another thread to acquire the same lock and then have the timer switch
-//! us out, causing priority inversion or deadlock.
+//! no DMA lock, no scheduler lock).  It releases the caller's park baseline
+//! (`task::park::release_baseline`) so the scheduler can safely
+//! context-switch the thread while it waits.  Re-enabling preemption with a
+//! lock held would allow another thread to acquire the same lock and then
+//! have the timer switch us out, causing priority inversion or deadlock.
+//!
+//! Who may wait is the block I/O caller rule (E2.4,
+//! docs/plans/e2-sleepable-contexts.md §6): a context that may park sleeps,
+//! early boot polls while it holds the early-boot I/O token, and any other
+//! context gets a receipt and `Err(NOT_SLEEPABLE)`, never a poll.
 //!
 //! Steps 1-3 of the AHCI split command protocol guarantee this:
 //!   PHASE 1 (setup)  → held briefly, released before calling wait_timeout
@@ -138,108 +143,10 @@ fn finish_wait_current() {
     });
 }
 
-/// The sleep path serves a context that may park and holds a braked
-/// baseline (a syscall, or a `park::Braked` worker): its sleep releases that
-/// one level (`task::park`). Other contexts poll until E2.4 makes each
-/// sleepable caller park (design §6, "Completion mode").
-#[inline]
-fn syscall_sleep_path_available() -> bool {
-    crate::task::park::sleepable_braked()
-}
-
-/// Idle's saved boot continuation is discarded after Ring 3 starts.
-/// preempt_count > 0 does not identify a syscall: boot holds it too.
-/// Do not release that caller's brake or publish idle as BlockedOnIO.
-/// Before the aarch64 timer runs, idle takes the bounded spin path
-/// instead, since nothing would end a WFI on a lost interrupt.
-fn idle_halt_wait_available() -> bool {
-    crate::task::park::context() == crate::task::park::ParkContext::Atomic(crate::task::park::AtomicReason::Idle)
-}
-
-/// Whether a wait from the current context gives up the CPU until an
-/// interrupt: a thread blocked in the scheduler, or an idle thread halted
-/// between ticks. Before the scheduler runs, and on the boot thread before
-/// its timer does, a wait busy-polls the CPU instead.
-pub fn wait_sleeps() -> bool {
-    let tid = crate::task::scheduler::current_thread_id();
-    tid.is_some() && (idle_halt_wait_available() || syscall_sleep_path_available())
-}
-
-/// The x86 boot continuation is the idle task, not a sleepable worker.
-/// Keep its scheduling brake while allowing IRQ completion and timeout ticks.
-/// The masked check plus STI; HLT closes the completion-before-halt race.
-#[cfg(target_arch = "x86_64")]
-fn wait_idle_completion(completion: &Completion, expected_token: u32, timeout_ns: u64) -> bool {
-    use x86_64::instructions::interrupts;
-
-    interrupts::without_interrupts(|| {
-        crate::per_cpu::preempt_disable();
-        // Idle polls done and never sleeps in the scheduler. Do not leave a
-        // previous waiter eligible for an ISR wakeup while IRQs are enabled.
-        completion.waiter.store(0, Ordering::Release);
-        // Published before the first check, so a completion either is seen
-        // by it or finds this CPU to interrupt.
-        completion
-            .idle_poller
-            .store(crate::per_cpu::cpu_id() + 1, Ordering::Release);
-        fence(Ordering::SeqCst);
-        let (secs, nanos) = crate::time::get_monotonic_time_ns();
-        let deadline = (secs * 1_000_000_000 + nanos).saturating_add(timeout_ns);
-        let completed = loop {
-            if completion.done.load(Ordering::Acquire) == expected_token {
-                break true;
-            }
-            let (secs, nanos) = crate::time::get_monotonic_time_ns();
-            if secs * 1_000_000_000 + nanos >= deadline {
-                break false;
-            }
-            interrupts::enable_and_hlt();
-            interrupts::disable();
-        };
-        completion.idle_poller.store(0, Ordering::Release);
-        crate::per_cpu::preempt_enable();
-        completed
-    })
-}
-
-/// An aarch64 idle thread is not a sleepable continuation either: dispatching
-/// one restarts it at idle_loop_arm64, so blocking it would discard its caller.
-/// Poll with the CPU's preemption brake held. A masked WFI still wakes on a
-/// pending interrupt, and unmasking IRQ and FIQ right after takes it whichever
-/// class the GIC delivers, so a completion that lands after the check is not
-/// missed. Only used once the timer runs: its tick bounds every WFI, so a lost
-/// device interrupt still reaches the deadline.
-#[cfg(target_arch = "aarch64")]
-fn wait_idle_completion(completion: &Completion, expected_token: u32, timeout_ns: u64) -> bool {
-    crate::arch_without_interrupts(|| {
-        crate::per_cpu_aarch64::preempt_disable();
-        completion.waiter.store(0, Ordering::Release);
-        let (secs, nanos) = crate::time::get_monotonic_time_ns();
-        let deadline = (secs * 1_000_000_000 + nanos).saturating_add(timeout_ns);
-        let completed = loop {
-            if completion.done.load(Ordering::Acquire) == expected_token {
-                break true;
-            }
-            let (secs, nanos) = crate::time::get_monotonic_time_ns();
-            if secs * 1_000_000_000 + nanos >= deadline {
-                break false;
-            }
-            crate::arch_impl::aarch64::irq_mask_account::closing();
-            unsafe {
-                core::arch::asm!(
-                    "wfi",
-                    "msr daifclr, #3",
-                    "isb",
-                    "msr daifset, #3",
-                    options(nostack)
-                );
-            }
-            crate::arch_impl::aarch64::irq_mask_account::opened();
-        };
-        crate::per_cpu_aarch64::preempt_enable();
-        completed
-    })
-}
+/// The error a wait from a context that may neither park nor poll returns,
+/// after its receipt (design §6, "Atomic callers"): EIO, never a silent
+/// success.
+pub const NOT_SLEEPABLE: i32 = 5;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum WaitMode {
@@ -270,17 +177,10 @@ pub(crate) enum WaitStage {
 /// Completion primitive — pairs one waiter thread with one ISR.
 pub struct Completion {
     /// 0 = not done, otherwise the completion token published by `complete()`.
-    /// Exposed `pub(crate)` so AHCI's intermediate polling path (IRQ registered
-    /// but scheduler not yet running) can poll it directly without sleeping.
+    /// Exposed `pub(crate)` so AHCI's early-boot polling path can read it.
     pub(crate) done: AtomicU32,
     /// TID of the sleeping waiter thread. 0 means no waiter.
     waiter: AtomicU64,
-    /// x86_64: one more than the CPU whose idle task is halted polling this
-    /// completion (`wait_idle_completion`), or 0. The device interrupt may be
-    /// routed to another CPU, so `complete()` interrupts that one; otherwise
-    /// it slept on to its next tick.
-    #[cfg(target_arch = "x86_64")]
-    idle_poller: core::sync::atomic::AtomicUsize,
     /// x86_64: one more than the CPU a syscall waiter is about to halt on in
     /// place, or 0. Its buffered wake is applied only when a CPU next
     /// schedules, and a device interrupt taken on another CPU returns without
@@ -295,8 +195,6 @@ impl Completion {
         Self {
             done: AtomicU32::new(0),
             waiter: AtomicU64::new(0),
-            #[cfg(target_arch = "x86_64")]
-            idle_poller: core::sync::atomic::AtomicUsize::new(0),
             #[cfg(target_arch = "x86_64")]
             halted_cpu: core::sync::atomic::AtomicUsize::new(0),
         }
@@ -331,8 +229,8 @@ impl Completion {
     /// `timeout_ns` is a duration in nanoseconds (not an absolute deadline).
     /// Internally converted to a CNTPCT_EL0 deadline on AArch64.
     ///
-    /// Falls back to spin-polling when the scheduler is not yet running
-    /// (detected by `with_scheduler` returning None).
+    /// Early boot, before the scheduler dispatches, polls instead; a context
+    /// that may not park returns `Err(NOT_SLEEPABLE)` after its receipt.
     pub fn wait_timeout(&self, expected_token: u32, timeout_ns: u64) -> Result<bool, i32> {
         self.wait_timeout_inner(expected_token, timeout_ns, WaitMode::Interruptible)
     }
@@ -384,319 +282,222 @@ impl Completion {
         wait_mode: WaitMode,
         observe: impl Fn(WaitStage),
     ) -> Result<bool, i32> {
+        use crate::task::park::{IoContext, ParkContext};
         observe(WaitStage::Recheck);
         // Fast path: already done (e.g., very fast device, or spurious call).
+        // Nothing waits, so no context is refused for it.
         if self.done.load(Ordering::Acquire) == expected_token {
-            let in_syscall = syscall_sleep_path_available();
-            if in_syscall {
+            if crate::task::park::context() == ParkContext::Sleepable {
                 finish_wait_current();
             }
             return Ok(true);
         }
 
-        // Obtain current thread ID. If no scheduler exists yet (early boot),
-        // fall through to the polling path below.
-        let tid = crate::task::scheduler::current_thread_id();
+        // The caller rule decides the wait (design §6): a context that may
+        // park sleeps, early boot polls while it holds the token, and any
+        // other context is refused, with a receipt, rather than polled.
+        match crate::task::park::io_context() {
+            Ok(IoContext::Sleepable) => self.sleep(expected_token, timeout_ns, wait_mode, observe),
+            Ok(IoContext::EarlyBoot) => Ok(self.poll_early_boot(expected_token, timeout_ns)),
+            Err(_) => Err(NOT_SLEEPABLE),
+        }
+    }
 
-        if idle_halt_wait_available() {
-            return Ok(wait_idle_completion(self, expected_token, timeout_ns));
+    /// The sleep, for a context that may park: publish this thread as the
+    /// waiter, block it for I/O with the deadline under the scheduler lock,
+    /// release its baseline and switch, until `complete()` wakes it, the
+    /// deadline passes or a signal the mode admits arrives.
+    ///
+    /// PRECONDITION: no locks are held (the AHCI split protocol in
+    /// ahci/mod.rs releases all locks before calling wait_timeout).
+    ///
+    /// Race safety: complete(token) publishes done without the scheduler lock
+    /// and publishes a wake only if it reads a nonzero waiter. If done lands
+    /// after the locked done-check, the unlocked recheck sees it; the waiter
+    /// is then cleared, so the ISR may publish no wake, and
+    /// finish_wait_current() returns the still-published BlockedOnIO to
+    /// Running before the wait returns. Otherwise the ISR read our tid and its
+    /// pending wake ends the halt or the switch.
+    fn sleep(
+        &self,
+        expected_token: u32,
+        timeout_ns: u64,
+        wait_mode: WaitMode,
+        observe: impl Fn(WaitStage),
+    ) -> Result<bool, i32> {
+        let Some(tid) = crate::task::scheduler::current_thread_id() else {
+            return Err(NOT_SLEEPABLE);
+        };
+        // Store TID so complete() can wake us.
+        self.waiter.store(tid, Ordering::Release);
+        // SeqCst fence: ensure the waiter store is visible to any
+        // concurrent complete() before we re-check done.
+        fence(Ordering::SeqCst);
+        let deadline_ns = {
+            let (secs, nanos) = crate::time::get_monotonic_time_ns();
+            (secs as u64 * 1_000_000_000 + nanos as u64).saturating_add(timeout_ns)
+        };
+
+        // Fast check after waiter store — ISR may have fired already.
+        if self.done.load(Ordering::Acquire) == expected_token {
+            self.waiter.store(0, Ordering::Release);
+            finish_wait_current();
+            return Ok(true);
         }
 
-        if let Some(tid) = tid {
-            // Store TID so complete() can wake us.
-            self.waiter.store(tid, Ordering::Release);
-            // SeqCst fence: ensure the waiter store is visible to any
-            // concurrent complete() before we re-check done.
-            fence(Ordering::SeqCst);
+        if wait_mode.signal_pending() {
+            self.waiter.store(0, Ordering::Release);
+            finish_wait_current();
+            return Err(EINTR);
+        }
 
-            // Compute deadline using the ARM64 free-running counter.
-            #[cfg(target_arch = "aarch64")]
-            let deadline_cntpct = {
-                let cnt: u64;
-                let freq: u64;
-                unsafe {
-                    core::arch::asm!("mrs {}, cntpct_el0", out(reg) cnt, options(nomem, nostack));
-                    core::arch::asm!("mrs {}, cntfrq_el0", out(reg) freq, options(nomem, nostack));
-                }
-                // Convert ns timeout to counter ticks.
-                // freq is in Hz; timeout_ns / 1e9 * freq = timeout_ns * freq / 1e9.
-                let ticks = (timeout_ns as u128 * freq as u128 / 1_000_000_000) as u64;
-                cnt.wrapping_add(ticks)
-            };
-            let deadline_ns = {
-                #[cfg(target_arch = "aarch64")]
-                {
-                    let (secs, nanos) = crate::time::get_monotonic_time_ns();
-                    let now_ns = secs as u64 * 1_000_000_000 + nanos as u64;
-                    now_ns.saturating_add(timeout_ns)
-                }
-                #[cfg(not(target_arch = "aarch64"))]
-                {
-                    let (secs, nanos) = crate::time::get_monotonic_time_ns();
-                    (secs * 1_000_000_000 + nanos).saturating_add(timeout_ns)
-                }
-            };
+        // Release the baseline so the scheduler can switch us out: the
+        // syscall brake, a `park::Braked` level, or none for a kernel thread
+        // at baseline 0. The caller holds no locks at this point.
+        let released = crate::task::park::release_baseline();
 
-            // Detect whether we are in syscall context (preempt_count > 0).
-            //
-            // Syscall handlers call preempt_disable() on entry, so
-            // preempt_count >= 1 when called from userspace-initiated I/O.
-            // On aarch64, the boot thread is also deliberately preempt-disabled
-            // before timer init; it must remain on the yield path because there
-            // is no timer to rescue a sleeping boot thread.
-            let in_syscall = syscall_sleep_path_available();
-
-            if in_syscall {
-                // ============================================================
-                // SYSCALL SLEEP PATH — true block_current_for_io
-                //
-                // PRECONDITION: no locks are held (the AHCI split protocol in
-                // ahci/mod.rs releases all locks before calling wait_timeout).
-                //
-                // 1. preempt_enable() — allows the scheduler to switch us out.
-                // 2. Atomic check-and-block under the scheduler lock: if done
-                //    already, skip the block; otherwise set BlockedOnIO.
-                // 3. Inline schedule() — switch fully off CPU until either the
-                //    ISR unblocks us or the timed BlockedOnIO wait expires.
-                // 4. finish_wait_current() takes back BlockedOnIO, then check
-                //    done and the timeout.
-                //
-                // Race safety: complete(token) publishes done without the
-                // scheduler lock and publishes a wake only if it reads a nonzero
-                // waiter. If done lands after our locked done-check, the
-                // unlocked recheck below sees it; we then clear waiter, so the
-                // ISR may publish no wake, and finish_wait_current() returns the
-                // still-published BlockedOnIO to Running before we return.
-                // Otherwise the ISR read our tid and its pending wake ends the
-                // halt or schedule() below.
-                // ============================================================
-
-                // Fast check after waiter store — ISR may have fired already.
-                if self.done.load(Ordering::Acquire) == expected_token {
-                    self.waiter.store(0, Ordering::Release);
-                    finish_wait_current();
-                    return Ok(true);
-                }
-
-                if wait_mode.signal_pending() {
-                    self.waiter.store(0, Ordering::Release);
-                    finish_wait_current();
-                    return Err(EINTR);
-                }
-
-                // Release the braked baseline so the scheduler can switch us
-                // out. The caller holds no locks at this point.
-                let released = crate::task::park::release_for_sleep();
-
-                loop {
-                    if wait_mode.signal_pending() {
-                        self.waiter.store(0, Ordering::Release);
-                        finish_wait_current();
-                        crate::task::park::retake_after_sleep(released);
-                        return Err(EINTR);
-                    }
-
-                    // Atomic check-and-block: under the scheduler lock, either
-                    // the ISR already set done=expected_token (don't block)
-                    // or we call
-                    // block_current_for_io() (sets state=BlockedOnIO).
-                    let already_done = crate::task::scheduler::with_current(|sched| {
-                        if self.done.load(Ordering::Acquire) == expected_token {
-                            true
-                        } else {
-                            if let Some(thread) = sched.current_thread_mut() {
-                                thread.uninterruptible_io = wait_mode == WaitMode::Uninterruptible;
-                            }
-                            sched.block_current_for_io_with_timeout(Some(deadline_ns));
-                            observe(WaitStage::Park);
-                            false
-                        }
-                    })
-                    .unwrap_or(false); // None = scheduler gone (shouldn't happen)
-
-                    observe(WaitStage::Recheck);
-                    if already_done || self.done.load(Ordering::Acquire) == expected_token {
-                        self.waiter.store(0, Ordering::Release);
-                        finish_wait_current();
-                        // Restore preempt_count to the value expected by the
-                        // syscall exit path (preempt_disable was called on entry).
-                        crate::task::park::retake_after_sleep(released);
-                        return Ok(true);
-                    }
-
-                    // Yield CPU via schedule (Linux-equivalent wait_for_completion).
-                    // schedule_from_kernel() blocks this thread (BlockedOnIO) and
-                    // switches to another. The AHCI ISR calls complete() →
-                    // unblock_for_io() to wake us. After re-dispatch, ensure IRQs
-                    // are enabled and give the CPU a window to take any pending
-                    // interrupt before re-entering the scheduler.
-                    #[cfg(target_arch = "aarch64")]
-                    trace_wait_timeout_stage(0);
-
-                    #[cfg(target_arch = "aarch64")]
-                    {
-                        crate::arch_impl::aarch64::context_switch::run_deferred_reclamation();
-                        crate::arch_impl::aarch64::context_switch::schedule_from_kernel();
-                    }
-                    // Published before the done check that precedes the halt,
-                    // so a completion is either seen by that check or finds
-                    // this CPU to interrupt.
-                    #[cfg(not(target_arch = "aarch64"))]
-                    {
-                        self.halted_cpu
-                            .store(crate::per_cpu::cpu_id() + 1, Ordering::Release);
-                        fence(Ordering::SeqCst);
-                        if self.done.load(Ordering::Acquire) != expected_token {
-                            crate::task::waitqueue::halt_blocked_current();
-                        }
-                        self.halted_cpu.store(0, Ordering::Release);
-                    }
-
-                    #[cfg(target_arch = "aarch64")]
-                    trace_wait_timeout_stage(1);
-
-                    observe(WaitStage::Wake);
-                    // Clear BlockedOnIO state after wake (could be timer or ISR).
-                    finish_wait_current();
-
-                    #[cfg(target_arch = "aarch64")]
-                    trace_wait_timeout_stage(2);
-
-                    // Check done after wake.
-                    observe(WaitStage::Recheck);
-                    if self.done.load(Ordering::Acquire) == expected_token {
-                        self.waiter.store(0, Ordering::Release);
-                        crate::task::park::retake_after_sleep(released);
-                        return Ok(true);
-                    }
-
-                    if wait_mode.signal_pending() {
-                        self.waiter.store(0, Ordering::Release);
-                        crate::task::park::retake_after_sleep(released);
-                        return Err(EINTR);
-                    }
-
-                    #[cfg(target_arch = "aarch64")]
-                    trace_wait_timeout_stage(3);
-
-                    // Wall-clock timeout.
-                    #[cfg(target_arch = "aarch64")]
-                    {
-                        trace_wait_timeout_stage(4);
-                        let (secs, nanos) = crate::time::get_monotonic_time_ns();
-                        trace_wait_timeout_stage(5);
-                        let now_ns = secs as u64 * 1_000_000_000 + nanos as u64;
-                        if now_ns >= deadline_ns {
-                            self.waiter.store(0, Ordering::Release);
-                            crate::task::park::retake_after_sleep(released);
-                            return Ok(false);
-                        }
-                    }
-                    #[cfg(not(target_arch = "aarch64"))]
-                    {
-                        let (secs, nanos) = crate::time::get_monotonic_time_ns();
-                        let now_ns = secs * 1_000_000_000 + nanos;
-                        if now_ns >= deadline_ns {
-                            self.waiter.store(0, Ordering::Release);
-                            crate::task::park::retake_after_sleep(released);
-                            return Ok(false);
-                        }
-                    }
-                }
-            } else {
-                // ============================================================
-                // BOOT-THREAD SPIN PATH
-                //
-                // Scheduler is running but we are NOT in syscall context
-                // (preempt_count = 0), meaning this is the raw boot thread
-                // between scheduler init and timer init.  WFI is unsafe here
-                // because the timer has not been started yet and may never
-                // fire to rescue a stuck WFI.  Instead, spin with yield:
-                // complete() emits SEV which wakes WFE race-free.
-                // ============================================================
-                loop {
-                    if self.done.load(Ordering::Acquire) == expected_token {
-                        self.waiter.store(0, Ordering::Release);
-                        return Ok(true);
-                    }
-
-                    #[cfg(target_arch = "aarch64")]
-                    {
-                        let now: u64;
-                        unsafe {
-                            core::arch::asm!("mrs {}, cntpct_el0", out(reg) now, options(nomem, nostack));
-                        }
-                        if now >= deadline_cntpct {
-                            self.waiter.store(0, Ordering::Release);
-                            return Ok(false);
-                        }
-                        // `yield` hints the hypervisor to schedule other vCPUs
-                        // without halting the CPU.  We do NOT use WFE/WFI here
-                        // because Parallels does not reliably wake a halted vCPU
-                        // when a wired SPI becomes pending without a timer.
-                        unsafe {
-                            core::arch::asm!("yield", options(nomem, nostack));
-                        }
-                    }
-                    #[cfg(not(target_arch = "aarch64"))]
-                    {
-                        let (secs, nanos) = crate::time::get_monotonic_time_ns();
-                        let now_ns = secs * 1_000_000_000 + nanos;
-                        if now_ns >= deadline_ns {
-                            self.waiter.store(0, Ordering::Release);
-                            return Ok(false);
-                        }
-                        core::hint::spin_loop();
-                    }
-                }
+        loop {
+            if wait_mode.signal_pending() {
+                self.waiter.store(0, Ordering::Release);
+                finish_wait_current();
+                crate::task::park::retake_baseline(released);
+                return Err(EINTR);
             }
-        } else {
-            // Early boot polling path — no scheduler, spin on done flag.
-            // Uses the same CNTPCT deadline as the interrupt path.
-            // Bounded fallback for pre-scheduler boot phase (NOT event polling).
-            // Linux equivalent: pre-scheduler-init busy-spin primitives like
-            // mdelay() — completions require the scheduler, but early boot has
-            // no thread to park. Allowlisted per docs/polling-allowlist.md.
+
+            // Atomic check-and-block: under the scheduler lock, either the
+            // ISR already set done=expected_token (don't block) or we call
+            // block_current_for_io() (sets state=BlockedOnIO).
+            let already_done = crate::task::scheduler::with_current(|sched| {
+                if self.done.load(Ordering::Acquire) == expected_token {
+                    true
+                } else {
+                    if let Some(thread) = sched.current_thread_mut() {
+                        thread.uninterruptible_io = wait_mode == WaitMode::Uninterruptible;
+                    }
+                    sched.block_current_for_io_with_timeout(Some(deadline_ns));
+                    observe(WaitStage::Park);
+                    false
+                }
+            })
+            .unwrap_or(false); // None = scheduler gone (shouldn't happen)
+
+            observe(WaitStage::Recheck);
+            if already_done || self.done.load(Ordering::Acquire) == expected_token {
+                self.waiter.store(0, Ordering::Release);
+                finish_wait_current();
+                crate::task::park::retake_baseline(released);
+                return Ok(true);
+            }
+
+            // Switch away until the ISR's complete() -> unblock_for_io()
+            // wakes us or the timed BlockedOnIO wait expires.
+            #[cfg(target_arch = "aarch64")]
+            trace_wait_timeout_stage(0);
+
             #[cfg(target_arch = "aarch64")]
             {
-                let cnt: u64;
-                let freq: u64;
-                unsafe {
-                    core::arch::asm!("mrs {}, cntpct_el0", out(reg) cnt, options(nomem, nostack));
-                    core::arch::asm!("mrs {}, cntfrq_el0", out(reg) freq, options(nomem, nostack));
-                }
-                let ticks = (timeout_ns as u128 * freq as u128 / 1_000_000_000) as u64;
-                let deadline = cnt.wrapping_add(ticks);
-                loop {
-                    if self.done.load(Ordering::Acquire) == expected_token {
-                        return Ok(true);
-                    }
-                    let now: u64;
-                    unsafe {
-                        core::arch::asm!("mrs {}, cntpct_el0", out(reg) now, options(nomem, nostack));
-                    }
-                    if now >= deadline {
-                        return Ok(false);
-                    }
-                    // `yield` not `wfe` — Parallels does not reliably wake
-                    // WFE when a wired SPI becomes pending without a timer.
-                    unsafe {
-                        core::arch::asm!("yield", options(nomem, nostack));
-                    }
-                }
+                crate::arch_impl::aarch64::context_switch::run_deferred_reclamation();
+                crate::arch_impl::aarch64::context_switch::schedule_from_kernel();
             }
+            // Published before the done check that precedes the halt, so a
+            // completion is either seen by that check or finds this CPU to
+            // interrupt.
             #[cfg(not(target_arch = "aarch64"))]
             {
-                // x86_64 early boot: plain spin (AHCI not primary driver here).
-                let limit = timeout_ns / 1000; // rough cycle budget
-                for _ in 0..limit {
-                    if self.done.load(Ordering::Acquire) == expected_token {
-                        return Ok(true);
-                    }
-                    core::hint::spin_loop();
+                self.halted_cpu
+                    .store(crate::per_cpu::cpu_id() + 1, Ordering::Release);
+                fence(Ordering::SeqCst);
+                if self.done.load(Ordering::Acquire) != expected_token {
+                    crate::task::waitqueue::halt_blocked_current();
                 }
-                Ok(self.done.load(Ordering::Acquire) == expected_token)
+                self.halted_cpu.store(0, Ordering::Release);
             }
+
+            #[cfg(target_arch = "aarch64")]
+            trace_wait_timeout_stage(1);
+
+            observe(WaitStage::Wake);
+            // Clear BlockedOnIO state after wake (could be timer or ISR).
+            finish_wait_current();
+
+            #[cfg(target_arch = "aarch64")]
+            trace_wait_timeout_stage(2);
+
+            // Check done after wake.
+            observe(WaitStage::Recheck);
+            if self.done.load(Ordering::Acquire) == expected_token {
+                self.waiter.store(0, Ordering::Release);
+                crate::task::park::retake_baseline(released);
+                return Ok(true);
+            }
+
+            if wait_mode.signal_pending() {
+                self.waiter.store(0, Ordering::Release);
+                crate::task::park::retake_baseline(released);
+                return Err(EINTR);
+            }
+
+            #[cfg(target_arch = "aarch64")]
+            trace_wait_timeout_stage(3);
+
+            // Wall-clock timeout.
+            #[cfg(target_arch = "aarch64")]
+            trace_wait_timeout_stage(4);
+            let (secs, nanos) = crate::time::get_monotonic_time_ns();
+            #[cfg(target_arch = "aarch64")]
+            trace_wait_timeout_stage(5);
+            if secs as u64 * 1_000_000_000 + nanos as u64 >= deadline_ns {
+                self.waiter.store(0, Ordering::Release);
+                crate::task::park::retake_baseline(released);
+                return Ok(false);
+            }
+        }
+    }
+
+    /// Early boot, with the I/O token held: the boot thread is the only
+    /// thread and the scheduler does not dispatch, so it polls the token
+    /// against a deadline. Bounded fallback for the pre-dispatch boot phase,
+    /// not event polling: allowlisted per docs/polling-allowlist.md.
+    fn poll_early_boot(&self, expected_token: u32, timeout_ns: u64) -> bool {
+        #[cfg(target_arch = "aarch64")]
+        {
+            let cnt: u64;
+            let freq: u64;
+            unsafe {
+                core::arch::asm!("mrs {}, cntpct_el0", out(reg) cnt, options(nomem, nostack));
+                core::arch::asm!("mrs {}, cntfrq_el0", out(reg) freq, options(nomem, nostack));
+            }
+            let ticks = (timeout_ns as u128 * freq as u128 / 1_000_000_000) as u64;
+            let deadline = cnt.wrapping_add(ticks);
+            loop {
+                if self.done.load(Ordering::Acquire) == expected_token {
+                    return true;
+                }
+                let now: u64;
+                unsafe {
+                    core::arch::asm!("mrs {}, cntpct_el0", out(reg) now, options(nomem, nostack));
+                }
+                if now >= deadline {
+                    return false;
+                }
+                // `yield` not `wfe` — Parallels does not reliably wake
+                // WFE when a wired SPI becomes pending without a timer.
+                unsafe {
+                    core::arch::asm!("yield", options(nomem, nostack));
+                }
+            }
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            // x86_64 early boot: plain spin with a rough cycle budget.
+            let limit = timeout_ns / 1000;
+            for _ in 0..limit {
+                if self.done.load(Ordering::Acquire) == expected_token {
+                    return true;
+                }
+                core::hint::spin_loop();
+            }
+            self.done.load(Ordering::Acquire) == expected_token
         }
     }
 
@@ -729,10 +530,6 @@ impl Completion {
             crate::task::scheduler::isr_unblock_for_io(tid);
         }
 
-        #[cfg(target_arch = "x86_64")]
-        if let Some(cpu) = self.idle_poller.load(Ordering::Acquire).checked_sub(1) {
-            crate::task::scheduler::kick_cpu_x86(cpu);
-        }
         #[cfg(target_arch = "x86_64")]
         if let Some(cpu) = self.halted_cpu.load(Ordering::Acquire).checked_sub(1) {
             crate::task::scheduler::kick_cpu_x86(cpu);

@@ -18,18 +18,18 @@ pub(super) fn with_interrupts<R>(f: impl FnOnce() -> R) -> R {
 }
 
 /// Let a native receipt waiter service IRQs and be preempted between core polls.
-/// Called with no core/session lock held. Release only the syscall's single
-/// preemption level; an unheld kernel-thread caller already permits scheduling.
+/// Called with no core/session lock held. A context that may park releases its
+/// baseline for the pause (`task::park::with_baseline_released`): the syscall's
+/// brake, or nothing for a kernel thread at baseline 0.
 #[cfg(target_arch = "x86_64")]
 pub(super) fn poll_pause(count: u32) {
-    let held = crate::per_cpu::preempt_count() == 1;
     // A pending timer must see the released hold at the first STI, rather than
     // deferring its reschedule until another timer lands inside the pause.
-    if held { crate::per_cpu::preempt_enable(); }
-    with_interrupts(|| {
-        for _ in 0..count { core::hint::spin_loop(); }
+    crate::task::park::with_baseline_released(|| {
+        with_interrupts(|| {
+            for _ in 0..count { core::hint::spin_loop(); }
+        })
     });
-    if held { crate::per_cpu::preempt_disable(); }
 }
 
 #[cfg(target_arch = "aarch64")]

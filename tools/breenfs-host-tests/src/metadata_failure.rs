@@ -106,7 +106,8 @@ fn ahci_preissue_refusal_leaves_root_writable() {
     let store = CachedNodeStore::new(&cache, disk.as_ref(), &sb);
     let writes = disk.writes.load(Ordering::Relaxed);
     for (error, expected) in [
-        (AhciReadError::CannotPark, EAGAIN),
+        (AhciReadError::NotSleepable, EIO),
+        (AhciReadError::EarlyBootPortOwned, EIO),
         (AhciReadError::Interrupted, EINTR),
         (AhciReadError::AdmissionTimeout, ETIMEDOUT),
         (AhciReadError::ControllerAbsent, EIO),
@@ -247,7 +248,7 @@ fn virtio_read_receipt_reaches_metadata_serial_and_report() {
 fn virtio_context_refusal_returns_eagain_without_latching() {
     use crate::block::read_failure::VirtioReadFailure;
     super::failed_mount_teardown::init_log();
-    for stage in ["gate-cannot-sleep", "gate-publish-refused", "gate-kill-claimed"] {
+    for stage in ["gate-publish-refused", "gate-kill-claimed"] {
         let (fs, disk, sb, ptr) = fixture();
         let receipt = VirtioReadFailure {
             reason: "request gate refused before issue", stage, device: 0,
@@ -280,9 +281,40 @@ fn virtio_context_refusal_returns_eagain_without_latching() {
     }
 }
 
+/// E2.4 (design §6): the block I/O caller rule refuses a context that may
+/// not sleep with EIO, not EAGAIN, and the refusal came before the request
+/// was issued, so it does not latch the volume read-only. So does a device
+/// whose completion source is not armed (`irq-unavailable`, the #3298
+/// review): `read_sectors` refuses it before `transfer` issues anything.
+#[test]
+fn virtio_caller_rule_refusal_returns_eio_without_latching() {
+    use crate::block::read_failure::VirtioReadFailure;
+    for stage in ["gate-not-sleepable", "gate-early-boot-busy", "irq-unavailable"] {
+        let (fs, disk, sb, ptr) = fixture();
+        let receipt = VirtioReadFailure {
+            reason: "request gate refused before issue", stage, device: 0,
+            sector: ptr.addr * 8, bytes: NODE_SIZE, thread: Some(73), preempt_count: 2, kill_custody: Some(1),
+            in_interrupt: false, interrupts_enabled: true, timer_ready: true,
+            gate_locked: true, gate_wedged: false, pending_token: 17, completed_token: 0, waiter_thread: 0,
+            completed_desc: u32::MAX, completed_status: u32::MAX,
+            used_idx: 9, last_used_idx: 9, device_status: 15,
+        };
+        let writes = disk.writes.load(Ordering::Relaxed);
+        *disk.read_error.lock().unwrap() = Some(BlockError::VirtioRead(receipt));
+        let cache = BufferCache::new(NoWait);
+        let store = CachedNodeStore::new(&cache, disk.as_ref(), &sb);
+        let error = store.read_node(ptr).err().expect("injected refusal succeeded");
+        assert_eq!(fs.inner.state.lock().observed::<()>(Err(error.into())), Err(Errno(EIO)), "{stage}");
+        assert_eq!(fs.failure(), None, "{stage}");
+        assert_eq!(fs.read_only(), Ok(false), "{stage}");
+        assert_eq!(disk.writes.load(Ordering::Relaxed), writes);
+    }
+}
+
 // E3-2 review: mmap's eager population keeps the backend's errno. A data read
 // the storage refused before issue, or that a kill interrupted, aborts
-// population with that read's errno (EAGAIN, EINTR), not EIO, so mmap tells
+// population with that read's errno (EAGAIN, EINTR; EIO for the E2.4 caller
+// rule's refusal), so mmap tells
 // the caller what read() on the same file would.
 #[test]
 fn population_keeps_the_backend_read_errno() {
@@ -301,7 +333,11 @@ fn population_keeps_the_backend_read_errno() {
     // A fresh mount: the file's data block is not in its block cache.
     let fs = BreenFs::mount_writable(disk.clone(), Arc::new(BufferCache::new(NoWait)), 80, 1).unwrap();
     let node = fs.open(ino).unwrap();
-    for (error, expected) in [(AhciReadError::CannotPark, EAGAIN), (AhciReadError::Interrupted, EINTR)] {
+    for (error, expected) in [
+        (AhciReadError::WaitPublication, EAGAIN),
+        (AhciReadError::Interrupted, EINTR),
+        (AhciReadError::NotSleepable, EIO),
+    ] {
         *disk.read_error.lock().unwrap() = Some(BlockError::AhciRead(error));
         let errno = populate(&node, 0, 1).err().map(|error| error.errno());
         *disk.read_error.lock().unwrap() = None;

@@ -792,3 +792,207 @@ pub fn should_wake(waiters: &AtomicU32) -> bool {
     fence(Ordering::SeqCst);
     waiters.load(Ordering::SeqCst) != 0
 }
+
+// ------------------------------------------- block I/O's caller rule (E2.4)
+
+/// The early-boot I/O token (design §6, "The early-boot path"). `kernel_main`
+/// mints it once, before the scheduler first dispatches, and revokes it at
+/// that point. While it is held the boot thread is the only thread, and owns
+/// each controller: it polls its commands against a deadline. Once revoked,
+/// block I/O needs a context that may park.
+pub struct EarlyBootIo {
+    state: AtomicU32,
+}
+
+const TOKEN_UNMINTED: u32 = 0;
+const TOKEN_HELD: u32 = 1;
+const TOKEN_REVOKED: u32 = 2;
+
+impl EarlyBootIo {
+    pub const fn new() -> Self {
+        Self { state: AtomicU32::new(TOKEN_UNMINTED) }
+    }
+
+    /// Mint the token. It is minted once: false if it was minted before,
+    /// including after its revocation.
+    pub fn mint(&self) -> bool {
+        self.state.compare_exchange(TOKEN_UNMINTED, TOKEN_HELD, Ordering::AcqRel, Ordering::Acquire).is_ok()
+    }
+
+    /// Revoke the token at the first dispatch. False if it was not held.
+    pub fn revoke(&self) -> bool {
+        self.state.compare_exchange(TOKEN_HELD, TOKEN_REVOKED, Ordering::AcqRel, Ordering::Acquire).is_ok()
+    }
+
+    pub fn held(&self) -> bool {
+        self.state.load(Ordering::Acquire) == TOKEN_HELD
+    }
+
+    /// The scheduler dispatches from here on.
+    pub fn revoked(&self) -> bool {
+        self.state.load(Ordering::Acquire) == TOKEN_REVOKED
+    }
+}
+
+impl Default for EarlyBootIo {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// How a caller may do block I/O (design §6, "The rule").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IoContext {
+    /// A context that may park: a busy device parks it, and so does each
+    /// command until its completion source completes it.
+    Sleepable,
+    /// Early boot, with the token held: the boot thread polls each command.
+    EarlyBoot,
+}
+
+/// The block I/O caller rule over a classified context: a context that may
+/// park, or early boot while the token is held. Anything else is refused,
+/// with the context that was refused.
+pub const fn io_rule(context: ParkContext, token_held: bool) -> Result<IoContext, ParkContext> {
+    match context {
+        ParkContext::Sleepable => Ok(IoContext::Sleepable),
+        ParkContext::EarlyBoot if token_held => Ok(IoContext::EarlyBoot),
+        refused => Err(refused),
+    }
+}
+
+/// [`io_rule`] for the current context. A refusal is a contract violation:
+/// a receipt at `site`, and `NotSleepable` (design §6, "Atomic callers").
+pub fn io_context<H: ParkHooks>(hooks: &H, site: u64, token: &EarlyBootIo) -> Result<IoContext, ParkError> {
+    io_rule(hooks.context(), token.held()).map_err(|refused| {
+        hooks.receipt(refused, site);
+        ParkError::NotSleepable(refused)
+    })
+}
+
+/// The kinds of block device that register a completion source.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum BlockSource {
+    Ahci = 1,
+    VirtioBlkPci = 2,
+    VirtioBlkMmio = 3,
+}
+
+impl BlockSource {
+    /// The [`CompletionSources`] key of device `index` of this kind.
+    pub const fn key(self, index: u32) -> u64 {
+        (self as u64) << 32 | index as u64
+    }
+}
+
+/// How many VirtIO MMIO block devices can attach: one per MMIO transport
+/// slot (`drivers::virtio::block_mmio::MAX_BLOCK_DEVICES`, which asserts it).
+pub const VIRTIO_BLK_MMIO_COMPLETION_SOURCES: usize = 32;
+
+/// The capacity of the kernel's completion-source table: one slot for each
+/// source the block drivers can attach. AHCI attaches one, for its single
+/// controller; virtio-blk-pci one, for its single device; and VirtIO MMIO
+/// one per block device.
+pub const BLOCK_COMPLETION_SOURCES: usize = 1 + 1 + VIRTIO_BLK_MMIO_COMPLETION_SOURCES;
+
+/// The completion sources of the attached block devices (design §6,
+/// "Completion readiness before revocation"). A sleeping caller can park on
+/// a command only if something will complete it: the device's interrupt,
+/// routed and unmasked, or its completion poller thread. A device attaches
+/// with its source armed or not; until it is armed, its sleeping requests
+/// are refused rather than polled, and each refusal is counted.
+pub struct CompletionSources<const N: usize> {
+    keys: [AtomicU64; N],
+    armed: [AtomicU32; N],
+    refused: [AtomicU64; N],
+}
+
+impl<const N: usize> CompletionSources<N> {
+    pub const fn new() -> Self {
+        Self {
+            keys: [const { AtomicU64::new(0) }; N],
+            armed: [const { AtomicU32::new(0) }; N],
+            refused: [const { AtomicU64::new(0) }; N],
+        }
+    }
+
+    fn slot(&self, key: u64) -> Option<usize> {
+        self.keys.iter().position(|slot| slot.load(Ordering::Acquire) == key)
+    }
+
+    /// Device `key` (nonzero) attaches, with its completion source armed or
+    /// not. False when the table is full: that device is never ready.
+    pub fn attach(&self, key: u64, armed: bool) -> bool {
+        let slot = match self.slot(key) {
+            Some(slot) => slot,
+            None => match self
+                .keys
+                .iter()
+                .position(|slot| slot.compare_exchange(0, key, Ordering::AcqRel, Ordering::Acquire).is_ok())
+            {
+                Some(slot) => slot,
+                None => return false,
+            },
+        };
+        self.armed[slot].store(u32::from(armed), Ordering::Release);
+        true
+    }
+
+    /// Device `key`'s completion source is armed now.
+    pub fn arm(&self, key: u64) {
+        if let Some(slot) = self.slot(key) {
+            self.armed[slot].store(1, Ordering::Release);
+        }
+    }
+
+    /// Whether a sleeping caller may issue to device `key`. An attached
+    /// device whose source is not armed counts a refusal; a device that
+    /// never attached is not ready either.
+    pub fn ready(&self, key: u64) -> bool {
+        match self.slot(key) {
+            Some(slot) if self.armed[slot].load(Ordering::Acquire) != 0 => true,
+            Some(slot) => {
+                self.refused[slot].fetch_add(1, Ordering::Relaxed);
+                false
+            }
+            None => false,
+        }
+    }
+
+    /// How many sleeping requests device `key` has refused.
+    pub fn refusals(&self, key: u64) -> u64 {
+        self.slot(key).map_or(0, |slot| self.refused[slot].load(Ordering::Relaxed))
+    }
+
+    /// The attached devices whose completion source is not armed, into
+    /// `out`; returns how many there are.
+    pub fn unready(&self, out: &mut [u64]) -> usize {
+        let mut n = 0;
+        for (key, armed) in self.keys.iter().zip(&self.armed) {
+            let key = key.load(Ordering::Acquire);
+            if key != 0 && armed.load(Ordering::Acquire) == 0 {
+                if let Some(slot) = out.get_mut(n) {
+                    *slot = key;
+                }
+                n += 1;
+            }
+        }
+        n
+    }
+}
+
+impl<const N: usize> Default for CompletionSources<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The first dispatch: revoke the token, and list the attached devices that
+/// are not ready to complete a sleeping caller's command (design §6). The
+/// caller writes a receipt naming each one; their requests are refused until
+/// their source is armed. Returns how many are not ready, or `None` if the
+/// token was not held.
+pub fn revoke<const N: usize>(token: &EarlyBootIo, sources: &CompletionSources<N>, out: &mut [u64]) -> Option<usize> {
+    token.revoke().then(|| sources.unready(out))
+}

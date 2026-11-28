@@ -174,14 +174,12 @@ impl TestDisk {
     }
 }
 
-/// Load and run a userspace binary from the test disk.
-/// On success, this function never returns (jumps to userspace).
+/// Load a userspace binary from the test disk and start it through the
+/// scheduler. The caller is the `init-loader` kernel thread (design §6), so
+/// the process runs when a CPU dispatches it, as every user thread does.
 /// On failure, returns an error string.
 #[cfg(target_arch = "aarch64")]
-pub fn run_userspace_from_disk(
-    binary_name: &str,
-) -> Result<core::convert::Infallible, &'static str> {
-    use crate::arch_impl::aarch64::context::return_to_userspace;
+pub fn run_userspace_from_disk(binary_name: &str) -> Result<(), &'static str> {
     use alloc::boxed::Box;
     use alloc::string::String;
 
@@ -273,72 +271,14 @@ pub fn run_userspace_from_disk(
             None
         }
     };
-    if let Some((thread, thread_id)) = scheduler_thread {
-        crate::task::scheduler::spawn(thread);
-        // Set this as the current thread
-        crate::task::scheduler::set_current_thread(thread_id);
-    }
-
-    // Switch to the process page table (TTBR0)
-    crate::serial_println!("[boot] Switching to process page table...");
-    {
-        let manager_guard = crate::process::manager();
-        if let Some(ref manager) = *manager_guard {
-            if let Some(process) = manager.get_process(pid) {
-                if let Some(ref page_table) = process.page_table {
-                    unsafe {
-                        crate::memory::process_memory::switch_to_process_page_table(page_table);
-                    }
-                    crate::serial_println!(
-                        "[boot] Page table switched to TTBR0={:#x}",
-                        page_table.level_4_frame().start_address().as_u64()
-                    );
-                } else {
-                    crate::serial_println!("[boot] WARNING: Process has no page table!");
-                }
-            }
-        }
-    }
-
-    crate::serial_println!("[boot] Jumping to userspace at {:#x}...", entry_point);
-    crate::serial_println!();
-
-    // Flush instruction cache for the loaded code region
-    unsafe {
-        let start = 0x4100_0000u64;
-        let end = 0x4200_0000u64;
-        let mut addr = start;
-        while addr < end {
-            core::arch::asm!(
-                "dc cvau, {addr}",
-                addr = in(reg) addr,
-                options(nostack)
-            );
-            addr += 64;
-        }
-        core::arch::asm!("dsb ish", "isb", options(nostack));
-        addr = start;
-        while addr < end {
-            core::arch::asm!(
-                "ic ivau, {addr}",
-                addr = in(reg) addr,
-                options(nostack)
-            );
-            addr += 64;
-        }
-        core::arch::asm!("dsb ish", "isb", options(nostack));
-    }
-
-    // Jump to userspace! (never returns)
-    unsafe {
-        return_to_userspace(entry_point, user_sp);
-    }
+    let (thread, thread_id) = scheduler_thread.ok_or("Process has no thread to schedule")?;
+    crate::task::scheduler::spawn(thread);
+    crate::serial_println!("[boot] {} started through the scheduler (thread {})", binary_name, thread_id);
+    Ok(())
 }
 
 /// Stub for x86_64 - the real implementation uses different infrastructure
 #[cfg(target_arch = "x86_64")]
-pub fn run_userspace_from_disk(
-    _binary_name: &str,
-) -> Result<core::convert::Infallible, &'static str> {
+pub fn run_userspace_from_disk(_binary_name: &str) -> Result<(), &'static str> {
     Err("Use x86_64-specific boot infrastructure")
 }
