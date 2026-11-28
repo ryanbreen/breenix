@@ -7,8 +7,7 @@ use crate::net::tcp::*;
 use crate::net::LOCAL_IP;
 use crate::process::process::ProcessId;
 
-#[path = "../../../kernel/src/fs/breenfs/siphash.rs"]
-mod fixture_hash;
+use crate::random::siphash as fixture_hash;
 
 fn visits(index: Index, f: impl FnOnce()) -> usize {
     VISITS.set([0; 3]);

@@ -1,4 +1,4 @@
-//! SipHash-2-4 for keyed directory-name hashes.
+//! SipHash-2-4 keyed hashing.
 
 fn round(v: &mut [u64; 4]) {
     v[0] = v[0].wrapping_add(v[1]);

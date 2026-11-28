@@ -53,19 +53,23 @@ pub(crate) fn seed_wildcard(
     port: u16,
     owner_pid: crate::process::process::ProcessId,
 ) -> ListenerId {
-    let id = ListenerId(0);
+    let id = ListenerId {
+        addr: [0; 4],
+        port,
+        generation: 0,
+    };
     with_tcp(|tables| {
-        tables.listeners.push(ListenSocket {
-            id,
-            local_ip: [0; 4],
-            local_port: port,
-            backlog: 4,
-            owner_pid,
-            reuse: false,
-            ttl: 64,
-            rcv_cap: DEFAULT_RCVBUF / 2,
-            owner: None,
-        })
+        tables
+            .insert_listener(ListenSocket {
+                id,
+                backlog: 4,
+                owner_pid,
+                reuse: false,
+                ttl: 64,
+                rcv_cap: DEFAULT_RCVBUF / 2,
+                owner: None,
+            })
+            .unwrap()
     });
     id
 }

@@ -30,8 +30,8 @@
 //!
 //! The active closer waits in TIME_WAIT for 60 s (Linux's `TCP_TIMEWAIT_LEN`).
 //! Expired TIME_WAIT entries, orphaned FIN_WAIT_2 entries past 60 s and closed
-//! orphans are reaped from the connection table whenever the table is consulted for
-//! a port or a new segment, at most once a second.
+//! orphans are reaped by the timer worker or during packet handling. Bind checks
+//! ignore expired owners in the bucket for the requested port.
 //!
 //! Every table lives behind one lock, `TCP_CONNECTIONS`, and grows only through
 //! fallible reservations: a segment or call that finds no memory is dropped or
@@ -43,6 +43,8 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::Mutex;
 
+#[path = "tcp/buckets.rs"]
+mod buckets;
 #[path = "tcp/congestion.rs"]
 mod congestion;
 #[path = "tcp/receive.rs"]
@@ -52,6 +54,8 @@ mod recovery;
 #[cfg(test)]
 #[path = "tcp/lookup_probe.rs"]
 pub(crate) mod lookup_probe;
+
+use buckets::Buckets;
 
 use super::icmp::TcpMtuQuote;
 use super::ipv4::{Ipv4Packet, PROTOCOL_TCP};
@@ -920,7 +924,7 @@ pub struct ConnectionId {
 
 /// TCP connection state
 pub struct TcpConnection {
-    pub id: ConnectionId,
+    id: ConnectionId,
     pub state: TcpState,
     /// Our sequence number (next byte to send)
     pub send_next: u32,
@@ -2132,21 +2136,22 @@ impl TcpConnection {
     }
 }
 
-/// A listener, named by the id `tcp_listen` returned.
+/// A listener, named by its endpoint and the incarnation that owns it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ListenerId(u64);
+pub struct ListenerId {
+    addr: [u8; 4],
+    port: u16,
+    generation: u64,
+}
 
 static NEXT_LISTENER_ID: AtomicU64 = AtomicU64::new(1);
 
-/// Listening socket info
-pub struct ListenSocket {
-    pub id: ListenerId,
-    /// The address it listens on; 0.0.0.0 takes every local address.
-    pub local_ip: [u8; 4],
-    pub local_port: u16,
+/// Listening socket info.
+struct ListenSocket {
+    id: ListenerId,
     /// Children it holds at most, in SYN_RECEIVED or waiting for accept.
-    pub backlog: usize,
-    pub owner_pid: crate::process::process::ProcessId,
+    backlog: usize,
+    owner_pid: crate::process::process::ProcessId,
     /// The listening socket set SO_REUSEADDR; its children inherit it.
     reuse: bool,
     /// The listening socket's IP_TTL, which its SYN+ACKs and children take.
@@ -2156,25 +2161,50 @@ pub struct ListenSocket {
     owner: Option<Weak<Socket>>,
 }
 
-/// A port a socket bound without listening or connecting yet.
-struct BoundPort {
-    addr: [u8; 4],
-    port: u16,
-    reuse: bool,
+fn tuple_key(id: &ConnectionId) -> [u8; 12] {
+    let mut key = [0; 12];
+    key[..4].copy_from_slice(&id.local_ip);
+    key[4..6].copy_from_slice(&id.local_port.to_be_bytes());
+    key[6..10].copy_from_slice(&id.remote_ip);
+    key[10..].copy_from_slice(&id.remote_port.to_be_bytes());
+    key
 }
 
-/// The connections, as `with_tcp_connections` hands them out.
+fn listener_key(addr: [u8; 4], port: u16) -> [u8; 6] {
+    let mut key = [0; 6];
+    key[..4].copy_from_slice(&addr);
+    key[4..].copy_from_slice(&port.to_be_bytes());
+    key
+}
+
+#[derive(Clone, Copy)]
+enum BindOwner {
+    Bound { addr: [u8; 4], reuse: bool },
+    Listener(ListenerId),
+    Connection(ConnectionId),
+}
+
+struct Binding {
+    port: u16,
+    owner: BindOwner,
+}
+
+/// The connections and their bind memberships, under the same TCP table lock.
 pub(crate) struct ConnTable {
-    conns: Vec<TcpConnection>,
+    conns: Buckets<TcpConnection>,
+    binds: Buckets<Binding>,
 }
 
 impl ConnTable {
     const fn new() -> Self {
-        ConnTable { conns: Vec::new() }
+        Self {
+            conns: Buckets::new(),
+            binds: Buckets::new(),
+        }
     }
 
     fn position(&self, id: &ConnectionId) -> Option<usize> {
-        self.conns.iter().position(|conn| {
+        self.conns.position(&tuple_key(id), |conn| {
             #[cfg(test)]
             lookup_probe::visit(lookup_probe::Index::Established);
             conn.id == *id
@@ -2182,124 +2212,194 @@ impl ConnTable {
     }
 
     pub fn get(&self, id: &ConnectionId) -> Option<&TcpConnection> {
-        self.position(id).map(|index| &self.conns[index])
+        self.position(id).map(|index| self.conns.get(index))
     }
 
     pub fn get_mut(&mut self, id: &ConnectionId) -> Option<&mut TcpConnection> {
         let index = self.position(id)?;
-        Some(&mut self.conns[index])
+        Some(self.conns.get_mut(index))
     }
 
     pub fn contains_key(&self, id: &ConnectionId) -> bool {
         self.position(id).is_some()
     }
 
+    fn len(&self) -> usize {
+        self.conns.len()
+    }
+
     pub fn values(&self) -> impl Iterator<Item = &TcpConnection> {
-        self.conns.iter()
+        self.conns.values()
     }
 
     pub fn values_mut(&mut self) -> impl Iterator<Item = &mut TcpConnection> {
-        self.conns.iter_mut()
+        self.conns.values_mut()
     }
 
-    /// Room for one more connection: ENOMEM when there is no memory for it.
-    fn reserve_one(&mut self) -> Result<(), i32> {
+    fn reserve_binding(&mut self) -> Result<(), i32> {
+        #[cfg(test)]
+        lookup_probe::reserve(lookup_probe::Index::Bind)?;
+        self.binds.try_reserve_one()
+    }
+
+    fn push_binding(&mut self, port: u16, owner: BindOwner) {
+        self.binds
+            .push_reserved(&port.to_be_bytes(), Binding { port, owner });
+    }
+
+    fn bind_owners(&self, port: u16) -> impl Iterator<Item = BindOwner> + '_ {
+        self.binds
+            .candidates(&port.to_be_bytes())
+            .filter_map(move |(_, binding)| {
+                #[cfg(test)]
+                lookup_probe::visit(lookup_probe::Index::Bind);
+                (binding.port == port).then_some(binding.owner)
+            })
+    }
+
+    fn remove_binding(&mut self, port: u16, matches: impl Fn(BindOwner) -> bool) {
+        let index = self.binds.position(&port.to_be_bytes(), |binding| {
+            binding.port == port && matches(binding.owner)
+        });
+        if let Some(index) = index {
+            self.binds.remove(index);
+        }
+    }
+
+    fn unbind(&mut self, addr: [u8; 4], port: u16) {
+        self.remove_binding(
+            port,
+            |owner| matches!(owner, BindOwner::Bound { addr: a, .. } if a == addr),
+        );
+    }
+
+    /// Both indexes must have room before a connection takes ownership of its port.
+    fn insert(&mut self, mut conn: TcpConnection) -> Result<(), i32> {
         #[cfg(test)]
         lookup_probe::reserve(lookup_probe::Index::Established)?;
-        self.conns.try_reserve(1).map_err(|_| ENOMEM)
+        self.conns.try_reserve_one()?;
+        self.reserve_binding()?;
+        let id = conn.id;
+        conn.arm_retransmit();
+        self.conns.push_reserved(&tuple_key(&id), conn);
+        self.push_binding(id.local_port, BindOwner::Connection(id));
+        Ok(())
     }
 
-    /// Add a connection after `reserve_one` made room for it.
-    fn push_reserved(&mut self, conn: TcpConnection) {
-        debug_assert!(self.conns.len() < self.conns.capacity());
-        self.conns.push(conn);
+    fn remove_at(&mut self, index: usize) {
+        let conn = self.conns.remove(index);
+        self.remove_binding(
+            conn.id.local_port,
+            |owner| matches!(owner, BindOwner::Connection(id) if id == conn.id),
+        );
     }
 
-    fn remove(&mut self, id: &ConnectionId) -> Option<TcpConnection> {
-        self.position(id).map(|index| self.conns.swap_remove(index))
+    fn remove(&mut self, id: &ConnectionId) {
+        if let Some(index) = self.position(id) {
+            self.remove_at(index);
+        }
     }
 
-    fn retain(&mut self, keep: impl FnMut(&TcpConnection) -> bool) {
-        self.conns.retain(keep);
+    fn reap(&mut self, now: u64) {
+        let mut index = 0;
+        while index < self.conns.len() {
+            if self.conns.get(index).expired(now) {
+                self.remove_at(index);
+            } else {
+                index += 1;
+            }
+        }
+    }
+
+    fn connections_on_port(&self, port: u16) -> impl Iterator<Item = &TcpConnection> {
+        self.bind_owners(port).filter_map(move |owner| {
+            let BindOwner::Connection(key) = owner else {
+                return None;
+            };
+            self.get(&key)
+        })
     }
 }
 
-/// Every TCP table: connections, listeners and bound ports.
+/// Every TCP table: connections, listeners and bind owners.
 pub(crate) struct TcpTables {
     conns: ConnTable,
-    listeners: Vec<ListenSocket>,
-    bound: Vec<BoundPort>,
+    listeners: Buckets<ListenSocket>,
 }
 
 impl TcpTables {
     const fn new() -> Self {
-        TcpTables {
+        Self {
             conns: ConnTable::new(),
-            listeners: Vec::new(),
-            bound: Vec::new(),
+            listeners: Buckets::new(),
         }
     }
 
+    fn listener_position(&self, id: ListenerId) -> Option<usize> {
+        self.listeners
+            .position(&listener_key(id.addr, id.port), |listener| {
+                listener.id == id
+            })
+    }
+
     fn listener(&mut self, id: ListenerId) -> Option<&mut ListenSocket> {
-        self.listeners.iter_mut().find(|listener| listener.id == id)
+        let index = self.listener_position(id)?;
+        Some(self.listeners.get_mut(index))
     }
 
     /// The listener an inbound segment to `local_ip`:`port` reaches: one bound
     /// to that address, else one bound to INADDR_ANY.
     fn listener_for(&self, local_ip: [u8; 4], port: u16) -> Option<usize> {
-        let on_port = |listener: &&ListenSocket| {
-            #[cfg(test)]
-            lookup_probe::visit(lookup_probe::Index::Listener);
-            listener.local_port == port
+        let find = |addr| {
+            self.listeners
+                .position(&listener_key(addr, port), |listener| {
+                    #[cfg(test)]
+                    lookup_probe::visit(lookup_probe::Index::Listener);
+                    listener.id.addr == addr && listener.id.port == port
+                })
         };
-        self.listeners
-            .iter()
-            .position(|listener| on_port(&listener) && listener.local_ip == local_ip)
-            .or_else(|| {
-                self.listeners
-                    .iter()
-                    .position(|listener| on_port(&listener) && listener.local_ip == [0; 4])
-            })
+        find(local_ip).or_else(|| {
+            if local_ip == [0; 4] {
+                None
+            } else {
+                find([0; 4])
+            }
+        })
     }
 
-    /// True when a socket with SO_REUSEADDR `reuse` may not bind `addr`:`port`,
-    /// as Linux's `inet_csk_bind_conflict` decides: another socket on the port
-    /// with an overlapping address holds it, unless both set SO_REUSEADDR and
-    /// the other is not listening. A connection in TIME_WAIT keeps the
-    /// SO_REUSEADDR its socket had.
+    /// An overlapping address holds the local port unless both sockets set
+    /// SO_REUSEADDR and the other is not listening. Unexpired TIME_WAIT keeps
+    /// the connection's reuse option. Read it from the connection itself so
+    /// option and state changes are visible without a second mutable copy.
     fn bind_conflict(&self, addr: [u8; 4], port: u16, reuse: bool) -> bool {
-        let shared = |other: bool| reuse && other;
-        self.listeners
-            .iter()
-            .any(|listener| {
-                #[cfg(test)]
-                lookup_probe::visit(lookup_probe::Index::Bind);
-                listener.local_port == port && overlaps(listener.local_ip, addr)
-            })
-            || self.bound.iter().any(|bound| {
-                #[cfg(test)]
-                lookup_probe::visit(lookup_probe::Index::Bind);
-                bound.port == port && overlaps(bound.addr, addr) && !shared(bound.reuse)
-            })
-            || self.conns.values().any(|conn| {
-                #[cfg(test)]
-                lookup_probe::visit(lookup_probe::Index::Bind);
-                conn.id.local_port == port
-                    && overlaps(conn.id.local_ip, addr)
-                    && !(conn.state == TcpState::Closed && conn.orphaned)
-                    && !shared(conn.reuse)
-            })
+        let now = now_ms();
+        self.conns.bind_owners(port).any(|owner| match owner {
+            BindOwner::Bound {
+                addr: other,
+                reuse: other_reuse,
+            } => overlaps(other, addr) && !(reuse && other_reuse),
+            BindOwner::Listener(id) => overlaps(id.addr, addr),
+            BindOwner::Connection(id) => {
+                overlaps(id.local_ip, addr)
+                    && self
+                        .conns
+                        .get(&id)
+                        .is_some_and(|conn| !(conn.expired(now) || reuse && conn.reuse))
+            }
+        })
     }
 
-    /// Give back the port a socket bound at `addr`.
-    fn unbind(&mut self, addr: [u8; 4], port: u16) {
-        if let Some(index) = self
-            .bound
-            .iter()
-            .position(|bound| bound.addr == addr && bound.port == port)
-        {
-            self.bound.swap_remove(index);
-        }
+    fn insert_listener(&mut self, listener: ListenSocket) -> Result<(), i32> {
+        #[cfg(test)]
+        lookup_probe::reserve(lookup_probe::Index::Listener)?;
+        self.listeners.try_reserve_one()?;
+        self.conns.reserve_binding()?;
+        let id = listener.id;
+        self.listeners
+            .push_reserved(&listener_key(id.addr, id.port), listener);
+        self.conns.push_binding(id.port, BindOwner::Listener(id));
+        self.conns.unbind(id.addr, id.port);
+        Ok(())
     }
 }
 
@@ -2346,7 +2446,7 @@ fn reap_expired(connections: &mut ConnTable, force: bool) {
         return;
     }
     LAST_REAP_MS.store(now, Ordering::Relaxed);
-    connections.retain(|conn| !conn.expired(now));
+    connections.reap(now);
 }
 
 /// `/proc/net/tcp_stats`: transmit-side counters since boot, one `name: value` line each.
@@ -2421,19 +2521,19 @@ pub fn tcp_sender_info(conn_id: &ConnectionId) -> Option<SenderInfo> {
 /// `/proc/net/tcp`: the first four columns of Linux's format, one line per listener and
 /// per connection: its slot, the local and remote address as hexadecimal IP:port (the IP
 /// as Linux prints its network-order word on a little-endian machine) and the state as
-/// Linux numbers it. Expired connections are reaped first, as a bind does, so one whose
+/// Linux numbers it. Expired connections are reaped first so a connection whose
 /// TIME_WAIT has run out is not listed.
 pub fn proc_net_tcp() -> Result<alloc::string::String, i32> {
     use core::fmt::Write;
     with_tcp(|tables| {
         reap_expired(&mut tables.conns, true);
-        let rows = tables.listeners.len() + tables.conns.values().count();
+        let rows = tables.listeners.len() + tables.conns.len();
         let mut text = alloc::string::String::new();
         // A row is at most 40 bytes; the header 36.
         text.try_reserve_exact(48 + rows * 48).map_err(|_| ENOMEM)?;
         text.push_str("  sl  local_address rem_address   st\n");
         let hex = |ip: [u8; 4]| u32::from_le_bytes(ip);
-        let listening = tables.listeners.iter().map(|l| (l.local_ip, l.local_port, [0; 4], 0, 0x0a));
+        let listening = tables.listeners.values().map(|l| (l.id.addr, l.id.port, [0; 4], 0, 0x0a));
         let connected = tables.conns.values().filter_map(|conn| {
             let state = match conn.state {
                 TcpState::Closed => return None,
@@ -2471,14 +2571,11 @@ pub fn proc_net_tcp() -> Result<alloc::string::String, i32> {
 /// memory to record it.
 pub fn tcp_bind_port(addr: [u8; 4], port: u16, reuse: bool) -> Result<(), i32> {
     with_tcp(|tables| {
-        reap_expired(&mut tables.conns, true);
         if tables.bind_conflict(addr, port, reuse) {
             return Err(EADDRINUSE);
         }
-        #[cfg(test)]
-        lookup_probe::reserve(lookup_probe::Index::Bind)?;
-        tables.bound.try_reserve(1).map_err(|_| ENOMEM)?;
-        tables.bound.push(BoundPort { addr, port, reuse });
+        tables.conns.reserve_binding()?;
+        tables.conns.push_binding(port, BindOwner::Bound { addr, reuse });
         Ok(())
     })
 }
@@ -2486,7 +2583,7 @@ pub fn tcp_bind_port(addr: [u8; 4], port: u16, reuse: bool) -> Result<(), i32> {
 /// Give back a port `tcp_bind_port` or `tcp_bind_ephemeral` took at `addr`:
 /// its socket closed without listening or connecting.
 pub fn tcp_unbind_port(addr: [u8; 4], port: u16) {
-    with_tcp(|tables| tables.unbind(addr, port));
+    with_tcp_connections(|connections| connections.unbind(addr, port));
 }
 
 /// Bind an unbound socket at `addr` to a free port from the ephemeral range,
@@ -2606,10 +2703,7 @@ pub fn tcp_has_peer(conn_id: &ConnectionId) -> bool {
 
 /// True when a socket without SO_REUSEADDR may not bind `port` on any address.
 pub fn tcp_port_in_use(port: u16, reuse: bool) -> bool {
-    with_tcp(|tables| {
-        reap_expired(&mut tables.conns, true);
-        tables.bind_conflict([0; 4], port, reuse)
-    })
+    with_tcp(|tables| tables.bind_conflict([0; 4], port, reuse))
 }
 
 /// The initial sequence number for a connection on `id` (RFC 6528): the keyed
@@ -3055,11 +3149,11 @@ fn handle_syn_for_listener(
     src_ip: [u8; 4],
     header: &TcpHeader,
 ) {
-    let listener = &tables.listeners[index];
+    let listener = tables.listeners.get(index);
     let id = listener.id;
     let children = tables
         .conns
-        .values()
+        .connections_on_port(id.port)
         .filter(|conn| conn.parent == Some(id))
         .count();
     if children >= listener.backlog {
@@ -3088,13 +3182,11 @@ fn handle_syn_for_listener(
     let Some(syn_ack) = try_build_segment(&seg, options, [&[], &[]]) else {
         return;
     };
-    if tables.conns.reserve_one().is_err() {
+    // The SYN+ACK is outstanding until the final ACK comes; the child's timer
+    // sends it again and eventually gives up on the child.
+    if tables.conns.insert(child).is_err() {
         return;
     }
-    // The SYN+ACK is outstanding until the final ACK comes; the child's timer
-    // sends it again, and gives the child up after Linux's tcp_synack_retries.
-    child.arm_retransmit();
-    tables.conns.push_reserved(child);
 
     let src_mac = super::current_packet_src_mac();
     send_reply_segment(local_ip, src_ip, src_mac, seg.ttl, &syn_ack);
@@ -3194,22 +3286,19 @@ pub fn tcp_connect(
     conn.recv_shift = Some(shift);
     let syn = conn.segment(isn, TcpFlags::syn());
     conn.recv_right = u32::from(syn.window);
-    // The SYN is outstanding until the SYN+ACK comes; the timer resends it.
-    conn.arm_retransmit();
-
-    // An earlier incarnation of the same four-tuple that only waits out
-    // TIME_WAIT with no owner gives way to the new one.
-    with_tcp(|tables| {
-        reap_expired(&mut tables.conns, true);
-        if let Some(old) = tables.conns.get(&conn_id) {
-            if !(old.orphaned && matches!(old.state, TcpState::TimeWait | TcpState::Closed)) {
+    // The same tuple can replace an expired instance or an ownerless one in
+    // TIME_WAIT. Its established and bind memberships already fit.
+    with_tcp_connections(|connections| {
+        if let Some(old) = connections.get_mut(&conn_id) {
+            if !(old.expired(now_ms()) || old.orphaned && old.state == TcpState::TimeWait) {
                 return Err(EADDRNOTAVAIL);
             }
+            conn.arm_retransmit();
+            *old = conn;
+        } else {
+            connections.insert(conn)?;
         }
-        tables.conns.reserve_one()?;
-        tables.conns.remove(&conn_id);
-        tables.conns.push_reserved(conn);
-        tables.unbind(bind_addr, local_port);
+        connections.unbind(bind_addr, local_port);
         Ok(())
     })?;
 
@@ -3237,30 +3326,27 @@ pub fn tcp_listen(
 ) -> Result<ListenerId, i32> {
     // Children retransmit their SYN+ACKs; the timer thread must be there for them.
     ensure_timer_thread()?;
-    let id = ListenerId(NEXT_LISTENER_ID.fetch_add(1, Ordering::Relaxed));
+    let id = ListenerId {
+        addr,
+        port,
+        generation: NEXT_LISTENER_ID.fetch_add(1, Ordering::Relaxed),
+    };
     with_tcp(|tables| {
-        if tables
-            .listeners
-            .iter()
-            .any(|listener| listener.local_port == port && overlaps(listener.local_ip, addr))
-        {
+        let conflict = tables.conns.bind_owners(port).any(|owner| {
+            matches!(owner, BindOwner::Listener(other) if overlaps(other.addr, addr))
+        });
+        if conflict {
             return Err(EADDRINUSE);
         }
-        #[cfg(test)]
-        lookup_probe::reserve(lookup_probe::Index::Listener)?;
-        tables.listeners.try_reserve(1).map_err(|_| ENOMEM)?;
-        tables.unbind(addr, port);
-        tables.listeners.push(ListenSocket {
+        tables.insert_listener(ListenSocket {
             id,
-            local_ip: addr,
-            local_port: port,
             backlog: listen_backlog(backlog),
             owner_pid,
             reuse,
             ttl,
             rcv_cap: (rcvbuf / 2).max(1),
             owner,
-        });
+        })?;
         Ok(id)
     })
 }
@@ -3296,8 +3382,11 @@ pub fn tcp_set_backlog(id: ListenerId, backlog: usize) {
 /// connection nobody owns.
 pub fn tcp_unlisten(id: ListenerId) {
     with_tcp(|tables| {
-        if let Some(index) = tables.listeners.iter().position(|listener| listener.id == id) {
-            tables.listeners.swap_remove(index);
+        if let Some(index) = tables.listener_position(id) {
+            tables.listeners.remove(index);
+            tables.conns.remove_binding(id.port, |owner| {
+                matches!(owner, BindOwner::Listener(listener) if listener == id)
+            });
         }
         for conn in tables.conns.values_mut() {
             if conn.parent == Some(id) {
@@ -3318,10 +3407,12 @@ pub fn tcp_unlisten(id: ListenerId) {
 /// ready. It belongs to no socket until the caller ties it to one.
 pub fn tcp_accept(id: ListenerId) -> Option<ConnectionId> {
     with_tcp_connections(|connections| {
-        let conn = connections
-            .values_mut()
+        let child = connections
+            .connections_on_port(id.port)
             .filter(|conn| conn.parent == Some(id) && conn.acceptable())
-            .min_by_key(|conn| conn.accept_order)?;
+            .min_by_key(|conn| conn.accept_order)?
+            .id;
+        let conn = connections.get_mut(&child)?;
         conn.parent = None;
         conn.parent_owner = None;
         Some(conn.id)
@@ -3656,8 +3747,9 @@ pub fn tcp_close_connection(
             TcpState::SynSent | TcpState::Listen => conn.close_now(),
             TcpState::FinWait1 | TcpState::Closing | TcpState::LastAck | TcpState::Closed => {}
         }
-        reap_expired(connections, true);
-
+        if conn.expired(now_ms()) {
+            connections.remove(conn_id);
+        }
         Ok(())
     })
 }
@@ -3689,7 +3781,7 @@ pub fn tcp_has_pending(id: ListenerId) -> bool {
 pub fn tcp_pending_accept_depth(id: ListenerId) -> usize {
     with_tcp_connections(|connections| {
         connections
-            .values()
+            .connections_on_port(id.port)
             .filter(|conn| conn.parent == Some(id) && conn.acceptable())
             .count()
     })
