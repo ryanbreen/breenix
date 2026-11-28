@@ -174,6 +174,27 @@ refuses a deploy when a change skipped the lock. On the box, each step is
 `sudo -n /sbin/persistent-install paired ...` over the strict-host-key SSH session the live flash already uses.
 The exception is the first deploy, which uses a bootstrap installer (4.8).
 
+### 4.0 How the installer writes a path
+
+A path in the running root or the draft can hold a pet symlink (`/usr/lib` → `/home/...`, say). Following it
+would send a root-owned write into `/home` or onto an existing file. So each write the paired installer makes, in
+the running root (4.5), in shared `/opt` (4.5) and in the draft (4.3), resolves its path like this:
+- open the tree's root directory with `O_DIRECTORY | O_NOFOLLOW`, and `fstat` it for its `st_dev`;
+- walk each parent component with `openat(dir, name, O_DIRECTORY | O_NOFOLLOW)`. A symlink (`ELOOP`) or a
+  non-directory (`ENOTDIR`) refuses the step. A component whose `st_dev` differs from the root's (a mount point,
+  such as a bind to `/home`) also refuses it. A missing component is created with `mkdirat` at 0755 root:root and
+  then opened the same way;
+- create the leaf as a fresh temporary name in that directory with `O_CREAT | O_EXCL | O_NOFOLLOW`, write and
+  `fsync` it, and `renameat` it over the final name in the same directory. A rename replaces a final symlink
+  itself rather than its target. When the final name exists, its type must be the one the step expects (4.5 lists
+  the cases), or the step refuses;
+- `symlinkat`, `linkat`, `fchmodat` and `fchownat` (with `AT_SYMLINK_NOFOLLOW`) take the walked directory's fd.
+
+The kernel already provides these calls and flags (`O_NOFOLLOW` in syscall/fs.rs:26-31; `Mkdirat`, `Symlinkat`,
+`Linkat`, `Renameat`, `Fchmodat` and `Fchownat` in syscall/handler.rs:372-428). `local.rs`'s `install_at` and
+`incoming` already refuse symlinked parents with `symlink_metadata`, but a check and a later path-based write leave
+a window, so the paired installer uses descriptors instead.
+
 ### 4.1 Reclaim, then clone
 
 1. `paired reclaim <retained...>`. The host passes the retained set (section 2). The box adds the booted
@@ -268,8 +289,12 @@ Only the selection moves into the generation:
   paired deploy.
 - **One-time conversion**, by the first paired deploy, inside `paired begin` before it reads E1 and clones (4.1):
   1. write `usr/lib/breenix/rust-current` into the running root with the ID that shared `CURRENT` names today
-     (a pet change, and the only write a deploy makes to the running root);
-  2. rename a symlink over shared `CURRENT`.
+     (a pet change, and the only write a deploy makes to the running root), by the walk in 4.0 from `/`. The final
+     name may be absent or a regular file. A symlink or a directory there, or at `usr`, `usr/lib` or
+     `usr/lib/breenix`, refuses the conversion with the path named;
+  2. rename a symlink over shared `CURRENT`, by the walk in 4.0 from `/opt`. `opt/breenix/rust` must be real
+     directories on the default tree. The final name must be a regular file (the old selection) or a symlink
+     whose target is already `/usr/lib/breenix/rust-current` (a repeated conversion).
 
   The rename is atomic. Before it, readers see the old file. After it, they see the same ID through the running
   root's new file, so the running system's toolchain does not change. The clone then inherits the file, so both
@@ -493,7 +518,7 @@ Scope: sections 4 to 6.
 
 | Test | Where | Checks | Red on the old code because |
 |---|---|---|---|
-| T-B1 apply over a fixture clone | `tests/persistent_install/` host test, beside `tests/metal_replace_usr_host.rs` | A fixture clone with a baseline, an inventory and objects. After apply and verify: the payload rows equal the inventory; a pet file at an unmanaged path is kept; a locally changed managed file is moved to `.breenix-carried/<prev>/` with set-ID cleared; a dropped, unchanged managed file is removed; a BusyBox hard-link group across `/bin` and `/sbin`, a symlink and set-ID `su` are exact; mount points are untouched; a rerun after a cut at each file is idempotent. | The check commit's stub routes `apply` to today's only in-place path, `replace_usr`, which leaves `/bin`, `/sbin` and `/lib` unchanged |
+| T-B1 apply over a fixture clone | `tests/persistent_install/` host test, beside `tests/metal_replace_usr_host.rs` | A fixture clone with a baseline, an inventory and objects. After apply and verify: the payload rows equal the inventory; a pet file at an unmanaged path is kept; a locally changed managed file is moved to `.breenix-carried/<prev>/` with set-ID cleared; a dropped, unchanged managed file is removed; a BusyBox hard-link group across `/bin` and `/sbin`, a symlink and set-ID `su` are exact; mount points are untouched; a rerun after a cut at each file is idempotent. Path safety (4.0): with a pet symlink at `usr/lib` pointing outside the tree, at `usr/lib/breenix/rust-current`, and at `opt/breenix/rust`, the conversion and apply refuse, and the symlinks' targets (a fixture file standing in for one in `/home`) are byte-for-byte unchanged. | The check commit's stub routes `apply` to today's only in-place path, `replace_usr`, which leaves `/bin`, `/sbin` and `/lib` unchanged |
 | T-B2 manager version 2 | `scripts/metal/efi-stub/tests/live_sequence.rs` | The trial is refused for a missing root, a read-only root, or an image intent naming another userland. It is accepted when the three agree. Version 1 behaves exactly as today. | `Manifest::parse` rejects a seventh line |
 | T-B3 host flow | `tests/metal_live_flash_test.py` | `prepare --paired`: the slot intent names the new generation; the manifest carries the root line only for a version-2 manager. The retained set keeps the physical PREVIOUS's root when an acknowledged trial is not promoted (a stale base or a foreign NEXT), and drops a root only after a `promoted` line removes it from both physical slots. The commit check needs `/` to be `gen-<new>` `rw` plus the verify digest. A rollback receipt needs the old commit and `gen-<old>`. | Today's `prepare` names CURRENT's userland (metal_live_flash.py:100) |
 
