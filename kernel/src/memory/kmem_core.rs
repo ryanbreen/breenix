@@ -547,16 +547,32 @@ impl<M: Pool, R: Pool, S: Small> Front<'_, M, R, S> {
     /// frame, or a page table's. The frame allocator calls it when it has no
     /// frame, and retries once when it returns a nonzero count. Returns the
     /// frames given back.
+    ///
+    /// In an interrupt handler, or inside a shrinker, the request is
+    /// `Atomic`, which runs no reclaim (6.6), so it returns 0. Otherwise it
+    /// drains this CPU's magazines and each other CPU's, all with `try_lock`
+    /// (steps 1-2), then runs the shrinkers, the slab shrinker first, for the
+    /// frames plus the batch (steps 3-4).
     pub fn reclaim_frames<C: Cpu>(&self, frames: usize, cpu: &C) -> usize {
-        // Today a frame request outside this front runs no reclaim.
-        let _ = (frames, cpu);
-        0
+        if cpu.in_interrupt() || self.reclaim.held_by(cpu.id()) {
+            return 0;
+        }
+        self.small.drain_own(false);
+        for other in 0..self.small.cpus() {
+            self.small.drain(other);
+        }
+        self.reclaim_pages(frames + RECLAIM_BATCH_FRAMES, cpu)
     }
 
     /// Run the shrinkers with interrupts masked, holding no pool lock, for
     /// the request's frames plus the batch.
     fn reclaim<C: Cpu>(&self, layout: Layout, cpu: &C) {
-        let target = layout.size().div_ceil(PAGE) + RECLAIM_BATCH_FRAMES;
+        self.reclaim_pages(layout.size().div_ceil(PAGE) + RECLAIM_BATCH_FRAMES, cpu);
+    }
+
+    /// Run the shrinkers for `target` frames; returns the frames given back,
+    /// 0 when another CPU is reclaiming.
+    fn reclaim_pages<C: Cpu>(&self, target: usize, cpu: &C) -> usize {
         // A shrinker that frees through the allocator leaves its blocks in
         // this CPU's magazines, so the slab layer returns them afterwards;
         // the count is the shrinkers' frames plus those pages.
@@ -568,8 +584,12 @@ impl<M: Pool, R: Pool, S: Small> Front<'_, M, R, S> {
             Some(frames) => {
                 add(&self.stats.reclaim_runs, 1);
                 add(&self.stats.reclaim_frames, frames as u64);
+                frames
             }
-            None => add(&self.stats.reclaim_busy, 1),
+            None => {
+                add(&self.stats.reclaim_busy, 1);
+                0
+            }
         }
     }
 
