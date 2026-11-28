@@ -67,9 +67,9 @@ fn chains_over_fragmented_frames_complete_out_of_order_across_index_wrap() {
         let failing = if round % 5 == 0 { Some(order(round)[1]) } else { None };
 
         // A window of three writes, made visible by one index store.
-        let slots: Vec<usize> = (0..3).map(|_| queue.reserve().expect("a free slot")).collect();
+        let slots: Vec<usize> = (0..3).map(|_| queue.reserve(7).expect("a free slot")).collect();
         assert_eq!(slots, [0, 1, 2]);
-        assert_eq!(queue.reserve(), None, "every slot is in use");
+        assert_eq!(queue.reserve(7), None, "every slot is in use");
         let mut heads = [0u16; 3];
         for slot in 0..3 {
             let data = pattern(round, slot, len);
@@ -105,13 +105,13 @@ fn chains_over_fragmented_frames_complete_out_of_order_across_index_wrap() {
             let result = if failing == Some(slot) { status::IOERR } else { status::OK };
             dev.complete(by_head(&taken, heads[slot]), result, None);
             if step == 0 {
-                assert_eq!(queue.drain(&mut dma, |s| drained.push(s)), Drain::Completed(1));
+                assert_eq!(queue.drain(&mut dma, |s, _| drained.push(s)), Drain::Completed(1));
             }
         }
-        assert_eq!(queue.drain(&mut dma, |s| drained.push(s)), Drain::Completed(2));
+        assert_eq!(queue.drain(&mut dma, |s, _| drained.push(s)), Drain::Completed(2));
         assert_eq!(drained, order(round), "completions follow the device's order");
         assert_eq!(queue.free_descriptors(), SIZE, "every descriptor credit is back");
-        assert_eq!(queue.drain(&mut dma, |_| panic!("nothing new")), Drain::Completed(0));
+        assert_eq!(queue.drain(&mut dma, |_, _| panic!("nothing new")), Drain::Completed(0));
         for slot in 0..3 {
             let result = queue.finish(&mut dma, slot, None);
             if failing == Some(slot) {
@@ -127,7 +127,7 @@ fn chains_over_fragmented_frames_complete_out_of_order_across_index_wrap() {
         // Read the ranges back, returned in another order. In rounds divisible by
         // 11, one read's used length is short, which fails that read alone.
         let short = if round % 11 == 0 { Some(order(round + 1)[2]) } else { None };
-        let slots: Vec<usize> = (0..3).map(|_| queue.reserve().unwrap()).collect();
+        let slots: Vec<usize> = (0..3).map(|_| queue.reserve(7).unwrap()).collect();
         assert_eq!(slots, [0, 1, 2]);
         for slot in 0..3 {
             heads[slot] = queue.submit(&mut dma, slot, request_type::IN, sectors[slot], None, len).unwrap();
@@ -140,7 +140,7 @@ fn chains_over_fragmented_frames_complete_out_of_order_across_index_wrap() {
             dev.complete(chain, status::OK, if short == Some(slot) { Some(len as u32) } else { None });
         }
         let mut drained = Vec::new();
-        assert_eq!(queue.drain(&mut dma, |s| drained.push(s)), Drain::Completed(3));
+        assert_eq!(queue.drain(&mut dma, |s, _| drained.push(s)), Drain::Completed(3));
         assert_eq!(drained, order(round + 1));
         for slot in 0..3 {
             let mut out = vec![0xa5u8; len];
@@ -168,12 +168,12 @@ fn a_legacy_device_used_length_is_ignored() {
     let (_mem, mut dev, mut queue, mut dma) = setup(legacy);
     assert_eq!(queue.size(), SIZE);
     dev.disk[..512].fill(0x5c);
-    let slot = queue.reserve().unwrap();
+    let slot = queue.reserve(7).unwrap();
     let head = queue.submit(&mut dma, slot, request_type::IN, 0, None, 512).unwrap();
     queue.publish();
     let taken = dev.take();
     dev.complete(by_head(&taken, head), status::OK, Some(0));
-    assert_eq!(queue.drain(&mut dma, |_| {}), Drain::Completed(1));
+    assert_eq!(queue.drain(&mut dma, |_, _| {}), Drain::Completed(1));
     let mut out = vec![0; 512];
     assert_eq!(queue.finish(&mut dma, slot, Some(&mut out)), Ok(()));
     assert!(out.iter().all(|b| *b == 0x5c));
@@ -183,9 +183,9 @@ fn a_legacy_device_used_length_is_ignored() {
 fn an_abandoned_chain_keeps_its_memory_and_a_stale_used_entry_completes_nothing() {
     let (mem, mut dev, mut queue, mut dma) = setup(MODERN);
     // Two chains on the device, a third reserved but not issued.
-    let a = queue.reserve().unwrap();
-    let b = queue.reserve().unwrap();
-    let c = queue.reserve().unwrap();
+    let a = queue.reserve(7).unwrap();
+    let b = queue.reserve(7).unwrap();
+    let c = queue.reserve(7).unwrap();
     let data = pattern(1, a, 8192);
     let head_a = queue.submit(&mut dma, a, request_type::OUT, 8, Some(&data), 8192).unwrap();
     let head_b = queue.submit(&mut dma, b, request_type::IN, 64, None, 4096).unwrap();
@@ -203,7 +203,7 @@ fn an_abandoned_chain_keeps_its_memory_and_a_stale_used_entry_completes_nothing(
     // The device, not yet reset, still completes them.
     dev.complete(by_head(&taken, head_b), status::OK, None);
     dev.complete(by_head(&taken, head_a), status::OK, None);
-    assert_eq!(queue.drain(&mut dma, |slot| panic!("slot {slot} completed after the stop")), Drain::Stopped);
+    assert_eq!(queue.drain(&mut dma, |slot, _| panic!("slot {slot} completed after the stop")), Drain::Stopped);
     assert_eq!(queue.device_used_idx(), 2, "the device returned both");
     assert_eq!(queue.last_used(), 0, "the stopped queue read none of them");
     let mut out = vec![0xa5; 4096];
@@ -214,7 +214,7 @@ fn an_abandoned_chain_keeps_its_memory_and_a_stale_used_entry_completes_nothing(
     // Its memory stays owned: no slot, descriptor or buffer is reused.
     assert_eq!(queue.free_descriptors(), descriptors_at_stop);
     assert_eq!(queue.free_slots(), 0);
-    assert_eq!(queue.reserve(), None);
+    assert_eq!(queue.reserve(7), None);
     assert_eq!(queue.submit(&mut dma, c, request_type::IN, 0, None, 512), Err(SubmitError::Stopped));
     assert!(!queue.publish());
     assert_eq!(mem.borrow().bus.driver_writes.len(), writes_at_stop, "the driver wrote no chain memory");
@@ -226,8 +226,8 @@ fn an_abandoned_chain_keeps_its_memory_and_a_stale_used_entry_completes_nothing(
 fn an_unknown_head_or_an_index_past_the_chains_issued_stops_the_queue() {
     for case in 0..2 {
         let (_mem, mut dev, mut queue, mut dma) = setup(MODERN);
-        let a = queue.reserve().unwrap();
-        let b = queue.reserve().unwrap();
+        let a = queue.reserve(7).unwrap();
+        let b = queue.reserve(7).unwrap();
         let head_a = queue.submit(&mut dma, a, request_type::IN, 0, None, 512).unwrap();
         let head_b = queue.submit(&mut dma, b, request_type::IN, 8, None, 512).unwrap();
         queue.publish();
@@ -243,7 +243,7 @@ fn an_unknown_head_or_an_index_past_the_chains_issued_stops_the_queue() {
             dev.post_raw(u32::from(head_b), 513);
         }
         let mut drained = Vec::new();
-        assert_eq!(queue.drain(&mut dma, |slot| drained.push(slot)), Drain::Broken, "case {case}");
+        assert_eq!(queue.drain(&mut dma, |slot, _| drained.push(slot)), Drain::Broken, "case {case}");
         assert!(queue.is_stopped());
         assert_eq!(queue.finish(&mut dma, b, Some(&mut [0; 512])), Err(RequestError::Lost));
         if case == 0 {
@@ -255,8 +255,8 @@ fn an_unknown_head_or_an_index_past_the_chains_issued_stops_the_queue() {
             assert!(drained.is_empty());
             assert_eq!(queue.finish(&mut dma, a, Some(&mut [0; 512])), Err(RequestError::Lost));
         }
-        assert_eq!(queue.reserve(), None);
-        assert_eq!(queue.drain(&mut dma, |_| panic!("stopped")), Drain::Stopped);
+        assert_eq!(queue.reserve(7), None);
+        assert_eq!(queue.drain(&mut dma, |_, _| panic!("stopped")), Drain::Stopped);
     }
 }
 
@@ -282,9 +282,9 @@ fn the_negotiated_limits_shape_each_chain() {
     let mut dev = Device::new(&mem, DISK_SECTORS);
     let mut queue = BlkQueue::new(Ring(mem.clone()), SIZE, half, &storage()[..2]).expect("two chains fit");
     let mut dma = Dma(mem.clone());
-    assert_eq!(queue.reserve(), Some(0));
+    assert_eq!(queue.reserve(7), Some(0));
     queue.unreserve(0);
-    let slot = queue.reserve().unwrap();
+    let slot = queue.reserve(7).unwrap();
     assert_eq!(slot, 0, "an unsubmitted reservation is returned");
     let data = pattern(3, slot, 8192);
     let head = queue.submit(&mut dma, slot, request_type::OUT, 0, Some(&data), 8192).unwrap();
@@ -324,4 +324,46 @@ fn overlapping_requests_wait_and_a_flush_covers_every_write_in_flight() {
         assert!(matches!(table.try_admit(start * 10, start * 10 + 1, false), Admission::Admitted(_)));
     }
     assert_eq!(table.try_admit(900, 901, false), Admission::Wait);
+}
+
+#[test]
+fn a_slot_reports_the_tag_of_the_owner_whose_chain_completed() {
+    // Owner P's chain completes on slot 0 and P takes its result. Owner X
+    // reserves slot 0 next. The drain of X's chain must report X's tag: the
+    // tag goes with the slot's ownership, so P, after `finish`, holds no
+    // handle on what X armed.
+    let (_mem, mut dev, mut queue, mut dma) = setup(MODERN);
+    let p = queue.reserve(0x1111).unwrap();
+    assert_eq!((p, queue.tag(p)), (0, 0x1111));
+    let head = queue.submit(&mut dma, p, request_type::IN, 0, None, 512).unwrap();
+    queue.publish();
+    let taken = dev.take();
+    dev.complete(by_head(&taken, head), status::OK, None);
+    let mut drained = Vec::new();
+    assert_eq!(queue.drain(&mut dma, |slot, tag| drained.push((slot, tag))), Drain::Completed(1));
+    assert_eq!(drained, [(0, 0x1111)]);
+    assert_eq!(queue.finish(&mut dma, p, Some(&mut [0; 512])), Ok(()));
+    assert_eq!(queue.tag(p), 0, "taking the result ends the owner's tag");
+
+    let x = queue.reserve(0x2222).unwrap();
+    assert_eq!((x, queue.tag(x)), (0, 0x2222), "the next owner reuses slot 0");
+    let head = queue.submit(&mut dma, x, request_type::IN, 8, None, 512).unwrap();
+    queue.publish();
+    let taken = dev.take();
+    dev.complete(by_head(&taken, head), status::OK, None);
+    drained.clear();
+    assert_eq!(queue.drain(&mut dma, |slot, tag| drained.push((slot, tag))), Drain::Completed(1));
+    assert_eq!(drained, [(0, 0x2222)], "the drain wakes the owner that armed the slot");
+
+    // An unsubmitted reservation gives its tag back with the slot.
+    assert_eq!(queue.finish(&mut dma, x, Some(&mut [0; 512])), Ok(()));
+    let r = queue.reserve(0x3333).unwrap();
+    queue.unreserve(r);
+    assert_eq!(queue.tag(r), 0);
+    // A lost chain keeps its tag, so a stop can still wake its owner.
+    let l = queue.reserve(0x4444).unwrap();
+    queue.submit(&mut dma, l, request_type::IN, 0, None, 512).unwrap();
+    queue.publish();
+    queue.stop();
+    assert_eq!(queue.tag(l), 0x4444);
 }
