@@ -454,6 +454,62 @@ fn no_kernel_thread_fakes_a_brake_for_a_completion_wait() {
     );
 }
 
+/// A syscall runs at its braked baseline. A halt as the current thread does
+/// not release that level, so the interrupt that ends it cannot switch the
+/// thread away, and no receipt records it. A syscall that backs off uses
+/// `task::park::retry_pause`, which releases the level for the halt and
+/// records a caller it still cannot switch from; one that waits uses
+/// `park::wait`.
+#[test]
+fn no_syscall_halts_as_current_itself() {
+    let root = repo_root();
+    let mut files = Vec::new();
+    rust_files(&root.join("kernel/src/syscall"), &mut files);
+    let mut sites = Vec::new();
+    for path in files {
+        let rel = path.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
+        let code = strip_comments(&fs::read_to_string(&path).unwrap());
+        let fns = functions(&code);
+        for (name, open, end) in &fns {
+            if HALTS.iter().any(|halt| !own_calls(&code, &fns, *open, *end, halt).is_empty()) {
+                sites.push(format!("  {rel}::{name}"));
+            }
+        }
+    }
+    sites.sort();
+    sites.dedup();
+    assert!(
+        sites.is_empty(),
+        "syscall paths that halt as the current thread at their braked baseline (use park::retry_pause):\n{}",
+        sites.join("\n")
+    );
+}
+
+/// `park::retry_pause` releases one level for its halt. A caller that holds
+/// more is still not preemptible there, and keeps its CPU until the
+/// interrupt: that halt records a receipt at the caller's site, as
+/// `arch_halt_while_blocked`'s do (design §3.5).
+#[test]
+fn retry_pause_records_a_caller_it_cannot_switch_from() {
+    let code = strip_comments(&fs::read_to_string(repo_root().join("kernel/src/task/park.rs")).unwrap());
+    let fns = functions(&code);
+    let (_, open, end) = fns.iter().find(|(name, _, _)| name == "retry_pause").expect("retry_pause");
+    let halt = own_calls(&code, &fns, *open, *end, "arch_halt_with_interrupts(");
+    assert_eq!(halt.len(), 1, "one halt");
+    let gated = own_calls(&code, &fns, *open, *end, "may_switch_now(");
+    let receipts = own_calls(&code, &fns, *open, *end, "halt_as_current(");
+    assert!(
+        receipts.iter().any(|r| gated.iter().any(|g| g < r) && *r < halt[0]),
+        "retry_pause halts with no halt_as_current() receipt, gated on may_switch_now(), before it"
+    );
+    let head = &code[..*open];
+    let signature = head.rfind("fn retry_pause").expect("retry_pause signature");
+    assert!(
+        head[..signature].trim_end().trim_end_matches("pub(crate)").trim_end().ends_with("#[track_caller]"),
+        "retry_pause is #[track_caller], so its receipt names the caller's site"
+    );
+}
+
 #[test]
 fn the_brake_census_sees_each_shape() {
     let code = "fn a() { crate::per_cpu::preempt_disable(); let _ = k.wait_timeout_uninterruptible(1, 2); }\n\
