@@ -102,6 +102,22 @@ impl TxRing for TestRing {
         self.step();
         self.dev.borrow().used[pos as usize]
     }
+    fn write_desc_next(&mut self, slot: u16, _addr: u64, _len: u32, _next: u16) {
+        self.store(Store::Desc(slot));
+    }
+    // Notification suppression is outside this model: the device here neither
+    // suppresses notifications nor is asked to interrupt. These checks submit
+    // single descriptors without calling `start`, and the queue makes these
+    // accesses only when it reclaims or finds the ring full.
+    fn read_avail_event(&mut self) -> u16 {
+        0
+    }
+    fn read_used_flags(&mut self) -> u16 {
+        0
+    }
+    fn write_used_event(&mut self, _idx: u16) {}
+    fn write_avail_flags(&mut self, _flags: u16) {}
+    fn full_barrier(&mut self) {}
 }
 
 /// Replay the stores in the order the device can observe them and return the

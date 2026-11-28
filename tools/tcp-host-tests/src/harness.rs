@@ -42,6 +42,47 @@ pub fn offer_batches(limit: Option<usize>) {
     *BATCH_LIMIT.lock().unwrap() = limit;
 }
 
+pub fn batch_limit() -> Option<usize> {
+    *BATCH_LIMIT.lock().unwrap()
+}
+
+/// A batch TCP handed to the route's device: refused while output is refused,
+/// or when the route has no segmentation offload; else recorded. Its checksum
+/// field must hold the pseudo-header sum (RFC 9293 3.1) the device completes.
+pub fn batch_output(
+    src: [u8; 4],
+    dst: [u8; 4],
+    segment: &[u8],
+    mss: u16,
+) -> Result<(), crate::net::BatchError> {
+    let limit = batch_limit().ok_or(crate::net::BatchError::Unavailable)?;
+    if REFUSE.load(Ordering::SeqCst) {
+        return Err(crate::net::BatchError::Refused);
+    }
+    assert_eq!((src, dst), (LOCAL_IP, PEER_IP), "a batch left for an address no check uses");
+    let (header, payload) = TcpHeader::parse(segment).expect("TCP sent an unparseable batch");
+    assert!(payload.len() <= limit, "a {}-byte batch over the {limit}-byte limit", payload.len());
+    assert_eq!(payload.len() % usize::from(mss), 0, "a batch of part segments");
+    let mut sum: u32 = 0;
+    for word in [&src[..2], &src[2..], &dst[..2], &dst[2..]] {
+        sum += u32::from(u16::from_be_bytes([word[0], word[1]]));
+    }
+    sum += 6 + segment.len() as u32;
+    while sum >> 16 != 0 {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    assert_eq!(
+        u16::from_be_bytes([segment[16], segment[17]]),
+        sum as u16,
+        "the checksum field does not hold the pseudo-header sum"
+    );
+    BATCHES
+        .lock()
+        .unwrap()
+        .push((header.src_port, header.seq_num, payload.len(), mss));
+    Ok(())
+}
+
 /// The batches sent from `local_port` since the last look, as (sequence
 /// number, payload length, MSS).
 pub fn take_batches(local_port: u16) -> Vec<(u32, usize, u16)> {

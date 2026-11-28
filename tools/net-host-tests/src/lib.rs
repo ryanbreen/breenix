@@ -5,7 +5,7 @@
 #![cfg(test)]
 
 #[path = "../../../kernel/src/drivers/virtio/net_tx_queue.rs"]
-mod net_tx_queue;
+pub mod net_tx_queue;
 #[path = "../../../kernel/src/net/tcp_ident.rs"]
 mod tcp_ident;
 mod random;

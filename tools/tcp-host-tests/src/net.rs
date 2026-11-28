@@ -69,6 +69,30 @@ pub fn send_ethernet(_dst_mac: &[u8; 6], _ethertype: u16, packet: &[u8]) -> Resu
 
 pub fn drain_loopback_queue() {}
 
+/// Why a batch of TCP segments did not leave as one request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BatchError {
+    Unavailable,
+    Refused,
+}
+
+/// The batch the route's device segments, as the harness sets it.
+pub fn tcp_batch_limit(_dst: [u8; 4]) -> Option<usize> {
+    crate::harness::batch_limit()
+}
+
+/// A batch for the device to segment: recorded, or refused while the harness
+/// refuses output.
+pub fn send_tcp_batch(
+    src: [u8; 4],
+    dst: [u8; 4],
+    _ttl: u8,
+    segment: &[u8],
+    mss: u16,
+) -> Result<(), BatchError> {
+    crate::harness::batch_output(src, dst, segment, mss)
+}
+
 pub mod ethernet {
     pub const ETHERTYPE_IPV4: u16 = 0x0800;
 }

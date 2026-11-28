@@ -528,3 +528,47 @@ concurrency, loss or RTT named in the prediction.
   `retransmitted_segments`, `fast_retransmits`, `partial_ack_retransmits`,
   `timeout_retransmits` and `fast_recoveries` beside the existing
   `retransmit_timeouts`.
+
+### PR 2 details (DEV-39(2))
+
+- Queue pairs follow the CPUs firmware reports (PSCI on QEMU), capped at the
+  kernel's eight, because `drivers::init` runs before the secondary CPUs are
+  released and the online count is then one.
+- A queue's depth is the device's QueueNumMax capped at 1024 and halved until
+  the wanted pairs fit a 2048-page (8 MiB) budget of rings and copy buffers,
+  because QueueNumMax is per queue and the design names the budget but no
+  figure.
+- The driver negotiates `VIRTIO_NET_F_MTU` when offered with an MTU of at
+  least 1500 that the buffers or merging can hold, because without it a
+  conforming device sends frames of at most 1514 bytes, which fit one 2 KiB
+  receive buffer, and `MRG_RXBUF` would not merge (section 5.1.4.2 says SHOULD).
+- A legacy device without `VIRTIO_F_ANY_LAYOUT` gets the header in its own
+  descriptor on both queues and no `MRG_RXBUF`, because section 5.1.6.6
+  requires that framing and a merged buffer begins with the header.
+- `GUEST_CSUM` stays off, because the stack verifies received checksums
+  itself and has no path yet that uses a device's partial or validated checksum.
+- A segmentation request's checksum field holds the pseudo-header sum over
+  the whole batch's TCP length, because section 5.1.6.2 asks for the TCP
+  pseudo-header there and states no exception for GSO.
+- The TCP batch path sends only new data, in whole SMSS segments of at least
+  two, to a next hop whose MAC is cached, and falls back to the segment path
+  otherwise, because a batch cannot wait in the ARP queue and the loss,
+  urgent and Limited Transmit rules count single segments.
+- `/proc/net/tcp_stats` adds `offload_batches` and `offload_segments`, the
+  logical on-wire segments those batches stand for.
+- A transmit queue keeps completion interrupts suppressed while it has room
+  and asks for one at the next completion when a submission finds it full,
+  because the transmit path reclaims on submit and only a stalled queue needs
+  the interrupt.
+- The control queue is set up only when more than one pair is wanted, because
+  VQ_PAIRS_SET is its only command here.
+- The receive buffers are filled before `DRIVER_OK` and the device is notified
+  after it (section 3.1.1 step 7), and a legacy device gets `GuestPageSize`
+  after the reset; the old driver wrote it before.
+- A received frame stays valid until the next `receive` from its queue or
+  `recycle_rx_buffers`, because a merged frame is assembled in one staging
+  area per queue.
+- The checks compile `net_mmio.rs`, `mmio.rs` and `net_tx_queue.rs` in
+  `tools/virtio-net-host-tests` against a fake virtio-mmio device written from
+  the specification, one test binary per scenario because the driver keeps its
+  device in statics. The TCP batch is checked in `tools/tcp-host-tests`.
