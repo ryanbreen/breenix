@@ -588,7 +588,9 @@ does not make mmap lazy, so the 157,671x `memory.driver-mmap` ratio (§10) stays
   exclusively: it asserts the port has no owner, issues one command at a time, polls the port's
   command-issue and interrupt-status registers (AHCI 1.3.1, PxCI and PxIS) against a deadline, and returns
   `Timeout` when the deadline passes. <!-- claim-lint:ok: normative requirement of docs/plans/e2-sleepable-contexts.md under ruling DEV-37(2), not a measured result. -->
-- **Boot order.** The boot thread reads no storage after the scheduler first dispatches. On ARM64 that
+- **Boot order.** The boot thread reads no storage after the scheduler first dispatches. On x86 the
+  first dispatch comes at `start_application_processors`, before the mounts, so E2.4x (ruling DEV-48,
+  §8) moves x86's storage work onto a CPU-0 kernel thread ahead of E2.4. On ARM64 that
   takes three moves, which E2.4 makes together: <!-- claim-lint:ok: normative requirement of docs/plans/e2-sleepable-contexts.md under ruling DEV-37(2), not a measured result. -->
   - the production init path moves into a sleepable `init-loader` kthread, as #3228 did for x86. It
     takes the pre-loaded image if the early-boot read got one. Otherwise it does the late
@@ -770,7 +772,8 @@ series before and after each PR that §10 says could move a row (DEV-31(3)).
 | E2.1 | Clean-room event queue from B1 | — | — |
 | E2.2 | Park contract: `park::context`, baselines, `park::wait`, receipts; the eight predicates in §1.2 converted | E2.1 | — |
 | E2.3 | Parking and parked: preemption does not commit a sleep; non-preemptible halts become violations | E2.2 | `interrupts/context_switch.rs` (Tier 2) |
-| E2.4 | Block I/O caller rule: CannotPark removed, early-boot token, ARM64 init load in a kthread, completion modes collapsed | E2.2 | — |
+| E2.4x | x86 boot storage off the idle continuation: a CPU-0 kernel thread does the mounts and the program loads (DEV-48) | E2.2 | — |
+| E2.4 | Block I/O caller rule: CannotPark removed, early-boot token, ARM64 init load in a kthread, completion modes collapsed | E2.4x | — |
 | E2.5 | BreenFS: no device wait under `MountLock` (shared with E5) | E2.2 | — |
 | E2.6 | `sync::` lock types and the validator (6a); raw spin locks migrated by subsystem (6b onward) | E2.2 | `per_cpu.rs` (Tier 2) only if the guard needs it |
 | E2.7 | x86 syscalls with interrupts enabled, under the brake | E2.6 (x86 ISR inventory) | `syscall/handler.rs` (Tier 1) |
@@ -976,6 +979,66 @@ The builder resolved these details against the code. Each has one sentence of re
   feature.
 - **E2.2's publication check.** Its host check that a baseline-0 publication reads depth 1 or more is
   replaced by the I4 check, because this PR removes that level.
+
+### E2.4x: x86 boot storage off the idle continuation (ruling DEV-48)
+
+A DEV-48 addition, on the model of E1-2x (DEV-42). E2.4's design-fit stop (ledger, 12:34 AM ET on
+2026-11-28) found that x86's boot continuation, swapper/0 and so CPU 0's idle thread, read storage after
+`start_application_processors` had the APs dispatching (`kernel/src/main.rs:610` onward on 5aa428fc). Under
+E2.4 as designed those reads would get `NotSleepable`, and the R240 would not mount its root. E2.4x
+goes first, and E2.4 then follows as designed.
+
+- **Scope.** A sleepable kernel thread pinned to CPU 0 does the x86 boot's storage work: the install
+  copy, the root and home mounts, `bind_home_if_unmounted`, `fence_seal`, the init load and the testing
+  profile's test-binary loads.
+- **Test.** `tests/x86_boot_storage_structure.rs`, its own first commit. It reads `kernel/src/main.rs`
+  with comments and strings blanked, takes the body of `kernel_main_on_kernel_stack_checked` after its
+  `start_application_processors()` call plus the `main.rs` functions that text calls, transitively, and
+  refuses the storage entry points the continuation called before E2.4x. Red on 5aa428fc: 11 findings,
+  through `kernel_main_continue` and the three single-program test modes. A second case requires those
+  reads to be reached from the kernel thread's entry, so the check cannot pass on a tree that stopped
+  mounting. The scan sees named calls in `main.rs`; a read inside a library function the continuation
+  calls is outside it, and the list names the reads `main.rs` made itself.
+- **Risk retired.** The DEV-24 shape at boot on x86: `mount_home` after `mount_root`, an idle reader
+  against a `breenfs-commit` worker that owns AHCI port 0.
+- **Rows.** The rig is ARM64 QEMU, and this PR changes x86 boot code alone (1 kernel file, `kernel/src/main.rs`), so it moves 0 rig rows.
+- **Boot.** x86 has no QEMU (S23). The x86 boot evidence is the coordinator's next R240 flash through
+  the one-reboot try-once path (DEV-32/33), whose rollback is the safety net. No ARM64 boot: the PR
+  changes no ARM64 code.
+
+#### E2.4x as built: deviations (ruling DEV-39(2))
+
+- **One thread, two phases.** The thread, `boot_storage`, starts where the mounts ran. Its first phase is
+  the mounts, and the boot continuation halts until it ends, so the `boot_tests` gates, the kthread tests
+  and the oracles after it still see a mounted root, and BTRT's mount milestone still precedes its
+  finalize. It then parks until the continuation releases it from the place `production_init` was
+  spawned, under the same brakes, and runs the program phase after the last brake release, as
+  `production_init` did. The split is forced by x86's idle rule: once a thread reaches Ring 3, a
+  dispatch of the idle thread restarts at `idle_loop` and drops boot's saved context
+  (`interrupts/context_switch.rs`), so the continuation may wait for the thread only before a user
+  process exists. <!-- claim-lint:ok: describes the code in kernel/src/main.rs and kernel/src/interrupts/context_switch.rs at this PR's head. -->
+- **The name.** The kernel thread is `boot_storage`, not `production_init`, because it runs in each
+  profile and in testing loads no init. Production's PID 1 path, `run_x86_production_init`, is unchanged
+  and is its program phase.
+- **Testing moves registration with the loads.** The thread loads the test programs, creates their
+  processes and then runs the contract tests, holding a `park::Braked` level as ARM64's `test-loader`
+  does. Loading alone cannot be split from creation: about 85 test programs of about 250 KB each would
+  have to sit in the fixed 64 MiB kernel heap at once (audit T3), and the continuation cannot wait for
+  the thread once test processes run. The contracts move because they need registration's process
+  tables. In the serial, the RING3_SMOKE and registration lines now follow the continuation's
+  POST_COMPLETE checkpoint and PRECONDITION lines, and CHECKPOINT B reports no user threads in testing.
+- **The other profiles.** The interactive profile's `init_shell` load and the three single-program modes
+  (`dns_test_only`, `blocking_recv_test`, `nonblock_eagain_test`) move too, because they are
+  `kernel_main` reads after AP start and the check covers them. Their idle loops stay on the
+  continuation.
+- **The fault legs.** `fs_fault_inject` stays between the root and home mounts. `ext2_lock_race` moves
+  from after the `boot_tests` gates to the end of the mount phase, after `fence_seal`, because it reads
+  the mounted root and needs only a running scheduler, which the thread has. `block_fence_inject`
+  stays after `fence_seal`.
+- **The continuation's wait.** It halts with interrupts enabled at depth 0 until the thread reports its
+  mounts: a flag wait, with no storage access. A fatal root-mount failure halts the thread after
+  `BREENIX_ROOT_MOUNT_FATAL`, and the continuation keeps waiting, so the boot stops at the same line as
+  before.
 
 ### E2.4: block I/O caller rule
 
