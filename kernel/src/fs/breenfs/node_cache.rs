@@ -123,7 +123,9 @@ struct Pass {
 #[derive(Default)]
 pub struct Held {
     nodes: Vec<((u64, u64), Arc<Node>)>,
-    raw: Vec<(u64, Vec<u8>)>,
+    // Keyed by address and the asking store's generation: one address can
+    // hold different nodes in two views a read-only mount moves between.
+    raw: Vec<((u64, u64), Vec<u8>)>,
 }
 impl Held {
     /// Keep a node read with the lock released for the operation's later passes.
@@ -135,11 +137,12 @@ impl Held {
         }
         Ok(())
     }
-    /// Keep raw node bytes read with the lock released (`NodeStore::get`).
-    pub fn hold_raw(&mut self, addr: u64, bytes: Vec<u8>) -> Result<(), Error> {
-        if !self.raw.iter().any(|(held, _)| *held == addr) {
+    /// Keep raw node bytes read with the lock released (`NodeStore::get`)
+    /// for a store at generation `ceiling`.
+    pub fn hold_raw(&mut self, addr: u64, ceiling: u64, bytes: Vec<u8>) -> Result<(), Error> {
+        if !self.raw.iter().any(|(held, _)| *held == (addr, ceiling)) {
             self.raw.try_reserve(1).map_err(|_| allocation(addr))?;
-            self.raw.push((addr, bytes));
+            self.raw.push(((addr, ceiling), bytes));
         }
         Ok(())
     }
@@ -147,8 +150,8 @@ impl Held {
         let index = self.nodes.binary_search_by_key(&(ptr.addr, ptr.generation), |(key, _)| *key).ok()?;
         Some(self.nodes[index].1.clone())
     }
-    fn bytes(&self, addr: u64) -> Option<Vec<u8>> {
-        let (_, bytes) = self.raw.iter().find(|(held, _)| *held == addr)?;
+    fn bytes(&self, addr: u64, ceiling: u64) -> Option<Vec<u8>> {
+        let (_, bytes) = self.raw.iter().find(|(held, _)| *held == (addr, ceiling))?;
         let mut copy = Vec::new();
         copy.try_reserve_exact(bytes.len()).ok()?;
         copy.extend_from_slice(bytes);
@@ -271,8 +274,8 @@ impl DecodedNodes {
     fn held(&self, ptr: BlockPtr) -> Option<Arc<Node>> {
         self.pass.lock().held.node(ptr)
     }
-    fn held_raw(&self, addr: u64) -> Option<Vec<u8>> {
-        self.pass.lock().held.bytes(addr)
+    fn held_raw(&self, addr: u64, ceiling: u64) -> Option<Vec<u8>> {
+        self.pass.lock().held.bytes(addr, ceiling)
     }
     /// Record a read the pass could not make from memory.
     fn defer(&self, ptr: Option<BlockPtr>, addr: u64, ceiling: u64) -> Error {
@@ -526,7 +529,7 @@ impl<W: Wait> NodeStore for CachedNodeStore<'_, W> {
             }
         }
         if self.decoded.in_pass() {
-            if let Some(held) = self.decoded.held_raw(addr) {
+            if let Some(held) = self.decoded.held_raw(addr, self.generation) {
                 return Ok(held);
             }
             let Some(buffer) = self.cache.pin(self.device.as_ref(), addr) else {

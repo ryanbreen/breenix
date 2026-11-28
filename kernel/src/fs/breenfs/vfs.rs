@@ -359,6 +359,11 @@ struct DeviceMounts {
     // The oldest pin, or u64::MAX, written under `pins` for the transactions'
     // allocation-time promotion.
     oldest_pin: Arc<AtomicU64>,
+    // Readers past PASS_HOLD passes on any of the device's mounts (design
+    // 7.2 step 4). The writer's freeze does not start while any is held.
+    read_holds: AtomicU32,
+    // The writable mount's commit signal, which a hold's release wakes.
+    writer: Mutex<Option<Weak<CommitSignal>>>,
 }
 /// The device's publication exclusion (design 7.3a).
 struct PublishToken(MountLock<()>);
@@ -419,6 +424,40 @@ impl DeviceMounts {
         self.oldest_pin.store(pins[0].0, Ordering::SeqCst);
         Ok(GenerationPin { device: self.clone(), generation })
     }
+    /// A read-only mount's pin (design 7.1, review M2 on #3310). Its state
+    /// lock does not exclude the writer, so the writer may be generations
+    /// ahead of the view. The blocks the newest published generation P
+    /// reaches are released at P+1 or later, and a release at R is promoted
+    /// by a transaction at R+2 or later: at P+3 at the earliest, which opens
+    /// only after P+1 installs, and that install moves `published` under this
+    /// lock. So a pin of P taken under `published` precedes every preparation
+    /// that could free P's blocks. `generation` is pinned only while it is P;
+    /// None means the caller passes again from P.
+    fn pin_published(self: &Arc<Self>, generation: u64) -> Result<Option<GenerationPin>, Errno> {
+        let published = self.published.lock();
+        if published.as_ref().is_some_and(|sb| sb.generation > generation) {
+            return Ok(None);
+        }
+        self.pin(generation).map(Some)
+    }
+    /// The newest published superblock, or `durable` if it is as new, with
+    /// its generation pinned, for a read-only mount's walk with the lock
+    /// released (design 7.3a).
+    fn pin_newest(self: &Arc<Self>, durable: &Superblock) -> Result<(Superblock, GenerationPin), Errno> {
+        let published = self.published.lock();
+        let sb = published.as_ref().filter(|sb| sb.generation > durable.generation)
+            .unwrap_or(durable).clone();
+        let pin = self.pin(sb.generation)?;
+        Ok((sb, pin))
+    }
+    /// Take a reader's publication hold (design 7.2 step 4).
+    fn hold_publication(&self) -> PublicationHold<'_> {
+        self.read_holds.fetch_add(1, Ordering::SeqCst);
+        PublicationHold(self)
+    }
+    fn publication_held(&self) -> bool {
+        self.read_holds.load(Ordering::SeqCst) != 0
+    }
     /// Mark root `id` as changing. EBUSY if another change holds it.
     fn select(self: &Arc<Self>, id: u64) -> Result<Selecting, Errno> {
         let mut selection = self.selection.lock();
@@ -454,6 +493,8 @@ impl DeviceMounts {
             published: Mutex::new(None),
             pins: Mutex::new(Vec::new()),
             oldest_pin: Arc::try_new(AtomicU64::new(u64::MAX)).map_err(|_| Errno(ENOMEM))?,
+            read_holds: AtomicU32::new(0),
+            writer: Mutex::new(None),
         }).map_err(|_| Errno(ENOMEM))?;
         devices.try_reserve(1).map_err(|_| Errno(ENOMEM))?;
         devices.push(Arc::downgrade(&device));
@@ -549,9 +590,6 @@ struct Mount<W: Wait + 'static> {
     generation: AtomicU64,
     // Install left N+1's replay or N's per-file cleanup to the next holder.
     materialize: AtomicBool,
-    // Readers past PASS_HOLD passes (design 7.2 step 4). Taken under the
-    // state lock; a freeze does not start while any is held.
-    read_holds: AtomicU32,
     // The commit worker's thread (node_cache::thread_token), recorded when it
     // starts, and 0 when no worker runs. Admission branches on it (design 7.3).
     worker: core::sync::atomic::AtomicUsize,
@@ -673,6 +711,10 @@ struct MountState<W: Wait + 'static> {
     // Some while a no-wait pass runs (design 7.2): the inodes it read whose
     // touch stamps are pending, applied after the pass (ruling DEV-53(2)).
     pass_touches: Option<Vec<u64>>,
+    // A read-only mount's pass that could not open the newest published view
+    // from memory (design 7.3a): that view's superblock. The pass's misses
+    // are that view's reads, so its pin is of that generation.
+    observing: Option<Superblock>,
     // Changes the booted tree admitted since this mount (3.3).
     root_epoch: u64,
     signal: Arc<CommitSignal>,
@@ -2021,14 +2063,18 @@ where
     Plain { run, reflects_touches: false }
 }
 
-/// A reader's hold on publication (design 7.2 step 4); its release wakes the
-/// commit worker, whose freeze waited for it.
-struct PublicationHold<'a, W: Wait + 'static>(&'a Mount<W>);
-impl<W: Wait + 'static> Drop for PublicationHold<'_, W> {
+/// A reader's hold on its device's publication (design 7.2 step 4). It is
+/// counted on the device, so a read-only mount's reader holds off the writer
+/// on another mount; its release wakes that writer's commit worker, whose
+/// freeze waited for it.
+struct PublicationHold<'a>(&'a DeviceMounts);
+impl Drop for PublicationHold<'_> {
     fn drop(&mut self) {
         self.0.read_holds.fetch_sub(1, Ordering::SeqCst);
-        self.0.signal.worker.wake();
-        self.0.signal.wake_all();
+        let writer = self.0.writer.lock().as_ref().and_then(Weak::upgrade);
+        if let Some(signal) = writer {
+            signal.wake_all();
+        }
     }
 }
 
@@ -2159,9 +2205,6 @@ impl<W: Wait + 'static> PassOp<W> for ReadOp<'_> {
     type Output = usize;
     fn pass(&mut self, fs: &BreenFs<W>, state: &mut MountState<W>) -> Result<usize, Errno> {
         self.fills.restart();
-        if !fs.inner.writable {
-            fs.observe_publication(state)?;
-        }
         let (ino, off) = (self.ino, self.off);
         let size = state.regular(ino)?.size;
         if off >= size || self.buf.is_empty() {
@@ -2768,6 +2811,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                 drain_growth: 0,
                 staging: None,
                 pass_touches: None,
+                observing: None,
                 root_epoch: 0,
                 durable,
                 durable_pending,
@@ -2818,7 +2862,6 @@ impl<W: Wait + 'static> BreenFs<W> {
             scrub_signal: Arc::new(CommitSignal::new()),
             generation,
             materialize: AtomicBool::new(false),
-            read_holds: AtomicU32::new(0),
             worker: core::sync::atomic::AtomicUsize::new(0),
             worker_deferred: AtomicBool::new(false),
             mapping_passes: AtomicU64::new(0),
@@ -2828,6 +2871,10 @@ impl<W: Wait + 'static> BreenFs<W> {
             commit_faults: super::commit::faults::Faults::for_mount(boot && writable),
         })
         .map_err(|_| Errno(ENOMEM))?;
+        if writable {
+            // Readers' publication holds on the device wake this worker.
+            *mounts.writer.lock() = Some(Arc::downgrade(&inner.signal));
+        }
         Arc::try_new(Self { inner }).map_err(|_| Errno(ENOMEM))
     }
     #[cfg(not(test))]
@@ -2900,13 +2947,16 @@ impl<W: Wait + 'static> BreenFs<W> {
         let mut hold = None;
         loop {
             let mut state = self.foreground_lock()?;
+            let device = &self.inner.mounted_root.device;
             if passes >= PASS_HOLD && hold.is_none() {
-                self.inner.read_holds.fetch_add(1, Ordering::SeqCst);
-                hold = Some(PublicationHold(&self.inner));
+                hold = Some(device.hold_publication());
             }
             state.pass_touches = Some(Vec::new());
             self.inner.decoded.begin_pass(core::mem::take(&mut held));
-            let result = op.pass(self, &mut state);
+            // A read-only mount answers from the writer's newest publication,
+            // the only generation its pass can pin in time (review M2).
+            let result = if self.inner.writable { Ok(()) } else { self.observe_publication(&mut state) }
+                .and_then(|()| op.pass(self, &mut state));
             let (wanted, kept) = self.inner.decoded.end_pass();
             held = kept;
             let touches = state.pass_touches.take().unwrap_or_default();
@@ -2926,11 +2976,35 @@ impl<W: Wait + 'static> BreenFs<W> {
                 }
                 continue;
             }
-            let pin = self.inner.mounted_root.device.pin(state.durable.generation)?;
-            let fetcher = state.files.files.store().fetcher(wanted.ceiling());
+            // A writable mount's durable generation is the newest published,
+            // and its state lock excludes the install that moves it.
+            let pin = if self.inner.writable {
+                device.pin(state.durable.generation)?
+            } else {
+                let generation = state.observing.as_ref().map_or(state.durable.generation, |sb| sb.generation);
+                match device.pin_published(generation)? {
+                    Some(pin) => pin,
+                    None => {
+                        // A newer generation was published: pass from it.
+                        drop(state);
+                        passes += 1;
+                        continue;
+                    }
+                }
+            };
+            // A read-only mount's misses while it opens a newer view are that
+            // view's reads: fetch them through a store of that view, whose
+            // cache keyspace is its own. The installed view's cache can hold
+            // an address the newer trees reuse (review M3 on #3310).
+            let observed = state.observing.take()
+                .map(|sb| self.inner.cache.store(self.inner.device.clone(), &sb, &self.inner.decoded));
+            let fetcher = observed.as_ref().unwrap_or_else(|| state.files.files.store())
+                .fetcher(wanted.ceiling());
             drop(state);
             self.fetch_nodes(&fetcher, &wanted, &mut held)?;
             op.fetch_data(self)?;
+            drop(fetcher);
+            drop(observed);
             drop(pin);
             passes += 1;
         }
@@ -2990,9 +3064,9 @@ impl<W: Wait + 'static> BreenFs<W> {
             let node = fetcher.read_node(ptr).map_err(|error| self.fetch_failed(error))?;
             held.hold(ptr, node).map_err(|_| Errno(ENOMEM))?;
         }
-        for &(addr, _) in &wanted.raw {
+        for &(addr, ceiling) in &wanted.raw {
             let bytes = fetcher.get(addr).map_err(|error| self.fetch_failed(error))?;
-            held.hold_raw(addr, bytes).map_err(|_| Errno(ENOMEM))?;
+            held.hold_raw(addr, ceiling, bytes).map_err(|_| Errno(ENOMEM))?;
         }
         Ok(())
     }
@@ -3006,6 +3080,7 @@ impl<W: Wait + 'static> BreenFs<W> {
     /// newest published superblock replaces its view inside the pass. The
     /// pass's pin, not publication exclusion, keeps the view's blocks.
     fn observe_publication(&self, state: &mut MountState<W>) -> Result<(), Errno> {
+        state.observing = None;
         let published = self.inner.mounted_root.device.published.lock().clone();
         if let Some(sb) = published.filter(|sb| sb.generation > state.durable.generation) {
             // An observer can skip generations without seeing the writer's
@@ -3013,6 +3088,10 @@ impl<W: Wait + 'static> BreenFs<W> {
             self.inner.decoded.clear();
             let store = self.inner.cache.store(self.inner.device.clone(), &sb, &self.inner.decoded);
             let result = Files::new(store, &sb, self.inner.root_id, false);
+            if result.is_err() {
+                // The pass's misses, if any, are this view's reads.
+                state.observing = Some(sb.clone());
+            }
             let files = state.observed(result)?;
             state.inodes.clear();
             state.files.files = state.edited(&[], Ok(files))?;
@@ -3029,22 +3108,37 @@ impl<W: Wait + 'static> BreenFs<W> {
         // reuse. Its superblock's ring slot can be rewritten once two later
         // commits publish, so a failed probe is repeated, up to three times,
         // while the durable generation keeps moving.
-        let device = &self.inner.mounted_root.device;
         let mut attempts = 0;
         loop {
-            let (durable, pin) = {
-                let state = self.inner.state.lock_interruptible()?;
-                (state.durable.clone(), device.pin(state.durable.generation)?)
-            };
+            let (durable, pin) = self.pin_view(&*self.inner.state.lock_interruptible()?)?;
             let result = self.probe_or_progress(&durable, generation);
             drop(pin);
             attempts += 1;
             if result.is_ok() || attempts == 3
-                || self.inner.state.lock_interruptible()?.durable.generation == durable.generation
+                || self.view_generation(&*self.inner.state.lock_interruptible()?) == durable.generation
             {
                 return result;
             }
         }
+    }
+    /// The generation a walk with the lock released reads, pinned (design
+    /// 7.3a): the mount's durable generation, or on a read-only mount the
+    /// device's newest publication, the only one it can pin in time (review
+    /// M2 on #3310).
+    fn pin_view(&self, state: &MountState<W>) -> Result<(Superblock, GenerationPin), Errno> {
+        let device = &self.inner.mounted_root.device;
+        if self.inner.writable {
+            Ok((state.durable.clone(), device.pin(state.durable.generation)?))
+        } else {
+            device.pin_newest(&state.durable)
+        }
+    }
+    /// The generation `pin_view` would pin now.
+    fn view_generation(&self, state: &MountState<W>) -> u64 {
+        let published = (!self.inner.writable)
+            .then(|| self.inner.mounted_root.device.published.lock().as_ref().map(|sb| sb.generation))
+            .flatten();
+        published.map_or(state.durable.generation, |newest| newest.max(state.durable.generation))
     }
     /// One probe of `sb`, with the x86 watchdog's starved-admission rule.
     fn probe_or_progress(&self, sb: &Superblock, generation: Option<u64>) -> Result<(), Errno> {
@@ -3838,7 +3932,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             // A reader's publication hold (design 7.2 step 4) also waits here:
             // its release wakes the worker.
             if guard.retaining_for_sync != 0 || (guard.pending.is_some() && !guard.failed)
-                || self.inner.read_holds.load(Ordering::SeqCst) != 0
+                || self.inner.mounted_root.device.publication_held()
             {
                 return Ok(false);
             }
@@ -4285,10 +4379,10 @@ impl<W: Wait + 'static> BreenFs<W> {
                 signal.started.store(false, Ordering::Release);
                 return Ok((false, 0));
             }
-            let pin = self.inner.mounted_root.device.pin(state.durable.generation)?;
+            let (sb, pin) = self.pin_view(&state)?;
             let walk = state.scrub.take().ok_or(Errno(EIO))?;
             state.scrub_progress = Some(scrub_progress(&walk));
-            (state.durable.space_root, state.durable.generation, walk, pin)
+            (sb.space_root, sb.generation, walk, pin)
         };
         let result = walk.step(&super::commit::DeviceStore(self.inner.device.as_ref()),
             root, generation, budget);
@@ -4614,13 +4708,8 @@ impl<W: Wait + 'static> BreenFs<W> {
         // before the writer's latest snapshot or reaper generation.
         // Pin that generation under the state lock and read it with the
         // lock released (design 7.3a).
-        let device = &self.inner.mounted_root.device;
-        let (sb, _pin) = {
-            let state = self.foreground_lock()?;
-            let sb = device.published.lock().clone().unwrap_or_else(|| state.durable.clone());
-            let pin = device.pin(sb.generation)?;
-            (sb, pin)
-        };
+        // The copy and the pin are one step under `published` (review M2).
+        let (sb, _pin) = self.inner.mounted_root.device.pin_newest(&self.foreground_lock()?.durable)?;
         let store = CachedNodeStore::new(self.inner.cache.buffers(), self.inner.device.as_ref(), &sb);
         let items = recover::space_items(&store, &sb).map_err(|_| Errno(EIO))?;
         Ok(SnapshotStatus {
@@ -4817,7 +4906,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                             // with the ordinary interval as a retry bound.
                             // A reader's publication hold also blocks the freeze;
                             // its release wakes this loop (design 7.2 step 4).
-                            let held = fs.inner.read_holds.load(Ordering::SeqCst) != 0;
+                            let held = fs.inner.mounted_root.device.publication_held();
                             (state.failed, if state.failed || state.publication_blocked() || held {
                                 monotonic_ns().saturating_add(COMMIT_INTERVAL_NS)
                             } else { state.policy.deadline() })
