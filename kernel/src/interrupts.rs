@@ -782,13 +782,13 @@ extern "x86-interrupt" fn invalid_opcode_handler(mut stack_frame: InterruptStack
 /// #MF: an unmasked x87 exception, reported at the next x87 instruction. From
 /// Ring 3, SIGFPE with the si_code of the flagged exception and si_addr at
 /// the reporting instruction, as Linux reports it. The faulting thread owns
-/// this CPU's x87 registers, which the kernel never uses (`fpu`).
+/// this CPU's x87 registers (`fpu`).
 extern "x86-interrupt" fn x87_floating_point_handler(mut stack_frame: InterruptStackFrame) {
     // A trap from Ring 3 is system time until it returns there.
     let _trap_time = crate::task::thread::TrapTime::enter(stack_frame.code_segment.0 & 3 == 3);
     if stack_frame.code_segment.0 & 3 == 3 {
         let rip = stack_frame.instruction_pointer.as_u64();
-        let code = crate::arch_impl::x86_64::fpu::FpuState::capture().x87_fault_code();
+        let code = crate::arch_impl::x86_64::fpu::x87_fault_code();
         user_fault(
             &mut stack_frame,
             crate::signal::constants::SIGFPE,
@@ -805,7 +805,7 @@ extern "x86-interrupt" fn simd_floating_point_handler(mut stack_frame: Interrupt
     let _trap_time = crate::task::thread::TrapTime::enter(stack_frame.code_segment.0 & 3 == 3);
     if stack_frame.code_segment.0 & 3 == 3 {
         let rip = stack_frame.instruction_pointer.as_u64();
-        let code = crate::arch_impl::x86_64::fpu::FpuState::capture().simd_fault_code();
+        let code = crate::arch_impl::x86_64::fpu::simd_fault_code();
         user_fault(
             &mut stack_frame,
             crate::signal::constants::SIGFPE,
@@ -1744,6 +1744,20 @@ extern "x86-interrupt" fn general_protection_fault_handler(
     mut stack_frame: InterruptStackFrame,
     error_code: u64,
 ) {
+    if stack_frame.code_segment.0 & 3 == 0 {
+        if let Some(pc) = crate::arch_impl::x86_64::fpu::restore_fixup(
+            stack_frame.instruction_pointer.as_u64(),
+            error_code,
+        ) {
+            // The restore wrapper returns failure and reloads its old image.
+            unsafe {
+                stack_frame.as_mut().update(|frame| {
+                    frame.instruction_pointer = x86_64::VirtAddr::new(pc);
+                });
+            }
+            return;
+        }
+    }
     // A trap from Ring 3 is system time until it returns there.
     let _trap_time = crate::task::thread::TrapTime::enter(stack_frame.code_segment.0 & 3 == 3);
     // IRETQ can reject a user return frame while CS still names Ring 0.

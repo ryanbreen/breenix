@@ -1840,6 +1840,11 @@ pub(super) fn switch_to_idle(local: &mut Held) -> bool {
         return false;
     };
     let ptr = thread as *mut Thread;
+    let cpu = local.cpu;
+    let outgoing = local.state().current_thread;
+    crate::arch_impl::x86_64::fpu::hand_over_with(outgoing, idle, |tid| {
+        local.thread(tid).map(|thread| thread as *mut Thread).or_else(|| leaving_thread(cpu, tid))
+    });
     local.state().current_thread = Some(idle);
     crate::per_cpu::set_current_thread(ptr);
     true
@@ -1900,7 +1905,7 @@ pub(super) fn abort_dispatch_and_resume(local: &mut Held, aborted: u64, resume: 
     }
     local.state().current_thread = Some(resume);
     crate::arch_impl::x86_64::fpu::hand_over_with(None, resume, |tid| {
-        local.thread(tid).map(|thread| thread as *mut Thread)
+        local.thread(tid).map(|thread| thread as *mut Thread).or_else(|| leaving_thread(cpu, tid))
     });
     crate::per_cpu::set_current_thread(ptr);
     if let Some(top) = kernel_stack_top {

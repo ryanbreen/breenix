@@ -2024,6 +2024,8 @@ pub fn sys_execv_with_frame(
             // process manager again after this drop.
             drop(manager_guard);
 
+            // Reset the live state and its backing before publishing the new context.
+            crate::arch_impl::x86_64::fpu::reset_current();
             commit.apply();
             crate::tls::install_exec_fs_base(current_thread_id);
 
@@ -2066,8 +2068,6 @@ pub fn sys_execv_with_frame(
                 );
             }
 
-            // The new image starts from the initial x87/SSE state, not the old one's.
-            crate::arch_impl::x86_64::fpu::reset_current();
             // The roots exec superseded retire once no CPU can still walk them.
             if let Some(reclaim) = superseded.and_then(|mut receipt| receipt.take_contents()) {
                 crate::task::process_task::enqueue_process_reclaim(reclaim);
@@ -2210,6 +2210,8 @@ pub fn sys_execv_with_frame(
             // CR3 install below).
             drop(manager_guard);
 
+            // Reset the live state and its backing before publishing the new context.
+            crate::arch_impl::x86_64::fpu::reset_current();
             commit.apply();
             crate::tls::install_exec_fs_base(current_thread_id);
 
@@ -2253,8 +2255,6 @@ pub fn sys_execv_with_frame(
                 );
             }
 
-            // The new image starts from the initial x87/SSE state, not the old one's.
-            crate::arch_impl::x86_64::fpu::reset_current();
             // The roots exec superseded retire once no CPU can still walk them.
             if let Some(reclaim) = superseded.and_then(|mut receipt| receipt.take_contents()) {
                 crate::task::process_task::enqueue_process_reclaim(reclaim);

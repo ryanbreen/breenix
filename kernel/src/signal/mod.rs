@@ -17,3 +17,15 @@ pub mod trampoline;
 pub mod types;
 
 pub use types::*;
+
+/// Minimum space needed for one delivery on this machine.
+pub fn minimum_alt_stack() -> usize {
+    #[cfg(target_arch = "x86_64")]
+    {
+        crate::arch_impl::x86_64::fpu::minimum_stack()
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        constants::MINSIGSTKSZ.max(types::SignalFrame::SIZE + trampoline::SIGNAL_TRAMPOLINE_SIZE + 30)
+    }
+}

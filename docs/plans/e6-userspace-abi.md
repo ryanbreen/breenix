@@ -78,9 +78,10 @@ mask. Check arithmetic, offsets, bounds and non-overlap before allocation.
 [Intel SDM Vol. 1 §13.2 and §13.4, Vol. 2 CPUID, Vol. 3A §15.5](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).
 
 Distinguish reported, enabled and in-use state. Enable dependency-closed
-user feature groups, including AVX together with SSE, both MPX components
-where applicable, the full AVX-512 group with AVX, and both AMX components
-where applicable. Require complete leaf-0xD accounting, with an enable,
+user feature groups. PR 1 enables AVX together with SSE and the full AVX-512
+group with AVX when supported. MPX stays disabled until there is a #BR path.
+AMX stays disabled until E1 provides frame-backed storage and AMX has a tile
+configuration and XFD policy. Require complete leaf-0xD accounting, with an enable,
 ownership and restore policy for each reported component from the SDM.
 For example, AMX needs valid tile configuration and XFD policy, and PKRU
 needs an explicit order for user accesses by the kernel and restore on return. Start with eager backing
@@ -133,7 +134,8 @@ a stable, fallibly allocated area before the thread becomes runnable. Back
 it by committed kernel memory, including scratch for signal import/export,
 before any return path can use it. Charge the real size and fail thread or
 process preparation if backing cannot be obtained. Keep the existing
-scheduler hand-over and rollback ownership boundaries. Finish the outgoing
+scheduler hand-over and rollback ownership boundaries. Kernel threads retain
+state ownership because the console renderer uses SSE4.1. Finish the outgoing
 save before another CPU can resume the thread, including the first user
 entry and migration. Initialize exec's live state and saved image with
 architectural defaults before publishing the new context. Ensure a kernel
@@ -188,7 +190,13 @@ optional trampoline and its 15 bytes of alignment slack, 15 bytes plus
 8 for handler stack placement, and 128 for the nested red zone. For ARM64,
 use the existing FPSIMD frame, trampoline and stack-alignment rules. Export it as
 `AT_MINSIGSTKSZ` (51) on both targets and expose it in libc through
-`getauxval(AT_MINSIGSTKSZ)` and `sysconf(_SC_MINSIGSTKSZ)`. Fixed public constants remain lower bounds. Teach
+`getauxval(AT_MINSIGSTKSZ)` and `sysconf(_SC_MINSIGSTKSZ)`. The C
+`MINSIGSTKSZ` and `SIGSTKSZ` names query the runtime, and Rust callers use
+`minsigstksz()` and `sigstksz()`. On older kernels these interfaces retain the
+legacy floors. Use the prior difference between the two values as handler
+headroom. The tag number and kernel-frame semantics come from the
+[published x86 ELF auxiliary-vector ABI](https://docs.kernel.org/next/x86/elf_auxvec.html).
+Teach
 in-tree callers with fixed buffers to allocate for the runtime minimum
 plus handler headroom. Use the runtime minimum to admit registrations.
 For delivery, check the entire frame range against the configured stack,
@@ -204,8 +212,9 @@ Emit one `AT_HWCAP` (16) and one `AT_HWCAP2` (26) in both static and
 interpreted exec, before `AT_NULL`, including when a value is 0. Add the
 signal-stack minimum to the same suffix and update both stack budgeting and
 emission from the shared count. Have libc and libbreenix use one set of
-public Breenix constants per architecture. Define the values below as
-Breenix ABI. Unassigned bits are 0 and readers mask only bits they
+public Breenix constants per architecture. The x86 words use a Breenix encoding. The assigned ARM64 first-word bits use
+the [published Linux ARM64 ELF HWCAP ABI](https://docs.kernel.org/arch/arm64/elf_hwcaps.html),
+with the second word reserved by Breenix in E6. Unassigned bits are 0 and readers mask only bits they
 understand. Publish the intersection for CPUs that may run the process,
 validated against the kernel's actual state and enable policy. A CPU with
 a weaker contract cannot be added after publication. The tags describe
@@ -279,7 +288,7 @@ verify code generation with the exact compiler and sysroot that ship.
 | 0 | This design and rollout plan. | No. |
 | 1 | Kernel CPU bring-up and XSAVE ownership, signal frames and runtime stack minimum, usable HWCAP words, ARM64 normal-memory alignment policy. Establish corresponding save and restore before enabling a group or advertising its capabilities. | No. Breenix kernel and existing assembler support. |
 | 2 | Opt-in targets and staged sysroot for both architectures. Drop `x86-softfloat` and use the existing C/hosted feature settings in the staged target. Remove `+strict-align` from staged ARM64 userspace. Build in isolated roots and add the generation and publication guard. Release defaults continue to use the existing generation. | No. JSON and build recipes through existing target interfaces. Use the pinned fork libraries and rebuild against the new target identity. |
-| 3 | libc, CRT, public ABI headers, ld-breenix and link inputs. Unify x86's ordinary and C libc ABI in the staged generation, rebuild shared libc and loader, wire HWCAP startup tables and runtime signal-stack query, and rebuild and verify bld against the staged sysroot. | No. Breenix runtime and in-tree bld. Ordinary ELF relocations with the pinned linkers. |
+| 3 | libc, CRT, public ABI headers, ld-breenix and link inputs. Unify x86's ordinary and C libc ABI in the staged generation, rebuild shared libc and loader, wire HWCAP startup tables and carry the runtime stack query into the staged generation, and rebuild and verify bld against the staged sysroot. | No. Breenix runtime and in-tree bld. Ordinary ELF relocations with the pinned linkers. |
 | 4 | Rebuild the complete static program inventory and dependent image artifacts for both architectures. Verify and publish the complete generation and flip the release defaults. | No. Artifact build and publication. |
 | 5 | Hardware crypto for R16. Isolate AES-NI, PCLMULQDQ, Arm AES and PMULL from baseline code. Keep the portable constant-time path available, and choose AES and polynomial multiply separately so AES-only CPUs are safe. Make the benchmark and bsshd/bssh use the same selected production functions. | No. Per-function target features or existing workspace assembler interfaces. |
 | 6 | R30 vector strings. Use SSE2 and then usable AVX2 variants where they win on x86, and ASIMD on ARM64. Keep bounded tails, safe page-boundary handling for sentinel searches, and correct overlap direction for memmove. Measure small and large sizes before changing copy thresholds. | No. Breenix libc and existing target features or assembler interfaces. |
@@ -379,9 +388,9 @@ x86-64 and ARM64. The documentation PR needs neither a guest build nor a boot.
 | --- | --- |
 | 1 | Host CPUID table cases for legacy, XSAVE, XSAVEOPT and XSAVES. A fixture puts AVX at standard offset 576, a later user component after a standard gap and an aligned XSS component in compacted layout. Assert exact offsets and sizes against independent fixture values and leaf-0xD EBX, plus reserved-bit, overflow and incompatible AP rejection. Use a fixed switch/rollback and clone/exec state sequence with distinct per-thread sentinel data. Attempt a switch before and after each replacement commit, including sigreturn and failed restore. Drive a save that omits unmodified components to catch stale backing, lost imports and cross-thread reuse. |
 | 1 | Host frame placement and import/export tests with synthetic YMM high halves, a later component, mixed `XSTATE_BV`, and a nested alternate stack at the exact fit boundary. Verify byte offsets, 64-byte image alignment, handler stack alignment, red-zone preservation, absence of supervisor data, legacy import, and rejection of truncated or compacted images and illegal component content before context commit. The state test drives a deliberate handler clobber and return to expose a lost upper half. |
-| 1 | Initial stack byte fixtures for static and interpreted exec on both ISAs. Assert the HWCAP entries, a value of 0 versus absent, unchanged credential and interpreter entries, signal-stack minimum and final terminator. Toggle x86 hardware AVX with XCR0 off, the AVX2 and AVX-512 predicates, and independent AES-NI, PCLMULQDQ, ERMS and FSRM flags. Exercise ARM AES-only versus AES+PMULL and FP/ASIMD disabled, including a weaker CPU. |
-| 2 | Inspect relocatable Rust objects and call boundaries from the pinned compiler and C driver on both architectures. Use f32/f64, a mixed aggregate, an ARM HFA, x86 long-double return from C, and a variadic case with register and stack arguments. A separate ARM packed-copy fixture uses a deliberately unaligned normal-memory address. Audit emitted objects and fixed data results for the ABI change, while preserving alignment requirements for atomic and Device accesses. A mixed-generation target/archive pair and an incomplete manifest must fail during staging/publication. Submit a staged artifact through a legacy publisher and check that it leaves the prior release in place, then check that the legacy publisher accepts its own inputs. |
-| 3 | Feed synthetic auxv to the static and loader startup paths. A preinit/constructor reads its selected implementation before main and reads the same choice after a repeated init and via a dynamic consumer. Check absent capabilities, an explicit 0 mask and an enabled selection. Inspect that both link outputs retain ordinary relocations and that the static bld and reference linker resolve the intended ABI-consistent CRT and libc. |
+| 1 | Initial stack byte fixtures for static and interpreted exec on both ISAs. Assert the HWCAP entries, a value of 0 versus absent, credential and interpreter entries (invariant controls), signal-stack minimum and final terminator. Toggle x86 hardware AVX with XCR0 off, the AVX2 and AVX-512 predicates, and independent AES-NI, PCLMULQDQ, ERMS and FSRM flags. Exercise ARM AES-only versus AES+PMULL and FP/ASIMD disabled, including a weaker CPU. |
+| 2 | Inspect relocatable Rust objects and call boundaries from the pinned compiler and C driver on both architectures. Use f32/f64, a mixed aggregate, an ARM HFA, x86 long-double return from C, and a variadic case with register and stack arguments. A separate ARM packed-copy fixture uses a deliberately unaligned normal-memory address. Audit emitted objects and fixed data results for the ABI change, while preserving alignment requirements for atomic and Device accesses (invariant control). A mixed-generation target/archive pair and an incomplete manifest must fail during staging/publication. Submit a staged artifact through a legacy publisher and check that it leaves the prior release in place, then check that the legacy publisher accepts its own inputs. |
+| 3 | Feed synthetic auxv to the static and loader startup paths. A preinit/constructor reads its selected implementation before main and reads the same choice after a repeated init and via a dynamic consumer. Check absent capabilities, an explicit 0 mask and an enabled selection. Inspect that both link outputs retain ordinary relocations (invariant control) and that the static bld and reference linker resolve the intended ABI-consistent CRT and libc. |
 | 4 | Validate the full expected ELF and alias inventory against both staged images and SDK/toolchain bundles. A stale input archive or omitted executable must fail publication before any bundle becomes current. |
 | 5–6 | Fixed crypto known-answer and cross-implementation vectors, including AES without carryless multiply and AEAD rejection, with selection driven by fake masks and execution confined to usable implementations. For strings, use guarded page ends, unaligned offsets, empty ranges, overlapping memmove in both directions and exact first-match/difference results. |
 

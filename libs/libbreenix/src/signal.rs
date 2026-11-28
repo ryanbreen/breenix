@@ -65,13 +65,36 @@ pub const SS_DISABLE: i32 = 2;
 // The Linux ABI's sizes: an ARM64 signal frame holds the 4 KiB sigcontext
 // reserve, so its alternate stacks are larger.
 #[cfg(target_arch = "x86_64")]
-pub const MINSIGSTKSZ: usize = 2048;
+pub const MINSIGSTKSZ_FLOOR: usize = 2048;
 #[cfg(target_arch = "x86_64")]
-pub const SIGSTKSZ: usize = 8192;
+pub const SIGSTKSZ_FLOOR: usize = 8192;
 #[cfg(target_arch = "aarch64")]
-pub const MINSIGSTKSZ: usize = 5120;
+pub const MINSIGSTKSZ_FLOOR: usize = 5120;
 #[cfg(target_arch = "aarch64")]
-pub const SIGSTKSZ: usize = 16384;
+pub const SIGSTKSZ_FLOOR: usize = 16384;
+
+/// The x86 ucontext points to an Intel standard XSAVE image.
+#[cfg(target_arch = "x86_64")]
+pub const UC_BREENIX_XSTATE_V1: u64 = 1 << 32;
+
+pub const SC_MINSIGSTKSZ: i32 = 254;
+pub const SC_SIGSTKSZ: i32 = 255;
+
+/// Minimum kernel frame space for the current process.
+#[cfg(target_os = "breenix")]
+pub fn minsigstksz() -> usize {
+    extern "C" {
+        fn sysconf(name: i32) -> i64;
+    }
+    // The runtime and headers reserve this query in Breenix's sysconf ABI.
+    (unsafe { sysconf(SC_MINSIGSTKSZ) }).try_into().unwrap_or(MINSIGSTKSZ_FLOOR)
+}
+
+/// Alternate-stack allocation with the original handler headroom.
+#[cfg(target_os = "breenix")]
+pub fn sigstksz() -> usize {
+    minsigstksz() + (SIGSTKSZ_FLOOR - MINSIGSTKSZ_FLOOR)
+}
 
 // Interval timer types
 pub const ITIMER_REAL: i32 = 0;

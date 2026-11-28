@@ -32,6 +32,11 @@ fn memory_pages(free: bool) -> i64 {
     (bytes.saturating_mul(info.mem_unit as u64) / 4096).min(i64::MAX as u64) as i64
 }
 
+fn minimum_signal_stack() -> i64 {
+    let floor = libbreenix::signal::MINSIGSTKSZ_FLOOR as u64;
+    crate::crt::auxv_entry(libbreenix::auxv::AT_MINSIGSTKSZ).unwrap_or(floor).max(floor) as i64
+}
+
 /// sysconf's value for `name` (`crate::sysconf`): -1 with errno unchanged is a
 /// valid name with no limit, or an option this implementation does not
 /// support; -1 with EINVAL is an unknown name.
@@ -91,6 +96,10 @@ pub fn system_value(name: i32) -> i64 {
         173 => 40,                            // SYMLOOP_MAX
         180 => 255,                           // HOST_NAME_MAX
         // The programming environments: only LP64 with a 64-bit off_t.
+        // Runtime signal-stack sizing, with the legacy floor on older kernels.
+        libbreenix::signal::SC_MINSIGSTKSZ => minimum_signal_stack(),
+        libbreenix::signal::SC_SIGSTKSZ => minimum_signal_stack()
+            + (libbreenix::signal::SIGSTKSZ_FLOOR - libbreenix::signal::MINSIGSTKSZ_FLOOR) as i64,
         239 | V8_LP64_OFF64 => 1,
         237 | 238 | 240 | V8_ILP32_OFF32 | V8_ILP32_OFFBIG | V8_LPBIG_OFFBIG => -1,
         // Valid names of options this implementation does not provide.

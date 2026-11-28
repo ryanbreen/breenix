@@ -23,6 +23,8 @@ pub mod cpu;
 pub mod cpu_init;
 pub mod cpuinfo;
 pub mod fpu;
+pub(crate) mod xstate;
+pub(crate) mod xstate_layout;
 pub mod interrupt_frame;
 pub mod ioapic;
 mod ioapic_route;

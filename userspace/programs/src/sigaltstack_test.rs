@@ -4,15 +4,12 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use libbreenix::signal::{SIGUSR1, SA_ONSTACK, SS_DISABLE, SS_ONSTACK, MINSIGSTKSZ, SIGSTKSZ};
+use libbreenix::signal::{SIGUSR1, SA_ONSTACK, SS_DISABLE, SS_ONSTACK, minsigstksz, sigstksz};
 use libbreenix::{kill, sigaction, sigaltstack, Sigaction, StackT};
 use libbreenix::process::{getpid, yield_now};
 
 static HANDLER_CALLED: AtomicBool = AtomicBool::new(false);
 static HANDLER_RSP: AtomicU64 = AtomicU64::new(0);
-
-/// Alternate stack buffer
-static mut ALT_STACK: [u8; SIGSTKSZ] = [0; SIGSTKSZ];
 
 /// Signal handler that runs on alternate stack
 extern "C" fn handler_on_altstack(_sig: i32) {
@@ -61,8 +58,10 @@ fn main() {
 
     // Test 1: Set alternate stack
     println!("Test 1: Setting alternate signal stack");
-    let alt_stack_base = std::ptr::addr_of!(ALT_STACK) as u64;
-    let alt_stack_size = SIGSTKSZ;
+    let alt_stack_size = sigstksz();
+    let mut alt_stack = vec![0u8; alt_stack_size];
+    let alt_stack_base = alt_stack.as_mut_ptr() as u64;
+    let minimum = minsigstksz();
 
     println!("  Alt stack base = {:#018x}", alt_stack_base);
     println!("  Alt stack size = {} bytes", alt_stack_size);
@@ -209,13 +208,13 @@ fn main() {
 
     // Test 7: Validate minimum size requirement (MINSIGSTKSZ)
     println!("\nTest 7: Testing minimum stack size validation");
-    println!("  MINSIGSTKSZ = {} bytes", MINSIGSTKSZ);
+    println!("  MINSIGSTKSZ = {} bytes", minimum);
 
     let too_small_ss = StackT {
         ss_sp: alt_stack_base,
         ss_flags: 0,
         _pad: 0,
-        ss_size: MINSIGSTKSZ - 1,
+        ss_size: minimum - 1,
     };
 
     if sigaltstack(Some(&too_small_ss), None).is_err() {
@@ -229,7 +228,7 @@ fn main() {
         ss_sp: alt_stack_base,
         ss_flags: 0,
         _pad: 0,
-        ss_size: MINSIGSTKSZ,
+        ss_size: minimum,
     };
 
     if sigaltstack(Some(&min_ss), None).is_err() {

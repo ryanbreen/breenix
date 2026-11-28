@@ -474,7 +474,7 @@ pub fn report_write_combining(result: Result<crate::arch_impl::x86_64::pagewalk:
 }
 
 /// Whether `read_64` may run: the CPU has SSE4.1 (CPUID.01H:ECX bit 19) and
-/// this CPU has SSE enabled (CR4.OSFXSR, set by `cpu_init::init_fpu`).
+/// this CPU has SSE enabled (CR4.OSFXSR, set during per-CPU xstate initialization).
 #[cfg(target_arch = "x86_64")]
 fn streaming_loads() -> bool {
     use core::sync::atomic::{AtomicU8, Ordering};

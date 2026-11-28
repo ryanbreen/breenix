@@ -67,6 +67,7 @@ pub mod runtime;
 pub mod services;
 #[cfg(feature = "std")]
 pub mod service_logs;
+pub mod auxv;
 pub mod signal;
 pub mod socket;
 pub mod synth;

@@ -1493,7 +1493,7 @@ pub struct UContext {
 /// The x86-64 signal frame: Linux's `rt_sigframe`. The handler is entered
 /// with RSP pointing at `pretcode`, as if called, so its `ret` goes to the
 /// restorer, which calls rt_sigreturn with RSP just above `pretcode`. The
-/// FXSAVE image `uc_mcontext.fpstate` points to lies above the frame.
+/// FP/vector image `uc_mcontext.fpstate` points to lies above the frame.
 #[cfg(target_arch = "x86_64")]
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
