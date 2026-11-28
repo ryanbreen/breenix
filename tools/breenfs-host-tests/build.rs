@@ -46,6 +46,17 @@ fn main() {
         "impl core::ops::Deref for Population",
         "pub(crate) fn populate(",
         "pub(crate) fn populate_through(",
+        // The fill interface (E3-4): batches of claimed frames, their
+        // outcomes, the default fill through a transfer, and the host window.
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\npub enum FillPage",
+        "pub struct FrameVec",
+        "struct FrameSegment",
+        "impl FrameVec",
+        "pub struct FillBatch",
+        "impl FillBatch",
+        "pub fn fill_by_reads(",
+        "pub mod fill_window",
+        "pub(crate) fn fill_counts(",
         // Exec admission and the running-image write rule (E3-3) are production.
         "impl Drop for WriteOpen",
         "impl Drop for ExecLoad",
@@ -83,6 +94,7 @@ fn main() {
     // The fault's page choice and its absent-page count (E3-2) are production.
     // The running-image refusal (E3-3) mmap reports as ETXTBSY is production too.
     for marker in ["static ABSENT_BOUND", "static EXEC_COPY_FALLBACKS", "static ETXTBSY_REFUSALS",
+        "static FILLS", "static FILL_PAGES", "static FILL_ERRORS", "static FILL_DISCARDED",
         "pub(crate) struct WriteOpen(", "struct ExecLoad(", "pub(crate) const TEXT_BUSY"] {
         let start = source.find(marker).unwrap_or_else(|| panic!("missing {marker}"));
         let end = start + source[start..].find(";\n").unwrap();

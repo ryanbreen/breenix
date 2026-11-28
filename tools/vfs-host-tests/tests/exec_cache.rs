@@ -13,7 +13,7 @@ use crate::{
     errno::Errno,
     exec_elf::{prot_bits, Headers, ImageTarget},
     memory::file_map::{
-        bind_shared_authority, ExecImage, PageTableFlags, PhysFrame, ProcessPageTable, Protection, Vma,
+        bind_shared_authority, fill_window, ExecImage, PageTableFlags, PhysFrame, ProcessPageTable, Protection, Vma,
         COW_FLAG, TEXT_BUSY,
     },
     permissions::Credentials,
@@ -24,7 +24,7 @@ use crate::{
 use std::{
     cell::Cell,
     collections::BTreeMap,
-    sync::{atomic::{AtomicUsize, Ordering}, Arc, Mutex},
+    sync::{Arc, Mutex},
 };
 
 const PAGE: u64 = 4096;
@@ -99,32 +99,6 @@ fn fixture_ranges(bytes: &[u8], ranges: &[std::ops::Range<usize>]) -> (Arc<Breen
     let fs = BreenFs::mount_writable(disk, Arc::new(BufferCache::new(NoWait)), 73, 1).unwrap();
     let node = fs.open(ino).unwrap();
     (fs, node)
-}
-
-/// The image's transfer, counting the file bytes the cache reads through it.
-struct Counted {
-    inner: Box<dyn MappingIo>,
-    bytes: Arc<AtomicUsize>,
-}
-
-impl MappingIo for Counted {
-    fn as_any(&self) -> &dyn core::any::Any { self }
-    fn size(&self) -> u64 { self.inner.size() }
-    fn read(&self, offset: u64, length: usize) -> Result<Vec<u8>, Errno> {
-        let read = self.inner.read(offset, length)?;
-        self.bytes.fetch_add(read.len(), Ordering::Relaxed);
-        Ok(read)
-    }
-    fn read_into(&self, offset: u64, bytes: &mut [u8]) -> Result<usize, Errno> {
-        let read = self.inner.read_into(offset, bytes)?;
-        self.bytes.fetch_add(read, Ordering::Relaxed);
-        Ok(read)
-    }
-    fn needs_flush(&self) -> bool { self.inner.needs_flush() }
-    fn sync(&self, first: u64, last: u64) -> Result<(), Errno> { self.inner.sync(first, last) }
-    fn publish(&self, bind: &mut dyn FnMut(bool) -> Result<(), Errno>) -> Result<(), Errno> {
-        self.inner.publish(bind)
-    }
 }
 
 /// What exec installed at one virtual page.
@@ -248,14 +222,16 @@ impl Image<'_> {
 
 /// Exec `node` as the kernel does (`MappedElf::load`): admit it to its cache
 /// through the transfer exec holds, then read its headers and load it with
-/// the production reader. `reads` counts the bytes the loader reads.
+/// the production reader. `reads` counts the bytes the loader reads: its
+/// own reads, and the pages population filled for it (`fill_window`),
+/// since BreenFS's fill reads the device rather than the transfer (E3-4).
 fn exec<'a>(
     fs: &dyn FileSystem,
     node: &'a Arc<VNode>,
-    transfer: &'a Counted,
+    transfer: &'a dyn MappingIo,
     reads: &Cell<usize>,
 ) -> Image<'a> {
-    let before = transfer.bytes.load(Ordering::Relaxed);
+    let before = fill_window::data_pages();
     let (image, _) = crate::exec::read_image(
         fs, node, MountFlags::default(), &Credentials::kernel(), || false, false,
         |size, read| {
@@ -283,12 +259,17 @@ fn exec<'a>(
             Ok(image)
         },
     ).unwrap();
-    reads.set(reads.get() + transfer.bytes.load(Ordering::Relaxed) - before);
+    reads.set(reads.get() + filled_bytes(before));
     image
 }
 
-fn transfer(node: &VNode) -> Counted {
-    Counted { inner: node.filesystem.mapping_io(node).unwrap(), bytes: Arc::new(AtomicUsize::new(0)) }
+fn transfer(node: &VNode) -> Box<dyn MappingIo> {
+    node.filesystem.mapping_io(node).unwrap()
+}
+
+/// The file bytes this thread's fills gave as Data since the tally read `before`.
+fn filled_bytes(before: u64) -> usize {
+    ((fill_window::data_pages() - before) * PAGE) as usize
 }
 
 #[test]
@@ -297,8 +278,8 @@ fn a_second_exec_shares_the_first_execs_text_and_reads_nothing() {
     let (fs, node) = fixture(&bytes);
     let io = transfer(&node);
     let (first_reads, second_reads) = (Cell::new(0), Cell::new(0));
-    let mut first = exec(fs.as_ref(), &node, &io, &first_reads);
-    let second = exec(fs.as_ref(), &node, &io, &second_reads);
+    let mut first = exec(fs.as_ref(), &node, &*io, &first_reads);
+    let second = exec(fs.as_ref(), &node, &*io, &second_reads);
     assert!(first_reads.get() > 0);
     // Text, rodata and the data's whole page are the cache's frames in both.
     for address in [TEXT, TEXT + PAGE, DATA] {
@@ -326,7 +307,7 @@ fn bss_is_demand_zero_after_the_tail_page() {
     let bytes = program();
     let (fs, node) = fixture(&bytes);
     let io = transfer(&node);
-    let image = exec(fs.as_ref(), &node, &io, &Cell::new(0));
+    let image = exec(fs.as_ref(), &node, &*io, &Cell::new(0));
     let tail = DATA + PAGE;
     let bss = tail + PAGE..(DATA + DATA_BYTES + BSS + PAGE - 1) & !(PAGE - 1);
     assert_eq!((bss.end - bss.start) / PAGE, 256);
@@ -345,7 +326,7 @@ fn bss_is_demand_zero_after_the_tail_page() {
 fn a_running_image_refuses_write_access() {
     let (fs, node) = fixture(&program());
     let io = transfer(&node);
-    let image = exec(fs.as_ref(), &node, &io, &Cell::new(0));
+    let image = exec(fs.as_ref(), &node, &*io, &Cell::new(0));
     // The exec load has ended: its exec bindings alone make this a running image.
     assert!(matches!(node.map.open_writer(), Err(Errno(ETXTBSY))));
     // mmap's refusal, made before it replaces anything, is for shared write
@@ -365,7 +346,7 @@ fn an_image_open_for_writing_is_copied_and_runs() {
     let (fs, node) = fixture(&bytes);
     let io = transfer(&node);
     let writer = node.map.open_writer().unwrap();
-    let image = exec(fs.as_ref(), &node, &io, &Cell::new(0));
+    let image = exec(fs.as_ref(), &node, &*io, &Cell::new(0));
     assert!(image.entries.values().all(|entry| !entry.cached));
     assert_eq!(image.bytes(TEXT + PAGE), &bytes[PAGE as usize..2 * PAGE as usize]);
     drop(writer);
@@ -381,7 +362,7 @@ fn a_shared_binding_with_write_authority_cannot_change_running_text() {
     let (fs, node) = fixture(&bytes);
     let io = transfer(&node);
     let shared = bind_shared_authority(node.clone(), 2 * PAGE);
-    let image = exec(fs.as_ref(), &node, &io, &Cell::new(0));
+    let image = exec(fs.as_ref(), &node, &*io, &Cell::new(0));
     assert!(!image.entries[&(TEXT + PAGE)].cached);
     shared.protect_write().unwrap();
     shared.store(PAGE + 7, 0xee).unwrap();
@@ -394,7 +375,7 @@ fn a_segment_that_breaks_congruence_is_copied() {
     let bytes = image(&[(PAGE + 0x100, TEXT, 0x800, 0x800, PF_R | PF_X)], 2 * PAGE as usize);
     let (fs, node) = fixture(&bytes);
     let io = transfer(&node);
-    let image = exec(fs.as_ref(), &node, &io, &Cell::new(0));
+    let image = exec(fs.as_ref(), &node, &*io, &Cell::new(0));
     assert!(image.fell_back, "a non-congruent segment did not take the counted fallback");
     assert!(!image.entries[&TEXT].cached);
     assert_eq!(&image.bytes(TEXT)[..0x800], &bytes[(PAGE + 0x100) as usize..(PAGE + 0x900) as usize]);
@@ -411,10 +392,11 @@ fn exec_populates_only_the_pages_its_loads_map() {
     ], (far + PAGE) as usize);
     let (fs, node) = fixture_ranges(&bytes, &[0..PAGE as usize, far as usize..(far + PAGE) as usize]);
     let io = transfer(&node);
-    let image = exec(fs.as_ref(), &node, &io, &Cell::new(0));
+    let before = fill_window::data_pages();
+    let image = exec(fs.as_ref(), &node, &*io, &Cell::new(0));
     assert!(image.entries[&TEXT].cached && image.entries[&(TEXT + far)].cached);
     assert_eq!(image.bytes(TEXT + far), &bytes[far as usize..(far + PAGE) as usize]);
     let (resident, _, _) = node.map.cache_counts();
     assert_eq!(resident, 2, "exec populated the pages between its loads, which no load maps");
-    assert_eq!(io.bytes.load(Ordering::Relaxed), 2 * PAGE as usize, "exec read the hole between its loads");
+    assert_eq!(filled_bytes(before), 2 * PAGE as usize, "exec read the hole between its loads");
 }

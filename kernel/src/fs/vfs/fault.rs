@@ -407,6 +407,17 @@ impl<F: FileSystem + ?Sized> FileSystem for FaultFs<F> {
     fn mapping_io(&self, node: &VNode) -> Result<Box<dyn MappingIo>, Errno> {
         self.inner.mapping_io(node)
     }
+    fn cache_policy(&self) -> CachePolicy {
+        self.inner.cache_policy()
+    }
+    fn fill(
+        &self,
+        node: &VNode,
+        io: &dyn MappingIo,
+        pages: &mut crate::memory::file_map::FillBatch,
+    ) -> Result<(), Errno> {
+        self.inner.fill(node, io, pages)
+    }
     fn clear_mapping_privilege(&self, node: &VNode) -> Result<(), Errno> {
         self.inner.clear_mapping_privilege(node)
     }

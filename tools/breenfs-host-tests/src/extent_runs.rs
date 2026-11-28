@@ -353,8 +353,9 @@ fn extent_map_is_reused_until_the_inode_changes() {
 }
 
 /// mmap population of a fragmented file through a cold mount: one device
-/// request per contiguous run within each population run of RUN_BLOCKS
-/// pages, where the old path read one page per request.
+/// request per contiguous run of the file, up to RUN_BLOCKS, where Phase
+/// 1.1's path split runs at windows of RUN_BLOCKS pages from the start and
+/// the path before it read one page per request (E3-4's fill).
 #[test]
 fn population_reads_runs_not_pages() {
     use crate::memory::file_map::{bind_populated, populate};
@@ -389,11 +390,7 @@ fn population_reads_runs_not_pages() {
         .collect();
     let size = shadow.len() as u64;
     let pages = size.div_ceil(BLOCK_SIZE as u64);
-    let mut want = 0;
-    for first in (0..pages).step_by(RUN_BLOCKS) {
-        let lo = first * BLOCK_SIZE as u64;
-        want += expected_requests(&extents, lo, (lo + (RUN_BLOCKS * BLOCK_SIZE) as u64).min(size));
-    }
+    let want = expected_requests(&extents, 0, size);
     let observer = BreenFs::mount(disk.clone(), Arc::new(BufferCache::new(NoWait)), 91, 1).unwrap();
     let node = observer.open(a).unwrap();
     disk.take_reads();
