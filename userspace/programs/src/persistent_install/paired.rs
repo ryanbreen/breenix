@@ -919,12 +919,15 @@ pub(crate) fn verify_runtime_fixture(path: &Path, rust: &Path) -> Result<(), Str
 }
 
 fn toolchain(root: &Dir, rust: &Dir) -> Result<(), String> {
-    let selected = field(root, SELECTION).map_err(io_error)?;
+    let selected = field(root, SELECTION).map_err(|err| format!("/{SELECTION}: {err}"))?;
     let id = version_id(&selected)?;
-    let version = rust.dir(OsStr::new(id), None).map_err(io_error)?;
+    let place = format!("/opt/breenix/rust/{id}");
+    let version = rust
+        .dir(OsStr::new(id), None)
+        .map_err(|err| format!("{place}: {err}"))?;
     let bytes = version
         .read(OsStr::new("MANIFEST.json"))
-        .map_err(io_error)?;
+        .map_err(|err| format!("{place}/MANIFEST.json: {err}"))?;
     let manifest: serde_json::Value =
         serde_json::from_slice(&bytes).map_err(|err| err.to_string())?;
     if manifest["id"].as_str() != Some(id) {
@@ -942,7 +945,9 @@ fn toolchain(root: &Dir, rust: &Dir) -> Result<(), String> {
             return Err(format!("missing toolchain runtime {required}"));
         }
     }
-    let libraries = root.dir(OsStr::new("lib"), None).map_err(io_error)?;
+    let libraries = root
+        .dir(OsStr::new("lib"), None)
+        .map_err(|err| format!("/lib: {err}"))?;
     for (root, rows, hash) in [(&version, payload, false), (&libraries, runtime, true)] {
         for (path, facts) in rows {
             let path = Path::new(path);
