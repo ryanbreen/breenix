@@ -437,7 +437,8 @@ impl<B: Backing> Kmem<B> {
     }
 
     /// Fill an empty magazine from the class's slabs; at least one round on
-    /// success.
+    /// success. Every round slot holds an initialized pointer: `new_magazine`
+    /// writes them null, and a reused magazine's hold earlier rounds.
     unsafe fn fill(&self, class: usize, magazine: *mut Magazine, wait: bool) -> Result<(), Short> {
         unsafe {
             let capacity = (*magazine).capacity as usize;
@@ -459,8 +460,15 @@ impl<B: Backing> Kmem<B> {
         let mut one = [ptr::null_mut(); 1];
         self.magazines[size].take(&mut one, wait, &self.backing, &self.descriptors).ok()?;
         let magazine = one[0].cast::<Magazine>();
-        // SAFETY: the object is a magazine-sized block of this cache.
-        unsafe { magazine.write(Magazine { next: ptr::null_mut(), rounds: 0, capacity: ROUNDS[size] as u32 }) };
+        // SAFETY: the object is a magazine-sized block of this cache. Its
+        // round slots are written null here, so `fill`'s typed slice over
+        // them covers initialized pointers.
+        unsafe {
+            magazine.write(Magazine { next: ptr::null_mut(), rounds: 0, capacity: ROUNDS[size] as u32 });
+            for index in 0..ROUNDS[size] {
+                round(magazine, index).write(ptr::null_mut());
+            }
+        }
         Some(magazine)
     }
 
