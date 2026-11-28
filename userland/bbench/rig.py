@@ -302,12 +302,13 @@ def tcp_summary(system, before, after):
 class Guest:
     """One VM in the rig's shape, reached over SSH on a forwarded loopback port."""
 
-    def __init__(self, system, run_dir, disk, headed, extra=()):
+    def __init__(self, system, run_dir, disk, headed, extra=(), kernel=BREENIX_KERNEL):
         self.system = system
         self.run_dir = run_dir
         self.disk = disk
         self.headed = headed
         self.extra = list(extra)
+        self.kernel = kernel
         self.port = None
         self.process = None
         self.boots = 0
@@ -319,7 +320,7 @@ class Guest:
         self.known_hosts = run_dir / f"known_hosts-{system}"
 
     def argv(self):
-        boot = (["-bios", EDK2] if self.system == "linux" else ["-kernel", BREENIX_KERNEL])
+        boot = (["-bios", EDK2] if self.system == "linux" else ["-kernel", self.kernel])
         disks = ["-device", "virtio-blk-device,drive=disk0",
                  "-drive", f"if=none,id=disk0,format=raw,cache=writeback,file={self.disk}"]
         return [
@@ -571,6 +572,9 @@ class Rig:
         # Each guest's root mount line, as the guest reports it, by boot number: only
         # boots whose setup passed, which are the only boots that take samples.
         self.roots = {system: {} for system in SYSTEMS}
+        # The verified build record and the run's clones of its artifacts (boot()).
+        self.build = None
+        self.inputs = {}
         self.started = datetime.now(timezone.utc).replace(microsecond=0)
 
     def bin(self, system, name):
@@ -583,8 +587,12 @@ class Rig:
     def boot(self):
         commit = self.commit
         disk = self.run_dir / "breenix-disk.raw"
-        run_command(["cp", "-c", BREENIX_IMAGE, disk])
-        self.guests["breenix"] = Guest("breenix", self.run_dir, disk, self.args.headed)
+        # The build this run verified, cloned into the run before anything boots.
+        self.build, self.inputs = snapshot_inputs(BUILD_STAMP, commit, BREENIX_ARTIFACTS,
+                                                  self.run_dir / "inputs")
+        run_command(["cp", "-c", self.inputs[BREENIX_IMAGE], disk])
+        self.guests["breenix"] = Guest("breenix", self.run_dir, disk, self.args.headed,
+                                        kernel=self.inputs[BREENIX_KERNEL])
         linux_disk = self.run_dir / "linux-disk.raw"
         run_command(["cp", "-c", LINUX_CACHE / f"provisioned-{PIN['sha256'][:12]}-{DISK_BYTES // MIB}.raw",
                      linux_disk])
@@ -614,10 +622,12 @@ class Rig:
         root = self.check_root(system)
         guest.ssh(["/bin/mkdir", "-p", f"{home}/bbench/bin", data, reports, f"{home}/bbench/net"])
         if system == "breenix":
-            for source, name in ((BREENIX_RELEASE / "bbench", "bbench"),
-                                 (BREENIX_RELEASE / "bbench-exit", "bbench-exit"),
-                                 (BREENIX_OZ / "bbench", "bbench-oz"),
-                                 (BREENIX_O3 / "bbench", "bbench-o3")):
+            for artifact, name in ((BREENIX_RELEASE / "bbench", "bbench"),
+                                   (BREENIX_RELEASE / "bbench-exit", "bbench-exit"),
+                                   (BREENIX_OZ / "bbench", "bbench-oz"),
+                                   (BREENIX_O3 / "bbench", "bbench-o3")):
+                # The run's verified clone, on every boot (snapshot_inputs).
+                source = self.inputs[artifact]
                 result = guest.scp(source, guest.remote(f"{home}/bbench/bin/{name}"))
                 if result.returncode:
                     raise RuntimeError(f"breenix: upload of {name} failed: {result.stderr!r}")
@@ -972,8 +982,9 @@ class Rig:
         else:
             provenance["toolchain"] = {"fork": FORK, "commitsAhead": FORK_AHEAD, "base": FORK_BASE,
                                        "staged": BREENIX_TOOLCHAIN,
-                                       "stamp": json.loads(BUILD_STAMP.read_text())
-                                       if BUILD_STAMP.exists() else None}
+                                       # The record snapshot_inputs verified, not the
+                                       # shared stamp as it reads now.
+                                       "stamp": self.build}
         metadata = {
             "system": system, "target": "arm64-qemu", "hardware": hardware(profiles[0]),
             "kernelCommit": kernel, "userlandCommit": short, "toolchain": toolchain,
@@ -1041,9 +1052,8 @@ def write_build_stamp(stamp, commit, artifacts):
     stamp.write_text(json.dumps(record, indent=2) + "\n")
 
 
-def verify_build_stamp(stamp, head, artifacts):
-    """The commit the Breenix inputs were built from. Refuses inputs that build-breenix
-    did not build at `head`, and any artifact that changed after that build."""
+def read_build_stamp(stamp, head):
+    """The build record, read once. Refuses inputs build-breenix did not build at `head`."""
     if not stamp.exists():
         raise ValueError(f"no build stamp at {stamp}: build the Breenix inputs with "
                          "scripts/bench-qemu-arm64.sh build-breenix")
@@ -1051,13 +1061,44 @@ def verify_build_stamp(stamp, head, artifacts):
     if record["commit"] != head:
         raise ValueError(f"the Breenix inputs were built at {record['commit']}, not HEAD {head}: "
                          "run scripts/bench-qemu-arm64.sh build-breenix")
+    return record
+
+
+def check_artifacts(record, artifacts, copies=None):
+    """Refuse any artifact (or its copy in `copies`) whose SHA-256 is not the record's."""
+    copies = copies or {}
     for path in artifacts:
         recorded = record["artifacts"].get(str(path))
         if recorded is None:
             raise ValueError(f"the build stamp does not cover {path}: run build-breenix")
-        if not Path(path).exists() or sha256(path) != recorded:
-            raise ValueError(f"{path} changed after build-breenix built it at {head}")
+        actual = Path(copies.get(path, path))
+        if not actual.exists() or sha256(actual) != recorded:
+            raise ValueError(f"{path} changed after build-breenix built it at {record['commit']}")
+
+
+def verify_build_stamp(stamp, head, artifacts):
+    """The commit the Breenix inputs were built from. Refuses inputs that build-breenix
+    did not build at `head`, and any artifact that changed after that build."""
+    check_artifacts(read_build_stamp(stamp, head), artifacts)
     return head
+
+
+def snapshot_inputs(stamp, head, artifacts, into):
+    """Clone each stamped artifact into the run (`into`) and verify the clones against
+    the stamp, read once. Every boot of the run, restarts included, and its sidecar use
+    these, so a build-breenix elsewhere that replaces the shared stamp or artifacts
+    during the run changes nothing in it. Returns the record and each artifact's clone."""
+    record = read_build_stamp(stamp, head)
+    into.mkdir(parents=True)
+    clones = {}
+    for index, path in enumerate(artifacts):
+        if not Path(path).exists():
+            raise ValueError(f"missing Breenix input {path}: run build-breenix")
+        clones[path] = into / f"{index}-{Path(path).name}"
+        # A copy-on-write clone on APFS: the 8 GiB image costs no space or time.
+        run_command(["cp", "-c", path, clones[path]])
+    check_artifacts(record, artifacts, clones)
+    return record, clones
 
 
 def build_breenix():
