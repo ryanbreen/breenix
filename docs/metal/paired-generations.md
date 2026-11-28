@@ -358,8 +358,8 @@ Only the selection moves into the generation:
      1), the walk in 4.0 from the staging root with the ID shared `CURRENT` names today, a sync, and
      `detach_staging()`. That reproduces what the root sees today, since a rollback already keeps the shared
      selection. A retained root that is read-only refuses the conversion with its name, for the operator to
-     decide. A cut part-way leaves some roots with the file and shared `CURRENT` still a regular file, which the
-     reader still uses, and the next deploy repeats this step for the roots still lacking it;
+     decide. A cut part-way leaves some roots with the file and shared `CURRENT` still a regular file, which
+     readers still use, and the next deploy repeats this step for the roots still lacking it;
   1. write `usr/lib/breenix/rust-current` into the running root with the ID that shared `CURRENT` names today
      (a pet change, and the only write a deploy makes to the running root), by the walk in 4.0 from `/`. The final
      name may be absent or a regular file. A symlink or a directory there, or at `usr`, `usr/lib` or
@@ -459,6 +459,23 @@ naming the old root, becomes PREVIOUS. `live-flash.json` gains `root`, `previous
 or a loader that returns), the next boot finds an unacknowledged attempt. The manager boots CURRENT, which names the
 old root (`Outcome::Rollback`, live_sequence.rs). The host records the rollback only after reading the old kernel
 commit and `/` source `gen-<old>` over SSH. The failed generation stays as a reclaimable root.
+
+**The host makes that next boot happen.** Today the deadline path raises `no matching SSH and PID 1 receipt after
+reboot; CURRENT will boot on the next power cycle` and returns (metal_live_flash.py:277), so an uncommitted trial
+can stay up as the persistent session until someone power-cycles the box. PR B replaces both failure exits with
+one `force_rollback(token)`:
+- if the trial answers SSH with the expected boot ID, `sudo -n /sbin/reboot` under the boot-ID guard the flash
+  already uses;
+- otherwise, or if no new manager start appears on the serial within 120 s of that reboot, a reset of the
+  persistent lease through metal-boot's own power control (the `power_off(hung=True)` path, then power on). The
+  tool asks the boot loop for it and does not contact the management controller itself;
+- then the same wait as a flash: the manager's `live flash: rollback <token>` and `booting current <commit>`
+  lines, then SSH on the old pair, then the receipt `result=rolled-back`. If that also fails, the tool reports
+  the box as needing the recovery route and stops.
+
+The three triggers take this path: a failed commit check (section 5, the three conditions), the 600 s deadline,
+and `--inject paired-no-commit`.
+
 `metal-run install-persistent --rollback` swaps CURRENT and PREVIOUS, both kernel and root, as it does today.
 
 **What rollback restores, and what it does not.**
@@ -612,7 +629,7 @@ Scope: sections 4 to 6.
 |---|---|---|---|
 | T-B1 apply over a fixture clone | `tests/persistent_install/` host test, beside `tests/metal_replace_usr_host.rs` | A fixture clone with a baseline, an inventory and objects. After apply and verify: the payload rows equal the inventory; a pet file at an unmanaged path is kept; a locally changed managed file is moved to `.breenix-carried/<prev>/` with set-ID cleared; a dropped, unchanged managed file is removed; a BusyBox hard-link group across `/bin` and `/sbin`, a symlink and set-ID `su` are exact; a symlink whose target the clone lacks is rebuilt from its object; two independent rows with one SHA-256 end as two inodes; a group whose members match on their own but are two inodes in the clone, and a group one of whose members is linked to a pet path, are each rebuilt as one inode with the group's link count; `paired have` reports neither group as satisfied; mount points are untouched; a rerun after a cut at each file is idempotent. Path safety (4.0): with a pet symlink at `usr/lib` pointing outside the tree, at `usr/lib/breenix/rust-current`, and at `opt/breenix/rust`, the conversion and apply refuse, and the symlinks' targets (a fixture file standing in for one in `/home`) are byte-for-byte unchanged. Toolchain: the conversion leaves a fixture PREVIOUS root, which lacked the file, with `usr/lib/breenix/rust-current` naming the old ID before shared `CURRENT` becomes a symlink, and a read-only retained root refuses it; verify fails when the draft's `/lib/libc.so` differs from the selected version's `runtime` entry. Deletions and baselines: a managed file deleted on the box and still in the inventory is restored and listed in `deletedOnBox`; with no baseline, a pet edit to a payload file is carried; a baseline with an unknown header refuses before the clone. Epoch custody: begin, apply and publish run in sequence, and publish compares the E1 that begin recorded after apply has removed `.breenix-incoming` and the unmount has run; a recorded boot ID that differs from the fixture's refuses publish. | The check commit's stub routes `apply` to today's only in-place path, `replace_usr`, which leaves `/bin`, `/sbin` and `/lib` unchanged |
 | T-B2 manager version 2 | `scripts/metal/efi-stub/tests/live_sequence.rs` | The trial is refused for a missing root, a read-only root, or an image intent naming another userland. It is accepted when the three agree. Version 1 behaves exactly as today. | `Manifest::parse` rejects a seventh line |
-| T-B3 host flow | `tests/metal_live_flash_test.py` | `prepare --paired`: the slot intent names the new generation; the manifest carries the root line only for a version-2 manager. The retained set keeps the physical PREVIOUS's root when an acknowledged trial is not promoted (a stale base or a foreign NEXT), and drops a root only after a `promoted` line removes it from both physical slots. The commit check needs `/` to be `gen-<new>` `rw` plus the verify digest. A rollback receipt needs the old commit and `gen-<old>`. Staging order: the tool and the inventory are published, and `paired protocol` answers, before `paired begin`; the eight box subcommands and the cold verify invoke the staged tool path, not `/sbin/persistent-install`. | Today's `prepare` names CURRENT's userland (metal_live_flash.py:100) |
+| T-B3 host flow | `tests/metal_live_flash_test.py` | `prepare --paired`: the slot intent names the new generation; the manifest carries the root line only for a version-2 manager. The retained set keeps the physical PREVIOUS's root when an acknowledged trial is not promoted (a stale base or a foreign NEXT), and drops a root only after a `promoted` line removes it from both physical slots. The commit check needs `/` to be `gen-<new>` `rw` plus the verify digest. A rollback receipt needs the old commit and `gen-<old>`. Forced rollback: a fixture trial that does not answer SSH reaches the deadline and `force_rollback` requests the lease reset; one that answers but fails the commit check gets the guarded reboot; neither returns before reading the rollback lines and SSH on the old pair, and neither writes `committed`. Staging order: the tool and the inventory are published, and `paired protocol` answers, before `paired begin`; the eight box subcommands and the cold verify invoke the staged tool path, not `/sbin/persistent-install`. | Today's `prepare` names CURRENT's userland (metal_live_flash.py:100) |
 
 **The live run on the R240** is the only box activity. It goes through the one-reboot path, under the
 persistent lease, with no netboot and no suites. Steps:
@@ -626,14 +643,20 @@ persistent lease, with no netboot and no suites. Steps:
    - `live-flash.json` (`result=committed`, `root=gen-<id1>`, `previousRoot`, `inventorySha256`, `carried`, `onBox`);
    - the serial's `live flash: trial` line;
    - `/proc/mounts` and the cold verify digest.
-2. **One forced rollback.** A second paired deploy of the same build with `--inject paired-no-commit`. The trial
-   boots `gen-<id2>`. The host reads SSH on it, writes a marker file into `gen-<id2>`'s `/usr/share`, withholds
-   `committed` and reboots. The manager boots the step-1 pair. Evidence:
+2. **One forced rollback.** A second paired deploy with `--inject paired-no-commit`, built from a different
+   commit: the first parent of step 1's main commit (`<main>^1`), which is also a production kernel with writable
+   persistent root support. So the kernel and the root each identify the slot on their own. The trial boots
+   `gen-<id2>`. The host reads SSH on it and writes a marker file into `gen-<id2>`'s `/usr/share`. The inject
+   then fails the commit check, and the host takes the production path, `force_rollback` (section 5), with no
+   reboot of its own. Evidence:
    - `result=rolled-back`;
-   - the manager's `live flash: rollback <token>` and `booting current <commit>` serial lines;
-   - `/` = `gen-<id1>`. Both steps build the same kernel commit, so the root identifies the slot: `gen-<id1>` is
-     named only by the step-1 image's sealed intent, and `gen-<id2>` only by the trial's;
+   - the kernel: the trial's `live flash: trial <token> <main^1>` line, then `live flash: rollback <token>` and
+     `booting current <main>`, the step-1 commit, which differs from the trial's;
+   - the root: `/` = `gen-<id1>`, named only by the step-1 image's sealed intent;
    - the marker absent.
+
+   The 600 s branch with no SSH is not run live: T-B3 drives it with a fixture that does not answer, and checks
+   that `force_rollback` asks the boot loop for the lease reset.
 
    `upgrade-no-ssh`'s invalid loader stops before the kernel mounts the new root, so it cannot show the root
    returning. This inject can.
