@@ -740,8 +740,8 @@ keeps I7 throughout. The PR belongs to E2's sequence. If E5's lane starts first,
 which lane carries it (§12, Q3). It must not land twice.
 
 ext2's lock (#728) moves onto the park contract in E2.2. It keeps holding its lock across device reads,
-because the ruling names only BreenFS. That matters for measurement: the QEMU rig's disk rows run on ext2
-(§10).
+because the ruling names only BreenFS. Since #3250 the QEMU rig's disk rows run on a BreenFS root
+(`userland/bbench/RIG.md:139-146`), so ext2's lock no longer bears on them (§10).
 
 ## 8. PR sequence
 
@@ -904,8 +904,11 @@ should own each, not several agents on one PR (DEV-30(3)).
   - the revocation assertion: a host test that revoking the token while an attached device's
     completion source is unarmed yields that device's receipt and an error for its requests, not a poll.
 - **Risk retired.** DEV-24 and its family (#3209). Context-dependent I/O modes.
-- **Rows.** No QEMU row: the rig's disks are virtio-blk and its disk rows run on ext2. On the R240 the
-  effect is boot and dev-loop reliability, read from the next kernel-only flash.
+- **Rows.** The rig's disk is virtio-blk, so its rows cannot show the AHCI change. They can move
+  through E2.4's virtio-blk change, where the completion mode collapses to a park. The before-and-after
+  series reads the rig's disk rows (sequential, small-files, walk and fsync, on the BreenFS root since
+  #3250) for that, and attributes any move to virtio-blk waits, not to AHCI. On the R240 the effect is
+  boot and dev-loop reliability, read from the next kernel-only flash.
 - **Boot.** Boot order is a hardware-timing effect the host tests cannot settle, and E2.4 changes it on
   two ARM64 paths. So it gets two ARM64 QEMU boots with the repo's standard scripts, one per path:
   - the testing boot (`test-loader` under `park::Braked`), which must load its whole roster;
@@ -955,7 +958,8 @@ should own each, not several agents on one PR (DEV-30(3)).
     and checks that the edit is redone against the new generation.
 - **Risk retired.** The BreenFS half of DEV-24 (R10). One reader's device wait stalls the whole mount,
   including commit publication.
-- **Rows.** No row on the QEMU rig as it stands (§10). On the R240, `disk.stat`, `disk.create` and
+- **Rows.** On the QEMU rig, the disk rows, which run on a BreenFS root since #3250 (§10), and the
+  Breenix compile rows, whose cargo jobs share one mount. On the R240, `disk.stat`, `disk.create` and
   `disk.unlink` while the commit worker is active, and `compile.cargo-noop`. DEV-23's ban still keeps
   `disk.walk` and `disk.sequential-*` off the R240 until #3226 closes.
 - **Boot.** Not needed. The host harness runs the production BreenFS code and settles lock order and the
@@ -1112,8 +1116,9 @@ should own each, not several agents on one PR (DEV-30(3)).
     behind it. The prediction is small, because entry and exit carry other work.
   - `process.fork-exec` in 10e.
   - `network.tcp-*` and `memory.malloc-4t` from contended threads in 10c and 10d.
-  - The compile rows are where the effect should show (cargo -j4), but they are deferred on the QEMU rig
-    (`NO_BREENIX_RUSTC`), so they are read on the R240 after the batched flash.
+  - The compile rows are where the effect should show (cargo with four jobs). Since #3250 the QEMU rig
+    runs them on Breenix with the hosted fork (`userland/bbench/RIG.md:130-137`), so they are read on
+    the rig, and on the R240 after the batched flash.
 - **Boot.** One ARM64 QEMU boot per class, of the cases that class reaches: preemption in the middle of a
   syscall is a timing effect. x86 gets its evidence at the flash.
 
@@ -1154,7 +1159,10 @@ E2 weakens no check in them.
 ## 10. bbench rows (DEV-31)
 
 The baseline is the ARM64 QEMU series `qemu-20261127-731f1d00` (Breenix and Linux, same VM shape, 5 samples
-per row). Ratio above 1 means slower than Linux (DEV-28(1)).
+per row). Ratio above 1 means slower than Linux (DEV-28(1)). That series predates #3250, which gave
+the rig guests 2048 MiB, a BreenFS root on Breenix and an ext4 root on Linux, and Breenix compile rows
+(`userland/bbench/RIG.md:20-25`, `:130-146`). So the figures below give the size of each gap, not the
+comparison point. Each PR's before-series is recorded on the rig as it is when that PR lands.
 
 | Row | Breenix | Linux | Ratio | E2 PRs that may move it |
 |---|---|---|---|---|
@@ -1174,12 +1182,13 @@ Notes on the table:
   re-opens the attribution.
 - **Neutral rows.** E2.1, E2.2, E2.6 and E2.7 are expected to be neutral on QEMU. Their series check that
   they are, chiefly on `ssh.round-trip` (0.53x) and `memory.copy-bytes` (1.03x).
-- **Disk rows.** These do not show E2.4 or E2.5 on this rig: its disk rows run on ext2 on virtio-blk
-  (`userland/bbench/RIG.md:88-91`), so they measure neither AHCI nor BreenFS. Until the rig has a BreenFS
-  volume, those two PRs are measured on the R240 after a batched kernel-only flash (DEV-31(2)), within
-  DEV-23's limits (§12, Q2).
-- **Compile rows.** These are deferred on the rig (`NO_BREENIX_RUSTC`). They are where E2.10's preemption
-  and E2.8's fault scaling should matter most (cargo -j4), and they are read on the R240.
+- **Disk rows.** Since #3250 the rig's disk rows run on Breenix's BreenFS root over virtio-blk
+  (`userland/bbench/RIG.md:139-146`). They can show E2.5 (BreenFS lock order) and E2.4's virtio-blk
+  waits, but not AHCI, which only the R240 has. E2.4's AHCI part is read on the R240 after a batched
+  kernel-only flash (DEV-31(2)), within DEV-23's limits.
+- **Compile rows.** Since #3250 they run on Breenix with the hosted fork (`RIG.md:130-137`). They are where
+  E2.10's preemption and E2.8's fault scaling should matter most (cargo with four jobs). They are read on
+  the rig and on the R240.
 
 ## 11. Interfaces with other work
 
@@ -1210,13 +1219,12 @@ Notes on the table:
   each of these PRs merges on its host tests and review, and its boot evidence is the coordinator's next
   kernel-only flash (staging boot and SSH). The alternative is to hold the merge until a flash of the PR
   head. The coordinator decides which.
-- **Q2. A BreenFS volume in the QEMU rig.** Adding a second virtio disk formatted BreenFS for the disk rows
-  would let E2.5, E5 and E11 be judged on the primary rig (DEV-31(1)). The rig is outside E2. The proposal
-  is a rig PR before E2.5 lands.
+- **Q2. A BreenFS volume in the QEMU rig.** Settled by #3250: the rig's Breenix guest now runs on a
+  BreenFS root, so E2.5, E5 and E11 can be judged on the primary rig (DEV-31(1)). No decision is needed.
 - **Q3. Which lane carries E2.5.** If E5's lane opens first, the coordinator assigns E2.5 to one of the
   two lanes.
-- **Q4. ext2's lock across I/O.** It stays out of scope (§7.4) unless the coordinator adds it. It bears on
-  the QEMU disk rows while the rig runs ext2.
+- **Q4. ext2's lock across I/O.** It stays out of scope (§7.4) unless the coordinator adds it. Since
+  #3250 it no longer bears on the QEMU disk rows, which run on BreenFS.
 
 ## 13. References
 
