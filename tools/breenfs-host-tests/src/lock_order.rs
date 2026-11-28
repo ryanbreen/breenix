@@ -461,6 +461,49 @@ fn a_publication_hold_lets_a_reader_finish_while_commits_keep_arriving() {
     assert!(refused != 0, "no publication waited for the reader's hold");
 }
 
+/// A getdents64-shaped reply: records appended until `budget` of them fit.
+fn reply(fs: &Fs, dir: u64, budget: usize) -> Result<Vec<(Vec<u8>, u64)>, Errno> {
+    let mut out = Vec::new();
+    fs.readdir(dir, 0, &mut |entry, cookie| {
+        if out.len() == budget {
+            return Ok(false);
+        }
+        out.push((entry.name, cookie));
+        Ok(true)
+    })?;
+    Ok(out)
+}
+
+/// Design §8 E2.5, a late miss in readdir: the first leaf is cached and a
+/// later one cold, so a pass emits entries before it needs the device, and a
+/// commit adds an entry while the read is out. The reply has no duplicate
+/// names or cookies and matches one generation's listing.
+#[test]
+fn a_directory_reply_comes_from_one_pass_of_one_generation() {
+    let (disk, inos) = image();
+    let fs = mount(&disk, 134);
+    // Warm the first leaf only.
+    assert_eq!(reply(&fs, inos.d, 1).unwrap().len(), 1);
+    disk.stop("reader-a", true, false);
+    let a = {
+        let fs = fs.clone();
+        spawn("reader-a", move || reply(&fs, inos.d, 500))
+    };
+    disk.entered(1, "reader A never reached the device");
+    let writer = fs.clone();
+    bounded("writer", move || {
+        writer.create(inos.d, b"added-late", regular()).unwrap();
+        writer.fsync(&writer.open(inos.d).unwrap(), false).unwrap();
+    });
+    disk.release();
+    let got = join(a, "reader A did not finish").unwrap();
+    let names: BTreeSet<_> = got.iter().map(|(name, _)| name.clone()).collect();
+    let cookies: BTreeSet<_> = got.iter().map(|(_, cookie)| *cookie).collect();
+    assert_eq!(names.len(), got.len(), "the reply repeats names");
+    assert_eq!(cookies.len(), got.len(), "the reply repeats cookies");
+    assert_eq!(got, reply(&fs, inos.d, 500).unwrap(), "the reply is not one generation's listing");
+}
+
 fn reuse_past_the_horizon(read_only: bool) {
     let (disk, inos) = image();
     let fs = mount(&disk, 126);
