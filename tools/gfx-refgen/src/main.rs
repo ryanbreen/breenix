@@ -9,7 +9,7 @@
 
 #[path = "../../../libs/libuitest/src/formula.rs"]
 mod ui_formula;
-#[path = "../../../userspace/programs/src/uitest_suite/formula_pattern.rs"]
+#[path = "../../../tests/ui_frames/formula_pattern.rs"]
 mod ui_formula_pattern;
 mod png;
 mod sha256;
