@@ -75,13 +75,20 @@ fn program() -> Vec<u8> {
 }
 
 fn fixture(bytes: &[u8]) -> (Arc<BreenFs<NoWait>>, Arc<VNode>) {
+    fixture_ranges(bytes, &[0..bytes.len()])
+}
+
+/// An image file holding only `ranges` of `bytes`; the rest is a hole.
+fn fixture_ranges(bytes: &[u8], ranges: &[std::ops::Range<usize>]) -> (Arc<BreenFs<NoWait>>, Arc<VNode>) {
     let disk = Arc::new(Disk { bytes: Mutex::new(vec![0; 64 * 1024 * 1024]), writable: true });
     let sb = Superblock { fs_uuid: [0x45; 16], generation: 1, slot: 1,
         total_blocks: 16384, global_reserve: 4096, next_root_id: 2,
         ..Superblock::default() };
     let mut files = Files::format(DeviceStore(disk.as_ref()), &sb).unwrap();
     let ino = files.create(2, b"image", 0o755, Time::default()).unwrap();
-    files.write(disk.as_ref(), ino, 0, bytes, Time::default()).unwrap();
+    for range in ranges {
+        files.write(disk.as_ref(), ino, range.start as u64, &bytes[range.clone()], Time::default()).unwrap();
+    }
     files.fsync(disk.as_ref(), &mut Committer::format(sb)).unwrap();
     drop(files);
     let fs = BreenFs::mount_writable(disk, Arc::new(BufferCache::new(NoWait)), 73, 1).unwrap();
@@ -323,4 +330,23 @@ fn a_segment_that_breaks_congruence_is_copied() {
     assert!(image.fell_back, "a non-congruent segment did not take the counted fallback");
     assert!(!image.entries[&TEXT].cached);
     assert_eq!(&image.bytes(TEXT)[..0x800], &bytes[(PAGE + 0x100) as usize..(PAGE + 0x900) as usize]);
+}
+
+#[test]
+fn exec_populates_only_the_pages_its_loads_map() {
+    // One page of text at file page 0 and one of data at file page 256,
+    // with a 255-page hole between them that neither load maps.
+    let far = 256 * PAGE;
+    let bytes = image(&[
+        (0, TEXT, PAGE, PAGE, PF_R | PF_X),
+        (far, TEXT + far, PAGE, PAGE, PF_R | PF_W),
+    ], (far + PAGE) as usize);
+    let (fs, node) = fixture_ranges(&bytes, &[0..PAGE as usize, far as usize..(far + PAGE) as usize]);
+    let io = transfer(&node);
+    let image = exec(fs.as_ref(), &node, &io, &Cell::new(0));
+    assert!(image.entries[&TEXT].cached && image.entries[&(TEXT + far)].cached);
+    assert_eq!(image.bytes(TEXT + far), &bytes[far as usize..(far + PAGE) as usize]);
+    let (resident, _, _) = node.map.cache_counts();
+    assert_eq!(resident, 2, "exec populated the pages between its loads, which no load maps");
+    assert_eq!(io.bytes.load(Ordering::Relaxed), 2 * PAGE as usize, "exec read the hole between its loads");
 }
