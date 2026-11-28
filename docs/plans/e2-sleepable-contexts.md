@@ -125,7 +125,8 @@ Each invariant is checked by a deterministic test named in §9.
 - **I6, faults are off PROCESS_MANAGER.** A page fault reaches its address space directly and takes only
   that address space's locks (§5).
 - **I7, no device wait under a filesystem-wide lock.** BreenFS submits and waits for device requests with
-  no `MountLock` held. The one exception is a mount that has not been published yet (§7).
+  no `MountLock` held. The exceptions are a mount that has not been published yet and the commit workers'
+  `PublishToken`, which is not a `MountLock` and which no foreground operation takes (§7.3a).
 - **I8, polling only at early boot.** A caller polls only while it holds the early-boot I/O token, which
   stops being issued when the scheduler first dispatches (§6). A device with no usable interrupt still has
   a poller thread, but that thread is the device's completion source. It is not a mode the caller picks.
@@ -688,6 +689,25 @@ A foreground operation runs in passes (an optimistic read with validation: Kung 
   `mount_lock.rs:136-138` goes, and so does the `EAGAIN` path. `preempt.rs`'s cooperative points stay
   until E2.10b makes the BreenFS syscalls preemptible, and then go. <!-- claim-lint:ok: normative requirement of docs/plans/e2-sleepable-contexts.md under ruling DEV-37(2), not a measured result. -->
 
+### 7.3a Device waits that are not read passes
+
+The passes in §7.2 cover lookups and reads. Several other paths wait on the device under a
+`MountLock` today. Two of those locks are device-wide gates in `DeviceMounts` (`vfs.rs:208-218`), so the
+unpublished-mount exception in I7 cannot cover them: a published mount takes them too. E2.5 moves each
+path as follows.
+
+| Path today | Device wait under | Under E2.5 |
+|---|---|---|
+| A cold partial-page write or truncate: `edit_pages` reads the old page through `files.read_verified` (`vfs.rs:3303-3339`) | the mount state lock | Two phases. Under the lock, a no-wait pass finds the partly covered pages that are cold and returns `NeedsIo` with their (inode, index, generation). The writer pins, releases, reads those pages into a staging buffer and verifies them, then retakes the lock. If the file's extent identity and generation are unchanged it applies the edit from the staged pages, and otherwise it repeats the pass |
+| Scrub (`scrub_pass`, `vfs.rs:3160-3177`) | the mount state lock | Under the lock it copies `space_root` and the generation and pins it. It walks that generation's nodes with no lock held, then retakes the lock only to record its progress |
+| The durable-root check (`check_durable_roots`, `vfs.rs:2019-2032`) and snapshot status | the mount state lock | The same: pin the durable generation under the lock, release, read, and validate against the pin |
+| The commit worker's writes and FLUSH (`vfs.rs:2886-2917`) | `DeviceMounts::publication`, a `MountLock` | `publication` stops being a `MountLock`. It becomes a `PublishToken` that serialises the publishers of one device's mounts, and only commit workers take it. Foreground operations no longer take it |
+| A read-only snapshot read, which holds `publication` through its read so that reused SPACE nodes cannot change under it | `publication` | It pins its generation in the device's pin table (§7.1) instead. Pinned blocks are not reused, so it no longer needs to exclude publication |
+| Snapshot deletion, which holds `selection` across its sync (`vfs.rs:3384-3398`) | `DeviceMounts::selection`, a `MountLock` | Under the state lock, deletion marks the root `Deleting`. A constructor that would select a `Deleting` root fails with `EBUSY`, as it would during today's hold. Deletion releases the lock, syncs, then clears the marker under the lock. `selection` becomes that marker and is held across no I/O |
+
+I7's exception list then names exactly two things: a mount not yet published, and the `PublishToken`,
+which is not a `MountLock` and which the I7 guard checks no foreground thread ever takes. <!-- claim-lint:ok: normative requirement of docs/plans/e2-sleepable-contexts.md under ruling DEV-37(2), not a measured result. -->
+
 ### 7.4 The boundary with E5
 
 E2.5 is the first step of E5 ("release the mount lock before I/O") and carries the I7 guard. E5 then adds
@@ -852,7 +872,13 @@ should own each, not several agents on one PR (DEV-30(3)).
       `promote_pending`, which frees it at P+3. The same case with A on a read-only mount of the
       writer's device;
   - **the write path:** a full dirty budget makes the writer park on commit progress without holding the
-    lock.
+    lock;
+  - **the §7.3a paths, each with a cold cache under the I7 guard:** a partial-page write, a truncate to
+    the middle of a page, a scrub pass, the durable-root check, snapshot status, a read-only snapshot
+    read and a snapshot delete. Each is red on the old code at its first device read, or at its
+    `publication` or `selection` hold. The guard also fails if a thread outside the commit worker takes
+    the `PublishToken`. The partial-write case adds a commit between the staging read and the retake,
+    and checks that the edit is redone against the new generation.
 - **Risk retired.** The BreenFS half of DEV-24 (R10). One reader's device wait stalls the whole mount,
   including commit publication.
 - **Rows.** No row on the QEMU rig as it stands (§10). On the R240, `disk.stat`, `disk.create` and
