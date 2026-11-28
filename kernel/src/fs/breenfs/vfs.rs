@@ -2007,16 +2007,46 @@ impl<W: Wait + 'static> BreenFs<W> {
     /// The epoch with the booted tree's writable shared mappings and files
     /// with unwritten mapped stores (3.3, DEV-44).
     fn root_epoch(&self, state: &MountState<W>) -> RootEpoch {
-        RootEpoch { epoch: state.root_epoch, writable_mappings: 0, dirty_files: 0 }
+        let mut epoch = RootEpoch { epoch: state.root_epoch, writable_mappings: 0, dirty_files: 0 };
+        for (&ino, entry) in &state.nodes {
+            if state.files.tag(ino) != 0 {
+                continue;
+            }
+            if let Some(node) = entry.node.upgrade().or_else(|| entry.mapped.clone()) {
+                epoch.writable_mappings += node.map.writable_shared() as u64;
+                epoch.dirty_files += u64::from(node.map.has_dirty());
+            }
+        }
+        epoch
     }
     /// Freeze the booted tree and return the epoch at that instant (E2).
+    /// DEV-44(2a): refused with EBUSY, and the counts filled in, while a
+    /// booted-tree file has a writable shared mapping or mapped stores not
+    /// yet written back. Those stores change the file without admission, so
+    /// they would be in neither E2 nor a refusal.
     fn root_freeze(&self) -> Result<RootEpoch, (Errno, RootEpoch)> {
-        let state = self.foreground_lock().map_err(|error| (error, RootEpoch::default()))?;
-        let epoch = self.root_epoch(&state);
-        if let Err(error) = state.writable() {
-            return Err((error, epoch));
+        let busy = |epoch: RootEpoch| epoch.writable_mappings != 0 || epoch.dirty_files != 0;
+        {
+            let state = self.foreground_lock().map_err(|error| (error, RootEpoch::default()))?;
+            let epoch = self.root_epoch(&state);
+            if epoch.writable_mappings != 0 {
+                return Err((Errno(EBUSY), epoch));
+            }
         }
-        self.inner.root_frozen.store(true, Ordering::Release);
+        // Write back, and so count, the stores of mappings already gone.
+        self.sync_mappings(None).map_err(|error| (error, RootEpoch::default()))?;
+        let state = self.foreground_lock().map_err(|error| (error, RootEpoch::default()))?;
+        if let Err(error) = state.writable() {
+            return Err((error, self.root_epoch(&state)));
+        }
+        // Raise the flag before counting: a binding counted after this read
+        // sees the flag and is refused (MapInner::gain_writable_shared).
+        let was = self.inner.root_frozen.swap(true, Ordering::AcqRel);
+        let epoch = self.root_epoch(&state);
+        if busy(epoch) {
+            self.inner.root_frozen.store(was, Ordering::Release);
+            return Err((Errno(EBUSY), epoch));
+        }
         Ok(epoch)
     }
     fn root_thaw(&self) -> Result<RootEpoch, Errno> {
@@ -4215,6 +4245,11 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
     fn request_eviction(&self) {
         self.inner.signal.mappings.store(true, Ordering::Release);
         self.inner.signal.worker.wake();
+    }
+    /// DEV-44(2a): while ROOT_FREEZE holds, no booted-tree file gains a
+    /// writable shared mapping. Booted-tree inode numbers carry no tag bit.
+    fn refuses_shared_write(&self, node: &VNode) -> bool {
+        node.ino & ops::TREE_TAGS == 0 && self.inner.root_frozen.load(Ordering::Acquire)
     }
     fn mapping_io(&self, node: &VNode) -> Result<Box<dyn MappingIo>, Errno> {
         self.check_node(node)?;

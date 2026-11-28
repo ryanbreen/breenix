@@ -244,7 +244,7 @@ fn publish_host(node: &VNode, io: &dyn MappingIo, length: u64, shared: bool, wri
     io.publish(&mut |_| {
         let mut inner = node.map.state.inner.lock();
         if shared && writable {
-            inner.writable_shared += 1;
+            inner.gain_writable_shared(node).map_err(|_| Errno(crate::syscall_errno::EBUSY))?;
         }
         id = inner.bindings.iter().map(|r| r.id).max().unwrap_or(0) + 1;
         inner.bindings.push(BindingRec { id, pgoff: 0, pages: pages(length), shared, writable,
@@ -262,7 +262,7 @@ impl HostBinding {
             return Ok(());
         }
         if inner.bindings[slot].shared {
-            inner.writable_shared += 1;
+            inner.gain_writable_shared(&self.0.node).map_err(|_| Errno(crate::syscall_errno::EBUSY))?;
         }
         inner.bindings[slot].writable = true;
         Ok(())

@@ -59,6 +59,9 @@ const REVOKE_WINDOW: u64 = 64;
 pub(crate) const EVICT_BUDGET: usize = 64;
 /// Pages copied by one writeback batch.
 const WRITEBACK_PAGES: usize = 64;
+/// The error of a shared write mapping the filesystem refused; mmap and
+/// mprotect report it as EBUSY.
+pub(crate) const ROOT_FROZEN: &str = "Root volume frozen";
 
 pub(crate) fn writeback_buffer() -> Result<Vec<u8>, &'static str> {
     let mut bytes = Vec::new();
@@ -554,6 +557,21 @@ impl MapInner {
         self.bindings.iter().any(|rec| rec.covers(index))
     }
 
+    /// Count a binding of `handle` gaining shared write authority, unless its
+    /// filesystem refuses one (a frozen root, paired generations DEV-44). The
+    /// count is raised before the filesystem's flag is read, both under this
+    /// map lock, and a root freeze raises its flag before it reads the count
+    /// under the same lock: the freeze sees this binding, or this binding
+    /// sees the freeze. Nonblocking; PROCESS_MANAGER may be held.
+    fn gain_writable_shared(&mut self, handle: &VNode) -> Result<(), &'static str> {
+        self.writable_shared += 1;
+        if handle.filesystem.refuses_shared_write(handle) {
+            self.writable_shared -= 1;
+            return Err(ROOT_FROZEN);
+        }
+        Ok(())
+    }
+
     /// A mutation changed the file bytes of pages `[first, last)`. A
     /// population may have read some of them already, and its copies are not
     /// in the cache, where the mutation hooks update pages, so mark its claim
@@ -799,6 +817,11 @@ impl MapState {
         let inner = self.state.inner.lock();
         inner.bindings.iter().any(|rec| rec.shared && rec.may_write)
             || inner.pages.entries.iter().any(|(_, page)| page.dirty)
+    }
+
+    /// Bindings that can store into this file without another fault.
+    pub(crate) fn writable_shared(&self) -> usize {
+        self.state.inner.lock().writable_shared
     }
 
     pub(crate) fn has_dirty(&self) -> bool {
@@ -1710,7 +1733,7 @@ pub(crate) fn bind(
         let id = next_binding();
         let shared = vma.flags.bits() & 3 != 2;
         if shared && vma.prot.contains(Protection::WRITE) {
-            inner.writable_shared += 1;
+            inner.gain_writable_shared(&handle)?;
         }
         inner.bindings.push(BindingRec {
             id,
@@ -2038,8 +2061,8 @@ pub(crate) fn protect(
     let handle = binding.handle.clone();
     // Private copies are the entries that do not map their cache page.
     let mut copies = Vec::new();
-    {
-        let inner = handle.map.state.inner.lock();
+    let gains = {
+        let mut inner = handle.map.state.inner.lock();
         let rec = inner
             .bindings
             .iter()
@@ -2061,16 +2084,33 @@ pub(crate) fn protect(
                 }
             }
         }
-    }
-    let index = isolate(vmas, start, end, copies.len())?.ok_or("Not a file VMA")?;
-    let binding = vmas[index].backing.as_ref().ok_or("Not a file VMA")?;
+        // Shared write authority this call adds is counted now, before any
+        // change, so a root freeze either sees it or refuses it (DEV-44).
+        let gains = rec.shared && prot.contains(Protection::WRITE) && !rec.writable_shared();
+        if gains {
+            inner.gain_writable_shared(&handle)?;
+        }
+        gains
+    };
+    let undo = |error: &'static str| {
+        if gains {
+            handle.map.state.inner.lock().writable_shared -= 1;
+        }
+        error
+    };
+    let index = isolate(vmas, start, end, copies.len()).map_err(|error| undo(error))?
+        .ok_or_else(|| undo("Not a file VMA"))?;
+    let binding = vmas[index].backing.as_ref().ok_or_else(|| undo("Not a file VMA"))?;
     // Commit: nothing below allocates. PROCESS_MANAGER is held throughout,
     // so no fault observes the binding and the VMA apart.
     let mut inner = binding.handle.map.state.inner.lock();
     let valid = pages(inner.mapped_size);
-    let rec = inner
-        .rec_mut(binding.id)
-        .ok_or("File binding missing from its reverse map")?;
+    let Some(rec) = inner.rec_mut(binding.id) else {
+        if gains {
+            inner.writable_shared -= 1;
+        }
+        return Err("File binding missing from its reverse map");
+    };
     let mut clean = true;
     let mut leaves = super::process_memory::LeafBatch::new();
     let mut from = start;
@@ -2089,12 +2129,16 @@ pub(crate) fn protect(
         }
     }
     if !clean {
+        if gains {
+            inner.writable_shared -= 1;
+        }
         return Err("File mapping entry custody disagreed");
     }
     let was_writable = rec.writable_shared();
     rec.prot = prot;
     let now_writable = rec.writable_shared();
-    if now_writable && !was_writable {
+    // A gain was counted before the first change.
+    if now_writable && !was_writable && !gains {
         inner.writable_shared += 1;
     }
     if was_writable && !now_writable {
