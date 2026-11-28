@@ -660,3 +660,48 @@ fn an_aligned_extent_that_fits_exactly_is_not_refused() {
         assert_eq!(extents.free_bytes(), 0);
     }
 }
+
+/// Check first (review of E1-5): an allocation the window handed out is
+/// unmapped with no new node, because the node its retirement needs is held from
+/// the reserve, not drawn from the spares at unmap. `kva::release` adds a
+/// node page when an unmap has no node, and panics when no frame is left
+/// for one, so an unmap that needs a node can fail under memory pressure.
+/// A 16-page vmap window has 3 nodes: reserve 1-page allocations until the
+/// window refuses (`NoNode` is where `kva::reserve` adds a page, and may fail
+/// cleanly), map each, then unmap each with no flush between, as x86's
+/// pending list does. 8 of 8 reserves succeeding on the old code and its
+/// fourth unmap returning `NoNode` is the failure.
+#[test]
+fn each_reserved_allocation_unmaps_without_a_new_node() {
+    let mut tables = Tables::new();
+    let slot = 330;
+    let root = x86_root(&mut tables, slot);
+    let placement =
+        Placement { id: WindowId::Vmap, first_slot: slot, slots: 1, base: kva_window::slot_va(slot), bytes: 16 * PAGE };
+    let mut window = Window::new(placement, PAGE);
+    let mut nodes = vec![0u64; 3 * kva_extent::NODE_BYTES / 8];
+    unsafe { window.extents.add_nodes(nodes.as_mut_ptr() as *mut u8, nodes.len() * 8) };
+    window.open().unwrap();
+
+    let mut live = Vec::new();
+    loop {
+        match window.reserve(PAGE, PAGE) {
+            Ok(allocation) => live.push(allocation),
+            Err(ExtentError::NoNode | ExtentError::NoVa) => break,
+            Err(error) => panic!("reserve: {error:?}"),
+        }
+    }
+    assert!(!live.is_empty());
+    for (index, allocation) in live.iter().enumerate() {
+        map_window_range(&mut tables, root, allocation.start, PAGE, &[0xa000_0000 + index as u64 * PAGE]);
+    }
+    for (index, allocation) in live.iter().enumerate() {
+        assert_eq!(
+            window.unmap::<X86, _>(&tables, root, allocation),
+            Ok(1),
+            "unmap {} of {} reserved allocations",
+            index + 1,
+            live.len(),
+        );
+    }
+}
