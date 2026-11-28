@@ -1,6 +1,7 @@
 # E3: unified page cache and pager (design and PR plan)
 
-Status: design and PR sequence. E3-1 adds the pure modules, which no kernel path calls yet. Builders
+Status: design and PR sequence. E3-1 adds the pure modules, which no kernel path calls yet. E3-2 makes
+absent, Hole and poisoned pages explicit in today's mapping cache. Builders
 append the detail deviations they make under DEV-39(2) to section 22.
 
 Rulings. DEV-41(2) starts this design and orders implementation to begin as soon as its E1 and E2
@@ -2361,3 +2362,45 @@ boundary) are not recorded here: the builder stops and asks the coordinator.
   by exchanging it from 0, because a caller's snapshot of the mount's charge let two writers on one mount,
   overlapping under per-file `io` locks, both take the exception. 11.5's "one compare-and-add" is now
   that compare-and-add on the global count, or, past `limit`, the claim on the mount's count.
+- **E3-2, a Hole holds no frame (5.4, 9.2).** A Hole entry holds no frame, and the first fault on it gives
+  the index a cleared frame of its own, which the bindings then share, instead of mapping the shared zero
+  frame. The reason is that 5.4's revocation of the zero frame's PTEs from a store fault needs the other
+  bindings' page tables, and before E2.8 `resolve_page` holds only the faulting table under
+  PROCESS_MANAGER; with one frame per faulted Hole there is no alias to revoke, so a `write()` or a
+  shared store reaches every mapping as it does today. E3-11's fault, on E2.8's per-address-space
+  locks, can adopt the shared zero frame. <!-- claim-lint:ok: "zero frame" names the shared frame of sections 5.1 and 9.2; the mapping claim is checked by tools/vfs-host-tests/tests/mapped_coherence.rs a_hole_page_shows_a_later_shared_store_to_every_mapping. -->
+- **E3-2, the Hole set.** Holes are a sorted index set beside the cache vector (`MapInner::holes`,
+  shaped like the poison set), not entries in it, because a Hole holds no frame and the set costs 8 heap
+  bytes an index, where a cache entry costs several times that; E3-6's tree stores them as value
+  entries (4.3).
+- **E3-2, where Holes are made.** `prepare_write` and `prepare_resize` reserve the Hole room, and the
+  EOF transition inserts the Holes, because a page becomes valid only when the new size is published,
+  and a write that fails leaves the size unchanged.
+- **E3-2 review, a population's claim.** The EOF transition's Holes and `prepare_write`'s frames cover
+  the pages a population claims as well as the bound ones (`held_runs`), as eviction already does,
+  because mmap publishes its binding after population returns and without the filesystem guard in
+  between, so a growth in that gap would otherwise leave the new binding's grown pages absent. A
+  population's merge drops its copy of a page that became resident while it read, and Holes only a
+  claim holds keep eviction pending, so the pass after a failed mmap retires them.
+- **E3-2 review, ext2's preallocation.** ext2's fallocate calls `prepare_resize` before each batch,
+  under the guard that batch holds, because its last batch publishes the larger size and a Hole
+  reservation that failed after that was lost, leaving the newly valid pages absent under a successful
+  fallocate. This repairs E3-2's own change to the mapping hooks ext2 already calls (its resize calls
+  `prepare_resize` too); ext2 stays MappedOnly under Q3. The transition still reserves room itself for
+  a page a population claimed after the reservation, and a page left without room stays absent (the
+  counted SIGBUS rather than 00 bytes).
+- **E3-2, `prepare_write`'s frames.** A write gives cleared frames to the bound Holes and the bound
+  pages past EOF it reaches, and no longer to an absent bound page below EOF, because that page's bytes
+  are unknown and a cleared frame under a partial write would publish 00 bytes as file bytes.
+- **E3-2, a failed mutation.** `invalidate` drops the Holes in its range, and the bound ones are
+  poisoned like any clean page, because their bytes are unknown once a mutation fails.
+- **E3-2, population.** Population still reads a Hole page from the file and its merged frame replaces
+  the Hole, as it reads non-resident pages today, because only the fault depends on Holes before
+  E3-4's `fill` reports them.
+- **E3-2, the #3208 check's seam.** The check releases the claim by dropping the population (its
+  production `Drop`) and publishes the binding through a fresh transfer, and the host fault reaches
+  production through `MapInner::fault_frame`, which `resolve_page` calls. An unpopulated host fixture
+  binding records the pages that read as 00 as Holes and leaves the others absent, because production
+  mmap populates each mapping (`map_file`, `syscall/mmap.rs`) and those fixtures stand for sparse files.
+- **E3-2, `/proc/breenix/pagecache`.** It lists only `absent_bound` until E3-6 adds the rest of
+  section 16, because E3-2 has no other counter to report.

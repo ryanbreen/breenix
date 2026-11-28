@@ -134,3 +134,80 @@ fn bound_empty_private_file_grows_for_owner_and_clone_vm_sibling() {
         assert_eq!(cold(disk, node.ino, contents.len()), contents);
     }
 }
+
+// E3-2 (docs/plans/e3-page-cache.md 5.3 and 18): the #3208 interleaving. A
+// population's claim is released before its binding is published, the
+// eviction pass retires the populated pages, and the binding then faults page
+// 0, the ELF header. The page's bytes are unknown, not 00: the fault is
+// SIGBUS, counted in absent_bound, and read() still returns the file's bytes.
+#[test]
+fn an_absent_bound_page_is_sigbus_and_read_keeps_the_file_bytes() {
+    use crate::memory::file_map::{absent_bound, bind_populated, populate, EVICT_BUDGET};
+    let elf: Vec<u8> = (0..2 * PAGE as usize).map(|i| [0x7f, b'E', b'L', b'F'][i % 4]).collect();
+    let (fs, _disk, node) = fixture(&elf);
+    let Ok(population) = populate(&node, 0, 2) else { panic!("population failed") };
+    // The seam: the claim goes before the binding is published.
+    drop(population);
+    let mut budget = EVICT_BUDGET;
+    node.map.evict(&mut budget);
+    assert_eq!(node.map.cache_counts().0, 0, "the eviction pass left populated pages");
+    let io = node.filesystem.mapping_io(&node).unwrap();
+    let before = absent_bound();
+    let binding = bind_populated(node.clone(), &*io, 2 * PAGE);
+    assert_eq!(binding.load(0), Err(HostFault::Sigbus), "the fault mapped an absent page as 00 bytes");
+    assert_eq!(absent_bound() - before, 1);
+    assert_eq!(read(fs.as_ref(), &node, 0, 4), b"\x7fELF", "read() returned the fault's 00 bytes");
+}
+
+// E3-2: an extension makes the bound pages it adds valid. A fault on one reads
+// 00 bytes through its Hole entry; an absent page would be the SIGBUS refusal.
+// This guards existing behaviour, so it is not red on the old tree.
+#[test]
+fn a_bound_page_made_valid_by_extension_reads_zeros() {
+    let (fs, _disk, node) = fixture(&[b'x'; 4096]);
+    let map = bind_host(node.clone(), 3 * PAGE, true, false, true);
+    fs.resize(&node, 3 * PAGE, false, &|_| Ok(())).unwrap();
+    assert!((PAGE..3 * PAGE).step_by(1021).all(|i| map.load(i) == Ok(0)));
+    assert_eq!(map.load(7), Ok(b'x'));
+}
+
+// E3-2: aliases of a Hole. Mappings made before an extension cover the page
+// it adds. Process A (shared read-only) and a private reader read it as 00;
+// process B then stores through a shared writable mapping, and both readers'
+// next loads return B's byte. On the old tree the fault inserts one fresh
+// frame that all of them share, so this is not red there.
+#[test]
+fn a_hole_page_shows_a_later_shared_store_to_every_mapping() {
+    let (fs, _disk, node) = fixture(&[b'x'; 4096]);
+    let reader = bind_host(node.clone(), 3 * PAGE, true, false, true);
+    let private = bind_host(fs.open(node.ino).unwrap(), 3 * PAGE, false, false, true);
+    let writer = bind_host(fs.open(node.ino).unwrap(), 3 * PAGE, true, true, true);
+    fs.resize(&node, 3 * PAGE, false, &|_| Ok(())).unwrap();
+    let late = 2 * PAGE + 9;
+    assert_eq!(reader.load(late), Ok(0));
+    assert_eq!(private.load(late), Ok(0));
+    writer.store(late, 0x42).unwrap();
+    assert_eq!(reader.load(late), Ok(0x42), "a shared reader kept the hole's zeros");
+    assert_eq!(private.load(late), Ok(0x42), "a private reader kept the hole's zeros");
+    assert_eq!(read(fs.as_ref(), &node, late, 1), [0x42]);
+}
+
+// E3-2 review: mmap's population returns before the binding is published,
+// and a mutation that grows the file can run in that gap. The pages it makes
+// valid lie in the population's claim, not yet in any binding. Once the
+// binding is published, a page the growth left as a hole reads 00 and a page
+// the write reached reads the written byte. Neither is the absent page's SIGBUS.
+#[test]
+fn a_growth_before_the_binding_is_published_reads_the_grown_bytes() {
+    use crate::memory::file_map::{bind_populated, populate};
+    let (fs, _disk, node) = fixture(&[b'x'; 4096]);
+    let Ok(population) = populate(&node, 0, 3) else { panic!("population failed") };
+    fs.resize(&node, 2 * PAGE, false, &|_| Ok(())).unwrap();
+    write(fs.as_ref(), &node, 2 * PAGE + 5, b"w");
+    let binding = bind_populated(node.clone(), &*population, 3 * PAGE);
+    assert_eq!(binding.load(7), Ok(b'x'));
+    assert_eq!(binding.load(PAGE + 7), Ok(0), "the page the resize made valid was absent");
+    assert_eq!(binding.load(2 * PAGE + 5), Ok(b'w'), "the page the write reached was absent");
+    drop(binding);
+    drop(population);
+}

@@ -58,6 +58,10 @@ pub mod block {
     }
 
     pub trait BlockDevice: Send + Sync {
+        /// As the kernel trait: a device is writable unless it says otherwise.
+        fn is_read_only(&self) -> bool {
+            false
+        }
         fn identity(&self) -> usize {
             self as *const Self as *const () as usize
         }

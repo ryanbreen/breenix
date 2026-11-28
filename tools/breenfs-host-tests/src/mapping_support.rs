@@ -28,6 +28,7 @@ struct MapShared {
 struct MapInner {
     mapped_size: u64,
     pages: PageVec<CachePage>,
+    holes: PageVec<()>,
     poisoned: PageVec<()>,
     bindings: Vec<BindingRec>,
     populating: Vec<Claim>,
@@ -122,6 +123,9 @@ impl MapState {
                 inner: Mutex::new(MapInner {
                     mapped_size: size,
                     pages: PageVec {
+                        entries: Vec::new(),
+                    },
+                    holes: PageVec {
                         entries: Vec::new(),
                     },
                     poisoned: PageVec {
@@ -220,16 +224,24 @@ pub fn try_bind_host(
     node: Arc<VNode>, length: u64, shared: bool, writable: bool, populate: bool,
 ) -> Result<HostBinding, Errno> {
     let io = node.filesystem.mapping_io(&node).unwrap();
-    if populate {
-        let bytes = io.read(0, length.min(io.size()) as usize).unwrap();
-        let mut inner = node.map.state.inner.lock();
-        for (index, bytes) in bytes.chunks(4096).enumerate() {
+    let bytes = io.read(0, length.min(io.size()) as usize).unwrap();
+    let mut inner = node.map.state.inner.lock();
+    for (index, bytes) in bytes.chunks(4096).enumerate() {
+        let index = index as u64;
+        if populate {
             let mut page = CachePage::allocate().unwrap();
             page._storage[..bytes.len()].copy_from_slice(bytes);
-            inner.pages.try_insert(index as u64, page).unwrap();
+            inner.pages.try_insert(index, page).unwrap();
+            inner.holes.remove(index);
+        } else if !inner.pages.contains(index) && bytes.iter().all(|byte| *byte == 0) {
+            // An unpopulated fixture binding stands for the sparse pages of
+            // a file: the pages that read as 00 are recorded as Holes, as a
+            // fill reports them (E3-4), and the others stay absent.
+            inner.holes.try_insert(index, ()).unwrap();
         }
-        node.map.refresh(&inner);
     }
+    node.map.refresh(&inner);
+    drop(inner);
     let id = publish_host(&node, &*io, length, shared, writable)?;
     Ok(HostBinding(Arc::new(HostBindingOwner { node, id })))
 }
@@ -237,6 +249,17 @@ pub fn try_bind_host(
 /// `populate` returned, as mmap's `map_file` does after population.
 pub fn bind_populated(node: Arc<VNode>, io: &dyn MappingIo, length: u64) -> HostBinding {
     let id = publish_host(&node, io, length, false, false).unwrap();
+    HostBinding(Arc::new(HostBindingOwner { node, id }))
+}
+/// A read-only private binding of the first `length` bytes, registered in the
+/// map directly, for a filesystem whose host build has no mapping transfer
+/// (ext2). It covers no cached page; use it for pages past EOF.
+pub fn bind_unpopulated(node: Arc<VNode>, length: u64) -> HostBinding {
+    let mut inner = node.map.state.inner.lock();
+    let id = inner.bindings.iter().map(|r| r.id).max().unwrap_or(0) + 1;
+    inner.bindings.push(BindingRec { id, pgoff: 0, pages: pages(length), shared: false,
+        writable: false, parked: Vec::new(), leaves: Vec::new() });
+    drop(inner);
     HostBinding(Arc::new(HostBindingOwner { node, id }))
 }
 fn publish_host(node: &VNode, io: &dyn MappingIo, length: u64, shared: bool, writable: bool) -> Result<u64, Errno> {
@@ -282,18 +305,17 @@ impl HostBinding {
         let map = &self.0.node.map;
         let mut inner = map.state.inner.lock();
         let index = offset / PAGE_SIZE;
-        if index >= pages(inner.mapped_size) || inner.poisoned.contains(index) {
+        if index >= pages(inner.mapped_size) {
             return Err(HostFault::Sigbus);
         }
         let slot = inner.bindings.iter().position(|r| r.id == self.0.id).unwrap();
         assert!(inner.bindings[slot].covers(index));
         assert!(store.is_none() || inner.bindings[slot].writable);
-        // Absent pages in these fixtures are holes, already read as 0 by
-        // the production MappingIo, or pages made valid by a bound extension.
-        inner.pages.try_insert(index, CachePage::allocate().unwrap()).unwrap();
+        // The page a fault maps is production's choice (`fault_frame`, which
+        // `resolve_page` calls); only the page-table install is modeled.
+        let frame = inner.fault_frame(index).map_err(|_| HostFault::Sigbus)?;
         let shared = inner.bindings[slot].shared;
         let cache = inner.pages.get_mut(index).unwrap();
-        let frame = cache.frame;
         if store.is_some() && shared {
             cache.dirty = true;
             cache.gen += 1;

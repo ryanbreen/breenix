@@ -135,6 +135,11 @@ pub mod measurement {
         COMMITS.with(|cell| { let mut n = cell.get(); n[2] += 1; cell.set(n); });
     }
     pub fn heap_live() -> isize { super::dirty_heap_bound::live() }
+    /// Run `run` with this thread's `nth` next allocation of `size` bytes
+    /// refused, for a host test of an allocation-failure path.
+    pub fn fail_allocation<T>(size: usize, nth: usize, run: impl FnOnce() -> T) -> T {
+        super::dirty_heap_bound::fail_allocation(size, nth, run)
+    }
     pub fn take_work() -> [u64; 3] { COMMITS.with(|n| n.replace([0; 3])) }
     pub fn scrub_step<W: crate::block::cache::Wait + 'static>(
         fs: &super::BreenFs<W>, budget: usize,
