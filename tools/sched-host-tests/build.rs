@@ -49,6 +49,10 @@ fn queue_operations(kernel: &Path, out: &Path) {
     let arm = read(&kernel.join("task/scheduler/rq/arm64.rs"));
     let scheduler = read(&kernel.join("task/scheduler.rs"));
     let mut code = String::new();
+    for signature in ["const RQ_HELD:", "const RQ_PEER_WORK:"] {
+        code.push_str(item(&rq, signature, ";"));
+        code.push('\n');
+    }
     for signature in [
         "pub(super) struct RqLock {",
         "impl RqLock {",
@@ -59,6 +63,9 @@ fn queue_operations(kernel: &Path, out: &Path) {
         "fn kick_owed(",
         "pub(super) fn try_dispatch(",
         "pub(super) fn try_remote(",
+        "fn try_steal_lock(",
+        "fn is_peer_candidate(",
+        "fn has_peer_work(",
         "pub(super) enum Wake {",
         "pub(super) enum Woken {",
         "pub(super) fn wake(",

@@ -33,12 +33,22 @@ use crate::task::thread::{SchedPolicy, Thread, ThreadState};
 use alloc::boxed::Box;
 use alloc::collections::{BinaryHeap, VecDeque};
 use core::cmp::Reverse;
+#[cfg(target_arch = "aarch64")]
+use core::sync::atomic::AtomicU8;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering};
+
+#[cfg(target_arch = "aarch64")]
+const RQ_HELD: u8 = 1;
+#[cfg(target_arch = "aarch64")]
+const RQ_PEER_WORK: u8 = 2;
 
 /// One CPU's run-queue lock. Held only with interrupts masked, so the CPU
 /// that took it releases it.
 pub(super) struct RqLock {
+    #[cfg(target_arch = "x86_64")]
     held: AtomicBool,
+    #[cfg(target_arch = "aarch64")]
+    state: AtomicU8,
     #[cfg(target_arch = "aarch64")]
     began: AtomicU64,
 }
@@ -46,22 +56,44 @@ pub(super) struct RqLock {
 impl RqLock {
     const fn new() -> Self {
         Self {
+            #[cfg(target_arch = "x86_64")]
             held: AtomicBool::new(false),
+            #[cfg(target_arch = "aarch64")]
+            state: AtomicU8::new(0),
             #[cfg(target_arch = "aarch64")]
             began: AtomicU64::new(0),
         }
     }
 
+    #[cfg(target_arch = "x86_64")]
     #[inline(always)]
     pub(super) fn try_lock(&self) -> bool {
-        #[cfg(target_arch = "x86_64")]
-        let (success, failure) = (Ordering::Acquire, Ordering::Relaxed);
-        #[cfg(target_arch = "aarch64")]
-        let (success, failure) = (Ordering::SeqCst, Ordering::SeqCst);
-        #[cfg(target_arch = "aarch64")]
+        self.held.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok()
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[inline(always)]
+    pub(super) fn try_lock(&self) -> bool {
+        let state = self.state.load(Ordering::SeqCst);
+        state & RQ_HELD == 0 && self.try_lock_from(state)
+    }
+
+    /// Claim the unlocked queue and its advertised work in the same operation.
+    /// A peer that drained its last candidate can no longer be locked by a
+    /// stealer acting on an earlier observation.
+    #[cfg(target_arch = "aarch64")]
+    #[inline(always)]
+    fn try_lock_for_steal(&self) -> bool {
+        self.state.load(Ordering::Relaxed) == RQ_PEER_WORK && self.try_lock_from(RQ_PEER_WORK)
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[inline(always)]
+    fn try_lock_from(&self, state: u8) -> bool {
         let started = crate::tracing::trace_timestamp();
-        let acquired = self.held.compare_exchange(false, true, success, failure).is_ok();
-        #[cfg(target_arch = "aarch64")]
+        let acquired = self.state
+            .compare_exchange(state, state | RQ_HELD, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok();
         if acquired {
             let entered = crate::tracing::trace_timestamp();
             self.began.store(entered, Ordering::Relaxed);
@@ -72,20 +104,30 @@ impl RqLock {
 
     #[inline(always)]
     pub(super) fn is_locked(&self) -> bool {
-        self.held.load(Ordering::Relaxed)
+        #[cfg(target_arch = "x86_64")]
+        let held = self.held.load(Ordering::Relaxed);
+        #[cfg(target_arch = "aarch64")]
+        let held = self.state.load(Ordering::Relaxed) & RQ_HELD != 0;
+        held
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn publish_peer_work(&self, work: bool) {
+        // The holder is the only writer while RQ_HELD is set.
+        self.state.store(RQ_HELD | if work { RQ_PEER_WORK } else { 0 }, Ordering::Relaxed);
     }
 
     #[inline(always)]
     pub(super) fn unlock(&self) {
         #[cfg(target_arch = "x86_64")]
-        let order = Ordering::Release;
+        self.held.store(false, Ordering::Release);
         #[cfg(target_arch = "aarch64")]
-        let order = Ordering::SeqCst;
-        #[cfg(target_arch = "aarch64")]
-        let began = self.began.load(Ordering::Relaxed);
-        self.held.store(false, order);
-        #[cfg(target_arch = "aarch64")]
-        arm64::note_lock_interval(false, crate::tracing::trace_timestamp().wrapping_sub(began));
+        {
+            let began = self.began.load(Ordering::Relaxed);
+            let work = self.state.load(Ordering::Relaxed) & RQ_PEER_WORK;
+            self.state.store(work, Ordering::SeqCst);
+            arm64::note_lock_interval(false, crate::tracing::trace_timestamp().wrapping_sub(began));
+        }
     }
 }
 
@@ -224,6 +266,8 @@ pub(super) fn refresh(scheduler: &Scheduler) {
         if let Some(tid) = state.current_thread {
             set_owner(tid, cpu);
         }
+        #[cfg(target_arch = "aarch64")]
+        RQ_LOCKS[cpu].publish_peer_work(has_peer_work(&scheduler.per_cpu_queues[cpu], state));
         let idle = state.pending_next.or(state.current_thread) == Some(state.idle_thread);
         let busy = state.pending_next.or(state.current_thread).is_some() && !idle;
         let len = scheduler.per_cpu_queues[cpu].len() as u32;
@@ -329,6 +373,12 @@ impl Held {
     /// Publish the summaries placement reads, before the lock is released.
     fn publish(&mut self) {
         let cpu = self.cpu;
+        #[cfg(target_arch = "aarch64")]
+        {
+            // SAFETY: this guard owns the queue and state.
+            let queue = unsafe { &*core::ptr::addr_of!((*self.sched).per_cpu_queues[cpu]) };
+            RQ_LOCKS[cpu].publish_peer_work(has_peer_work(queue, self.state_ref()));
+        }
         let len = self.queue().len() as u32;
         let state = self.state();
         let idle = state.pending_next.or(state.current_thread) == Some(state.idle_thread);
@@ -348,6 +398,16 @@ impl Held {
         }
         publish_next_check(cpu, self.heap().peek().map_or(u64::MAX, |entry| entry.0 .0));
     }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn is_peer_candidate(state: &CpuSchedulerState, tid: u64) -> bool {
+    Some(tid) != state.current_thread && Some(tid) != state.pending_next
+}
+
+#[cfg(target_arch = "aarch64")]
+fn has_peer_work(queue: &VecDeque<u64>, state: &CpuSchedulerState) -> bool {
+    queue.iter().any(|&tid| is_peer_candidate(state, tid))
 }
 
 impl Drop for Held {
@@ -422,6 +482,19 @@ pub(super) fn try_remote(cpu: usize) -> Option<Held> {
         return None;
     }
     Some(Held::take(cpu, sched))
+}
+
+fn try_steal_lock(cpu: usize) -> Option<Held> {
+    #[cfg(target_arch = "x86_64")]
+    return try_remote(cpu);
+    #[cfg(target_arch = "aarch64")]
+    {
+        let sched = LIVE.load(Ordering::Acquire);
+        if sched.is_null() || !RQ_LOCKS[cpu].try_lock_for_steal() {
+            return None;
+        }
+        Some(Held::take(cpu, sched))
+    }
 }
 
 // ------------------------------------------------------------- liveness
@@ -1302,7 +1375,11 @@ fn reclaim_stalled(local: &mut Held) {
         if offline && !rescue && CPU_LOAD[cpu].load(Ordering::Relaxed) == 0 {
             continue;
         }
-        let Some(mut remote) = try_remote(cpu) else {
+        #[cfg(target_arch = "x86_64")]
+        let remote = try_remote(cpu);
+        #[cfg(target_arch = "aarch64")]
+        let remote = if rescue { try_remote(cpu) } else { try_steal_lock(cpu) };
+        let Some(mut remote) = remote else {
             continue;
         };
         if rescue {
@@ -1317,6 +1394,11 @@ fn reclaim_stalled(local: &mut Held) {
             let Some(tid) = remote.queue().pop_front() else {
                 break;
             };
+            #[cfg(target_arch = "aarch64")]
+            if !is_peer_candidate(remote.state_ref(), tid) {
+                remote.queue().push_back(tid);
+                continue;
+            }
             if accepting && remote.thread(tid).is_some_and(|thread| thread.cpu_affinity.is_some()) {
                 remote.queue().push_back(tid);
                 continue;
@@ -1346,11 +1428,19 @@ fn reclaim_stalled(local: &mut Held) {
 /// is free: the steal arms of `Scheduler::schedule`. `once` pops at most one
 /// candidate, as the second pick does.
 fn steal_from(local: &mut Held, cpu: usize, stack_waits: &mut u64, once: bool, skip: &mut impl FnMut(u64) -> bool) -> Option<u64> {
-    let mut remote = try_remote(cpu)?;
+    let mut remote = try_steal_lock(cpu)?;
     let candidates = remote.queue().len();
     for tried in 0..candidates {
         promote_best_of(&mut remote, candidates - tried);
         let tid = remote.queue().pop_front()?;
+        #[cfg(target_arch = "aarch64")]
+        if !is_peer_candidate(remote.state_ref(), tid) {
+            remote.queue().push_back(tid);
+            if once {
+                return None;
+            }
+            continue;
+        }
         if let Some(owner) = stack_owner_elsewhere(tid, local.cpu) {
             remote.queue().push_back(tid);
             *stack_waits |= 1 << owner;
@@ -1411,11 +1501,15 @@ fn steal_higher_ranked(local: &mut Held, floor: u8, stack_waits: &mut u64) -> Op
         if cpu == local.cpu || is_idle(cpu) {
             continue;
         }
-        let Some(mut remote) = try_remote(cpu) else {
+        let Some(mut remote) = try_steal_lock(cpu) else {
             continue;
         };
         for index in 0..remote.queue().len() {
             let tid = remote.queue()[index];
+            #[cfg(target_arch = "aarch64")]
+            if !is_peer_candidate(remote.state_ref(), tid) {
+                continue;
+            }
             let Some(thread) = remote.thread(tid) else {
                 continue;
             };
@@ -1428,7 +1522,11 @@ fn steal_higher_ranked(local: &mut Held, floor: u8, stack_waits: &mut u64) -> Op
         }
     }
     let (_, cpu, tid) = best?;
-    let mut remote = try_remote(cpu)?;
+    let mut remote = try_steal_lock(cpu)?;
+    #[cfg(target_arch = "aarch64")]
+    if !is_peer_candidate(remote.state_ref(), tid) {
+        return None;
+    }
     let index = remote.queue().iter().position(|&queued| queued == tid)?;
     remote.queue().make_contiguous()[..=index].rotate_right(1);
     let tid = remote.queue().pop_front()?;
