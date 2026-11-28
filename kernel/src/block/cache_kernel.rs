@@ -1,9 +1,6 @@
 //! System cache ownership and scheduler waits (breenfs design section 1.2).
 use super::cache::{bound_for_memory, BufferCache, PressureWait, Wait};
-use crate::task::{
-    thread::ThreadState,
-    waitqueue::{PrepareOutcome, WaitQueueHead},
-};
+use crate::task::waitqueue::WaitQueueHead;
 use core::sync::atomic::{compiler_fence, AtomicU64, Ordering};
 use spin::Once;
 
@@ -45,7 +42,12 @@ impl Wait for KernelWait {
 }
 
 impl KernelWait {
+    /// Sleep until the generation moves past `observed` or `deadline`. The
+    /// callers recheck the generation, so each end returns to them. A
+    /// context that may not park gets a receipt (`task::park`) and returns at
+    /// once; the boot continuation keeps its pre-E2.2 sleep until E2.4.
     fn wait_once(&self, observed: u64, deadline: Option<u64>) {
+        use crate::task::park::{self, WaitEnd, WaitMode};
         assert_io_context();
         if self.generation() != observed {
             return;
@@ -53,38 +55,14 @@ impl KernelWait {
         if crate::task::scheduler::current_thread_id().is_none() {
             return;
         }
-        // schedule_current_wait temporarily releases one preemption brake.
-        // Workers may need an added brake; syscall entry already holds one.
-        #[cfg(target_arch = "x86_64")]
-        use crate::per_cpu as cpu;
-        #[cfg(target_arch = "aarch64")]
-        use crate::per_cpu_aarch64 as cpu;
-        let add_brake = cpu::preempt_count() == 0;
-        if add_brake {
-            cpu::preempt_disable();
-        }
-        assert_eq!(
-            cpu::preempt_count(),
-            1,
-            "block cache wait has nested preemption guards"
+        let end = park::wait_allowing_boot_idle(
+            &self.queue,
+            || self.generation() != observed,
+            deadline,
+            WaitMode::Uninterruptible,
         );
-        let prepared = self
-            .queue
-            .prepare_to_wait_checked(ThreadState::BlockedOnIO, deadline, || {
-                self.generation() == observed
-            });
-        match prepared {
-            PrepareOutcome::Queued => {
-                crate::task::waitqueue::schedule_current_wait();
-                self.queue.finish_wait();
-            }
-            PrepareOutcome::OutOfMemory | PrepareOutcome::PublishFailed if deadline.is_none() => {
-                park_for_wait_retry();
-            }
-            _ => {}
-        }
-        if add_brake {
-            cpu::preempt_enable();
+        if matches!(end, Ok(WaitEnd::NoMemory | WaitEnd::Killed)) && deadline.is_none() {
+            park_for_wait_retry();
         }
     }
 
@@ -92,14 +70,11 @@ impl KernelWait {
 
 /// Back off if no waiter could be published. Use the next interrupt instead
 /// of allocating a scheduler timer entry, and allow the owner to run here.
-/// The queue guard is gone and the caller holds one preemption brake.
+/// The queue guard is gone; `task::park::retry_pause` releases the caller's
+/// level for the halt if it holds one.
 pub(crate) fn park_for_wait_retry() {
-    crate::task::scheduler::set_need_resched();
-    crate::per_cpu::preempt_enable();
-    crate::arch_halt_with_interrupts();
-    crate::per_cpu::preempt_disable();
+    crate::task::park::retry_pause();
 }
-
 pub type SystemCache = BufferCache<KernelWait>;
 static CACHE: Once<SystemCache> = Once::new();
 

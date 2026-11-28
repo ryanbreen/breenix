@@ -421,20 +421,6 @@ fn relax_port_io_wait() {
     }
 }
 
-/// A running non-idle thread may sleep outside interrupt context with at most
-/// one preemption brake. ARM64 boot holds a brake while loading PID 1's image
-/// before the timer starts, so it still needs to poll.
-fn can_park_for_port_io() -> bool {
-    #[cfg(target_arch = "aarch64")]
-    if !crate::arch_impl::aarch64::timer_interrupt::timer_is_running() {
-        return false;
-    }
-    let (preempt_count, in_interrupt) = (io_cpu::preempt_count(), io_cpu::in_interrupt());
-    let tid = crate::task::scheduler::current_thread_id();
-    let idle = crate::task::scheduler::with_current(|sched| Some(sched.idle_thread()) == tid);
-    tid.is_some() && idle == Some(false) && preempt_count <= 1 && !in_interrupt
-}
-
 /// Acquire exclusive ownership of a port's slot-0 I/O lifecycle.
 ///
 /// Returns with the port mutex held and the caller recorded as its owner.
@@ -468,7 +454,12 @@ fn begin_port_io(
             return Ok(guard);
         }
         drop(guard);
-        if !can_park_for_port_io() {
+        // The park contract decides whether this context may wait
+        // (`task::park`). ARM64 boot loads PID 1's image before the timer
+        // starts, which is EarlyBoot, so it polls. A refused context gets a
+        // receipt; E2.4 removes CannotPark and the polling fallback (design
+        // §6).
+        if crate::task::park::require_sleepable().is_err() {
             // Refuse this context on x86 and retain ARM64's polling fallback.
             #[cfg(target_arch = "x86_64")]
             return Err((AhciReadError::CannotPark, owner));
@@ -482,26 +473,20 @@ fn begin_port_io(
         if secs * 1_000_000_000 + nanos >= deadline {
             return Err((AhciReadError::AdmissionTimeout, owner));
         }
-        // schedule_current_wait releases and restores one brake. A preemptible
-        // kernel thread must supply it before publishing its blocked state.
-        let add_brake = io_cpu::preempt_count() == 0;
-        if add_brake {
-            io_cpu::preempt_disable();
-        }
-        // x86 syscall entry keeps IF clear; schedule_current_wait enables
-        // interrupts around HLT, so IF is not a prerequisite for parking.
-        let result = match PORT_IO_WAITERS[port].prepare_to_wait_checked(
-            crate::task::thread::ThreadState::BlockedOnIO,
+        // The park releases the caller's baseline for the switch and
+        // restores it (`task::park`). x86 syscall entry keeps IF clear; the
+        // switch enables interrupts around HLT and the wait restores the
+        // entry mask, so IF is not a prerequisite for parking. Each end
+        // loops back to the owner check above.
+        use crate::task::park::{WaitEnd, WaitMode};
+        let result = match crate::task::park::wait(
+            &PORT_IO_WAITERS[port],
+            || PORT_IO_OWNER[port].load(Ordering::Acquire) == 0,
             Some(deadline),
-            || PORT_IO_OWNER[port].load(Ordering::Acquire) != 0,
+            WaitMode::Uninterruptible,
         ) {
-            crate::task::waitqueue::PrepareOutcome::Queued => {
-                crate::task::waitqueue::schedule_current_wait();
-                PORT_IO_WAITERS[port].finish_wait();
-                Ok(())
-            }
-            crate::task::waitqueue::PrepareOutcome::Mismatch => Ok(()),
-            _ if read => {
+            Ok(WaitEnd::Condition | WaitEnd::Woken | WaitEnd::Timeout | WaitEnd::Interrupted(_)) => Ok(()),
+            Ok(WaitEnd::NoMemory | WaitEnd::Killed) if read => {
                 if crate::task::thread::current_wait_must_unwind() {
                     Err((AhciReadError::Interrupted, owner))
                 } else {
@@ -511,18 +496,12 @@ fn begin_port_io(
                     Ok(())
                 }
             }
-            outcome => {
-                let error = if outcome == crate::task::waitqueue::PrepareOutcome::OutOfMemory {
-                    AhciReadError::WaiterAllocation
-                } else {
-                    AhciReadError::WaitPublication
-                };
-                Err((error, owner))
-            }
+            Ok(WaitEnd::NoMemory) => Err((AhciReadError::WaiterAllocation, owner)),
+            Ok(WaitEnd::Killed) => Err((AhciReadError::WaitPublication, owner)),
+            // The context changed between the check and the wait; the check
+            // above refuses or polls on the next pass.
+            Err(_) => Ok(()),
         };
-        if add_brake {
-            io_cpu::preempt_enable();
-        }
         result?;
     }
 }
@@ -1120,9 +1099,17 @@ fn recover_failed_command(abar: u64, port: usize, force_reset: bool) {
 /// leaves the port quarantined for the next unmasked owner.
 #[cold]
 fn defer_port_recovery(abar: u64, port: usize, state: u8) {
+    use crate::task::park::{AtomicReason, ParkContext};
     use crate::task::workqueue::{schedule_work, Work};
 
-    if !can_park_for_port_io() {
+    // A thread context the scheduler dispatches, as the park contract
+    // classifies it (`task::park::context`), masked or not: this caller may
+    // be the masked one. Interrupt context, idle, early boot and a context
+    // holding levels beyond its baseline leave the port quarantined.
+    if !matches!(
+        crate::task::park::context(),
+        ParkContext::Sleepable | ParkContext::Atomic(AtomicReason::IrqsMasked)
+    ) {
         return;
     }
     PORT_RECOVERY[port].store(PORT_RECOVERY_QUEUED, Ordering::Release);
@@ -1226,25 +1213,17 @@ fn record_lost_notification(port: usize, cmd_num: u32, regs: TimeoutRegisters) {
 
 #[inline]
 fn scheduler_sleep_ready(has_irq: bool) -> bool {
-    // Two conditions must hold for the scheduler-sleep path:
-    // 1. Scheduler is running (current_thread_id returns Some).
-    // 2. Timer is running (timer_is_running() = true after timer init).
-    //
-    // The timer check is critical: during the boot sequence on ARM64,
-    // main_aarch64 calls preempt_disable() BEFORE timer_interrupt::init().
-    // The pre-load of /sbin/init from ext2 happens in this window.
-    let timer_running = {
-        #[cfg(target_arch = "aarch64")]
-        {
-            crate::arch_impl::aarch64::timer_interrupt::timer_is_running()
-        }
-        #[cfg(not(target_arch = "aarch64"))]
-        {
-            true
-        }
-    };
-
-    has_irq && crate::task::scheduler::current_thread_id().is_some() && timer_running
+    // The scheduler-sleep path needs the scheduler dispatching here: a
+    // current thread and, on ARM64, the timer running. Before that is
+    // EarlyBoot (`task::park::context`): ARM64's pre-load of /sbin/init
+    // runs there, with the boot brake taken before timer_interrupt::init().
+    // `Completion` then decides whether this caller sleeps or polls.
+    use crate::task::park::{AtomicReason, ParkContext};
+    has_irq
+        && !matches!(
+            crate::task::park::context(),
+            ParkContext::EarlyBoot | ParkContext::Atomic(AtomicReason::NoThread)
+        )
 }
 
 /// Wait for a slot-0 command to complete, with NO locks held.

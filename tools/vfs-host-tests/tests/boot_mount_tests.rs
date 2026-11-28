@@ -255,6 +255,134 @@ fn persistent_root_is_writable_with_existing_data_binds() {
     }
 }
 
+/// T-A4 (docs/metal/paired-generations.md 9): a draft mounted with the
+/// `root-volume` source on the persistent writer, then unmounted through the
+/// native entry the umount syscall calls (`breenfs::mount::unmount`). A cwd
+/// inside the mount refuses the unmount before any change. Once it succeeds,
+/// the syscall's own walk is dropped and detach releases its custodies: the
+/// draft can be deleted, another root attached, its inodes are gone and the
+/// covered directory can be removed. `/` stays writable and committing.
+#[test]
+fn root_volume_unmount_releases_staging_custody() {
+    use crate::{
+        breenfs::{abi::*, mount::{mount_root_volume, unmount}, ops::STAGING_TREE},
+        fs::namei::{Mount, Target},
+        vfs::{NodeKind, Remove, WriteAt, WriteReq},
+    };
+    let _registry = crate::statfs_support::TEST_MOUNTS.lock().unwrap();
+    let payload = format!("BREENIX-BOOT 3\ntarget persistent\ncmdline persistent_root=rw\nmount {NEW_SYSTEM} / rw\nuserland install-42\n");
+    let intent = intent::parse(payload.as_bytes()).unwrap();
+    let disk = cutover_system();
+    let line = boot::prepare_mounts(Some(&intent), &formats(), |_, _, _| Ok(Box::new((*disk).clone())))
+        .unwrap().unwrap().pop().unwrap();
+    let root_id = mount::allocate_id().unwrap();
+    let point = line.point(root_id, None, None);
+    let root = line.mount(&formats(), &point).unwrap();
+    let base = root.root().unwrap();
+    let request = |name: &[u8]| {
+        let mut request = SnapshotRequest { flags: 0, name_len: name.len() as u32, name: [0; 256] };
+        request.name[..name.len()].copy_from_slice(name);
+        request
+    };
+    let ioctl = |code, request: &SnapshotRequest| {
+        root.ioctl(&root.open(base).unwrap(), code, request as *const _ as u64)
+    };
+    ioctl(SNAPSHOT_CREATE, &request(b"draft.new")).unwrap();
+    ioctl(SNAPSHOT_CREATE, &request(b"other.new")).unwrap();
+
+    let run_id = mount::find_mount("/run").unwrap();
+    let run = mount::filesystem(run_id).unwrap();
+    let dir = |parent, name: &[u8], mode| {
+        run.create(parent, name, NewNode::Directory { attrs: crate::attrs::InodeAttrs::new(mode, 0, 0) }).unwrap()
+    };
+    let breenix = dir(mount::root_inode(run_id).unwrap(), b"breenix", 0o040755);
+    let paired = dir(breenix, b"paired", 0o040700);
+    let stage = dir(paired, b"stage", 0o040755);
+    let path = b"/run/breenix/paired/stage".to_vec();
+    let custody = run.open(stage).unwrap();
+    let held = Arc::downgrade(&custody);
+    assert_eq!(
+        mount_root_volume(b"draft.new", 1, path.clone(), (run_id, stage), (run_id, paired), custody.clone()),
+        Err(EINVAL as u64),
+        "a read-only root-volume mount"
+    );
+    mount_root_volume(b"draft.new", 0, path, (run_id, stage), (run_id, paired), custody).unwrap();
+    let id = mount::find_mount("/run/breenix/paired/stage").unwrap();
+    assert_ne!(id, run_id);
+    assert!(std::str::from_utf8(&mount::mounts_text()).unwrap().lines()
+        .any(|line| line == "none /run/breenix/paired/stage breenfs rw 0 0"), "only / shows its source");
+    let Some(mount::Entered::Fs(entered, staged_root)) = mount::enter((run_id, stage)) else {
+        panic!("the covered directory must enter the draft");
+    };
+    assert_eq!((entered, staged_root), (id, STAGING_TREE | 2));
+    let draft = mount::filesystem(id).unwrap();
+    assert_eq!(draft.getattr(draft.lookup(staged_root, b"generation").unwrap()).unwrap().kind, NodeKind::Regular);
+    let staged_write = || {
+        let ino = match draft.lookup(staged_root, b"staged") {
+            Ok(ino) => ino,
+            Err(_) => draft.create(staged_root, b"staged", NewNode::Regular {
+                attrs: crate::attrs::InodeAttrs::new(0o100644, 0, 0),
+            }).unwrap(),
+        };
+        let node = draft.open(ino).unwrap();
+        draft.write(&node, WriteReq { at: WriteAt::Offset(0), limit: u64::MAX, clear_setid: false }, b"staged")
+            .map(|_| ())
+    };
+    staged_write().unwrap();
+    // Only root may search the 0700 parent, so a non-root walk to the draft stops there.
+    let mut user = crate::permissions::Credentials::kernel();
+    user.euid = 1000;
+    user.egid = 1000;
+    assert!(!user.may(run.getattr(paired).unwrap().attrs, 1));
+
+    let target = Target::Inode { mount: Mount(id), ino: staged_root };
+    // The umount syscall drops its walk to the mount point before this entry.
+    let pinned = mount::pin(id).unwrap();
+    assert!(matches!(unmount(&target, 0), Some(Err(error)) if error == EBUSY as u64));
+    assert_eq!(mount::find_mount("/run/breenix/paired/stage"), Some(id), "a busy unmount changes nothing");
+    staged_write().expect("still attached after a busy unmount");
+    drop(pinned);
+    // A real working directory holds the staged directory's VNode, not a
+    // registry pin. A forced unmount is refused for it too: detach could not
+    // release the tree, and with the mount gone no later unmount could.
+    let cwd = draft.open(staged_root).unwrap();
+    for flags in [0, 1] {
+        assert!(matches!(unmount(&target, flags), Some(Err(error)) if error == EBUSY as u64),
+            "a cwd in the draft must refuse the unmount (flags {flags})");
+        assert_eq!(mount::find_mount("/run/breenix/paired/stage"), Some(id), "a busy unmount changes nothing");
+    }
+    staged_write().expect("still attached after a busy unmount");
+    drop(cwd);
+    let detach = match unmount(&target, 0) {
+        Some(Ok(Some(detach))) => detach,
+        _ => panic!("a staging mount unmounts through its own branch"),
+    };
+    assert_ne!(mount::find_mount("/run/breenix/paired/stage"), Some(id));
+    drop(draft);
+    detach.finish().unwrap();
+
+    assert!(held.upgrade().is_none(), "the covered directory's custody pin is released");
+    let parent = run.getattr(paired).unwrap().attrs;
+    run.remove(paired, b"stage", Remove { directory: true, expected: stage, owner: 0, parent }).unwrap();
+    assert_eq!(root.getattr(staged_root).map(|attrs| attrs.ino), Err(Errno(ENOENT)));
+    ioctl(SNAPSHOT_DELETE, &request(b"draft.new")).unwrap();
+    let writer: Arc<dyn std::any::Any + Send + Sync> = root.clone();
+    let writer = writer.downcast::<BreenFs<crate::block::cache_kernel::HostWait>>().unwrap();
+    assert_eq!(writer.attach_staging(b"other.new"), Ok(STAGING_TREE | 2), "the staging slot is free");
+    writer.detach_staging().unwrap();
+    let after = root.create(base, b"after", NewNode::Regular {
+        attrs: crate::attrs::InodeAttrs::new(0o100644, 0, 0),
+    }).unwrap();
+    root.sync().unwrap();
+    assert_eq!(root.lookup(base, b"after"), Ok(after));
+    assert!(!mount::flags_at(b"/").read_only);
+    drop((root, writer, run));
+    for name in ["run", "tmp", "srv", "opt", "var", "etc", "root", "/"] {
+        let path = if name == "/" { name.to_owned() } else { format!("/{name}") };
+        mount::unmount(mount::find_mount(&path).unwrap(), true).unwrap();
+    }
+}
+
 #[test]
 fn automated_test_mount_plan_refuses_persistent_partitions_before_probe() {
     let payload = format!("BREENIX-BOOT 3\ntarget tests\nmount {TEST} / ro\nmount {NEW_SYSTEM} /migrate/system rw\n");

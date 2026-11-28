@@ -16,8 +16,9 @@ use super::thread::ThreadState;
 
 pub use super::event_queue::PrepareOutcome;
 
-/// The scheduler and CPU operations the event queue uses.
-struct KernelHooks;
+/// The scheduler and CPU operations the event queue uses. `task::park`
+/// implements the park contract's hooks on the same type.
+pub(crate) struct KernelHooks;
 
 impl Hooks for KernelHooks {
     type Irq = crate::irq_safe_mutex::IrqState;
@@ -66,11 +67,17 @@ impl Hooks for KernelHooks {
         });
     }
 
+    /// The queue lock is held and `tid` is linked, so its wait word's current
+    /// wait is the one this wake is for (`task::park_core`): end it as woken,
+    /// then make the thread runnable.
     fn wake_task(&self, tid: u64) {
+        super::park::arrive_woken_task(tid);
         crate::task::scheduler::wake_waitqueue_thread(tid);
     }
 
+    /// As `wake_task`, without the scheduler lock.
     fn wake_from_interrupt(&self, tid: u64) {
+        super::park::arrive_woken(tid);
         crate::task::scheduler::isr_unblock_for_io(tid);
     }
 }
@@ -90,6 +97,11 @@ impl WaitQueueHead {
     /// An empty queue, usable in a `static`.
     pub const fn new() -> Self {
         Self { queue: EventQueue::new() }
+    }
+
+    /// The event queue itself, for `task::park`'s waits.
+    pub(crate) fn event_queue(&self) -> &EventQueue {
+        &self.queue
     }
 
     /// Register the current thread and publish it in `state`, which must be
@@ -266,10 +278,19 @@ fn sleep_while_blocked(#[cfg(target_arch = "aarch64")] return_pc: u64) {
     #[cfg(target_arch = "aarch64")]
     let parks_before = note_wait_site(return_pc);
     let irqs_were_enabled = crate::arch_interrupts_enabled();
-    let release = crate::per_cpu::preempt_count() & crate::arch_impl::current::constants::PREEMPT_MASK != 0;
-    if release {
-        crate::per_cpu::preempt_enable();
+    let released = super::park::release_for_sleep();
+    switch_while_blocked();
+    super::park::retake_after_sleep(released);
+    if !irqs_were_enabled {
+        // SAFETY: the caller entered with interrupts masked and expects them
+        // masked on return.
+        unsafe { crate::arch_disable_interrupts() };
     }
+    #[cfg(target_arch = "aarch64")]
+    note_wait_return(parks_before);
+}
+
+fn switch_while_blocked() {
     loop {
         if !current_still_blocked() {
             break;
@@ -284,14 +305,27 @@ fn sleep_while_blocked(#[cfg(target_arch = "aarch64")] return_pc: u64) {
         #[cfg(not(target_arch = "aarch64"))]
         halt_blocked_current();
     }
-    if release {
-        crate::per_cpu::preempt_disable();
-    }
-    if !irqs_were_enabled {
-        // SAFETY: the caller entered with interrupts masked and expects them
-        // masked on return.
-        unsafe { crate::arch_disable_interrupts() };
-    }
+}
+
+/// `task::park`'s switch: the wait has already released its levels and
+/// restores them and the interrupt state itself. ARM64 keeps the wait-site
+/// record the publication made and counts the return in the thread's
+/// progress record.
+pub(super) fn sleep_released() {
+    #[cfg(target_arch = "aarch64")]
+    let parks_before = park_epoch();
+    switch_while_blocked();
     #[cfg(target_arch = "aarch64")]
     note_wait_return(parks_before);
+}
+
+#[cfg(target_arch = "aarch64")]
+fn park_epoch() -> u64 {
+    crate::task::scheduler::with_scheduler(|sched| {
+        sched
+            .current_thread_mut()
+            .map(|thread| thread.io_park_epoch.load(core::sync::atomic::Ordering::Relaxed))
+    })
+    .flatten()
+    .unwrap_or(0)
 }

@@ -1539,30 +1539,14 @@ fn ext2_record_park(lock_name: &str) {
 /// Pinned in the structural ratchet (`tests/ext2_lock_structure.rs`).
 #[inline]
 fn ext2_lock_can_sleep() -> bool {
-    if crate::task::scheduler::current_thread_id().is_none() {
-        return false;
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    {
-        if crate::per_cpu_aarch64::in_interrupt() {
-            return false;
-        }
-        if !crate::arch_impl::aarch64::cpu::interrupts_enabled() {
-            return false;
-        }
-        if crate::per_cpu_aarch64::preempt_count() != 1 {
-            return false;
-        }
-        crate::arch_impl::aarch64::timer_interrupt::is_initialized()
-    }
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        if crate::per_cpu::in_interrupt() {
-            return false;
-        }
-        crate::per_cpu::preempt_count() == 1
-    }
+    // The park contract decides (`task::park::context`, E2.2): a context that
+    // may park and holds a braked baseline, so the one level the park's sleep
+    // releases is the syscall brake or a `park::Braked` worker's (ext2
+    // writeback). That keeps the conditions this gate tested before E2.2: no
+    // interrupt context, the ARM64 timer running, IRQs unmasked unless the
+    // baseline masks them (x86 syscalls do, so the x86 arm needs no IF
+    // check), and exactly the baseline held.
+    crate::task::park::sleepable_braked()
 }
 
 fn ext2_schedule_current_wait() {

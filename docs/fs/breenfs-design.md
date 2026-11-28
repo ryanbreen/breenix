@@ -316,6 +316,8 @@ deletion is O(1) to request and resumes after a crash. <!-- claim-lint:ok: Norma
 
 The snapshot wire interface uses `SNAPSHOT_CREATE`, `SNAPSHOT_DELETE` and `SNAPSHOT_STATUS` ioctls on a file in the target mount. Create requests name a root and set `READ_ONLY` for a snapshot or clear it for a writable clone; delete names the root to remove. Status reports the mounted root ID and flags, root count and remaining DEAD nodes. Mount data `root=NAME` selects a named root; absent mount data selects the default root. The `breenfs snapshot` command exposes create, clone, delete, status and wait; wait polls until no DEAD nodes remain.
 
+A running writer can serve one writable clone beside its booted root and the default tree, for a paired deploy (docs/metal/paired-generations.md 3). `mount("root-volume", dir, "breenfs", 0, "root=NAME")` by root attaches the named root as the writer's staging tree, whose in-memory inode numbers carry the tag `1 << 62`, and binds it over `dir`; unmount commits it and detaches it, and an attached root cannot be renamed or deleted. The attachment has no on-disk record. `ROOT_EPOCH` reads a count of the changes the booted tree admitted since the mount; `ROOT_FREEZE` makes each later booted-tree change return `EROFS` and returns that count; `ROOT_THAW` clears the freeze. `ROOT_FREEZE` returns `EBUSY` while a booted-tree file has a writable shared mapping or unwritten mapped stores, and while it holds, a writable shared mapping of a booted-tree file, or `mprotect` adding write to one, returns `EBUSY` (ruling DEV-44). The epoch and the freeze are in memory only.
+
 ### 2.7 Scrub
 
 A `breenfs-scrub` kthread (ioctl-controlled) walks REF and DEAD items in address order at 50 MB/s by default,

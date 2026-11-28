@@ -577,6 +577,21 @@ fn map_file(
                     return Err(abandon(ErrorCode::OutOfMemory as u64));
                 }
                 let (start, end) = (vma.start.as_u64(), vma.end.as_u64());
+                let bind_errno = |error: &'static str| if error == file_map::ROOT_FROZEN {
+                    crate::syscall::errno::EBUSY as u64
+                } else {
+                    ErrorCode::OutOfMemory as u64
+                };
+                // Claimed before the range is cleared, so a frozen root's
+                // refusal leaves the mapping a MAP_FIXED request would replace.
+                let claim = if vma.flags.bits() & 3 != 2 && vma.prot.contains(Protection::WRITE) {
+                    match file_map::claim_shared_write(&handle) {
+                        Ok(claim) => Some(claim),
+                        Err(error) => return Err(abandon(bind_errno(error))),
+                    }
+                } else {
+                    None
+                };
                 if let Err(errno) = clear_for_mapping(process, start, end, vma.prot, vma.flags) {
                     return Err(abandon(errno));
                 }
@@ -590,9 +605,10 @@ fn map_file(
                     &vma,
                     pgoff,
                     may_write && !append_only,
+                    claim,
                 ) {
                     Ok(binding) => vma.backing = Some(binding),
-                    Err(_) => return Err(abandon(ErrorCode::OutOfMemory as u64)),
+                    Err(error) => return Err(abandon(bind_errno(error))),
                 }
                 process.push_vma(vma);
                 super::memory_advice::record_future(process, start, end);
@@ -625,10 +641,11 @@ fn drop_writer_privilege(handle: &VNode) -> Result<(), u64> {
 
 /// errno for a failed munmap or mprotect of a file VMA: a range that does not
 /// fit one VMA is EINVAL; running out of memory, or an entry whose custody
-/// disagreed, is ENOMEM.
+/// disagreed, is ENOMEM; write authority refused on a frozen root is EBUSY.
 fn file_vma_errno(error: &'static str) -> u64 {
     match error {
         "Permission denied" => crate::syscall::errno::EACCES as u64,
+        crate::memory::file_map::ROOT_FROZEN => crate::syscall::errno::EBUSY as u64,
         "Range spans more than one VMA" | "Split point outside the VMA" => {
             ErrorCode::InvalidArgument as u64
         }

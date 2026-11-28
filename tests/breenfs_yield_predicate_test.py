@@ -34,62 +34,65 @@ def run_rust(source):
 
 class YieldPredicate(unittest.TestCase):
     def test_bootstrap_and_worker_on_both_architectures(self):
+        # E2.2: can_yield asks the park contract. The harness compiles the
+        # production predicate and the production park_core::classify, and
+        # gathers classify's inputs as task::park::context does.
         preempt = (ROOT / 'kernel/src/fs/breenfs/preempt.rs').read_text()
-        scheduler = (ROOT / 'kernel/src/task/scheduler.rs').read_text()
-        # Compile the kernel-only predicate, not preempt.rs's cfg(test) model.
         predicate = function(preempt, 'can_yield')
-        idle_query = function(scheduler, 'is_current_idle_thread')
-        implementation = scheduler[scheduler.index('impl Scheduler {'):]
-        methods = '\n'.join(function(implementation, name) for name in
-                            ('current_thread_id_inner', 'idle_thread_id'))
-        for arch in ('x86_64', 'aarch64'):
-            with self.subTest(arch=arch):
-                cpu = re.search(rf'#\[cfg\(target_arch = "{arch}"\)\]\s*'
-                                r'use crate::(\w+) as cpu;', preempt).group(1)
-                harness = r'''
+        self.assertIn('crate::task::park::sleepable_braked()', predicate)
+        park_core = ROOT / 'kernel/src/task/park_core.rs'
+        harness = r'''
 use std::cell::Cell;
 thread_local! {
     static COUNT: Cell<u32> = const { Cell::new(1) };
+    static BASELINE: Cell<u32> = const { Cell::new(0) };
     static IRQ_CONTEXT: Cell<bool> = const { Cell::new(false) };
     static IRQ_ON: Cell<bool> = const { Cell::new(true) };
     static CURRENT: Cell<Option<u64>> = const { Cell::new(Some(7)) };
-    static BUSY: Cell<bool> = const { Cell::new(false) };
 }
-mod __CPU__ {
-    pub fn preempt_count() -> u32 { crate::COUNT.get() }
-    pub fn in_interrupt() -> bool { crate::IRQ_CONTEXT.get() }
-}
+const IDLE: u64 = 7;
 fn arch_interrupts_enabled() -> bool { IRQ_ON.get() }
-mod task { pub mod scheduler {
-    struct CpuState { current_thread: Option<u64>, idle_thread: u64 }
-    struct Scheduler { cpu_state: [CpuState; 1] }
-    impl Scheduler {
-        fn current_cpu_id() -> usize { 0 }
-        __METHODS__
+/// park_core's queue operations, which classify never reaches.
+#[allow(dead_code)]
+mod event_queue {
+    pub enum PrepareOutcome { Mismatch, Queued, PublishFailed, OutOfMemory }
+    pub trait Hooks { fn current_tid(&self) -> Option<u64>; fn end_wait(&self, tid: u64); }
+    pub struct EventQueue;
+    impl EventQueue {
+        pub fn prepare_checked<H: Hooks, F: FnOnce() -> bool>(&self, _: &H, _: Option<u64>, _: F) -> PrepareOutcome { unreachable!() }
+        pub fn finish_for<H: Hooks>(&self, _: &H, _: u64) { unreachable!() }
+        pub fn add<H: Hooks>(&self, _: &H, _: u64) -> bool { unreachable!() }
+        pub fn take<H: Hooks>(&self, _: &H, _: u64) -> bool { unreachable!() }
     }
-    fn without_interrupts<R>(f: impl FnOnce() -> R) -> R {
-        let on = crate::IRQ_ON.replace(false);
-        let result = f();
-        crate::IRQ_ON.set(on);
-        result
+}
+#[allow(dead_code)]
+#[path = "__PARK_CORE__"]
+mod park_core;
+mod task { pub mod park {
+    use crate::park_core::{classify, ContextInputs, ParkContext};
+    pub fn sleepable_braked() -> bool {
+        let tid = crate::CURRENT.get();
+        let inputs = ContextInputs {
+            hardirq: crate::IRQ_CONTEXT.get(),
+            dispatching: tid.is_some(),
+            has_thread: tid.is_some(),
+            idle: tid == Some(crate::IDLE),
+            depth: crate::COUNT.get(),
+            baseline: crate::BASELINE.get(),
+            irqs_masked: !crate::IRQ_ON.get(),
+            ..ContextInputs::default()
+        };
+        classify(inputs) == ParkContext::Sleepable && crate::BASELINE.get() >= 1
     }
-    fn try_lock_scheduler() -> Option<Option<Scheduler>> {
-        assert!(!crate::IRQ_ON.get(), "scheduler read must be IRQ masked");
-        (!crate::BUSY.get()).then_some(Some(Scheduler { cpu_state: [CpuState {
-            current_thread: crate::CURRENT.get(), idle_thread: 7,
-        }] }))
-    }
-    pub fn current_thread_id() -> Option<u64> { crate::CURRENT.get() }
-    __IDLE_QUERY__
 } }
-use crate::__CPU__ as cpu;
 __PREDICATE__
 fn main() {
-    let _ = task::scheduler::is_current_idle_thread as fn() -> Option<bool>;
     // Both boots publish their running continuation as the scheduler's idle
     // thread; ARM additionally pins it at count 1 before starting the timer.
     assert!(!can_yield(), "bootstrap/idle continuation must stay pinned");
-    CURRENT.set(Some(8)); // ordinary schedulable breenfs-commit kthread
+    CURRENT.set(Some(8)); // breenfs-commit, its pass under park::Braked
+    assert!(!can_yield(), "a worker holding a bare level is not a braked context");
+    BASELINE.set(1);
     assert!(can_yield(), "commit worker must retain cooperative progress");
     IRQ_CONTEXT.set(true);
     assert!(!can_yield(), "interrupt context");
@@ -103,14 +106,10 @@ fn main() {
     CURRENT.set(None);
     assert!(!can_yield(), "unpublished bootstrap thread");
     CURRENT.set(Some(8));
-    BUSY.set(true);
-    assert!(!can_yield(), "scheduler identity unavailable");
-    BUSY.set(false);
     assert!(can_yield());
 }
 '''
-                run_rust(harness.replace('__CPU__', cpu).replace('__METHODS__', methods)
-                         .replace('__IDLE_QUERY__', idle_query).replace('__PREDICATE__', predicate))
+        run_rust(harness.replace('__PARK_CORE__', str(park_core)).replace('__PREDICATE__', predicate))
 
     def test_common_boot_labels_use_the_mounted_backend(self):
         # Keep the architecture entry points wired to the mounted table, rather
