@@ -44,7 +44,9 @@ those same suites. The console crate also has a behavioral input executable:
 `cargo run --manifest-path tools/console-host-tests/Cargo.toml --bin input`.
 
 The boot-memory checks cover the loader-to-kernel UEFI map handoff, page-table
-construction, firmware RAM normalization and boot carves. Run them with
+construction, firmware RAM normalization, boot carves and the frame metadata
+(`tests/frame_meta.rs`: its lookup, its sparse placement, and its lease rules
+against the extracted pre-E1-3 ledger). Run them with
 `cargo test --manifest-path tools/kmem-host-tests/Cargo.toml`.
 
 Run the standalone `tests/*_host.py` programs separately: discovery's

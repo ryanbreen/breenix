@@ -686,7 +686,6 @@ counter!(
     FRAME_DUPLICATE_ALLOC_REFUSED,
     "Duplicate frame allocations refused"
 );
-counter!(FRAME_LOST_CONTENDED, "Frame returns lost to contention");
 counter!(
     FRAME_RETURN_REFUSED_LIVE_LEAF,
     "Returns of frames with live leaf mappings refused"
@@ -811,7 +810,7 @@ counter!(
     "Fatal group signals dropped for init"
 );
 
-pub const COUNTER_COUNT: usize = 88;
+pub const COUNTER_COUNT: usize = 87;
 
 /// The registration and normal-context reader inventory. Keeping one inventory
 /// makes a write-only counter structurally impossible without changing the P0
@@ -857,7 +856,6 @@ pub static COUNTERS: [&TraceCounter; COUNTER_COUNT] = [
     &FRAME_RETURN_REFUSED_NEVER_ALLOCATED,
     &FRAME_RETURN_REFUSED_UNTRACKED,
     &FRAME_DUPLICATE_ALLOC_REFUSED,
-    &FRAME_LOST_CONTENDED,
     &FRAME_RETURN_REFUSED_LIVE_LEAF,
     &LEAF_MAPPINGS_RECORDED,
     &LEAF_MAPPINGS_RELEASED,
@@ -1213,7 +1211,6 @@ enum BootTestPidCountKind {
     Report,
     TableFramesRecorded(u64),
     TableFrameReturned,
-    TableFrameLost,
     RootRetired,
     KernelStackSlotReturn,
 }
@@ -1279,9 +1276,6 @@ fn record_boot_test_pid_count(pid: u64, kind: BootTestPidCountKind) {
                 }
                 BootTestPidCountKind::TableFrameReturned => {
                     slot.table_frames_returned.fetch_add(1, Ordering::Relaxed);
-                }
-                BootTestPidCountKind::TableFrameLost => {
-                    slot.table_frames_lost.fetch_add(1, Ordering::Relaxed);
                 }
                 BootTestPidCountKind::RootRetired => {
                     slot.roots_retired.fetch_add(1, Ordering::Release);
@@ -1412,14 +1406,6 @@ pub fn record_pt_frame_returned(pid: u64) {
     let _ = pid;
 }
 
-#[inline(always)]
-pub fn record_pt_frame_lost(pid: u64) {
-    crate::trace_count!(PT_RETIRE_FRAMES_LOST);
-    #[cfg(any(feature = "boot_tests", feature = "testing"))]
-    record_boot_test_pid_count(pid, BootTestPidCountKind::TableFrameLost);
-    #[cfg(not(any(feature = "boot_tests", feature = "testing")))]
-    let _ = pid;
-}
 
 #[inline(always)]
 pub fn record_pt_root_retired(pid: u64) {
