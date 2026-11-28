@@ -968,3 +968,52 @@ fn writable_recovery_keeps_a_read_only_readers_blocks() {
     let read = join(a, "reader A did not finish");
     assert!(read.is_ok(), "reader A: {:?}", read.err());
 }
+
+/// Review M5 (#3310): a partial truncate finds whether its tail page is
+/// backed with no device wait under the mount lock; the extent lookup is not
+/// a tree edit. The file has 1,200 extents, so its last ones sit in a leaf
+/// that opening the file does not read.
+#[test]
+fn a_cold_partial_truncate_waits_with_no_mount_lock() {
+    let (disk, _) = image();
+    let ino = {
+        let fs = mount(&disk, 158);
+        let ino = fs.create(2, b"frag", regular()).unwrap();
+        let node = fs.open(ino).unwrap();
+        for i in 0..1200u64 {
+            fs.write(&node, at(2 * i * BLOCK_SIZE as u64), &pattern(i as u8, BLOCK_SIZE)).unwrap();
+        }
+        fs.fsync(&node, false).unwrap();
+        fs.shutdown("e2-5-frag", u64::MAX).unwrap();
+        ino
+    };
+    let fs = mount(&disk, 151);
+    let node = fs.open(ino).unwrap();
+    disk.take_log();
+    let _ = super::i7::take_publishers(identity(&disk));
+    let size = 2 * 1199 * BLOCK_SIZE as u64 + 100;
+    bounded("i7-truncate", move || fs.resize(&node, size, false, &|_| Ok(()))).unwrap();
+    let log = disk.take_log();
+    assert_guarded(&log, "a cold partial truncate");
+    assert!(log.exceptions.is_empty(), "a cold partial truncate waited under the mount lock in {:?}", log.exceptions);
+}
+
+/// Review M5 (#3310): mapped writeback's transfer setup reads a cold inode
+/// with no mount lock held.
+#[test]
+fn mapped_writeback_setup_waits_with_no_mount_lock() {
+    let (disk, inos) = image();
+    let cache = Arc::new(BufferCache::new(YieldWait));
+    let fs = Fs::mount_writable(disk.clone(), cache.clone(), 152, 1).unwrap();
+    fs.init_service().unwrap();
+    let node = fs.open(inos.a).unwrap();
+    node.map.shared_stores(&pattern(170, 3 * BLOCK_SIZE), false);
+    // The inode leaves every cache.
+    fs.inner.state.lock().inodes.clear();
+    fs.inner.decoded.clear();
+    cache.shrink(usize::MAX);
+    disk.take_log();
+    let worker = fs.clone();
+    bounded("i7-mapping", move || worker.mapping_io(&node).map(|_| ())).unwrap();
+    assert_guarded(&disk.take_log(), "mapped writeback setup");
+}
