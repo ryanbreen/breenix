@@ -116,3 +116,5 @@ pub fn arch_without_interrupts<R>(f: impl FnOnce() -> R) -> R {
 pub fn arch_halt_with_interrupts() {}
 
 mod newreno_checks;
+mod offload_checks;
+mod window_checks;

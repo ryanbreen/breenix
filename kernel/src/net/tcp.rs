@@ -78,6 +78,10 @@ static TX_PARTIAL_ACK_RETRANSMITS: AtomicU64 = AtomicU64::new(0);
 static TX_TIMEOUT_RETRANSMITS: AtomicU64 = AtomicU64::new(0);
 /// Fast recoveries begun.
 static TX_FAST_RECOVERIES: AtomicU64 = AtomicU64::new(0);
+/// Batches of new data the device was given to cut into segments, and the
+/// segments on the wire those batches stand for.
+static TX_OFFLOAD_BATCHES: AtomicU64 = AtomicU64::new(0);
+static TX_OFFLOAD_SEGMENTS: AtomicU64 = AtomicU64::new(0);
 
 /// Why `send_next` stands behind `send_max`, for counting what goes out again.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -788,6 +792,43 @@ fn try_build_segment(seg: &Segment, options: &[u8], parts: [&[u8]; 2]) -> Option
     Some(packet)
 }
 
+/// The ones'-complement sum of the IPv4 pseudo-header for a TCP segment of
+/// `tcp_len` bytes, folded and not complemented: what a device that completes
+/// the checksum expects in the checksum field (virtio 1.2 section 5.1.6.2).
+fn pseudo_header_sum(src_ip: [u8; 4], dst_ip: [u8; 4], tcp_len: usize) -> u16 {
+    let mut sum = checksum_words(0, &src_ip);
+    sum = checksum_words(sum, &dst_ip);
+    sum += PROTOCOL_TCP as u64;
+    sum += tcp_len as u64 & 0xFFFF;
+    while sum >> 16 != 0 {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+    sum as u16
+}
+
+/// Build `seg` with the payload `parts` joined and its checksum field holding
+/// the pseudo-header sum, for a device to complete; without the memory, no segment.
+fn try_build_offload_segment(seg: &Segment, parts: [&[u8]; 2]) -> Option<Vec<u8>> {
+    let mut packet = Vec::new();
+    packet
+        .try_reserve_exact(TCP_HEADER_MIN_SIZE + parts[0].len() + parts[1].len())
+        .ok()?;
+    packet.extend_from_slice(&seg.src_port.to_be_bytes());
+    packet.extend_from_slice(&seg.dst_port.to_be_bytes());
+    packet.extend_from_slice(&seg.seq.to_be_bytes());
+    packet.extend_from_slice(&seg.ack.to_be_bytes());
+    packet.push(((TCP_HEADER_MIN_SIZE / 4) as u8) << 4);
+    packet.push(seg.flags.to_byte());
+    packet.extend_from_slice(&seg.window.to_be_bytes());
+    packet.extend_from_slice(&[0, 0]);
+    packet.extend_from_slice(&seg.urgent.to_be_bytes());
+    packet.extend_from_slice(parts[0]);
+    packet.extend_from_slice(parts[1]);
+    let seed = pseudo_header_sum(seg.src_ip, seg.dst_ip, packet.len());
+    packet[16..18].copy_from_slice(&seed.to_be_bytes());
+    Some(packet)
+}
+
 /// Hand `seg` to IP output. False when it was not sent: no memory for it, or IP
 /// output refused it.
 fn transmit(seg: &Segment, options: &[u8], parts: [&[u8]; 2]) -> bool {
@@ -1393,6 +1434,37 @@ impl TcpConnection {
         sent
     }
 
+    /// Send `len` queued bytes from `offset` after `send_unack`, new data in
+    /// whole segments of `mss`, as one request the device cuts into segments
+    /// (virtio 1.2 section 5.1.6.2). When the route cannot take a batch the
+    /// result is empty and the caller sends segment by segment; Some(false) when the device
+    /// refused it for now, which leaves the bytes queued as a refused segment
+    /// does.
+    fn send_batch(&mut self, offset: usize, len: usize, mss: u16) -> Option<bool> {
+        let seq = self.send_unack.wrapping_add(offset as u32);
+        let seg = self.segment(seq, TcpFlags::ack_psh());
+        let (front, back) = self.tx_buffer.as_slices();
+        let end = offset + len;
+        let parts: [&[u8]; 2] = if end <= front.len() {
+            [&front[offset..end], &[]]
+        } else if offset >= front.len() {
+            [&back[offset - front.len()..end - front.len()], &[]]
+        } else {
+            [&front[offset..], &back[..end - front.len()]]
+        };
+        let Some(packet) = try_build_offload_segment(&seg, parts) else {
+            return Some(false);
+        };
+        match super::send_tcp_batch(seg.src_ip, seg.dst_ip, seg.ttl, &packet, mss) {
+            Ok(()) => {
+                self.record_window(&seg);
+                Some(true)
+            }
+            Err(super::BatchError::Unavailable) => None,
+            Err(super::BatchError::Refused) => Some(false),
+        }
+    }
+
     /// Note that sequence space up to `send_next` has been sent: time it if it is
     /// new and nothing else is being timed, and run the retransmission timer.
     fn sent_through_next(&mut self) {
@@ -1467,6 +1539,33 @@ impl TcpConnection {
             }
             let len = want.min(room);
             let seq = self.send_next;
+            // New data with at least two whole segments allowed by both windows
+            // goes to a device that segments as one batch, debiting the flight
+            // for the batch and counting the segments it stands for. A short
+            // tail, a resend, urgent data and Limited Transmit go segment by
+            // segment, as the data does when the route cannot take a batch.
+            let new_data = !seq_lt(seq, self.send_max);
+            if !limited && new_data && len == self.mss as usize && self.snd_up.is_none() {
+                if let Some(limit) = super::tcp_batch_limit(self.id.remote_ip) {
+                    let queued = self.tx_buffer.len() - self.tx_sent;
+                    let segments = room.min(allowance).min(queued).min(limit) / len;
+                    if segments >= 2 {
+                        let batch = segments * len;
+                        match self.send_batch(self.tx_sent, batch, self.mss) {
+                            Some(true) => {
+                                TX_OFFLOAD_BATCHES.fetch_add(1, Ordering::Relaxed);
+                                TX_OFFLOAD_SEGMENTS.fetch_add(segments as u64, Ordering::Relaxed);
+                                self.tx_sent += batch;
+                                self.send_next = self.send_next.wrapping_add(batch as u32);
+                                self.sent_through_next();
+                                continue;
+                            }
+                            Some(false) => return false,
+                            None => {}
+                        }
+                    }
+                }
+            }
             if !self.send_data(self.tx_sent, len) {
                 return false;
             }
@@ -2241,6 +2340,8 @@ pub fn proc_net_tcp_stats() -> Result<alloc::string::String, i32> {
         ("partial_ack_retransmits", &TX_PARTIAL_ACK_RETRANSMITS),
         ("timeout_retransmits", &TX_TIMEOUT_RETRANSMITS),
         ("fast_recoveries", &TX_FAST_RECOVERIES),
+        ("offload_batches", &TX_OFFLOAD_BATCHES),
+        ("offload_segments", &TX_OFFLOAD_SEGMENTS),
     ];
     let mut text = alloc::string::String::new();
     text.try_reserve_exact(256).map_err(|_| ENOMEM)?;
@@ -3397,9 +3498,13 @@ fn update_window(conn: &mut TcpConnection) {
     let shift = conn.recv_shift(false);
     let offered = conn.advertised_space();
     let window = (conn.rcv_window(false) as usize) << shift;
-    // A pending ACK already carries the update. Reopen a closed window
-    // immediately because the peer cannot send a second segment.
-    if window > offered && (conn.ack_deadline_ms.is_none() || offered >> shift == 0) {
+    // `rcv_window` grows the window only by a segment or half the buffer. A
+    // pending delayed ACK carries that update while the peer still has half
+    // the buffer or more to send into. Below that the peer can be held by the
+    // window, so the update goes now, with any pending ACK, rather than at the
+    // delayed-ACK timer: a peer that fills the window each round trip would
+    // otherwise wait that timer out on each round. A closed window is below it.
+    if window > offered && (conn.ack_deadline_ms.is_none() || offered < conn.rcv_cap / 2) {
         conn.send_ack();
     }
 }

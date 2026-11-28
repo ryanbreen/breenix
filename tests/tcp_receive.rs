@@ -140,6 +140,19 @@ pub mod ethernet {
 pub fn send_ethernet(_: &[u8; 6], _: u16, _: &[u8]) -> Result<(), ()> {
     unreachable!("test flows use loopback output")
 }
+/// Loopback flows take no segmentation-offload batch.
+#[derive(Debug)]
+pub enum BatchError {
+    Unavailable,
+    #[allow(dead_code)] // the device-refused case; loopback has no device
+    Refused,
+}
+pub fn tcp_batch_limit(_: [u8; 4]) -> Option<usize> {
+    None
+}
+pub fn send_tcp_batch(_: [u8; 4], _: [u8; 4], _: u8, _: &[u8], _: u16) -> Result<(), BatchError> {
+    Err(BatchError::Unavailable)
+}
 pub fn net_lock_guard() {}
 pub fn loopback_work_queued() {}
 pub fn loopback_work_done() {}

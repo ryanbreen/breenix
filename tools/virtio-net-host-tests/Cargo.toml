@@ -1,0 +1,19 @@
+[package]
+name = "virtio-net-host-tests"
+version = "0.1.0"
+edition = "2021"
+
+# Host checks of the ARM64 virtio-net MMIO driver (kernel/src/drivers/virtio/
+# net_mmio.rs and the files beside it, compiled unchanged) against a fake
+# virtio-mmio network device written from virtio 1.2 sections 2.7, 4.2 and 5.1.
+# Each file in tests/ is one device scenario in its own process, because the
+# driver keeps its device in statics. Run:
+#   cargo test --manifest-path tools/virtio-net-host-tests/Cargo.toml
+
+[workspace]
+
+[dependencies]
+spin = "0.9.8"
+
+[lib]
+doctest = false
