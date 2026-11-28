@@ -419,6 +419,27 @@ class FlashPathTest(unittest.TestCase):
         with self.assertRaises(boot['Finish']):
             driver.pump_bmc()
 
+    def test_service_commands_accept_input_without_inheriting_stdin(self):
+        # The paired deploy sends the `have` list to `metal_live_flash.py objects`
+        # and the receipt to `tee` with input=. Only the incus command is swapped
+        # for cat, so the real subprocess.run checks the keyword arguments.
+        runner = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'scripts/metal/metal-run'))
+        real = subprocess.run
+        seen = []
+
+        def run(command, **options):
+            self.assertEqual(command[:5], ['sudo', '-n', 'incus', 'exec', 'metal'])
+            seen.append(options.get('stdin', 'absent'))
+            return real(['cat'], **options)
+
+        with patch.object(subprocess, 'run', run):
+            result = runner['in_metal']({'METAL_INSTANCE': 'metal'}, 'cat', input=b'ab\n',
+                                        capture_output=True, check=True)
+            self.assertEqual(result.stdout, b'ab\n')
+            quiet = runner['in_metal']({'METAL_INSTANCE': 'metal'}, 'cat', capture_output=True, check=True)
+            self.assertEqual(quiet.stdout, b'')
+        self.assertEqual(seen, ['absent', subprocess.DEVNULL])
+
 
 if __name__ == '__main__':
     unittest.main()
