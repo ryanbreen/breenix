@@ -624,6 +624,12 @@ pub fn memory_stats() -> MemoryStats {
     }
 }
 
+/// The frames the frontier has handed out, read without the free list's lock,
+/// for the OOM record, which may run while this CPU or another holds it.
+pub fn frontier_frames() -> usize {
+    NEXT_FREE_FRAME.load(Ordering::Relaxed)
+}
+
 /// What holds an allocated frame, for the census's `owner` rows: the owners a
 /// suite's memory record breaks its frames down by (docs/suites/README.md,
 /// "Memory record").

@@ -991,7 +991,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 } else {
                     crate::memory::file_map::Access::Read
                 };
-                match file_mapping_fault(far, iss, access, from_el0) {
+                match file_mapping_fault(far, iss, access, from_el0).delivered() {
                     crate::memory::file_map::FaultOutcome::NotFile => {}
                     crate::memory::file_map::FaultOutcome::Signal(sig) => {
                         // Raised for the thread: its handler runs on this
@@ -1327,7 +1327,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             let from_el0 = (frame_ref.spsr & 0xF) == 0;
             // An EL0 fetch from a private file mapping, as for data aborts.
             if from_el0 {
-                match file_mapping_fault(far, iss, crate::memory::file_map::Access::Execute, true) {
+                match file_mapping_fault(far, iss, crate::memory::file_map::Access::Execute, true).delivered() {
                     crate::memory::file_map::FaultOutcome::NotFile => {}
                     crate::memory::file_map::FaultOutcome::Signal(sig) => {
                         act_on_raised_el0_fault_signal(frame_ref, sig);

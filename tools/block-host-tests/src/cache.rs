@@ -493,3 +493,60 @@ fn review_metadata_is_charged_before_admission() {
     assert!(cache.pin(&*device, 1).is_none(), "payload-only budget retained an uncharged index and buffer");
     assert_eq!(cache.resident_bytes(), 0);
 }
+
+/// The reclaim hook (E1 plan, 7.3): clean, unpinned entries from the cold end
+/// only, a bounded number of visits, and no wait for a held state lock.
+#[test]
+fn shrink_drops_clean_unpinned_entries_from_the_cold_end() {
+    use crate::buffer_cache::{measurement::shrink_visits, SHRINK_BATCH};
+    let device = Arc::new(RecordingDevice::default());
+    let cache = BufferCache::with_capacity(HostWait::new(device.clone()), 64 * CHARGED_SIZE);
+    let mut bytes = [0; SIZE];
+    // Cold to hot: 1 and 2 (pinned), then 3 to 20; 3 then becomes dirty.
+    cache.read(&*device, 1, &mut bytes).unwrap();
+    cache.read(&*device, 2, &mut bytes).unwrap();
+    let pins = [cache.pin(&*device, 1).unwrap(), cache.pin(&*device, 2).unwrap()];
+    for block in 3..=20 {
+        cache.read(&*device, block, &mut bytes).unwrap();
+    }
+    let group = WriteGroup::hold(&*device, Arc::new(|| {}));
+    cache.write(&*device, group, 3, &[3; SIZE]).unwrap();
+
+    // One frame is three charged entries: 4, 5 and 6, after skipping 1 and 2.
+    let before = shrink_visits();
+    assert_eq!(cache.shrink(1), 1);
+    assert_eq!(shrink_visits() - before, 5);
+    for (block, status) in [
+        (1, Some(BufferStatus::Clean)),
+        (2, Some(BufferStatus::Clean)),
+        (3, Some(BufferStatus::Dirty)),
+        (4, None),
+        (5, None),
+        (6, None),
+        (7, Some(BufferStatus::Clean)),
+    ] {
+        assert_eq!(cache.status(&*device, block), status, "block {block}");
+    }
+    drop(pins);
+
+    // A held state lock: 0 frames, at once, and 0 entries removed.
+    let held = cache.hold_state();
+    assert_eq!(cache.shrink(4), 0);
+    drop(held);
+    assert_eq!(cache.status(&*device, 7), Some(BufferStatus::Clean));
+
+    // Pinned entries at the cold end end the scan at its visit bound.
+    let cache = BufferCache::with_capacity(HostWait::new(device.clone()), 64 * CHARGED_SIZE);
+    let mut pins = Vec::new();
+    for block in 1..=12 {
+        cache.read(&*device, block, &mut bytes).unwrap();
+        pins.push(cache.pin(&*device, block).unwrap());
+    }
+    for block in 13..=20 {
+        cache.read(&*device, block, &mut bytes).unwrap();
+    }
+    let before = shrink_visits();
+    assert_eq!(cache.shrink(1), 0);
+    assert_eq!(shrink_visits() - before, (1 + SHRINK_BATCH) as u64);
+    assert_eq!(cache.status(&*device, 13), Some(BufferStatus::Clean));
+}

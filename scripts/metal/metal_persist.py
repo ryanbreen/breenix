@@ -571,7 +571,7 @@ def upgrade_request(directory, the_layout, files, slot, note, site, *, rescue=No
     return request.finish(), request
 
 
-def manager_replacement_request(directory, layout, generation, manager):
+def manager_replacement_request(directory, layout, generation, manager, digest):
     if layout['version'] != 3 or not slot_userland({'userland': generation}):
         raise ValueError('manager replacement requires writable format-3 CURRENT')
     parts = layout['partitions']
@@ -579,8 +579,8 @@ def manager_replacement_request(directory, layout, generation, manager):
     request.lines += ['expect-disk ' + layout['diskGuid'], 'disk ' + layout['diskGuid'],
                       'esp ' + parts['esp']['guid'],
                       'breenfs-upgrade ' + ' '.join(parts[role]['guid'] for role in BREENFS_ROLES),
-                      'current-userland ' + generation, 'manager-replacement yes']
-    request.esp_file('efi/breenix/live.efi', manager)
+                      'current-userland ' + generation, 'manager-replacement ' + digest]
+    request.esp_file(f'efi/breenix/pair-{digest}.efi', manager)
     return request.finish(), request
 
 

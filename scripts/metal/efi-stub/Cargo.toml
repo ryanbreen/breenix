@@ -6,6 +6,10 @@ description = "The x86-metal EFI applications: the delivery stub that serves its
 publish = false
 autotests = false
 
+[package.metadata.breenix]
+# The paired manager supports version-2 live manifests and the matching delivery stub verifies its digest.
+manager-manifest-version = 2
+
 # The UEFI declarations and the pieces both applications use (docs/metal/README.md, "Delivery" and "Boot manager
 # and persistent install").
 [lib]

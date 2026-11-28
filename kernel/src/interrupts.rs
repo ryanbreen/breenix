@@ -1415,7 +1415,7 @@ extern "x86-interrupt" fn page_fault_handler(
             may_retry,
         );
         crate::per_cpu::preempt_enable();
-        match outcome {
+        match outcome.delivered() {
             crate::memory::file_map::FaultOutcome::NotFile => {
                 if from_user { mapping_guard = guard; }
             }

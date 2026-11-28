@@ -2641,6 +2641,26 @@ class SetupOriginalsTest(StateTest):
 
 
 class StagingTest(unittest.TestCase):
+    def test_manager_recovery_passes_the_replacement_flag_to_the_builder(self):
+        run = load_script('metal-run')
+        sha = 'a' * 40
+        args = run.argument_parser().parse_args([
+            'install-persistent', '--kernel-only', '--recovery', '--replace-manager', '--sha', sha,
+        ])
+        with tempfile.TemporaryDirectory() as temporary, \
+             patch.object(run.Path, 'home', return_value=Path(temporary)), \
+             patch.object(run, 'host_env', return_value={}), \
+             patch.object(run, 'verify_target'), \
+             patch.object(run, 'in_metal', return_value=SimpleNamespace(returncode=0, stdout='{}')) as launch, \
+             patch.object(run.subprocess, 'Popen') as spawn:
+            self.assertEqual(run.install_persistent(args), 0)
+        self.assertIn('--replace-manager', launch.call_args.args)
+        self.assertEqual(spawn.call_count, 1)
+        command = spawn.call_args.args[0]
+        self.assertEqual(command[2], '_build')
+        self.assertEqual(command[4], sha)
+        self.assertIn('--replace-manager', command)
+
     def test_single_attempt_launches_without_a_resume_collector(self):
         run = load_script('metal-run')
         suite = 'libc,utilities'
@@ -2758,15 +2778,20 @@ class BuildSlotTest(unittest.TestCase):
                    'src/interrupts/breakpoint_entry.asm', 'src/arch_impl/x86_64/ap_trampoline.asm')
     ASM_OBJECTS = ('syscall_entry.o', 'timer_entry.o', 'breakpoint_entry.o', 'ap_trampoline.o')
 
-    def build_inner(self, suite, milestone=None, *, bad_kernel_digest=False):
+    def build_inner(self, suite, milestone=None, *, bad_kernel_digest=False, replace_manager=False):
         """Run metal-build's inner build with every subprocess faked; returns the helper and build calls."""
         build = load_script('metal-build')
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             args = SimpleNamespace(id='20261017T000012Z-metal', root=str(root), repo=str(root / 'repo'), sha='a' * 40,
                                    rust_fork=str(root / 'rust'), cache=str(root / 'cache'), stub=str(root / 'stub'),
-                                   guard_target='x86-metal', features='', suite=suite, milestone=milestone)
+                                   guard_target='x86-metal', features='', suite=suite, milestone=milestone,
+                                   kernel_only=replace_manager, replace_manager=replace_manager)
             clone, out, tmp = build.paths(args)
+            if replace_manager:
+                manifest = clone / 'scripts/metal/efi-stub/Cargo.toml'
+                manifest.parent.mkdir(parents=True)
+                manifest.write_text('[package.metadata.breenix]\nmanager-manifest-version = 2\n')
             out.mkdir(parents=True)
             image = clone / 'target/release/build/breenix-0/out/breenix-uefi.img'
             stub = tmp / 'stub-target' / build.STUB_TARGET / 'release/metal-efi-stub.efi'
@@ -2806,6 +2831,9 @@ class BuildSlotTest(unittest.TestCase):
                 stale.write_bytes(b'stale')
             order = []
             def run(command, **options):
+                if command == ['git', 'rev-parse', 'HEAD']:
+                    self.assertEqual(options['cwd'], clone)
+                    return SimpleNamespace(stdout=args.sha + '\n')
                 if str(clone / 'scripts/create_ext2_disk.sh') == command[0]:
                     order.append(command)
                     Path(command[command.index('--output') + 1]).write_bytes(b'toolchain fixture')
@@ -2814,6 +2842,8 @@ class BuildSlotTest(unittest.TestCase):
                 return SimpleNamespace(returncode=0, stdout=str(root / 'cargo-home') + '\n')
             def call(command, **options):
                 order.append(command)
+                if replace_manager and command[:3] == ['cargo', 'build', '--release'] and build.STUB_TARGET in command:
+                    order.append(('efi-source', Path(options['cwd'])))
                 if command[-1:] == ['--dynamic']:
                     pinned_libc = (options.get('env') or build.os.environ).get('BREENIX_KD_LIBC_INPUT')
                     order.append(('dynamic-libc-input', pinned_libc))
@@ -2865,7 +2895,15 @@ class BuildSlotTest(unittest.TestCase):
                 built['expectedKernelAssembly'] = assembly
                 scratch = out / 'toolchain-scratch.img'
                 built['scratch'] = scratch.read_bytes() if scratch.is_file() else None
-            return build, clone, tmp, order, (out / 'ext2.img').read_bytes(), built
+            built_root = None if replace_manager else (out / 'ext2.img').read_bytes()
+            return build, clone, tmp, order, built_root, built
+
+    def test_replacement_manager_build_uses_the_requested_clone(self):
+        _, clone, _, order, _, built = self.build_inner('', replace_manager=True)
+        self.assertEqual([entry for entry in order if isinstance(entry, tuple) and entry[0] == 'efi-source'],
+                         [('efi-source', clone / 'scripts/metal/efi-stub')])
+        self.assertEqual(built['manager']['sourceCommit'], built['commit'])
+        self.assertEqual(built['manager']['manifestVersion'], 2)
 
     def test_one_metal_build_lease_covers_a_single_userspace_build_and_the_kernel(self):
         build, clone, tmp, order, root, built = self.build_inner('')

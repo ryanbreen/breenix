@@ -1711,6 +1711,45 @@ E1-3 implementation decisions (DEV-39(2)):
 - Boot: not needed.
 - Rows: no row expected to move. This is the failure path.
 
+E1-4 implementation decisions (DEV-39(2)):
+
+- On the fixed heap the heap mutex is the only refill lock, so `Atomic` takes it with 1 `try_lock` and then uses an
+  emergency reserve: a separate `heap_index` arena at the top of the fixed heap with its own mutex, sized at half of
+  5.3's `min` for a zone of the heap's frames (256 KiB of a 64 MiB heap). A reserve behind the heap mutex could not be
+  reached while that mutex is busy, and without one an interrupt-context request that waits for the mutex today
+  would fail on contention while its caller is still infallible.
+- Each context's first attempt is the heap mutex's `try_lock`, and the context is derived only after a miss.
+  The 3 contexts take the same first step (3 of 3), so an uncontended allocation reads no per-CPU state.
+- `in_reclaim` is one owner word naming the reclaiming CPU, set with that CPU's interrupts masked for the shrinker
+  phase, and a second CPU that finds it set skips reclaim (counted as `reclaim_busy`). The per-CPU slot table arrives
+  with E1-6 and E1-8 (5.4a), and E1 adds no CPU cap.
+- E1-4 enforces the steps of 6.6's table that exist on the fixed heap: waiting for a busy lock, the shrinkers and the
+  reserve. Remote drains, span and vmap growth and the pending-unmap flush arrive with E1-5 to E1-8, each checking
+  the context the same way, so the context tests count try_locks, waits, shrinker scans and reserve use, and no
+  E1-4 code path can drain or flush.
+- `AllocError` is `HeapExhausted` or `Refused`. The fixed heap is E1-4's only failing layer; `NoFrames { zone, order }`
+  and `NoVa { window }` arrive with E1-8's zones and E1-5's windows, and E1-9 retires `HeapExhausted`.
+- The reclaim target is the request's frames plus 8, the floor of 5.4's batch, because no per-CPU batch exists
+  before E1-8.
+- The OOM record runs on both architectures with the cause, context, reserve, reclaim and frame counts. Zone, order
+  and watermark fields wait for E1-8's zones. The `OOM_FRAME` caller walk stays x86-only, because the ARM64 kernel is
+  not built with forced frame pointers.
+- The block-cache shrinker has cost 30, which leaves room for E1-6's and E1-7's cheaper shrinkers before it. Its
+  count is its charged bytes in frames, an upper bound, and a scan visits at most its target plus 8 entries.
+- The BreenFS decoded-node cache is not registered. Its insert picks the victim with `min_by_key` over the whole
+  entry list (`node_cache.rs`), which is the full scan 7.3 rules out, so it waits for E3 with the mapping cache.
+- `FaultOutcome::OutOfMemory` replaces `Signal(SIGKILL)` at the 5 sites in `anon_map.rs` where a frame, a page
+  mapping or a shared-memory page could not be had. The fault handlers match on `delivered()`, which is
+  `Signal(SIGKILL)` for it, so each takes the arm it took before. `ipc/shmem/fault.rs`'s own SIGKILL sites stay with
+  E1-17.
+- The inventory scan is `tools/kmem-host-tests/tests/oom_inventory.rs`, not `tests/kmem_oom_inventory.rs`, because
+  the root crate's tests build the kernel and userspace through its build script. It parses with `syn`, so a site is
+  matched by its function path, and code under `#[cfg(test)]` is skipped. A row groups a file's functions under one
+  owner. Its rollback point is the owning PR's rule from the table above, which that PR refines per function when
+  it converts the row. A row with no remaining site does not fail the scan, and
+  `scripts/kmem-oom-inventory-fill.py` adds rows for new sites.
+- `/proc/breenix/kmem` exists on x86-64 as well, and carries the allocator's counts on both architectures.
+
 ### E1-5: kernel VA windows
 
 - Change: the span, vmap and stack windows (6.5), with a VA allocator per window.

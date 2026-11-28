@@ -5,6 +5,8 @@ use core::ptr::NonNull;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
 
+use super::kmem;
+
 #[path = "heap_index.rs"]
 mod index;
 use index::Heap;
@@ -112,6 +114,17 @@ impl IrqSafeLockedHeap {
         }
     }
 
+    /// One heap operation if the mutex is free now, with interrupts masked
+    /// for the hold, as `with_inner` holds it.
+    #[inline(always)]
+    fn try_inner<R>(&self, operation: impl FnOnce(&mut Heap) -> (R, u32)) -> Option<R> {
+        crate::arch_without_interrupts(|| {
+            self.inner
+                .try_lock()
+                .map(|mut inner| inner.run(case::LockWait::new(), operation))
+        })
+    }
+
     #[inline(always)]
     fn with_inner<R>(&self, operation: impl FnOnce(&mut Heap) -> (R, u32)) -> R {
         let mut wait = case::LockWait::new();
@@ -154,25 +167,77 @@ impl IrqSafeLockedHeap {
     }
 }
 
-/// The most heap bytes in use at once since boot, counted as the allocator
-/// counts them, including block headers and alignment padding.
+/// The most bytes in use at once since boot in the main heap (the reserve is
+/// not counted), as the allocator counts them, including block headers and
+/// alignment padding.
 static HIGH_WATER: AtomicUsize = AtomicUsize::new(0);
 
-unsafe impl GlobalAlloc for IrqSafeLockedHeap {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        self.with_inner(|heap| {
+impl kmem::Pool for IrqSafeLockedHeap {
+    fn take(&self, layout: Layout, wait: bool) -> Result<NonNull<u8>, kmem::Miss> {
+        let operation = |heap: &mut Heap| {
             let (ptr, walk) = heap.allocate(layout);
-            let ptr = ptr.map_or(core::ptr::null_mut(), NonNull::as_ptr);
             let used = heap.used();
-            if used > HIGH_WATER.load(Ordering::Relaxed) {
+            if ptr.is_some() && used > HIGH_WATER.load(Ordering::Relaxed) {
                 HIGH_WATER.store(used, Ordering::Relaxed);
             }
             (ptr, walk)
-        })
+        };
+        let ptr = if wait {
+            self.with_inner(operation)
+        } else {
+            self.try_inner(operation).ok_or(kmem::Miss::Busy)?
+        };
+        ptr.ok_or(kmem::Miss::Exhausted)
+    }
+}
+
+/// The fixed kernel heap and, at its top, the emergency reserve that only
+/// `Atomic` requests use (5.3). Each has its own mutex, so an interrupt
+/// handler that finds the heap's mutex held still has the reserve.
+struct KernelHeap {
+    main: IrqSafeLockedHeap,
+    reserve: IrqSafeLockedHeap,
+    reserve_start: AtomicUsize,
+    reserve_end: AtomicUsize,
+}
+
+impl KernelHeap {
+    fn front(&self) -> kmem::Front<'_, IrqSafeLockedHeap, IrqSafeLockedHeap> {
+        kmem::Front {
+            main: &self.main,
+            reserve: &self.reserve,
+            shrinkers: &kmem::SHRINKERS,
+            reclaim: &kmem::RECLAIM,
+            stats: &kmem::STATS,
+        }
+    }
+
+    fn pool_of(&self, ptr: *mut u8) -> &IrqSafeLockedHeap {
+        let address = ptr as usize;
+        if address >= self.reserve_start.load(Ordering::Relaxed)
+            && address < self.reserve_end.load(Ordering::Relaxed)
+        {
+            &self.reserve
+        } else {
+            &self.main
+        }
+    }
+}
+
+/// Allocate from the kernel heap through the front, in `ctx`.
+pub(super) fn allocate(layout: Layout, ctx: kmem::Ctx) -> Result<NonNull<u8>, kmem::AllocError> {
+    ALLOCATOR.front().allocate(layout, ctx, &kmem::KernelCpu)
+}
+
+unsafe impl GlobalAlloc for KernelHeap {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        self.front()
+            .allocate(layout, kmem::Ctx::Normal, &kmem::KernelCpu)
+            .map_or(core::ptr::null_mut(), NonNull::as_ptr)
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
-        self.with_inner(|heap| unsafe {
+        self.pool_of(ptr).with_inner(|heap| unsafe {
             heap.deallocate(NonNull::new_unchecked(ptr));
             ((), 0)
         });
@@ -206,7 +271,12 @@ unsafe impl GlobalAlloc for IrqSafeLockedHeap {
 
 /// Global allocator over the boot-reserved kernel heap.
 #[global_allocator]
-static ALLOCATOR: IrqSafeLockedHeap = IrqSafeLockedHeap::empty();
+static ALLOCATOR: KernelHeap = KernelHeap {
+    main: IrqSafeLockedHeap::empty(),
+    reserve: IrqSafeLockedHeap::empty(),
+    reserve_start: AtomicUsize::new(0),
+    reserve_end: AtomicUsize::new(0),
+};
 
 /// Initialize the heap allocator
 pub fn init(mapper: &OffsetPageTable<'static>) -> Result<(), &'static str> {
@@ -268,24 +338,38 @@ pub fn init(mapper: &OffsetPageTable<'static>) -> Result<(), &'static str> {
         log::info!("ARM64 heap using direct-mapped region at {:#x}", heap_base);
     }
 
-    // Initialize the allocator
+    // The reserve is the top of the region, so the main heap starts where it
+    // did and the region as a whole is unchanged.
+    let reserve_bytes = (kmem::reserve_frames(heap_size as usize / 4096) * 4096) as u64;
+    let main_bytes = heap_size - reserve_bytes;
     unsafe {
-        ALLOCATOR.init(heap_base as *mut u8, heap_size as usize);
+        ALLOCATOR.main.init(heap_base as *mut u8, main_bytes as usize);
+        ALLOCATOR
+            .reserve
+            .init((heap_base + main_bytes) as *mut u8, reserve_bytes as usize);
     }
+    ALLOCATOR
+        .reserve_start
+        .store((heap_base + main_bytes) as usize, Ordering::Relaxed);
+    ALLOCATOR
+        .reserve_end
+        .store((heap_base + heap_size) as usize, Ordering::Relaxed);
 
     log::info!(
-        "Heap initialized at {:#x} with size {} KiB",
+        "Heap initialized at {:#x} with size {} KiB ({} KiB emergency reserve)",
         heap_base,
-        heap_size / 1024
+        heap_size / 1024,
+        reserve_bytes / 1024
     );
 
     Ok(())
 }
 
-/// Bytes free in the kernel heap. Physical frames are not heap and are
-/// counted by the frame allocator instead.
+/// Bytes free in the kernel heap, its emergency reserve included. Physical
+/// frames are not heap and are counted by the frame allocator instead.
 pub fn free_bytes() -> usize {
-    ALLOCATOR.with_inner(|heap| (heap.free(), 0))
+    ALLOCATOR.main.with_inner(|heap| (heap.free(), 0))
+        + ALLOCATOR.reserve.with_inner(|heap| (heap.free(), 0))
 }
 
 /// The most bytes the kernel heap has had in use at once since boot.
@@ -293,13 +377,23 @@ pub fn high_water_bytes() -> usize {
     HIGH_WATER.load(Ordering::Relaxed)
 }
 
-/// Print the failing allocation and its callers before the general panic
-/// handler. The heap and serial paths may already be under contention.
-#[cfg(target_arch = "x86_64")]
+/// The pool's free bytes, free extents and largest extent, if its mutex is
+/// free now.
+fn pool_shape(pool: &IrqSafeLockedHeap) -> Option<(usize, u32, u32)> {
+    let guard = pool.inner.try_lock()?;
+    let free = guard.heap.free();
+    let (extents, largest) = guard.heap.free_shape();
+    Some((free, extents, largest))
+}
+
+/// Print the failing allocation, the slow path's state and, on x86-64, its
+/// callers, before the general panic handler. The heap and serial paths may
+/// already be under contention.
 #[cold]
 fn report_oom(layout: Layout) {
     use crate::capture::record::Writer;
     use crate::per_cpu;
+    use core::sync::atomic::Ordering::Relaxed;
 
     let mut writer = Writer::new();
     if !writer.open("OOM") {
@@ -307,21 +401,40 @@ fn report_oom(layout: Layout) {
     }
     writer.kv_dec("size", layout.size() as u64);
     writer.kv_dec("align", layout.align() as u64);
+    if let Some((cause, ctx)) = kmem::STATS.last_failure() {
+        writer.kv_text("cause", cause.name());
+        writer.kv_text(
+            "ctx",
+            match ctx {
+                kmem::Ctx::Normal => "normal",
+                kmem::Ctx::NoReclaim => "noreclaim",
+                kmem::Ctx::Atomic => "atomic",
+            },
+        );
+    }
     writer.kv_dec("high_water", high_water_bytes() as u64);
-    if let Some(guard) = ALLOCATOR.inner.try_lock() {
-        let free = guard.heap.free();
-        let (extents, largest) = guard.heap.free_shape();
-        drop(guard);
+    if let Some((free, extents, largest)) = pool_shape(&ALLOCATOR.main) {
         writer.kv_dec("free", free as u64);
         writer.kv_dec("extents", u64::from(extents));
         writer.kv_dec("largest", u64::from(largest));
     }
+    if let Some((free, _, largest)) = pool_shape(&ALLOCATOR.reserve) {
+        writer.kv_dec("reserve_free", free as u64);
+        writer.kv_dec("reserve_largest", u64::from(largest));
+    }
+    writer.kv_dec("reclaim_runs", kmem::STATS.reclaim_runs.load(Relaxed));
+    writer.kv_dec("reclaim_frames", kmem::STATS.reclaim_frames.load(Relaxed));
+    writer.kv_dec("frames_frontier", super::frame_allocator::frontier_frames() as u64);
     if !per_cpu::is_initialized() {
         let _ = writer.close();
         return;
     }
-    writer.kv_dec("cpu", per_cpu::cpu_id() as u64);
-    if let Some(tid) = per_cpu::current_thread_id_lock_free() {
+    writer.kv_dec("cpu", kmem::cpu_number() as u64);
+    #[cfg(target_arch = "x86_64")]
+    let tid = per_cpu::current_thread_id_lock_free();
+    #[cfg(target_arch = "aarch64")]
+    let tid = per_cpu::current_thread().map(|thread| thread.id);
+    if let Some(tid) = tid {
         writer.kv_dec("tid", tid);
     }
     // The matching ELF can use this symbol address to account for relocation.
@@ -329,6 +442,16 @@ fn report_oom(layout: Layout) {
     if !writer.close() {
         return;
     }
+    // The ARM64 kernel is not built with forced frame pointers, so only x86-64
+    // can follow its callers' frame links.
+    #[cfg(target_arch = "x86_64")]
+    report_oom_frames(writer);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[cold]
+fn report_oom_frames(mut writer: crate::capture::record::Writer) {
+    use crate::per_cpu;
 
     let (mut frame, rsp): (u64, u64);
     unsafe {
@@ -367,20 +490,23 @@ fn report_oom(layout: Layout) {
 /// Handle allocation errors
 #[alloc_error_handler]
 fn alloc_error_handler(layout: core::alloc::Layout) -> ! {
-    #[cfg(target_arch = "x86_64")]
-    {
-        use core::sync::atomic::AtomicBool;
+    use core::sync::atomic::AtomicBool;
 
-        // A secondary OOM must leave the first CPU's allocation record and
-        // general panic capture readable.
-        static REPORTING: AtomicBool = AtomicBool::new(false);
-        if REPORTING.swap(true, Ordering::AcqRel) {
-            x86_64::instructions::interrupts::disable();
-            loop {
-                x86_64::instructions::hlt();
+    // A secondary OOM must leave the first CPU's allocation record and
+    // general panic capture readable.
+    static REPORTING: AtomicBool = AtomicBool::new(false);
+    if REPORTING.swap(true, Ordering::AcqRel) {
+        loop {
+            // SAFETY: this CPU stops here for good.
+            unsafe { crate::arch_disable_interrupts() };
+            #[cfg(target_arch = "x86_64")]
+            x86_64::instructions::hlt();
+            #[cfg(target_arch = "aarch64")]
+            unsafe {
+                core::arch::asm!("wfe", options(nomem, nostack));
             }
         }
-        x86_64::instructions::interrupts::without_interrupts(|| report_oom(layout));
     }
+    crate::arch_without_interrupts(|| report_oom(layout));
     panic!("allocation error: {:?}", layout)
 }
