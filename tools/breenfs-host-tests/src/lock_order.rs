@@ -1045,3 +1045,29 @@ fn a_directory_reply_across_batches_shows_a_rename_once() {
     let inos: BTreeSet<_> = got.iter().map(|(_, ino)| *ino).collect();
     assert_eq!(inos.len(), got.len(), "one reply named an inode twice across a rename");
 }
+
+/// Review M7 (#3310): an interrupted snapshot delete keeps its root marked
+/// until the delete publishes, so a constructor cannot select the root the
+/// queued delete removes.
+#[test]
+fn an_interrupted_delete_keeps_its_root_marked_until_it_publishes() {
+    let (disk, _) = image();
+    let fs = mount(&disk, 154);
+    let mut request = SnapshotRequest { flags: 0, name_len: 4, name: [0; 256] };
+    request.name[..4].copy_from_slice(b"gone");
+    fs.snapshot_request(&request, true).unwrap();
+    // Publication is held off, so the delete's sync waits; its wait ends EINTR.
+    fs.inner.state.lock().retaining_for_sync += 1;
+    super::super::commit_signal::interrupt_waits(1);
+    let deleted = fs.snapshot_request(&request, false);
+    super::super::commit_signal::interrupt_waits(0);
+    assert_eq!(deleted, Err(Errno(EINTR)));
+    let selected = Fs::mount_named(disk.clone(), Arc::new(BufferCache::new(YieldWait)), 155, Some(b"root=gone"), false)
+        .map(|_| ());
+    assert_eq!(selected, Err(Errno(EBUSY)), "a constructor selected a root whose delete is queued");
+    fs.inner.state.lock().retaining_for_sync -= 1;
+    fs.sync().unwrap();
+    let selected = Fs::mount_named(disk.clone(), Arc::new(BufferCache::new(YieldWait)), 156, Some(b"root=gone"), false)
+        .map(|_| ());
+    assert_eq!(selected, Err(Errno(ENOENT)));
+}
