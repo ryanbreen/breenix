@@ -240,13 +240,14 @@ fn foreground_signal_thread() {
         let (seconds, nanos) = crate::time::get_monotonic_time_ns();
         let wake_at = seconds.saturating_mul(1_000_000_000)
             .saturating_add(nanos).saturating_add(10_000_000);
+        // Halt only while still blocked, rereading the state with interrupts
+        // masked: a halt begun after the wake (its IPI already taken, or this
+        // thread switched out before the halt and dispatched again once woken)
+        // would last until this CPU's next interrupt, which a CPU taking no
+        // timer ticks may never get.
         scheduler::with_current(|sched| sched.block_current_for_timer(wake_at));
-        scheduler::yield_current();
-        loop {
-            crate::arch_halt_with_interrupts();
-            if scheduler::thread_state(tid) != Some(ThreadState::BlockedOnTimer) {
-                break;
-            }
+        while scheduler::thread_state(tid) == Some(ThreadState::BlockedOnTimer) {
+            crate::arch_halt_while_blocked();
         }
     }
 }
