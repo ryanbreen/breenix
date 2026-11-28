@@ -38,6 +38,7 @@ pub mod syscall {
     pub mod nr {
         pub const MADVISE: u64 = 0;
         pub const FUTEX: u64 = 1;
+        pub const TGKILL: u64 = 2;
     }
 }
 
@@ -68,6 +69,9 @@ fn errno() -> i32 {
 fn malloc_thread_id() -> u32 {
     // The linker probe runs on one thread and does not fork.
     1
+}
+fn fork_child_thread_id() -> u32 {
+    unreachable!("the linker probe does not fork")
 }
 
 fn getpid() -> i32 {

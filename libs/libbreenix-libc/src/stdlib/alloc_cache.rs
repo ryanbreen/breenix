@@ -37,6 +37,9 @@ struct Links {
 static OWNER: AtomicU32 = AtomicU32::new(0);
 static PROCESS: AtomicU32 = AtomicU32::new(0);
 static DEFERRED: AtomicBool = AtomicBool::new(false);
+// Set while libc fork holds the lock across the fork syscall. A fork child
+// inherits it and so tells fork's own hold from an interrupted allocator call.
+static FORK_HELD: AtomicBool = AtomicBool::new(false);
 static ALL: [AtomicPtr<Arena>; CLASSES] = [const { AtomicPtr::new(null_mut()) }; CLASSES];
 static PARTIAL: [AtomicPtr<Arena>; CLASSES] = [const { AtomicPtr::new(null_mut()) }; CLASSES];
 static EMPTY: [AtomicPtr<Arena>; CLASSES] = [const { AtomicPtr::new(null_mut()) }; CLASSES];
@@ -55,6 +58,24 @@ fn futex(op: u64, value: u32) {
     }
 }
 
+/// Whether thread `tid` exists in process `pid`: tgkill with signal 0 checks
+/// the target without delivery, and fails with ESRCH outside that group.
+fn thread_exists(pid: u32, tid: u32) -> bool {
+    unsafe { raw::syscall3(nr::TGKILL, pid.into(), tid.into(), 0) == 0 }
+}
+
+/// Take over a lock word whose owner is not a thread of this process, then
+/// rebuild the indexes it may have left half-edited. When several threads
+/// find the same missing owner, the compare-exchange admits one of them.
+unsafe fn recover(observed: u32, id: u32) -> bool {
+    if OWNER.compare_exchange(observed, id, Acquire, Relaxed).is_err() {
+        return false;
+    }
+    rebuild_indexes();
+    FORK_HELD.store(false, Relaxed);
+    true
+}
+
 pub(crate) struct Guard;
 
 impl Guard {
@@ -63,13 +84,7 @@ impl Guard {
         let Err(mut observed) = OWNER.compare_exchange(0, id, Acquire, Relaxed) else {
             return Some(Self);
         };
-        // The public fork path repairs the cache in the child. This also
-        // handles a direct fork syscall that inherited a held lock.
-        let pid = crate::getpid() as u32;
-        if PROCESS.load(Relaxed) != pid {
-            unsafe { after_fork(pid) };
-            return Self::acquire();
-        }
+        let mut checked = false;
         loop {
             if observed == 0 {
                 match OWNER.compare_exchange(0, id | WAITERS, Acquire, Relaxed) {
@@ -77,8 +92,32 @@ impl Guard {
                     Err(other) => observed = other,
                 }
             } else if observed & !WAITERS == id {
-                // Same-thread reentry cannot wait for itself.
+                // Same-thread reentry from a signal handler cannot wait for
+                // itself. A fork child whose thread was inside the allocator
+                // when a handler forked is the same case: the interrupted call
+                // resumes and releases the lock.
                 return None;
+            } else if !checked {
+                checked = true;
+                // A direct fork syscall bypasses libc's child hook, so the
+                // child still records its parent's pid and the lock may name
+                // a parent thread the child lacks. Ask the kernel.
+                let pid = crate::getpid() as u32;
+                if PROCESS.load(Relaxed) != pid {
+                    let owner = observed & !WAITERS;
+                    if !thread_exists(pid, owner) {
+                        if unsafe { recover(observed, id) } {
+                            PROCESS.store(pid, Relaxed);
+                            return Some(Self);
+                        }
+                        checked = false;
+                        observed = OWNER.load(Relaxed);
+                        continue;
+                    }
+                    // A thread of this process took the lock after the fork,
+                    // so the indexes are whole; wait for it.
+                    PROCESS.store(pid, Relaxed);
+                }
             } else if observed & WAITERS == 0 {
                 match OWNER.compare_exchange(observed, observed | WAITERS, Relaxed, Relaxed) {
                     Ok(_) => observed |= WAITERS,
@@ -106,23 +145,56 @@ fn initialize_process() {
     }
 }
 
-pub(crate) fn before_fork() -> Option<Guard> {
-    initialize_process();
-    Guard::acquire()
+/// libc fork's hold on the allocator across the fork syscall. The parent
+/// drops it; the child forgets it, and `after_fork` releases the lock there.
+pub(crate) struct ForkGuard {
+    _held: Guard,
 }
 
-/// Called by the surviving thread before child atfork callbacks. A raw fork
-/// may have copied a half-edited index. Each forward link of an arena list is
+impl Drop for ForkGuard {
+    fn drop(&mut self) {
+        // Cleared while the lock is still held; the inner guard releases it.
+        FORK_HELD.store(false, Relaxed);
+    }
+}
+
+/// Returns no guard when a signal handler forks while this thread is in the
+/// allocator; the child keeps the interrupted call's ownership.
+pub(crate) fn before_fork() -> Option<ForkGuard> {
+    initialize_process();
+    let guard = Guard::acquire()?;
+    FORK_HELD.store(true, Relaxed);
+    Some(ForkGuard { _held: guard })
+}
+
+/// Called by the surviving thread before child atfork callbacks, and by
+/// pthread_create in a process a direct fork syscall created. A raw fork may
+/// have copied a half-edited index. Each forward link of an arena list is
 /// published in one store and stays valid during an edit, so the child
 /// rebuilds the back links and the partial index from those links.
 pub(crate) unsafe fn after_fork(pid: u32) {
-    if PROCESS.load(Relaxed) != pid {
-        if OWNER.load(Relaxed) != 0 {
-            rebuild_indexes();
+    if PROCESS.load(Acquire) == pid {
+        return;
+    }
+    let observed = OWNER.load(Acquire);
+    let owner = observed & !WAITERS;
+    // The survivor's descriptor still holds its ID from before the fork.
+    let id = crate::malloc_thread_id();
+    if owner != 0 && owner == id {
+        if FORK_HELD.swap(false, Relaxed) {
+            // libc fork held the lock across the syscall: the indexes are
+            // whole, and no thread waits in the child.
+            OWNER.store(0, Release);
+        } else {
+            // A handler forked while this thread was inside the allocator.
+            // That call still owns the indexes and releases them on return;
+            // give its ownership this thread's ID in the child.
+            OWNER.store(crate::fork_child_thread_id(), Relaxed);
         }
-        PROCESS.store(pid, Relaxed);
+    } else if owner != 0 && !thread_exists(pid, owner) && recover(observed, id) {
         OWNER.store(0, Release);
     }
+    PROCESS.store(pid, Release);
 }
 
 pub fn class(size: usize) -> Option<usize> {
@@ -224,7 +296,9 @@ unsafe fn rebuild_indexes() {
 }
 
 unsafe fn apply_deferred() {
-    if !DEFERRED.swap(false, Relaxed) {
+    // Acquire pairs with the deferring free's Release, so the masks it set
+    // before raising the flag is visible below.
+    if !DEFERRED.swap(false, Acquire) {
         return;
     }
     for head in &ALL {
@@ -333,10 +407,11 @@ pub unsafe fn put_run(
     let class = (*arena).class;
     let mask = low_bits(run_slots(class, size)) << slot_index(arena, block, class);
     let Some(_guard) = Guard::acquire() else {
-        // Only the owner can reenter; preserve the slot until we can edit
+        // The owner's ID reentered: a handler on the owner thread, or a raw
+        // clone that shares its descriptor. Keep the slot until we can edit
         // both the bitmap and partial-list membership together.
         (*arena).deferred.fetch_or(mask, Relaxed);
-        DEFERRED.store(true, Relaxed);
+        DEFERRED.store(true, Release);
         return;
     };
     release_slots(arena, mask);

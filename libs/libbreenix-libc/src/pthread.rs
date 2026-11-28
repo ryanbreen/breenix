@@ -540,9 +540,20 @@ pub(crate) fn malloc_thread_id() -> u32 {
     if RUNTIME_READY.load(Acquire) {
         let thread = unsafe { descriptor_from_tp() };
         if !thread.is_null() {
-            return unsafe { (*thread).id.load(Relaxed) };
+            // 0 is the unlocked word. A new thread's descriptor holds 0 until
+            // its entry stores the ID, which a signal handler can precede.
+            let id = unsafe { (*thread).id.load(Relaxed) };
+            if id != 0 {
+                return id;
+            }
         }
     }
+    tid()
+}
+
+/// The ID malloc_thread_id reports for a fork child's survivor once
+/// __breenix_after_fork has stored the child's thread ID in its descriptor.
+pub(crate) fn fork_child_thread_id() -> u32 {
     tid()
 }
 

@@ -98,7 +98,7 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 // =============================================================================
 
 pub use pthread::__errno_location;
-pub(crate) use pthread::malloc_thread_id;
+pub(crate) use pthread::{fork_child_thread_id, malloc_thread_id};
 pub use stdlib::exit::exit;
 pub use stdlib::malloc::{calloc, free, malloc, realloc};
 
@@ -1048,7 +1048,8 @@ pub extern "C" fn fork() -> i32 {
     let allocator = stdlib::alloc_cache::before_fork();
     let result = libbreenix::process::fork();
     if matches!(result, Ok(libbreenix::process::ForkResult::Child)) {
-        // The child resets its own lock without issuing the parent's wake.
+        // The child hook releases fork's hold on the allocator (it may have
+        // run already, inside libbreenix's fork) without the parent's wake.
         core::mem::forget(allocator);
         unsafe {
             pthread::__breenix_after_fork();
