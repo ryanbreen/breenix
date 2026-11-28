@@ -10,14 +10,15 @@
 //! frames, one descriptor each unless physically adjacent) from submission
 //! until its waiter takes the result, or for good once the queue stops.
 //!
-//! Submission writes the chain's descriptors and its available-ring entry;
-//! `publish` then orders them before the one `avail.idx` store that makes a
-//! window of chains visible (section 2.7.13). `drain` reads the used ring
-//! entry by entry, in whatever order the device returned the chains, and
-//! accepts only the head of a chain it issued (section 2.7.8). An unknown
-//! head, or an index that runs past the chains outstanding, stops the queue:
-//! no chain is completed or reused after that, and the slots keep their
-//! memory until the device is reset and the queue rebuilt.
+//! Submission writes the chain's descriptors and its available-ring entry
+//! and leaves the chain staged; `publish` then orders them before the one
+//! `avail.idx` store that makes a window of chains visible (section 2.7.13),
+//! and only then are they issued. `drain` reads the used ring entry by entry,
+//! in whatever order the device returned the chains, and accepts only the
+//! head of a chain it issued (section 2.7.8). An unknown head, the head of a
+//! chain still staged, or an index that runs past the chains published stops
+//! the queue: no chain is completed, published or reused after that, and the
+//! slots keep their memory until the device is reset and the queue rebuilt.
 //!
 //! The same-range table orders requests from different callers: overlapping
 //! ranges are serialized when either writes, and a flush covers the whole
@@ -234,6 +235,9 @@ pub enum RequestError {
 enum Slot {
     Free,
     Reserved,
+    /// Built, with its available entry written, but not yet covered by
+    /// `avail.idx`: the device has not been given it.
+    Staged { head: u16, kind: u32, data_len: usize },
     Issued { head: u16, kind: u32, data_len: usize },
     Done { kind: u32, data_len: usize, status: u8, used_len: u32 },
     Lost,
@@ -367,29 +371,30 @@ impl<R: RingMemory> BlkQueue<R> {
         self.ring.read_used_idx()
     }
 
-    /// Head descriptor of a slot the device holds.
+    /// Head descriptor of a slot's chain, published or not.
     pub fn slot_head(&self, slot: usize) -> Option<u16> {
         match self.slots.get(slot) {
-            Some(Slot::Issued { head, .. }) => Some(*head),
+            Some(Slot::Staged { head, .. } | Slot::Issued { head, .. }) => Some(*head),
             _ => None,
         }
     }
 
-    /// A slot's state for failure reports: `F`ree, `R`eserved, `I`ssued,
-    /// `D`one or `L`ost.
+    /// A slot's state for failure reports: `F`ree, `R`eserved, `S`taged,
+    /// `I`ssued, `D`one or `L`ost.
     pub fn slot_state(&self, slot: usize) -> char {
         match self.slots.get(slot) {
             Some(Slot::Free) => 'F',
             Some(Slot::Reserved) => 'R',
+            Some(Slot::Staged { .. }) => 'S',
             Some(Slot::Issued { .. }) => 'I',
             Some(Slot::Done { .. }) => 'D',
             Some(Slot::Lost) | None => 'L',
         }
     }
 
-    /// Whether `slot` still waits for the device.
+    /// Whether `slot` still waits for the device, published or not.
     pub fn is_issued(&self, slot: usize) -> bool {
-        matches!(self.slots.get(slot), Some(Slot::Issued { .. }))
+        matches!(self.slots.get(slot), Some(Slot::Staged { .. } | Slot::Issued { .. }))
     }
 
     /// Take a free chain slot for the owner `tag` (nonzero). The tag stays
@@ -501,23 +506,30 @@ impl<R: RingMemory> BlkQueue<R> {
 
         self.chain_len[head as usize] = needed;
         self.head_slot[head as usize] = slot as u8;
-        self.slots[slot] = Slot::Issued { head, kind, data_len: len };
+        self.slots[slot] = Slot::Staged { head, kind, data_len: len };
         self.ring.write_avail_entry(self.avail_idx % self.size, head);
         self.avail_idx = self.avail_idx.wrapping_add(1);
         self.outstanding += 1;
         Ok(head)
     }
 
-    /// Make the submitted chains visible with one index store. Returns
-    /// whether the device needs a notification.
+    /// Make the submitted chains visible with one index store, whichever
+    /// caller staged them, and issue them. Returns whether the device needs a
+    /// notification. A stopped queue publishes nothing: its staged chains are
+    /// lost, and their callers have been told so.
     pub fn publish(&mut self) -> bool {
-        if self.avail_idx == self.published_idx {
+        if self.stopped || self.avail_idx == self.published_idx {
             return false;
         }
         self.ring.barrier_before_avail_idx();
         self.ring.write_avail_idx(self.avail_idx);
         self.published_idx = self.avail_idx;
         self.ring.barrier_before_notify();
+        for slot in &mut self.slots[..self.chains] {
+            if let Slot::Staged { head, kind, data_len } = *slot {
+                *slot = Slot::Issued { head, kind, data_len };
+            }
+        }
         true
     }
 
@@ -563,7 +575,7 @@ impl<R: RingMemory> BlkQueue<R> {
     pub fn finish(&mut self, dma: &mut impl DmaMemory, slot: usize, read_out: Option<&mut [u8]>) -> Result<(), RequestError> {
         let (kind, data_len, status, used_len) = match self.slots.get(slot) {
             Some(&Slot::Done { kind, data_len, status, used_len }) => (kind, data_len, status, used_len),
-            Some(Slot::Issued { .. }) => return Err(RequestError::Pending),
+            Some(Slot::Staged { .. } | Slot::Issued { .. }) => return Err(RequestError::Pending),
             Some(Slot::Lost) => return Err(RequestError::Lost),
             _ => return Err(RequestError::NotIssued),
         };
@@ -591,12 +603,13 @@ impl<R: RingMemory> BlkQueue<R> {
 
     /// Stop the queue with requests still on the device: after an abandoned
     /// wait, or a device that stopped answering. Each chain the device holds
-    /// is lost with its memory, no slot is reserved again, and later used
-    /// entries are ignored until the device is reset and the queue rebuilt.
+    /// is lost with its memory, and so is each staged chain, which is never
+    /// published; no slot is reserved again, and later used entries are
+    /// ignored until the device is reset and the queue rebuilt.
     pub fn stop(&mut self) {
         self.stopped = true;
         for slot in &mut self.slots[..self.chains] {
-            if matches!(slot, Slot::Issued { .. }) {
+            if matches!(slot, Slot::Staged { .. } | Slot::Issued { .. }) {
                 *slot = Slot::Lost;
             }
         }
