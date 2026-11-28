@@ -254,7 +254,7 @@ The same as on x86 (§1.2), plus the ARM64-only per-CPU state that today sits un
 and `cpu_state` (`scheduler.rs:7316-7386`). That is sound only while one global lock covers every queue.
 Under the home CPU's lock alone, a peer could grow its own queue during the scan and leave the reader
 holding freed storage. So E9.1 deletes both functions on ARM64. x86 already skips them (`:7364`). ARM64
-then uses x86's placement path:
+then uses x86's placement path: <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
 
 - `hold(tid, WAKE_PLACE, home)` records the placement and the home CPU in the thread's R17 record
   (`rq.rs:1252-1268`);
@@ -283,7 +283,7 @@ only for whole-scheduler holders until E9.4. <!-- claim-lint:ok: normative requi
 Neither architecture waits for a stack (ruling S8). They differ in what follows the skip. x86 registers
 as a waiter, rechecks the mark and is kicked by the clear (§1.2). ARM64 registers nothing and relies on
 a later selection. The shared selection calls `RqArch::stack_owner_elsewhere`. x86's implementation
-keeps today's protocol, unchanged in every PR. ARM64's adopts the same protocol in E9.1, as follows.
+keeps today's protocol, unchanged in every PR. ARM64's adopts the same protocol in E9.1, as follows. <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
 
 **ARM64 registers, rechecks and is kicked durably (E9.1).** Today ARM64 skips a marked thread and relies
 on a later selection, "at the latest the next tick" (`switch_save.rs:11-14`). Tickless idle (E9.6b)
@@ -298,7 +298,7 @@ removes that tick. So E9.1 gives `switch_save` a waiter set per marking CPU and 
 
 The waiter's set-then-load and the leaver's clear-then-swap are sequentially consistent operations.
 Either the selector's second load sees the clear, or the leaver's swap sees the selector's bit. That
-holds for every interleaving (model in §10, E9.1). This is the order x86 already uses (§1.2).
+holds for every interleaving (model in §10, E9.1). This is the order x86 already uses (§1.2). <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
 
 ### 3.5 The ARM64 switch transaction
 
@@ -331,19 +331,19 @@ holds for every interleaving (model in §10, E9.1). This is the order x86 alread
   `rq::try_local`, not the waiting `rq::local` (`rq.rs:602-615`). When the try fails:
   - *interrupt-return dispatch* sets this CPU's `DISPATCH_OWED` flag, tries the lock once more, and
     returns to the interrupted thread if that also fails, with interrupts enabled as they were. Nothing
-    has been dequeued, so the thread is still the CPU's current thread;
+    has been dequeued, so the thread is still the CPU's current thread; <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
   - *the inline and exit switches* set the flag and retry with interrupts enabled between attempts. A
     thread that has not committed its park is still running (E2 §3.3), so it keeps its CPU and services
     interrupts while it retries;
   - every release of a run-queue lock by a CPU other than its owner reads the owner's `DISPATCH_OWED`
     after the unlock and kicks the owner if the flag is set. The kick is deferred past the unlock, like
-    the other SGIs.
+    the other SGIs. <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
 
   The flag store and the retry on one side, and the unlock and the flag read on the other, are
   sequentially consistent. So either the retry finds the lock free or the releaser sees the flag. That
   holds for every interleaving (model in §10, E9.1). E9.1 moves ARM64 to `try_local` for all three entry
   points. x86 keeps `rq::local` in E9.1, which leaves x86 unchanged, and moves to `try_local` in E9.2a
-  under the same kernel check.
+  under the same kernel check. <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
 
 The lock is now this CPU's alone, so a peer's dispatch, wake or steal is held up only on try-locks of
 this CPU, and those do not wait (S2).
@@ -528,7 +528,7 @@ preempted or may it run deferred work" are mask tests on the whole word. <!-- cl
 - **NMI** (requirement 2). Never runs deferred work, and never raises it. <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
   - *Why.* An NMI is taken even with interrupts masked (SDM Vol. 3A, "Nonmaskable Interrupt (NMI)").
     One that lands after the idle loop's final masked check returns to the HLT. A bit raised there
-    would wait for whatever interrupt wakes the CPU next, and a tickless idle CPU may have none.
+    would wait for whatever interrupt wakes the CPU next, and a tickless idle CPU may have none. <!-- claim-lint:ok: the NMI masking fact is from the Intel SDM Vol. 3A section cited in this paragraph; the consequence is a normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2). -->
   - *How it is held.* The only NMI handler is the x86 shootdown handler
     (`tlb::shootdown_nmi_handler`, installed at `interrupts.rs:254`), and it raises no deferred work.
     E9.7 retires that NMI. In testing builds `defer::raise` checks `nmi` and writes a receipt and
@@ -580,11 +580,11 @@ preempted or may it run deferred work" are mask tests on the whole word. <!-- cl
   entry from idle, before the handler can take a `Pin`, or the idle loop's return to the scheduler. Both
   increments are sequentially consistent. A grace period snapshots each CPU's counter after the unlink.
   A CPU whose snapshot is odd, or whose counter has changed since, has passed a quiescent state. So an
-  idle CPU holds up no grace period, and a handler that leaves idle to take a `Pin` is waited for.
+  idle CPU holds up no grace period, and a handler that leaves idle to take a `Pin` is waited for. <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
 - **Bounded batches.** Each CPU frees at most a fixed batch per pass from its own queue, in its idle loop
   or its housekeeping deadline. An idle CPU frees its batch before it halts. While its own backlog is
   non-empty it arms the reclamation housekeeping deadline rather than halting with no deadline. A
-  tickless idle CPU therefore never sits on a backlog of its own.
+  tickless idle CPU therefore never sits on a backlog of its own. <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
 - **Backpressure.** When a CPU's backlog passes a threshold, new admissions on that CPU park on reclamation
   progress (E2 `park::wait`) until the backlog falls. Until E2.2 lands, they return EAGAIN as today.
 - **What reclamation preserves.** Batched translation invalidation for kernel stacks, the per-thread
@@ -666,11 +666,11 @@ Each CPU owns one deadline queue under its run-queue lock. It holds:
 
 The queue is a per-CPU heap of intrusive nodes, one per sleeping thread (in the thread) and one per
 housekeeping kind (in the per-CPU area), so arming never allocates and never refuses. "A full heap refuses
-admission" (`deadlines.rs:2`) goes.
+admission" (`deadlines.rs:2`) goes. <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
 
 A thread's deadline is never posted to another CPU. The R17 inbox carries wake bits only
 (`publish_wake(tid, bits, ..)`, `rq.rs:1263`). A deadline left there would stay with the old owner after a
-migration. Instead:
+migration. Instead: <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
 
 - **Arm.** Only the owner arms a thread's deadline, under the owner's lock. A sleeper arms its own
   deadline in the park commit (E2 §3.3 step 3), which runs on its owner CPU. Housekeeping deadlines are
@@ -700,7 +700,7 @@ for the head: <!-- claim-lint:ok: normative requirement of docs/plans/e9-schedul
   timer chosen at init, and every "now" it computes from reads that timer's own counter. That is
   `CNTPCT_EL0` for the physical timer and `CNTVCT_EL0` for the virtual one. Today's arm paths already
   pair them this way (`timer_interrupt.rs:544-559`). A path that arms both timers computes each compare
-  from its own counter. A virtual count is never written to the physical compare.
+  from its own counter. A virtual count is never written to the physical compare. <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
 - **x86.** It uses TSC-deadline mode when CPUID.01H:ECX[24] reports it: the deadline goes into the
   IA32_TSC_DEADLINE MSR (SDM Vol. 3A, "APIC Timer", TSC-deadline mode). Otherwise it uses one-shot mode with
   an initial count computed from the calibrated rate. The invariant TSC (CPUID.80000007H:EDX[8]) is the
@@ -726,7 +726,7 @@ for the head: <!-- claim-lint:ok: normative requirement of docs/plans/e9-schedul
   - device interrupts are delivered to it directly.
 - **Owed kicks (S5).** A reschedule notification that cannot be sent never relies on a periodic tick: <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
   - On x86 under x2APIC, a send is one ICR write with no busy state to refuse it (`apic.rs:355`,
-    `:387`), so nothing is owed.
+    `:387`), so nothing is owed. <!-- claim-lint:ok: read from kernel/src/arch_impl/x86_64/apic.rs:355 and :387 at b22a066f, unchanged at this branch's merge of origin/main. -->
   - Under xAPIC, `try_send_reschedule` skips a busy ICR (`apic.rs:370-373`). A busy ICR means only that
     the previous IPI is still being delivered (SDM Vol. 3A, "Interrupt Command Register (ICR)", delivery
     status). Kicks are sent after the run-queue unlock. So under E9.6b a sender that finds the ICR
@@ -773,7 +773,7 @@ for the head: <!-- claim-lint:ok: normative requirement of docs/plans/e9-schedul
   mappings are never global (SDM Vol. 3A, "Process-Context Identifiers (PCIDs)"). It can use them again
   only by loading A. A load at a stale generation clears the no-flush bit, which invalidates that PCID's
   entries (SDM, "MOV to CR3" with CR4.PCIDE=1). So the CPUs that can translate through A's old entries
-  are exactly those in `A.loaded`.
+  are exactly those in `A.loaded`. <!-- claim-lint:ok: Intel SDM Vol. 3A, "Process-Context Identifiers (PCIDs)" and MOV to CR3 with CR4.PCIDE=1, cited in this paragraph; the set rule is a normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2). -->
 - **Ordering between activation and target selection.** Each address space A keeps a `loaded` `CpuSet`
   beside its generation. Both sides use locked read-modify-writes. Locked instructions have one total
   order, and loads are not reordered with them (SDM Vol. 3A, "Memory Ordering in P6 and More Recent
@@ -793,7 +793,7 @@ for the head: <!-- claim-lint:ok: normative requirement of docs/plans/e9-schedul
   If the initiator's read misses an activating CPU, that CPU's RMW came after the increment in the total
   order, so its generation read sees g and it flushes. If the activating CPU read the old generation,
   its RMW came first, so the initiator's read includes it and the IPI reaches it. An IPI handler flushes
-  when its current address space is A at a cached generation below g, and acknowledges in every case.
+  when its current address space is A at a cached generation below g, and acknowledges in every case. <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
 - **Targets.** A shootdown for address space A at generation g goes only to the CPUs in that read of
   `A.loaded`. They invalidate the range or flush the PCID and acknowledge. A CPU that caches A but does
   not have it loaded needs no interrupt: at its next switch to A it finds its cached generation below g
@@ -850,7 +850,7 @@ after E9.1. One lane owns each PR (DEV-30(3)). <!-- claim-lint:ok: normative req
 `python3 -m doctest docs/plans/e9-scheduler.md`. A model states the design's rule, not the implementation.
 The implementation PR's own check binds that PR. Models that race two CPUs enumerate every interleaving
 of their steps, keeping each CPU's program order. The steps are sequentially consistent, which §3.4 and
-§9.2 require of the operations they name.
+§9.2 require of the operations they name. <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
 
 ```pycon
 >>> from itertools import combinations
@@ -936,7 +936,7 @@ of their steps, keeping each CPU's program order. The steps are sequentially con
     once, after it revalidates the owner under the owner's lock. Red on the design as first written,
     because §3.2 moved `deliver_pinned_wakes_for_this_cpu` under the home CPU's lock alone. Its
     `pinned_wake_is_waiting_here` reads every CPU's queue and `cpu_state` (`scheduler.rs:7316-7386`).
-    Green on §3.2's R17 placement through `place_held`.
+    Green on §3.2's R17 placement through `place_held`. <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
 
     ```pycon
     >>> def pinned_delivery_reads(home, cpus, owner):
@@ -1066,7 +1066,7 @@ of their steps, keeping each CPU's program order. The steps are sequentially con
     check therefore returns straight to the halt. Red on §5.3 as first written: there a raise is
     allowed "any context", an NMI never runs the work, and nothing notifies the CPU afterwards. Green
     on §5.3's rule that an NMI never raises, which the testing-build receipt and the structure test
-    below enforce in the implementation.
+    below enforce in the implementation. <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
 
     ```pycon
     >>> IDLE = ['mask', 'check_pending', 'halt']
@@ -1090,7 +1090,7 @@ of their steps, keeping each CPU's program order. The steps are sequentially con
   - The layout check is red on today's tree: a structure test that no file outside `cpu_nest` names a
     raw nesting constant. The same file checks that no path from the NMI handler reaches
     `defer::raise`. That half guards a rule and is green on today's tree, whose NMI handler raises
-    nothing.
+    nothing. <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
 - **Rows.** `network.tcp-guest-to-host` and `network.tcp-host-to-guest` (NetRx budget and hand-off),
   `network.scp-*`. Neutral checks on `process.getpid` and `process.fork-exec`.
 - **Boot.** One ARM64 QEMU boot: interrupt-exit behaviour is a hardware exception return.
@@ -1296,7 +1296,7 @@ of their steps, keeping each CPU's program order. The steps are sequentially con
     loaded and CPUs 2 and 3 sit idle on the kernel root, caching A's PCID. The frame must be freed once
     CPU 1 acknowledges. No wait may depend on CPUs 2 and 3 ever running A again. Red on §9.2 as first
     written. Its lifetime rule waits for every CPU in the set to acknowledge or flush, yet it sends no
-    IPI to the CPUs that only cache the PCID. Green on §9.2's lifetime rule over the target set.
+    IPI to the CPUs that only cache the PCID. Green on §9.2's lifetime rule over the target set. <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
 
     ```pycon
     >>> def free_waits_for(loaded_at_selection, cached_only):
