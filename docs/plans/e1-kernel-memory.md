@@ -632,9 +632,29 @@ Bonwick and Adams 2001.
   - `dealloc` cannot fail;
   - `realloc` stays in place where the layer allows: same slab class, `grow_in_place`, or the vmap move.
 - Explicit APIs for code that can say more than `Layout` can:
-  - `kmem::try_alloc(layout, Ctx)`, where `Ctx` is `Normal`, `Atomic` (interrupt or reclaim; may use the
-    emergency reserve) or `NoReclaim` (must not run shrinkers, for callers that hold a shrinker's lock);
-  - `kmem::alloc_pages(order, zone, Ctx)`.
+  - `kmem::try_alloc(layout, Ctx)` and `kmem::alloc_pages(order, zone, Ctx)`.
+- `Ctx` is `Normal`, `Atomic` or `NoReclaim`. Each is a list of steps the allocator may take, enforced in
+  the allocator and not left to the caller:
+
+  | Step | `Normal` | `NoReclaim` | `Atomic` |
+  |---|---|---|---|
+  | Own CPU's magazine or page-cache pop | yes | yes | yes |
+  | Refill from a depot, slab list or zone, under its lock | lock | lock | `try_lock` only; busy means fail |
+  | Grow a span or vmap (maps pages, may take table pages) | yes | yes | no |
+  | Flush the pending-unmap list (an x86 shootdown waits for each CPU) | yes | yes | no |
+  | Slow-path drains of other CPUs (`try_lock`, 7.2 step 2) | yes | yes | no |
+  | Shrinkers (7.2 steps 3-4) | yes | no | no |
+  | Emergency reserve (5.3, half of `min`) | no | no | yes |
+
+  - The context is derived, not only passed: `GlobalAlloc` reads the CPU's interrupt nesting (the
+    preempt count's interrupt bits, `in_interrupt()` in `per_cpu.rs:690` and `per_cpu_aarch64.rs:615`)
+    and the `in_reclaim` flag. In an interrupt handler or inside a shrinker, a `Normal` request is
+    lowered to `Atomic`. A caller holding a shrinker's lock passes `NoReclaim`. A request can be lowered,
+    and is not raised.
+  - So an interrupt-context miss reaches at most one `try_lock` per layer and the reserve. It does not
+    spin on a contended refill, run reclaim or wait for a shootdown.
+  - Each step checks the context in the allocator's code, and `kmem::stats()` counts refusals per
+    context, so a refused step shows up in `/proc/breenix/kmem`.
 - The fixed heap reservation goes on both architectures:
   - x86's 64 MiB window at `0x4444_4444_0000` is no longer mapped;
   - ARM64's `place_kernel_pools` no longer carves a heap, and `KERNEL_HEAP_MIN` and `KERNEL_HEAP_MAX` are
@@ -670,7 +690,10 @@ The slow path is entered when a zone would go below `min`, or when a layer canno
 4. Run the remaining registered shrinkers in cost order (7.3), asking for the shortfall plus `batch`. Stop
    as soon as the target is met.
 5. Retry the allocation once.
-6. If the context is `Atomic`, allow the emergency reserve. Otherwise return `AllocError`.
+6. Return `AllocError`.
+
+The context limits the steps (the table in 6.6). `NoReclaim` runs steps 1, 2, 5 and 6. `Atomic` runs
+step 1 with `try_lock`, then tries the emergency reserve, then step 6. It does not enter steps 2-4.
 
 - The slow path holds no allocator lock while it runs shrinkers.
 - A per-CPU `in_reclaim` flag makes any allocation a shrinker makes `Atomic`, and stops reclaim from
@@ -695,12 +718,20 @@ The slow path is entered when a zone would go below `min`, or when a layer canno
   2. span arenas: empty spans; vmap: the pending-flush list;
   3. block cache: clean, unpinned entries. This needs a new non-blocking entry point in `block/cache.rs`;
      the cache bounds itself today but cannot be asked to shrink;
-  4. mapping cache: clean pages no binding covers, using the eviction `evict` already does
-     (`file_map.rs:1138`), but on demand. Unbinding still requests eviction at once (`file_map.rs:529`);
-     with pressure now having a path, that request can wait for the shrinker (memory lane F3's interim
-     step). Populated pages that are not yet bound stay pinned (cfec5a00);
-  5. BreenFS decoded-node cache.
-- Each shrinker is a few lines in its owning module, with its own host test.
+  4. BreenFS decoded-node cache, under the mount lock's `try_lock` (`fs/breenfs/mount_lock.rs:101`). It
+     is registered only if its entries can be dropped from one end of an order in bounded steps. If
+     `node_cache.rs`'s structure cannot do that without a full scan, it waits for E3 like the mapping
+     cache below.
+- The mapping cache is not an E1 shrinker. `evict` (`file_map.rs:1138`) takes its map lock with a blocking
+  `lock()`, needs the filesystem write guard its caller holds, and is a full scan: `retain` over each cached
+  page, testing it against each binding and population claim. That makes it O(pages × bindings). A
+  shrinker built on it would block, and its work would not be bounded by its target. The mapping cache
+  keeps today's eviction request at unbind (`file_map.rs:529`). E3's page cache, with an LRU that can be
+  trimmed from one end under `try_lock`, is where file pages become reclaimable.
+- Each registered shrinker meets two rules, tested in its own module: it takes its lock with `try_lock`
+  only, and its work is bounded by its target plus a fixed batch, with no full scan. The block cache
+  meets both with a new `shrink` entry point: its state is a spin `Mutex` with an LRU ordered map
+  (`block/cache.rs:199`, `:276`), so it can pop clean, unpinned entries from the cold end.
 
 ### 7.4 Converting the panicking callers
 
@@ -949,8 +980,10 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
   - `kmem::AllocError`, `Ctx`, and the `in_reclaim` flag;
   - the shrinker registry and the slow path (7.2) wrapped around the existing fixed heap: on failure the
     heap's `alloc` runs the shrinkers and retries before returning null;
-  - the first shrinkers: block cache (a new non-blocking `shrink`), mapping cache (on-demand eviction) and
-    the BreenFS node cache;
+  - the first shrinkers: the block cache (a new `shrink` from the LRU's cold end, under `try_lock`), and
+    the BreenFS node cache if it meets 7.3's two rules. The mapping cache is not one (7.3);
+  - `Ctx`'s step table (6.6) enforced in the allocator, with the context lowered to `Atomic` in
+    interrupt context and inside reclaim;
   - `report_oom` on both architectures;
   - `FaultOutcome::OutOfMemory` with the existing SIGKILL policy, counted.
 - x86-64 and ARM64: the same on both. A heap exhaustion that clean caches can cover is now survived instead
@@ -962,9 +995,15 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
   - A shrinker whose lock is held is skipped, and the slow path returns `AllocError` without waiting, under
     a fixed interleaving in which the caller holds that lock.
   - Shrinkers run in cost order and stop at the target.
-  - The block-cache and mapping-cache shrinkers have their own tests in `block-host-tests` and the
-    mapping-cache fixture: only clean, unpinned, unbound entries are dropped. That includes the R1 case:
-    pages populated but not yet bound are pinned and not dropped.
+  - The block-cache shrinker has its own test in `block-host-tests`: it drops only clean, unpinned
+    entries from the cold end, and the entries it visits are at most its target plus the batch. With the
+    cache's lock held, it returns 0 without waiting.
+  - Context enforcement, under a fixed schedule: an `Atomic` request whose own-CPU layer is empty and
+    whose depot lock is held by another simulated CPU makes 1 `try_lock` attempt, takes the reserve or
+    fails, and runs 0 shrinkers, 0 remote drains and 0 flushes. A `Normal` request made while the
+    model's interrupt count is above 0 is treated the same way. A `NoReclaim` request runs 0
+    shrinkers. Check first: today's front (`heap.rs` `alloc`) given the same held lock spins on it,
+    which the model counts as a wait, and that is red.
 - Boot: not needed.
 - Rows: no row expected to move. This is the failure path.
 
