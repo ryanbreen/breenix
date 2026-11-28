@@ -266,7 +266,7 @@ fn runtime_readback_rejects_mismatched_bytes() {
     };
     let manifest = serde_json::json!({
         "id": "old-version", "files": {"bin/rustc": facts(b"rustc")},
-        "runtime": {"libc.so": facts(b"libc"), "ld-breenix.so": facts(b"loader")}
+        "runtime": {"/lib/libc.so": facts(b"libc"), "/lib/ld-breenix.so": facts(b"loader")}
     });
     opt.write(
         "old-version/MANIFEST.json",
@@ -277,7 +277,67 @@ fn runtime_readback_rejects_mismatched_bytes() {
     root.write("lib/libc.so", b"oops", 0o755);
     assert!(installer::paired::verify_runtime_fixture(&root.0, &opt.0)
         .unwrap_err()
-        .contains("libc.so"));
+        .contains("/lib/libc.so"));
+}
+
+/// The R240's paired deploy of dfe80725 stopped verify with "missing toolchain runtime
+/// libc.so": the box's manifest, written by scripts/devbox/toolchain.py, keys its runtime
+/// rows `/lib/libc.so` and `/lib/ld-breenix.so` (tests/devbox_toolchain_test.py pins that),
+/// and the check looked for bare names, which toolchain.py does not write. A row must name
+/// one file directly in `/lib`; the 8 rows below that do not are refused.
+#[test]
+fn runtime_readback_reads_the_producers_lib_paths() {
+    let root = Fixture::new();
+    let opt = Fixture::new();
+    fs::create_dir_all(opt.0.join("old-version/bin")).unwrap();
+    opt.write("old-version/bin/rustc", b"rustc", 0o755);
+    root.write("usr/lib/breenix/rust-current", b"old-version\n", 0o644);
+    root.write("lib/libc.so", b"libc", 0o755);
+    root.write("lib/ld-breenix.so", b"loader", 0o755);
+    fs::create_dir_all(root.0.join("etc")).unwrap();
+    root.write("etc/libc.so", b"libc", 0o755);
+    let facts = |bytes: &[u8]| {
+        serde_json::json!({
+            "size": bytes.len(), "mode": "0755", "sha256": installer::paired::digest(bytes)
+        })
+    };
+    let check = |runtime: serde_json::Value| {
+        let manifest = serde_json::json!({
+            "id": "old-version", "files": {"bin/rustc": facts(b"rustc")}, "runtime": runtime
+        });
+        let path = opt.0.join("old-version/MANIFEST.json");
+        let _ = fs::remove_file(&path);
+        opt.write("old-version/MANIFEST.json", manifest.to_string().as_bytes(), 0o444);
+        installer::paired::verify_runtime_fixture(&root.0, &opt.0)
+    };
+    check(serde_json::json!({
+        "/lib/ld-breenix.so": facts(b"loader"), "/lib/libc.so": facts(b"libc")
+    }))
+    .unwrap();
+    let error = check(serde_json::json!({
+        "libc.so": facts(b"libc"), "ld-breenix.so": facts(b"loader")
+    }))
+    .unwrap_err();
+    assert!(error.contains("/lib/libc.so"), "{error}");
+    let error = check(serde_json::json!({"/lib/libc.so": facts(b"libc")})).unwrap_err();
+    assert!(error.contains("/lib/ld-breenix.so"), "{error}");
+    for unsafe_path in [
+        "libc.so",
+        "/etc/libc.so",
+        "/lib/../etc/libc.so",
+        "/lib//libc.so",
+        "/lib/./libc.so",
+        "/lib/sub/libc.so",
+        "/lib/libc.so/",
+        "/lib/",
+    ] {
+        let error = check(serde_json::json!({
+            "/lib/libc.so": facts(b"libc"), "/lib/ld-breenix.so": facts(b"loader"),
+            unsafe_path: facts(b"libc")
+        }))
+        .unwrap_err();
+        assert!(error.contains("unsafe toolchain"), "{unsafe_path}: {error}");
+    }
 }
 
 /// The rehearsal on the built image (paired_image.rs) first stopped verify with a bare
@@ -305,7 +365,7 @@ fn runtime_readback_names_what_is_missing() {
     };
     let manifest = serde_json::json!({
         "id": "old-version", "files": {"bin/rustc": facts(b"rustc")},
-        "runtime": {"libc.so": facts(b"libc"), "ld-breenix.so": facts(b"loader")}
+        "runtime": {"/lib/libc.so": facts(b"libc"), "/lib/ld-breenix.so": facts(b"loader")}
     });
     opt.write("old-version/MANIFEST.json", manifest.to_string().as_bytes(), 0o444);
     fs::remove_dir_all(root.0.join("lib")).unwrap();

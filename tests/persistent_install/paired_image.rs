@@ -639,6 +639,10 @@ mod rehearsal {
         }
     }
 
+    /// A toolchain manifest in the layout `scripts/devbox/toolchain.py` writes: the runtime
+    /// rows are keyed by their absolute `/lib/<name>` paths (rust_host_stage.py
+    /// `hosted_runtime_entries`, pinned by tests/devbox_toolchain_test.py). The box's
+    /// x86_64-a763a7dd-e231546f manifest has those keys.
     fn toolchain_manifest(opt: &Path, id: &str, libc: &[u8], loader: &[u8]) {
         let dir = opt.join("breenix/rust").join(id);
         fs::create_dir_all(dir.join("bin")).unwrap();
@@ -647,7 +651,7 @@ mod rehearsal {
         let facts = |bytes: &[u8]| serde_json::json!({"size": bytes.len(), "mode": "0755", "sha256": digest(bytes)});
         let manifest = serde_json::json!({
             "id": id, "fork_commit": "0".repeat(40), "files": {"bin/rustc": facts(b"rustc")},
-            "runtime": {"libc.so": facts(libc), "ld-breenix.so": facts(loader)},
+            "runtime": {"/lib/ld-breenix.so": facts(loader), "/lib/libc.so": facts(libc)},
         });
         fs::write(dir.join("MANIFEST.json"), manifest.to_string()).unwrap();
     }
