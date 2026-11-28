@@ -7,6 +7,67 @@ import unittest
 from unittest.mock import Mock
 
 
+class PairedFlashTest(unittest.TestCase):
+    def setUp(self):
+        self.flash = runpy.run_path(str(Path(__file__).resolve().parents[1] /
+                                       'scripts/metal/metal_live_flash.py'))
+        self.current = '20261127T230258Z-metal'
+        self.previous = '20261127T224742Z-metal'
+        self.trial = '20261127T235000Z-metal'
+        self.staged = '20261127T235900Z-metal'
+        self.token = '1' * 32
+        self.commit = '2' * 40
+
+    def test_reclaim_through_each_host_publication_cut(self):
+        slots = {'current': {'userland': self.current},
+                 'previous': {'userland': self.previous}}
+        trial = dict(userland=self.trial)
+        staged = dict(userland=self.staged)
+        names = lambda *ids: {'gen-' + value for value in ids}
+        # An acknowledged trial can be left unpromoted, for example
+        # when NEXT differs from the trial. Its receipt keeps three roots.
+        for attempts, booted, expected in (
+            ([], self.current, names(self.current, self.previous)),
+            ([staged], self.current, names(self.current, self.previous, self.staged)),
+            ([trial], self.trial, names(self.current, self.previous, self.trial)),
+            ([trial, staged], self.trial, names(self.current, self.previous, self.trial, self.staged)),
+        ):
+            with self.subTest(booted=booted, attempts=attempts):
+                self.assertEqual(self.flash['retained_roots'](slots, attempts, 'gen-' + booted),
+                                 expected)
+        promoted = {'current': trial, 'previous': slots['current']}
+        self.assertEqual(self.flash['retained_roots'](promoted, [], 'gen-' + self.trial),
+                         names(self.current, self.trial))
+
+    def test_manifest_capacity_and_capability(self):
+        entry = dict(commit=self.commit, sha256='3' * 64, baseNoteSha256='4' * 64,
+                     userland=self.trial)
+        for size, length in [(99_999_999, 256), (536_870_912, 257)]:
+            with self.subTest(size=size):
+                entry['size'] = size
+                legacy = self.flash['manifest'](self.token, entry, 1)
+                paired = self.flash['manifest'](self.token, entry, 2)
+                self.assertEqual(len(legacy.splitlines()), 6)
+                self.assertLessEqual(len(legacy), 255)
+                self.assertEqual(paired.splitlines()[0], b'BREENIX-FLASH 2')
+                self.assertEqual(paired.splitlines()[-1], ('gen-' + self.trial).encode())
+                self.assertEqual(len(paired), length)
+
+    def test_paired_install_uses_live_build_and_rejects_network_recovery(self):
+        runner = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'scripts/metal/metal-run'))
+        scope = runner['install_persistent'].__globals__
+        live = Mock(return_value=0)
+        network = Mock(side_effect=AssertionError('paired deploy used the network installer'))
+        scope.update(live_flash=live, boot=network)
+        parser = runner['argument_parser']()
+        args = parser.parse_args(['install-persistent', '--paired', '--inject', 'paired-no-commit'])
+        self.assertEqual(runner['install_persistent'](args), 0)
+        live.assert_called_once_with(args)
+        args.recovery = True
+        with self.assertRaises(SystemExit):
+            runner['install_persistent'](args)
+
+
 class FlashPathTest(unittest.TestCase):
     def test_kernel_flash_uses_ssh_unless_explicitly_in_recovery(self):
         runner = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'scripts/metal/metal-run'))
