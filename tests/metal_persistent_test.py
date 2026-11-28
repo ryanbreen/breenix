@@ -304,6 +304,22 @@ class DriverPersistentTest(unittest.TestCase):
     def tearDown(self):
         self.fixture.tearDown()
 
+    def test_replace_usr_requires_selection_safe_installer(self):
+        d = self.driver
+        d.args.replace_usr = True
+        record = persistent_disk_records()[3]
+        generation = '20261127T230258Z-metal'
+        metal_persist.update_disk(layout=record['layout'],
+                                  slots={'current': {'writableRoot': True, 'userland': generation}})
+        build = {'writablePersistentRoot': True}
+        with patch.object(d, 'prepare_replace_usr', return_value=({}, None)) as stage:
+            with self.assertRaisesRegex(boot.Finish, 'preserves.*rust-current'):
+                d.prepare_install(d.stage, build)
+            stage.assert_not_called()
+            build['replaceUsrPreservesRustSelection'] = True
+            self.assertEqual(d.prepare_install(d.stage, build), ({}, None))
+            stage.assert_called_once_with(d.stage, build, record['layout'], generation)
+
     def test_default_flash_stages_only_kernel_slots(self):
         run = existing.load_script('metal-run')
         args = run.argument_parser().parse_args(['install-persistent', '--sha', 'a' * 40])
