@@ -282,7 +282,7 @@ impl Flow {
     }
 }
 
-fn take_sent(local_port: u16) -> Vec<Sent> {
+pub(crate) fn take_sent(local_port: u16) -> Vec<Sent> {
     let mut wire = WIRE.lock().unwrap();
     let (mine, rest): (Vec<_>, Vec<_>) = wire.drain(..).partition(|s| s.src_port == local_port);
     *wire = rest;

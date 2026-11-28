@@ -51,6 +51,12 @@ impl Ctx {
         self == Ctx::Normal
     }
 
+    /// Whether a kernel VA window may map pages, taking table pages, or flush
+    /// its pending unmaps, which on x86 waits for each CPU (6.6's table).
+    pub fn may_map(self) -> bool {
+        self != Ctx::Atomic
+    }
+
     /// Whether the emergency reserve may be used (5.3).
     pub fn may_use_reserve(self) -> bool {
         self == Ctx::Atomic
@@ -73,8 +79,15 @@ pub enum AllocError {
     /// `NoVa` of the layer that failed.
     HeapExhausted,
     /// The context may not take the step the request needed: an `Atomic`
-    /// request found the heap lock busy and the reserve could not serve it.
+    /// request found the heap lock busy and the reserve could not serve it,
+    /// or asked a kernel VA window to map pages or flush.
     Refused,
+    /// The kernel VA window numbered `window` (`kva_window::WindowId`) has
+    /// no free extent for the request, after its pending unmaps were flushed.
+    NoVa { window: u8 },
+    /// No frame for a kernel window's page tables or extent nodes. E1-8's
+    /// zones add the zone and order.
+    NoFrames,
 }
 
 impl AllocError {
@@ -82,7 +95,28 @@ impl AllocError {
         match self {
             AllocError::HeapExhausted => "heap_exhausted",
             AllocError::Refused => "refused",
+            AllocError::NoVa { .. } => "no_va",
+            AllocError::NoFrames => "no_frames",
         }
+    }
+
+    fn code(self) -> u64 {
+        match self {
+            AllocError::HeapExhausted => 1,
+            AllocError::Refused => 2,
+            AllocError::NoVa { window } => 3 | u64::from(window) << 8,
+            AllocError::NoFrames => 4,
+        }
+    }
+
+    fn from_code(code: u64) -> Option<AllocError> {
+        Some(match code & 0xff {
+            1 => AllocError::HeapExhausted,
+            2 => AllocError::Refused,
+            3 => AllocError::NoVa { window: (code >> 8) as u8 },
+            4 => AllocError::NoFrames,
+            _ => return None,
+        })
     }
 }
 
@@ -286,22 +320,21 @@ impl Stats {
         add(&self.failed[ctx.index()], 1);
         self.last_size.store(layout.size() as u64, Ordering::Relaxed);
         self.last_align.store(layout.align() as u64, Ordering::Relaxed);
-        let cause = match error {
-            AllocError::HeapExhausted => 1,
-            AllocError::Refused => 2,
-        };
-        self.last_cause.store(cause << 8 | ctx.index() as u64, Ordering::Relaxed);
+        self.last_cause.store(error.code() << 8 | ctx.index() as u64, Ordering::Relaxed);
         error
+    }
+
+    /// Count a step `ctx` may not take, outside the heap's own front: a
+    /// kernel window asked to map or flush in `Atomic`.
+    pub fn refuse(&self, ctx: Ctx) -> AllocError {
+        add(&self.refused[ctx.index()], 1);
+        AllocError::Refused
     }
 
     /// The last failure's cause and context, if a request has failed.
     pub fn last_failure(&self) -> Option<(AllocError, Ctx)> {
         let word = self.last_cause.load(Ordering::Relaxed);
-        let cause = match word >> 8 {
-            1 => AllocError::HeapExhausted,
-            2 => AllocError::Refused,
-            _ => return None,
-        };
+        let cause = AllocError::from_code(word >> 8)?;
         let ctx = [Ctx::Normal, Ctx::NoReclaim, Ctx::Atomic][(word & 3) as usize % 3];
         Some((cause, ctx))
     }
