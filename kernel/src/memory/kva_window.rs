@@ -174,20 +174,17 @@ impl Window {
 
     /// Unmap `allocation`: invalidate each leaf it mapped and hold its extent
     /// back until a flush covers it. An allocation with no leaf goes straight
-    /// back to the free trees. Returns the leaves invalidated. Needs one
-    /// spare node, checked before any leaf is touched.
+    /// back to the free trees. Returns the leaves invalidated. Needs no
+    /// spare node: the allocation has held one since `reserve`.
     pub fn unmap<F: Format, M: TableMemory>(
         &mut self,
         mem: &M,
         root: u64,
         allocation: &Allocation,
     ) -> Result<usize, ExtentError> {
-        if self.extents.spare_nodes() == 0 {
-            return Err(ExtentError::NoNode);
-        }
         let leaves = kva_map::invalidate_range::<F, M>(mem, root, allocation.start, allocation.len, |_| {});
         if leaves == 0 {
-            self.extents.free(allocation.extent)?;
+            self.extents.give_back(allocation.extent)?;
         } else {
             self.extents.retire(allocation.extent)?;
         }

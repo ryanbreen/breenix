@@ -327,12 +327,18 @@ fn free_extents_keep_guards_coalesce_and_run_out_with_no_va() {
     let size = 1 << 30;
     let (granule, before, after) = WindowId::Vmap.shape();
     let mut extents = Extents::new(granule);
-    let mut nodes = vec![0u64; 64 * 1024 / 8];
-    unsafe { extents.add_nodes(nodes.as_mut_ptr() as *mut u8, nodes.len() * 8) };
+    // Node pages, added as `kva::reserve` adds them: on `NoNode`.
+    let mut node_pages: Vec<Vec<u64>> = Vec::new();
+    let mut add_page = |extents: &mut Extents| {
+        let mut page = vec![0u64; PAGE as usize / 8];
+        unsafe { extents.add_nodes(page.as_mut_ptr() as *mut u8, page.len() * 8) };
+        node_pages.push(page);
+    };
+    add_page(&mut extents);
     extents.free(Extent { start: base, len: size }).unwrap();
 
     // A fixed sequence (seed 0x5eed): allocate 1 to 64 pages at 4 KiB,
-    // 64 KiB or 2 MiB alignment, or free a live allocation.
+    // 64 KiB or 2 MiB alignment, or give a live allocation back.
     let mut seed = 0x5eedu64;
     let mut next = || {
         seed ^= seed << 13;
@@ -345,7 +351,12 @@ fn free_extents_keep_guards_coalesce_and_run_out_with_no_va() {
         if live.is_empty() || next() % 3 != 0 {
             let len = (next() % 64 + 1) * PAGE;
             let align = [PAGE, 64 << 10, 2 << 20][(next() % 3) as usize];
-            let allocation = extents.allocate(len, align, before, after).unwrap();
+            let allocation = loop {
+                match extents.allocate(len, align, before, after) {
+                    Err(ExtentError::NoNode) => add_page(&mut extents),
+                    result => break result.unwrap(),
+                }
+            };
             assert_eq!(allocation.start % align, 0);
             assert_eq!(allocation.extent.start + before, allocation.start);
             assert_eq!(allocation.extent.end(), allocation.start + len + after, "guard page after");
@@ -354,7 +365,7 @@ fn free_extents_keep_guards_coalesce_and_run_out_with_no_va() {
         } else {
             let key = *live.keys().nth((next() % live.len() as u64) as usize).unwrap();
             let allocation = live.remove(&key).unwrap();
-            extents.free(allocation.extent).unwrap();
+            extents.give_back(allocation.extent).unwrap();
         }
         let mut end = base;
         for allocation in live.values() {
@@ -367,7 +378,7 @@ fn free_extents_keep_guards_coalesce_and_run_out_with_no_va() {
 
     let some = *live.values().next().unwrap();
     for allocation in std::mem::take(&mut live).into_values() {
-        extents.free(allocation.extent).unwrap();
+        extents.give_back(allocation.extent).unwrap();
     }
     let mut free = Vec::new();
     extents.for_each_free(|extent| free.push(extent));
@@ -376,7 +387,7 @@ fn free_extents_keep_guards_coalesce_and_run_out_with_no_va() {
 
     let whole = extents.allocate(size - after, PAGE, before, after).unwrap();
     assert_eq!(extents.allocate(PAGE, PAGE, before, after), Err(ExtentError::NoVa));
-    extents.free(whole.extent).unwrap();
+    extents.give_back(whole.extent).unwrap();
     assert!(extents.allocate(PAGE, PAGE, before, after).is_ok());
 }
 

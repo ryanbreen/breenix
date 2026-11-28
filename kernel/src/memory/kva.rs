@@ -247,7 +247,9 @@ fn lowered(ctx: Ctx) -> Ctx {
 }
 
 /// VA for `len` bytes aligned to `align` in window `id`. A window with no
-/// room flushes its pending unmaps and tries once more.
+/// room flushes its pending unmaps and tries once more. The allocation holds
+/// the extent node its unmap will need, so `release` never allocates; a
+/// window short of nodes gets a node page here, where failing is an error.
 pub fn reserve(id: WindowId, len: u64, align: u64, ctx: Ctx) -> Result<Allocation, AllocError> {
     let ctx = lowered(ctx);
     if !ctx.may_map() {
@@ -255,14 +257,8 @@ pub fn reserve(id: WindowId, len: u64, align: u64, ctx: Ctx) -> Result<Allocatio
     }
     let mut flushed = false;
     loop {
-        // Keep two spare nodes: one for this split, one for the unmap after.
-        let result = with_window(id, |window| {
-            if window.extents.spare_nodes() < 2 {
-                return Err(ExtentError::NoNode);
-            }
-            window.reserve(len, align)
-        })
-        .ok_or(AllocError::NoVa { window: id as u8 })?;
+        let result = with_window(id, |window| window.reserve(len, align))
+            .ok_or(AllocError::NoVa { window: id as u8 })?;
         match result {
             Ok(allocation) => return Ok(allocation),
             Err(ExtentError::NoNode) => {
@@ -308,23 +304,15 @@ pub fn map(
 /// passes 16 MiB and `ctx` may wait for the shootdown.
 pub fn release(id: WindowId, allocation: Allocation, ctx: Ctx) {
     let Some(windows) = windows() else { return };
-    let pending = loop {
-        let result = with_window(id, |window| {
-            window
-                .unmap::<Fmt, _>(&KernelTables, windows.root, &allocation)
-                .map(|_| window.extents.retired_bytes())
-        })
-        .expect("windows are set up");
-        match result {
-            Ok(pending) => break pending,
-            Err(ExtentError::NoNode) => {
-                if with_window(id, add_node_page).expect("windows are set up").is_err() {
-                    panic!("kernel window {}: no frame for an extent node", id.name());
-                }
-            }
-            Err(error) => panic!("kernel window {} release: {:?}", id.name(), error),
-        }
-    };
+    // The allocation's own node retires it, so this takes no memory; an
+    // error is a release of an allocation this window did not hand out.
+    let pending = with_window(id, |window| {
+        window
+            .unmap::<Fmt, _>(&KernelTables, windows.root, &allocation)
+            .map(|_| window.extents.retired_bytes())
+    })
+    .expect("windows are set up")
+    .unwrap_or_else(|error| panic!("kernel window {} release: {:?}", id.name(), error));
     let flush_now = POLICY == FlushPolicy::Chunked
         || (pending > kva_window::PENDING_FLUSH_BYTES && lowered(ctx).may_map());
     if flush_now {

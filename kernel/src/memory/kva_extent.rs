@@ -10,8 +10,13 @@
 //!
 //! Nodes come from pages the caller adds (`add_nodes`), not from the
 //! window itself, so the allocator does not recurse into the memory it
-//! manages. An operation needs at most one spare node and says so with
-//! `NoNode`, before it changes anything.
+//! manages. An operation that needs spare nodes says so with `NoNode`,
+//! before it changes anything.
+//!
+//! Each allocation holds one spare node from `allocate` until its extent
+//! comes back through `retire` or `give_back`, which use that node, so
+//! returning an allocation never needs a node the caller would have to
+//! allocate memory for.
 
 use core::ptr::null_mut;
 
@@ -100,6 +105,8 @@ pub struct Extents {
     roots: [*mut Node; 2],
     spare: *mut Node,
     spares: usize,
+    /// Spare nodes promised to allocations not yet returned, one each.
+    held: usize,
     retired: *mut Node,
     retired_bytes: u64,
     free_bytes: u64,
@@ -162,6 +169,7 @@ impl Extents {
             roots: [null_mut(); 2],
             spare: null_mut(),
             spares: 0,
+            held: 0,
             retired: null_mut(),
             retired_bytes: 0,
             free_bytes: 0,
@@ -182,8 +190,9 @@ impl Extents {
         }
     }
 
+    /// Spare nodes no allocation holds.
     pub fn spare_nodes(&self) -> usize {
-        self.spares
+        self.spares - self.held
     }
 
     pub fn free_bytes(&self) -> u64 {
@@ -218,6 +227,15 @@ impl Extents {
         self.seed ^= self.seed << 17;
         unsafe { (*node).priority = self.seed };
         Some(node)
+    }
+
+    /// A spare node no allocation holds.
+    fn take_unheld(&mut self) -> Option<*mut Node> {
+        if self.spares > self.held {
+            self.take_spare()
+        } else {
+            None
+        }
     }
 
     unsafe fn insert(&mut self, node: *mut Node, tree: usize) {
@@ -280,7 +298,23 @@ impl Extents {
         extent.start.checked_add(extent.len).map(|_| ()).ok_or(ExtentError::BadRequest)
     }
 
-    /// Return `extent` to the free trees, coalescing it with free neighbours.
+    /// Return an allocation's extent to the free trees with no flush, using
+    /// the node the allocation holds. With no allocation outstanding the
+    /// extent is foreign, and that is `Overlap`.
+    pub fn give_back(&mut self, extent: Extent) -> Result<(), ExtentError> {
+        if self.held == 0 {
+            return Err(ExtentError::Overlap);
+        }
+        self.held -= 1;
+        let result = self.free(extent);
+        if result.is_err() {
+            self.held += 1;
+        }
+        result
+    }
+
+    /// Return `extent`, which no allocation holds a node for (a new window),
+    /// to the free trees, coalescing it with free neighbours.
     pub fn free(&mut self, extent: Extent) -> Result<(), ExtentError> {
         self.check(extent)?;
         let (below, above) = self.neighbours(extent.start);
@@ -300,7 +334,7 @@ impl Extents {
         let node = if joins_below || joins_above {
             null_mut()
         } else {
-            self.take_spare().ok_or(ExtentError::NoNode)?
+            self.take_unheld().ok_or(ExtentError::NoNode)?
         };
         // SAFETY: each node named here is this allocator's.
         unsafe { self.link_free(extent, node, below, above, joins_below, joins_above) };
@@ -406,7 +440,9 @@ impl Extents {
             let extent = Extent { start: start - guard_before, len: total };
             let head = extent.start - node_start;
             let tail = node_end - extent.end();
-            if head != 0 && tail != 0 && self.spares == 0 {
+            // One node for the allocation to hold, and one for a split.
+            let needed = 1 + usize::from(head != 0 && tail != 0);
+            if self.spare_nodes() < needed {
                 return Err(ExtentError::NoNode);
             }
             self.remove(node, BY_SIZE);
@@ -435,14 +471,22 @@ impl Extents {
                 }
             }
             self.free_bytes -= total;
+            self.held += 1;
             Ok(Allocation { extent, start, len })
         }
     }
 
     /// Hold `extent` out of the free trees until a TLB flush covers it.
+    /// `extent` is an allocation's, and the retirement uses the node the
+    /// allocation holds, so it needs no spare. With no allocation
+    /// outstanding the extent is foreign, and that is `Overlap`.
     pub fn retire(&mut self, extent: Extent) -> Result<(), ExtentError> {
         self.check(extent)?;
-        let node = self.take_spare().ok_or(ExtentError::NoNode)?;
+        if self.held == 0 {
+            return Err(ExtentError::Overlap);
+        }
+        self.held -= 1;
+        let node = self.take_spare().expect("an allocation holds a spare node");
         // SAFETY: `node` is a spare node of this allocator.
         unsafe {
             (*node).start = extent.start;
