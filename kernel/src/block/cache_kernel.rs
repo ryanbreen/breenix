@@ -78,9 +78,23 @@ pub(crate) fn park_for_wait_retry() {
 pub type SystemCache = BufferCache<KernelWait>;
 static CACHE: Once<SystemCache> = Once::new();
 
+fn shrinker_count() -> usize {
+    CACHE.get().map_or(0, SystemCache::reclaimable_frames)
+}
+
+fn shrinker_scan(target: usize, _ctx: crate::memory::kmem::ReclaimCtx) -> usize {
+    CACHE.get().map_or(0, |cache| cache.shrink(target))
+}
+
+/// The block cache's reclaim hook, after the slab and span shrinkers E1-6 and
+/// E1-7 add (E1 plan, 7.3).
+static SHRINKER: crate::memory::kmem::Shrinker =
+    crate::memory::kmem::Shrinker::new("block-cache", 30, shrinker_count, shrinker_scan);
+
 pub fn system_cache() -> &'static SystemCache {
     crate::arch_without_interrupts(|| {
         CACHE.call_once(|| {
+            crate::memory::kmem::register_shrinker(&SHRINKER);
             let memory = crate::memory::frame_allocator::memory_stats().total_bytes;
             SystemCache::with_capacity(
                 KernelWait {

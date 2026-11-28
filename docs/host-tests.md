@@ -46,8 +46,12 @@ those same suites. The console crate also has a behavioral input executable:
 The boot-memory checks cover the loader-to-kernel UEFI map handoff, page-table
 construction, firmware RAM normalization, boot carves and the frame metadata
 (`tests/frame_meta.rs`: its lookup, its sparse placement, and its lease rules
-against the extracted pre-E1-3 ledger). Run them with
-`cargo test --manifest-path tools/kmem-host-tests/Cargo.toml`.
+against the extracted pre-E1-3 ledger). The same crate holds the allocator's front
+(`tests/kmem_front.rs`: contexts, the emergency reserve and the shrinker registry under a fixed
+lock schedule) and the OOM caller inventory scan (`tests/oom_inventory.rs`, which checks
+`docs/plans/e1-oom-inventory.json`). Run them with
+`cargo test --manifest-path tools/kmem-host-tests/Cargo.toml`. The block-cache shrinker's
+test is in `block-host-tests`.
 
 Run the standalone `tests/*_host.py` programs separately: discovery's
 `*_test.py` pattern does not include them. The SDK Python checks use

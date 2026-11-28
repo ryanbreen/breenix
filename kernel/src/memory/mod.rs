@@ -11,6 +11,7 @@ pub mod frame_allocator;
 pub mod frame_meta;
 pub mod frame_metadata;
 pub mod heap;
+pub mod kmem;
 #[cfg(target_arch = "x86_64")]
 pub mod kernel_page_table;
 pub mod kernel_walk;
