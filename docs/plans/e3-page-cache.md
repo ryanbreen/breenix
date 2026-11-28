@@ -196,8 +196,8 @@ from its page cache. Breenix's 3.72 s is device reads through an 8 MiB cache. <!
 - **Frame leases and the census.** Cache frames keep `FrameOwner::PageCache`. The `/proc/breenix/frames`
   owner set does not change (`docs/suites/README.md`, "Memory record").
 - **BreenFS's commit ordering and crash contract** (`docs/fs/breenfs-design.md` section 2.5). This covers
-  nodes and data, then FLUSH, then superblock rings, then FLUSH, and the G+2 reuse rule. Syscalls stay
-  all-or-nothing across a crash. A generation's on-disk bytes are exactly its frozen snapshot (11.2). <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+  nodes and data, then FLUSH, then superblock rings, then FLUSH, and the G+2 reuse rule. A write stays
+  all-or-nothing across a crash for each admission part, as today (11.5a). A generation's on-disk bytes are exactly its frozen snapshot (11.2). <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
 - **Delayed allocation.** Blocks are allocated when a generation's pages are drained, in runs of up to
   1 MiB.
 - **Checksums.** Every data block read from the device is verified against its extent REF CRC before its
@@ -565,39 +565,49 @@ copies each byte from exactly one source. <!-- claim-lint:ok: normative requirem
 
 ### 7.2 write
 
-For a Native file, `write(fd, buf, n)`:
+For a Native file, `write(fd, buf, n)`, one part at a time (11.5a):
 
-1. Copy from user memory in bounded chunks (64 KiB, as read does) into kernel staging, before taking any
-   lock. This replaces the whole-request heap copy (`handlers.rs:619`). E3-15 removes the staging.
-2. Take `io` exclusive. For `O_APPEND`, take the offset from the size under it.
-3. Let BreenFS admit and reserve the write: its worst-case space reservation (`reserve.rs`) and the generation
-   bookkeeping. Only the byte budget changes (11.4).
-4. **Prepare** every page the chunk covers. This step may fail, and it changes no page the tree holds: <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+1. Take `io` exclusive, and keep it until the last part. For `O_APPEND`, take the offset from the size
+   under it, once.
+2. **Prepare** every page the part covers. This step may fail, and it changes no page the tree holds: <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
    - **Absent, with the write not covering the whole page below EOF:** fill a new, unpublished frame first
      (read-modify-write). Never hold a page in `Filling` across a user copy: the fill completes before the
      copy. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
    - **Absent and fully overwritten, or past EOF, or Hole:** allocate a new, unpublished frame and zero the
      parts not written. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
    - **Writeback:** allocate the copy frame of 11.2's COW-on-writeback step and copy the stable bytes into it.
-   - **Uptodate or Dirty:** nothing; the page is changed in place in step 5. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
-   - Reserve the tree nodes that publishing the new frames needs (4.3).
-5. **Publish**, which cannot fail. Copy the chunk's bytes into the page or its prepared frame, insert the
-   prepared frames into the tree, and mark each page `DIRTY` with `dirty_gen` set to the open generation. Tag
-   it. A prepared frame that replaced a `Hole` or `Writeback` page revokes the old frame's PTEs (5.4)
-   before the write returns.
-6. Publish the new size, if it grew, through BreenFS's inode update, then through `mapped_size`, as
-   `transition` does today.
-7. Release `io`. Throttle if the dirty limit says so (11.5), with no lock held.
+   - **Uptodate or Dirty:** nothing; the page is changed in place in step 4. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+   - Reserve the tree nodes that publishing the new frames needs (4.3). <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+   No BreenFS lock is held here: a fill takes its own (6.1). `io` keeps every other write and truncation of
+   the file out, so a prepared frame stays current.
+3. **Charge** the part's newly dirtied pages against the dirty limit (11.5). If they do not fit, request the
+   mount's commit and park, holding only `io`, until they do.
+4. **Join the open generation and publish.** Take a hold on the mount's open generation G (11.5a): G cannot
+   freeze while a hold is out. Under `MountLock`, BreenFS reserves the part (its worst-case space
+   reservation, `reserve.rs`, and the generation bookkeeping; only the byte budget changes, 11.4), and
+   releases the lock. Then, still holding G, and with no further failure possible:
+   - copy the part's bytes, 64 KiB at a time, from user memory into kernel staging and from there into the
+     page or its prepared frame; E3-15 copies straight from user memory (7.4). This replaces the
+     whole-request heap copy (`handlers.rs:619`);
+   - insert the prepared frames into the tree, and mark each page `DIRTY` with `dirty_gen` = G. Tag it;
+   - publish the new size, if it grew, through BreenFS's inode update, then through `mapped_size`, as
+     `transition` does today;
+   - release the hold. A prepared frame that replaced a `Hole` or `Writeback` page revokes the old frame's
+     PTEs (5.4) before the write returns.
+5. Go on with the next part from step 2, or release `io`.
+
 Atomicity:
 
-- A write of n bytes changes every byte or none. This is BreenFS's existing all-or-nothing rule across a
-  crash, and E3 keeps the generation discipline that provides it. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
-- If step 4 fails for want of memory, it frees the frames it prepared and changes nothing, so the bytes of
+- A part changes every byte or none, across a crash too, because all of it lands in the one generation it
+  holds (step 4). A write of one part, which is any write up to `limit / 2`, is therefore all-or-nothing.
+  A longer write can recover as a prefix of whole parts, which is today's rule for writes longer than
+  half the budget (design 2.5, "Dirty admission"); 11.5a keeps it. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+- If step 2 fails for want of memory, it frees the frames it prepared and changes nothing, so the bytes of
   earlier writes stay in the tree. Invalidating changed pages back to `Absent`, as `invalidate` does today,
   would lose them: a dirty page's bytes are on no disk, and a refill would read older bytes. The write
-  returns the count of whole chunks completed before it, or `ENOMEM`. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
-- From E3-15, step 5 copies from user memory. A user copy that ends in `EFAULT` ends the write at the bytes
-  it copied, a short write; the prepared frames it did not reach are freed, and no earlier byte is undone.
+  returns the count of whole parts completed before it, or `ENOMEM`. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+- A user copy in step 4 that ends in `EFAULT` ends the write at the bytes it copied, a short write. Those
+  bytes are in G, the prepared frames it did not reach are freed, and no earlier byte is undone.
 
 ### 7.3 The I/O lock, and POSIX atomicity
 
@@ -626,6 +636,9 @@ Once faults may sleep (E2.9), `read` copies from referenced cache frames straigh
 - A write whose source buffer is a mapping of the same file at the same page faults on a page the write
   already made uptodate, or one the fault fills. `write` holds no page in `Filling`, so it cannot wait on
   itself.
+- `write`'s copy runs under a generation hold (7.2, step 4). A fault's fill does not wait for holds, and
+  the freeze waits for them holding no `MountLock` (11.5a), so the copy's faults cannot deadlock with a
+  freeze.
 
 ### 7.5 Truncate, extend and holes
 
@@ -972,7 +985,7 @@ background = dirtyable / 10
   - reservation pressure;
   - the page daemon asks.
 - **Removed.** `DIRTY_BUDGET` and the unreachable `DIRTY_LIMIT` go. The per-mount admission bound becomes
-  `limit`, enforced by throttling (11.5) instead of by an inline commit. BreenFS's worst-case space
+  `limit`, enforced by charging before dirtying (11.5) instead of by an inline commit. BreenFS's worst-case space
   reservation (design 2.8) is unchanged, and ENOSPC is still decided there.
 - **No inline commit.** A writing thread never runs `commit_generation`. That is audit R11's "writers
   throttled against writeback progress rather than committing themselves". <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
@@ -986,20 +999,48 @@ limit. They are not RAM ceilings. Section 21 Q4 names the fsync trade-off they c
 
 ### 11.5 Writer throttling
 
-After `write` releases `io`, and after a store fault marks a page `MAPPED_DIRTY` (counted, not checked per store):
+Checking the count after a write has dirtied its pages lets N concurrent writers pass `limit` by N writes
+before any parks. So the count is charged before pages become dirty:
 
-- **Below `limit`:** return.
-- **Above `limit`:** request the mount's commit, then park, Killable, on the writeback-progress channel
-  (cleaned-page count and seq) until the global dirty count is at most `(limit + background) / 2`, or the
-  pages this writer dirtied since its last pass have been cleaned, whichever comes first.
-  - The second condition makes a writer pay for its own dirty pages. A heavy writer waits, and a light one
-    is not starved behind it.
-- **Context.** The wait uses E2's park contract. Writers already wait for generations today (design 2.5,
-  "Dirty admission"), so the wait does not need E2.9. A store fault does not wait before E2.9: it counts,
-  and the next syscall of that thread throttles.
+- **What is charged.** One global count of the frames that dirty data holds: `DIRTY` and `MAPPED_DIRTY`
+  pages, `WRITEBACK` frames that a batch still holds (including frames a COW replaced in the tree), and
+  the bounce frames of 11.2's mapped copies. A charge is released when its page becomes clean (11.2), is
+  truncated, or its batch frees the frame. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+- **Charge first.** A write charges each part's newly dirtied pages (7.2, step 3) with one compare-and-add <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+  that fails if the count would pass `limit`. A failed charge requests the mount's commit and parks,
+  Killable, on the writeback-progress channel until the charge fits, then retries. Parked writers retry
+  in arrival order, so a light writer is not starved behind a heavy one. The one charge allowed past
+  `limit` is a part admitted alone while its mount has nothing else charged, which keeps today's progress
+  rule (design 2.5), and a part is at most `limit / 2`.
+- **Context.** The wait uses E2's park contract and holds only `io`, which the commit worker and the drain <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+  never take (section 15), and never a generation hold. Writers already wait for generations today
+  (design 2.5, "Dirty admission"), so the wait does not need E2.9.
+- **Mapped stores.** Before E2.9 a store fault cannot park. It charges its page without the check, so
+  mapped stores can pass `limit` by the resident shared-writable pages stored since the last mapped
+  admission, which the writeback service admits and freezes once the count passes `background` (11.2a).
+  From E3-11 a store fault whose charge does not fit parks before it sets `MAPPED_DIRTY`, as a writer
+  does.
 - **A latched mount.** After a failed commit latches a mount read-only, its dirty pages leave the global
   dirty count and keep their bytes readable until unmount. Writers to other mounts are never throttled on
   pages that can never be cleaned. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+
+### 11.5a Parts, generation holds, append exclusion and the crash boundary
+
+- **Parts.** A write longer than `limit / 2` is admitted in parts of at most `limit / 2`, as today's
+  writes longer than half the budget are (`admit_data`, `fs/breenfs/vfs.rs:2211-2233`).
+- **Generation holds.** A part joins the open generation with a hold, and G's freeze waits until G has no <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+  holds. The freeze first marks G closing, so no new hold joins G (a new part waits for G+1 to open), then
+  waits for the holds to drain, holding no `MountLock`, then freezes under it. This is the open and
+  quiescing stages of the ZFS transaction-group pipeline (Bonwick et al. 2003; section 17 lists it). A part's copy
+  may fault and fill (E3-15), and a fill takes `MountLock` briefly (6.1); nothing that waits for holds
+  holds `MountLock`, so the copy cannot deadlock with the freeze. A hold is never kept across a wait for a
+  charge (11.5) or for a page channel.
+- **Exclusion.** From its first part to its last, the writer holds `io` exclusive and BreenFS's splitting
+  mark for the inode, so no other write, truncation or read of the file sees a part of it, and an
+  `O_APPEND` write takes its offset once, at the first part (POSIX XSH 2.9.7; `write`, `O_APPEND`).
+- **The crash boundary** is the part (7.2, Atomicity). A crash recovers whole parts in order, never part
+  of one. With `limit` relative to RAM the parts are larger than today's 4 MiB, so more writes are
+  all-or-nothing than today. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
 
 ### 11.6 fsync and writeback errors
 
@@ -1198,6 +1239,8 @@ FileCache io (shared or exclusive; a SleepRwLock from E3-7; before E3-7 there is
   -> frame ledger and allocator (E1)
 ```
 
+- **Generation holds** (11.5a) are taken with no `MountLock` held and released before any wait. The freeze
+  waits for them with no `MountLock` held. A hold may be out while a user copy faults and fills.
 - **Fills** run with no VM lock and no `tree_lock` held. A fault drops `as.mapping` before it fills (9.2).
   BreenFS fill takes `MountLock` only to snapshot its view, and from E2.5 releases it before the device wait.
 - **`io` never under `as.mapping`.** A user copy under `io` may fault and take `as.mapping` (`io` →
@@ -1637,7 +1680,8 @@ waits for E3-6 (it needs pages retained by the cache to be worth anything), so t
 - **Change.**
   - 11.4 and 11.5: `DIRTY_BUDGET` and `DIRTY_LIMIT` are removed, and the global `limit` and `background`
     apply.
-  - Background freezes. Writers throttle and never commit inline. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+  - Background freezes. Writers charge before dirtying, throttle and never commit inline. Parts join the
+    open generation with a hold (11.5a). <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
   - 11.3's overlapped drain.
   - A latched mount's pages leave the dirty count.
 - **Tests (host), check first.**
@@ -1647,6 +1691,15 @@ waits for E3-6 (it needs pages retained by the cache to be worth anything), so t
     `commit_generation`. That is a structure test plus a fixed interleaving. On the old code the writer
     commits inline, which is red. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
   - Two writers, one heavy and one light: the light writer's waits are bounded by its own pages.
+  - Four writers of 40 pages each under a 100-page `limit` with 30 frozen pages, as a fixed interleaving: <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+    the charged count never passes `limit`, and it includes the frozen frames and the bounce copies.
+    Today's admission checks its fixed budget before each part, so this guards that E3-9 keeps the check
+    under the RAM-relative limit and counts frozen and bounce frames; it is not red on the old tree, and
+    the PR says so.
+  - A two-part `O_APPEND` write and a second appender: the second's bytes follow all of the first's. A <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+    freeze requested during the first part's copy waits for its hold, and a crash image taken after that
+    generation recovers the first part whole and none of the second. This guards today's split rule, so
+    it is not red; the PR says so.
   - The drain submits run k+1 before waiting for run k, as recorded by the recording device's submission
     order. The old code waits each run, which is red.
   - A latched mount does not throttle a writer to another mount.
@@ -2085,7 +2138,7 @@ copies hold 30. Four writers each dirty 40 pages at once, before any of them rea
 that parks resumes after writeback has cleaned as many pages as it needs.
 
 ```pycon
->>> RULE = 'check-after-write'
+>>> RULE = 'charge-before-dirtying'
 >>> LIMIT = 100
 >>> def peak(writers, each, frozen):
 ...     charged = frozen if RULE == 'charge-before-dirtying' else 0
