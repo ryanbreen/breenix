@@ -62,10 +62,17 @@ state, one new ioctl and one new mount source.
   Link groups are computed over the inventory's rows, so BusyBox's hard links across `/bin` and `/sbin` are one group.
   For E6 the inventory is the "expected install inventory" its publisher emits (toolchain/targets/e6/README.md). For
   a legacy build of main, the metal tools encode it from the built userland tree.
-- **Effective slots.** What CURRENT and PREVIOUS will be after the manager's next startup reconcile. That reconcile
-  promotes an acknowledged trial before anything else (manager/main.rs:317, `live_sequence::process` with
-  `try_new=false`). So while a committed trial is running unpromoted, the effective slots are CURRENT = the trial
-  and PREVIOUS = the ESP's CURRENT.
+- **Retained set.** The roots that a slot image the manager could still boot names. It is the union of:
+  - the booted root (the `/` source in `/proc/mounts`);
+  - the roots named by the physical CURRENT and PREVIOUS in `disk.json` `slots`. The host changes those entries
+    only when it reads the manager's `live flash: promoted <token>` line (metal-boot `on_manager_line` calls
+    `metal_live_flash.promoted`), so they describe the ESP as the manager last reported it;
+  - the root of each live-flash attempt whose promotion or rollback the host has not yet read from the serial.
+
+  An acknowledged trial is not assumed to promote. `live_sequence::promote` returns without promoting when the
+  base note no longer matches, when a foreign `NEXT` is staged, or when `TRY.IMG` is missing, and `process` then
+  reports `Outcome::Current` with the old slots in place. So while a committed trial runs unpromoted, the retained
+  set holds the trial, the physical CURRENT and the physical PREVIOUS: three roots, not two.
 
 ## 3. Kernel and BreenFS additions (PR A)
 
@@ -156,9 +163,8 @@ The exception is the first deploy, which uses a bootstrap installer (4.8).
 
 ### 4.1 Reclaim, then clone
 
-1. `paired reclaim <retained...>`. The host passes the effective CURRENT and PREVIOUS userland IDs from
-   `disk.json` `slots`. The box checks that the booted generation (the `/` source in `/proc/mounts`) is one of them,
-   then deletes with `SNAPSHOT_DELETE`:
+1. `paired reclaim <retained...>`. The host passes the retained set (section 2). The box adds the booted
+   generation itself, then deletes with `SNAPSHOT_DELETE`:
    - each `gen-<metal id>` root that is not retained;
    - each `<metal id>.new` draft.
 
@@ -383,8 +389,10 @@ PR C also ships manifest version 2 (section 4.7), because both reach the box onl
 
 ## 6. CURRENT, PREVIOUS and reclamation
 
-At rest, the system volume holds the default tree, `gen-<current>` and `gen-<previous>`. During a deploy, it also
-holds one draft or one published but unselected `gen-<id>`. Retention is the effective-slot pair from section 2.
+At rest, the system volume holds the default tree, `gen-<current>` and `gen-<previous>`. While a committed trial
+runs unpromoted, it also holds the trial's root. During a deploy, it also holds one draft or one published but
+unselected `gen-<id>`. Retention is the retained set from section 2, so a root leaves it only after the manager has
+reported a promotion that drops it from both physical slots.
 Reclamation runs at the start of each deploy (4.1), and as `paired reclaim` on its own:
 - it deletes the metal generations and drafts outside the retained pair;
 - it does not delete the booted root (the kernel refuses with `EBUSY`), root 1, an attached staging root, or a root
@@ -471,7 +479,7 @@ Scope: sections 4 to 6.
 |---|---|---|---|
 | T-B1 apply over a fixture clone | `tests/persistent_install/` host test, beside `tests/metal_replace_usr_host.rs` | A fixture clone with a baseline, an inventory and objects. After apply and verify: the payload rows equal the inventory; a pet file at an unmanaged path is kept; a locally changed managed file is moved to `.breenix-carried/<prev>/` with set-ID cleared; a dropped, unchanged managed file is removed; a BusyBox hard-link group across `/bin` and `/sbin`, a symlink and set-ID `su` are exact; mount points are untouched; a rerun after a cut at each file is idempotent. | The check commit's stub routes `apply` to today's only in-place path, `replace_usr`, which leaves `/bin`, `/sbin` and `/lib` unchanged |
 | T-B2 manager version 2 | `scripts/metal/efi-stub/tests/live_sequence.rs` | The trial is refused for a missing root, a read-only root, or an image intent naming another userland. It is accepted when the three agree. Version 1 behaves exactly as today. | `Manifest::parse` rejects a seventh line |
-| T-B3 host flow | `tests/metal_live_flash_test.py` | `prepare --paired`: the slot intent names the new generation; the manifest carries the root line only for a version-2 manager. The retained set is right with an acknowledged but unpromoted trial. The commit check needs `/` to be `gen-<new>` `rw` plus the verify digest. A rollback receipt needs the old commit and `gen-<old>`. | Today's `prepare` names CURRENT's userland (metal_live_flash.py:100) |
+| T-B3 host flow | `tests/metal_live_flash_test.py` | `prepare --paired`: the slot intent names the new generation; the manifest carries the root line only for a version-2 manager. The retained set keeps the physical PREVIOUS's root when an acknowledged trial is not promoted (a stale base or a foreign NEXT), and drops a root only after a `promoted` line removes it from both physical slots. The commit check needs `/` to be `gen-<new>` `rw` plus the verify digest. A rollback receipt needs the old commit and `gen-<old>`. | Today's `prepare` names CURRENT's userland (metal_live_flash.py:100) |
 
 **The live run on the R240** is the only box activity. It goes through the one-reboot path, under the
 persistent lease, with no netboot and no suites. Steps:
@@ -496,7 +504,7 @@ persistent lease, with no netboot and no suites. Steps:
    `upgrade-no-ssh`'s invalid loader stops before the kernel mounts the new root, so it cannot show the root
    returning. This inject can.
 3. **Reclaim.** `paired reclaim` deletes `gen-<id2>`. A `SNAPSHOT_NEXT` listing shows `gen-<id1>`, the generation
-   that was running before step 1 (effective PREVIOUS) and the default tree.
+   that was running before step 1 (physical PREVIOUS once step 2's reboot has promoted step 1) and the default tree.
 4. **End state.** The box is left on the main pair (step 1), answering SSH. PID 1 is `/sbin/init`.
 
 That is three reboots in total (one in step 1, two in step 2), plus the step-0 flash if it is needed.
