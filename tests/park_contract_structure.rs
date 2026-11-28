@@ -218,7 +218,7 @@ const CLASSIFIED: &[(&str, &str, &str, &str)] = &[
     ("DEPTH", "kernel/src/task/scheduler.rs", "note_x86_interrupt_return", "diagnostic: records a dispatchable return tick"),
     ("DEPTH", "kernel/src/task/softirqd.rs", "init_online_daemons", "boot order: CPU 0 is still pinned by kernel_main"),
     ("DEPTH", "kernel/src/drivers/ahci/mod.rs", "start_completion_pollers", "boot order: CPU 0 is still pinned by kernel_main"),
-    ("DEPTH", "kernel/src/arch_impl/aarch64/context_switch.rs", "can_dispatch_here", "the scheduler's own switch decision; E2.3 factors it into a seam"),
+    ("DEPTH", "kernel/src/arch_impl/aarch64/context_switch.rs", "can_dispatch_here", "the scheduler's own dispatch gate on depth; the exit's decision about the thread is park_core::exit_switch (E2.3)"),
     // E2.4 moves the other drivers' waits to the contract (design §6, "Other drivers").
     ("DEPTH", "kernel/src/drivers/nvme/mod.rs", "request_gate_can_sleep", "E2.4: NVMe request gate"),
     ("DEPTH", "kernel/src/drivers/virtio/block.rs", "block_request_gate_can_sleep", "E2.4: virtio-blk PCI request gate"),
@@ -366,6 +366,32 @@ fn no_task_context_wait_halts_as_current() {
         "task-context waits that publish a blocked state and then halt as the current thread:\n{}",
         sites.iter().map(|s| format!("  {}::{}", s.file, s.function)).collect::<Vec<_>>().join("\n")
     );
+}
+
+/// `arch_halt_while_blocked` is where halting as current survives. Each of
+/// its halts (x86's HLT, ARM64's WFI) is preceded, after the previous halt,
+/// by `task::park::halt_as_current`, which records a non-preemptible
+/// caller's halt as a contract violation and lets the idle thread and early
+/// boot through (design §3.5).
+#[test]
+fn each_halt_as_current_records_a_non_preemptible_caller() {
+    let path = repo_root().join("kernel/src/lib.rs");
+    let code = strip_comments(&fs::read_to_string(path).unwrap());
+    let fns = functions(&code);
+    let (_, open, end) = fns.iter().find(|(name, _, _)| name == "arch_halt_while_blocked").expect("arch_halt_while_blocked");
+    let mut halts: Vec<usize> =
+        ["enable_and_hlt(", "\"wfi\""].iter().flat_map(|halt| own_calls(&code, &fns, *open, *end, halt)).collect();
+    halts.sort();
+    assert_eq!(halts.len(), 2, "one HLT and one WFI");
+    let receipts = own_calls(&code, &fns, *open, *end, "halt_as_current(");
+    let mut previous = *open;
+    for halt in halts {
+        assert!(
+            receipts.iter().any(|r| previous < *r && *r < halt),
+            "a halt as the current thread at byte {halt} has no halt_as_current() receipt before it"
+        );
+        previous = halt;
+    }
 }
 
 #[test]
