@@ -12,7 +12,9 @@
 //!
 //! The lists are threaded through per-page link words that the caller stores
 //! ([`PageLinks`]; FrameMeta's `use` words in the kernel), so no list
-//! operation allocates. Pages are named by an abstract number (the pfn).
+//! operation allocates. A hit changes only the bits word, by
+//! compare-and-exchange, so it cannot undo a list change made under the
+//! lock. Pages are named by an abstract number (the pfn).
 //!
 //! The module has no kernel dependency. The kernel supplies the zone lock.
 
@@ -44,10 +46,18 @@ impl Links {
     };
 }
 
-/// Per-page link storage.
+/// Per-page link storage. The bits are one word of their own, apart from
+/// `prev` and `next`.
 pub trait PageLinks {
     fn links(&self, page: u64) -> Links;
+    /// Store a page's links and bits. Only list operations call this, under
+    /// the zone lock; the bits word is written with one atomic store.
     fn set_links(&mut self, page: u64, links: Links);
+    /// Replace the page's bits word with `new` if it holds `current`, as one
+    /// atomic compare-and-exchange of that word alone; on failure return the
+    /// bits it holds. A hit uses only this and `links`, so it never writes
+    /// `prev`, `next` or a membership bit.
+    fn compare_exchange_bits(&self, page: u64, current: u8, new: u8) -> Result<(), u8>;
 }
 
 /// Why an LRU operation was refused; the lists are unchanged.
@@ -242,10 +252,18 @@ impl Default for Lru {
 
 /// Record a hit: set `REFERENCED` on a listed or isolated page. No list
 /// changes, so the kernel does this without the zone lock.
-pub fn mark_referenced<P: PageLinks>(pages: &mut P, page: u64) {
-    let mut links = pages.links(page);
-    if links.bits & (ON_LRU | ISOLATED) != 0 {
-        links.bits |= REFERENCED;
-        pages.set_links(page, links);
+///
+/// Only the bits word changes, by compare-and-exchange, so a scan that moves
+/// or isolates the page meanwhile keeps its links and membership bits, and
+/// the hit retries against the bits the scan left. A list operation's store
+/// of a word it read before the hit can drop the hit's `REFERENCED`; that
+/// loses one reference hint, never a list change.
+pub fn mark_referenced<P: PageLinks>(pages: &P, page: u64) {
+    let mut bits = pages.links(page).bits;
+    while bits & (ON_LRU | ISOLATED) != 0 && bits & REFERENCED == 0 {
+        match pages.compare_exchange_bits(page, bits, bits | REFERENCED) {
+            Ok(()) => return,
+            Err(seen) => bits = seen,
+        }
     }
 }

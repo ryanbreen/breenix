@@ -2,21 +2,32 @@
 //! 12.3). The hit runs without the zone lock, so a scan on another CPU can
 //! isolate the page between the hit reading the page's LRU word and writing
 //! it back. The harness runs that scan at exactly that point.
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 use pagecache_host_tests::lru::{
     mark_referenced, Links, Lru, PageLinks, ACTIVE, ISOLATED, NIL, ON_LRU, REFERENCED,
 };
 
-struct Table(Vec<Links>);
+struct Table(Vec<Cell<Links>>);
 
 impl PageLinks for Table {
     fn links(&self, page: u64) -> Links {
-        self.0[page as usize]
+        self.0[page as usize].get()
     }
 
     fn set_links(&mut self, page: u64, links: Links) {
-        self.0[page as usize] = links;
+        self.0[page as usize].set(links);
+    }
+
+    fn compare_exchange_bits(&self, page: u64, current: u8, new: u8) -> Result<(), u8> {
+        let word = &self.0[page as usize];
+        let mut links = word.get();
+        if links.bits != current {
+            return Err(links.bits);
+        }
+        links.bits = new;
+        word.set(links);
+        Ok(())
     }
 }
 
@@ -25,7 +36,7 @@ impl PageLinks for Table {
 struct Racing {
     table: RefCell<Table>,
     lru: RefCell<Lru>,
-    race_page: Option<u64>,
+    race_page: Cell<Option<u64>>,
     isolated: RefCell<Vec<u64>>,
 }
 
@@ -47,20 +58,24 @@ impl PageLinks for Racing {
     }
 
     fn set_links(&mut self, page: u64, links: Links) {
-        if self.race_page == Some(page) {
-            self.race_page = None;
+        self.table.get_mut().set_links(page, links);
+    }
+
+    fn compare_exchange_bits(&self, page: u64, current: u8, new: u8) -> Result<(), u8> {
+        if self.race_page.get() == Some(page) {
+            self.race_page.set(None);
             self.scan();
         }
-        self.table.get_mut().set_links(page, links);
+        self.table.borrow().compare_exchange_bits(page, current, new)
     }
 }
 
 #[test]
 fn a_hit_racing_a_scan_keeps_the_isolation_and_its_reference() {
     let mut racing = Racing {
-        table: RefCell::new(Table(vec![Links::UNLINKED; 3])),
+        table: RefCell::new(Table(vec![Cell::new(Links::UNLINKED); 3])),
         lru: RefCell::new(Lru::new()),
-        race_page: None,
+        race_page: Cell::new(None),
         isolated: RefCell::new(Vec::new()),
     };
     for page in 0..3 {
@@ -72,8 +87,8 @@ fn a_hit_racing_a_scan_keeps_the_isolation_and_its_reference() {
     }
     // Page 0 is the inactive tail. The hit on it reads its word, then the
     // scan isolates it, then the hit's write lands.
-    racing.race_page = Some(0);
-    mark_referenced(&mut racing, 0);
+    racing.race_page.set(Some(0));
+    mark_referenced(&racing, 0);
     assert_eq!(*racing.isolated.borrow(), vec![0], "the scan isolated page 0");
 
     let table = racing.table.get_mut();

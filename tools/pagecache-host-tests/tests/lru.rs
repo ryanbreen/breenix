@@ -1,19 +1,31 @@
 //! E3-1: the two-list LRU scan (plan sections 8.3 and 12.1).
+use std::cell::Cell;
 use std::collections::BTreeSet;
 
 use pagecache_host_tests::lru::{mark_referenced, Links, Lru, PageLinks, ISOLATED};
 use pagecache_host_tests::Lcg;
 
 /// Link words for pages 0..n, as FrameMeta's `use` words hold them.
-struct Pages(Vec<Links>);
+struct Pages(Vec<Cell<Links>>);
 
 impl PageLinks for Pages {
     fn links(&self, page: u64) -> Links {
-        self.0[page as usize]
+        self.0[page as usize].get()
     }
 
     fn set_links(&mut self, page: u64, links: Links) {
-        self.0[page as usize] = links;
+        self.0[page as usize].set(links);
+    }
+
+    fn compare_exchange_bits(&self, page: u64, current: u8, new: u8) -> Result<(), u8> {
+        let word = &self.0[page as usize];
+        let mut links = word.get();
+        if links.bits != current {
+            return Err(links.bits);
+        }
+        links.bits = new;
+        word.set(links);
+        Ok(())
     }
 }
 
@@ -35,7 +47,7 @@ impl Cache {
     fn new() -> Cache {
         Cache {
             lru: Lru::new(),
-            pages: Pages(vec![Links::UNLINKED; (STREAM_BASE + STREAM_LEN) as usize]),
+            pages: Pages(vec![Cell::new(Links::UNLINKED); (STREAM_BASE + STREAM_LEN) as usize]),
             resident: BTreeSet::new(),
             evicted: Vec::new(),
         }
@@ -43,7 +55,7 @@ impl Cache {
 
     fn access(&mut self, page: u64) {
         if self.resident.contains(&page) {
-            mark_referenced(&mut self.pages, page);
+            mark_referenced(&self.pages, page);
             return;
         }
         while self.resident.len() >= CAPACITY {
