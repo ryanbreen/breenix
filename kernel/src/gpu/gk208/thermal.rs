@@ -110,6 +110,7 @@ pub fn down_clock(r:&[u8])->Result<u32,&'static str> {
     down.filter(|v|*v>0).ok_or("thermal-downclock-missing")
 }
 #[cfg(all(target_os="none", feature="gt710_clock_probe"))]
+#[path = "thermal/runtime.rs"]
 mod runtime;
 #[cfg(all(target_os="none", feature="gt710_clock_probe"))]
 pub(super) use runtime::{initialize,read_status};

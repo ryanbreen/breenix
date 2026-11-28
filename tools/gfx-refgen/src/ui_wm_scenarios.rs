@@ -1,9 +1,9 @@
 //! Exercise the scenario oracle with the real desktop producer and widget raster.
-#[path = "../userspace/programs/src/uitest_suite/proof_wm_checks.rs"]
+#[path = "../../../userspace/programs/src/uitest_suite/proof_wm_checks.rs"]
 mod checks;
-#[path = "../userspace/programs/src/bwm/desktop_tree.rs"]
+#[path = "../../../userspace/programs/src/bwm/desktop_tree.rs"]
 mod desktop_tree;
-#[path = "../userspace/programs/src/bwm/stack.rs"]
+#[path = "../../../userspace/programs/src/bwm/stack.rs"]
 mod stack;
 use crate::{surface::Surface, widgets::Widgets, KeyInput};
 use libpixcheck::{Format, Frame};
@@ -151,6 +151,15 @@ fn desktop_oracle_rejects_minimized_and_removed_windows_and_accepts_restored_pol
         checks::desktop(&project(policy), [11, 22], [101, 202], 1, [1280, 800], top)
     };
     verify(&policy, 1).unwrap();
+    let mut notices = Vec::new();
+    stack::publish_focus(policy.clear_focus(), |notice| notices.push(notice), || ());
+    assert_eq!(notices, [stack::FocusNotice::Lost(22)]);
+    assert!(project(&policy)
+        .children
+        .iter()
+        .all(|node| !node.flags.contains(&libbui::tree::Flag::Focused)));
+    assert!(verify(&policy, 1).is_err());
+    policy.raise(22);
     let next = policy.cycle(false).unwrap();
     assert_eq!(next, 11);
     let transition = policy.raise(next);
