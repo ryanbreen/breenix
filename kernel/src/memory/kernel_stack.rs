@@ -347,6 +347,9 @@ pub fn kernel_stack_quiesce_leaked_slots() -> u64 {
         .sum()
 }
 
+/// Its one caller is x86's `kernel_page_table::map_kernel_page`; ARM64 kernel
+/// stacks are not mapped through that module.
+#[cfg(target_arch = "x86_64")]
 pub(crate) fn note_kernel_stack_pte_overwrite_refused() {
     KSTACK_PTE_OVERWRITE_REFUSALS.fetch_add(1, Ordering::Relaxed);
 }

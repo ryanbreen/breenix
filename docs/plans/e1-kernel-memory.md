@@ -346,7 +346,7 @@ The lease rules carry over word for word:
 The census walks the directory instead of the chunks. `/proc/breenix/frames` keeps its lines and owner set.
 Zone, order and per-CPU cache counts go in a new `/proc/breenix/kmem`.
 
-### 4.4 The direct map covers the described RAM (ARM64)
+### 4.4 The direct map covers the described RAM
 
 - Before the buddy is seeded, ARM64 builds direct-map entries for each usable range above the boot
   window, at `HHDM_BASE + pa`.
@@ -363,7 +363,9 @@ Zone, order and per-CPU cache counts go in a new `/proc/breenix/kmem`.
   - Entries are written only where the descriptor was invalid, so no break-before-make sequence is needed
     (Arm ARM, translation table updates). Then `dsb ishst; isb`.
 - `direct_map_ram_window`'s clip goes, and the frame pool covers the described RAM.
-- x86-64 needs no change: the bootloader's dynamic physical-memory mapping covers it.
+- On x86-64, the bootloader's dynamic physical-memory mapping covers RAM. E1-2x's move to per-slot
+  PDPTs leaves the boot translations unchanged (the #3264 fixture checks two slots), so E1-3's
+  carved metadata can keep using those addresses across the boot, master and process roots.
 - `PhysAddrWrapper::from_kernel_virt` already uses the CPU's own translation (`AT S1E1R` on ARM64, a table
   walk on x86), so it needs no change.
 
@@ -915,24 +917,17 @@ Bonwick and Adams 2001.
   - span window: RAM size, rounded up to 1 GiB;
   - vmap window: 4 × RAM;
   - stack window (E1-10): reserved for kernel stacks.
-  VA is plentiful: the 48-bit kernel half is 128 TiB, and a window costs no memory until it is mapped.
+  VA is plentiful: the 48-bit kernel half is 128 TiB, and mapping a window consumes table pages below its boot-installed root.
   The direct map (RAM), span window (RAM) and vmap window (4 × RAM) together take about 6 × RAM of it,
   which is the bound section 9 names.
-- x86-64 does not map the windows through `map_kernel_page` (`kernel_page_table.rs:132`). That function
-  points each upper-half PML4 slot it touches, other than 402 and 403, at one shared `KERNEL_PDPT_FRAME` (lines 170-191),
-  so addresses that differ only in their PML4 index alias each other and the whole upper half has 512 GiB
-  of unique space. The vmap window alone fills that at 128 GiB of RAM. It also walks and fills the tables
-  with no lock, so two first mappings under one empty PD entry can each install a table and one is lost.
-  E1-5 instead gives the windows their own slots:
-  - each window takes ceil(size / 512 GiB) PML4 slots of its own, each with its own PDPT, installed in the
-    master PML4 at boot. That happens before the first process is created, because
-    `ProcessPageTable::new` copies PML4[256..512] from the master once (`process_memory.rs:1098-1107`), so
-    a slot added later would be missing from existing address spaces;
-  - a window mapper walks from the window's own PDPT and does not write PML4 entries after boot;
-  - an intermediate table is installed by a compare-exchange of the empty entry. The loser returns its
-    zeroed page and uses the winner's. Leaf entries need no lock: the VA allocator gives each range to
-    one owner.
-  `map_kernel_page`'s aliasing stays for its existing callers, and E1-5 does not widen its use.
+- On x86-64, E1-2x preallocates a distinct PDPT for each kernel PML4 slot. The boot, master and
+  process roots share those per-slot PDPTs. E1-5 reserves VA windows on that layout:
+  - each window takes ceil(size / 512 GiB) PML4 slots of its own and uses the PDPTs installed by
+    E1-2x;
+  - a window mapper walks from the window's own PDPT and installs only lower-level entries;
+  - an intermediate table is installed by a compare-exchange of the empty entry. The loser returns
+    its zeroed page and uses the winner's. Leaf entries need no lock because the VA allocator gives
+    each range to one owner.
 - ARM64 has no TTBR1 page mapper today (`arch_impl/aarch64/mmu.rs` holds the boot-time block tables only).
   E1-5 adds one.
   - It installs table pages from the page layer, zeroed and made visible with `dsb ishst` before the table
@@ -1237,9 +1232,10 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
 | E1-0 | This design | - | docs |
 | E1-1 | One usable-RAM range set and a boot carve; the complete UEFI map handoff (`HardwareConfig` v8); no 128-region or 32-range limit | E1-0 | M |
 | E1-2 | ARM64 direct map over the described RAM | E1-1 | S |
-| E1-3 | Frame metadata sections replace the heap ledger; free list through metadata; drop the empty-span lock | E1-1, E1-2 | M |
+| E1-2x | x86 kernel half with per-slot preallocated PDPTs | E1-1 | S |
+| E1-3 | Frame metadata sections replace the heap ledger; free list through metadata; drop the empty-span lock | E1-2, E1-2x | M |
 | E1-4 | `AllocError`, allocation contexts, the reclaim registry and the first shrinkers; OOM record on both architectures | E1-3 | S |
-| E1-5 | Kernel VA windows: x86 window allocator and the ARM64 TTBR1 mapper, with batched flush before free | E1-3 | M |
+| E1-5 | Kernel VA windows: x86 window allocator and the ARM64 TTBR1 mapper, with batched flush before free | E1-2x, E1-3 | M |
 | E1-6 | Slab caches with per-CPU magazines for requests up to 4 KiB | E1-4 | M |
 | E1-7 | `heap_index` span arenas, vmap large allocations, in-place realloc, the DMA bus-address check; built and self-checked, not yet routed | E1-5, E1-6 | M |
 | E1-8 | Buddy allocator, zones, per-CPU page caches, mobility pageblocks, watermarks, `dma::alloc` with address limits; each direct frame caller in drivers converted; frontier and LIFO list deleted | E1-7 | M |
@@ -1535,6 +1531,65 @@ E1-2 implementation decisions (DEV-39):
 - The existing low heap and stack reservations precede the table carve, so a table shortfall can retain a bootable low-memory pool. Heap sizing still uses the RAM in its low placement window.
 - The host FDT fixture runs the production growable visitor and the UEFI fixture uses the production stride-aware encoder and table builder. These are the paths that make RAM allocatable after E1-1.
 
+### E1-2x: x86 kernel half with per-slot preallocated PDPTs
+
+- DEV-42 and #3264. Boot allocates 256 independent 4 KiB PDPT frames (1 MiB) and copies an existing
+  PDPT only into the new table for its corresponding PML4 slot. The master inherits the boot root,
+  and each process copies the master's 256 kernel entries. Later kernel mappings edit the shared
+  tables below PML4. The frame allocator retains its boot order because the migration keeps its
+  direct-map addresses backed by the same frames.
+- DEV-42(2) offered two orders. E1-2x takes the translation-preserving migration rather than moving
+  `kernel_page_table::init` ahead of `frame_allocator::init`: the migration needs 256 frames from that
+  allocator, and leaving the boot translations unchanged makes the order irrelevant to direct-map
+  pointers.
+- After `build_master_kernel_pml4`, the kernel writes PML4 kernel entries only into a process root
+  that `ProcessPageTable::new` has not yet published. The old `map_kernel_page` re-pointed slots at
+  the shared PDPT and fell back to the active root before the master existed. That fallback is gone:
+  the 3 of 3 `map_kernel_page` call sites (`kernel_stack`, `per_cpu_stack`, `gpu::dma`) run after
+  `memory::init` publishes the master, and a call before then now returns an error.
+- Implementation decisions (DEV-39(2)):
+  - A copied PML4 entry's read-only or execute-disable restriction moves to its populated PDPTEs so
+    existing access rights survive and later mappings can use empty PDPTEs without changing the root
+    permissions. See [Intel SDM, Vol. 3A, paging and access rights](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).
+    XD is copied down only from a root entry that already sets it, which the CPU accepts only with
+    `IA32_EFER.NXE` set.
+  - The master uses the migrated stack and IST PDPTs (slots 402 and 403) instead of allocating
+    fresh ones. The old fresh allocation existed only to undo the shared-PDPT aliasing, and replacing
+    a per-slot PDPT would discard any boot mappings in those slots. `main.rs` sets the bootloader's
+    physical-memory mapping to `Mapping::Dynamic` and keeps the default for the others, and the
+    measured physical-memory and kernel offsets are lower-half. So these slots are expected to arrive
+    empty, matching the old fresh tables. The next R240 flash shows it: a present PTE in the stack
+    range would make `map_kernel_page` refuse a stack mapping and count it in
+    `pte_overwrite_refusals`. Their stack ranges still receive the lower-level tables built at boot.
+  - The master no longer aliases boot PML4[0]'s PDPT at slot 511. That alias did not serve
+    `layout::high_alias_from_low`: `0xffffffff80000000` falls in PDPT index 510 of the aliased table,
+    the low VA `0x7f80000000`, not `KERNEL_LOW_BASE`, and `syscall::entry_address` and the IDT setup
+    use the high alias only for kernels linked in `[0x100000, 0x40000000]`, while the bootloader
+    loads the PIE above that range (`0x8000000000` and `0x10000000000` observed). The alias also put
+    the boot root's slot-0 hierarchy at slot 511 of each process root, which copies 256 to 511.
+  - A process requires the master root: `memory::init` publishes it before `heap::init`, which
+    process creation depends on, and the active root at process creation can belong to another
+    process.
+  - `memory::init` no longer calls `paging::init` before the CR3 switch. That call's only lasting
+    effect was to fill the never-read `PAGE_TABLE_MAPPER` cell with a mapper over the boot root;
+    the remaining call after the switch now fills it with the master.
+  - Exec no longer clears PML4 slots 32 and 170 of its new root (`clear_user_entries`, removed).
+    This defect predates E1-2x and was raised in the #3270 review. The root is fresh from
+    `ProcessPageTable::new`, which on x86 fills those slots only from the master's supervisor-only
+    entries, and the dynamic physical-memory mapping can place the direct map there. So the clear
+    could only erase a kernel mapping. On ARM64 the fresh root is empty and the clear had no effect.
+- Check first, exec root. The fixture `exec_root_keeps_a_direct_map_at_pml4_32` puts the master's
+  direct map at PML4[32] and runs the production slot policy (`inherit_master_slots`) and exec's
+  slot clear. It fails on the commit that moves them into `x86_kernel_half.rs` unchanged: low
+  physical RAM does not translate under the exec root. The fix removes the clear.
+- Check first. The #3264 fixture drives the production migration loop with slots 256 and 257
+  sharing a PDPT index. Before and after migration, the expected translations are
+  `0xffff800010000000` to `0x10000000` and `0xffff808010000000` to `0x8010000000`.
+  The old loop sends both addresses to `0x8010000000`.
+  The access-rights assertions (slot 256's root entry read-only and XD) were added after the
+  migration change. They fail on a copy of the new helper with the push-down removed.
+- Boot. The next coordinator R240 one-reboot flash supplies x86 hardware evidence under DEV-42.
+
 ### E1-3: frame metadata sections replace the heap ledger
 
 - Change:
@@ -1611,13 +1666,13 @@ E1-2 implementation decisions (DEV-39):
 ### E1-5: kernel VA windows
 
 - Change: the span, vmap and stack windows (6.5), with a VA allocator per window.
-  - x86-64 uses a window mapper over dedicated PML4 slots and PDPTs installed at boot (6.5), with
+  - x86-64 uses a window mapper over the slots and PDPTs preallocated by E1-2x (6.5), with
     compare-exchange table installs, and a pending-unmap list flushed through `memory/tlb.rs` with a new
     request kind that removes global entries (`invlpg` per page, or a CR4.PGE toggle; 6.5).
   - ARM64 gets a TTBR1 4 KiB and 2 MiB mapper. Its unmap flushes through the existing
     `arch_stub::tlb::flush_pages` (`dsb ishst`, `tlbi vaae1is` per page, `dsb ish; isb`).
   - Only this PR's own self-check at init uses the windows yet.
-- x86-64: kernel-half table pages for the windows are allocated on first use.
+- x86-64: page directories and page tables for the windows are allocated on first use.
 - ARM64: a new TTBR1 mapper.
 - Tests (host):
   - Check first, flush before free: a fake per-CPU TLB that follows SDM vol. 3A §4.10.4.1. A CR3 load
@@ -1631,11 +1686,8 @@ E1-2 implementation decisions (DEV-39):
     which is red. With the new request kind 0 of 4 do.
   - The pending list returns a frame only after a flush that covers it on each CPU that may hold it.
   - A mapping that runs out of table pages part way unwinds, leaving no partial mapping.
-  - Check first, address space: the existing x86 index selection (`map_kernel_page`'s PML4/PDPT choice,
-    lines 165-191) is extracted unchanged into a pure function and given two addresses that differ only in
-    their PML4 index (any two slots other than 402 and 403). It returns the same PDPT and PDPT index for
-    both, which is red: the two windows alias. The window mapper resolves them to distinct entries, and a
-    window of 4 × 128 GiB gets four slots.
+  - Address space: use E1-2x's per-slot PDPTs, and check that a window of 4 × 128 GiB uses four
+    slots with independent translation trees.
   - Check first, table install: two simulated CPUs make first mappings under the same empty PD entry, in
     the fixed order read-empty (CPU 0), read-empty (CPU 1), install (CPU 0), install (CPU 1). On the
     extracted old walk CPU 0's page table is overwritten and its leaf is lost, which is red. With the
