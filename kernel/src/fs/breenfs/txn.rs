@@ -370,6 +370,10 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
         };
         Ok(Self::blank(base, generation, space_root, state))
     }
+    /// The read-only store beneath this transaction's private nodes.
+    pub fn base(&self) -> &S {
+        self.base.get()
+    }
     pub fn view(&self) -> View<'_, S> {
         View {
             base: self.base.get(),

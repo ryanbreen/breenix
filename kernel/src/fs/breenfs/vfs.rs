@@ -15,7 +15,10 @@ use super::{
     dirty::DirtyPages,
     format::{self, Inode, Root, Superblock, Time, BLOCK_SIZE},
     mount_lock::{MountGuard, MountLock},
-    node_cache::{metadata_ram_bytes, thread_token, CacheBudget, CacheCharge, CachedNodeStore, DecodedNodes, Held, Wanted},
+    node_cache::{
+        metadata_ram_bytes, thread_token, CacheBudget, CacheCharge, CachedNodeStore, DecodedNodes, Held,
+        NodeFetcher, Wanted,
+    },
     ops::{self, DeferredRun, Files, ReadError},
     recover,
     reserve::{Estimate, Grant, Ledger, Operation},
@@ -186,8 +189,9 @@ mod i7 {
             const { core::cell::RefCell::new(alloc::vec::Vec::new()) };
         static WORKER: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
     }
+    // Host checks share one process: each record names its device.
     #[cfg(test)]
-    static PUBLISHERS: std::sync::Mutex<alloc::vec::Vec<(std::thread::ThreadId, bool)>> =
+    static PUBLISHERS: std::sync::Mutex<alloc::vec::Vec<(usize, std::thread::ThreadId, bool)>> =
         std::sync::Mutex::new(alloc::vec::Vec::new());
 
     #[must_use]
@@ -207,10 +211,15 @@ mod i7 {
             SCOPES.with(|scopes| { scopes.borrow_mut().pop(); });
         }
     }
+    /// A scope inside an exception where device requests are not excepted.
+    #[inline]
+    pub(super) fn strict() -> Exception {
+        exception("")
+    }
     /// Host checks: the innermost exception scope on this thread.
     #[cfg(test)]
     pub(super) fn current() -> Option<&'static str> {
-        SCOPES.with(|scopes| scopes.borrow().last().copied())
+        SCOPES.with(|scopes| scopes.borrow().last().copied()).filter(|name| !name.is_empty())
     }
     /// Host checks: this thread stands in for a mount's commit worker.
     #[cfg(test)]
@@ -221,17 +230,30 @@ mod i7 {
     pub(super) fn is_worker() -> bool {
         WORKER.with(core::cell::Cell::get)
     }
-    /// Host checks: a thread took the device's publication exclusion.
+    /// Host checks: a thread took the publication exclusion of the device
+    /// with this identity.
     #[inline]
-    pub(super) fn publisher() {
+    pub(super) fn publisher(device: usize) {
         #[cfg(test)]
-        PUBLISHERS.lock().unwrap().push((std::thread::current().id(), is_worker()));
+        PUBLISHERS.lock().unwrap().push((device, std::thread::current().id(), is_worker()));
+        #[cfg(not(test))]
+        let _ = device;
     }
-    /// Host checks: the threads that took publication exclusion, and whether
-    /// each stood in for the commit worker when it did.
+    /// Host checks: the threads that took the device's publication
+    /// exclusion, and whether each stood in for the commit worker when it did.
     #[cfg(test)]
-    pub(super) fn take_publishers() -> alloc::vec::Vec<(std::thread::ThreadId, bool)> {
-        core::mem::take(&mut *PUBLISHERS.lock().unwrap())
+    pub(super) fn take_publishers(device: usize) -> alloc::vec::Vec<(std::thread::ThreadId, bool)> {
+        let mut all = PUBLISHERS.lock().unwrap();
+        let mut taken = alloc::vec::Vec::new();
+        all.retain(|&(identity, thread, worker)| {
+            if identity == device {
+                taken.push((thread, worker));
+                false
+            } else {
+                true
+            }
+        });
+        taken
     }
 }
 
@@ -317,13 +339,18 @@ static MOUNTED_DEVICES: Mutex<Vec<Weak<DeviceMounts>>> = Mutex::new(Vec::new());
 struct DeviceMounts {
     identity: usize,
     roots: Mutex<Vec<u64>>,
-    // A delete holds this through durable ROOT removal. A constructor cannot
-    // select the old on-disk ROOT between the busy check and publication.
-    selection: MountLock<()>,
-    // Snapshot data reads need current REF checksums. SPACE nodes from their
-    // original generation can be reused even while the FS root remains live.
-    // Serialize those reads with publication, using sleeping exclusion.
-    publication: MountLock<Option<Superblock>>,
+    // Roots a snapshot delete or rename is changing (design 7.3a). A
+    // constructor or generation view that would select one fails with EBUSY,
+    // as it waited during the old `selection` hold. The marker is set and
+    // cleared under the writer's state lock and is held across no I/O.
+    selection: Mutex<Vec<u64>>,
+    // Serialises the device's publishers: commit workers, and a mount's
+    // constructor while its recovery may publish (design 7.3a). It is not a
+    // MountLock, and foreground operations of a published mount do not take
+    // it: readers pin their generation instead (7.1).
+    publication: PublishToken,
+    // The newest superblock a publisher wrote, which read-only mounts follow.
+    published: Mutex<Option<Superblock>>,
     // Generations pinned by readers that released their mount's state lock,
     // with their counts, oldest first (E2 design 7.1). The device's mounts
     // share it, read-only mounts included; preparation promotes
@@ -332,6 +359,31 @@ struct DeviceMounts {
     // The oldest pin, or u64::MAX, written under `pins` for the transactions'
     // allocation-time promotion.
     oldest_pin: Arc<AtomicU64>,
+}
+/// The device's publication exclusion (design 7.3a).
+struct PublishToken(MountLock<()>);
+impl PublishToken {
+    /// A commit worker's publication on the device with this identity.
+    fn publish(&self, device: usize) -> MountGuard<'_, ()> {
+        i7::publisher(device);
+        self.0.lock()
+    }
+    /// A constructor's recovery, before its mount is published (I7's
+    /// unpublished-mount exception): recovery can publish orphan reclamation.
+    fn recover(&self) -> MountGuard<'_, ()> {
+        self.0.lock()
+    }
+}
+/// A root a delete or rename is changing (design 7.3a); dropped once its
+/// change is durable.
+struct Selecting {
+    device: Arc<DeviceMounts>,
+    id: u64,
+}
+impl Drop for Selecting {
+    fn drop(&mut self) {
+        self.device.selection.lock().retain(|&id| id != self.id);
+    }
 }
 /// A reader's pin on one generation of a device (E2 design 7.1): blocks that
 /// generation reaches are not reused while the pin lives.
@@ -367,6 +419,20 @@ impl DeviceMounts {
         self.oldest_pin.store(pins[0].0, Ordering::SeqCst);
         Ok(GenerationPin { device: self.clone(), generation })
     }
+    /// Mark root `id` as changing. EBUSY if another change holds it.
+    fn select(self: &Arc<Self>, id: u64) -> Result<Selecting, Errno> {
+        let mut selection = self.selection.lock();
+        if selection.contains(&id) {
+            return Err(Errno(EBUSY));
+        }
+        selection.try_reserve(1).map_err(|_| Errno(ENOMEM))?;
+        selection.push(id);
+        Ok(Selecting { device: self.clone(), id })
+    }
+    /// EBUSY while a delete or rename is changing root `id`.
+    fn selectable(&self, id: u64) -> Result<(), Errno> {
+        if self.selection.lock().contains(&id) { Err(Errno(EBUSY)) } else { Ok(()) }
+    }
     /// The bound `promote_pending` applies: the oldest pinned generation, or
     /// `u64::MAX` when no reader holds a pin.
     fn reuse_bound(&self) -> u64 {
@@ -383,8 +449,9 @@ impl DeviceMounts {
         let device = Arc::try_new(Self {
             identity,
             roots: Mutex::new(Vec::new()),
-            selection: MountLock::new(()),
-            publication: MountLock::new(None),
+            selection: Mutex::new(Vec::new()),
+            publication: PublishToken(MountLock::uncounted(())),
+            published: Mutex::new(None),
             pins: Mutex::new(Vec::new()),
             oldest_pin: Arc::try_new(AtomicU64::new(u64::MAX)).map_err(|_| Errno(ENOMEM))?,
         }).map_err(|_| Errno(ENOMEM))?;
@@ -566,6 +633,8 @@ struct MountState<W: Wait + 'static> {
     metadata_error: Option<super::btree::ReadFailure>,
     read_refusal_reported: bool,
     scrub: Option<Scrub>,
+    // The walk's progress while a batch runs with the lock released.
+    scrub_progress: Option<ScrubStatus>,
     scrub_state: u32,
     mount: usize,
     closed: bool,
@@ -1973,6 +2042,32 @@ struct Fills {
     done: Vec<(DeferredRun, bool)>,
     wanted: Vec<DeferredRun>,
 }
+impl Fills {
+    /// A pass begins: clear the reached marks and the recorded runs.
+    fn restart(&mut self) {
+        for (_, reached) in &mut self.done {
+            *reached = false;
+        }
+        self.wanted.clear();
+    }
+    /// Read the runs the pass recorded, with the lock released, straight
+    /// into `buf`, which holds the file's bytes from `off`.
+    fn fetch<W: Wait + 'static>(&mut self, fs: &BreenFs<W>, buf: &mut [u8], off: u64) -> Result<(), Errno> {
+        self.done.retain(|(_, reached)| *reached);
+        let reader = fs.data_reader();
+        for run in core::mem::take(&mut self.wanted) {
+            preemption_point();
+            let blocks = read_run(&reader, &run)?;
+            let skip = (run.lo - run.first) as usize;
+            let take = (run.hi - run.lo) as usize;
+            let at = (run.lo - off) as usize;
+            buf[at..at + take].copy_from_slice(&blocks[skip..skip + take]);
+            self.done.try_reserve(1).map_err(|_| Errno(ENOMEM))?;
+            self.done.push((run, true));
+        }
+        Ok(())
+    }
+}
 struct PassFills<'f, W: Wait> {
     fills: &'f mut Fills,
     cache: &'f BufferCache<W>,
@@ -1989,6 +2084,45 @@ impl<W: Wait> ops::Deferral for PassFills<'_, W> {
     fn want(&mut self, run: DeferredRun) -> Result<(), ReadError> {
         self.fills.wanted.try_reserve(1).map_err(|_| ReadError::Device(BlockError::OutOfMemory))?;
         self.fills.wanted.push(run);
+        Ok(())
+    }
+}
+
+/// What a data edit's no-wait attempt (design 7.3a row 1) found cold: the
+/// nodes and runs its partly covered pages need, and the pages read for it
+/// with the lock released. An attempt uses a staged page only while the
+/// file's extent still names the same blocks with the same checksums, so a
+/// commit between the read and the retake makes it stage again.
+#[derive(Default)]
+struct Staged {
+    pages: Vec<(DeferredRun, Vec<u8>)>,
+    wanted: Vec<DeferredRun>,
+    nodes: Wanted,
+    held: Held,
+}
+impl Staged {
+    fn needs_io(&self) -> bool {
+        !self.wanted.is_empty() || !self.nodes.is_empty()
+    }
+}
+struct StagedFills<'f, W: Wait> {
+    staged: &'f mut Staged,
+    cache: &'f BufferCache<W>,
+    data: &'f DataBlocks,
+}
+impl<W: Wait> ops::Deferral for StagedFills<'_, W> {
+    fn filled(&mut self, lo: u64, hi: u64, first: u64, phys: u64, crcs: &[u32], out: &mut [u8]) -> bool {
+        let Some((_, bytes)) = self.staged.pages.iter()
+            .find(|(run, _)| run.matches(lo, hi, first, phys, crcs)) else { return false; };
+        out.copy_from_slice(bytes);
+        true
+    }
+    fn resident(&mut self, phys: u64, blocks: usize, bytes: &mut [u8]) -> bool {
+        self.cache.read_resident(self.data, phys, blocks, bytes)
+    }
+    fn want(&mut self, run: DeferredRun) -> Result<(), ReadError> {
+        self.staged.wanted.try_reserve(1).map_err(|_| ReadError::Device(BlockError::OutOfMemory))?;
+        self.staged.wanted.push(run);
         Ok(())
     }
 }
@@ -2024,10 +2158,7 @@ struct ReadOp<'b> {
 impl<W: Wait + 'static> PassOp<W> for ReadOp<'_> {
     type Output = usize;
     fn pass(&mut self, fs: &BreenFs<W>, state: &mut MountState<W>) -> Result<usize, Errno> {
-        for (_, reached) in &mut self.fills.done {
-            *reached = false;
-        }
-        self.fills.wanted.clear();
+        self.fills.restart();
         if !fs.inner.writable {
             fs.observe_publication(state)?;
         }
@@ -2084,19 +2215,47 @@ impl<W: Wait + 'static> PassOp<W> for ReadOp<'_> {
         !self.fills.wanted.is_empty()
     }
     fn fetch_data(&mut self, fs: &BreenFs<W>) -> Result<(), Errno> {
-        self.fills.done.retain(|(_, reached)| *reached);
-        let reader = fs.data_reader();
-        for run in core::mem::take(&mut self.fills.wanted) {
-            preemption_point();
-            let blocks = read_run(&reader, &run)?;
-            let skip = (run.lo - run.first) as usize;
-            let take = (run.hi - run.lo) as usize;
-            let at = (run.lo - self.off) as usize;
-            self.buf[at..at + take].copy_from_slice(&blocks[skip..skip + take]);
-            self.fills.done.try_reserve(1).map_err(|_| Errno(ENOMEM))?;
-            self.fills.done.push((run, true));
+        self.fills.fetch(fs, self.buf, self.off)
+    }
+}
+
+/// A generation view's file read (design 7.2): the projected root's clean
+/// runs, read as the writer's reads are.
+struct ViewRead<'b> {
+    id: u64,
+    closed: Arc<BTreeSet<u64>>,
+    ino: u64,
+    off: u64,
+    buf: &'b mut [u8],
+    fills: Fills,
+}
+impl<W: Wait + 'static> PassOp<W> for ViewRead<'_> {
+    type Output = usize;
+    fn pass(&mut self, fs: &BreenFs<W>, state: &mut MountState<W>) -> Result<usize, Errno> {
+        self.fills.restart();
+        let (ino, off) = (self.ino, self.off);
+        let buf = &mut *self.buf;
+        let mut deferral = PassFills {
+            fills: &mut self.fills,
+            cache: fs.inner.cache.buffers(),
+            data: &fs.inner.data,
+        };
+        let result = state.files.files.with_read_root(self.id, &self.closed, |files| {
+            files.read_runs(&fs.data_reader(), ino, off, buf, &mut |_, _| {}, Some(&mut deferral))
+        });
+        let result = state.observed(result)?;
+        let read = state.read_result(result)?;
+        if !self.fills.wanted.is_empty() {
+            return Ok(0);
         }
-        Ok(())
+        self.buf[read..].fill(0);
+        Ok(read)
+    }
+    fn wants_data(&self) -> bool {
+        !self.fills.wanted.is_empty()
+    }
+    fn fetch_data(&mut self, fs: &BreenFs<W>) -> Result<(), Errno> {
+        self.fills.fetch(fs, self.buf, self.off)
     }
 }
 
@@ -2249,11 +2408,11 @@ impl<W: Wait + 'static> BreenFs<W> {
     /// writer's Files transaction and cache.
     pub fn generation_view(&self, id: usize, name: &[u8]) -> Result<Arc<dyn FileSystem>, Errno> {
         let device = &self.inner.mounted_root.device;
-        let _selection = device.selection.lock();
         let state = self.foreground_lock()?;
         state.writable()?;
         let root_id = state.roots.iter().find(|(_, (root, _))| root == name)
             .map(|(&id, _)| id).ok_or(Errno(ENOENT))?;
+        device.selectable(root_id)?;
         let root = Arc::try_new(GenerationRoot {
             mount: id,
             mounted: MountedRoot::claim(device.clone(), root_id)?,
@@ -2289,8 +2448,8 @@ impl<W: Wait + 'static> BreenFs<W> {
     /// Serve writable root `name` beside the booted tree, under this writer
     /// (docs/metal/paired-generations.md 3.1). Returns its root inode.
     pub fn attach_staging(&self, name: &[u8]) -> Result<u64, Errno> {
+        let _mutation = i7::exception("mutation");
         let device = &self.inner.mounted_root.device;
-        let _selection = device.selection.lock();
         loop {
             // Share the committed tree, as SNAPSHOT_CREATE does.
             self.sync()?;
@@ -2315,6 +2474,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             // Another mount or view holds this root, or a previous
             // attachment's per-inode state was not purged.
             self.check_root_unmounted(id)?;
+            device.selectable(id)?;
             if state.staged_state() {
                 return Err(Errno(EBUSY));
             }
@@ -2359,8 +2519,7 @@ impl<W: Wait + 'static> BreenFs<W> {
     /// so no path reaches it (3.1). Refused with EBUSY, leaving the tree
     /// attached and claimed, while a staged node is still in use.
     pub fn detach_staging(&self) -> Result<(), Errno> {
-        let device = &self.inner.mounted_root.device;
-        let _selection = device.selection.lock();
+        let _mutation = i7::exception("mutation");
         // A staged orphan is reclaimed by the commit after its last close.
         for _ in 0..3 {
             {
@@ -2520,14 +2679,16 @@ impl<W: Wait + 'static> BreenFs<W> {
             None
         };
         let mounts = DeviceMounts::get(device.identity())?;
-        let selection = mounts.selection.lock();
-        let mut publication = mounts.publication.lock();
+        // Held through root selection and its claim: a delete cannot publish
+        // the removal of the root this constructor selects meanwhile, and a
+        // delete already under way has marked it (design 7.3a).
+        let publication = mounts.publication.recover();
         let durable = recover::recover_detailed(device.as_ref(), writable).map_err(|failure| {
             report(format_args!("breenfs {}", failure));
             recovery_errno(failure.error)
         })?;
         // Recovery can publish orphan reclamation even if root selection fails.
-        *publication = Some(durable.clone());
+        *mounts.published.lock() = Some(durable.clone());
         let ram = metadata_ram_bytes();
         let decoded = Arc::try_new(DecodedNodes::new(ram)).map_err(|_| Errno(ENOMEM))?;
         let store = cache.store(device.clone(), &durable, &decoded);
@@ -2562,6 +2723,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         })?;
         files.set_reuse_bound(mounts.oldest_pin.clone());
         let mounted_root = MountedRoot::claim(mounts.clone(), root_id)?;
+        mounts.selectable(root_id)?;
         let default_root = if with_default {
             files.include_default_tree().map_err(errno)?;
             Some(MountedRoot::claim(mounts.clone(), 1)?)
@@ -2569,7 +2731,6 @@ impl<W: Wait + 'static> BreenFs<W> {
             None
         };
         drop(publication);
-        drop(selection);
         let dead_remaining = roots.iter().filter(|(key, _)| key.item_type == format::DEAD).count() as u64;
         let roots = roots.into_iter().filter(|(key, _)| key.item_type == format::ROOT)
             .map(|(key, bytes)| Root::decode(&bytes)
@@ -2615,6 +2776,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                 metadata_error: None,
                 read_refusal_reported: false,
                 scrub: None,
+                scrub_progress: None,
                 scrub_state: SCRUB_IDLE,
                 mount,
                 closed: false,
@@ -2764,36 +2926,72 @@ impl<W: Wait + 'static> BreenFs<W> {
                 }
                 continue;
             }
-            let durable = state.durable.clone();
-            let pin = self.inner.mounted_root.device.pin(durable.generation)?;
+            let pin = self.inner.mounted_root.device.pin(state.durable.generation)?;
+            let fetcher = state.files.files.store().fetcher(wanted.ceiling());
             drop(state);
-            self.fetch_nodes(&durable, &wanted, &mut held)?;
+            self.fetch_nodes(&fetcher, &wanted, &mut held)?;
             op.fetch_data(self)?;
             drop(pin);
             passes += 1;
         }
     }
-    /// Read what a pass recorded, with the mount lock released and the
-    /// durable generation pinned, into the operation's held set (design 7.2
-    /// step 2). BlockDevice is synchronous, so submitting and parking on the
-    /// completion is one ordinary cached read (ruling DEV-53(3)).
-    fn fetch_nodes(&self, durable: &Superblock, wanted: &Wanted, held: &mut Held) -> Result<(), Errno> {
-        use super::btree::NodeStore;
-        if wanted.is_empty() {
-            return Ok(());
+    /// readdir in batches (design 7.2 step 5). `walk` visits entries from a
+    /// cookie in one pass. A pass collects its entries and the sink sees them
+    /// only once the pass completes: a pass that ends in NeedsIo discards its
+    /// batch, so a reply repeats no entry and each batch is one generation's.
+    /// A sink that takes a whole batch gets the next one, which continues
+    /// from the batch's last cookie.
+    fn readdir_in_passes(
+        &self,
+        mut cookie: u64,
+        sink: &mut dyn FnMut(DirEnt, u64) -> Result<bool, Errno>,
+        mut walk: impl FnMut(&mut MountState<W>, u64, &mut dyn FnMut(DirEnt, u64) -> Result<bool, Errno>)
+            -> Result<u64, Errno>,
+    ) -> Result<u64, Errno> {
+        loop {
+            let start = cookie;
+            let (batch, end, more) = self.passes(&mut metadata(|_: &Self, state: &mut MountState<W>| {
+                let mut batch = Vec::new();
+                let mut bytes = 0;
+                let mut more = false;
+                let end = walk(state, start, &mut |entry, next| {
+                    let size = entry.name.len() + READDIR_RECORD_OVERHEAD;
+                    if !batch.is_empty() && bytes + size > READDIR_PASS_BYTES {
+                        more = true;
+                        return Ok(false);
+                    }
+                    bytes += size;
+                    batch.try_reserve(1).map_err(|_| Errno(ENOMEM))?;
+                    batch.push((entry, next));
+                    Ok(true)
+                })?;
+                Ok((batch, end, more))
+            }))?;
+            for (entry, next) in batch {
+                if !sink(entry, next)? {
+                    return Ok(cookie);
+                }
+                cookie = next;
+            }
+            if !more {
+                return Ok(end);
+            }
+            cookie = end;
         }
-        let mut sb = durable.clone();
-        sb.generation = wanted.nodes.iter().map(|ptr| ptr.generation)
-            .chain(wanted.raw.iter().map(|&(_, ceiling)| ceiling))
-            .fold(sb.generation, u64::max);
-        let store = self.inner.cache.store(self.inner.device.clone(), &sb, &self.inner.decoded);
+    }
+    /// Read what a pass recorded, with the mount lock released and the
+    /// durable generation pinned, through the view that recorded it into
+    /// the operation's held set (design 7.2 step 2). BlockDevice is
+    /// synchronous, so submitting and parking on the completion is one
+    /// ordinary cached read (ruling DEV-53(3)).
+    fn fetch_nodes(&self, fetcher: &NodeFetcher<'static, W>, wanted: &Wanted, held: &mut Held) -> Result<(), Errno> {
         for &ptr in &wanted.nodes {
             preemption_point();
-            let node = store.read_node(ptr).map_err(|error| self.fetch_failed(error))?;
+            let node = fetcher.read_node(ptr).map_err(|error| self.fetch_failed(error))?;
             held.hold(ptr, node).map_err(|_| Errno(ENOMEM))?;
         }
         for &(addr, _) in &wanted.raw {
-            let bytes = store.get(addr).map_err(|error| self.fetch_failed(error))?;
+            let bytes = fetcher.get(addr).map_err(|error| self.fetch_failed(error))?;
             held.hold_raw(addr, bytes).map_err(|_| Errno(ENOMEM))?;
         }
         Ok(())
@@ -2808,7 +3006,7 @@ impl<W: Wait + 'static> BreenFs<W> {
     /// newest published superblock replaces its view inside the pass. The
     /// pass's pin, not publication exclusion, keeps the view's blocks.
     fn observe_publication(&self, state: &mut MountState<W>) -> Result<(), Errno> {
-        let published = self.inner.mounted_root.device.publication.lock().clone();
+        let published = self.inner.mounted_root.device.published.lock().clone();
         if let Some(sb) = published.filter(|sb| sb.generation > state.durable.generation) {
             // An observer can skip generations without seeing the writer's
             // overwritten ranges or changed inode set. Start from its new view.
@@ -2824,11 +3022,32 @@ impl<W: Wait + 'static> BreenFs<W> {
     }
 
     fn check_durable_roots(&self, generation: Option<u64>) -> Result<(), Errno> {
-        // Keep this durable generation pinned against install and reuse while
-        // reading it. An in-flight publication still protects its blocks.
         #[cfg(all(target_arch = "x86_64", not(test)))]
         crate::drivers::watchdog::root_probe_waiting(self.inner.device.hardware_disk());
-        let state = self.inner.state.lock_interruptible()?;
+        // Pin the durable generation under the state lock and probe it with
+        // the lock released (design 7.3a). The pin keeps its nodes from
+        // reuse. Its superblock's ring slot can be rewritten once two later
+        // commits publish, so a failed probe is repeated, up to three times,
+        // while the durable generation keeps moving.
+        let device = &self.inner.mounted_root.device;
+        let mut attempts = 0;
+        loop {
+            let (durable, pin) = {
+                let state = self.inner.state.lock_interruptible()?;
+                (state.durable.clone(), device.pin(state.durable.generation)?)
+            };
+            let result = self.probe_or_progress(&durable, generation);
+            drop(pin);
+            attempts += 1;
+            if result.is_ok() || attempts == 3
+                || self.inner.state.lock_interruptible()?.durable.generation == durable.generation
+            {
+                return result;
+            }
+        }
+    }
+    /// One probe of `sb`, with the x86 watchdog's starved-admission rule.
+    fn probe_or_progress(&self, sb: &Superblock, generation: Option<u64>) -> Result<(), Errno> {
         #[cfg(all(not(test), target_arch = "x86_64"))]
         let progress = match self.inner.device.hardware_disk() {
             Some(crate::block::HardwareDisk::Ahci(port)) => {
@@ -2836,7 +3055,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             }
             _ => None,
         };
-        let result = self.probe_durable_roots(&state.durable, generation);
+        let result = self.probe_durable_roots(sb, generation);
         // A probe starved at admission can defer verification for this round
         // if the same disk completed another command during the probe.
         #[cfg(all(not(test), target_arch = "x86_64"))]
@@ -3260,8 +3479,11 @@ impl<W: Wait + 'static> BreenFs<W> {
         let split = if state.nodes.get(&node.ino).is_some_and(|n| n.splitting) {
             Split::Held
         } else { Split::No };
+        let mut staged = Staged::default();
+        let mut admitted = state;
+        loop {
         let (mut state, (mut inode, offset, length, end, grant)) = self.reserve_with_pressure(
-            cost, state,
+            cost, admitted,
             || self.admit_data(node.ino, touched_bytes(bytes.len()), split, cost),
             |state| {
                 let inode = state.regular(node.ino)?;
@@ -3297,8 +3519,15 @@ impl<W: Wait + 'static> BreenFs<W> {
             state.reservations.release(grant.grant);
             return Err(Errno(ENOMEM).into());
         }
-        let result = self.edit_pages(&mut state, node.ino, "write-read-metadata",
+        let result = self.edit_pages(&mut state, node.ino, "write-read-metadata", &mut staged,
             |open, read| open.pages.write(offset, &bytes[..length], read));
+        if staged.needs_io() {
+            // No page changed; the grant goes back with the refusal.
+            let _ = state.finish_data(node.ino, grant, result);
+            self.stage(state, &mut staged)?;
+            admitted = self.admit_data(node.ino, touched_bytes(bytes.len()), split, cost)?;
+            continue;
+        }
         state.finish_data(node.ino, grant, result)?;
         inode.size = inode.size.max(end);
         inode.mtime = now();
@@ -3327,11 +3556,12 @@ impl<W: Wait + 'static> BreenFs<W> {
         node.map.transition(inode.size);
         node.map.commit_write(offset, &bytes[..length]);
         self.inner.costs.record_write(length);
-        Ok(WriteResult {
+        return Ok(WriteResult {
             offset,
             bytes: length,
             limited: length < bytes.len(),
-        })
+        });
+        }
     }
     /// The parts after the first, which `first` admitted with the mark set.
     /// An error after some bytes are written returns those bytes, as write(2)
@@ -3765,10 +3995,9 @@ impl<W: Wait + 'static> BreenFs<W> {
                 signal.worker.wake();
             }),
         );
-        let mut publication = {
+        let publication = {
             let _wait = self.inner.costs.span(CostOp::Commit, CostPhase::Wait);
-            i7::publisher();
-            self.inner.mounted_root.device.publication.lock()
+            self.inner.mounted_root.device.publication.publish(self.inner.mounted_root.device.identity)
         };
         #[cfg(any(feature = "breenfs_commit_window", feature = "breenfs_corrupt_inject"))]
         let armed = self.inner.commit_faults.as_ref().and_then(|faults| {
@@ -3823,7 +4052,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                 // With the free count that excludes N's allocations, stop
                 // charging N's grants for them; each is released below (M3).
                 ledger.retire(grants.blocks);
-                *publication = Some(sb.clone());
+                *self.inner.mounted_root.device.published.lock() = Some(sb.clone());
                 // The publication keeps its own reference: no page is freed here.
                 let installed_pages = state.pending.take();
                 state.dead_remaining = dead_remaining;
@@ -4040,26 +4269,38 @@ impl<W: Wait + 'static> BreenFs<W> {
             }
         }
     }
-    // A batch holds publication/reuse exclusion only while reading its durable
-    // view. An in-flight next generation cannot overwrite that view under 2.5.
+    // A batch pins its durable generation under the state lock and walks it
+    // with the lock released (design 7.3a). The pin keeps the generation's
+    // blocks from reuse; the lock is retaken only to record progress.
     fn scrub_pass(&self, budget: usize) -> Result<(bool, usize), Errno> {
         let signal = &self.inner.scrub_signal;
-        let mut state = self.inner.state.lock();
-        if state.scrub_state != SCRUB_RUNNING {
-            return Ok((false, 0));
-        }
-        if state.closed || signal.stop.load(Ordering::Acquire) {
-            state.scrub_state = SCRUB_CANCELLED;
-            #[cfg(test)]
-            signal.started.store(false, Ordering::Release);
-            return Ok((false, 0));
-        }
-        let root = state.durable.space_root;
-        let generation = state.durable.generation;
-        let walk = state.scrub.as_mut().ok_or(Errno(EIO))?;
+        let (root, generation, mut walk, pin) = {
+            let mut state = self.inner.state.lock();
+            if state.scrub_state != SCRUB_RUNNING {
+                return Ok((false, 0));
+            }
+            if state.closed || signal.stop.load(Ordering::Acquire) {
+                state.scrub_state = SCRUB_CANCELLED;
+                #[cfg(test)]
+                signal.started.store(false, Ordering::Release);
+                return Ok((false, 0));
+            }
+            let pin = self.inner.mounted_root.device.pin(state.durable.generation)?;
+            let walk = state.scrub.take().ok_or(Errno(EIO))?;
+            state.scrub_progress = Some(scrub_progress(&walk));
+            (state.durable.space_root, state.durable.generation, walk, pin)
+        };
         let result = walk.step(&super::commit::DeviceStore(self.inner.device.as_ref()),
             root, generation, budget);
+        drop(pin);
         let completion = walk.completion();
+        let mut state = self.inner.state.lock();
+        state.scrub = Some(walk);
+        state.scrub_progress = None;
+        if state.scrub_state != SCRUB_RUNNING {
+            // Stopped or restarted while the batch walked unlocked.
+            return Ok((false, 0));
+        }
         match result {
             Err(error) => {
                 state.scrub_state = SCRUB_FAILED;
@@ -4157,15 +4398,13 @@ impl<W: Wait + 'static> BreenFs<W> {
             last_scrub_errors: state.durable.last_scrub_errors,
             ..ScrubStatus::default()
         };
-        if let Some(walk) = &state.scrub {
-            status.bytes_scanned = walk.blocks().saturating_mul(BLOCK_SIZE as u64);
-            status.errors = walk.errors();
-            for (slot, bad) in status.bad.iter_mut().zip(walk.bad()) {
-                *slot = BadBlock { block: bad.address,
-                    kind: match bad.kind { scrub::Kind::Node => BAD_NODE, scrub::Kind::Data => BAD_DATA },
-                    reserved: 0 };
-                status.bad_count += 1;
-            }
+        // A batch walking with the lock released left its progress here.
+        let progress = state.scrub.as_ref().map(scrub_progress).or(state.scrub_progress);
+        if let Some(progress) = progress {
+            status.bytes_scanned = progress.bytes_scanned;
+            status.errors = progress.errors;
+            status.bad = progress.bad;
+            status.bad_count = progress.bad_count;
         }
         status
     }
@@ -4179,13 +4418,22 @@ impl<W: Wait + 'static> BreenFs<W> {
     /// A page the change only partly covers starts from the frozen
     /// generation's copy when one is visible, else from the open generation's
     /// Files view; a frozen page is copied, not changed.
+    ///
+    /// The page reads are a no-wait pass (design 7.3a row 1): a page that is
+    /// neither in memory nor in `staged` is recorded there and the edit
+    /// fails with EAGAIN before it changes the dirty map (DirtyPages
+    /// prepares its pages first). The caller then stages it (`stage`) and repeats
+    /// its admission.
     fn edit_pages(
         &self,
         state: &mut MountState<W>,
         ino: u64,
         branch: &'static str,
+        staged: &mut Staged,
         edit: impl FnOnce(&mut GenPages, &mut dyn FnMut(u64, &mut [u8]) -> Result<(), Errno>) -> Result<(), Errno>,
     ) -> Result<(), Errno> {
+        // These reads stay outside the I7 exceptions, inside a mutation's.
+        let _strict = i7::strict();
         state.nodes.entry(ino).or_default();
         let mut bad_metadata = None;
         let result = {
@@ -4194,6 +4442,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             let before = open.pages.bytes();
             let hidden = open.hide_frozen_from;
             let frozen = pending.as_ref().or(installed.as_ref()).and_then(|pages| pages.nodes.get(&ino));
+            let decoded = &self.inner.decoded;
             let mut read = |off: u64, page: &mut [u8]| -> Result<(), Errno> {
                 let index = off / BLOCK_SIZE as u64;
                 if let Some(old) = frozen.filter(|_| hidden.is_none_or(|from| index < from))
@@ -4202,7 +4451,21 @@ impl<W: Wait + 'static> BreenFs<W> {
                     page.copy_from_slice(old);
                     return Ok(());
                 }
-                files.read_verified(&self.data_reader(), ino, off, page).map_err(|error| {
+                decoded.begin_pass(core::mem::take(&mut staged.held));
+                let mut deferral = StagedFills {
+                    staged: &mut *staged,
+                    cache: self.inner.cache.buffers(),
+                    data: &self.inner.data,
+                };
+                let result = files.read_runs(&self.data_reader(), ino, off, page, &mut |_, _| {},
+                    Some(&mut deferral));
+                let (wanted, held) = decoded.end_pass();
+                staged.held = held;
+                staged.nodes.append(wanted).map_err(|_| Errno(ENOMEM))?;
+                if staged.needs_io() {
+                    return Err(Errno(EAGAIN));
+                }
+                result.map_err(|error| {
                     match error {
                         ReadError::Metadata(error) => {
                             bad_metadata = Some(error);
@@ -4224,7 +4487,32 @@ impl<W: Wait + 'static> BreenFs<W> {
         }
         result
     }
+    /// After an edit refused for a cold page (design 7.3a row 1): pin the
+    /// durable generation, release the lock, and read the nodes and pages the
+    /// edit needs into `staged`, checked against their REF checksums.
+    fn stage(&self, state: MountGuard<'_, MountState<W>>, staged: &mut Staged) -> Result<(), Errno> {
+        let pin = self.inner.mounted_root.device.pin(state.durable.generation)?;
+        let nodes = core::mem::take(&mut staged.nodes);
+        let fetcher = state.files.files.store().fetcher(nodes.ceiling());
+        drop(state);
+        self.fetch_nodes(&fetcher, &nodes, &mut staged.held)?;
+        let reader = self.data_reader();
+        for run in core::mem::take(&mut staged.wanted) {
+            preemption_point();
+            let blocks = read_run(&reader, &run)?;
+            let skip = (run.lo - run.first) as usize;
+            let take = (run.hi - run.lo) as usize;
+            let mut bytes = Vec::new();
+            bytes.try_reserve_exact(take).map_err(|_| Errno(ENOMEM))?;
+            bytes.extend_from_slice(&blocks[skip..skip + take]);
+            staged.pages.try_reserve(1).map_err(|_| Errno(ENOMEM))?;
+            staged.pages.push((run, bytes));
+        }
+        drop(pin);
+        Ok(())
+    }
     fn snapshot_request(&self, request: &SnapshotRequest, create: bool) -> Result<(), Errno> {
+        let _mutation = i7::exception("mutation");
         let name = snapshot_name(request)?;
         let empty = request.flags == SNAPSHOT_EMPTY;
         if (!create && request.flags != 0)
@@ -4260,12 +4548,14 @@ impl<W: Wait + 'static> BreenFs<W> {
                 return self.sync_generation(None, false);
             }
         }
-        let _selection = self.inner.mounted_root.device.selection.lock();
-        {
+        // Under the state lock the delete marks its root; it syncs with no
+        // lock held and clears the mark once the removal is durable (7.3a).
+        let _selecting = {
             let mut state = self.foreground_lock()?;
             state.writable()?;
             let id = state.roots.iter().find(|(_, (root, _))| root == name)
                 .map(|(&id, _)| id).ok_or(Errno(ENOENT))?;
+            let selecting = self.inner.mounted_root.device.select(id)?;
             self.check_root_unmounted(id)?;
             state.protect_edit()?;
             let grant = state.reserve_metadata(&[2], 1, false, false, Operation::DeleteSnapshot)?;
@@ -4273,29 +4563,32 @@ impl<W: Wait + 'static> BreenFs<W> {
             state.finish_metadata(&[], grant, result)?;
             state.roots.remove(&id);
             state.skip_reap = true;
-        }
+            selecting
+        };
         self.sync_generation(None, false)
     }
     fn snapshot_rename(&self, request: &SnapshotRename) -> Result<(), Errno> {
+        let _mutation = i7::exception("mutation");
         if request.from.flags != 0 || request.to.flags != 0 {
             return Err(Errno(EINVAL));
         }
         let from = snapshot_name(&request.from)?;
         let to = snapshot_name(&request.to)?;
-        let _selection = self.inner.mounted_root.device.selection.lock();
-        {
+        let _selecting = {
             let mut state = self.foreground_lock()?;
             state.writable()?;
             let (&id, (_, flags)) = state.roots.iter().find(|(_, (name, _))| name == from)
                 .ok_or(Errno(ENOENT))?;
             let flags = *flags;
+            let selecting = self.inner.mounted_root.device.select(id)?;
             self.check_root_unmounted(id)?;
             state.protect_edit()?;
             let grant = state.reserve_metadata(&[2], 1, false, false, Operation::Allocate)?;
             let result = state.files.rename_root(from, to);
             state.finish_metadata(&[], grant, result)?;
             state.roots.insert(id, (to.to_vec(), flags));
-        }
+            selecting
+        };
         self.sync_generation(None, false)
     }
 
@@ -4319,11 +4612,17 @@ impl<W: Wait + 'static> BreenFs<W> {
     fn snapshot_status(&self) -> Result<SnapshotStatus, Errno> {
         // Read the current durable SPACE tree even on a frozen reader mounted
         // before the writer's latest snapshot or reaper generation.
-        let publication = self.inner.mounted_root.device.publication.lock();
-        let state = self.foreground_lock()?;
-        let sb = publication.as_ref().unwrap_or(&state.durable);
-        let store = CachedNodeStore::new(self.inner.cache.buffers(), self.inner.device.as_ref(), sb);
-        let items = recover::space_items(&store, sb).map_err(|_| Errno(EIO))?;
+        // Pin that generation under the state lock and read it with the
+        // lock released (design 7.3a).
+        let device = &self.inner.mounted_root.device;
+        let (sb, _pin) = {
+            let state = self.foreground_lock()?;
+            let sb = device.published.lock().clone().unwrap_or_else(|| state.durable.clone());
+            let pin = device.pin(sb.generation)?;
+            (sb, pin)
+        };
+        let store = CachedNodeStore::new(self.inner.cache.buffers(), self.inner.device.as_ref(), &sb);
+        let items = recover::space_items(&store, &sb).map_err(|_| Errno(EIO))?;
         Ok(SnapshotStatus {
             root_id: self.inner.root_id,
             flags: if self.inner.frozen { SNAPSHOT_READ_ONLY } else { 0 },
@@ -4332,6 +4631,21 @@ impl<W: Wait + 'static> BreenFs<W> {
             dead_remaining: items.iter().filter(|(key, _)| key.item_type == format::DEAD).count() as u64,
         })
     }
+}
+/// A scrub walk's counts and bad blocks, as SCRUB_STATUS reports them.
+fn scrub_progress(walk: &Scrub) -> ScrubStatus {
+    let mut status = ScrubStatus {
+        bytes_scanned: walk.blocks().saturating_mul(BLOCK_SIZE as u64),
+        errors: walk.errors(),
+        ..ScrubStatus::default()
+    };
+    for (slot, bad) in status.bad.iter_mut().zip(walk.bad()) {
+        *slot = BadBlock { block: bad.address,
+            kind: match bad.kind { scrub::Kind::Node => BAD_NODE, scrub::Kind::Data => BAD_DATA },
+            reserved: 0 };
+        status.bad_count += 1;
+    }
+    status
 }
 fn snapshot_name(request: &SnapshotRequest) -> Result<&[u8], Errno> {
     let length = request.name_len as usize;
@@ -4803,45 +5117,13 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
     fn readdir(
         &self,
         dir: u64,
-        mut cookie: u64,
+        cookie: u64,
         sink: &mut dyn FnMut(DirEnt, u64) -> Result<bool, Errno>,
     ) -> Result<u64, Errno> {
-        // A pass collects its entries and the sink sees them only once the
-        // pass completes (design 7.2 step 5): a pass that ends in NeedsIo
-        // discards its batch, so a reply repeats no entry and each batch is
-        // one generation's. A sink that takes a whole batch gets the next
-        // one, which continues from the batch's last cookie.
-        loop {
-            let start = cookie;
-            let (batch, end, more) = self.passes(&mut metadata(|_: &Self, state: &mut MountState<W>| {
-                let mut batch = Vec::new();
-                let mut bytes = 0;
-                let mut more = false;
-                let result = read_directory(&state.files, dir, start, &mut |entry, next| {
-                    let size = entry.name.len() + READDIR_RECORD_OVERHEAD;
-                    if !batch.is_empty() && bytes + size > READDIR_PASS_BYTES {
-                        more = true;
-                        return Ok(false);
-                    }
-                    bytes += size;
-                    batch.try_reserve(1).map_err(|_| Errno(ENOMEM))?;
-                    batch.push((entry, next));
-                    Ok(true)
-                });
-                let end = state.observed(result)??;
-                Ok((batch, end, more))
-            }))?;
-            for (entry, next) in batch {
-                if !sink(entry, next)? {
-                    return Ok(cookie);
-                }
-                cookie = next;
-            }
-            if !more {
-                return Ok(end);
-            }
-            cookie = end;
-        }
+        self.readdir_in_passes(cookie, sink, |state, start, collect| {
+            let result = read_directory(&state.files, dir, start, collect);
+            state.observed(result)?
+        })
     }
 
     fn read(&self, node: &VNode, off: u64, buf: &mut [u8]) -> Result<usize, Errno> {
@@ -4853,7 +5135,10 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             map: &node.map,
             fills: Fills::default(),
         })?;
-        self.touch(node, true);
+        // An empty read, or one at or past EOF, leaves atime alone.
+        if length != 0 {
+            self.touch(node, true);
+        }
         Ok(length)
     }
     fn readlink(&self, ino: u64) -> Result<Vec<u8>, Errno> {
@@ -4898,6 +5183,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         Ok(Box::try_new(transfer).map_err(|_| Errno(ENOMEM))?)
     }
     fn setattr(&self, ino: u64, attrs: SetAttr) -> Result<(), Errno> {
+        let _mutation = i7::exception("mutation");
         let _operation = self.inner.costs.span(CostOp::Setattr, CostPhase::Operation);
         let state = self.mutation_admission_lock(CostOp::Setattr)?;
         state.writable()?;
@@ -4929,6 +5215,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         state.finish_metadata(&[ino], grant, result)
     }
     fn create(&self, dir: u64, name: &[u8], node: NewNode<'_>) -> Result<u64, Errno> {
+        let _mutation = i7::exception("mutation");
         let _operation = self.inner.costs.span(CostOp::Create, CostPhase::Operation);
         let state = self.mutation_admission_lock(CostOp::Create)?;
         state.writable()?;
@@ -4970,6 +5257,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         check: &dyn Fn(NodeAttrs) -> Result<InodeAttrs, Errno>,
         prepare: &mut dyn FnMut(Arc<VNode>) -> Result<(), Errno>,
     ) -> Result<(), Errno> {
+        let _mutation = i7::exception("mutation");
         let _operation = self.inner.costs.span(CostOp::Create, CostPhase::Operation);
         let state = self.mutation_admission_lock(CostOp::Create)?;
         state.writable()?;
@@ -5034,6 +5322,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         Ok(())
     }
     fn link(&self, ino: u64, dir: u64, name: &[u8], check: &LinkCheck<'_>) -> Result<(), Errno> {
+        let _mutation = i7::exception("mutation");
         let _operation = self.inner.costs.span(CostOp::Link, CostPhase::Operation);
         let state = self.mutation_admission_lock(CostOp::Link)?;
         state.writable()?;
@@ -5057,6 +5346,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         state.finish_metadata(&[ino, dir], grant, result)
     }
     fn remove(&self, dir: u64, name: &[u8], which: Remove) -> Result<(), Errno> {
+        let _mutation = i7::exception("mutation");
         let cost = if which.directory { CostOp::Rmdir } else { CostOp::Unlink };
         let _operation = self.inner.costs.span(cost, CostPhase::Operation);
         let state = self.mutation_admission_lock(cost)?;
@@ -5110,6 +5400,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         mode: RenameMode,
         check: &RenameCheck<'_>,
     ) -> Result<(), Errno> {
+        let _mutation = i7::exception("mutation");
         let _operation = self.inner.costs.span(CostOp::Rename, CostPhase::Operation);
         let state = self.mutation_admission_lock(CostOp::Rename)?;
         state.writable()?;
@@ -5150,6 +5441,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         Ok(())
     }
     fn write(&self, node: &VNode, req: WriteReq, bytes: &[u8]) -> Result<WriteResult, WriteError> {
+        let _mutation = i7::exception("mutation");
         let _operation = self.inner.costs.span(CostOp::Write, CostPhase::Operation);
         self.check_node(node)?;
         if bytes.len() <= WRITE_PART {
@@ -5175,12 +5467,15 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         clear_setid: bool,
         check: &dyn Fn(NodeAttrs) -> Result<(), Errno>,
     ) -> Result<(), Errno> {
+        let _mutation = i7::exception("mutation");
         let _operation = self.inner.costs.span(CostOp::Resize, CostPhase::Operation);
         self.check_node(node)?;
         // Shrinking can keep one zeroed partial tail page.
-        let state = self.admit_data(node.ino, BLOCK_SIZE as u64, Split::No, CostOp::Resize)?;
+        let mut admitted = self.admit_data(node.ino, BLOCK_SIZE as u64, Split::No, CostOp::Resize)?;
+        let mut staged = Staged::default();
+        loop {
         let (mut state, (mut inode, mapped_tail, grant)) = self.reserve_with_pressure(
-            CostOp::Resize, state, || self.admit_data(node.ino, BLOCK_SIZE as u64, Split::No, CostOp::Resize), |state| {
+            CostOp::Resize, admitted, || self.admit_data(node.ino, BLOCK_SIZE as u64, Split::No, CostOp::Resize), |state| {
                 let inode = state.regular(node.ino)?;
                 check(state.attrs(node.ino)?)?;
                 if size > (1 << 63) - 4096 {
@@ -5222,7 +5517,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             return Err(Errno(ENOMEM));
         }
         if size < inode.size {
-            let result = self.edit_pages(&mut state, node.ino, "resize-read-metadata", |open, read| {
+            let result = self.edit_pages(&mut state, node.ino, "resize-read-metadata", &mut staged, |open, read| {
                 open.pages.shrink(size, mapped_tail, read)?;
                 // A frozen generation's pages past the new EOF are not this
                 // generation's bytes, even if the file grows again (601(2)).
@@ -5232,6 +5527,13 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                 open.hide_frozen_from = Some(open.hide_frozen_from.map_or(end, |from| from.min(end)));
                 Ok(())
             });
+            if staged.needs_io() {
+                // No page changed; the grant goes back with the refusal.
+                let _ = state.finish_data(node.ino, grant, result);
+                self.stage(state, &mut staged)?;
+                admitted = self.admit_data(node.ino, BLOCK_SIZE as u64, Split::No, CostOp::Resize)?;
+                continue;
+            }
             state.finish_data(node.ino, grant, result)?;
             let result = state.files.trim_mappings(node.ino, size);
             inode.nblocks = state.edited(&[node.ino], result)?;
@@ -5247,7 +5549,8 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         let result = state.files.put_inode(node.ino, inode);
         let result = state.edited(&[node.ino], result);
         node.map.transition(node.size.load(Ordering::Acquire));
-        result
+        return result;
+        }
     }
     fn writeback_pages(
         &self,
@@ -5256,6 +5559,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         bytes: &[u8],
         io: &dyn MappingIo,
     ) -> Result<(), Errno> {
+        let _mutation = i7::exception("mutation");
         let _operation = self.inner.costs.span(CostOp::Writeback, CostPhase::Operation);
         self.check_node(node)?;
         let mapping = io.as_any().downcast_ref::<Mapping<W>>().ok_or(Errno(EIO))?;
@@ -5274,9 +5578,11 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             .try_reserve_exact(bytes.len())
             .map_err(|_| Errno(ENOMEM))?;
         bounce.extend_from_slice(bytes);
-        let state = self.admit(touched_bytes(bounce.len()), CostOp::Writeback)?;
+        let mut admitted = self.admit(touched_bytes(bounce.len()), CostOp::Writeback)?;
+        let mut staged = Staged::default();
+        loop {
         let (mut state, (mut inode, length, grant)) = self.reserve_with_pressure(
-            CostOp::Writeback, state, || self.admit(touched_bytes(bounce.len()), CostOp::Writeback), |state| {
+            CostOp::Writeback, admitted, || self.admit(touched_bytes(bounce.len()), CostOp::Writeback), |state| {
                 if !mapping.writable {
                     return Err(Errno(EROFS).into());
                 }
@@ -5293,17 +5599,26 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         )?;
         let _edit = self.inner.costs.span(CostOp::Writeback, CostPhase::Edit);
         let Some(grant) = grant else { return Ok(()); };
-        let result = self.edit_pages(&mut state, node.ino, "writeback-read-metadata",
+        let result = self.edit_pages(&mut state, node.ino, "writeback-read-metadata", &mut staged,
             |open, read| open.pages.write(offset, &bounce[..length], read));
+        if staged.needs_io() {
+            // No page changed; the grant goes back with the refusal.
+            let _ = state.finish_data(node.ino, grant, result);
+            self.stage(state, &mut staged)?;
+            admitted = self.admit(touched_bytes(bounce.len()), CostOp::Writeback)?;
+            continue;
+        }
         state.finish_data(node.ino, grant, result)?;
         inode.mtime = now();
         inode.ctime = inode.mtime;
         let result = state.files.put_inode(node.ino, inode);
         state.edited(&[node.ino], result)?;
         mapping.staged_generation.set(Some(state.open_generation()));
-        Ok(())
+        return Ok(());
+        }
     }
     fn clear_mapping_privilege(&self, node: &VNode) -> Result<(), Errno> {
+        let _mutation = i7::exception("mutation");
         let _operation = self.inner.costs.span(CostOp::Setattr, CostPhase::Operation);
         self.check_node(node)?;
         let mut state = self.mutation_admission_lock(CostOp::Setattr)?;
@@ -5349,6 +5664,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                 Xattr::Set { .. } | Xattr::Remove { .. } => Err(Errno(EINVAL)),
             };
         }
+        let _mutation = i7::exception("mutation");
         let mut state = self.mutation_admission_lock(CostOp::Xattr)?;
         if state.committer.is_none() {
             return Err(Errno(EROFS));
@@ -5424,14 +5740,18 @@ struct GenerationView<W: Wait + 'static> {
 }
 
 impl<W: Wait + 'static> GenerationView<W> {
+    /// A read of the projected root, in the writer's no-wait passes
+    /// (design 7.2).
     fn read_files<T>(
         &self,
-        read: impl FnOnce(&Files<'static, CachedNodeStore<'static, W>>) -> Result<T, ReadError>,
+        mut read: impl FnMut(&Files<'static, CachedNodeStore<'static, W>>) -> Result<T, ReadError>,
     ) -> Result<T, Errno> {
-        let mut state = self.writer.foreground_lock()?;
-        let result = state.files.files.with_read_root(self.root.mounted.id, &self.root.closed_inodes, read);
-        let result = state.observed(result)?;
-        state.read_result(result)
+        let (id, closed) = (self.root.mounted.id, &self.root.closed_inodes);
+        self.writer.passes(&mut metadata(|_: &BreenFs<W>, state: &mut MountState<W>| {
+            let result = state.files.files.with_read_root(id, closed, |files| read(files));
+            let result = state.observed(result)?;
+            state.read_result(result)
+        }))
     }
 
     fn check_node(&self, node: &VNode) -> Result<(), Errno> {
@@ -5519,16 +5839,28 @@ impl<W: Wait + 'static> FileSystem for GenerationView<W> {
         cookie: u64,
         sink: &mut dyn FnMut(DirEnt, u64) -> Result<bool, Errno>,
     ) -> Result<u64, Errno> {
-        self.read_files(|files| Ok(read_directory(files, dir, cookie, sink)?))?
+        let (id, closed) = (self.root.mounted.id, &self.root.closed_inodes);
+        self.writer.readdir_in_passes(cookie, sink, |state, start, collect| {
+            let result = state.files.files.with_read_root(id, closed, |files| -> Result<_, ReadError> {
+                Ok(read_directory(files, dir, start, collect)?)
+            });
+            let result = state.observed(result)?;
+            state.read_result(result)?
+        })
     }
     fn readlink(&self, ino: u64) -> Result<Vec<u8>, Errno> {
         self.read_files(|files| Ok(files.readlink(ino)?))
     }
     fn read(&self, node: &VNode, off: u64, buf: &mut [u8]) -> Result<usize, Errno> {
         self.check_node(node)?;
-        let read = self.read_files(|files| files.read_verified(&self.writer.data_reader(), node.ino, off, buf))?;
-        buf[read..].fill(0);
-        Ok(read)
+        self.writer.passes(&mut ViewRead {
+            id: self.root.mounted.id,
+            closed: self.root.closed_inodes.clone(),
+            ino: node.ino,
+            off,
+            buf,
+            fills: Fills::default(),
+        })
     }
     fn fsync(&self, node: &VNode, _: bool) -> Result<(), Errno> {
         self.check_node(node)

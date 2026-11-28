@@ -165,8 +165,22 @@ pub struct Wanted {
     pub raw: Vec<(u64, u64)>,
 }
 impl Wanted {
+    /// Add `other`'s reads to these.
+    pub fn append(&mut self, other: Wanted) -> Result<(), Error> {
+        self.nodes.try_reserve(other.nodes.len()).map_err(|_| allocation(0))?;
+        self.raw.try_reserve(other.raw.len()).map_err(|_| allocation(0))?;
+        self.nodes.extend(other.nodes);
+        self.raw.extend(other.raw);
+        Ok(())
+    }
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty() && self.raw.is_empty()
+    }
+    /// The newest generation these reads name.
+    pub fn ceiling(&self) -> u64 {
+        self.nodes.iter().map(|ptr| ptr.generation)
+            .chain(self.raw.iter().map(|&(_, ceiling)| ceiling))
+            .max().unwrap_or(0)
     }
 }
 
@@ -404,6 +418,7 @@ impl<'a, W: Wait> CachedNodeStore<'a, W> {
             device: Box::new(NodeDevice {
                 device: Retained::Borrowed(device),
                 total_blocks: durable.total_blocks,
+                identity: view_identity(),
             }),
             fs_uuid: durable.fs_uuid,
             generation: durable.generation,
@@ -423,6 +438,7 @@ impl<'a, W: Wait> CachedNodeStore<'a, W> {
             device: Box::new(NodeDevice {
                 device: Retained::Shared(device),
                 total_blocks: durable.total_blocks,
+                identity: view_identity(),
             }),
             fs_uuid: durable.fs_uuid,
             generation: durable.generation,
@@ -442,6 +458,7 @@ impl<'a, W: Wait> CachedNodeStore<'a, W> {
             device: Box::new(NodeDevice {
                 device: Retained::Shared(device),
                 total_blocks: durable.total_blocks,
+                identity: view_identity(),
             }),
             fs_uuid: durable.fs_uuid,
             generation: durable.generation,
@@ -518,30 +535,7 @@ impl<W: Wait> NodeStore for CachedNodeStore<'_, W> {
             bytes.copy_from_slice(&buffer[..NODE_SIZE]);
             return Ok(bytes);
         }
-        let verification_failed = core::cell::Cell::new(false);
-        self.cache
-            .read_verified(self.device.as_ref(), addr, &mut bytes, |node| {
-                // decode checks the magic and CRC-32C of bytes 12..16383.
-                let valid = NodeHeader::decode(node).is_ok_and(|header| {
-                    header.addr == addr
-                        && header.generation > 0
-                        && header.generation <= self.generation
-                        && header.fs_uuid == self.fs_uuid
-                });
-                verification_failed.set(!valid);
-                valid
-            })
-            .map_err(|error| {
-                Error::Read(ReadFailure {
-                    cause: if verification_failed.get() {
-                        ReadCause::Verification
-                    } else {
-                        error.into()
-                    },
-                    addr,
-                })
-            })?;
-        Ok(bytes)
+        read_verified_node(&self.cache, &self.device, &self.fs_uuid, self.generation, addr, bytes)
     }
     fn put(&mut self, _: u64, _: Vec<u8>) -> Result<(), Error> {
         Err(Error::Store)
@@ -557,13 +551,133 @@ impl<W: Wait> Drop for CachedNodeStore<'_, W> {
     }
 }
 
+/// Read node `addr` through `cache` into `bytes` (NODE_SIZE), verifying
+/// UUID, address, generation (at most `generation`) and CRC on a miss.
+fn read_verified_node<W: Wait>(
+    cache: &BufferCache<W>,
+    device: &NodeDevice<'_>,
+    fs_uuid: &[u8; 16],
+    generation: u64,
+    addr: u64,
+    mut bytes: Vec<u8>,
+) -> Result<Vec<u8>, Error> {
+    let verification_failed = core::cell::Cell::new(false);
+    cache
+        .read_verified(device, addr, &mut bytes, |node| {
+            // decode checks the magic and CRC-32C of bytes 12..16383.
+            let valid = NodeHeader::decode(node).is_ok_and(|header| {
+                header.addr == addr
+                    && header.generation > 0
+                    && header.generation <= generation
+                    && header.fs_uuid == *fs_uuid
+            });
+            verification_failed.set(!valid);
+            valid
+        })
+        .map_err(|error| {
+            Error::Read(ReadFailure {
+                cause: if verification_failed.get() {
+                    ReadCause::Verification
+                } else {
+                    error.into()
+                },
+                addr,
+            })
+        })?;
+    Ok(bytes)
+}
+
+impl<'a, W: Wait> CachedNodeStore<'a, W> {
+    /// A handle that reads into this view's caches with no mount lock held
+    /// (E2 design 7.2 step 2), for nodes of generations up to `ceiling`.
+    pub fn fetcher(&self, ceiling: u64) -> NodeFetcher<'a, W> {
+        NodeFetcher {
+            cache: self.cache.clone(),
+            device: NodeDevice {
+                device: self.device.device.clone(),
+                total_blocks: self.device.total_blocks,
+                identity: self.device.identity,
+            },
+            fs_uuid: self.fs_uuid,
+            generation: ceiling.max(self.generation),
+            view_generation: self.generation,
+            decoded: self.decoded.clone(),
+        }
+    }
+}
+
+/// Reads a pass's misses with the mount lock released into the view that
+/// recorded them: its buffer-cache keyspace and the mount's decoded cache, as
+/// the view's own reads would. It reads the device outside the cache's
+/// admission queue, which is keyed by the view: a caller reading through the
+/// view under the state lock must not queue behind this read (ruling
+/// DEV-53(3)). The reader's generation pin keeps writes off these blocks.
+/// The view's own drop retires its keyspace; dropping a fetcher leaves it.
+pub struct NodeFetcher<'a, W: Wait> {
+    cache: Retained<'a, BufferCache<W>>,
+    device: NodeDevice<'a>,
+    fs_uuid: [u8; 16],
+    generation: u64,
+    // Only nodes the view itself may read enter its keyspace.
+    view_generation: u64,
+    decoded: Arc<DecodedNodes>,
+}
+impl<W: Wait> NodeFetcher<'_, W> {
+    pub fn read_node(&self, ptr: BlockPtr) -> Result<Arc<Node>, Error> {
+        if ptr.generation == 0 || ptr.generation > self.generation {
+            return Err(Error::InvalidNode.at_node(ptr.addr));
+        }
+        if let Some(node) = self.decoded.get(ptr) {
+            return node;
+        }
+        let node = btree::decode_verified_node(&self.get(ptr.addr)?, ptr)
+            .map_err(|error| error.at_node(ptr.addr))?;
+        self.decoded.insert(ptr, &node);
+        Ok(node)
+    }
+    pub fn get(&self, addr: u64) -> Result<Vec<u8>, Error> {
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(NODE_SIZE).map_err(|_| allocation(addr))?;
+        bytes.resize(NODE_SIZE, 0);
+        if let Some(buffer) = self.cache.pin(&self.device, addr) {
+            bytes.copy_from_slice(&buffer[..NODE_SIZE]);
+            return Ok(bytes);
+        }
+        self.device.read_block(addr, &mut bytes)
+            .map_err(|error| Error::Read(ReadFailure { cause: error.into(), addr }))?;
+        // decode checks the magic and CRC-32C of bytes 12..16383.
+        let header = NodeHeader::decode(&bytes).ok().filter(|header| {
+            header.addr == addr
+                && header.generation > 0
+                && header.generation <= self.generation
+                && header.fs_uuid == self.fs_uuid
+        }).ok_or(Error::Read(ReadFailure { cause: ReadCause::Verification, addr }))?;
+        if header.generation <= self.view_generation {
+            self.cache.adopt_clean(&self.device, addr, &bytes);
+        }
+        Ok(bytes)
+    }
+}
+
+// A view's buffer-cache identity: unique in the process, and odd, so it cannot
+// equal a device's identity, which is an aligned address. A dropped view's
+// address can be reused; its identity is not.
+static NEXT_VIEW: AtomicUsize = AtomicUsize::new(0);
+fn view_identity() -> usize {
+    (NEXT_VIEW.fetch_add(1, Ordering::Relaxed) << 1) | 1
+}
+
 // Keys retain the format's 4 KiB start address, including nodes not aligned to
 // four blocks. Only read_block is exposed to the store; mutation is refused.
 struct NodeDevice<'a> {
     device: Retained<'a, dyn BlockDevice + 'a>,
     total_blocks: u64,
+    identity: usize,
 }
 impl BlockDevice for NodeDevice<'_> {
+    fn identity(&self) -> usize {
+        self.identity
+    }
     fn read_block(&self, addr: u64, bytes: &mut [u8]) -> Result<(), BlockError> {
         let total = commit::partition_blocks(&*self.device).map_err(|_| BlockError::IoError)?;
         if bytes.len() != NODE_SIZE
@@ -602,6 +716,14 @@ impl BlockDevice for NodeDevice<'_> {
 enum Retained<'a, T: ?Sized> {
     Borrowed(&'a T),
     Shared(Arc<T>),
+}
+impl<T: ?Sized> Clone for Retained<'_, T> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Borrowed(value) => Self::Borrowed(value),
+            Self::Shared(value) => Self::Shared(value.clone()),
+        }
+    }
 }
 impl<T: ?Sized> Deref for Retained<'_, T> {
     type Target = T;

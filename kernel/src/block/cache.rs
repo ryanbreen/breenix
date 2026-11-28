@@ -393,6 +393,43 @@ impl<W: Wait> BufferCache<W> {
         found
     }
 
+    /// Count one block the caller read from `device` itself, outside device
+    /// admission, and keep it as a clean copy when the key has no entry and
+    /// the cache has room. A no-wait pass's fetch (E2 design 7.2) does this:
+    /// its reader holds a generation pin, so no write can reach the block,
+    /// and a reader queued at admission must not wait behind it.
+    pub fn adopt_clean(&self, device: &dyn BlockDevice, block: u64, bytes: &[u8]) {
+        self.count(|c| &mut c.misses);
+        self.count(|c| &mut c.device_reads);
+        let key = (device.identity(), block);
+        let charge = self.with(|state| {
+            if state.buffers.contains_key(&key) {
+                return None;
+            }
+            state.reserve(bytes.len(), self.bound, &self.resident)
+        });
+        let Some(charge) = charge else { return };
+        let mut copy = Vec::new();
+        if copy.try_reserve_exact(bytes.len()).is_err() {
+            return;
+        }
+        copy.extend_from_slice(bytes);
+        let buffer = Arc::new(Buffer { bytes: copy, charge });
+        self.with(|state| {
+            if state.buffers.contains_key(&key) {
+                return;
+            }
+            state.next_generation = state.next_generation.checked_add(1).expect("cache generation exhausted");
+            let generation = state.next_generation;
+            state.buffers.insert(key, Entry {
+                status: BufferState::Clean { buffer, used: 0 },
+                generation,
+                waiters: 0,
+            });
+            state.touch(key);
+        });
+    }
+
     pub fn status(&self, device: &dyn BlockDevice, block: u64) -> Option<BufferStatus> {
         self.with(|state| {
             state

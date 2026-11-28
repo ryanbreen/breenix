@@ -33,6 +33,10 @@ pub struct MountLock<T> {
     queue: crate::task::waitqueue::WaitQueueHead,
     #[cfg(test)]
     host: HostPark,
+    // Host checks: whether the I7 guard counts this lock's holders. The
+    // device's PublishToken (vfs.rs) is built on this lock and is not one.
+    #[cfg(test)]
+    counted: bool,
     value: UnsafeCell<T>,
 }
 
@@ -71,7 +75,25 @@ impl<T> MountLock<T> {
             queue: crate::task::waitqueue::WaitQueueHead::new(),
             #[cfg(test)]
             host: HostPark::default(),
+            #[cfg(test)]
+            counted: true,
             value: UnsafeCell::new(value),
+        }
+    }
+
+    /// The same sleeping exclusion for a lock that is not a mount lock (the
+    /// device's PublishToken, E2 design 7.3a): the host I7 guard does not
+    /// count its holders.
+    pub fn uncounted(value: T) -> Self {
+        #[cfg(test)]
+        {
+            let mut lock = Self::new(value);
+            lock.counted = false;
+            lock
+        }
+        #[cfg(not(test))]
+        {
+            Self::new(value)
         }
     }
 
@@ -106,7 +128,9 @@ impl<T> MountLock<T> {
             .ok()
             .map(|_| {
                 #[cfg(test)]
-                HELD.with(|held| held.set(held.get() + 1));
+                if self.counted {
+                    HELD.with(|held| held.set(held.get() + 1));
+                }
                 #[cfg(test)]
                 super::preempt::context::observe(super::preempt::context::Event::Acquire(self as *const Self as usize));
                 MountGuard {
@@ -122,7 +146,9 @@ impl<T> MountLock<T> {
         #[cfg(test)]
         super::preempt::context::observe(super::preempt::context::Event::Release(self as *const Self as usize));
         #[cfg(test)]
-        HELD.with(|held| held.set(held.get() - 1));
+        if self.counted {
+            HELD.with(|held| held.set(held.get() - 1));
+        }
         self.held.store(false, Ordering::SeqCst);
         #[cfg(not(test))]
         let parked = crate::task::park::should_wake(&self.parked);

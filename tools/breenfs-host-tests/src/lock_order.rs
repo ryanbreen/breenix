@@ -65,6 +65,7 @@ struct Disk {
     gate: HostMutex<Gate>,
     turn: Condvar,
     log: HostMutex<Log>,
+    reads: AtomicU64,
 }
 
 impl Disk {
@@ -74,6 +75,7 @@ impl Disk {
             gate: HostMutex::default(),
             turn: Condvar::new(),
             log: HostMutex::default(),
+            reads: AtomicU64::new(0),
         })
     }
     fn observe(&self, kind: &'static str, block: u64) {
@@ -147,6 +149,7 @@ impl BlockDevice for Disk {
     }
     fn read_blocks(&self, block: u64, count: usize, bytes: &mut [u8]) -> Result<(), BlockError> {
         self.observe("read", block);
+        self.reads.fetch_add(1, Ordering::SeqCst);
         let start = block as usize * BLOCK_SIZE;
         let length = count * BLOCK_SIZE;
         bytes[..length].copy_from_slice(&self.bytes.lock().unwrap()[start..start + length]);
@@ -298,11 +301,17 @@ fn assert_guarded(log: &Log, what: &str) {
     }
 }
 
-fn assert_worker_publishes(log: &Log, what: &str) {
+fn assert_worker_publishes(disk: &Arc<Disk>, log: &Log, what: &str) {
     let foreground: Vec<_> = log.writers.iter().filter(|(_, worker)| !*worker).collect();
     assert!(foreground.is_empty(), "{what}: device writes outside the commit worker: {foreground:?}");
-    let publishers: Vec<_> = super::i7::take_publishers().into_iter().filter(|(_, worker)| !*worker).collect();
+    let publishers: Vec<_> = super::i7::take_publishers(identity(disk)).into_iter()
+        .filter(|(_, worker)| !*worker).collect();
     assert!(publishers.is_empty(), "{what}: foreground threads took publication exclusion: {publishers:?}");
+}
+
+/// The disk's BlockDevice identity, which names its publication records.
+fn identity(disk: &Arc<Disk>) -> usize {
+    BlockDevice::identity(disk.as_ref())
 }
 
 /// The block that backs `ino`'s file block `index` in the open view.
@@ -334,7 +343,7 @@ fn i7_guard_read_paths_wait_with_no_mount_lock() {
     let (disk, inos) = image();
     let fs = mount(&disk, 121);
     disk.take_log();
-    let _ = super::i7::take_publishers();
+    let _ = super::i7::take_publishers(identity(&disk));
     let worker = fs.clone();
     bounded("i7-reads", move || {
         let fs = worker;
@@ -351,12 +360,45 @@ fn i7_guard_read_paths_wait_with_no_mount_lock() {
     assert_guarded(&disk.take_log(), "read paths");
 }
 
+/// A generation view reads its projected root through the writer's mount
+/// (paired generations 3.1); its reads are passes too.
+#[test]
+fn i7_guard_generation_view_reads_wait_with_no_mount_lock() {
+    let (disk, inos) = image();
+    let fs = mount(&disk, 136);
+    let mut request = SnapshotRequest { flags: 0, name_len: 3, name: [0; 256] };
+    request.name[..3].copy_from_slice(b"gen");
+    fs.snapshot_request(&request, true).unwrap();
+    fs.shutdown("e2-5-generation-view", u64::MAX).unwrap();
+    drop(fs);
+    let fs = mount(&disk, 137);
+    let view = fs.generation_view(138, b"gen").unwrap();
+    disk.take_log();
+    bounded("i7-view", move || {
+        assert_eq!(view.lookup(2, b"f"), Ok(inos.f));
+        view.getattr(inos.a).unwrap();
+        assert_eq!(view.parent(inos.d), Ok(2));
+        let mut entries = 0;
+        view.readdir(inos.d, 0, &mut |_, _| {
+            entries += 1;
+            Ok(true)
+        }).unwrap();
+        assert_eq!(entries, 600);
+        let node = view.open(inos.b).unwrap();
+        let mut bytes = vec![0; 3 * BLOCK_SIZE];
+        assert_eq!(view.read(&node, 0, &mut bytes), Ok(3 * BLOCK_SIZE));
+        assert!(bytes == pattern(2, 3 * BLOCK_SIZE), "the view read wrong bytes");
+        assert_eq!(view.readlink(inos.s).unwrap(), b"a");
+    });
+    assert_guarded(&disk.take_log(), "generation view reads");
+}
+
 #[test]
 fn i7_guard_mutations_stay_inside_the_exception_list() {
     let (disk, inos) = image();
     let fs = mount(&disk, 122);
     disk.take_log();
-    let _ = super::i7::take_publishers();
+    let _ = super::i7::take_publishers(identity(&disk));
     let worker = fs.clone();
     bounded("i7-mutations", move || {
         let fs = worker;
@@ -373,7 +415,7 @@ fn i7_guard_mutations_stay_inside_the_exception_list() {
     });
     let log = disk.take_log();
     assert_guarded(&log, "mutations");
-    assert_worker_publishes(&log, "mutations");
+    assert_worker_publishes(&disk, &log, "mutations");
 }
 
 #[test]
@@ -505,6 +547,20 @@ fn a_directory_reply_comes_from_one_pass_of_one_generation() {
     assert_eq!(got, reply(&fs, inos.d, 500).unwrap(), "the reply is not one generation's listing");
 }
 
+/// A node a pass read with the lock released lands in the view's own buffer
+/// cache, as a read under the lock did: with the decoded cache emptied (as a
+/// refused decoded insert leaves it), the next lookup reads no device block.
+#[test]
+fn a_fetched_node_stays_in_the_views_buffer_cache() {
+    let (disk, inos) = image();
+    let fs = mount(&disk, 135);
+    assert_eq!(fs.lookup(inos.d, b"entry-0300").map(|ino| ino != 0), Ok(true));
+    fs.inner.decoded.clear();
+    let reads = disk.reads.load(Ordering::SeqCst);
+    assert_eq!(fs.lookup(inos.d, b"entry-0300").map(|ino| ino != 0), Ok(true));
+    assert_eq!(disk.reads.load(Ordering::SeqCst) - reads, 0, "the lookup read the device again");
+}
+
 fn reuse_past_the_horizon(read_only: bool) {
     let (disk, inos) = image();
     let fs = mount(&disk, 126);
@@ -571,7 +627,7 @@ fn a_writer_at_the_full_budget_parks_on_commit_progress() {
         }))
     };
     disk.take_log();
-    let _ = super::i7::take_publishers();
+    let _ = super::i7::take_publishers(identity(&disk));
     let writer = fs.clone();
     bounded("writer", move || {
         let node = writer.open(inos.f).unwrap();
@@ -584,7 +640,7 @@ fn a_writer_at_the_full_budget_parks_on_commit_progress() {
     join(worker, "the commit worker did not stop");
     let log = disk.take_log();
     assert_guarded(&log, "full-budget writes");
-    assert_worker_publishes(&log, "full-budget writes");
+    assert_worker_publishes(&disk, &log, "full-budget writes");
 }
 
 /// The commit worker reaches the full budget while it stages mapped dirty
@@ -615,6 +671,7 @@ fn worker_at_the_full_budget(other_publisher: bool) {
     let stores = pattern(90, 64 * BLOCK_SIZE);
     mapped.map.shared_stores(&stores, true);
     mapped.map.request_writeback();
+    let before = fs.inner.state.lock().durable.generation;
     let pass = {
         let fs = fs.clone();
         bounded("commit-worker", move || measurement::as_worker(&fs, || {
@@ -633,6 +690,14 @@ fn worker_at_the_full_budget(other_publisher: bool) {
     };
     assert!(pass.0.is_ok(), "the worker's pass failed: {:?}", pass.0);
     assert!(!pass.1, "the commit worker parked on commit progress");
+    // The case is reached: the owner published inline at the full budget and
+    // again at the pass's end; the deferring worker left the mapping dirty.
+    if other_publisher {
+        assert!(mapped.map.has_dirty(), "the worker's pass did not reach the full budget");
+    } else {
+        let after = fs.inner.state.lock().durable.generation;
+        assert!(after >= before + 2, "the worker's pass did not reach the full budget ({before} to {after})");
+    }
     if let Some(handle) = publisher {
         disk.release();
         assert_eq!(join(handle, "the other publisher did not finish"), Ok(true));
@@ -691,7 +756,7 @@ fn table_7_3a_paths_wait_with_no_mount_lock() {
     let (disk, inos) = image();
     let fs = mount(&disk, 130);
     disk.take_log();
-    let _ = super::i7::take_publishers();
+    let _ = super::i7::take_publishers(identity(&disk));
     let worker = fs.clone();
     let disk_for = disk.clone();
     bounded("i7-table", move || {
@@ -720,7 +785,7 @@ fn table_7_3a_paths_wait_with_no_mount_lock() {
     });
     let log = disk.take_log();
     assert_guarded(&log, "the §7.3a paths");
-    assert_worker_publishes(&log, "the §7.3a paths");
+    assert_worker_publishes(&disk, &log, "the §7.3a paths");
 }
 
 /// Fails when an `i7::exception("...")` site in vfs.rs names an exception the

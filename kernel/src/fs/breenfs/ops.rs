@@ -991,6 +991,8 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
                 && (root.source_root == id || !self.roots.contains_key(&root.source_root)))
     }
     pub fn root_pointer(&self) -> BlockPtr { self.root.root }
+    /// The view's read-only store.
+    pub fn store(&self) -> &S { self.txn.base() }
     /// See `Transaction::set_reuse_bound` (E2 design 7.1).
     pub fn set_reuse_bound(&mut self, bound: Arc<core::sync::atomic::AtomicU64>) {
         self.txn.set_reuse_bound(bound);
