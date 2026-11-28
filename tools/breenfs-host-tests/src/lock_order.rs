@@ -880,3 +880,27 @@ fn a_read_only_mount_passes_from_the_newest_publication() {
 fn a_read_only_readers_publication_hold_stops_the_writer() {
     publication_hold(true);
 }
+
+/// Review M3 (#3310): each view a read-only mount moves to is read through
+/// that view's own cache. The observer skips four generations at a time, so
+/// blocks its old view cached are reused by the newer trees it moves to.
+#[test]
+fn a_read_only_mount_reads_each_new_view_through_its_own_cache() {
+    let (disk, inos) = image();
+    let fs = mount(&disk, 146);
+    let observer = Fs::mount(disk.clone(), Arc::new(BufferCache::new(YieldWait)), 147, 1).unwrap();
+    assert_eq!(read_all(&observer, inos.f, 3 * BLOCK_SIZE).unwrap(), pattern(3, 3 * BLOCK_SIZE));
+    let other = fs.open(inos.b).unwrap();
+    for round in 0..8u8 {
+        for step in 0..4u8 {
+            fs.write(&other, at(0), &pattern(140 + 4 * round + step, 3 * BLOCK_SIZE)).unwrap();
+            fs.fsync(&other, false).unwrap();
+        }
+        let read = read_all(&observer, inos.f, 3 * BLOCK_SIZE);
+        assert!(read.as_ref().is_ok_and(|bytes| *bytes == pattern(3, 3 * BLOCK_SIZE)),
+            "round {round}: the observer's read of f: {:?}", read.err());
+        let read = read_all(&observer, inos.b, 3 * BLOCK_SIZE);
+        assert!(read.as_ref().is_ok_and(|bytes| *bytes == pattern(143 + 4 * round, 3 * BLOCK_SIZE)),
+            "round {round}: the observer's read of b: {:?}", read.err());
+    }
+}
