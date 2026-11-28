@@ -280,8 +280,9 @@ A digital search tree on the page index (Fredkin 1960; Knuth, *TAOCP* vol. 3, se
   - `00`: empty. The page is absent.
   - `01`: a page. Bits 12-63 hold the pfn. The page's flags live in its `FrameMeta` (4.4).
   - `10`: an interior node pointer.
-  - `11`: a value entry. Bits 2-3 give the kind: `Hole`, or `Error` with the errno in bits 8-23 and the
-    failed fill's sequence in bits 24-63 (5.1). A value entry holds no frame.
+  - `11`: a value entry. Bits 2-3 give the kind: 0 is `Hole`. A value entry holds no frame. A failed
+    fill leaves no entry: its waiters read the outcome from the frame they hold (9.2a), and the index
+    becomes `Absent`.
   - E12's large pages will need a multi-index entry (one entry covering 2^k aligned indices). The encoding
     reserves the `11` kind value 2 for it, so E3 has no format to change later.
 - **Tags.** Each node carries one 64-bit bitmap per tag, set for each slot whose subtree holds a page with
@@ -305,9 +306,9 @@ follows:
 | E1's 32 bytes | 32 | `state_gen`, `leaf_refs` (the PTE count), `site`, `owner` = `PageCache`, `flags`, `order` and `zone` as E1 defines them. `use: [u64; 2]` holds the LRU list's previous and next pfn while the page is on a list |
 | `cache: u64` | 8 | The owning FileCache's address. It is valid while the page is in the tree or isolated (12.3) |
 | `index: u64` | 8 | The page index in the file |
-| `pflags: AtomicU32` | 4 | `FILLING`, `UPTODATE`, `DIRTY`, `WRITEBACK`, `REFERENCED`, `ACTIVE`, `ON_LRU`, `ISOLATED`, `ICACHE_CLEAN`, `READAHEAD` (the async trigger of 8.2), `SHARED_WRITE` (has writable shared PTEs) and `MAPPED_DIRTY` (stored through a mapping, not yet admitted to a generation, 11.2a) |
+| `pflags: AtomicU32` | 4 | `FILLING`, `FILL_FAILED` and `CANCELED` (a fill's outcome, 9.2a), `UPTODATE`, `DIRTY`, `WRITEBACK`, `REFERENCED`, `ACTIVE`, `ON_LRU`, `ISOLATED`, `ICACHE_CLEAN`, `READAHEAD` (the async trigger of 8.2), `SHARED_WRITE` (has writable shared PTEs) and `MAPPED_DIRTY` (stored through a mapping, not yet admitted to a generation, 11.2a) |
 | `refs: AtomicU32` | 4 | Page references: one for the tree, one per in-flight fill or writeback, one per isolation, and one per lookup that copies or maps it. Distinct from `leaf_refs` |
-| `dirty_gen: u64` | 8 | The BreenFS generation that owns the page's dirty bytes (11.1). 0 for a clean page |
+| `dirty_gen: u64` | 8 | The BreenFS generation that owns the page's dirty bytes (11.1). 0 for a clean page. For a frame whose fill failed, which is in no tree, its errno |
 
 The cost is 1.56% of RAM, as E1's 14.6 anticipated.
 
@@ -339,15 +340,15 @@ the UNIX sleep-and-wakeup design in which a sleeper waits on an address hashed i
 | Dirty | page, `UPTODATE \| DIRTY` | Newer than the disk; `dirty_gen` names its generation | Copy | Map |
 | Writeback | page, `UPTODATE \| WRITEBACK` (and maybe `DIRTY`) | A frozen generation's stable copy is being written (11.2) | Copy | Map read-only; a store faults (11.2) |
 | Hole | value `Hole` | The filesystem reported that no extent covers the page and the page is below EOF | Zeros | The shared zero frame, read-only. A write allocates (5.2) <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. --> |
-| Error | value `Error(errno, seq)` | The fill with sequence `seq` failed | The errno, to that fill's waiters | SIGBUS, to that fill's waiters |
+| (failed fill) | no entry: `Absent`; the waiters' frame has `FILL_FAILED` and the errno | The fill failed | The errno, to that fill's waiters | SIGBUS, to that fill's waiters |
 
 - **Absent never means zero.** Only two things produce zeros: a `Hole` entry, which only a fill or the
   EOF-extension rule (5.2) creates, and the part of the last page past EOF. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
-- **Error is not sticky.** The waiters of the failed fill receive the error. An access that starts later,
-  which is one that did not wait on that fill (its sequence is newer), treats `Error` as `Absent` and fills
-  again. A transient device error therefore does not poison a page for good, and every waiter sees exactly
-  the outcome of the fill it waited for. Errors the application must learn about later are writeback
-  errors (11.6), which are kept per file. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+- **Errors are not sticky.** The waiters of a failed fill hold a reference to its frame, and read the
+  errno there (9.2a). The index itself becomes `Absent`, so an access that starts later fills again, and a
+  later fill cannot hide the earlier failure from that fill's waiters. A transient device error therefore
+  does not poison a page for good, and every waiter sees exactly the outcome of the fill it waited for.
+  Errors the application must learn about later are writeback errors (11.6), which are kept per file. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
 - **Poisoned** pages of today (bytes unknown after a failed mutation, `file_map.rs:606-641`) become
   `Absent`: their bytes are re-read from disk. Before E2.9 a fault cannot read, so poison keeps today's
   SIGBUS until E3-11.
@@ -358,8 +359,9 @@ the UNIX sleep-and-wakeup design in which a sleeper waits on an address hashed i
 Absent  --claim for fill (tree_lock; allocate frame, insert, FILLING, ref)--> Filling
 Filling --fill completed, CRC verified (clear FILLING, set UPTODATE; release; bump channel)--> Uptodate
 Filling --fill reports a hole (remove the frame; insert Hole; bump channel)--> Hole
-Filling --fill failed (remove the frame; insert Error(errno, seq); bump channel)--> Error
-Error   --a later access (not a waiter of seq)--> treated as Absent
+Filling --fill failed (remove the frame; FILL_FAILED and errno on the frame; bump channel)--> Absent
+Filling --claim canceled: a dropped readahead window or a stale claim (6.1a) (remove the frame; CANCELED;
+          bump channel)--> Absent
 Hole    --write() (allocate, zero, DIRTY, dirty_gen = open G), or a shared store (allocate, zero, MAPPED_DIRTY; 11.2a)--> Dirty
 Uptodate --write() (DIRTY, dirty_gen = open G; tag DIRTY), or a shared store (MAPPED_DIRTY, dirty_gen = 0; tag DIRTY)--> Dirty
 Dirty with MAPPED_DIRTY --mapped admission (11.2a: reserve, changed set, dirty_gen = open G)--> Dirty
@@ -393,7 +395,7 @@ failure (SIGBUS with `absent_bound` incremented in `/proc/breenix/pagecache`), n
 
 ### 5.4 Replacing a page's frame
 
-Three transitions give an index a new frame while PTEs may still map the old one: a `Hole` page written by <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+These transitions give an index a new frame while PTEs may still map the old one: a `Hole` page written by <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
 `write()` or by a shared store (the old frame is the shared zero frame), and a `Writeback` page written by
 `write()` or a shrink (the old frame is G's stable copy, 11.2). Read-only PTEs of the old frame can exist
 in any address space: private mappings, shared read-only mappings and fault-around entries. A process
@@ -484,7 +486,7 @@ give the bytes of every other one: <!-- claim-lint:ok: normative requirement of 
 
 > **Cache invariant.** For every page index i of a Native file below its size, exactly one holds: i has an
 > uptodate, dirty or writeback page in the tree; or i is a Hole entry and no extent covers i; or i is
-> absent or Error, and the open view's extent for i (or the absence of one) gives i's bytes. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+> absent, and the open view's extent for i (or the absence of one) gives i's bytes. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
 
 The invariant is checked by the model test of E3-8 after every step (19.2). <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
 
@@ -501,13 +503,13 @@ The block device interface is synchronous on contiguous slices (`block/mod.rs`).
 
 - A run is read into a bounce buffer and copied into its frames, which is one copy, as population does
   today. The buffer's size is the device's maximum transfer.
-- **A bounce buffer belongs to one request,** from the device read through CRC verification to the last
+- **A bounce buffer belongs to one request,** from the device read through CRC verification to the last <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
   copy into a frame. A fill sleeps in the device wait and can migrate, so a per-CPU buffer could be reused
   by another fill between its verification and its copy, and publish another file's bytes as verified.
   Population today owns its staging buffer for the call (`memory/file_map.rs:1589-1648`), and E3 keeps that
   ownership: a fill takes a buffer from a mount-wide pool of frame-backed buffers as an owned token, and
   returns it after its copies. A fill that finds the pool empty waits on the pool's channel (4.5) in a
-  sleepable context, and fails the claim with `Error(EAGAIN)` in one that is not (9.2, step 3). The pool
+  sleepable context. A context that cannot sleep never claims a fill (9.2, step 3). The pool
   holds one buffer per CPU at mount and grows on demand within the readahead budget (8.2). The drain's
   write bounce (11.3) uses the same pool.
 - The fill runs synchronously in the calling thread. An asynchronous readahead runs it in the readahead
@@ -537,10 +539,10 @@ For a Native file, `read(fd, buf, n)` at offset `off`:
 2. Walk the pages that the request covers:
    - **Uptodate, Dirty or Writeback:** take a page reference, set `REFERENCED` and copy.
    - **Hole:** copy zeros.
-   - **Absent, or Error from an older fill:** claim it and the rest of the readahead window (8) as
+   - **Absent:** claim it and the rest of the readahead window (8) as
      `Filling` in one `tree_lock` hold, then fill outside the lock. A page already claimed by someone
      else is waited on (4.5).
-3. If any page ends `Error` for the fill this read waited on, return the bytes copied before it, or the
+3. If the fill this read ran, or waited on, failed for a page (its frame has `FILL_FAILED`, 9.2a), return the bytes copied before it, or the
    errno if there are none (POSIX `read`: a partial count, else -1 with errno). <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
 4. Touch atime through the existing non-blocking `touch`.
 
@@ -649,7 +651,7 @@ Each open file description, and each file VMA, carries a small readahead state:
 - The worker claims its pages as `Filling` before queueing, so a reader that gets there first waits on the
   page, not on the queue.
 - The worker's queue is bounded by the frames it may claim: at most `max` pages per stream, and a share of
-  free memory overall. When memory is short it drops queued windows, never demanded ones. Readahead is a
+  free memory overall. When memory is short it drops queued windows, never demanded ones, and retires their claims (9.2a). Readahead is a
   hint (Patterson et al. 1995). <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
 
 ### 8.3 Scan resistance
@@ -683,17 +685,34 @@ The fault runs `resolve_fault(as, addr, access, ctx)` (E2.9). For a file VMA:
      (11.2a), revokes the zero frame's PTEs at this index in other address spaces (5.4), and maps it
      writable. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
    - **Filling:** take a reference, read the page's channel `seq`, drop `as.mapping`, and park (E2 section
-     5.2, "must wait for X"). When it wakes, return; the access re-executes.
-   - **Absent, or an older fill's Error:** claim the page, and its fault window (9.4), as `Filling`. Drop
+     5.2, "must wait for X"). When it wakes, it reads the outcome from the frame it holds (9.2a).
+   - **Absent:** claim the page, and its fault window (9.4), as `Filling`. Drop
      `as.mapping`, run the fill with no VM lock held, wake the channel, and return; the access
      re-executes and maps the page in step 2.
-   - **Error of the fill this fault waited on:** SIGBUS with `BUS_ADRERR` (POSIX `mmap`: references to
-     pages that cannot be read). A kernel user copy takes the uaccess fixup and EFAULT.
+   - **A fill this fault ran, or waited on, failed:** SIGBUS with `BUS_ADRERR` (POSIX `mmap`: references
+     to pages that cannot be read). A kernel user copy takes the uaccess fixup and EFAULT.
 3. A fault in an atomic context never claims or waits. It takes E2's nofault exit (EFAULT). <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
 
 E2.9's revalidation covers every change made while the fault slept: munmap, mprotect, a replaced VMA,
 truncation and exec. The retried fault repeats the lookup from the top and installs nothing it saw before
 it slept. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+
+### 9.2a Fill outcomes live on the frame
+
+A waiter that rechecked the tree after waking could find a later fill's claim, or that fill's result, in
+place of the outcome it waited for, so a persistent error could be retried for good, or lost. So:
+
+- **Every waiter holds the frame.** A reader or fault that waits on a `Filling` page holds a page <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+  reference to that frame (4.4). When it wakes it reads the frame's flags: `UPTODATE` means the access
+  re-executes and maps or copies the page; `FILL_FAILED` delivers the errno stored in the frame (SIGBUS
+  for a fault, the errno or a short count for `read`); `CANCELED` means the claim was retired, and the
+  access re-executes and fills the page itself. It then drops the reference, and the frame is freed with
+  the last one.
+- **Every claim ends with a wake.** A fill's completion, failure, staleness (6.1a) or cancellation removes <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+  or publishes the entry under `tree_lock`, sets the frame's outcome with release ordering, then bumps
+  the channel. No path drops a claim without doing all three.
+- **Dropped readahead.** When the readahead worker drops a queued window (8.2), it retires each page it
+  claimed for that window as `CANCELED`, so no waiter is left parked on a fill that will never run. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
 
 ### 9.3 Fault-around
 
@@ -1415,6 +1434,9 @@ waits for E3-6 (it needs pages retained by the cache to be worth anything), so t
     populate. The old code fills at most 16 pages, then reads the rest synchronously, which is red.
   - The worker's queue under a frame budget drops queued windows and never a demanded one. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
   - A reader reaching a page the worker claimed waits on it and gets its bytes.
+  - A queued window dropped under the frame budget retires its claims: a populate that reached one of
+    its pages wakes, fills the page itself and maps the file's bytes. The old tree has no worker, so this
+    guards the mechanism the PR adds; the PR says so.
 - **Rows.** `memory.driver-mmap` (if the loader's hints apply), `compile.hello-object`. These are expected
   to be small. The main readahead gains come with E3-7 and E3-11.
 - **Boot.** None. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
@@ -1586,7 +1608,9 @@ waits for E3-6 (it needs pages retained by the cache to be worth anything), so t
   - Two faults on one page make one fill, and the second waiter maps it.
   - munmap while a fill sleeps: no entry is installed, and the frame stays cached.
   - Truncate past the page while a fill sleeps: the retried fault is SIGBUS, and no stale page remains.
-  - A fill error gives SIGBUS to its waiters. The next fault fills again and succeeds.
+  - A fill error gives SIGBUS to its waiters, even when another access claims a new fill of the page
+    before the waiter runs (a fixed interleaving). The next fault fills again and succeeds. On the old
+    tree faults do not wait, so this guards the outcome rule the PR adds; the PR says so.
   - Fault-around maps only uptodate neighbours inside the VMA and the page table, read-only.
   - A shared writable VMA's neighbour faults on its first store and becomes dirty.
   - An atomic-context user copy over an absent page takes the EFAULT fixup and claims nothing. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
@@ -1900,7 +1924,7 @@ Before the waiter runs, a later access claims a new fill of page 0. Separately, 
 queued window whose pages it had claimed.
 
 ```pycon
->>> RULE = 'error-entry'
+>>> RULE = 'frame-outcome'
 >>> tree = {}
 >>> waited = {'state': 'filling'}
 >>> tree[0] = waited
