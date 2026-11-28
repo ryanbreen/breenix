@@ -1617,8 +1617,10 @@ E1-2 implementation decisions (DEV-39):
   - Sparse placement: a fixed map of 64 ranges of 768 KiB each, with the ranges spread across 1 TiB of
     address space. No range is 1 MiB long, so a layout that needs a contiguous 1 MiB array per section
     fits in 0 of the 64 ranges. The page-granular layout places the metadata (at most 192 pages), and its
-    directory and descriptors total under 200 KiB: a 128-byte root, at most 16 leaf pages and at most 64
+    directory and descriptors total under 200 KiB: one root page, at most 16 leaf pages and at most 64
     descriptors. Each RAM pfn resolves, and each hole pfn is untracked.
+  - Check first (#3276 review): 40 MiB dense plus 4864 two-page spans keeps at least 64 MiB after the carve,
+    with at most 4 spare pages; 64 non-adjacent pages at 32 TiB build without a contiguous run.
 - Boot: one ARM64 QEMU boot of the boot-path gate (`--features testing`). The change reorders boot memory
   initialisation, which is publication order that host tests cannot settle. Cases: the boot-path milestone
   stages and the frame census.
@@ -1633,10 +1635,18 @@ E1-3 implementation decisions (DEV-39(2)):
   E1-3 has 0 readers of those bytes, and an unread field is dead code.
 - A frame inside a metadata page's 512 KiB that the range set does not hold gets state 3 (untracked), and lookups
   treat it as absent. The old ordinal lookup refused such frames as untracked, so the refusal taxonomy is unchanged.
-- `frame_meta::build` counts the directory the set needs, carves its pages before it places any (the root as one run, the rest a
-  page at a time from the top), then walks the final set to place them. The carve can empty a 512 KiB span it took
-  pages from. The pages counted for such a span are reported as `spare_pages` on the boot line and are not reused,
-  because returning one could need metadata of its own.
+- `frame_meta::build` carves its pages one at a time from the top before it places any, then walks the final set to
+  place them. A carve can empty a 512 KiB span, a section, a leaf or a root, which lowers what the set needs. So the
+  build recounts the set and carves a fifth of the shortfall per round until the pool covers the set as it is now.
+  One carved page lowers the need by at most 4, so `spare_pages` is at most 4. Deviation (#3276 review): the first
+  version carved what the starting set needed, which on a fixture of 40 MiB dense RAM plus 4864 two-page spans left
+  2489 spare pages and 58.6 MiB, under the x86 64 MiB boot heap.
+- Deviation from 4.2 (#3276 review): the root is not one contiguous array. A fixed 128-entry top inside the map,
+  one entry per 32 TiB up to the 52-bit physical address limit, points at one-page roots of 512 leaf pointers.
+  4.2's rule that each piece fits in one 4 KiB page is kept, because a root carved as a run needed two adjacent
+  pages for RAM at 32 TiB and failed with `NoFit` on a map with no two adjacent pages. A lookup is the top entry
+  and then the same four dependent loads. RAM above the 52-bit limit, the largest x86-64 MAXPHYADDR and ARMv8
+  PARange, fails the build with `AboveAddressLimit`.
 - Section descriptors are packed `PAGE_SIZE / size_of::<Section>()` to a carved page (2 at 32 bytes), which is what
   keeps the sparse fixture's directory and descriptors under 200 KiB.
 - `FrameLease` drops its ordinal: the frame gives the pfn. It stays `Copy` until E1-8 adds `BlockLease`.

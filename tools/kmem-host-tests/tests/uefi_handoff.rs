@@ -23,6 +23,9 @@ use uefi_raw::{Handle, Status};
 #[path = "../../../kernel/src/memory/arm64_direct_map.rs"]
 mod arm64_direct_map;
 
+// `RangeError::AboveAddressLimit` is the metadata builder's, which this test
+// does not include.
+#[allow(dead_code)]
 #[path = "../../../kernel/src/memory/boot_ranges.rs"]
 mod boot_ranges;
 #[path = "../../../parallels-loader/src/handoff.rs"]

@@ -455,7 +455,7 @@ fn each_usable_frame_has_one_entry_and_holes_have_none() {
 
 /// 64 ranges of 768 KiB, spread across 1 TiB. A layout that needs a
 /// contiguous 1 MiB array per section fits in 0 of the 64. The page-granular
-/// layout places the metadata in at most 192 pages, with a 128-byte root, at
+/// layout places the metadata in at most 192 pages, with one root page, at
 /// most 16 leaf pages and at most 64 descriptors, under 200 KiB together.
 #[test]
 fn sparse_ranges_across_a_terabyte_need_no_large_run() {
@@ -473,7 +473,7 @@ fn sparse_ranges_across_a_terabyte_need_no_large_run() {
     let stats = map.stats();
 
     assert!(stats.metadata_pages <= 192, "{stats:?}");
-    assert_eq!((stats.root_entries * 8, stats.root_pages), (128, 1));
+    assert_eq!(stats.root_pages, 1, "{stats:?}");
     assert!(stats.leaf_pages <= 16 && stats.sections <= 64, "{stats:?}");
     let directory = (stats.root_pages + stats.leaf_pages + stats.descriptor_pages) as u64 * PAGE;
     assert!(directory < 200 << 10, "{stats:?}");
@@ -489,7 +489,7 @@ fn sparse_ranges_across_a_terabyte_need_no_large_run() {
 }
 
 /// 40 MiB of dense RAM at 1 GiB, then 4864 spans of 512 KiB above it that
-/// each hold two pages: 78 MiB in all. The carve takes pages from the top, so
+/// each hold two pages: 78 MiB together. The carve takes pages from the top, so
 /// it empties sparse spans, and an emptied span needs no metadata. Carving
 /// what the starting set needs costs 4956 pages and leaves 58.6 MiB, under the
 /// x86 64 MiB boot heap. Carving only what the final set needs leaves
@@ -514,8 +514,8 @@ fn carve_costs_only_the_metadata_the_final_set_needs() {
     assert!(pages(&set) * PAGE >= BOOT_HEAP, "{} pages left, {stats:?}", pages(&set));
 }
 
-/// 64 single pages, every other page of the 512 KiB at 32 TiB, so no two
-/// usable pages are adjacent. Every directory page is a page of its own, so
+/// 64 single pages, the even pages of the 512 KiB at 32 TiB, so no two
+/// usable pages are adjacent. Each directory page is carved alone, so
 /// the build places the metadata and each page left resolves.
 #[test]
 fn ram_at_32_tib_needs_no_contiguous_directory_run() {
@@ -523,10 +523,12 @@ fn ram_at_32_tib_needs_no_contiguous_directory_run() {
     let ranges: Vec<(u64, u64)> = (0..64u64).map(|i| (base + 2 * i * PAGE, base + (2 * i + 1) * PAGE)).collect();
     let memory = Memory::new(&ranges);
     let mut set = range_set(&memory);
+    // The range set keeps its own storage in one of the 64 pages.
+    let before = set.iter().count();
     let map = frame_meta::build(&mut set, &memory).expect("frame metadata");
 
     let left: Vec<u64> = set.iter().flat_map(|range| range.start / PAGE..range.end / PAGE).collect();
-    assert_eq!(left.len() + map.stats().carved_pages(), 64, "{:?}", map.stats());
+    assert_eq!(left.len() + map.stats().carved_pages(), before, "{:?}", map.stats());
     assert!(left.len() >= 56, "{:?}", map.stats());
     for &pfn in &left {
         assert!(map.entry(pfn).is_some(), "pfn {pfn:#x}");

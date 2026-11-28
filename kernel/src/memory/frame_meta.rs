@@ -3,9 +3,12 @@
 //! A 32-byte `FrameMeta` describes a 4 KiB frame. The entries live in
 //! 4 KiB metadata pages carved from the boot range set before any heap exists,
 //! one page for each 512 KiB of physical address space that holds usable RAM,
-//! under a sparse directory: a root with one entry per 64 GiB, leaf pages of
-//! 512 section descriptors, and descriptors of one pointer per metadata page.
-//! A lookup is four dependent loads, and holes cost nothing below the root.
+//! under a sparse directory: a fixed top of 128 entries inside the map (one
+//! per 32 TiB, up to the 52-bit physical address limit), root pages of 512
+//! leaf pointers, leaf pages of 512 section descriptors, and descriptors of
+//! one pointer per metadata page. Every carved piece is one 4 KiB page, so the
+//! build needs no contiguous run. A lookup is the top entry and then four
+//! dependent loads, and holes cost nothing below the top.
 //! claim-lint:ok: tools/kmem-host-tests/tests/frame_meta.rs sparse_ranges_across_a_terabyte_need_no_large_run.
 //!
 //! The lease rules are the generation ledger's, unchanged: a claim advances a
@@ -86,11 +89,19 @@ const PAGES_PER_SECTION: usize = 1 << (SECTION_BITS - ENTRY_BITS);
 const SECTIONS_PER_LEAF: usize = PAGE_SIZE as usize / size_of::<usize>();
 /// A leaf page covers 2^24 frames (64 GiB).
 const LEAF_BITS: u32 = SECTION_BITS + SECTIONS_PER_LEAF.trailing_zeros();
+const LEAVES_PER_ROOT: usize = PAGE_SIZE as usize / size_of::<usize>();
+/// A root page covers 2^33 frames (32 TiB).
+const ROOT_BITS: u32 = LEAF_BITS + LEAVES_PER_ROOT.trailing_zeros();
+/// Frame numbers below the 52-bit physical address limit, the largest that
+/// x86-64 (MAXPHYADDR) and ARMv8 (PARange) define.
+const PFN_BITS: u32 = 52 - PAGE_SIZE.trailing_zeros();
+const TOP_LEN: usize = 1 << (PFN_BITS - ROOT_BITS);
 const DESCRIPTORS_PER_PAGE: usize = PAGE_SIZE as usize / size_of::<Section>();
 
 const _: () = assert!(ENTRIES_PER_PAGE.is_power_of_two() && ENTRY_BITS < SECTION_BITS);
 const _: () = assert!(size_of::<Section>() <= PAGE_SIZE as usize);
 const _: () = assert!(size_of::<Leaf>() == PAGE_SIZE as usize);
+const _: () = assert!(size_of::<Root>() == PAGE_SIZE as usize);
 
 type MetaPage = [FrameMeta; ENTRIES_PER_PAGE];
 
@@ -102,6 +113,9 @@ struct Section([*const MetaPage; PAGES_PER_SECTION]);
 #[repr(C)]
 struct Leaf([*const Section; SECTIONS_PER_LEAF]);
 
+#[repr(C)]
+struct Root([*const Leaf; LEAVES_PER_ROOT]);
+
 /// What the boot carve spent on metadata, in pages.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MetaStats {
@@ -109,11 +123,10 @@ pub struct MetaStats {
     pub sections: usize,
     pub descriptor_pages: usize,
     pub leaf_pages: usize,
-    /// Root entries, one per 64 GiB up to the highest usable frame.
-    pub root_entries: usize,
+    /// Root pages, one per 32 TiB that holds usable RAM.
     pub root_pages: usize,
-    /// Pages carved for a part of the directory the final range set did not
-    /// need: the carve itself emptied that part of RAM.
+    /// Pages the last carve took beyond what the final range set needs: at
+    /// most one for each of the four levels a carved page can empty.
     pub spare_pages: usize,
 }
 
@@ -127,8 +140,7 @@ impl MetaStats {
 /// The sparse metadata directory. It is built once on the boot CPU and is
 /// read-only afterwards; the entries themselves are atomics.
 pub struct FrameMetaMap {
-    root: *const *const Leaf,
-    root_len: usize,
+    top: [*const Root; TOP_LEN],
     stats: MetaStats,
 }
 
@@ -174,9 +186,8 @@ pub enum Decref {
 
 impl FrameMetaMap {
     pub const fn empty() -> Self {
-        Self { root: ptr::null(), root_len: 0, stats: MetaStats {
-            metadata_pages: 0, sections: 0, descriptor_pages: 0, leaf_pages: 0, root_entries: 0,
-            root_pages: 0,
+        Self { top: [ptr::null(); TOP_LEN], stats: MetaStats {
+            metadata_pages: 0, sections: 0, descriptor_pages: 0, leaf_pages: 0, root_pages: 0,
             spare_pages: 0,
         } }
     }
@@ -189,14 +200,14 @@ impl FrameMetaMap {
     /// claim-lint:ok: tools/kmem-host-tests/tests/frame_meta.rs each_usable_frame_has_one_entry_and_holes_have_none.
     #[inline]
     pub fn entry(&self, pfn: u64) -> Option<&FrameMeta> {
-        let index = usize::try_from(pfn >> LEAF_BITS).ok()?;
-        if index >= self.root_len {
+        let root = *self.top.get(usize::try_from(pfn >> ROOT_BITS).ok()?)?;
+        if root.is_null() {
             return None;
         }
         // SAFETY: `build` wrote the directory before publication; a non-null
         // pointer names a page carved for that slot, which no code reuses.
         let meta = unsafe {
-            let leaf = self.root.add(index).read();
+            let leaf = (*root).0[(pfn >> LEAF_BITS) as usize & (LEAVES_PER_ROOT - 1)];
             if leaf.is_null() {
                 return None;
             }
@@ -215,9 +226,11 @@ impl FrameMetaMap {
 
     /// Visit the usable frames' entries in ascending frame order.
     pub fn for_each(&self, mut visit: impl FnMut(u64, &FrameMeta)) {
-        for index in 0..self.root_len {
+        let leaves = self.top.iter().enumerate().filter(|(_, root)| !root.is_null()).flat_map(|(t, &root)| {
             // SAFETY: as in `entry`.
-            let leaf = unsafe { self.root.add(index).read() };
+            unsafe { &(*root).0 }.iter().enumerate().map(move |(l, &leaf)| ((t << (ROOT_BITS - LEAF_BITS)) + l, leaf))
+        });
+        for (index, leaf) in leaves {
             if leaf.is_null() {
                 continue;
             }
@@ -472,13 +485,19 @@ impl Pool {
     }
 }
 
-/// The directory a range set needs, counted before anything is carved.
+/// The directory a range set needs.
 #[derive(Default)]
 struct Shape {
     pages: usize,
     sections: usize,
     leaves: usize,
-    root_len: usize,
+    roots: usize,
+}
+
+impl Shape {
+    fn carved_pages(&self) -> usize {
+        self.pages + self.sections.div_ceil(DESCRIPTORS_PER_PAGE) + self.leaves + self.roots
+    }
 }
 
 fn distinct(count: &mut usize, last: &mut Option<u64>, first: u64, end: u64) {
@@ -486,54 +505,49 @@ fn distinct(count: &mut usize, last: &mut Option<u64>, first: u64, end: u64) {
     *last = Some(end);
 }
 
-fn shape(set: &RangeSet) -> Shape {
+fn shape(set: &RangeSet) -> Result<Shape, RangeError> {
     let mut shape = Shape::default();
-    let (mut page, mut section, mut leaf) = (None, None, None);
+    let (mut page, mut section, mut leaf, mut root) = (None, None, None, None);
     for range in set.iter() {
         let (first, last) = (range.start / PAGE_SIZE, range.end / PAGE_SIZE - 1);
+        if last >> ROOT_BITS >= TOP_LEN as u64 {
+            return Err(RangeError::AboveAddressLimit);
+        }
         distinct(&mut shape.pages, &mut page, first >> ENTRY_BITS, last >> ENTRY_BITS);
         distinct(&mut shape.sections, &mut section, first >> SECTION_BITS, last >> SECTION_BITS);
         distinct(&mut shape.leaves, &mut leaf, first >> LEAF_BITS, last >> LEAF_BITS);
-        shape.root_len = (last >> LEAF_BITS) as usize + 1;
+        distinct(&mut shape.roots, &mut root, first >> ROOT_BITS, last >> ROOT_BITS);
     }
-    shape
+    Ok(shape)
 }
 
 /// Carve the metadata for the frames of `set` out of `set` itself and build
 /// the directory over what remains. Each page is carved from RAM that
 /// `storage` maps writable; a frame carved for metadata has no entry.
 pub fn build(set: &mut RangeSet, storage: &impl RangeStorage) -> Result<FrameMetaMap, RangeError> {
-    let need = shape(set);
-    if need.root_len == 0 {
-        return Ok(FrameMetaMap::empty());
-    }
-    let page = PAGE_SIZE as usize;
-    let root_pages = (need.root_len * size_of::<usize>()).div_ceil(page);
-    let others = need.leaves + need.sections.div_ceil(DESCRIPTORS_PER_PAGE) + need.pages;
-
-    // Carve everything first: the walk below then sees the final set.
-    let root_range = set.carve(root_pages as u64 * PAGE_SIZE, PAGE_SIZE, u64::MAX)?;
-    let root = storage.storage_page(root_range.start).ok_or(RangeError::NoMappedStorage)?;
-    for index in 1..root_pages as u64 {
-        let next = storage.storage_page(root_range.start + index * PAGE_SIZE);
-        if next.map(|p| p.as_ptr() as usize) != Some(root.as_ptr() as usize + index as usize * page) {
-            return Err(RangeError::NoMappedStorage);
+    // Carve everything first: the walk below then sees the final set. A carve
+    // that empties a span, section, leaf or root lowers what the set needs, so
+    // the pool grows until it covers the set as it is now. One carved page
+    // lowers the need by at most 4, so a batch of a fifth of the shortfall
+    // takes at most 4 pages beyond the final need.
+    let mut pool = Pool { head: ptr::null_mut(), count: 0 };
+    loop {
+        let need = shape(set)?.carved_pages();
+        if pool.count >= need {
+            break;
+        }
+        for _ in 0..(need - pool.count).div_ceil(5) {
+            let phys = set.carve(PAGE_SIZE, PAGE_SIZE, u64::MAX)?.start;
+            let address = storage.storage_page(phys).ok_or(RangeError::NoMappedStorage)?.as_ptr();
+            // SAFETY: a carved page the storage maps writable.
+            unsafe { address.cast::<*mut u8>().write(pool.head) };
+            pool.head = address;
+            pool.count += 1;
         }
     }
-    let root = root.as_ptr().cast::<*mut Leaf>();
-    // SAFETY: the root's pages are carved, mapped and contiguous.
-    unsafe { root.cast::<u8>().write_bytes(0, root_pages * page) };
-    let mut pool = Pool { head: ptr::null_mut(), count: 0 };
-    for _ in 0..others {
-        let phys = set.carve(PAGE_SIZE, PAGE_SIZE, u64::MAX)?.start;
-        let address = storage.storage_page(phys).ok_or(RangeError::NoMappedStorage)?.as_ptr();
-        // SAFETY: a carved page the storage maps writable.
-        unsafe { address.cast::<*mut u8>().write(pool.head) };
-        pool.head = address;
-        pool.count += 1;
-    }
 
-    let mut stats = MetaStats { root_entries: need.root_len, root_pages, ..MetaStats::default() };
+    let mut top = [ptr::null::<Root>(); TOP_LEN];
+    let mut stats = MetaStats::default();
     let mut descriptors: (*mut Section, usize) = (ptr::null_mut(), DESCRIPTORS_PER_PAGE);
     for range in set.iter() {
         let (first, last) = (range.start / PAGE_SIZE, range.end / PAGE_SIZE - 1);
@@ -542,12 +556,18 @@ pub fn build(set: &mut RangeSet, storage: &impl RangeStorage) -> Result<FrameMet
             // SAFETY: the directory pages below are carved for this build
             // and zeroed by `Pool::take`; the map is not published yet.
             unsafe {
-                let leaf_slot = root.add((pfn >> LEAF_BITS) as usize);
-                if leaf_slot.read().is_null() {
-                    leaf_slot.write(pool.take()?.cast::<Leaf>());
+                let root_slot = &mut top[(pfn >> ROOT_BITS) as usize];
+                if root_slot.is_null() {
+                    *root_slot = pool.take()?.cast::<Root>();
+                    stats.root_pages += 1;
+                }
+                let root = root_slot.cast_mut();
+                let leaf_slot = &mut (*root).0[(pfn >> LEAF_BITS) as usize & (LEAVES_PER_ROOT - 1)];
+                if leaf_slot.is_null() {
+                    *leaf_slot = pool.take()?.cast::<Leaf>();
                     stats.leaf_pages += 1;
                 }
-                let leaf = leaf_slot.read();
+                let leaf = leaf_slot.cast_mut();
                 let section_slot = &mut (*leaf).0[(pfn >> SECTION_BITS) as usize & (SECTIONS_PER_LEAF - 1)];
                 if section_slot.is_null() {
                     if descriptors.1 == DESCRIPTORS_PER_PAGE {
@@ -584,5 +604,5 @@ pub fn build(set: &mut RangeSet, storage: &impl RangeStorage) -> Result<FrameMet
         }
     }
     stats.spare_pages = pool.count;
-    Ok(FrameMetaMap { root: root.cast_const().cast(), root_len: need.root_len, stats })
+    Ok(FrameMetaMap { top, stats })
 }
