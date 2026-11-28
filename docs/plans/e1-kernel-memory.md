@@ -375,6 +375,37 @@ Zone, order and per-CPU cache counts go in a new `/proc/breenix/kmem`.
   - Drains happen on watermark `min`, on a failed contiguous allocation (5.6), on CPU offline, and from the
     reclaim slow path.
 - Cached frames carry `PCP_CACHED`, so the buddy does not merge them and the census counts them separately.
+
+### 5.4a Bootstrap and CPU registration (page caches and magazines)
+
+The per-CPU layers of 5.4 and 6.3 cannot assume per-CPU state exists when the first allocation runs:
+
+- ARM64 builds its heap and frame pool (`main_aarch64.rs:903-908`) long before `per_cpu_aarch64::init`
+  sets TPIDR_EL1 (line 1258). x86 runs `per_cpu::init` (`main.rs:202`) before `memory::init` (line 228),
+  so the boot CPU's id is readable there, but no AP is registered.
+- The scheduler's, the tracing layer's and ARM64's per-CPU arrays are fixed at 8 CPUs
+  (`task/scheduler.rs:1961`, `arch_impl/aarch64/constants.rs:514`), and x86's stack layout at 256
+  (`memory/layout.rs:213`). E1 must not add another such cap.
+
+So:
+
+- A global `KMEM_PERCPU` slot table is sized at boot from the CPU count firmware describes (the device
+  tree's `cpus` node or MADT entries on ARM64; MADT on x86), and carved from the range set like the
+  metadata. It holds one pointer per described CPU to that CPU's page caches and magazines. It is not
+  sized from a `MAX_CPUS` constant.
+- A slot starts null. While a CPU's slot is null, or while that CPU cannot yet name itself (ARM64 before
+  TPIDR_EL1 is set), its allocations take the shared path: the zone lock for frames, and the slab cache's
+  depot and slabs under the cache lock for objects. That path is correct, only slower, so allocation works
+  from the first heap use with no per-CPU state.
+- Registration: a CPU's caches are built from the shared path and published into its slot with a release
+  store, by that CPU, after its per-CPU id is readable and before it enables interrupts. For the boot CPU
+  that is right after `per_cpu_aarch64::init` or `per_cpu::init` and the heap; for an AP it is in its
+  bring-up, before it joins the scheduler.
+- The fast path reads its own slot with an acquire load. A remote drain reads a slot only after the
+  owner has published it.
+- CPU offline (when it exists) drains both layers into the shared ones and clears the slot.
+- The 8-CPU caps above are E9's ("CPU identity beyond 8"). Until E9 a CPU past them is not brought up, so
+  the memory layer has a slot for it that stays null.
 - Cost on the anonymous fault: an allocation is one per-CPU pop and the lease CAS. Today it is a global
   IRQ-masked lock, an O(regions) ordinal scan, and the empty-span mutex.
 
@@ -976,6 +1007,11 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
   - Conservation: across any sequence of allocations and frees on any CPUs, live + magazine rounds + depot
     rounds + free slab slots = total slots. No object is handed out twice.
   - Cross-CPU free: allocate on CPU 0 and free on CPU 1; the object returns to a slab of the right cache.
+  - Bootstrap and registration (5.4a): allocations and frees made before CPU 0's slot is published go
+    through the shared path and are found there afterwards; CPU 2 registers while CPUs 0 and 1 run their
+    fast paths, in a fixed order, and no object is lost or handed out twice; a machine described with 12
+    CPUs gets 12 slots, so CPUs past 8 are not an array overrun in this layer. The model fails the test
+    if any operation touches a slot before its owner publishes it.
   - Drain: after `drain(cpu)` for each CPU and a depot trim, each slab is empty and returned except the
     one kept per cache.
   - Alignment: each object meets its layout's alignment, and no object crosses its slab's page.
@@ -1072,7 +1108,8 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
     order 2 fails, which is red, and that is RTL8139's receive buffer. The exact-run search returns
     pfn 0x102-0x104, and the rest of the zone is unchanged.
   - Per-CPU caches: refill and drain move `batch` frames per zone-lock hold; a remote drain under the
-    per-CPU lock empties another CPU's cache; cached frames are not merged.
+    per-CPU lock empties another CPU's cache; cached frames are not merged. Frames allocated before a CPU's
+    slot is published come from the zone directly (5.4a).
   - Watermarks: an ordinary allocation stops at `min` and enters the slow path; an `Atomic` one may use
     half of `min`.
   - OOM: with each frame allocated, `alloc_pages` returns `AllocError` after draining and shrinking, and
