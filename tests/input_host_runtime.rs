@@ -5,6 +5,7 @@ pub use libbreenix::input::abi::{axis, key, kind, syn, Capability};
 use std::sync::{atomic::{AtomicBool, AtomicU64, Ordering}, Mutex};
 #[path = "../kernel/src/input/host.rs"]
 pub mod host;
+pub use host::diagnostics;
 pub use host::{Ack, Channel, Packet, BACKLOG, QUEUED};
 #[path = "../kernel/src/input/host/runtime.rs"]
 pub mod runtime;
