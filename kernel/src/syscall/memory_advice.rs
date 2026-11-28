@@ -241,10 +241,9 @@ pub(crate) fn populate(thread: u64, start: u64, end: u64) -> Result<(), u64> {
                 Population::Anonymous => {
                     prepared = Some(OwnedPopulationFrame::new().ok_or(ENOMEM as u64)?);
                 }
-                Population::Retry => {
-                    crate::task::scheduler::yield_current();
-                    crate::arch_halt_with_interrupts();
-                }
+                // Another thread is installing the page. Let it run here: the
+                // back-off releases the syscall's brake for its halt.
+                Population::Retry => crate::task::park::retry_pause(),
             }
         }
         address += PAGE_SIZE;

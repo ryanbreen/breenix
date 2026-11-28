@@ -505,10 +505,16 @@ pub(crate) fn retake_after_sleep(released: SleepRelease) {
 
 /// Back off when no waiter could be published (no memory for the entry):
 /// let another thread run here until the next interrupt, then return with
-/// the caller's depth.
+/// the caller's depth. A caller holding more than the one level this
+/// releases still keeps its CPU for the halt, which records a receipt at the
+/// caller's site (design §3.5).
+#[track_caller]
 pub(crate) fn retry_pause() {
     crate::task::scheduler::set_need_resched();
     let released = release_for_sleep();
+    if !may_switch_now() {
+        halt_as_current();
+    }
     crate::arch_halt_with_interrupts();
     retake_after_sleep(released);
 }
