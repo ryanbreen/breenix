@@ -132,6 +132,26 @@ pub(crate) fn may_switch_now() -> bool {
     crate::per_cpu::preempt_count() == 0
 }
 
+/// A waiter published blocked that may not switch away is about to halt as
+/// the current thread (`arch_halt_while_blocked`, design §3.5). That is the
+/// same as running idle in the idle thread and before the scheduler
+/// dispatches. Anywhere else the caller holds a preemption level the halt
+/// does not release, and the halt is a contract violation: a receipt naming
+/// the levels held. A caller at its baseline (a braked syscall or a
+/// `Braked` kernel thread) is recorded as holding those levels too, because
+/// the halt, unlike [`wait`], does not release the baseline.
+#[track_caller]
+pub(crate) fn halt_as_current() {
+    let refused = match context() {
+        ParkContext::EarlyBoot | ParkContext::Atomic(AtomicReason::Idle) => return,
+        ParkContext::Sleepable => {
+            ParkContext::Atomic(AtomicReason::LocksHeld(depth().min(u8::MAX as u32) as u8))
+        }
+        refused => refused,
+    };
+    record(refused, site());
+}
+
 // ------------------------------------------------------------------ receipts
 
 const RECEIPT_CPUS: usize = 16;

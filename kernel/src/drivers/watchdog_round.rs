@@ -29,11 +29,11 @@ pub fn wait(ms: u64) -> Result<(), &'static str> {
     let until = seconds.saturating_mul(1_000_000_000).saturating_add(nanos)
         .saturating_add(ms.saturating_mul(1_000_000));
     scheduler::with_current(|scheduler| scheduler.block_current_for_timer(until));
-    #[cfg(target_arch = "x86_64")]
-    scheduler::yield_current();
     loop {
+        // Switch away while blocked rather than halting as the current
+        // thread until the next tick (E2.3, design §3.5).
         #[cfg(target_arch = "x86_64")]
-        crate::arch_halt_with_interrupts();
+        crate::arch_halt_while_blocked();
         #[cfg(target_arch = "aarch64")]
         {
             let _ = scheduler::check_and_clear_need_resched();

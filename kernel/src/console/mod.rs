@@ -1312,12 +1312,11 @@ fn sleep_ms(ms: u64) {
         .saturating_add(nanos)
         .saturating_add(ms.saturating_mul(1_000_000));
     scheduler::with_current(|sched| sched.block_current_for_timer(deadline));
+    // Switch away while blocked rather than halting as the current thread
+    // until the next tick (E2.3, design §3.5).
     #[cfg(target_arch = "x86_64")]
-    {
-        scheduler::yield_current();
-        while scheduler::thread_state(tid) == Some(ThreadState::BlockedOnTimer) {
-            crate::arch_halt_with_interrupts();
-        }
+    while scheduler::thread_state(tid) == Some(ThreadState::BlockedOnTimer) {
+        crate::arch_halt_while_blocked();
     }
     // Give up the CPU at once rather than waiting in WFI as its current thread,
     // as the ARM64 render thread does (`graphics::render_task`, #1177).
