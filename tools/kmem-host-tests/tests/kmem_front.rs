@@ -19,7 +19,7 @@ mod kmem_core;
 mod sim;
 
 use heap_index::Heap;
-use kmem_core::{AllocError, Cpu, Ctx, Front, Miss, Pool, Reclaim, ReclaimCtx, Registry, Shrinker, Stats};
+use kmem_core::{AllocError, Cpu, Ctx, Front, Miss, Pool, Reclaim, ReclaimCtx, Registry, Shrinker, Small, Stats};
 use sim::SimLock;
 
 const ARENA_BYTES: usize = 64 * 1024;
@@ -57,6 +57,38 @@ impl Pool for Arena {
 
     unsafe fn give(&self, ptr: NonNull<u8>) {
         unsafe { self.lock.lock().deallocate(ptr) }
+    }
+}
+
+/// These tests drive the fixed-heap path, so their front has a small-object
+/// layer that serves no request (`slab_magazine.rs` drives that layer).
+struct NoSmall;
+
+impl Small for NoSmall {
+    fn serves(&self, _: Layout) -> bool {
+        false
+    }
+
+    fn take(&self, _: Layout, _: bool) -> Result<NonNull<u8>, Miss> {
+        unreachable!("no request is routed to this layer")
+    }
+
+    unsafe fn give(&self, _: NonNull<u8>, _: Layout) {
+        unreachable!("no request is routed to this layer")
+    }
+
+    fn same_object(&self, _: Layout, _: Layout) -> bool {
+        false
+    }
+
+    fn drain_own(&self, _: bool) {}
+
+    fn drain(&self, _: usize) -> bool {
+        true
+    }
+
+    fn cpus(&self) -> usize {
+        0
     }
 }
 
@@ -172,6 +204,7 @@ fn allocate(world: &'static World, request: Request) -> Result<NonNull<u8>, Allo
     let front = Front {
         main: &world.main,
         reserve: &world.reserve,
+        small: &NoSmall,
         shrinkers: &world.shrinkers,
         reclaim: &world.reclaim,
         stats: &world.stats,

@@ -4463,6 +4463,8 @@ const RETURN_LEASE_PRODUCTION_CALLS: &[(&str, &str, usize)] = &[
     ("kernel/src/memory/frame_allocator.rs", "fn deallocate_leaf_frame", 1),
     // #583: a dropped GuardedStack gives back its user stack's external leaves.
     ("kernel/src/memory/frame_allocator.rs", "fn release_external_leaf_frame", 1),
+    // E1-6: a slab page goes back with no logging, under its cache lock.
+    ("kernel/src/memory/frame_allocator.rs", "fn deallocate_slab_frame", 1),
     ("kernel/src/memory/process_memory.rs", "impl ProcessPageTable::fn retire_bounded", 2),
     // G35: live unmap returns empty tables after unlink and invalidation.
     ("kernel/src/memory/process_memory.rs", "impl crate::memory::table_reclaim::TableOps for ReclaimTables<'_>::fn release", 1),

@@ -1106,9 +1106,9 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
             text(report)
         }
         ProcEntryType::Kmem => {
-            // 3 frame-pool lines and 14 allocator lines, each at most 48 bytes.
+            // 3 frame-pool lines and the allocator's lines, each at most 96 bytes.
             let mut report = String::new();
-            report.try_reserve_exact(17 * 48).map_err(|_| -12)?;
+            report.try_reserve_exact((3 + crate::memory::kmem::STATS_LINES) * 96).map_err(|_| -12)?;
             #[cfg(target_arch = "aarch64")]
             {
                 use core::fmt::Write;
@@ -1311,7 +1311,6 @@ fn generate_frames() -> Result<String, i32> {
 
 /// Generate /proc/meminfo content
 fn generate_meminfo() -> String {
-    use crate::memory::slab::{FD_TABLE_SLAB, SIGNAL_HANDLERS_SLAB};
     use alloc::format;
 
     let stats = crate::memory::frame_allocator::memory_stats();
@@ -1330,14 +1329,9 @@ fn generate_meminfo() -> String {
         0
     };
 
-    // Slab memory usage: sum of allocated objects * object size for each slab
-    let slab_kb = {
-        let fd_stats = FD_TABLE_SLAB.stats();
-        let sig_stats = SIGNAL_HANDLERS_SLAB.stats();
-        let fd_bytes = (fd_stats.allocated * fd_stats.obj_size) as u64;
-        let sig_bytes = (sig_stats.allocated * sig_stats.obj_size) as u64;
-        (fd_bytes + sig_bytes) / 1024
-    };
+    // Slab memory: the pages the slab layer holds, the size classes', the
+    // named caches' and its descriptors' and magazines'.
+    let slab_kb = crate::memory::kmem::slab_pages() as u64 * 4;
 
     // Kernel heap is 32 MiB fixed
     let kernel_stack_kb: u64 = 32 * 1024; // 32 MiB heap as rough kernel memory estimate

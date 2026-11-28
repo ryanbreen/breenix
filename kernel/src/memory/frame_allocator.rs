@@ -5,7 +5,7 @@ mod contiguous;
 use crate::memory::arch_stub::{FrameAllocator, PhysAddr, PhysFrame, Size4KiB};
 use alloc::vec::Vec;
 use super::boot_ranges::RangeSet;
-use super::frame_meta::{ClaimError, Decref, FrameMetaMap, FreeList, LEAF_EXTERNAL, ST_ALLOCATED, ST_FREE};
+use super::frame_meta::{ClaimError, Decref, FrameMeta, FrameMetaMap, FreeList, LEAF_EXTERNAL, ST_ALLOCATED, ST_FREE};
 pub(crate) use super::frame_meta::{LeafMappingClass, ReturnOutcome};
 #[cfg(target_arch = "x86_64")]
 use bootloader_api::info::{MemoryRegionKind, MemoryRegions};
@@ -411,10 +411,12 @@ fn publish(ranges: &'static RangeSet, meta: &'static FrameMetaMap) {
 ///   during page faults.
 ///
 /// - **Other kernel code**: Should propagate the error or use fallback paths.
-fn allocate_candidate() -> Option<PhysFrame> {
+///
+/// The slab layer's pages pass `simulated_oom_applies` false (see
+/// `allocate_slab_frame`).
+fn allocate_candidate(simulated_oom_applies: bool) -> Option<PhysFrame> {
     // Test-only: simulate OOM if flag is set
-    #[cfg(feature = "testing")]
-    if SIMULATE_OOM.load(Ordering::SeqCst) {
+    if simulated_oom_applies && simulated_oom() {
         log::trace!("Frame allocator: OOM simulation active, returning None");
         return None;
     }
@@ -455,15 +457,37 @@ fn claim_frame(frame: PhysFrame, site: u16, owner: u8) -> Option<FrameLease> {
     }
 }
 
+/// Whether the testing build's simulated frame exhaustion is on.
+fn simulated_oom() -> bool {
+    #[cfg(feature = "testing")]
+    return SIMULATE_OOM.load(Ordering::SeqCst);
+    #[cfg(not(feature = "testing"))]
+    return false;
+}
+
 /// A candidate the metadata refuses to claim is skipped: it is live, mapped
 /// or untracked, so handing it out could give it two owners.
 fn allocate_claimed(site: u16, owner: u8) -> Option<FrameLease> {
+    claimed_from(true, site, owner)
+}
+
+fn claimed_from(simulated_oom_applies: bool, site: u16, owner: u8) -> Option<FrameLease> {
     loop {
-        let frame = allocate_candidate()?;
+        let frame = allocate_candidate(simulated_oom_applies)?;
         if let Some(lease) = claim_frame(frame, site, owner) {
             return Some(lease);
         }
     }
+}
+
+/// A frame for a slab page. The testing build's simulated frame exhaustion
+/// (`enable_oom_simulation`) models user pages running out, and the fixed
+/// heap the slab layer replaces did not see it, so this path does not either.
+/// No logging, formatting or allocation: the slab layer calls it with its
+/// cache lock held and interrupts masked.
+#[track_caller]
+pub(crate) fn allocate_slab_frame() -> Option<PhysFrame> {
+    claimed_from(false, frame_site(Location::caller()), 0).map(FrameLease::frame)
 }
 
 #[track_caller]
@@ -555,6 +579,17 @@ fn current_lease_for_frame(frame: PhysFrame) -> FrameLease {
         frame,
         generation: frame_meta().map_or(0, |meta| meta.current_generation(pfn(frame))),
     }
+}
+
+/// The entry of an allocated frame the slab layer holds, for its slab record.
+pub(crate) fn frame_entry(frame: PhysFrame) -> Option<&'static FrameMeta> {
+    frame_meta()?.entry(pfn(frame))
+}
+
+/// Return a slab page's frame. No logging, formatting or allocation: the
+/// slab layer returns pages with its cache lock held and interrupts masked.
+pub(crate) fn deallocate_slab_frame(frame: PhysFrame) -> ReturnOutcome {
+    return_lease(current_lease_for_frame(frame))
 }
 
 /// Return a leaf whose mapping refcount reached zero without adding logging,

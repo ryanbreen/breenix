@@ -565,6 +565,9 @@ pub extern "C" fn secondary_cpu_entry_rust(cpu_id: u64) -> ! {
     // Initialize per-CPU data (sets TPIDR_EL1 for this CPU)
     crate::per_cpu_aarch64::init_cpu(cpu_id as usize);
     set_bringup_stage(cpu_id as usize, BRINGUP_STAGE_PER_CPU_DATA_INITIALIZED);
+    // This CPU can name itself now: publish its slab magazines before it
+    // joins the scheduler (E1 plan, 5.4a).
+    crate::memory::kmem::register_cpu();
 
     // Store the boot TTBR0 as the kernel page table for this CPU.
     let boot_ttbr0: u64;

@@ -210,19 +210,23 @@ impl kmem::Pool for IrqSafeLockedHeap {
     }
 }
 
-/// The fixed kernel heap and, at its top, the emergency reserve that only
-/// `Atomic` requests use (5.3). Each has its own mutex, so an interrupt
-/// handler that finds the heap's mutex held still has the reserve.
+/// The kernel's allocator: requests up to a page go to the slab caches and
+/// their per-CPU magazines (E1-6), larger ones to the fixed kernel heap
+/// until E1-9. At the heap's top is the emergency reserve that only `Atomic`
+/// requests use (5.3). The heap and the reserve each have their own mutex,
+/// so an interrupt handler that finds the heap's mutex held still has the
+/// reserve.
 struct KernelHeap {
     main: IrqSafeLockedHeap,
     reserve: IrqSafeLockedHeap,
 }
 
 impl KernelHeap {
-    fn front(&self) -> kmem::Front<'_, IrqSafeLockedHeap, IrqSafeLockedHeap> {
+    fn front(&self) -> kmem::Front<'_, IrqSafeLockedHeap, IrqSafeLockedHeap, kmem::KernelSmall> {
         kmem::Front {
             main: &self.main,
             reserve: &self.reserve,
+            small: &kmem::KernelSmall,
             shrinkers: &kmem::SHRINKERS,
             reclaim: &kmem::RECLAIM,
             stats: &kmem::STATS,
@@ -242,8 +246,8 @@ unsafe impl GlobalAlloc for KernelHeap {
             .map_or(core::ptr::null_mut(), NonNull::as_ptr)
     }
 
-    unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
-        unsafe { self.front().deallocate(NonNull::new_unchecked(ptr)) }
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe { self.front().deallocate(NonNull::new_unchecked(ptr), layout) }
     }
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
@@ -260,6 +264,11 @@ unsafe impl GlobalAlloc for KernelHeap {
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         let new_layout = unsafe { Layout::from_size_align_unchecked(new_size, layout.align()) };
+        // A slab object whose class also serves the new size keeps its place
+        // (6.6), and its later free with the new layout finds the same class.
+        if self.front().resizes_in_place(unsafe { NonNull::new_unchecked(ptr) }, layout, new_layout) {
+            return ptr;
+        }
         let new_ptr = unsafe { self.alloc(new_layout) };
         if !new_ptr.is_null() {
             // The copy is private to the caller; it does not require the heap mutex.
@@ -349,6 +358,8 @@ pub fn init(mapper: &OffsetPageTable<'static>) -> Result<(), &'static str> {
             .reserve
             .init((heap_base + main_bytes) as *mut u8, reserve_bytes as usize);
     }
+
+    kmem::init_slab_layer();
 
     log::info!(
         "Heap initialized at {:#x} with size {} KiB ({} KiB emergency reserve)",
