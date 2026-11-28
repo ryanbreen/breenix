@@ -1571,9 +1571,12 @@ waits for E3-6 (it needs pages retained by the cache to be worth anything), so t
     pages (12.1-12.4).
   - `/proc/breenix/pagecache`.
 - **Tests (host), check first.**
-  - Map a 16 MiB fixture (4,096 pages) standing in for the driver, unmap, and map again with no pressure. The new code makes 0
-    device reads on the second map. The old code evicts on unbind and re-reads every page, which is red.
-    This is the bimodal `rustc -vV` mechanism of audit R5. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+  - Map a 16 MiB fixture (4,096 pages) standing in for the driver, unmap, run the production filesystem
+    service's eviction pass (the worker pass #3232's check drives), and map again with no pressure. The
+    new code makes 0 device reads on the second map. On the old code an unbind only requests the pass
+    (`file_map.rs:506-534`), and the pass retires every unbound clean page, so the second map re-reads
+    all 4,096, which is red. The check runs the pass itself, because without it the old code would also
+    read 0. This is the bimodal `rustc -vV` mechanism of audit R5. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
   - Close and reopen a file: its pages are still resident (red on the old code, which builds a new
     `MapState`).
   - Under a fixed frame budget, run a working set and a stream. Reclaim frees stream pages first and never <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
@@ -1655,8 +1658,9 @@ waits for E3-6 (it needs pages retained by the cache to be worth anything), so t
     and the PR says so.
   - Stable pages: freeze G, then write the same page in G+1 during G's drain. For every subset of G's
     writes, the crash images recover G-1 or G, and G's copy of the page is G's bytes. The cache holds
-    G+1's bytes. The old code holds this through immutable `Arc` pages, so the check is red only on a seam
-    variant that writes in place, which the PR states. The harness keeps it from regressing. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
+    G+1's bytes. The old code holds this through immutable `Arc` pages, so the check passes on the old
+    tree: it guards the stable-page rule against the move to frames, and the PR says so. No seam variant
+    is offered as its red result. The PR's red checks are the read-back and never-stored checks. <!-- claim-lint:ok: normative requirement of docs/plans/e3-page-cache.md under ruling DEV-41(2), not a measured result. -->
   - A shrink during G's drain whose new last page is in G's batch: pause the recording device after G's
     CRC for that page, `ftruncate` to the middle of the page, then complete G. G's block and CRC match a
     cold read of the image, and the cache's page reads the kept bytes, then 00s. The old code zeroes no
@@ -2213,7 +2217,7 @@ requests an eviction pass (`file_map.rs:506-534`); the pages go when the filesys
 frozen pages are immutable `Arc`s, so the old tree keeps G's bytes stable.
 
 ```pycon
->>> RULE = 'as-first-written'
+>>> RULE = 'red-on-old'
 >>> def old_remap_reads(run_eviction_pass):
 ...     return 4096 if run_eviction_pass else 0
 >>> remap_red = old_remap_reads(run_eviction_pass=(RULE == 'red-on-old')) > 0
