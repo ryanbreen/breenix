@@ -1,0 +1,16 @@
+[package]
+name = "waitqueue-host-tests"
+version = "0.1.0"
+edition = "2021"
+
+# Host model of the kernel's event queue (E2.1, brief B1). It compiles
+# kernel/src/task/event_queue.rs itself and drives it against a recording
+# scheduler. Run: cargo test --manifest-path tools/waitqueue-host-tests/Cargo.toml
+
+[workspace]
+
+[dependencies]
+spin = "0.9.8"
+
+[lib]
+doctest = false
