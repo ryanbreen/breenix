@@ -1,5 +1,4007 @@
 {
-  "version": 1,
-  "scan": "tools/kmem-host-tests/tests/oom_inventory.rs",
-  "rows": []
+ "version": 1,
+ "scan": "tools/kmem-host-tests/tests/oom_inventory.rs",
+ "rows": [
+  {
+   "file": "kernel/src/arch_impl/aarch64/asid.rs",
+   "owner": "E1-13",
+   "error": "EAGAIN for fork, clone and thread creation; ENOMEM for exec and the rest; EAGAIN for sigqueue",
+   "rollback": "before the process, thread or signal is published",
+   "functions": [
+    "AsidSpace::grow",
+    "AsidSpace::new",
+    "AsidSpace::register"
+   ]
+  },
+  {
+   "file": "kernel/src/arch_impl/aarch64/cpuinfo.rs",
+   "owner": "E1-13",
+   "error": "EAGAIN for fork, clone and thread creation; ENOMEM for exec and the rest; EAGAIN for sigqueue",
+   "rollback": "before the process, thread or signal is published",
+   "functions": [
+    "CpuInfo::features_string"
+   ]
+  },
+  {
+   "file": "kernel/src/arch_impl/aarch64/smp.rs",
+   "owner": "E1-13",
+   "error": "EAGAIN for fork, clone and thread creation; ENOMEM for exec and the rest; EAGAIN for sigqueue",
+   "rollback": "before the process, thread or signal is published",
+   "functions": [
+    "create_and_register_idle_thread"
+   ]
+  },
+  {
+   "file": "kernel/src/arch_impl/aarch64/syscall_entry.rs",
+   "owner": "E1-13",
+   "error": "EAGAIN for fork, clone and thread creation; ENOMEM for exec and the rest; EAGAIN for sigqueue",
+   "rollback": "before the process, thread or signal is published",
+   "functions": [
+    "sys_fork_aarch64",
+    "sys_spawn_aarch64"
+   ]
+  },
+  {
+   "file": "kernel/src/arch_impl/aarch64/timer_interrupt.rs",
+   "owner": "E1-13",
+   "error": "EAGAIN for fork, clone and thread creation; ENOMEM for exec and the rest; EAGAIN for sigqueue",
+   "rollback": "before the process, thread or signal is published",
+   "functions": [
+    "request_wakeup"
+   ]
+  },
+  {
+   "file": "kernel/src/arch_impl/x86_64/acpi.rs",
+   "owner": "E1-13",
+   "error": "EAGAIN for fork, clone and thread creation; ENOMEM for exec and the rest; EAGAIN for sigqueue",
+   "rollback": "before the process, thread or signal is published",
+   "functions": [
+    "dma_remapping_table"
+   ]
+  },
+  {
+   "file": "kernel/src/arch_impl/x86_64/ap_start.rs",
+   "owner": "E1-13",
+   "error": "EAGAIN for fork, clone and thread creation; ENOMEM for exec and the rest; EAGAIN for sigqueue",
+   "rollback": "before the process, thread or signal is published",
+   "functions": [
+    "register_idle_thread"
+   ]
+  },
+  {
+   "file": "kernel/src/arch_impl/x86_64/apic/clockevent.rs",
+   "owner": "E1-13",
+   "error": "EAGAIN for fork, clone and thread creation; ENOMEM for exec and the rest; EAGAIN for sigqueue",
+   "rollback": "before the process, thread or signal is published",
+   "functions": [
+    "ClockEvent::request"
+   ]
+  },
+  {
+   "file": "kernel/src/arch_impl/x86_64/cpuinfo.rs",
+   "owner": "E1-13",
+   "error": "EAGAIN for fork, clone and thread creation; ENOMEM for exec and the rest; EAGAIN for sigqueue",
+   "rollback": "before the process, thread or signal is published",
+   "functions": [
+    "CpuInfo::flags_string"
+   ]
+  },
+  {
+   "file": "kernel/src/arch_impl/x86_64/xstate.rs",
+   "owner": "E1-13",
+   "error": "EAGAIN for fork, clone and thread creation; ENOMEM for exec and the rest; EAGAIN for sigqueue",
+   "rollback": "before the process, thread or signal is published",
+   "functions": [
+    "init"
+   ]
+  },
+  {
+   "file": "kernel/src/block/cache.rs",
+   "owner": "E1-18",
+   "error": "an I/O error to the request",
+   "rollback": "before the request is submitted; no partial request",
+   "functions": [
+    "BufferCache::begin",
+    "BufferCache::finish",
+    "BufferCache::stage",
+    "BufferCache::submit_admitted",
+    "BufferCache::with_capacity",
+    "State::touch",
+    "WriteGroup::hold"
+   ]
+  },
+  {
+   "file": "kernel/src/block/cache_report.rs",
+   "owner": "E1-18",
+   "error": "an I/O error to the request",
+   "rollback": "before the request is submitted; no partial request",
+   "functions": [
+    "render"
+   ]
+  },
+  {
+   "file": "kernel/src/block/install.rs",
+   "owner": "E1-18",
+   "error": "an I/O error to the request",
+   "rollback": "before the request is submitted; no partial request",
+   "functions": [
+    "Record::parse",
+    "Record::sector",
+    "hex",
+    "install",
+    "matches",
+    "verify"
+   ]
+  },
+  {
+   "file": "kernel/src/block/mod.rs",
+   "owner": "E1-18",
+   "error": "an I/O error to the request",
+   "rollback": "before the request is submitted; no partial request",
+   "functions": [
+    "devices",
+    "discovered",
+    "explicit_mount_device",
+    "named_home",
+    "named_root",
+    "provisioning_device",
+    "root_devices",
+    "test_root_fixtures"
+   ]
+  },
+  {
+   "file": "kernel/src/block/ramdisk.rs",
+   "owner": "E1-18",
+   "error": "an I/O error to the request",
+   "rollback": "before the request is submitted; no partial request",
+   "functions": [
+    "RamDisk::new",
+    "device",
+    "test_device"
+   ]
+  },
+  {
+   "file": "kernel/src/block/read_only.rs",
+   "owner": "E1-18",
+   "error": "an I/O error to the request",
+   "rollback": "before the request is submitted; no partial request",
+   "functions": [
+    "device"
+   ]
+  },
+  {
+   "file": "kernel/src/boot/arm_install.rs",
+   "owner": "E1-4",
+   "error": "panic with the OOM record; the site becomes try_*().expect(\"boot: <what>\") (7.4 boot rule)",
+   "rollback": "none: before PID 1 runs a failed boot allocation stops the boot",
+   "functions": [
+    "argv"
+   ]
+  },
+  {
+   "file": "kernel/src/boot/console_start.rs",
+   "owner": "E1-4",
+   "error": "panic with the OOM record; the site becomes try_*().expect(\"boot: <what>\") (7.4 boot rule)",
+   "rollback": "none: before PID 1 runs a failed boot allocation stops the boot",
+   "functions": [
+    "schedule"
+   ]
+  },
+  {
+   "file": "kernel/src/boot/target.rs",
+   "owner": "E1-4",
+   "error": "panic with the OOM record; the site becomes try_*().expect(\"boot: <what>\") (7.4 boot rule)",
+   "rollback": "none: before PID 1 runs a failed boot allocation stops the boot",
+   "functions": [
+    "SuiteTarget::new",
+    "parse",
+    "read",
+    "suite_path"
+   ]
+  },
+  {
+   "file": "kernel/src/boot/test_disk.rs",
+   "owner": "E1-4",
+   "error": "panic with the OOM record; the site becomes try_*().expect(\"boot: <what>\") (7.4 boot rule)",
+   "rollback": "none: before PID 1 runs a failed boot allocation stops the boot",
+   "functions": [
+    "TestDisk::read",
+    "TestDisk::read_binary",
+    "run_userspace_from_disk"
+   ]
+  },
+  {
+   "file": "kernel/src/console/grid.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Grid::resize_boot"
+   ]
+  },
+  {
+   "file": "kernel/src/console/keymap.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Bytes::push_decimal",
+    "Bytes::with_modifiers"
+   ]
+  },
+  {
+   "file": "kernel/src/console/mod.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Screen::check",
+    "Screen::update",
+    "attach",
+    "prepare",
+    "proc_console_check",
+    "proc_fbcon_check",
+    "push_rows",
+    "read_display_pixel",
+    "render_thread",
+    "size_terminals",
+    "write_vt"
+   ]
+  },
+  {
+   "file": "kernel/src/console/panel.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Panel::new"
+   ]
+  },
+  {
+   "file": "kernel/src/console/records.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "write_tty"
+   ]
+  },
+  {
+   "file": "kernel/src/console/splash.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Painter::check",
+    "Text::write_str"
+   ]
+  },
+  {
+   "file": "kernel/src/console/status.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "SuiteStatus::heading",
+    "SuiteStatus::observe"
+   ]
+  },
+  {
+   "file": "kernel/src/console/vcs.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "project"
+   ]
+  },
+  {
+   "file": "kernel/src/console/vt.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Terminals::take_display_nested",
+    "ensure_history",
+    "screen"
+   ]
+  },
+  {
+   "file": "kernel/src/contracts/kernel_stack.rs",
+   "owner": "test",
+   "error": "outside the runtime rule: built only with a test feature",
+   "rollback": "none: converted when a test feature builds alloc with no_global_oom_handling",
+   "functions": [
+    "verify_guard_page_unmapped",
+    "verify_stack_mapping",
+    "verify_stack_region",
+    "verify_tss_rsp0_valid"
+   ]
+  },
+  {
+   "file": "kernel/src/contracts/page_table.rs",
+   "owner": "test",
+   "error": "outside the runtime rule: built only with a test feature",
+   "rollback": "none: converted when a test feature builds alloc with no_global_oom_handling",
+   "functions": [
+    "verify_all_kernel_entries",
+    "verify_entry_flags",
+    "verify_kernel_code_mapping",
+    "verify_kernel_ist_frame_separation",
+    "verify_kernel_mapping_inheritance",
+    "verify_stack_regions_present",
+    "verify_valid_frame"
+   ]
+  },
+  {
+   "file": "kernel/src/contracts/tss.rs",
+   "owner": "test",
+   "error": "outside the runtime rule: built only with a test feature",
+   "rollback": "none: converted when a test feature builds alloc with no_global_oom_handling",
+   "functions": [
+    "verify_all_tss_invariants",
+    "verify_ist_separation",
+    "verify_ist_stacks_valid",
+    "verify_tss_config"
+   ]
+  },
+  {
+   "file": "kernel/src/drivers/ahci/mod.rs",
+   "owner": "E1-18",
+   "error": "an I/O error to the request",
+   "rollback": "before the request is submitted; no partial request",
+   "functions": [
+    "report_first_sectors",
+    "start_completion_pollers"
+   ]
+  },
+  {
+   "file": "kernel/src/drivers/bcm5720/mod.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Port::attach",
+    "Port::run",
+    "init"
+   ]
+  },
+  {
+   "file": "kernel/src/drivers/fw_cfg.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "read_string"
+   ]
+  },
+  {
+   "file": "kernel/src/drivers/hid_boot/pointer.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Layout::replay_reports"
+   ]
+  },
+  {
+   "file": "kernel/src/drivers/i6300esb.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "feeder::fault"
+   ]
+  },
+  {
+   "file": "kernel/src/drivers/nvme/mod.rs",
+   "owner": "E1-18",
+   "error": "an I/O error to the request",
+   "rollback": "before the request is submitted; no partial request",
+   "functions": [
+    "init"
+   ]
+  },
+  {
+   "file": "kernel/src/drivers/pci.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "enumerate",
+    "find_network_devices",
+    "find_virtio_block_devices",
+    "find_virtio_net_devices",
+    "find_virtio_sound_devices"
+   ]
+  },
+  {
+   "file": "kernel/src/drivers/virtio/block.rs",
+   "owner": "E1-18",
+   "error": "an I/O error to the request",
+   "rollback": "before the request is submitted; no partial request",
+   "functions": [
+    "init"
+   ]
+  },
+  {
+   "file": "kernel/src/drivers/virtio/input_mmio.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "init_keyboard_device",
+    "init_tablet_device",
+    "report_event"
+   ]
+  },
+  {
+   "file": "kernel/src/drivers/virtio/net_legacy.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "NetDevice::fill_buffers",
+    "NetDevice::reclaim_tx",
+    "init",
+    "transmit"
+   ]
+  },
+  {
+   "file": "kernel/src/drivers/virtio/pci_transport.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "VirtioPciDevice::probe",
+    "enumerate_virtio_pci_devices"
+   ]
+  },
+  {
+   "file": "kernel/src/drivers/virtio/sound.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "init"
+   ]
+  },
+  {
+   "file": "kernel/src/drivers/xhci/fault.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Controller::recovery_exercise"
+   ]
+  },
+  {
+   "file": "kernel/src/drivers/xhci/keyboard.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Controller::configure_keyboard",
+    "Controller::control",
+    "Controller::dispatch",
+    "Controller::keyboard_event",
+    "Controller::queue_report",
+    "Controller::reclaim",
+    "Controller::replay_key",
+    "Controller::replug_exercise",
+    "Controller::serve",
+    "Controller::tick_keyboards"
+   ]
+  },
+  {
+   "file": "kernel/src/drivers/xhci/mod.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Controller::command",
+    "Controller::command_code",
+    "Controller::enumerate",
+    "Controller::read_descriptor",
+    "Controller::service",
+    "Dma::copy",
+    "Dma::new",
+    "start"
+   ]
+  },
+  {
+   "file": "kernel/src/drivers/xhci/platform.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "interrupt_delivery_snapshot"
+   ]
+  },
+  {
+   "file": "kernel/src/drivers/xhci/pointer.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Controller::attach_pointers",
+    "Controller::configure_pointer",
+    "Controller::deliver_pointer",
+    "Controller::queue_pointer",
+    "Controller::replay_pointer_report",
+    "describe",
+    "record",
+    "replay::ioctl"
+   ]
+  },
+  {
+   "file": "kernel/src/exec_elf.rs",
+   "owner": "E1-13",
+   "error": "EAGAIN for fork, clone and thread creation; ENOMEM for exec and the rest; EAGAIN for sigqueue",
+   "rollback": "before the process, thread or signal is published",
+   "functions": [
+    "Headers::append_image_regions",
+    "Headers::read",
+    "MappedElf::with_interpreter",
+    "map_interpreted_arm_page",
+    "read_interpreter_path",
+    "read_shebang"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/attrs.rs",
+   "owner": "E1-14",
+   "error": "ENOMEM",
+   "rollback": "before the dentry, fd or lock is published",
+   "functions": [
+    "MountFlags::options"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/breenfs/boot.rs",
+   "owner": "E1-15",
+   "error": "ENOMEM",
+   "rollback": "before any disk change, by the reservation rule (file_map.rs, fallible-allocation discipline)",
+   "functions": [
+    "mount"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/breenfs/btree.rs",
+   "owner": "E1-15",
+   "error": "ENOMEM",
+   "rollback": "before any disk change, by the reservation rule (file_map.rs, fallible-allocation discipline)",
+   "functions": [
+    "Edit::change",
+    "Edit::pack",
+    "Edit::rebalance",
+    "Edit::save",
+    "decode",
+    "decode_verified_node",
+    "node_buffer",
+    "range_limit",
+    "search"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/breenfs/commit.rs",
+   "owner": "E1-15",
+   "error": "ENOMEM",
+   "rollback": "before any disk change, by the reservation rule (file_map.rs, fallible-allocation discipline)",
+   "functions": [
+    "Committer::try_waiter",
+    "Committer::waiter",
+    "FrozenCommit::prepare",
+    "fill",
+    "read"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/breenfs/dirty.rs",
+   "owner": "E1-15",
+   "error": "ENOMEM",
+   "rollback": "before any disk change, by the reservation rule (file_map.rs, fallible-allocation discipline)",
+   "functions": [
+    "DirtyPages::shrink",
+    "DirtyPages::write",
+    "DirtyPages::write_runs",
+    "zero_page"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/breenfs/format.rs",
+   "owner": "E1-15",
+   "error": "ENOMEM",
+   "rollback": "before any disk change, by the reservation rule (file_map.rs, fallible-allocation discipline)",
+   "functions": [
+    "DirRecord::decode",
+    "DirRecord::encode",
+    "Ref::decode",
+    "Ref::encode",
+    "Root::decode",
+    "Root::encode",
+    "Xattr::decode",
+    "Xattr::encode"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/breenfs/mount.rs",
+   "owner": "E1-15",
+   "error": "ENOMEM",
+   "rollback": "before any disk change, by the reservation rule (file_map.rs, fallible-allocation discipline)",
+   "functions": [
+    "mount_root_volume",
+    "resolve_cover"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/breenfs/node_cache.rs",
+   "owner": "E1-15",
+   "error": "ENOMEM",
+   "rollback": "before any disk change, by the reservation rule (file_map.rs, fallible-allocation discipline)",
+   "functions": [
+    "CachedNodeStore::get",
+    "CachedNodeStore::new",
+    "CachedNodeStore::new_owned",
+    "CachedNodeStore::read_node",
+    "CachedNodeStore::with_device",
+    "DecodedNodes::insert"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/breenfs/ops.rs",
+   "owner": "E1-15",
+   "error": "ENOMEM",
+   "rollback": "before any disk change, by the reservation rule (file_map.rs, fallible-allocation discipline)",
+   "functions": [
+    "DirectoryCookies::insert",
+    "ExtentMap::keep_crcs",
+    "Files::add_entry",
+    "Files::create_empty_root",
+    "Files::create_node_prepared",
+    "Files::decode_extents",
+    "Files::directory_cookie",
+    "Files::directory_entries",
+    "Files::drop_link",
+    "Files::extents",
+    "Files::format",
+    "Files::include_orphans",
+    "Files::insert",
+    "Files::list_xattrs",
+    "Files::load_extent_map",
+    "Files::metadata_reservation_paths",
+    "Files::new",
+    "Files::next_generation",
+    "Files::prepare_commit",
+    "Files::put_inode",
+    "Files::read_mapped",
+    "Files::read_seek",
+    "Files::remove_entry",
+    "Files::remove_range",
+    "Files::rename",
+    "Files::rename_root",
+    "Files::replace_extent",
+    "Files::retain_open_inodes",
+    "Files::set_inode_open",
+    "Files::snapshot",
+    "Files::truncate",
+    "Files::write",
+    "Files::xattr",
+    "Runs::flush",
+    "dir_records",
+    "xattrs"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/breenfs/recover.rs",
+   "owner": "E1-15",
+   "error": "ENOMEM",
+   "rollback": "before any disk change, by the reservation rule (file_map.rs, fallible-allocation discipline)",
+   "functions": [
+    "recover_detailed",
+    "space_items"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/breenfs/scrub.rs",
+   "owner": "E1-15",
+   "error": "ENOMEM",
+   "rollback": "before any disk change, by the reservation rule (file_map.rs, fallible-allocation discipline)",
+   "functions": [
+    "BudgetStore::get",
+    "Reader::next",
+    "Scrub::record"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/breenfs/space.rs",
+   "owner": "E1-15",
+   "error": "ENOMEM",
+   "rollback": "before any disk change, by the reservation rule (file_map.rs, fallible-allocation discipline)",
+   "functions": [
+    "FreeIndex::put",
+    "Promotion::apply",
+    "Quarantine::promote",
+    "Quarantine::put_generation",
+    "Released::write",
+    "dead_nodes",
+    "insert_run",
+    "open"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/breenfs/txn.rs",
+   "owner": "E1-15",
+   "error": "ENOMEM",
+   "rollback": "before any disk change, by the reservation rule (file_map.rs, fallible-allocation discipline)",
+   "functions": [
+    "EditStore::alloc",
+    "EditStore::put_decoded",
+    "Transaction::count",
+    "Transaction::delete_root",
+    "Transaction::fork",
+    "Transaction::format",
+    "Transaction::increment",
+    "Transaction::prepare",
+    "Transaction::release",
+    "Transaction::reserve_extent",
+    "Transaction::update_root",
+    "View::read_node",
+    "outgoing"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/breenfs/vfs.rs",
+   "owner": "E1-15",
+   "error": "ENOMEM",
+   "rollback": "before any disk change, by the reservation rule (file_map.rs, fallible-allocation discipline)",
+   "functions": [
+    "BreenFs::commit_generation_up_to",
+    "BreenFs::create_open",
+    "BreenFs::mapped_nodes",
+    "BreenFs::mapping_descriptor_counts",
+    "BreenFs::mount_with",
+    "BreenFs::open_locked",
+    "BreenFs::rename",
+    "BreenFs::resize",
+    "BreenFs::service_mappings",
+    "BreenFs::snapshot_rename",
+    "BreenFs::snapshot_request",
+    "BreenFs::touch",
+    "BreenFs::write_part",
+    "BreenFs::writeback_pages",
+    "BreenFs::xattr",
+    "DeviceMounts::get",
+    "FrozenGeneration::apply_touch",
+    "GenerationView::xattr",
+    "Grants::push",
+    "InodeCache::insert",
+    "Mapping::read",
+    "MountState::apply_touches",
+    "MountState::finish_data",
+    "MountState::finish_metadata",
+    "MountState::forget_staged",
+    "MountState::inode",
+    "MountState::page_indexes",
+    "MountState::reserve_blocks",
+    "MountState::retain_open",
+    "MountedRoot::claim",
+    "NodePin::drop",
+    "OpenFiles::copy",
+    "OpenFiles::create_empty_root",
+    "OpenFiles::create_node_prepared",
+    "OpenFiles::delete_root",
+    "OpenFiles::link",
+    "OpenFiles::put_reserved_inode",
+    "OpenFiles::record",
+    "OpenFiles::record_touches",
+    "OpenFiles::rename",
+    "OpenFiles::rename_root",
+    "OpenFiles::reserve",
+    "OpenFiles::rmdir",
+    "OpenFiles::set_inode_open",
+    "OpenFiles::setattr",
+    "OpenFiles::snapshot",
+    "OpenFiles::trim_mappings",
+    "OpenFiles::unlink",
+    "OpenFiles::xattr",
+    "ReplayLog::push_back",
+    "ReplayLog::reserve",
+    "SharedLedger::reserve",
+    "WritableOwner::claim"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/devfs/disks.rs",
+   "owner": "E1-14",
+   "error": "ENOMEM",
+   "rollback": "before the dentry, fd or lock is published",
+   "functions": [
+    "hardware::devices"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/devfs/entries.rs",
+   "owner": "E1-14",
+   "error": "ENOMEM",
+   "rollback": "before the dentry, fd or lock is published",
+   "functions": [
+    "entries"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/devfs/input.rs",
+   "owner": "E1-14",
+   "error": "ENOMEM",
+   "rollback": "before the dentry, fd or lock is published",
+   "functions": [
+    "Directory::getdents"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/devfs/mod.rs",
+   "owner": "E1-14",
+   "error": "ENOMEM",
+   "rollback": "before the dentry, fd or lock is published",
+   "functions": [
+    "directory_entries",
+    "init",
+    "list_devices"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/ext2/adapter.rs",
+   "owner": "E1-15",
+   "error": "ENOMEM",
+   "rollback": "before any disk change, by the reservation rule (file_map.rs, fallible-allocation discipline)",
+   "functions": [
+    "Ext2Adapter::readdir",
+    "Ext2Adapter::register_root"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/ext2/block_group.rs",
+   "owner": "E1-15",
+   "error": "ENOMEM",
+   "rollback": "before any disk change, by the reservation rule (file_map.rs, fallible-allocation discipline)",
+   "functions": [
+    "Ext2BlockGroupDesc::read_table",
+    "claim"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/ext2/create_node.rs",
+   "owner": "E1-15",
+   "error": "ENOMEM",
+   "rollback": "before any disk change, by the reservation rule (file_map.rs, fallible-allocation discipline)",
+   "functions": [
+    "Ext2Fs::create_entry"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/ext2/dir.rs",
+   "owner": "E1-15",
+   "error": "ENOMEM",
+   "rollback": "before any disk change, by the reservation rule (file_map.rs, fallible-allocation discipline)",
+   "functions": [
+    "find_entry_location",
+    "parse_directory"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/ext2/directory_extension.rs",
+   "owner": "E1-15",
+   "error": "ENOMEM",
+   "rollback": "before any disk change, by the reservation rule (file_map.rs, fallible-allocation discipline)",
+   "functions": [
+    "Extension::new",
+    "Extension::write_block"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/ext2/directory_io.rs",
+   "owner": "E1-15",
+   "error": "ENOMEM",
+   "rollback": "before any disk change, by the reservation rule (file_map.rs, fallible-allocation discipline)",
+   "functions": [
+    "Ext2Fs::make_directory_room",
+    "Ext2Fs::plan_blocks",
+    "copy"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/ext2/fault.rs",
+   "owner": "E1-15",
+   "error": "ENOMEM",
+   "rollback": "before any disk change, by the reservation rule (file_map.rs, fallible-allocation discipline)",
+   "functions": [
+    "Shadow::open",
+    "mount"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/ext2/file.rs",
+   "owner": "E1-15",
+   "error": "ENOMEM",
+   "rollback": "before any disk change, by the reservation rule (file_map.rs, fallible-allocation discipline)",
+   "functions": [
+    "MetadataBatch::new",
+    "MetadataBatch::write_blocks",
+    "read_file_range",
+    "read_indirect_block",
+    "take_tail_blocks",
+    "trim_tail"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/ext2/generation.rs",
+   "owner": "E1-15",
+   "error": "ENOMEM",
+   "rollback": "before any disk change, by the reservation rule (file_map.rs, fallible-allocation discipline)",
+   "functions": [
+    "select"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/ext2/inode_index.rs",
+   "owner": "E1-15",
+   "error": "ENOMEM",
+   "rollback": "before any disk change, by the reservation rule (file_map.rs, fallible-allocation discipline)",
+   "functions": [
+    "InodeIndex::insert"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/ext2/live_inode.rs",
+   "owner": "E1-15",
+   "error": "ENOMEM",
+   "rollback": "before any disk change, by the reservation rule (file_map.rs, fallible-allocation discipline)",
+   "functions": [
+    "LiveInodes::dirty_handles",
+    "LiveInodes::evictions",
+    "LiveInodes::pending",
+    "LiveInodes::pending_snapshot",
+    "LiveInodes::pin"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/ext2/lock_race.rs",
+   "owner": "E1-15",
+   "error": "ENOMEM",
+   "rollback": "before any disk change, by the reservation rule (file_map.rs, fallible-allocation discipline)",
+   "functions": [
+    "contender_fn",
+    "run_one"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/ext2/mapped_io.rs",
+   "owner": "E1-15",
+   "error": "ENOMEM",
+   "rollback": "before any disk change, by the reservation rule (file_map.rs, fallible-allocation discipline)",
+   "functions": [
+    "DataFile::write",
+    "sync_mount"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/ext2/mod.rs",
+   "owner": "E1-15",
+   "error": "ENOMEM",
+   "rollback": "before any disk change, by the reservation rule (file_map.rs, fallible-allocation discipline)",
+   "functions": [
+    "Ext2Fs::begin_resize_file_as",
+    "Ext2Fs::finalize_orphans",
+    "Ext2Fs::finalize_shrinks",
+    "Ext2Fs::mapped_writeback_handles",
+    "Ext2Fs::mount",
+    "Ext2Fs::read_file_content_coherent_unless",
+    "Ext2WriteGuard::finish_shrink",
+    "mount_explicit_device",
+    "mount_home_device",
+    "mount_root_with_flags"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/ext2/namespace_alloc.rs",
+   "owner": "E1-15",
+   "error": "ENOMEM",
+   "rollback": "before any disk change, by the reservation rule (file_map.rs, fallible-allocation discipline)",
+   "functions": [
+    "copy_image"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/ext2/namespace_ops.rs",
+   "owner": "E1-15",
+   "error": "ENOMEM",
+   "rollback": "before any disk change, by the reservation rule (file_map.rs, fallible-allocation discipline)",
+   "functions": [
+    "Ext2Fs::link_in_dir",
+    "Ext2Fs::remove_directory_in",
+    "Ext2Fs::unlink_in_dir"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/ext2/path.rs",
+   "owner": "E1-15",
+   "error": "ENOMEM",
+   "rollback": "before any disk change, by the reservation rule (file_map.rs, fallible-allocation discipline)",
+   "functions": [
+    "Ext2Fs::read_symlink_bytes",
+    "Ext2Fs::resolve_path_impl"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/ext2/reclaim.rs",
+   "owner": "E1-15",
+   "error": "ENOMEM",
+   "rollback": "before any disk change, by the reservation rule (file_map.rs, fallible-allocation discipline)",
+   "functions": [
+    "Reclaim::prepare",
+    "Reclaim::stage"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/ext2/rename.rs",
+   "owner": "E1-15",
+   "error": "ENOMEM",
+   "rollback": "before any disk change, by the reservation rule (file_map.rs, fallible-allocation discipline)",
+   "functions": [
+    "Ext2Fs::rename"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/flock.rs",
+   "owner": "E1-14",
+   "error": "ENOMEM",
+   "rollback": "before the dentry, fd or lock is published",
+   "functions": [
+    "FileKey::of",
+    "FileLocks::for_key"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/flock_table.rs",
+   "owner": "E1-14",
+   "error": "ENOMEM",
+   "rollback": "before the dentry, fd or lock is published",
+   "functions": [
+    "LockTable::try_lock"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/locks.rs",
+   "owner": "E1-14",
+   "error": "ENOMEM",
+   "rollback": "before the dentry, fd or lock is published",
+   "functions": [
+    "LockOwner::new",
+    "LockTable::apply",
+    "set"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/namei.rs",
+   "owner": "E1-14",
+   "error": "ENOMEM",
+   "rollback": "before the dentry, fd or lock is published",
+   "functions": [
+    "SharedWorkingDir::copy",
+    "SharedWorkingDir::default",
+    "ancestry",
+    "copy_bytes",
+    "copy_frames",
+    "copy_string",
+    "frames",
+    "join",
+    "push_components",
+    "text_path",
+    "user_frames",
+    "walk_bytes"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/permissions.rs",
+   "owner": "E1-14",
+   "error": "ENOMEM",
+   "rollback": "before the dentry, fd or lock is published",
+   "functions": [
+    "Credentials::kernel"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/procfs/mod.rs",
+   "owner": "E1-20",
+   "error": "ENOMEM on a read; logging does not allocate",
+   "rollback": "before the read consumes its source; a /proc/kmsg read keeps its position",
+   "functions": [
+    "exe_target",
+    "generate_cowinfo",
+    "generate_cpuinfo",
+    "generate_frames",
+    "generate_meminfo",
+    "generate_pid_cmdline",
+    "generate_pid_dir",
+    "generate_pid_status",
+    "generate_pids",
+    "generate_slabinfo",
+    "generate_stat",
+    "generate_uptime",
+    "generate_version",
+    "init",
+    "list_breenix_entries",
+    "list_entries",
+    "list_task_entries",
+    "list_trace_entries",
+    "list_xhci_entries",
+    "lookup",
+    "read_entry",
+    "thread_ids"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/procfs/net.rs",
+   "owner": "E1-20",
+   "error": "ENOMEM on a read; logging does not allocate",
+   "rollback": "before the read consumes its source; a /proc/kmsg read keeps its position",
+   "functions": [
+    "generate_pnp",
+    "list_entries"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/procfs/status_memory.rs",
+   "owner": "E1-20",
+   "error": "ENOMEM on a read; logging does not allocate",
+   "rollback": "before the read consumes its source; a /proc/kmsg read keeps its position",
+   "functions": [
+    "vm_pte"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/procfs/trace.rs",
+   "owner": "E1-20",
+   "error": "ENOMEM on a read; logging does not allocate",
+   "rollback": "before the read consumes its source; a /proc/kmsg read keeps its position",
+   "functions": [
+    "append_gicv2m_diag",
+    "append_net_pci_diag",
+    "append_rx_sample",
+    "append_spi_diag",
+    "generate_buffer",
+    "generate_counters",
+    "generate_enable",
+    "generate_events",
+    "generate_providers",
+    "generate_teardown_pid"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/procfs/xhci.rs",
+   "owner": "E1-20",
+   "error": "ENOMEM on a read; logging does not allocate",
+   "rollback": "before the read consumes its source; a /proc/kmsg read keeps its position",
+   "functions": [
+    "generate_xhci_counters",
+    "generate_xhci_trace"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/ufs/file.rs",
+   "owner": "E1-14",
+   "error": "ENOMEM",
+   "rollback": "before the dentry, fd or lock is published",
+   "functions": [
+    "buffer"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/ufs/mod.rs",
+   "owner": "E1-14",
+   "error": "ENOMEM",
+   "rollback": "before the dentry, fd or lock is published",
+   "functions": [
+    "Endpoint::read_record",
+    "Endpoint::write",
+    "call",
+    "mount"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/ufs/mounts_line.rs",
+   "owner": "E1-14",
+   "error": "ENOMEM",
+   "rollback": "before the dentry, fd or lock is published",
+   "functions": [
+    "format_mount_line",
+    "format_mount_line::append_field"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/ufs/node_gates.rs",
+   "owner": "E1-14",
+   "error": "ENOMEM",
+   "rollback": "before the dentry, fd or lock is published",
+   "functions": [
+    "NodeGates::get_or_insert"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/ufs/path.rs",
+   "owner": "E1-14",
+   "error": "ENOMEM",
+   "rollback": "before the dentry, fd or lock is published",
+   "functions": [
+    "parent"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/ufs/table.rs",
+   "owner": "E1-14",
+   "error": "ENOMEM",
+   "rollback": "before the dentry, fd or lock is published",
+   "functions": [
+    "RequestTable::dead",
+    "RequestTable::expire",
+    "RequestTable::submit"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/vfs/boot.rs",
+   "owner": "E1-14",
+   "error": "ENOMEM",
+   "rollback": "before the dentry, fd or lock is published",
+   "functions": [
+    "ExplicitMount::entry",
+    "mount_cutover",
+    "mount_home",
+    "mount_root",
+    "mount_volatile_if_needed",
+    "prepare_mounts",
+    "read_config_node",
+    "storage"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/vfs/fault.rs",
+   "owner": "E1-14",
+   "error": "ENOMEM",
+   "rollback": "before the dentry, fd or lock is published",
+   "functions": [
+    "FaultFs::resize",
+    "open_fault_device",
+    "read_all"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/vfs/file.rs",
+   "owner": "E1-14",
+   "error": "ENOMEM",
+   "rollback": "before the dentry, fd or lock is published",
+   "functions": [
+    "OpenFile::dirents"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/vfs/mount.rs",
+   "owner": "E1-14",
+   "error": "ENOMEM",
+   "rollback": "before the dentry, fd or lock is published",
+   "functions": [
+    "attach_virtual_parents",
+    "attachment",
+    "bind_home_if_unmounted",
+    "list_mounts",
+    "mount",
+    "mounts_text",
+    "register",
+    "register_cutover",
+    "register_volatile_mounts",
+    "storage_mounts"
+   ]
+  },
+  {
+   "file": "kernel/src/fs/vfs/mount_table.rs",
+   "owner": "E1-14",
+   "error": "ENOMEM",
+   "rollback": "before the dentry, fd or lock is published",
+   "functions": [
+    "Entry::new",
+    "MountTable::insert"
+   ]
+  },
+  {
+   "file": "kernel/src/gdt.rs",
+   "owner": "E1-13",
+   "error": "EAGAIN for fork, clone and thread creation; ENOMEM for exec and the rest; EAGAIN for sigqueue",
+   "rollback": "before the process, thread or signal is published",
+   "functions": [
+    "load"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/compose.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "compose",
+    "scene_of",
+    "work"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/console.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Console::draw",
+    "Console::new",
+    "Console::text",
+    "resource"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/dev.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Device::restart"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/display.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Core::display_reset",
+    "Core::presented",
+    "State::new",
+    "back",
+    "give",
+    "present_as",
+    "present_counts",
+    "restored",
+    "take"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/dma.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "CpuStorage::try_new",
+    "DmaBox::try_new",
+    "Pages::new",
+    "Pages::runs",
+    "WordBuf::from_user",
+    "WordBuf::push"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/dma_owner.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Allocation::drop",
+    "Allocation::new",
+    "census"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/framebuffer.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "target"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/adapter.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Device::recover_fault",
+    "Device::restart",
+    "Device::send_traced"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/allocator.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Allocator::allocate_after",
+    "Allocator::new"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/aperture_probe.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "fault",
+    "probe",
+    "view"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/board.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "parse"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/bulk.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "line"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/c1.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "pairs",
+    "pcie",
+    "reading",
+    "startup"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/c2/observe.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "capture",
+    "differences"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/c2/runtime.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Io::record",
+    "initialize",
+    "memx_compare",
+    "memx_inputs",
+    "memx_pass",
+    "pmu_start",
+    "print_snapshot",
+    "read_status",
+    "set"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/caps/executable.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Runner::draw",
+    "Runner::image",
+    "Runner::read",
+    "Runner::render",
+    "Runner::sample",
+    "run_epoch"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/ce.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Channel::submit",
+    "gated_copy",
+    "probe",
+    "request_json",
+    "run_case",
+    "suppressed_copy",
+    "system_bytes",
+    "vram"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/ce/multi.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "probe"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/ce/process.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Session::begin",
+    "Session::drain",
+    "Session::status",
+    "present",
+    "present_complete",
+    "proc_read",
+    "recovery_read"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/ce/readback.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Reader::image",
+    "TransferHold::drop",
+    "console",
+    "flush_resource",
+    "initialize_image",
+    "region_plan",
+    "span_upload",
+    "transfer"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/ce/recovery.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "compare",
+    "gate",
+    "probe"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/channel.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "probe"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/clock.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Reader::reg",
+    "runtime::export",
+    "runtime::initialize_performance",
+    "runtime::reading",
+    "runtime::record",
+    "sample_domains"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/copy.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "encode_plan",
+    "method",
+    "transfer"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/core_record.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Completion::encode",
+    "anchor",
+    "caps",
+    "startup"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/display_crc.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "capture",
+    "failure_snapshot"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/display_evidence.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "export",
+    "export_transitions",
+    "transition"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/dma_policy.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "dmar_units"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/edid.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "detailed",
+    "parse"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/emergency.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Queue::draw",
+    "map_commands"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/encode.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Chunk::address",
+    "Chunk::emit",
+    "Frame::batch_draws",
+    "Storage::drop",
+    "channel_words",
+    "copy_bytes",
+    "new_data",
+    "parking_frame",
+    "prepare_traced",
+    "quads",
+    "resize_data",
+    "span_tables",
+    "translate_inner",
+    "warm"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/gpu_groups.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "instrument"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/gr/binding.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "commands"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/gr/channel.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "commands",
+    "format_record",
+    "native::NativeChannel::acknowledge_error",
+    "native::NativeChannel::publish_draw_traced",
+    "native::NativeChannel::publish_encoded_traced",
+    "native::NativeChannel::record_fault",
+    "native::NativeChannel::terminal_queue",
+    "native::Session::activate_regs",
+    "native::Session::allocate_draw",
+    "native::Session::context_draw",
+    "native::Session::copy_rect",
+    "native::Session::draw",
+    "native::Session::into_native",
+    "native::Session::new_channel",
+    "native::Session::open_second",
+    "native::Session::readback",
+    "native::emit_refusal"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/gr/context.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "SaveLayout::capture",
+    "SaveLayout::written",
+    "generate",
+    "patches",
+    "replay"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/gr/ctxctl.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Controller::wait_ready",
+    "csdata"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/gr/draw.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "commands",
+    "draw_commands",
+    "release_commands",
+    "state_commands"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/gr/error.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "commands"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/gr/mod.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "ContextsEvidence::emit",
+    "DrawEvidence::emit",
+    "Hardware::allocate",
+    "Hardware::patch",
+    "Hardware::poison",
+    "Hardware::readback",
+    "Hardware::runnable",
+    "ShaderEvidence::emit",
+    "ShaderUpload::poison",
+    "ShaderUpload::readback",
+    "context_pixels",
+    "contexts_probe",
+    "contexts_sequence",
+    "draw_probe",
+    "initialize_inner",
+    "interrupt_snapshot",
+    "layout_units",
+    "present_probe",
+    "probe_inner"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/gr/stall.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "capture"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/inventory.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "faults",
+    "probe",
+    "stats"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/lifetime.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Context::hold",
+    "Context::map_owned",
+    "Context::new",
+    "Context::refresh_tables",
+    "Context::remap"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/memory.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Layout::new",
+    "Pramin::bytes",
+    "discover",
+    "exercise",
+    "reference"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/memx.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Plan::words",
+    "Plan::words::flush",
+    "Script::cmd",
+    "Script::w",
+    "calculate_pass",
+    "fields",
+    "prog",
+    "tables"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/mod.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "display_memory",
+    "hex",
+    "inventory",
+    "proc_clocks",
+    "proc_pixels",
+    "proc_vblank",
+    "sink"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/modeset.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Viewport::methods",
+    "bar1_small_pages",
+    "crc_output_methods",
+    "display_modes",
+    "head_methods",
+    "logical_head_methods",
+    "script_decode::decode"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/native.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "CoreProducer::one",
+    "CoreProducer::run",
+    "Evo::apply_raster",
+    "Evo::select_raster",
+    "Evo::terminal_display",
+    "active_snapshot",
+    "capture_crc",
+    "logical_console",
+    "present_inner::Update::submit",
+    "runtime_rasters",
+    "submit",
+    "takeover"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/perf.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "decode",
+    "record"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/prepared.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "glyph_offsets",
+    "text_stream"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/present.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Surface::methods"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/presentation_trace.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Frames::take"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/production.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Controller::cool",
+    "Controller::gpu_health",
+    "Controller::memory_pass",
+    "Controller::run_stage",
+    "initialize"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/production_policy.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "core_decision"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/ram_init.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "scripts"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/resource.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Resources::bind",
+    "Resources::collect",
+    "Resources::create_aligned",
+    "Resources::import_linear",
+    "Resources::map_backing_rows",
+    "Resources::upload_spans",
+    "Resources::vacant_va",
+    "native::attach_backing",
+    "native::ctx_create",
+    "native::ownership_census",
+    "native::resource_unref",
+    "retire_blend_staging",
+    "span_staging"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/rom.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "read",
+    "read_full"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/submit_cost.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Totals::record"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/system_dma.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Pages::new",
+    "translation_status"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/thermal/runtime.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "read_status"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/timing.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Recorder::blocked",
+    "Recorder::drain",
+    "Recorder::facts",
+    "Recorder::finish",
+    "Recorder::gpu_group",
+    "Recorder::gpu_time",
+    "Recorder::readback",
+    "runtime::export"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/vm.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Space::map_kind",
+    "Space::reclaim_empty",
+    "faults"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/gk208/vm_probe.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "DeviceIo::invalidate",
+    "fault_json",
+    "guards",
+    "probe",
+    "snapshot"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/heap.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "encode"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/mod.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Core::background_in",
+    "Core::finish_reset",
+    "Core::flush_traced",
+    "Core::insert_ctx",
+    "Core::insert_res",
+    "Core::publish",
+    "Core::quarantine",
+    "Core::queue_sync",
+    "Core::release_depth",
+    "Core::reset_failed",
+    "Core::retire_if_done",
+    "Core::sync_ended",
+    "Core::unsendable",
+    "Core::watchdog",
+    "Snapshot::take",
+    "View::add_aliases",
+    "View::of",
+    "attach_all",
+    "create_context_with_requirements",
+    "create_device_context",
+    "device_frames",
+    "evidence_modes",
+    "init",
+    "init_vmware",
+    "named",
+    "native_blend_scratch",
+    "native_cached_blend_scratch",
+    "native_console_backing",
+    "native_spans",
+    "native_spans_readback",
+    "native_warm_scratch",
+    "observe",
+    "op_resource_create",
+    "ownership_census",
+    "private_vertex_storage",
+    "read_back_impl",
+    "reset_device",
+    "scratch_for",
+    "submit_stream",
+    "sweep",
+    "vertex_buffer_for",
+    "warm_next"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/panic.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "prepare"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/panic/native.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "prepare"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/present_answers.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Answers::register"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/screen.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Target::bind",
+    "open",
+    "settle"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/svga/commands.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Commands::command",
+    "Commands::dx_define_blend_state",
+    "Commands::dx_define_element_layout"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/svga/encode.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Backing::allocate",
+    "Tx::begin",
+    "Tx::close",
+    "Tx::finish",
+    "Tx::own_view",
+    "Tx::prelude",
+    "Tx::view",
+    "chunk",
+    "forget_surfaces",
+    "start",
+    "translate",
+    "warm_pipeline"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/svga/mod.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Builder::mark",
+    "Device::init_objects",
+    "Device::init_tables",
+    "Device::reap",
+    "Device::restart",
+    "Device::send",
+    "Ids::collect",
+    "Pool::give",
+    "Request::drop",
+    "apply",
+    "attach_backing",
+    "ctx_create",
+    "ctx_destroy",
+    "forget_transient",
+    "readback",
+    "resource_create",
+    "resource_unref",
+    "submit",
+    "transient",
+    "transient_pages",
+    "upload"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/svga/objects.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Context::hold",
+    "Context::new",
+    "Mob::allocate",
+    "Mob::new"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/svga/sm4.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "declaration",
+    "dst_tokens",
+    "immediate",
+    "inst",
+    "instruction",
+    "parse",
+    "signature",
+    "src_tokens",
+    "translate",
+    "vertex"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/virgl/encode.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Enc::cmd_iter",
+    "Enc::end_vertices",
+    "Enc::finish",
+    "bind_view_at",
+    "shader",
+    "translate_at",
+    "warm_base",
+    "warm_probe",
+    "write_vertices"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/virgl/mod.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Device::probe",
+    "Device::read_info",
+    "Device::restart",
+    "Request::segments"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/virgl/queue.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Queue::add",
+    "Queue::new",
+    "Queue::release_chain",
+    "Queue::reset"
+   ]
+  },
+  {
+   "file": "kernel/src/gpu/window_targets.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "Context::get",
+    "Target::execute_taken",
+    "Target::make"
+   ]
+  },
+  {
+   "file": "kernel/src/graphics/boot_ribbon.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "reached",
+    "serial",
+    "serial_timed"
+   ]
+  },
+  {
+   "file": "kernel/src/graphics/double_buffer.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "DirtyRegionTracker::mark_dirty",
+    "DirtyRegionTracker::mark_rect_dirty",
+    "DoubleBufferedFrameBuffer::new"
+   ]
+  },
+  {
+   "file": "kernel/src/input/control.rs",
+   "owner": "E1-19",
+   "error": "the input batch is dropped whole and counted",
+   "rollback": "before the batch is published to readers",
+   "functions": [
+    "open",
+    "replay"
+   ]
+  },
+  {
+   "file": "kernel/src/input/host.rs",
+   "owner": "E1-19",
+   "error": "the input batch is dropped whole and counted",
+   "rollback": "before the batch is published to readers",
+   "functions": [
+    "Channel::accept"
+   ]
+  },
+  {
+   "file": "kernel/src/input/host/runtime.rs",
+   "owner": "E1-19",
+   "error": "the input batch is dropped whole and counted",
+   "rollback": "before the batch is published to readers",
+   "functions": [
+    "init"
+   ]
+  },
+  {
+   "file": "kernel/src/input/stream.rs",
+   "owner": "E1-19",
+   "error": "the input batch is dropped whole and counted",
+   "rollback": "before the batch is published to readers",
+   "functions": [
+    "InputFile::create",
+    "InputFile::inject",
+    "InputFile::ioctl",
+    "InputFile::open",
+    "InputFile::read_with_status",
+    "State::publish",
+    "State::release_grab",
+    "State::remove_device",
+    "batch",
+    "drain_hardware",
+    "encode",
+    "ledger",
+    "register_hardware",
+    "release_service",
+    "retire_descriptors",
+    "wake_readers"
+   ]
+  },
+  {
+   "file": "kernel/src/ipc/fd.rs",
+   "owner": "E1-14",
+   "error": "ENOMEM",
+   "rollback": "before the dentry, fd or lock is published",
+   "functions": [
+    "FdSlots::grow",
+    "FdTable::from_inner",
+    "FdTableInner::close_cloexec",
+    "FdTableInner::reserve_slot",
+    "FdTableInner::take_all",
+    "FdTableInner::try_reserve_slot",
+    "FileDescriptor::with_flags"
+   ]
+  },
+  {
+   "file": "kernel/src/ipc/fifo.rs",
+   "owner": "E1-17",
+   "error": "ENOMEM or ENOSPC per the call's man page",
+   "rollback": "before the object is linked",
+   "functions": [
+    "FifoEntry::add_read_waiter",
+    "FifoEntry::add_write_waiter",
+    "FifoRegistry::get_or_create"
+   ]
+  },
+  {
+   "file": "kernel/src/ipc/mqueue.rs",
+   "owner": "E1-17",
+   "error": "ENOMEM or ENOSPC per the call's man page",
+   "rollback": "before the object is linked",
+   "functions": [
+    "Delivery::new",
+    "open"
+   ]
+  },
+  {
+   "file": "kernel/src/ipc/mqueue/calls.rs",
+   "owner": "E1-17",
+   "error": "ENOMEM or ENOSPC per the call's man page",
+   "rollback": "before the object is linked",
+   "functions": [
+    "mq_timedsend"
+   ]
+  },
+  {
+   "file": "kernel/src/ipc/mqueue/dev.rs",
+   "owner": "E1-17",
+   "error": "ENOMEM or ENOSPC per the call's man page",
+   "rollback": "before the object is linked",
+   "functions": [
+    "push_dirent"
+   ]
+  },
+  {
+   "file": "kernel/src/ipc/mqueue/store.rs",
+   "owner": "E1-17",
+   "error": "ENOMEM or ENOSPC per the call's man page",
+   "rollback": "before the object is linked",
+   "functions": [
+    "Channel::receive",
+    "Channel::send",
+    "MessageStore::queue",
+    "NameTable::insert",
+    "Usage::charge",
+    "WaitList::add"
+   ]
+  },
+  {
+   "file": "kernel/src/ipc/pipe.rs",
+   "owner": "E1-17",
+   "error": "ENOMEM or ENOSPC per the call's man page",
+   "rollback": "before the object is linked",
+   "functions": [
+    "PipeBuffer::add_read_waiter",
+    "PipeBuffer::try_add_read_waiter",
+    "PipeBuffer::try_new_zero_refs"
+   ]
+  },
+  {
+   "file": "kernel/src/ipc/shmem/namespace.rs",
+   "owner": "E1-17",
+   "error": "ENOMEM or ENOSPC per the call's man page",
+   "rollback": "before the object is linked",
+   "functions": [
+    "ShmFile::read",
+    "dirent",
+    "link_fd",
+    "link_path",
+    "open_path",
+    "rename_path"
+   ]
+  },
+  {
+   "file": "kernel/src/ipc/stdin.rs",
+   "owner": "E1-17",
+   "error": "ENOMEM or ENOSPC per the call's man page",
+   "rollback": "before the object is linked",
+   "functions": [
+    "register_blocked_reader"
+   ]
+  },
+  {
+   "file": "kernel/src/ipc/sysv/msg.rs",
+   "owner": "E1-17",
+   "error": "ENOMEM or ENOSPC per the call's man page",
+   "rollback": "before the object is linked",
+   "functions": [
+    "sys_msgget",
+    "sys_msgsnd"
+   ]
+  },
+  {
+   "file": "kernel/src/ipc/sysv/sem.rs",
+   "owner": "E1-17",
+   "error": "ENOMEM or ENOSPC per the call's man page",
+   "rollback": "before the object is linked",
+   "functions": [
+    "sys_semget",
+    "sys_semtimedop"
+   ]
+  },
+  {
+   "file": "kernel/src/ipc/sysv/shm.rs",
+   "owner": "E1-17",
+   "error": "ENOMEM or ENOSPC per the call's man page",
+   "rollback": "before the object is linked",
+   "functions": [
+    "sys_shmget"
+   ]
+  },
+  {
+   "file": "kernel/src/ipc/sysv/state.rs",
+   "owner": "E1-17",
+   "error": "ENOMEM or ENOSPC per the call's man page",
+   "rollback": "before the object is linked",
+   "functions": [
+    "IpcIds::insert",
+    "MsgQueue::push",
+    "SemSet::attempt",
+    "UndoLists::adjustments",
+    "UndoLists::join",
+    "UndoLists::rename",
+    "UndoLists::share",
+    "VecMap::insert",
+    "try_copy",
+    "try_push",
+    "try_vec"
+   ]
+  },
+  {
+   "file": "kernel/src/irq_log.rs",
+   "owner": "E1-20",
+   "error": "ENOMEM on a read; logging does not allocate",
+   "rollback": "before the read consumes its source; a /proc/kmsg read keeps its position",
+   "functions": [
+    "emergency_log"
+   ]
+  },
+  {
+   "file": "kernel/src/log_buffer.rs",
+   "owner": "E1-20",
+   "error": "ENOMEM on a read; logging does not allocate",
+   "rollback": "before the read consumes its source; a /proc/kmsg read keeps its position",
+   "functions": [
+    "read_all",
+    "sequenced_snapshot"
+   ]
+  },
+  {
+   "file": "kernel/src/log_notice.rs",
+   "owner": "E1-20",
+   "error": "ENOMEM on a read; logging does not allocate",
+   "rollback": "before the read consumes its source; a /proc/kmsg read keeps its position",
+   "functions": [
+    "Notice::new"
+   ]
+  },
+  {
+   "file": "kernel/src/log_ring.rs",
+   "owner": "E1-20",
+   "error": "ENOMEM on a read; logging does not allocate",
+   "rollback": "before the read consumes its source; a /proc/kmsg read keeps its position",
+   "functions": [
+    "RingWriter::write_str"
+   ]
+  },
+  {
+   "file": "kernel/src/main.rs",
+   "owner": "E1-4",
+   "error": "panic with the OOM record; the site becomes try_*().expect(\"boot: <what>\") (7.4 boot rule)",
+   "rollback": "none: before PID 1 runs a failed boot allocation stops the boot",
+   "functions": [
+    "blocking_recv_test_main",
+    "dns_test_only_main",
+    "kernel_main",
+    "kernel_main_continue",
+    "kernel_main_on_kernel_stack_checked",
+    "launch_x86_production_init",
+    "nonblock_eagain_test_main",
+    "read_default_x86_init",
+    "read_x86_production_init",
+    "test_threading"
+   ]
+  },
+  {
+   "file": "kernel/src/main_aarch64.rs",
+   "owner": "E1-4",
+   "error": "panic with the OOM record; the site becomes try_*().expect(\"boot: <what>\") (7.4 boot rule)",
+   "rollback": "none: before PID 1 runs a failed boot allocation stops the boot",
+   "functions": [
+    "InitLaunch::for_mode",
+    "InitLaunch::launch",
+    "InitLaunch::new",
+    "init_scheduler",
+    "launch_init_from_elf",
+    "load_test_binaries_from_ext2"
+   ]
+  },
+  {
+   "file": "kernel/src/memory/anon_map.rs",
+   "owner": "E1-12",
+   "error": "ENOMEM",
+   "rollback": "before the VMA or page-table change is published",
+   "functions": [
+    "page_flags"
+   ]
+  },
+  {
+   "file": "kernel/src/memory/arch_stub.rs",
+   "owner": "E1-12",
+   "error": "ENOMEM",
+   "rollback": "before the VMA or page-table change is published",
+   "functions": [
+    "PageTableEntry::flags"
+   ]
+  },
+  {
+   "file": "kernel/src/memory/boot_ranges.rs",
+   "owner": "E1-12",
+   "error": "ENOMEM",
+   "rollback": "before the VMA or page-table change is published",
+   "functions": [
+    "build"
+   ]
+  },
+  {
+   "file": "kernel/src/memory/file_map.rs",
+   "owner": "E1-12",
+   "error": "ENOMEM",
+   "rollback": "before the VMA or page-table change is published",
+   "functions": [
+    "Binding::fork",
+    "MapInner::poison",
+    "MapState::prepare_write",
+    "MapState::writeback_snapshot",
+    "PageVec::merge_reserved",
+    "PageVec::try_insert",
+    "bind",
+    "dontcopy_ranges",
+    "entry_flags",
+    "fork_vmas",
+    "isolate",
+    "populate",
+    "protect",
+    "revoke_entry",
+    "unmap",
+    "writeback_buffer"
+   ]
+  },
+  {
+   "file": "kernel/src/memory/frame_allocator.rs",
+   "owner": "E1-12",
+   "error": "ENOMEM",
+   "rollback": "before the VMA or page-table change is published",
+   "functions": [
+    "frame_census",
+    "return_lease"
+   ]
+  },
+  {
+   "file": "kernel/src/memory/frame_allocator_tests.rs",
+   "owner": "E1-12",
+   "error": "ENOMEM",
+   "rollback": "before the VMA or page-table change is published",
+   "functions": [
+    "drain_free_list",
+    "inject_live_candidates",
+    "refill_free_list",
+    "remove_candidates"
+   ]
+  },
+  {
+   "file": "kernel/src/memory/heap_index.rs",
+   "owner": "E1-12",
+   "error": "ENOMEM",
+   "rollback": "before the VMA or page-table change is published",
+   "functions": [
+    "Heap::allocate_inner",
+    "Heap::deallocate",
+    "Heap::init"
+   ]
+  },
+  {
+   "file": "kernel/src/memory/kernel_stack.rs",
+   "owner": "E1-12",
+   "error": "ENOMEM",
+   "rollback": "before the VMA or page-table change is published",
+   "functions": [
+    "release_batch"
+   ]
+  },
+  {
+   "file": "kernel/src/memory/locked.rs",
+   "owner": "E1-12",
+   "error": "ENOMEM",
+   "rollback": "before the VMA or page-table change is published",
+   "functions": [
+    "MemoryLocks::insert_reserved",
+    "MemoryLocks::remove"
+   ]
+  },
+  {
+   "file": "kernel/src/memory/mod.rs",
+   "owner": "E1-12",
+   "error": "ENOMEM",
+   "rollback": "before the VMA or page-table change is published",
+   "functions": [
+    "debug_memory_info"
+   ]
+  },
+  {
+   "file": "kernel/src/memory/process_memory.rs",
+   "owner": "E1-12",
+   "error": "ENOMEM",
+   "rollback": "before the VMA or page-table change is published",
+   "functions": [
+    "OwnedTableFrames::record",
+    "ProcessPageTable::custody_frames_for_gate",
+    "ProcessPageTable::gate_sentinels",
+    "ProcessPageTable::map_page",
+    "ProcessPageTable::new",
+    "ProcessPageTable::read_user_bytes",
+    "UnpublishedPageTable::new",
+    "leaf_slot",
+    "make_cow_flags",
+    "make_private_flags"
+   ]
+  },
+  {
+   "file": "kernel/src/memory/slab.rs",
+   "owner": "E1-12",
+   "error": "ENOMEM",
+   "rollback": "before the VMA or page-table change is published",
+   "functions": [
+    "SlabBox::clone",
+    "SlabCache::init"
+   ]
+  },
+  {
+   "file": "kernel/src/memory/stack.rs",
+   "owner": "E1-12",
+   "error": "ENOMEM",
+   "rollback": "before the VMA or page-table change is published",
+   "functions": [
+    "GuardedStack::map_stack_pages",
+    "GuardedStack::new",
+    "allocate_stack_with_privilege"
+   ]
+  },
+  {
+   "file": "kernel/src/memory/vma.rs",
+   "owner": "E1-12",
+   "error": "ENOMEM",
+   "rollback": "before the VMA or page-table change is published",
+   "functions": [
+    "VmaList::insert",
+    "VmaList::remove"
+   ]
+  },
+  {
+   "file": "kernel/src/memory/x86_kernel_half.rs",
+   "owner": "E1-12",
+   "error": "ENOMEM",
+   "rollback": "before the VMA or page-table change is published",
+   "functions": [
+    "migrate_kernel_half"
+   ]
+  },
+  {
+   "file": "kernel/src/net/ethernet.rs",
+   "owner": "E1-16",
+   "error": "ENOBUFS on send; a counted drop on receive",
+   "rollback": "before the segment is queued",
+   "functions": [
+    "EthernetFrame::build"
+   ]
+  },
+  {
+   "file": "kernel/src/net/icmp.rs",
+   "owner": "E1-16",
+   "error": "ENOBUFS on send; a counted drop on receive",
+   "rollback": "before the segment is queued",
+   "functions": [
+    "IcmpPacket::build_echo",
+    "handle_icmp"
+   ]
+  },
+  {
+   "file": "kernel/src/net/ipv4.rs",
+   "owner": "E1-16",
+   "error": "ENOBUFS on send; a counted drop on receive",
+   "rollback": "before the segment is queued",
+   "functions": [
+    "Ipv4Packet::try_build"
+   ]
+  },
+  {
+   "file": "kernel/src/net/mod.rs",
+   "owner": "E1-16",
+   "error": "ENOBUFS on send; a counted drop on receive",
+   "rollback": "before the segment is queued",
+   "functions": [
+    "enqueue_arp_pending_packet",
+    "enqueue_local_packet",
+    "flush_arp_pending_packets"
+   ]
+  },
+  {
+   "file": "kernel/src/net/tcp.rs",
+   "owner": "E1-16",
+   "error": "ENOBUFS on send; a counted drop on receive",
+   "rollback": "before the segment is queued",
+   "functions": [
+    "ConnTable::push_reserved",
+    "TcpConnection::publish_rx",
+    "TcpConnection::queue_tx",
+    "TcpConnection::receive_payload",
+    "build_tcp_packet",
+    "proc_net_tcp",
+    "tcp_bind_port",
+    "tcp_listen",
+    "tcp_register_recv_waiter",
+    "try_build_offload_segment",
+    "try_build_segment"
+   ]
+  },
+  {
+   "file": "kernel/src/net/tcp/receive.rs",
+   "owner": "E1-16",
+   "error": "ENOBUFS on send; a counted drop on receive",
+   "rollback": "before the segment is queued",
+   "functions": [
+    "Pending::insert",
+    "Pending::restore_front"
+   ]
+  },
+  {
+   "file": "kernel/src/net/udp.rs",
+   "owner": "E1-16",
+   "error": "ENOBUFS on send; a counted drop on receive",
+   "rollback": "before the segment is queued",
+   "functions": [
+    "try_build_udp_packet"
+   ]
+  },
+  {
+   "file": "kernel/src/process/creation.rs",
+   "owner": "E1-13",
+   "error": "EAGAIN for fork, clone and thread creation; ENOMEM for exec and the rest; EAGAIN for sigqueue",
+   "rollback": "before the process, thread or signal is published",
+   "functions": [
+    "create_user_process",
+    "create_user_process_before_run",
+    "init_user_process"
+   ]
+  },
+  {
+   "file": "kernel/src/process/credentials.rs",
+   "owner": "E1-13",
+   "error": "EAGAIN for fork, clone and thread creation; ENOMEM for exec and the rest; EAGAIN for sigqueue",
+   "rollback": "before the process, thread or signal is published",
+   "functions": [
+    "ProcessCredentials::root"
+   ]
+  },
+  {
+   "file": "kernel/src/process/limits.rs",
+   "owner": "E1-13",
+   "error": "EAGAIN for fork, clone and thread creation; ENOMEM for exec and the rest; EAGAIN for sigqueue",
+   "rollback": "before the process, thread or signal is published",
+   "functions": [
+    "Limits::from_values"
+   ]
+  },
+  {
+   "file": "kernel/src/process/manager.rs",
+   "owner": "E1-13",
+   "error": "EAGAIN for fork, clone and thread creation; ENOMEM for exec and the rest; EAGAIN for sigqueue",
+   "rollback": "before the process, thread or signal is published",
+   "functions": [
+    "ProcessManager::add_to_ready_queue",
+    "ProcessManager::all_pids",
+    "ProcessManager::all_processes",
+    "ProcessManager::build_process_at",
+    "ProcessManager::build_process_with_argv_at",
+    "ProcessManager::complete_fork",
+    "ProcessManager::complete_fork_aarch64",
+    "ProcessManager::create_init_process_with_argv_at",
+    "ProcessManager::create_main_thread_with_sp",
+    "ProcessManager::create_process",
+    "ProcessManager::create_process_with_argv",
+    "ProcessManager::exec_process",
+    "ProcessManager::exec_process_with_argv",
+    "ProcessManager::exec_take_over_group",
+    "ProcessManager::fork_process_with_context",
+    "ProcessManager::groups_orphaned_by_exit",
+    "ProcessManager::hold_init_publication",
+    "ProcessManager::insert_process",
+    "ProcessManager::publish_init",
+    "ProcessManager::reparent_children_to_init",
+    "ProcessManager::schedule_next",
+    "ProcessManager::setup_argv_on_stack",
+    "ProcessManager::spawn_process",
+    "ProcessManager::thread_group_peers",
+    "ProcessManager::wait_children"
+   ]
+  },
+  {
+   "file": "kernel/src/process/process.rs",
+   "owner": "E1-13",
+   "error": "EAGAIN for fork, clone and thread creation; ENOMEM for exec and the rest; EAGAIN for sigqueue",
+   "rollback": "before the process, thread or signal is published",
+   "functions": [
+    "Process::add_child",
+    "Process::new",
+    "Process::push_vma",
+    "ReaperState::new_process",
+    "cmdline_of"
+   ]
+  },
+  {
+   "file": "kernel/src/process/unpublished.rs",
+   "owner": "E1-13",
+   "error": "EAGAIN for fork, clone and thread creation; ENOMEM for exec and the rest; EAGAIN for sigqueue",
+   "rollback": "before the process, thread or signal is published",
+   "functions": [
+    "commit_preserves_live_table_for_gate"
+   ]
+  },
+  {
+   "file": "kernel/src/proof/quiesce.rs",
+   "owner": "test",
+   "error": "outside the runtime rule: built only with a test feature",
+   "rollback": "none: converted when a test feature builds alloc with no_global_oom_handling",
+   "functions": [
+    "Controller::begin"
+   ]
+  },
+  {
+   "file": "kernel/src/random/jitter.rs",
+   "owner": "E1-11",
+   "error": "ENOMEM",
+   "rollback": "before any user-visible effect of the call",
+   "functions": [
+    "Jitter::new"
+   ]
+  },
+  {
+   "file": "kernel/src/serial.rs",
+   "owner": "E1-20",
+   "error": "ENOMEM on a read; logging does not allocate",
+   "rollback": "before the read consumes its source; a /proc/kmsg read keeps its position",
+   "functions": [
+    "enqueue_log_unaccounted",
+    "queue_byte",
+    "queue_log_line"
+   ]
+  },
+  {
+   "file": "kernel/src/serial/command.rs",
+   "owner": "E1-20",
+   "error": "ENOMEM on a read; logging does not allocate",
+   "rollback": "before the read consumes its source; a /proc/kmsg read keeps its position",
+   "functions": [
+    "process_command",
+    "serial_command_task"
+   ]
+  },
+  {
+   "file": "kernel/src/serial/rx.rs",
+   "owner": "E1-20",
+   "error": "ENOMEM on a read; logging does not allocate",
+   "rollback": "before the read consumes its source; a /proc/kmsg read keeps its position",
+   "functions": [
+    "add_serial_byte"
+   ]
+  },
+  {
+   "file": "kernel/src/serial_line.rs",
+   "owner": "E1-20",
+   "error": "ENOMEM on a read; logging does not allocate",
+   "rollback": "before the read consumes its source; a /proc/kmsg read keeps its position",
+   "functions": [
+    "queue_terminal"
+   ]
+  },
+  {
+   "file": "kernel/src/serial_writer.rs",
+   "owner": "E1-20",
+   "error": "ENOMEM on a read; logging does not allocate",
+   "rollback": "before the read consumes its source; a /proc/kmsg read keeps its position",
+   "functions": [
+    "terminal"
+   ]
+  },
+  {
+   "file": "kernel/src/signal/timers.rs",
+   "owner": "E1-13",
+   "error": "EAGAIN for fork, clone and thread creation; ENOMEM for exec and the rest; EAGAIN for sigqueue",
+   "rollback": "before the process, thread or signal is published",
+   "functions": [
+    "PosixTimers::create"
+   ]
+  },
+  {
+   "file": "kernel/src/signal/types.rs",
+   "owner": "E1-13",
+   "error": "EAGAIN for fork, clone and thread creation; ENOMEM for exec and the rest; EAGAIN for sigqueue",
+   "rollback": "before the process, thread or signal is published",
+   "functions": [
+    "SignalState::accept_moved",
+    "SignalState::default",
+    "SignalState::fork",
+    "SignalState::queue_ordinary_pending",
+    "SignalState::queue_timer_signal",
+    "SignalState::try_generate"
+   ]
+  },
+  {
+   "file": "kernel/src/socket/addr.rs",
+   "owner": "E1-16",
+   "error": "ENOBUFS on send; a counted drop on receive",
+   "rollback": "before the segment is queued",
+   "functions": [
+    "owned_name"
+   ]
+  },
+  {
+   "file": "kernel/src/socket/object.rs",
+   "owner": "E1-16",
+   "error": "ENOBUFS on send; a counted drop on receive",
+   "rollback": "before the segment is queued",
+   "functions": [
+    "Socket::drop",
+    "SocketCommon::put_back",
+    "SocketCommon::take_stash"
+   ]
+  },
+  {
+   "file": "kernel/src/socket/tcp.rs",
+   "owner": "E1-16",
+   "error": "ENOBUFS on send; a counted drop on receive",
+   "rollback": "before the segment is queued",
+   "functions": [
+    "TcpSock::recvmsg",
+    "recv_oob"
+   ]
+  },
+  {
+   "file": "kernel/src/socket/udp.rs",
+   "owner": "E1-16",
+   "error": "ENOBUFS on send; a counted drop on receive",
+   "rollback": "before the segment is queued",
+   "functions": [
+    "UdpSock::bind",
+    "UdpSock::enqueue",
+    "UdpSock::ensure_bound",
+    "UdpSock::recvmsg",
+    "UdpSock::reserve",
+    "UdpSock::sendmsg",
+    "receivers"
+   ]
+  },
+  {
+   "file": "kernel/src/socket/unix.rs",
+   "owner": "E1-16",
+   "error": "ENOBUFS on send; a counted drop on receive",
+   "rollback": "before the segment is queued",
+   "functions": [
+    "UnixSock::autobind",
+    "UnixSock::connect",
+    "UnixSock::receive_with",
+    "UnixSock::register_writer",
+    "UnixSock::sendmsg",
+    "clone_rights",
+    "copy_name"
+   ]
+  },
+  {
+   "file": "kernel/src/socket/unix_msg.rs",
+   "owner": "E1-16",
+   "error": "ENOBUFS on send; a counted drop on receive",
+   "rollback": "before the segment is queued",
+   "functions": [
+    "PendingLink::new",
+    "UnixMsg::new",
+    "UnixMsg::register_rights",
+    "UnixQueue::push",
+    "UnixQueue::push_stream",
+    "validate_graph"
+   ]
+  },
+  {
+   "file": "kernel/src/socket/unix_ns.rs",
+   "owner": "E1-16",
+   "error": "ENOBUFS on send; a counted drop on receive",
+   "rollback": "before the segment is queued",
+   "functions": [
+    "OwnerLease::reserve"
+   ]
+  },
+  {
+   "file": "kernel/src/syscall/audio.rs",
+   "owner": "E1-11",
+   "error": "ENOMEM",
+   "rollback": "before any user-visible effect of the call",
+   "functions": [
+    "sys_audio_write"
+   ]
+  },
+  {
+   "file": "kernel/src/syscall/clone.rs",
+   "owner": "E1-11",
+   "error": "ENOMEM",
+   "rollback": "before any user-visible effect of the call",
+   "functions": [
+    "sys_clone_thread"
+   ]
+  },
+  {
+   "file": "kernel/src/syscall/close_range.rs",
+   "owner": "E1-11",
+   "error": "ENOMEM",
+   "rollback": "before any user-visible effect of the call",
+   "functions": [
+    "sys_close_range"
+   ]
+  },
+  {
+   "file": "kernel/src/syscall/epoll.rs",
+   "owner": "E1-11",
+   "error": "ENOMEM",
+   "rollback": "before any user-visible effect of the call",
+   "functions": [
+    "EpollInstance::commit",
+    "EpollInstance::ctl",
+    "EpollInstance::snapshot",
+    "resolve",
+    "wait"
+   ]
+  },
+  {
+   "file": "kernel/src/syscall/exec.rs",
+   "owner": "E1-11",
+   "error": "ENOMEM",
+   "rollback": "before any user-visible effect of the call",
+   "functions": [
+    "Arguments::append",
+    "Arguments::copy_from_user",
+    "Arguments::interpreter",
+    "Arguments::slices",
+    "convenience_path",
+    "copy_string",
+    "copy_vector",
+    "display_path",
+    "read_image",
+    "try_box"
+   ]
+  },
+  {
+   "file": "kernel/src/syscall/fs.rs",
+   "owner": "E1-11",
+   "error": "ENOMEM",
+   "rollback": "before any user-visible effect of the call",
+   "functions": [
+    "handle_fifo_open",
+    "handle_procfs_getdents64",
+    "handle_procfs_open",
+    "open_input",
+    "open_vcs",
+    "push_dirent64",
+    "sys_fchdir",
+    "sys_ftruncate",
+    "sys_getcwd",
+    "sys_open_from",
+    "sys_truncate"
+   ]
+  },
+  {
+   "file": "kernel/src/syscall/futex.rs",
+   "owner": "E1-11",
+   "error": "ENOMEM",
+   "rollback": "before any user-visible effect of the call",
+   "functions": [
+    "FutexTable::enqueue",
+    "FutexTable::own",
+    "FutexTable::pi_attempt",
+    "FutexTable::pi_unlock",
+    "FutexTable::requeue"
+   ]
+  },
+  {
+   "file": "kernel/src/syscall/graphics.rs",
+   "owner": "E1-11",
+   "error": "ENOMEM",
+   "rollback": "before any user-visible effect of the call",
+   "functions": [
+    "fbmmap"
+   ]
+  },
+  {
+   "file": "kernel/src/syscall/handlers.rs",
+   "owner": "E1-11",
+   "error": "ENOMEM",
+   "rollback": "before any user-visible effect of the call",
+   "functions": [
+    "copy_string_from_user",
+    "dup_to",
+    "read_pipe",
+    "read_positional_file",
+    "sys_fork_with_parent_context",
+    "sys_read",
+    "sys_setgroups",
+    "sys_spawn"
+   ]
+  },
+  {
+   "file": "kernel/src/syscall/iovec.rs",
+   "owner": "E1-11",
+   "error": "ENOMEM",
+   "rollback": "before any user-visible effect of the call",
+   "functions": [
+    "gather",
+    "sys_writev"
+   ]
+  },
+  {
+   "file": "kernel/src/syscall/iovec_range.rs",
+   "owner": "E1-11",
+   "error": "ENOMEM",
+   "rollback": "before any user-visible effect of the call",
+   "functions": [
+    "snapshot_vectors"
+   ]
+  },
+  {
+   "file": "kernel/src/syscall/memory.rs",
+   "owner": "E1-12",
+   "error": "ENOMEM",
+   "rollback": "before the VMA or page-table change is published",
+   "functions": [
+    "unmap_heap_pages"
+   ]
+  },
+  {
+   "file": "kernel/src/syscall/memory_advice.rs",
+   "owner": "E1-11",
+   "error": "ENOMEM",
+   "rollback": "before any user-visible effect of the call",
+   "functions": [
+    "sys_madvise",
+    "sys_mlock",
+    "sys_mlockall"
+   ]
+  },
+  {
+   "file": "kernel/src/syscall/memory_common.rs",
+   "owner": "E1-11",
+   "error": "ENOMEM",
+   "rollback": "before any user-visible effect of the call",
+   "functions": [
+    "MmapGaps::alloc_slot",
+    "MmapGaps::cut",
+    "MmapGaps::from_occupied",
+    "MmapGaps::join",
+    "allocate_zeroed_frames",
+    "cleanup_mapped_pages",
+    "place_below_hint",
+    "reserve_placement",
+    "unmap_reservation"
+   ]
+  },
+  {
+   "file": "kernel/src/syscall/mmap.rs",
+   "owner": "E1-12",
+   "error": "ENOMEM",
+   "rollback": "before the VMA or page-table change is published",
+   "functions": [
+    "sys_mprotect",
+    "sys_msync",
+    "unmap_range"
+   ]
+  },
+  {
+   "file": "kernel/src/syscall/mod.rs",
+   "owner": "E1-11",
+   "error": "ENOMEM",
+   "rollback": "before any user-visible effect of the call",
+   "functions": [
+    "init"
+   ]
+  },
+  {
+   "file": "kernel/src/syscall/multiplex.rs",
+   "owner": "E1-11",
+   "error": "ENOMEM",
+   "rollback": "before any user-visible effect of the call",
+   "functions": [
+    "WaitSet::add",
+    "poll_wait",
+    "select_wait",
+    "snapshots"
+   ]
+  },
+  {
+   "file": "kernel/src/syscall/reboot.rs",
+   "owner": "E1-11",
+   "error": "ENOMEM",
+   "rollback": "before any user-visible effect of the call",
+   "functions": [
+    "power_token"
+   ]
+  },
+  {
+   "file": "kernel/src/syscall/regular_read.rs",
+   "owner": "E1-11",
+   "error": "ENOMEM",
+   "rollback": "before any user-visible effect of the call",
+   "functions": [
+    "read"
+   ]
+  },
+  {
+   "file": "kernel/src/syscall/signal.rs",
+   "owner": "E1-13",
+   "error": "EAGAIN for fork, clone and thread creation; ENOMEM for exec and the rest; EAGAIN for sigqueue",
+   "rollback": "before the process, thread or signal is published",
+   "functions": [
+    "send_signal_to_group_lockless",
+    "sys_sigaction"
+   ]
+  },
+  {
+   "file": "kernel/src/syscall/socket.rs",
+   "owner": "E1-11",
+   "error": "ENOMEM",
+   "rollback": "before any user-visible effect of the call",
+   "functions": [
+    "copy_in",
+    "hold_prefix",
+    "read_iovecs",
+    "read_rights",
+    "send_all"
+   ]
+  },
+  {
+   "file": "kernel/src/syscall/userptr.rs",
+   "owner": "E1-11",
+   "error": "ENOMEM",
+   "rollback": "before any user-visible effect of the call",
+   "functions": [
+    "copy_path_bytes_from_user"
+   ]
+  },
+  {
+   "file": "kernel/src/task/event_queue.rs",
+   "owner": "E1-13",
+   "error": "EAGAIN for fork, clone and thread creation; ENOMEM for exec and the rest; EAGAIN for sigqueue",
+   "rollback": "before the process, thread or signal is published",
+   "functions": [
+    "EventQueue::register"
+   ]
+  },
+  {
+   "file": "kernel/src/task/executor.rs",
+   "owner": "E1-13",
+   "error": "EAGAIN for fork, clone and thread creation; ENOMEM for exec and the rest; EAGAIN for sigqueue",
+   "rollback": "before the process, thread or signal is published",
+   "functions": [
+    "Executor::new",
+    "Executor::spawn",
+    "TaskWaker::new",
+    "TaskWaker::wake_task"
+   ]
+  },
+  {
+   "file": "kernel/src/task/exit_tally.rs",
+   "owner": "E1-13",
+   "error": "EAGAIN for fork, clone and thread creation; ENOMEM for exec and the rest; EAGAIN for sigqueue",
+   "rollback": "before the process, thread or signal is published",
+   "functions": [
+    "snapshot_failures"
+   ]
+  },
+  {
+   "file": "kernel/src/task/kthread.rs",
+   "owner": "E1-13",
+   "error": "EAGAIN for fork, clone and thread creation; ENOMEM for exec and the rest; EAGAIN for sigqueue",
+   "rollback": "before the process, thread or signal is published",
+   "functions": [
+    "build_pin_guard_probe_thread",
+    "kthread_run_with"
+   ]
+  },
+  {
+   "file": "kernel/src/task/kthread_tests.rs",
+   "owner": "E1-13",
+   "error": "EAGAIN for fork, clone and thread creation; ENOMEM for exec and the rest; EAGAIN for sigqueue",
+   "rollback": "before the process, thread or signal is published",
+   "functions": [
+    "test_kthread_stress"
+   ]
+  },
+  {
+   "file": "kernel/src/task/mod.rs",
+   "owner": "E1-13",
+   "error": "EAGAIN for fork, clone and thread creation; ENOMEM for exec and the rest; EAGAIN for sigqueue",
+   "rollback": "before the process, thread or signal is published",
+   "functions": [
+    "Task::new"
+   ]
+  },
+  {
+   "file": "kernel/src/task/process_task.rs",
+   "owner": "E1-13",
+   "error": "EAGAIN for fork, clone and thread creation; ENOMEM for exec and the rest; EAGAIN for sigqueue",
+   "rollback": "before the process, thread or signal is published",
+   "functions": [
+    "DeferredFaultExitBuffer::drain",
+    "boot_oversized_page_table",
+    "boot_page_table_reclaim",
+    "boot_push_live",
+    "boot_push_parked",
+    "defer_fault_exit",
+    "deferred_fault_ring_overflow_injection",
+    "drain_deferred_fault_sigsegv_exits",
+    "park_reclaim",
+    "push_pending_or_abandon",
+    "reclaim_progress_gate_test",
+    "spill_fault_exit",
+    "unpark_sweep_with_snapshot",
+    "x86_forced_root_proof_case",
+    "x86_shadow_proof_case"
+   ]
+  },
+  {
+   "file": "kernel/src/task/reclaim_busy_oracle.rs",
+   "owner": "E1-13",
+   "error": "EAGAIN for fork, clone and thread creation; ENOMEM for exec and the rest; EAGAIN for sigqueue",
+   "rollback": "before the process, thread or signal is published",
+   "functions": [
+    "insert_clone_vm_member",
+    "retire_through_exit_path",
+    "run_coordinator"
+   ]
+  },
+  {
+   "file": "kernel/src/task/scheduler.rs",
+   "owner": "E1-13",
+   "error": "EAGAIN for fork, clone and thread creation; ENOMEM for exec and the rest; EAGAIN for sigqueue",
+   "rollback": "before the process, thread or signal is published",
+   "functions": [
+    "Scheduler::add_thread_inner",
+    "Scheduler::add_thread_on_cpu_for_test",
+    "Scheduler::admit_thread_unindexed",
+    "Scheduler::apply_wake_inbox",
+    "Scheduler::block_current_departure_gate",
+    "Scheduler::block_current_for_compositor",
+    "Scheduler::block_current_for_io_publish",
+    "Scheduler::block_current_for_timer",
+    "Scheduler::collect_unlinked_threads",
+    "Scheduler::deliver_pinned_wakes_for_this_cpu",
+    "Scheduler::expedite_signal_recipient",
+    "Scheduler::reclaim_terminated_threads",
+    "Scheduler::reclaim_unschedulable_cpu_queues",
+    "Scheduler::register_signal_timers",
+    "Scheduler::requeue_thread_after_save_onto",
+    "Scheduler::resolve_exception_cleanup_previous_thread",
+    "Scheduler::resolve_pending_next_locked",
+    "Scheduler::retain_cpu_affine_thread",
+    "Scheduler::retain_pinned_worker_on_source_queue",
+    "Scheduler::run_pin_guard_oracle",
+    "Scheduler::schedule",
+    "Scheduler::schedule_deferred_requeue",
+    "Scheduler::steal_higher_ranked",
+    "Scheduler::terminate_process_threads",
+    "Scheduler::unblock",
+    "Scheduler::unblock_for_child_exit",
+    "Scheduler::unblock_for_signal",
+    "Scheduler::wake_expired_timers",
+    "Scheduler::wake_io_thread_locked",
+    "TimerHeaps::push",
+    "abort_dispatch_and_resume",
+    "block_current_coreproof_probe",
+    "boot_test_thread",
+    "claim_process_threads_for_kill",
+    "group_signals",
+    "install_ec0_fault_inject_thread",
+    "live_signals",
+    "release_cpu_affine_thread_for_test",
+    "release_reclaimed_threads",
+    "requeue_refused_dispatch",
+    "retain_cpu_affine_test_thread",
+    "retain_ec0_fault_inject_on_cpu0",
+    "set_user_affinity",
+    "teardown_token_pick",
+    "try_dump_state"
+   ]
+  },
+  {
+   "file": "kernel/src/task/scheduler/rq.rs",
+   "owner": "E1-13",
+   "error": "EAGAIN for fork, clone and thread creation; ENOMEM for exec and the rest; EAGAIN for sigqueue",
+   "rollback": "before the process, thread or signal is published",
+   "functions": [
+    "Held::enqueue",
+    "block_current",
+    "expedite",
+    "group_threads",
+    "insert",
+    "place_held",
+    "pop_local",
+    "quarantine_token",
+    "reclaim",
+    "reclaim_stalled",
+    "retain_on_home",
+    "spawn",
+    "steal_from",
+    "steal_higher_ranked"
+   ]
+  },
+  {
+   "file": "kernel/src/task/scheduler/wake_index.rs",
+   "owner": "E1-13",
+   "error": "EAGAIN for fork, clone and thread creation; ENOMEM for exec and the rest; EAGAIN for sigqueue",
+   "rollback": "before the process, thread or signal is published",
+   "functions": [
+    "insert"
+   ]
+  },
+  {
+   "file": "kernel/src/task/softirqd.rs",
+   "owner": "E1-13",
+   "error": "EAGAIN for fork, clone and thread creation; ENOMEM for exec and the rest; EAGAIN for sigqueue",
+   "rollback": "before the process, thread or signal is published",
+   "functions": [
+    "init_online_daemons"
+   ]
+  },
+  {
+   "file": "kernel/src/task/spawn.rs",
+   "owner": "E1-13",
+   "error": "EAGAIN for fork, clone and thread creation; ENOMEM for exec and the rest; EAGAIN for sigqueue",
+   "rollback": "before the process, thread or signal is published",
+   "functions": [
+    "create_idle_thread",
+    "spawn_thread_with_privilege"
+   ]
+  },
+  {
+   "file": "kernel/src/task/thread.rs",
+   "owner": "E1-13",
+   "error": "EAGAIN for fork, clone and thread creation; ENOMEM for exec and the rest; EAGAIN for sigqueue",
+   "rollback": "before the process, thread or signal is published",
+   "functions": [
+    "Thread::new",
+    "Thread::new_kernel",
+    "Thread::new_prepared",
+    "Thread::new_userspace",
+    "Thread::new_with_id"
+   ]
+  },
+  {
+   "file": "kernel/src/task/timer_wake_oracle.rs",
+   "owner": "E1-13",
+   "error": "EAGAIN for fork, clone and thread creation; ENOMEM for exec and the rest; EAGAIN for sigqueue",
+   "rollback": "before the process, thread or signal is published",
+   "functions": [
+    "run_coordinator"
+   ]
+  },
+  {
+   "file": "kernel/src/task/userspace_completion.rs",
+   "owner": "E1-13",
+   "error": "EAGAIN for fork, clone and thread creation; ENOMEM for exec and the rest; EAGAIN for sigqueue",
+   "rollback": "before the process, thread or signal is published",
+   "functions": [
+    "report_when_finished"
+   ]
+  },
+  {
+   "file": "kernel/src/task/workqueue.rs",
+   "owner": "E1-13",
+   "error": "EAGAIN for fork, clone and thread creation; ENOMEM for exec and the rest; EAGAIN for sigqueue",
+   "rollback": "before the process, thread or signal is published",
+   "functions": [
+    "Work::new",
+    "Workqueue::flush",
+    "Workqueue::new",
+    "Workqueue::queue"
+   ]
+  },
+  {
+   "file": "kernel/src/test_control.rs",
+   "owner": "E1-20",
+   "error": "ENOMEM on a read; logging does not allocate",
+   "rollback": "before the read consumes its source; a /proc/kmsg read keeps its position",
+   "functions": [
+    "reserve",
+    "take_if"
+   ]
+  },
+  {
+   "file": "kernel/src/test_control/resident_census.rs",
+   "owner": "E1-20",
+   "error": "ENOMEM on a read; logging does not allocate",
+   "rollback": "before the read consumes its source; a /proc/kmsg read keeps its position",
+   "functions": [
+    "sample"
+   ]
+  },
+  {
+   "file": "kernel/src/test_exec.rs",
+   "owner": "E1-20",
+   "error": "ENOMEM on a read; logging does not allocate",
+   "rollback": "before the read consumes its source; a /proc/kmsg read keeps its position",
+   "functions": [
+    "create_exec_test_elf",
+    "create_fork_test_elf",
+    "create_hello_world_elf",
+    "test_access",
+    "test_argv",
+    "test_cat_coreutil",
+    "test_cloexec",
+    "test_cow_cleanup",
+    "test_cow_readonly",
+    "test_cow_signal",
+    "test_cow_sole_owner",
+    "test_cow_stress",
+    "test_ctrl_c",
+    "test_cwd",
+    "test_devfs",
+    "test_direct_execution",
+    "test_dup",
+    "test_exec_argv",
+    "test_exec_directly",
+    "test_exec_from_ext2",
+    "test_exec_minimal",
+    "test_exec_real_userspace",
+    "test_exec_stack_argv",
+    "test_exec_without_scheduling",
+    "test_false_coreutil",
+    "test_fbinfo",
+    "test_fcntl",
+    "test_fifo",
+    "test_fifo_fs",
+    "test_file_read",
+    "test_fork_exec",
+    "test_fork_memory",
+    "test_fork_pending_signal",
+    "test_fork_state",
+    "test_fs_block_alloc",
+    "test_fs_directory",
+    "test_fs_large_file",
+    "test_fs_link",
+    "test_fs_rename",
+    "test_fs_write",
+    "test_getdents",
+    "test_head_coreutil",
+    "test_hello_std_real",
+    "test_job_control",
+    "test_kill_process_group",
+    "test_ls_coreutil",
+    "test_lseek",
+    "test_nonblock",
+    "test_pause",
+    "test_pipe",
+    "test_pipe2",
+    "test_pipe_concurrent",
+    "test_pipe_fork",
+    "test_poll",
+    "test_select",
+    "test_session",
+    "test_shell_fork_exec",
+    "test_shell_pipe",
+    "test_sigaltstack",
+    "test_sigchld",
+    "test_signal_exec",
+    "test_signal_fork",
+    "test_signal_handler",
+    "test_signal_kill",
+    "test_signal_regs",
+    "test_signal_return",
+    "test_sigsuspend",
+    "test_syscall_enosys",
+    "test_tail_coreutil",
+    "test_timer_functionality",
+    "test_true_coreutil",
+    "test_tty",
+    "test_unix_named_socket",
+    "test_unix_socket",
+    "test_userspace_fork",
+    "test_waitpid",
+    "test_wc_coreutil",
+    "test_which_coreutil",
+    "test_wnohang_timing"
+   ]
+  },
+  {
+   "file": "kernel/src/test_framework/display.rs",
+   "owner": "test",
+   "error": "outside the runtime rule: built only with a test feature",
+   "rollback": "none: converted when a test feature builds alloc with no_global_oom_handling",
+   "functions": [
+    "render_splash::format_summary"
+   ]
+  },
+  {
+   "file": "kernel/src/test_framework/executor.rs",
+   "owner": "test",
+   "error": "outside the runtime rule: built only with a test feature",
+   "rollback": "none: converted when a test feature builds alloc with no_global_oom_handling",
+   "functions": [
+    "run_staged_tests"
+   ]
+  },
+  {
+   "file": "kernel/src/test_framework/registry.rs",
+   "owner": "test",
+   "error": "outside the runtime rule: built only with a test feature",
+   "rollback": "none: converted when a test feature builds alloc with no_global_oom_handling",
+   "functions": [
+    "run_tty_irq_fg_oracle",
+    "test_arm64_pty_ioctl_path",
+    "test_boot_sequence",
+    "test_heap_alloc_basic",
+    "test_heap_large_alloc",
+    "test_heap_many_small",
+    "test_kernel_heap",
+    "test_system_stability",
+    "test_tty_foreground_pgrp"
+   ]
+  },
+  {
+   "file": "kernel/src/time/firmware_rtc.rs",
+   "owner": "E1-11",
+   "error": "ENOMEM",
+   "rollback": "before any user-visible effect of the call",
+   "functions": [
+    "new_table"
+   ]
+  },
+  {
+   "file": "kernel/src/tls.rs",
+   "owner": "E1-13",
+   "error": "EAGAIN for fork, clone and thread creation; ENOMEM for exec and the rest; EAGAIN for sigqueue",
+   "rollback": "before the process, thread or signal is published",
+   "functions": [
+    "allocate_thread_tls_with_stack",
+    "register_thread_tls",
+    "setup_kernel_tls"
+   ]
+  },
+  {
+   "file": "kernel/src/tracing/providers/gpu.rs",
+   "owner": "E1-20",
+   "error": "ENOMEM on a read; logging does not allocate",
+   "rollback": "before the read consumes its source; a /proc/kmsg read keeps its position",
+   "functions": [
+    "gpu_mask::report"
+   ]
+  },
+  {
+   "file": "kernel/src/tracing/providers/teardown.rs",
+   "owner": "E1-20",
+   "error": "ENOMEM on a read; logging does not allocate",
+   "rollback": "before the read consumes its source; a /proc/kmsg read keeps its position",
+   "functions": [
+    "KickSlot::publish",
+    "clone_admission_oracle_test",
+    "clone_admission_oracle_test::exit_and_remove_row",
+    "clone_admission_oracle_test::test_thread",
+    "creating_dispatch_refusal_test",
+    "creating_dispatch_refusal_test::retire_and_remove_owned_row",
+    "exec_detach_oracle_test",
+    "exec_detach_oracle_test::process_row",
+    "exec_detach_oracle_test::retire_and_remove_owned_row",
+    "exec_supersede_cohort_test",
+    "exit_kick_protocol_gate_test",
+    "exit_kick_worker_window_isolation_test",
+    "fork_exit_defer_reclaim_pairing_test",
+    "init_designation_oracle_test",
+    "init_designation_oracle_test::synthetic_row",
+    "init_designation_oracle_test::test_thread",
+    "init_group_refusal_oracle_test",
+    "init_group_refusal_oracle_test::synthetic_row",
+    "init_group_refusal_oracle_test::test_thread",
+    "kernel_stack_ownership_oracle_test",
+    "kernel_stack_ownership_oracle_test::create_ownership_stress_row",
+    "kernel_stack_ownership_oracle_test::retire_and_remove_owned_row",
+    "signal_thread_group_for_test",
+    "tombstone_join_oracle_test::stage_zombie"
+   ]
+  },
+  {
+   "file": "kernel/src/tty/driver.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "TtyDevice::register_blocked_reader",
+    "init_console",
+    "push_char_nonblock_from",
+    "push_reply"
+   ]
+  },
+  {
+   "file": "kernel/src/tty/line_discipline.rs",
+   "owner": "E1-19",
+   "error": "a counted drop, or the call's errno",
+   "rollback": "before the driver publishes the unit of work",
+   "functions": [
+    "LineDiscipline::complete_line",
+    "LineDiscipline::handle_eof",
+    "LineDiscipline::process_canonical",
+    "LineDiscipline::process_raw",
+    "LineDiscipline::set_termios"
+   ]
+  },
+  {
+   "file": "kernel/src/userspace_fault_tests.rs",
+   "owner": "E1-20",
+   "error": "ENOMEM on a read; logging does not allocate",
+   "rollback": "before the read consumes its source; a /proc/kmsg read keeps its position",
+   "functions": [
+    "create_cli_test_elf",
+    "create_cr3_write_test_elf",
+    "create_elf_header",
+    "create_hlt_test_elf",
+    "create_unmapped_access_test_elf",
+    "run_fault_tests"
+   ]
+  },
+  {
+   "file": "kernel/src/userspace_test.rs",
+   "owner": "E1-20",
+   "error": "ENOMEM on a read; logging does not allocate",
+   "rollback": "before the read consumes its source; a /proc/kmsg read keeps its position",
+   "functions": [
+    "create_exec_test_elf",
+    "create_minimal_valid_elf",
+    "fork_creator_thread_fn",
+    "get_test_binary_static",
+    "load_test_binary_from_disk",
+    "run_timer_test",
+    "run_userspace_test",
+    "test_fork_debug",
+    "test_fork_manually",
+    "test_multiple_processes"
+   ]
+  },
+  {
+   "file": "kernel/src/window/damage_union.rs",
+   "owner": "E1-19",
+   "error": "ENOMEM from the window commit",
+   "rollback": "before the new buffer is published; the last committed frame stays on screen",
+   "functions": [
+    "normalized"
+   ]
+  },
+  {
+   "file": "kernel/src/window/event_admission.rs",
+   "owner": "E1-19",
+   "error": "ENOMEM from the window commit",
+   "rollback": "before the new buffer is published; the last committed frame stays on screen",
+   "functions": [
+    "push"
+   ]
+  },
+  {
+   "file": "kernel/src/window/events.rs",
+   "owner": "E1-19",
+   "error": "ENOMEM from the window commit",
+   "rollback": "before the new buffer is published; the last committed frame stays on screen",
+   "functions": [
+    "Ring::push",
+    "Ring::take",
+    "Ring::untake"
+   ]
+  },
+  {
+   "file": "kernel/src/window/mem.rs",
+   "owner": "E1-19",
+   "error": "ENOMEM from the window commit",
+   "rollback": "before the new buffer is published; the last committed frame stays on screen",
+   "functions": [
+    "Mem::new",
+    "copy_in",
+    "protect_range"
+   ]
+  },
+  {
+   "file": "kernel/src/window/mod.rs",
+   "owner": "E1-19",
+   "error": "ENOMEM from the window commit",
+   "rollback": "before the new buffer is published; the last committed frame stays on screen",
+   "functions": [
+    "Damage::add",
+    "Damage::rects",
+    "ownership_census"
+   ]
+  },
+  {
+   "file": "kernel/src/window/ops.rs",
+   "owner": "E1-19",
+   "error": "ENOMEM from the window commit",
+   "rollback": "before the new buffer is published; the last committed frame stays on screen",
+   "functions": [
+    "all_waits",
+    "claim",
+    "commit",
+    "create",
+    "end_claim",
+    "group_gone",
+    "list",
+    "pixels_out",
+    "publish_ready",
+    "resize",
+    "sweep_dead_owners",
+    "tell",
+    "uids",
+    "write_events"
+   ]
+  },
+  {
+   "file": "kernel/src/window/pacing.rs",
+   "owner": "E1-19",
+   "error": "ENOMEM from the window commit",
+   "rollback": "before the new buffer is published; the last committed frame stays on screen",
+   "functions": [
+    "text"
+   ]
+  },
+  {
+   "file": "kernel/src/window/pipeline.rs",
+   "owner": "E1-19",
+   "error": "ENOMEM from the window commit",
+   "rollback": "before the new buffer is published; the last committed frame stays on screen",
+   "functions": [
+    "snapshot",
+    "text"
+   ]
+  },
+  {
+   "file": "kernel/src/window/present.rs",
+   "owner": "E1-19",
+   "error": "ENOMEM from the window commit",
+   "rollback": "before the new buffer is published; the last committed frame stays on screen",
+   "functions": [
+    "State::uncover",
+    "record"
+   ]
+  },
+  {
+   "file": "kernel/src/window/scene.rs",
+   "owner": "E1-19",
+   "error": "ENOMEM from the window commit",
+   "rollback": "before the new buffer is published; the last committed frame stays on screen",
+   "functions": [
+    "finish",
+    "keys",
+    "snapshot",
+    "submit"
+   ]
+  },
+  {
+   "file": "kernel/src/window/status.rs",
+   "owner": "E1-19",
+   "error": "ENOMEM from the window commit",
+   "rollback": "before the new buffer is published; the last committed frame stays on screen",
+   "functions": [
+    "text"
+   ]
+  },
+  {
+   "file": "kernel/src/window/status_pages.rs",
+   "owner": "E1-19",
+   "error": "ENOMEM from the window commit",
+   "rollback": "before the new buffer is published; the last committed frame stays on screen",
+   "functions": [
+    "CompositeHistory::format",
+    "format_status"
+   ]
+  }
+ ]
 }
