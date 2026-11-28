@@ -571,20 +571,33 @@ fn close_call_census_requires_delivery_or_the_documented_fault_carveout() {
 /// inline, because close_all_fds() runs under caller-owned PROCESS_MANAGER
 /// and scheduler.rs's "Lock Ordering Discipline" note forbids acquiring
 /// SCHEDULER (Level 1) while holding PROCESS_MANAGER (Level 2). This checks
-/// the mechanism itself, independent of the census above, and the three
+/// the mechanism itself, independent of the census above, and the four
 /// mutations below (`deferred_delivery_never_touches_the_scheduler_lock`)
-/// redden it: wake_up_deferred()'s wake call is the lock-free
-/// isr_unblock_for_io() buffer, and deliver_deferred() routes to it rather
-/// than the ordinary, scheduler-lock-acquiring wake_up().
-fn deferred_delivery_uses_lock_free_wake(waitqueue: &str, pipe: &str) -> Result<(), &'static str> {
-    let body = compact(&function(waitqueue, "wake_up_deferred"));
-    if !body.contains("isr_unblock_for_io(waiter.tid())") {
+/// redden it: wake_up_deferred() forwards to the event queue's deferred wake,
+/// whose only wake is the lock-free inbox hook, which the kernel binding
+/// implements with the isr_unblock_for_io() buffer; and deliver_deferred()
+/// routes to it rather than the ordinary, scheduler-lock-acquiring wake_up().
+fn deferred_delivery_uses_lock_free_wake(
+    waitqueue: &str,
+    queue: &str,
+    pipe: &str,
+) -> Result<(), &'static str> {
+    let binding = compact(&function(waitqueue, "wake_up_deferred"));
+    let deferred = compact(&function(queue, "wake_all_deferred"));
+    let inbox = compact(&function(waitqueue, "wake_from_interrupt"));
+    if !binding.contains("self.queue.wake_all_deferred(&KernelHooks)")
+        || !deferred.contains("hooks.wake_from_interrupt(tid)")
+        || !inbox.contains("isr_unblock_for_io(tid)")
+    {
         return Err("missing lock-free wake");
     }
-    if body.contains("wake_waitqueue_thread")
-        || body.contains("with_scheduler")
-        || body.contains("wake_waiter(")
-    {
+    let scheduler = |body: &str| {
+        body.contains("wake_waitqueue_thread")
+            || body.contains("with_scheduler")
+            || body.contains("wake_task(")
+            || body.contains("wake_waiter(")
+    };
+    if scheduler(&binding) || scheduler(&deferred) || scheduler(&inbox) {
         return Err("touches the scheduler lock");
     }
     if !contains(
@@ -602,37 +615,51 @@ fn deferred_delivery_uses_lock_free_wake(waitqueue: &str, pipe: &str) -> Result<
 #[test]
 fn deferred_delivery_never_touches_the_scheduler_lock() {
     let waitqueue = read("kernel/src/task/waitqueue.rs");
+    let queue = read("kernel/src/task/event_queue.rs");
     let pipe = read("kernel/src/ipc/pipe.rs");
-    deferred_delivery_uses_lock_free_wake(&waitqueue, &pipe).unwrap();
+    deferred_delivery_uses_lock_free_wake(&waitqueue, &queue, &pipe).unwrap();
 
     let mutated_pipe = pipe.replace("queue.wake_up_deferred();", "queue.wake_up();");
     assert_ne!(mutated_pipe, pipe, "mutation must change a real call site");
     assert_eq!(
-        deferred_delivery_uses_lock_free_wake(&waitqueue, &mutated_pipe),
+        deferred_delivery_uses_lock_free_wake(&waitqueue, &queue, &mutated_pipe),
         Err("deliver_deferred does not route to the deferred wake")
     );
 
     // A partial regression that keeps the lock-free wake but ALSO reaches the
     // scheduler lock (e.g. a stray direct wake alongside the buffered one)
-    // must be caught too, not just an outright replacement.
+    // must be caught too, not just an outright replacement: in the kernel
+    // binding's inbox hook, and in the event queue's deferred loop.
     let mutated_wq = waitqueue.replace(
-        "crate::task::scheduler::isr_unblock_for_io(waiter.tid());",
-        "crate::task::scheduler::isr_unblock_for_io(waiter.tid());\
-                crate::task::scheduler::wake_waitqueue_thread(waiter.tid());",
+        "crate::task::scheduler::isr_unblock_for_io(tid);",
+        "crate::task::scheduler::isr_unblock_for_io(tid);\
+                crate::task::scheduler::wake_waitqueue_thread(tid);",
     );
     assert_ne!(
         mutated_wq, waitqueue,
         "mutation must change a real call site"
     );
     assert_eq!(
-        deferred_delivery_uses_lock_free_wake(&mutated_wq, &pipe),
+        deferred_delivery_uses_lock_free_wake(&mutated_wq, &queue, &pipe),
+        Err("touches the scheduler lock")
+    );
+    let mutated_queue = queue.replace(
+        "for &tid in list.iter() {\n            hooks.wake_from_interrupt(tid);",
+        "for &tid in list.iter() {\n            hooks.wake_from_interrupt(tid);\n            hooks.wake_task(tid);",
+    );
+    assert_ne!(
+        mutated_queue, queue,
+        "mutation must change a real call site"
+    );
+    assert_eq!(
+        deferred_delivery_uses_lock_free_wake(&waitqueue, &mutated_queue, &pipe),
         Err("touches the scheduler lock")
     );
 
-    // Deleting the lock-free wake outright (leaving the loop body empty of any
+    // Deleting the lock-free wake outright (leaving the hook empty of any
     // wake call) must also be caught.
     let dropped_wq = waitqueue.replace(
-        "crate::task::scheduler::isr_unblock_for_io(waiter.tid());",
+        "crate::task::scheduler::isr_unblock_for_io(tid);",
         "",
     );
     assert_ne!(
@@ -640,7 +667,7 @@ fn deferred_delivery_never_touches_the_scheduler_lock() {
         "mutation must change a real call site"
     );
     assert_eq!(
-        deferred_delivery_uses_lock_free_wake(&dropped_wq, &pipe),
+        deferred_delivery_uses_lock_free_wake(&dropped_wq, &queue, &pipe),
         Err("missing lock-free wake")
     );
 }
@@ -929,25 +956,35 @@ fn writev_aggregate_atomicity_rejects_per_iovec_mutation() {
     );
 }
 
-fn retained_wait_identity(source: &str, waitqueue: &str) -> bool {
+fn retained_wait_identity(source: &str, waitqueue: &str, queue: &str) -> bool {
     let body = compact(&function(source, "wait_prepared"));
     let finish = compact(&function(waitqueue, "finish_wait_for"));
+    let finish_for = compact(&function(queue, "finish_for"));
+    let end_wait = compact(&function(waitqueue, "end_wait"));
     body.matches("current_thread_id()").count() == 1
         && body.find("let tid=".replace(' ', "").as_str()) < body.find("preempt_enable()")
         && body.contains("queue.take_waiter(tid);queue.finish_wait_for(tid);")
-        && finish.contains("self.remove_waiter(tid)")
-        && finish.contains("with_thread_mut(tid,")
-        && !finish.contains("current_thread_id")
+        && finish.contains("self.queue.finish_for(&KernelHooks,tid)")
+        && finish_for.contains("Self::unregister(locked.list(),tid)")
+        && finish_for.contains("hooks.end_wait(tid)")
+        && end_wait.contains("with_thread_mut(tid,")
+        && ![finish, finish_for, end_wait].iter().any(|b| b.contains("current_thread_id") || b.contains("current_tid"))
 }
 
 #[test]
 fn prepared_wait_retains_identity_for_both_cleanup_operations() {
     let source = read("kernel/src/syscall/blocking_io.rs");
-    let queue = read("kernel/src/task/waitqueue.rs");
-    assert!(retained_wait_identity(&source, &queue));
+    let waitqueue = read("kernel/src/task/waitqueue.rs");
+    let queue = read("kernel/src/task/event_queue.rs");
+    assert!(retained_wait_identity(&source, &waitqueue, &queue));
     let mutation = source.replace("queue.take_waiter(tid);", "if let Some(tid) = crate::task::scheduler::current_thread_id() { queue.take_waiter(tid); }");
     assert_ne!(mutation, source);
-    assert!(!retained_wait_identity(&mutation, &queue));
+    assert!(!retained_wait_identity(&mutation, &waitqueue, &queue));
     let mutation = source.replace("queue.finish_wait_for(tid);", "queue.finish_wait();");
-    assert!(!retained_wait_identity(&mutation, &queue));
+    assert!(!retained_wait_identity(&mutation, &waitqueue, &queue));
+    // The event queue's finish must end the named thread's wait, not the
+    // current thread's.
+    let mutation = queue.replace("hooks.end_wait(tid);", "if let Some(tid) = hooks.current_tid() { hooks.end_wait(tid); }");
+    assert_ne!(mutation, queue);
+    assert!(!retained_wait_identity(&source, &waitqueue, &mutation));
 }
