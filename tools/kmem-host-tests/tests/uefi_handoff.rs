@@ -439,9 +439,10 @@ fn buffer_mapping_preserves_neighbor_and_loader_permissions() {
         let range = PhysRange::from_base_size(address + 8, 8192);
         let (new0, new1) = build_page_tables(&mut after, &config, execution(), Some(range));
         for page in [address, address + 4096, address + 8192] {
-            let (physical, flags) = walk(new0, page).unwrap();
+            let (physical, flags) = walk(new0, page)
+                .unwrap_or_else(|| panic!("map buffer page {page:#x} is unmapped in TTBR0"));
             assert_eq!(physical, page);
-            assert_eq!(flags & (1 << 7), 0, "EL1 write denied");
+            assert_eq!(flags & (1 << 7), 0, "EL1 write denied at {page:#x}");
             assert_eq!(flags & (7 << 2), 1 << 2, "not normal WB");
             assert_eq!(flags & XN, if nx { XN } else { 0 });
             assert_eq!(walk(new1, page), walk(old1, page));
@@ -473,6 +474,41 @@ fn fixture(records: &[(u32, u64, u64, u64)], phys: u64) -> (Memory, UefiMapHando
         ..Memory::default()
     };
     (memory, wire)
+}
+
+#[test]
+fn conventional_ram_excludes_nvs_overlap_and_specific_purpose_memory() {
+    let owner = BASE + 2 * RANGE;
+    let records = [
+        (7, BASE, 32, 0),
+        (10, BASE + 0x8000, 1, 0),
+        (7, BASE + RANGE, 32, uefi_map::ATTR_SPECIFIC_PURPOSE),
+        (BOOT_MAP_MEMORY_TYPE, owner, 1, 0),
+    ];
+    let (memory, wire) = fixture(&records, owner);
+    let (ranges, stats) = boot_ranges::from_hardware_config(
+        &HardwareConfig::new().v7,
+        Some(wire),
+        &memory,
+        PhysRange::new(BASE, owner),
+        &[],
+    )
+    .unwrap();
+    let usable = ranges.iter().collect::<Vec<_>>();
+    let wrongly_usable: Vec<_> = [BASE + 0x8000, BASE + RANGE]
+        .into_iter()
+        .filter(|page| usable.iter().any(|r| (r.start..r.end).contains(page)))
+        .collect();
+    assert_eq!(wrongly_usable, [], "reserved pages in the frame pool");
+    assert_eq!(stats.overlap_bytes, 4096);
+    assert_eq!(
+        usable,
+        [
+            PhysRange::new(BASE, BASE + 0x8000),
+            // The last page of the larger fragment holds the range set.
+            PhysRange::new(BASE + 0x9000, BASE + 0x1f000),
+        ]
+    );
 }
 
 #[test]
@@ -661,18 +697,22 @@ fn legacy_prefix_only_and_unknown_versions() {
     );
 }
 
+fn fragmented_x86_ranges() -> impl Iterator<Item = PhysRange> + Clone {
+    (0..200).rev().map(|i| {
+        let base = 0x10_0000 + 0x1_0000 * i;
+        PhysRange::new(base, base + 0x8000)
+    })
+}
+
 #[test]
 fn fragmented_x86_ranges_grow_and_carve_the_highest_aligned_fit() {
     let memory = Memory::default();
-    let ranges = (0..200)
-        .rev()
-        .map(|i| {
-            let base = 0x10_0000 + 0x1_0000 * i;
-            PhysRange::new(base, base + 0x8000)
-        })
-        .chain([PhysRange::new(0x8000, 0x9000)]);
+    let ranges = fragmented_x86_ranges().chain([PhysRange::new(0x8000, 0x9000)]);
     let mut pool = boot_ranges::from_x86(&memory, ranges).unwrap();
     assert_eq!(pool.len(), 200);
+    let mut starts: Vec<_> = fragmented_x86_ranges().map(|r| r.start).collect();
+    starts.sort_unstable();
+    assert!(pool.iter().map(|r| r.start).eq(starts));
     assert_eq!(
         RangeError::NoFit.as_str(),
         "no boot range fits requested carve"
@@ -687,8 +727,7 @@ fn fragmented_x86_ranges_grow_and_carve_the_highest_aligned_fit() {
     assert_eq!(pool.total_bytes(), 200 * 0x8000 - 3 * 4096);
 }
 
-#[test]
-fn fdt_uses_all_memory_tuples_and_stays_inside_the_storage_window() {
+fn fragmented_fdt() -> Vec<u8> {
     let mut regs = Vec::new();
     for range in expected() {
         regs.extend(range.start.to_be_bytes());
@@ -741,7 +780,12 @@ fn fdt_uses_all_memory_tuples_and_stays_inside_the_storage_window() {
     blob.extend([0; 16]); // Empty reservation table.
     blob.extend(structure);
     blob.extend(names);
+    blob
+}
 
+#[test]
+fn fdt_uses_all_memory_tuples_and_stays_inside_the_storage_window() {
+    let blob = fragmented_fdt();
     let memory = Memory::default();
     let ranges = boot_ranges::from_fdt(
         &memory,
@@ -752,6 +796,7 @@ fn fdt_uses_all_memory_tuples_and_stays_inside_the_storage_window() {
     )
     .unwrap();
     let mut expected = expected();
+    assert_eq!(ranges.len(), expected.len());
     expected[0].end -= 4096;
     assert_eq!(ranges.iter().collect::<Vec<_>>(), expected);
     assert!(memory
