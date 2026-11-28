@@ -2208,6 +2208,21 @@ executed.
 
 ```
 
+**Two planned checks are red on the old tree only as specified (18).** On the old tree an unbind only
+requests an eviction pass (`file_map.rs:506-534`); the pages go when the filesystem service runs it. Old
+frozen pages are immutable `Arc`s, so the old tree keeps G's bytes stable.
+
+```pycon
+>>> RULE = 'as-first-written'
+>>> def old_remap_reads(run_eviction_pass):
+...     return 4096 if run_eviction_pass else 0
+>>> remap_red = old_remap_reads(run_eviction_pass=(RULE == 'red-on-old')) > 0
+>>> stable_pages_claimed_red = (RULE == 'as-first-written')
+>>> (remap_red, stable_pages_claimed_red)
+(True, False)
+
+```
+
 ## 20. bbench rows (DEV-31)
 
 | Row | Ratio (28668b28) | Expected to move in | Parity reachable from E3 alone |
