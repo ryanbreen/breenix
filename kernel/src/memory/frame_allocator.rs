@@ -5,7 +5,7 @@ mod contiguous;
 use crate::memory::arch_stub::{FrameAllocator, PhysAddr, PhysFrame, Size4KiB};
 use alloc::vec::Vec;
 use super::boot_ranges::RangeSet;
-use super::frame_meta::{ClaimError, Decref, FrameMetaMap, FreeList, LEAF_EXTERNAL, ST_ALLOCATED, ST_FREE};
+use super::frame_meta::{ClaimError, Decref, FrameMeta, FrameMetaMap, FreeList, LEAF_EXTERNAL, ST_ALLOCATED, ST_FREE};
 pub(crate) use super::frame_meta::{LeafMappingClass, ReturnOutcome};
 #[cfg(target_arch = "x86_64")]
 use bootloader_api::info::{MemoryRegionKind, MemoryRegions};
@@ -137,6 +137,21 @@ static FREE_FRAMES: Mutex<FreeList> = Mutex::new(FreeList::new());
 
 fn with_free_frames<R>(f: impl FnOnce(&mut FreeList) -> R) -> R {
     crate::arch_without_interrupts(|| f(&mut FREE_FRAMES.lock()))
+}
+
+/// `with_free_frames` with one `try_lock`, returning an empty `Option` while
+/// another CPU holds the free list.
+fn try_with_free_frames<R>(f: impl FnOnce(&mut FreeList) -> R) -> Option<R> {
+    crate::arch_without_interrupts(|| Some(f(&mut *FREE_FRAMES.try_lock()?)))
+}
+
+/// Why the slab layer's page request got no frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SlabFrameMiss {
+    /// The free list's lock was held, and the memory map had no frame left.
+    Busy,
+    /// No frame.
+    Exhausted,
 }
 
 /// Test-only flag to simulate OOM conditions
@@ -411,24 +426,36 @@ fn publish(ranges: &'static RangeSet, meta: &'static FrameMetaMap) {
 ///   during page faults.
 ///
 /// - **Other kernel code**: Should propagate the error or use fallback paths.
-fn allocate_candidate() -> Option<PhysFrame> {
+///
+/// The slab layer's pages pass `simulated_oom_applies` false (see
+/// `allocate_slab_frame`). With `wait` false the free list's lock is taken
+/// with one `try_lock`; when it is held, the memory map's lock-free
+/// sequential allocator is tried, and a miss there is `Busy`.
+fn allocate_candidate(simulated_oom_applies: bool, wait: bool) -> Result<PhysFrame, SlabFrameMiss> {
     // Test-only: simulate OOM if flag is set
-    #[cfg(feature = "testing")]
-    if SIMULATE_OOM.load(Ordering::SeqCst) {
+    if simulated_oom_applies && simulated_oom() {
         log::trace!("Frame allocator: OOM simulation active, returning None");
-        return None;
+        return Err(SlabFrameMiss::Exhausted);
     }
 
     // Try to reuse a frame from the free list (all architectures).
+    let mut miss = SlabFrameMiss::Exhausted;
     if let Some(meta) = frame_meta() {
-        if let Some(pfn) = with_free_frames(|free_list| free_list.pop(meta)) {
-            return Some(frame_at(pfn));
+        let popped = if wait {
+            Some(with_free_frames(|free_list| free_list.pop(meta)))
+        } else {
+            try_with_free_frames(|free_list| free_list.pop(meta))
+        };
+        match popped {
+            Some(Some(pfn)) => return Ok(frame_at(pfn)),
+            Some(None) => {}
+            None => miss = SlabFrameMiss::Busy,
         }
     }
 
     // Fall back to sequential allocation from memory map
     let mut allocator = BootInfoFrameAllocator::new();
-    allocator.allocate_frame()
+    allocator.allocate_frame().ok_or(miss)
 }
 
 /// Claim `frame`'s next generation for an allocation at `site`.
@@ -455,15 +482,49 @@ fn claim_frame(frame: PhysFrame, site: u16, owner: u8) -> Option<FrameLease> {
     }
 }
 
+/// Whether the testing build's simulated frame exhaustion is on.
+fn simulated_oom() -> bool {
+    #[cfg(feature = "testing")]
+    return SIMULATE_OOM.load(Ordering::SeqCst);
+    #[cfg(not(feature = "testing"))]
+    return false;
+}
+
 /// A candidate the metadata refuses to claim is skipped: it is live, mapped
 /// or untracked, so handing it out could give it two owners.
+///
+/// When the first attempt finds 0 frames, the allocator's slow path runs once
+/// (E1 plan 7.2): it drains the CPUs' magazines and runs the shrinkers, so
+/// pages the slab layer holds idle can back the request. In an interrupt
+/// handler, or inside a shrinker, it returns 0 frames, and the request fails.
 fn allocate_claimed(site: u16, owner: u8) -> Option<FrameLease> {
+    if let Ok(lease) = claimed_from(true, true, site, owner) {
+        return Some(lease);
+    }
+    if super::heap::reclaim_frames(1) == 0 {
+        return None;
+    }
+    claimed_from(true, true, site, owner).ok()
+}
+
+fn claimed_from(simulated_oom_applies: bool, wait: bool, site: u16, owner: u8) -> Result<FrameLease, SlabFrameMiss> {
     loop {
-        let frame = allocate_candidate()?;
+        let frame = allocate_candidate(simulated_oom_applies, wait)?;
         if let Some(lease) = claim_frame(frame, site, owner) {
-            return Some(lease);
+            return Ok(lease);
         }
     }
+}
+
+/// A frame for a slab page. The testing build's simulated frame exhaustion
+/// (`enable_oom_simulation`) models user pages running out, and the fixed
+/// heap the slab layer replaces did not see it, so this path does not either.
+/// No logging, formatting or allocation: the slab layer calls it with its
+/// cache lock held and interrupts masked. With `wait` false it waits for no
+/// lock (E1 plan 6.6), and a held free list is `SlabFrameMiss::Busy`.
+#[track_caller]
+pub(crate) fn allocate_slab_frame(wait: bool) -> Result<PhysFrame, SlabFrameMiss> {
+    claimed_from(false, wait, frame_site(Location::caller()), 0).map(FrameLease::frame)
 }
 
 #[track_caller]
@@ -555,6 +616,17 @@ fn current_lease_for_frame(frame: PhysFrame) -> FrameLease {
         frame,
         generation: frame_meta().map_or(0, |meta| meta.current_generation(pfn(frame))),
     }
+}
+
+/// The entry of an allocated frame the slab layer holds, for its slab record.
+pub(crate) fn frame_entry(frame: PhysFrame) -> Option<&'static FrameMeta> {
+    frame_meta()?.entry(pfn(frame))
+}
+
+/// Return a slab page's frame. No logging, formatting or allocation: the
+/// slab layer returns pages with its cache lock held and interrupts masked.
+pub(crate) fn deallocate_slab_frame(frame: PhysFrame) -> ReturnOutcome {
+    return_lease(current_lease_for_frame(frame))
 }
 
 /// Return a leaf whose mapping refcount reached zero without adding logging,

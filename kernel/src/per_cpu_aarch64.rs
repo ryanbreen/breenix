@@ -171,6 +171,14 @@ static mut ALL_CPU_DATA: [PerCpuData; crate::arch_impl::aarch64::constants::MAX_
     PerCpuData::new(7),
 ];
 
+/// The per-CPU array's address, its entries' size and their count. CPU `n`'s
+/// TPIDR_EL1 holds `first + n * stride` once `init_cpu(n)` has run.
+pub fn cpu_data_array() -> (u64, u64, usize) {
+    let first = &raw const ALL_CPU_DATA as u64;
+    let stride = core::mem::size_of::<PerCpuData>() as u64;
+    (first, stride, crate::arch_impl::aarch64::constants::MAX_CPUS)
+}
+
 /// Flag to indicate whether per-CPU data is initialized
 static PER_CPU_INITIALIZED: AtomicBool = AtomicBool::new(false);
 static EARLY_SOFTIRQ_PENDING: AtomicU32 = AtomicU32::new(0);

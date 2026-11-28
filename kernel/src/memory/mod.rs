@@ -20,6 +20,7 @@ pub mod kva;
 pub mod kva_extent;
 pub mod kva_map;
 pub mod kva_window;
+pub mod magazine;
 pub mod kernel_stack;
 pub mod layout;
 pub mod lru;
@@ -32,6 +33,7 @@ pub mod per_cpu_stack;
 pub mod process_memory;
 pub mod readahead;
 pub mod slab;
+pub mod slab_cache;
 pub mod stack;
 pub(crate) mod stack_growth;
 pub mod table_reclaim;
@@ -79,7 +81,6 @@ pub fn init_aarch64_heap() {
     let phys_offset = physical_memory_offset();
     let mapper = unsafe { paging::init(phys_offset) };
     heap::init(&mapper).expect("ARM64 heap initialization failed");
-    slab::init();
 }
 
 /// Next available MMIO virtual address
@@ -156,9 +157,6 @@ pub fn init(physical_memory_offset: VirtAddr, memory_regions: &'static MemoryReg
         log::info!("Initializing heap allocator...");
         heap::init(&mapper).expect("heap initialization failed");
     }
-    // Initialize slab caches (must be after heap)
-    slab::init();
-
     // Initialize stack allocation system
     log::info!("Initializing stack allocation system...");
     stack::init();
@@ -201,6 +199,11 @@ pub fn init(physical_memory_offset: VirtAddr, memory_regions: &'static MemoryReg
     frame_allocator::run_x86_frame_custody_gate();
     #[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
     process_memory::run_x86_page_table_custody_gate();
+}
+
+/// The direct map's offset, if it is set yet.
+pub(crate) fn direct_map_offset() -> Option<u64> {
+    PHYSICAL_MEMORY_OFFSET.get().map(|offset| offset.as_u64())
 }
 
 /// Get the physical memory offset

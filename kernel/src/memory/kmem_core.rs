@@ -3,10 +3,12 @@
 //! kernel supplies the pools, the CPU and the interrupt masking
 //! (`memory/kmem.rs`); `tools/kmem-host-tests` supplies simulated ones.
 //!
-//! Until E1-9 the pools are the fixed kernel heap and its emergency reserve.
-//! The layers E1-5 to E1-8 add (per-CPU magazines and page caches, remote
-//! drains, span and vmap growth, the pending-unmap flush) bring their own
-//! steps of the context table, and each checks the context the same way.
+//! Requests up to a page go to the slab caches and their per-CPU magazines
+//! (E1-6), with the remote drains of 7.2 step 2. Until E1-9 larger requests
+//! go to the fixed kernel heap, and both layers share its emergency reserve.
+//! The layers E1-7 and E1-8 add (per-CPU page caches, span and vmap growth,
+//! the pending-unmap flush) bring their own steps of the context table, and
+//! each checks the context the same way.
 use core::alloc::Layout;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
@@ -85,8 +87,8 @@ pub enum AllocError {
     /// The kernel VA window numbered `window` (`kva_window::WindowId`) has
     /// no free extent for the request, after its pending unmaps were flushed.
     NoVa { window: u8 },
-    /// No frame for a kernel window's page tables or extent nodes. E1-8's
-    /// zones add the zone and order.
+    /// No frame for a slab, or for a kernel window's page tables or extent
+    /// nodes, after the slow path. E1-8's zones add the zone and order.
     NoFrames,
 }
 
@@ -134,6 +136,14 @@ pub trait Pool {
     /// One allocation. With `wait` false the pool's lock is taken with one
     /// `try_lock`, and a held lock is `Miss::Busy`.
     fn take(&self, layout: Layout, wait: bool) -> Result<NonNull<u8>, Miss>;
+    /// Whether `ptr` lies in this pool.
+    fn contains(&self, ptr: NonNull<u8>) -> bool;
+    /// Free a block `take` gave.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` came from this pool's `take` and is not freed twice.
+    unsafe fn give(&self, ptr: NonNull<u8>);
 }
 
 /// The CPU an allocation runs on.
@@ -346,23 +356,147 @@ impl Default for Stats {
     }
 }
 
+/// The logical CPU that a per-CPU base register's value `base` names, for
+/// the slab layer's slot lookup (5.4a). The per-CPU array starts at `first`
+/// and holds `count` entries `stride` bytes apart. The address of entry `n`
+/// names CPU `n`. Other values, such as 0 or a value firmware left in a
+/// register whose reset value is UNKNOWN (ARM64's TPIDR_EL1), give an empty
+/// `Option` and are not read through. ARM64's `kmem::named_cpu` is its
+/// kernel caller (x86-64 names a CPU through `per_cpu`), and the host tests
+/// compile it on their host.
+#[cfg(any(target_arch = "aarch64", test))]
+pub fn cpu_of_base(base: u64, first: u64, stride: u64, count: usize) -> Option<usize> {
+    let offset = base.checked_sub(first)?;
+    if stride == 0 || offset % stride != 0 {
+        return None;
+    }
+    let index = usize::try_from(offset / stride).ok()?;
+    (index < count).then_some(index)
+}
+
 /// The emergency reserve's size for a heap of `heap_frames` frames: half of
 /// 5.3's `min` for a zone of that size.
 pub fn reserve_frames(heap_frames: usize) -> usize {
     (heap_frames / 1024).max(128).min(heap_frames / 16) / 2
 }
 
-/// The allocator's front over the fixed heap (6.6, 7.2).
-pub struct Front<'a, M: Pool, R: Pool> {
+/// The slab caches and per-CPU magazines in front of the heap (6.1 row 1,
+/// 6.2, 6.3). Each call masks the CPU's interrupts and reads the CPU's
+/// identity itself, so the identity cannot go stale by migration.
+pub trait Small {
+    /// Whether this layer serves `layout`.
+    fn serves(&self, layout: Layout) -> bool;
+    /// One object for `layout`. With `wait` false each lock is taken with one
+    /// `try_lock`, and a held lock is `Miss::Busy`; `Miss::Exhausted` means
+    /// no page could be had.
+    fn take(&self, layout: Layout, wait: bool) -> Result<NonNull<u8>, Miss>;
+    /// Free an object `take` gave for `layout`.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` came from `take` and is not freed twice.
+    unsafe fn give(&self, ptr: NonNull<u8>, layout: Layout);
+    /// Whether an object `take` gave for `old` also serves `new`.
+    fn same_object(&self, old: Layout, new: Layout) -> bool;
+    /// 7.2 step 1: this CPU's magazines into the depots, with `try_lock`
+    /// only when `wait` is false.
+    fn drain_own(&self, wait: bool);
+    /// 7.2 step 2: CPU `cpu`'s magazines into the depots, taking its lock
+    /// with `try_lock`. Returns false when that lock was busy.
+    fn drain(&self, cpu: usize) -> bool;
+    /// The CPUs the per-CPU slot table describes.
+    fn cpus(&self) -> usize;
+    /// 7.2 step 3 again, after the other shrinkers ran: what they freed on
+    /// this CPU went to its magazines, so move those to the depots with
+    /// `try_lock`, and run the slab shrinker for `target` pages. Returns the
+    /// pages given back.
+    fn release_freed(&self, target: usize) -> usize;
+}
+
+/// The allocator's front (6.1, 6.6, 7.2): requests up to a page go to the
+/// small-object layer, larger ones to the fixed heap until E1-9.
+pub struct Front<'a, M: Pool, R: Pool, S: Small> {
     pub main: &'a M,
     pub reserve: &'a R,
+    pub small: &'a S,
     pub shrinkers: &'a Registry,
     pub reclaim: &'a Reclaim,
     pub stats: &'a Stats,
 }
 
-impl<M: Pool, R: Pool> Front<'_, M, R> {
+impl<M: Pool, R: Pool, S: Small> Front<'_, M, R, S> {
     /// Allocate `layout` in `requested`, lowered for `cpu`'s state.
+    pub fn allocate<C: Cpu>(
+        &self,
+        layout: Layout,
+        requested: Ctx,
+        cpu: &C,
+    ) -> Result<NonNull<u8>, AllocError> {
+        if self.small.serves(layout) {
+            self.allocate_small(layout, requested, cpu)
+        } else {
+            self.allocate_large(layout, requested, cpu)
+        }
+    }
+
+    /// A request the slab layer serves. The first attempt takes each lock
+    /// with `try_lock`; it is the per-CPU pop unless a magazine is empty.
+    /// After a miss, in the context the request is lowered to (7.2):
+    /// - `Normal` and `NoReclaim` wait for a busy lock and try again;
+    /// - `Atomic` drains this CPU's magazines with `try_lock` only, then
+    ///   tries the emergency reserve;
+    /// - with no page to be had, `Normal` and `NoReclaim` drain this CPU's
+    ///   magazines (step 1) and, with `try_lock`, each other CPU's (step 2);
+    ///   `Normal` runs the shrinkers, the slab shrinker first (steps 3-4);
+    ///   then one retry (step 5).
+    fn allocate_small<C: Cpu>(
+        &self,
+        layout: Layout,
+        requested: Ctx,
+        cpu: &C,
+    ) -> Result<NonNull<u8>, AllocError> {
+        let miss = match self.small.take(layout, false) {
+            Ok(ptr) => return Ok(ptr),
+            Err(miss) => miss,
+        };
+        let ctx = requested.lowered(cpu.in_interrupt(), self.reclaim.held_by(cpu.id()));
+        add(&self.stats.slow[ctx.index()], 1);
+        let miss = match miss {
+            Miss::Busy if ctx.may_wait() => match self.small.take(layout, true) {
+                Ok(ptr) => return Ok(ptr),
+                Err(miss) => miss,
+            },
+            miss => miss,
+        };
+        if ctx.may_use_reserve() {
+            if miss == Miss::Busy {
+                add(&self.stats.refused[ctx.index()], 1);
+            }
+            self.small.drain_own(false);
+            return match self.reserve.take(layout, false) {
+                Ok(ptr) => {
+                    add(&self.stats.reserve_hits, 1);
+                    Ok(ptr)
+                }
+                Err(_) if miss == Miss::Busy => Err(self.stats.fail(layout, ctx, AllocError::Refused)),
+                Err(_) => Err(self.stats.fail(layout, ctx, AllocError::NoFrames)),
+            };
+        }
+        self.small.drain_own(true);
+        for other in 0..self.small.cpus() {
+            self.small.drain(other);
+        }
+        if ctx.may_shrink() {
+            self.reclaim(layout, cpu);
+        } else {
+            add(&self.stats.refused[ctx.index()], 1);
+        }
+        self.small
+            .take(layout, true)
+            .map_err(|_| self.stats.fail(layout, ctx, AllocError::NoFrames))
+    }
+
+    /// A request above a page, on the fixed heap.
     ///
     /// The first attempt takes the heap lock with `try_lock` in each context,
     /// so an uncontended request reads no per-CPU state. After a miss:
@@ -370,7 +504,7 @@ impl<M: Pool, R: Pool> Front<'_, M, R> {
     /// - `Atomic` takes no other step on the heap and tries the reserve;
     /// - `Normal` on an exhausted heap runs the shrinkers with interrupts
     ///   masked, holding no pool lock, and retries once.
-    pub fn allocate<C: Cpu>(
+    fn allocate_large<C: Cpu>(
         &self,
         layout: Layout,
         requested: Ctx,
@@ -406,17 +540,82 @@ impl<M: Pool, R: Pool> Front<'_, M, R> {
             add(&self.stats.refused[ctx.index()], 1);
             return Err(self.stats.fail(layout, ctx, AllocError::HeapExhausted));
         }
-        let target = layout.size().div_ceil(PAGE) + RECLAIM_BATCH_FRAMES;
-        let freed = cpu.masked(|| self.reclaim.run(cpu.id(), || self.shrinkers.reclaim(target)));
+        self.reclaim(layout, cpu);
+        self.main
+            .take(layout, true)
+            .map_err(|_| self.stats.fail(layout, ctx, AllocError::HeapExhausted))
+    }
+
+    /// 7.2 for `frames` frames asked for outside this front: a page fault's
+    /// frame, or a page table's. The frame allocator calls it when it has no
+    /// frame, and retries once when it returns a nonzero count. Returns the
+    /// frames given back.
+    ///
+    /// In an interrupt handler, or inside a shrinker, the request is
+    /// `Atomic`, which skips steps 2-4 (6.6), so it returns 0. Otherwise it
+    /// drains this CPU's magazines and then each other CPU's with `try_lock`
+    /// (steps 1-2), then runs the shrinkers, the slab shrinker first, for the
+    /// frames plus the batch (steps 3-4).
+    pub fn reclaim_frames<C: Cpu>(&self, frames: usize, cpu: &C) -> usize {
+        if cpu.in_interrupt() || self.reclaim.held_by(cpu.id()) {
+            return 0;
+        }
+        self.small.drain_own(false);
+        for other in 0..self.small.cpus() {
+            self.small.drain(other);
+        }
+        self.reclaim_pages(frames + RECLAIM_BATCH_FRAMES, cpu)
+    }
+
+    /// Run the shrinkers with interrupts masked, holding no pool lock, for
+    /// the request's frames plus the batch.
+    fn reclaim<C: Cpu>(&self, layout: Layout, cpu: &C) {
+        self.reclaim_pages(layout.size().div_ceil(PAGE) + RECLAIM_BATCH_FRAMES, cpu);
+    }
+
+    /// Run the shrinkers for `target` frames; returns the frames given back,
+    /// 0 when another CPU is reclaiming.
+    fn reclaim_pages<C: Cpu>(&self, target: usize, cpu: &C) -> usize {
+        // A shrinker that frees through the allocator leaves its blocks in
+        // this CPU's magazines, so the slab layer returns them afterwards;
+        // the count is the shrinkers' frames plus those pages.
+        let freed = cpu.masked(|| {
+            self.reclaim
+                .run(cpu.id(), || self.shrinkers.reclaim(target) + self.small.release_freed(target))
+        });
         match freed {
             Some(frames) => {
                 add(&self.stats.reclaim_runs, 1);
                 add(&self.stats.reclaim_frames, frames as u64);
+                frames
             }
-            None => add(&self.stats.reclaim_busy, 1),
+            None => {
+                add(&self.stats.reclaim_busy, 1);
+                0
+            }
         }
-        self.main
-            .take(layout, true)
-            .map_err(|_| self.stats.fail(layout, ctx, AllocError::HeapExhausted))
+    }
+
+    /// Free `ptr`, allocated for `layout`, to the layer that holds it,
+    /// chosen by its address (6.1): the reserve, the heap, or else the slab
+    /// layer, which checks `layout` against the slab's class.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` came from `allocate` and is not freed twice.
+    pub unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
+        if self.reserve.contains(ptr) {
+            unsafe { self.reserve.give(ptr) }
+        } else if self.main.contains(ptr) {
+            unsafe { self.main.give(ptr) }
+        } else {
+            unsafe { self.small.give(ptr, layout) }
+        }
+    }
+
+    /// Whether `ptr`, allocated for `old`, can keep its place as a block of
+    /// `new`: a slab object whose class serves both (6.6).
+    pub fn resizes_in_place(&self, ptr: NonNull<u8>, old: Layout, new: Layout) -> bool {
+        !self.reserve.contains(ptr) && !self.main.contains(ptr) && self.small.same_object(old, new)
     }
 }
