@@ -120,6 +120,14 @@ to the default tree. PR A adds a third slot:
   slots once (bounded by its RAM budget, at most 2 MiB). Attach then checks those four for a staging-tagged entry and
   refuses with `EBUSY` if it finds one. The decoded-node cache is keyed by block address and node generation (#3245) and
   the block cache by block address, so these two do not alias across roots.
+
+  *As built (PR A):* `memory::file_map`'s mapping state is the VNode's own `MapState` (`VNode::map`). It is
+  keyed by the VNode object, which `MountState::nodes` tracks per tagged inode number through a weak reference
+  and, while a mapping cache is retained, the `mapped` pin. Detach refuses while any staged VNode is referenced
+  beyond that pin, then removes each staged `NodeState` (dropping the pins outside the mount exclusion), so the
+  next attach opens fresh VNodes with empty mapping state. The purge also covers the `refresh` set and, inside
+  `Files`, the open-inode set, the extent maps and the directory cookie cache, which are keyed by tagged
+  numbers too.
 - The staging attachment has no on-disk record. After a crash or reboot, no tree is attached, and the draft is
   just a root.
 
@@ -136,10 +144,12 @@ The mount syscall (`kernel/src/fs/breenfs/mount.rs:12`) gains one source, alongs
 - refuses flags 1 with `EINVAL`. The existing `GenerationView` already gives read-only access.
 
 Unmount (`mount.rs:90`) checks for this mount before its existing branches, in this order:
-1. `registry::unmount(id, force)` removes the entry. `MountTable::remove` applies its existing busy check (pins
-   from open files and working directories in the mount) first, so a busy mount is refused before any change:
-   still registered, still attached.
-2. The syscall drops its resolved walk.
+1. The syscall drops its resolved walk, keeping only its target, because the walk's pin on the staging root
+   would count as a use.
+2. `writer.unpublish_staging(...)` refuses with `EBUSY` while a staged node is in use (an open file, a mapping or
+   a working directory, which holds the directory's node rather than a registry pin), and under the same mount
+   exclusion `registry::unmount(id, force)` removes the entry, with `MountTable::remove`'s own busy check. A
+   busy mount is refused before any change: still registered, still attached.
 3. `writer.detach_staging()` (3.1).
 
 It does not call `shutdown` on the shared writer. Detaching before removal would be the wrong order: a removal
@@ -161,7 +171,7 @@ after the clone would exist only in the old generation. PR A adds `ROOT_EPOCH` (
 `SNAPSHOT_NEXT` in `abi.rs`), an ioctl on any file in the mount that returns a `u64`:
 
 - The epoch increases with each change the booted tree (tag 0) admits: create, link, unlink, rename, write,
-  truncate, setattr and xattr changes.
+  truncate, setattr and xattr changes, and the mtime and ctime stamp of each FIFO write.
 - It does not change for atime-only touches (`record_touches`), for writes to the default tree (logs in `/var`,
   `/tmp`, `/run`), or for writes to the staging tree.
 - It is in memory only and restarts at 0 on each mount.
@@ -182,6 +192,27 @@ beside `ROOT_EPOCH`, for euid 0 only:
 Publish (4.6) freezes the running root and compares E2 with E1. From then until the reboot, no edit can land in
 the old root. If the trial rolls back, the old root boots again unfrozen, and the refused edits were refused, not
 lost.
+
+**Shared writable mappings (ruling DEV-44).** A process holding a writable `MAP_SHARED` page of a booted-root file
+changes the file without BreenFS admission (`memory/file_map.rs` installs a writable shared entry, and later stores
+fault no more). So a store after the clone leaves the epoch unchanged until writeback, and a store after the freeze
+could still land. PR A therefore adds, per DEV-44(2a):
+- `ROOT_FREEZE` refuses with `EBUSY` while any booted-tree file has a writable shared mapping, or mapped stores not
+  yet written back. It first writes back the stores of mappings already gone, which counts them in the epoch. The
+  refusal fills in the counts (`RootEpoch.writable_mappings` and `dirty_files`).
+- While the freeze holds, `mmap` with `PROT_WRITE` and `MAP_SHARED` of a booted-tree file, and `mprotect` adding
+  write to a shared mapping of one, fail with `EBUSY`. They are refused, not queued. A binding gaining shared write
+  authority raises the file's count and then reads the freeze flag, both under the file's map lock; the freeze
+  raises its flag and then reads the counts under the same locks. So either the freeze sees the binding or the
+  binding sees the freeze.
+- The deploy tooling (PR B) retries a refused freeze a bounded number of times, then stops and reports. It does not
+  force the freeze (DEV-44(2a)).
+
+**E3 replaces this refusal.** Per DEV-44(2b), the unified page cache effort (E3) replaces the refusal with the
+proper freeze: write back dirty shared pages, then write-protect shared file mappings so the next store faults and
+sleeps until thaw, using E2's sleeping faults and E3's dirty tracking. When E3 lands, `ROOT_FREEZE` no longer
+returns `EBUSY` for a mapping, and `mmap` and `mprotect` no longer refuse during a freeze; E3's design carries this
+as a requirement.
 
 ### 3.4 What PR A does not add
 
@@ -731,6 +762,68 @@ That is three reboots in total (one in step 1, two in step 2), plus the step-0 f
   after a torn rename (5.1), and the power-loss table (section 8) depends on recovering from one.
 - **The README section the brief calls 'Flash and rollback contract'** is "Kernel flash and /usr replacement" in
   `docs/metal/README.md`. Its rollback paragraph is the one #3263 links.
+
+### 10.1 PR A detail deviations (DEV-39(2))
+
+Each one resolves a detail the design left open or that the code shaped differently. The architectural
+additions are the ones DEV-44 rules: the freeze refusal and the mmap and mprotect hook.
+
+- **The epoch ioctls take a 24-byte `RootEpoch` argument** (`epoch`, `writable_mappings`, `dirty_files`), filled on
+  success and on a freeze refusal, instead of returning the epoch as the ioctl's value, because the existing BreenFS ioctls
+  (`SNAPSHOT_NEXT`, `SNAPSHOT_STATUS`, `SCRUB_STATUS` in `kernel/src/fs/breenfs/vfs.rs`) return their data through
+  the argument and DEV-44 needs the busy counts reported beside it. The codes are
+  `ROOT_EPOCH` `0xb824_1406`, `ROOT_FREEZE` `0xb824_1407` and `ROOT_THAW` `0xb824_1408`.
+- **"Root-volume file" in DEV-44 is a booted-tree file.** Default-tree files (`/etc`, `/var`, `/root` and the
+  other shared binds) are not frozen (3.3), so their writable shared mappings neither block the freeze nor are
+  refused, which is how DEV-44 says `/var` is treated.
+- **The freeze also refuses unwritten mapped stores** (`dirty_files`) that its own write-back left, because stores
+  of a mapping that has since closed are in neither E2 nor a refusal until they are written back.
+- **The epoch is advanced at each change's admission check, before its space reservation**, so a change later
+  refused for space still counts: the epoch reports changes conservatively, as 3.3 allows.
+- **`include_staging_tree` also refuses a root changed in the open transaction** (`EBUSY`), the Files-level form of
+  attach's quiescence loop: a clone not yet committed shares nodes the booted tree may hold privately.
+- **Attach does not require the default tree.** Any writable writer can attach a staging tree; on the R240 the
+  writer at `/` is the persistent one.
+- **Detach retries its commit at most three times** (queued closes, sync, then the checks) before `EBUSY`, so a
+  staged orphan whose last close lands mid-detach is reclaimed rather than refused.
+- **`/proc/mounts` prints the staging mount's source as `none`.** The mount entry holds `<name>` as its source,
+  but `mounts_text` prints a native source only for `/`; T-A4 checks the line as printed (claim-lint:ok:
+  kernel/src/fs/vfs/mount.rs `mounts_text`).
+- **T-A3, T-A5 and the DEV-44 check live in `tools/breenfs-host-tests/src/staging_tree.rs`**, included by
+  `vfs.rs` under `cfg(test)`, not in `tests/snapshot.rs`, because the adapter, its caches and its ioctls are
+  reachable only from the crate's unit-test modules. T-A1 stays in `tests/snapshot.rs` at the Files layer.
+- **T-A1 compares a path manifest** (type, permission bits, link count, and bytes or target per path) rather than
+  the migration-manifest TSV, whose encoder is userspace code the BreenFS host crate does not link.
+- **T-A5's aliased inodes are the next two numbers both clones allocate**, rather than literal inodes 300 and 301:
+  both clones share one `next_inode`, so the first two creates in each alias. The test stats A's inodes last before
+  detaching A and asserts the inode cache still holds them; without the purge, B's stat returns A's regular file.
+- **The freeze-race interleaving in T-A3** is a two-part write with `ROOT_FREEZE` run between the parts through a
+  test-only hook (`measurement::on_write_part`); the first part is counted in E2 and the second refused.
+- **T-A4 links `breenfs::mount::unmount` on the host.** `mount.rs` builds in `tools/vfs-host-tests` with its
+  syscall-facing `mount` and path resolution kernel-only, so the test drives the same native entry and
+  `mount_root_volume`. The host has no path walk, so the access check applies the production `Credentials::may`
+  search test to `/run/breenix/paired` (0700) for a non-root credential.
+- **T-A2 samples each crash window**: 17 evenly spaced write selections for a window of at most 12 writes, the
+  crash corpus's representative slice for longer ones, each recovered writably and checked with
+  `breenfs-check --full`.
+
+Review of PR #3273 (the same rule):
+- **A staged node in use refuses `MNT_FORCE` too.** For other mounts the force flag invalidates held handles; a
+  staged node cannot be invalidated, and a forced removal would leave the tree attached and claimed with no mount to
+  unmount.
+- **A frozen FIFO write keeps the FIFO's old times.** Its mtime and ctime stamp is a booted-tree change made without
+  admission (`touch`), so it is counted in an atomic beside the epoch and dropped while frozen, as on a read-only
+  mount, rather than failing the write.
+- **A frozen set-ID mapping's privilege clear returns `EBUSY`.** `clear_mapping_privilege` runs only for a shared
+  write mapping, which the freeze refuses with `EBUSY`, so that edit's refusal is the same error rather than
+  `EROFS`.
+- **mmap claims shared write authority before clearing the range** (`file_map::SharedWriteClaim`), so a refused
+  `MAP_FIXED` leaves the mapping it would replace. `bind` adopts the claim's count.
+- **An `EFAULT` from the freeze or the thaw leaves the flag as it was.** The freeze writes a zeroed result first
+  and restores the flag if the final copy fails; the thaw reports the epoch before it clears the flag.
+- **The freeze writes back only the booted tree's mappings**, the files `root_epoch` counts.
+- **Attach reads the draft's root directory**, past `observed`, and refuses a damaged one with its error. A
+  metadata `EIO` through `observed` latches the mount failed, and that mount is the booted writer.
 
 ## 11. For the coordinator
 
