@@ -2303,6 +2303,8 @@ impl ConnTable {
     fn reap(&mut self, now: u64) {
         let mut index = 0;
         while index < self.conns.len() {
+            #[cfg(test)]
+            lookup_probe::visit(lookup_probe::Index::Established);
             if self.conns.get(index).expired(now) {
                 self.remove_at(index);
             } else {

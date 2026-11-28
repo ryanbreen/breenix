@@ -124,6 +124,9 @@ fn indexed_demux_and_bind_consult_only_their_buckets() {
         .unwrap();
     listen(LOCAL_IP, listener_collision).unwrap();
 
+    // A packet after the old sweep interval must inspect only its own bucket
+    // even when all 96 unrelated connections are still live.
+    harness::advance(1000);
     let demux = visits(Index::Established, || flow.send(9));
     assert_eq!(flow.read(9), 9);
     assert_eq!(tcp_get_state(&other), Some(TcpState::SynSent));
