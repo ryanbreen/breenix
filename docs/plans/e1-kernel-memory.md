@@ -429,10 +429,25 @@ filters it in one place. No fixed array sits between the two.
     - The base it uses becomes the lowest one it found. Today the code takes the first entry
       (`main.rs:148-149`). The two differ only if the firmware lists RAM out of address order.
     - The filter loop (`main.rs:376-387`) goes, and `ram_region_count` is written as 0.
-  - The runtime-region loop (`main.rs:388-399`) keeps reading the same final map.
-  - From the returned map's `meta()` and `buffer()`, the loader records `map_phys`, `map_size`,
-    `descriptor_size` and `descriptor_version` in `HardwareConfig` (4.5.3), and leaks the owner with
-    `core::mem::forget`.
+  - The loader checks the map's metadata before it reads a single descriptor. Today's runtime-region
+    loop (`main.rs:388-399`) iterates `final_map.entries()`, and the crate's `MemoryMap` API hands out a
+    `&MemoryDescriptor` at each multiple of `desc_size`. At a 44-byte stride the second of those
+    references is misaligned, so the loader would act on a malformed map before the kernel's checks run.
+    `arm64_boot_contract::uefi_map::check_meta(meta, buffer_len)` comes first, with the kernel's
+    structural rules 2 to 4 (4.5.5), plus two more:
+    - `meta().map_size` is at most `buffer().len()`. The wire length is `meta().map_size`, the bytes the
+      firmware wrote. `buffer().len()` also counts the pool's spare capacity.
+    - `meta().desc_size` converts to `u32` without loss, checked with `u32::try_from`.
+  - When the check passes, the runtime-region loop reads the final map through the contract's
+    stride-aware reader, which reads each field by byte offset from the slice
+    `buffer()[..meta().map_size]`. It forms no `&MemoryDescriptor`, and `final_map.entries()` is not
+    used.
+  - When the check fails, the loader cannot go back to the firmware, because boot services have exited.
+    It skips the runtime-region loop, writes `rtc_get_time = 0`, and records the failed rule in
+    `UefiMapHandoff.loader_check`. The kernel then refuses the map with that rule named (4.5.5).
+  - The loader records `map_phys` (`buffer().as_ptr()`), `map_size` (`meta().map_size`),
+    `descriptor_size`, `descriptor_version` and `loader_check` in `HardwareConfig` (4.5.3), and leaks the
+    owner with `core::mem::forget`.
   - The code between the exit and the jump does not allocate, as today.
   - The exit and these steps are one function, `handoff::exit_and_encode(config)`, which `main.rs`
     calls. E1-1's host test runs that same function over a fake firmware table.
@@ -446,7 +461,8 @@ filters it in one place. No fixed array sits between the two.
     `uart_base_phys` stay at offsets 0, 4 and 8. The loader's handoff stub already reads
     `uart_base_phys` at `[x3, #8]` (`kernel_entry.rs:74`).
   - `UefiMapHandoff`, appended after `boot_seed`: `map_phys: u64`, `map_size: u64`,
-    `descriptor_size: u32` and `descriptor_version: u32`.
+    `descriptor_size: u32`, `descriptor_version: u32`, `loader_check: u32` (0, or the number of the rule
+    the loader's check refused, 4.5.2) and `_reserved: u32`.
 - `HARDWARE_CONFIG_VERSION` becomes 8. A v8 loader writes both parts, with `ram_region_count = 0`. The
   `ram_regions` array keeps its place in the layout, but v8 does not use it.
 - The kernel accepts versions 7 and 8 with the magic.
@@ -571,6 +587,8 @@ is counted.
 
 Structural, in order:
 
+0. `loader_check` is 0. Otherwise the kernel refuses with the loader's rule. It then reads no descriptor,
+   and it still runs its own rules below on the metadata, so the boot line names both.
 1. `map_phys` is not 0 and is 8-byte aligned (the pool's alignment), and `map_phys + map_size` does not
    overflow.
 2. `descriptor_version` is 1.
@@ -1241,15 +1259,16 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
 - Change, `arm64-boot-contract`:
   - one `HardwareConfig` (`HardwareConfigV7` plus `UefiMapHandoff`), `HARDWARE_CONFIG_VERSION = 8`, and
     `BOOT_MAP_MEMORY_TYPE`;
-  - a stride-aware descriptor reader with the checks of 4.5.5, which the kernel uses;
+  - a stride-aware descriptor reader with the checks of 4.5.5, which the kernel and the loader's
+    runtime-region loop use, and `uefi_map::check_meta`, which the loader runs first (4.5.2);
   - `encode_uefi_map`, which the loader uses to fill `UefiMapHandoff` from the final map's `meta()` and
     buffer;
   - `handoff_decision(elf)`, which the loader uses to proceed or refuse, and the bounded
     `find_object_symbol` it reads the version with (4.5.3).
 - Change, `parallels-loader`:
   - `exit_boot_services` with `BOOT_MAP_MEMORY_TYPE`;
-  - `handoff::exit_and_encode`, which runs the exit, the runtime-region loop and `encode_uefi_map`, and
-    writes `ram_region_count = 0`;
+  - `handoff::exit_and_encode`, which runs the exit, the metadata check, the runtime-region loop through
+    the stride-aware reader, and `encode_uefi_map`, and writes `ram_region_count = 0`;
   - the buffer's pages mapped in TTBR0 only, writable with PXN and UXN set, splitting a block whose
     attributes are not writable normal memory (4.5.4);
   - `handoff_decision` before exit;
@@ -1273,7 +1292,7 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
     - The loader side is its whole post-exit sequence, not the encoder alone. In production, `main.rs`
       calls one function, `handoff::exit_and_encode(config)`, for everything from the exit to the
       encoded handoff. That covers `uefi::boot::exit_boot_services(MemoryType::custom(BOOT_MAP_MEMORY_TYPE))`,
-      the runtime-region loop and `encode_uefi_map`. The early map read,
+      the metadata check of 4.5.2, the runtime-region loop and `encode_uefi_map`. The early map read,
       `populate_ram_regions`, runs before it, as in production.
     - The firmware under it is a fake. The test crate depends on `uefi` 0.33, without the loader's
       `panic_handler` and `global_allocator` features, and installs a fake system table with the crate's
@@ -1334,8 +1353,18 @@ the gain (DEV-31(2)), and from the program's one final run (DEV-30(2)).
     - Structural cases are each refused with their own reason: `descriptor_version` 2; `descriptor_size`
       36 and 44; a `map_size` that is not a multiple; `map_phys` not 8-byte aligned; a buffer page that
       does not translate, one that translates read-only, one that translates to another physical address,
-      and one that translates as device memory; and a buffer that no `BOOT_MAP_MEMORY_TYPE` descriptor covers, which is the map
-      a `GetMemoryMap()` taken before the allocation would give.
+      and one that translates as device memory; and a buffer that no `BOOT_MAP_MEMORY_TYPE` descriptor
+      covers, which is the map a `GetMemoryMap()` taken before the allocation would give.
+    - Loader-side metadata. These run through `handoff::exit_and_encode` over the fake firmware. In each,
+      the fake reports one bad value: `DescriptorVersion` 2, `DescriptorSize` 36 or 44, a `MapSize` that
+      is not a multiple of the stride, and a `MapSize` larger than the pool it was given. Each map holds
+      runtime descriptors. For each:
+      - the runtime-region loop does not run, so `runtime_region_count` is 0 and `rtc_get_time` is 0;
+      - `loader_check` names the rule;
+      - the kernel refuses with that rule.
+      Check first: today's loader runs its typed runtime-region loop on each. At the 44-byte stride it
+      reads descriptors at offsets that are not multiples of 8, records runtime regions from them, and
+      hands off with no refusal, which is red.
     - Per-descriptor cases each lose exactly the stated bytes and no others, and the counts match: a
       conventional descriptor that overlaps an `EfiACPIMemoryNVS` descriptor by one page, an unaligned
       start, a page count of 0, a range past `0xffff_ffff_ffff_f000`, and a conventional descriptor with
