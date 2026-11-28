@@ -293,10 +293,13 @@ fn hangup_daemon() {
         if PENDING_HANGUPS.iter().any(|pending| pending.load(Ordering::SeqCst) != 0) {
             continue;
         }
-        // The brake selects the completion's sleeping wait, as in a syscall.
-        crate::per_cpu::preempt_disable();
+        // A braked level, depth and baseline together, selects the
+        // completion's sleeping wait, as in a syscall (park::Braked). A bare
+        // preempt_disable() is a held level at baseline 0, and the wait would
+        // spin this CPU for the whole timeout.
+        let braked = crate::task::park::Braked::new();
         let _ = HANGUP_KICK.wait_timeout_uninterruptible(1, HANGUP_DAEMON_IDLE_NS);
-        crate::per_cpu::preempt_enable();
+        drop(braked);
     }
 }
 
