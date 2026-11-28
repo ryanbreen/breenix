@@ -556,6 +556,12 @@ concurrency, loss or RTT named in the prediction.
   urgent and Limited Transmit rules count single segments.
 - `/proc/net/tcp_stats` adds `offload_batches` and `offload_segments`, the
   logical on-wire segments those batches stand for.
+- A read that reopens the receive window sends the update at once, with any
+  pending delayed ACK, when the window offered before it was below half the
+  buffer, because the 1024-entry receive ring lets a whole window arrive in
+  one burst and the update then waited for the 10 ms delayed-ACK timer each
+  round, holding the host-to-guest row at 10.04 MB/s on the first after
+  series (e10-2-20261128-after).
 - A transmit queue keeps completion interrupts suppressed while it has room
   and asks for one at the next completion when a submission finds it full,
   because the transmit path reclaims on submit and only a stalled queue needs

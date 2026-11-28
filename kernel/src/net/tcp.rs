@@ -3498,9 +3498,13 @@ fn update_window(conn: &mut TcpConnection) {
     let shift = conn.recv_shift(false);
     let offered = conn.advertised_space();
     let window = (conn.rcv_window(false) as usize) << shift;
-    // A pending ACK already carries the update. Reopen a closed window
-    // immediately because the peer cannot send a second segment.
-    if window > offered && (conn.ack_deadline_ms.is_none() || offered >> shift == 0) {
+    // `rcv_window` grows the window only by a segment or half the buffer. A
+    // pending delayed ACK carries that update while the peer still has half
+    // the buffer or more to send into. Below that the peer can be held by the
+    // window, so the update goes now, with any pending ACK, rather than at the
+    // delayed-ACK timer: a peer that fills the window each round trip would
+    // otherwise wait that timer out on each round. A closed window is below it.
+    if window > offered && (conn.ack_deadline_ms.is_none() || offered < conn.rcv_cap / 2) {
         conn.send_ack();
     }
 }
