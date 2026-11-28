@@ -15,6 +15,19 @@ pub mod event_queue;
 #[path = "../../../kernel/src/task/park_core.rs"]
 pub mod park_core;
 
+/// E2.4's AHCI admission decision (`drivers/ahci/admission.rs`), compiled
+/// unchanged. It names its dependencies by their kernel paths.
+#[path = "../../../kernel/src/block/read_failure.rs"]
+pub mod read_failure;
+pub mod block {
+    pub use crate::read_failure;
+}
+pub mod task {
+    pub use crate::park_core;
+}
+#[path = "../../../kernel/src/drivers/ahci/admission.rs"]
+pub mod admission;
+
 pub mod model;
 
 /// E2.1's allocation budget, so a failed reservation runs the real
@@ -25,3 +38,6 @@ mod budget;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod block_io;

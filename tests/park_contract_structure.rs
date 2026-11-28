@@ -217,20 +217,7 @@ const CLASSIFIED: &[(&str, &str, &str, &str)] = &[
     ("DEPTH", "kernel/src/net/mod.rs", "drop", "runs pending softirqs on the last release, as per_cpu does"),
     ("DEPTH", "kernel/src/task/scheduler.rs", "note_x86_interrupt_return", "diagnostic: records a dispatchable return tick"),
     ("DEPTH", "kernel/src/task/softirqd.rs", "init_online_daemons", "boot order: CPU 0 is still pinned by kernel_main"),
-    ("DEPTH", "kernel/src/drivers/ahci/mod.rs", "start_completion_pollers", "boot order: CPU 0 is still pinned by kernel_main"),
     ("DEPTH", "kernel/src/arch_impl/aarch64/context_switch.rs", "can_dispatch_here", "the scheduler's own dispatch gate on depth; the exit's decision about the thread is park_core::exit_switch (E2.3)"),
-    // E2.4 moves the other drivers' waits to the contract (design §6, "Other drivers").
-    ("DEPTH", "kernel/src/drivers/nvme/mod.rs", "request_gate_can_sleep", "E2.4: NVMe request gate"),
-    ("DEPTH", "kernel/src/drivers/virtio/block.rs", "block_request_gate_can_sleep", "E2.4: virtio-blk PCI request gate"),
-    ("DEPTH", "kernel/src/drivers/virtio/block_mmio.rs", "block_mmio_request_gate_can_sleep", "E2.4: virtio-blk MMIO request gate"),
-    ("DEPTH", "kernel/src/drivers/virtio/block_mmio.rs", "enter", "E2.4: virtio-blk MMIO request gate"),
-    ("DEPTH", "kernel/src/drivers/virtio/sound.rs", "sound_request_gate_can_sleep", "E2.4: virtio-sound PCI request gate"),
-    ("DEPTH", "kernel/src/drivers/virtio/sound_mmio.rs", "sound_mmio_request_gate_can_sleep", "E2.4: virtio-sound MMIO request gate"),
-    ("DEPTH", "kernel/src/gpu/arch.rs", "poll_pause", "E2.4: GPU receipt wait"),
-    ("DEPTH", "kernel/src/gpu/mod.rs", "wait_for_completion", "E2.4: GPU completion wait"),
-    ("DEPTH", "kernel/src/gpu/mod.rs", "wait_for_traced", "E2.4: GPU completion wait"),
-    ("DEPTH", "kernel/src/gpu/gk208/ce/recovery.rs", "pause", "E2.4: GPU copy-engine recovery wait"),
-    ("LEVEL", "kernel/src/gpu/gk208/ce/recovery.rs", "pause", "E2.4: GPU copy-engine recovery wait"),
     // Syscall waits that release the syscall's level by hand. Each syscall
     // class moves onto park::wait when E2.10 makes it preemptible (design
     // §4.4), because at baseline 0 the hand release would underflow.

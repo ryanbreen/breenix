@@ -177,18 +177,16 @@ pub fn run_post_init_self_tests() {
     if crate::arch_impl::x86_64::irq::pci_intx_routing_known() {
         crate::interrupts::enable_irq10();
         crate::interrupts::enable_virtio_irq();
+        // The VirtIO block devices' completion source (design §6): a
+        // sleeping request waits for this line from here on.
+        crate::task::park::arm_completion_source(crate::task::park::BlockSource::VirtioBlkPci, 0);
     }
 
-    // The storage self-tests wait for block completions, so they run on the
-    // boot_storage kernel thread (`run_storage_self_tests`), not here on the
-    // x86 boot continuation, which is CPU 0's idle thread once the APs
-    // dispatch (E2.4x, ruling DEV-48).
-
-    if virtio::sound::is_initialized() {
-        if let Err(e) = virtio::sound::test_silence() {
-            log::warn!("VirtIO sound test failed: {}", e);
-        }
-    }
+    // The storage self-tests, and the sound device's silence test, wait for
+    // device completions, so they run on the boot_storage kernel thread
+    // (`run_storage_self_tests`), not here on the x86 boot continuation,
+    // which is CPU 0's idle thread once the APs dispatch (E2.4x, ruling
+    // DEV-48): since E2.4 idle may not wait for a device (design §6).
 
     // BCM5720 bring-up probes wait for link and take frames by MSI.
     bcm5720::start_networking();
@@ -217,6 +215,14 @@ pub fn run_storage_self_tests() {
     if nvme::controller_count() > 0 {
         if let Err(e) = nvme::test_read() {
             log::warn!("NVMe test failed: {}", e);
+        }
+    }
+
+    // Not storage, but it waits for a device completion too, which idle may
+    // not do since E2.4 (design §6).
+    if virtio::sound::is_initialized() {
+        if let Err(e) = virtio::sound::test_silence() {
+            log::warn!("VirtIO sound test failed: {}", e);
         }
     }
 }

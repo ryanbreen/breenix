@@ -644,25 +644,27 @@ fn the_ttbr0_discipline_publishes_both_shadows() {
     );
 }
 
+/// Before E2.4 init was the one thread that reached EL0 without a scheduler
+/// dispatch, so its launcher installed its root itself and had to reconcile
+/// the shadows. Since E2.4 (design §6) the `init-loader` kernel thread starts
+/// PID 1 through the scheduler, so init's root is installed by the dispatch,
+/// which the census above covers, and no launcher installs one or returns to
+/// EL0 by itself.
 #[test]
-fn init_reaches_userspace_on_the_root_the_shadows_name() {
+fn init_reaches_userspace_through_a_scheduler_dispatch() {
     let main = repo_text("kernel/src/main_aarch64.rs");
-    let launch = function_body(&main, "launch_init_from_elf");
-    assert!(
-        launch.contains("ttbr0::adopt_process_ttbr0(ttbr0_value)"),
-        "init is the one thread that reaches EL0 without a scheduler dispatch, so its own \
-         install has to reconcile the shadows"
-    );
-    assert!(
-        !launch.contains("msr ttbr0_el1"),
-        "a raw install here leaves the idle redirect kernel root armed in next_cr3"
-    );
-    let install = launch.find("adopt_process_ttbr0").unwrap();
-    let eret = launch.rfind("return_to_userspace(entry_point").unwrap();
-    assert!(
-        install < eret,
-        "the shadows must agree with the register before the ERET to EL0"
-    );
+    assert!(!main.contains("fn launch_init_from_elf"), "the boot continuation's own init launch is back");
+    let start = function_body(&main, "start_init_from_elf");
+    assert!(start.contains("kernel::task::scheduler::spawn(init_thread)"), "PID 1 is not started through the scheduler");
+    for bypass in ["msr ttbr0_el1", "adopt_process_ttbr0", "return_to_userspace", "spawn_as_current"] {
+        assert!(!start.contains(bypass), "start_init_from_elf bypasses the dispatch with {bypass}");
+    }
+    let disk = repo_text("kernel/src/boot/test_disk.rs");
+    let fallback = function_body(&disk, "run_userspace_from_disk");
+    assert!(fallback.contains("crate::task::scheduler::spawn(thread)"), "init_shell is not started through the scheduler");
+    for bypass in ["switch_to_process_page_table", "return_to_userspace", "set_current_thread"] {
+        assert!(!fallback.contains(bypass), "the init_shell fallback bypasses the dispatch with {bypass}");
+    }
 }
 
 #[test]

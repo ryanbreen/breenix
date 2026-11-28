@@ -50,7 +50,9 @@ fn block_error(error: breenfs_host_tests::block::BlockError) -> BlockError {
             BlockError::AhciRead(match error {
                 Source::Range => Target::Range,
                 Source::BufferSize => Target::BufferSize,
-                Source::CannotPark => Target::CannotPark,
+                Source::NotSleepable => Target::NotSleepable,
+                Source::EarlyBootPortOwned => Target::EarlyBootPortOwned,
+                Source::CompletionNotReady => Target::CompletionNotReady,
                 Source::Interrupted => Target::Interrupted,
                 Source::WaiterAllocation => Target::WaiterAllocation,
                 Source::WaitPublication => Target::WaitPublication,

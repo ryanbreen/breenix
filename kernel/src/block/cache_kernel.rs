@@ -45,7 +45,8 @@ impl KernelWait {
     /// Sleep until the generation moves past `observed` or `deadline`. The
     /// callers recheck the generation, so each end returns to them. A
     /// context that may not park gets a receipt (`task::park`) and returns at
-    /// once; the boot continuation keeps its pre-E2.2 sleep until E2.4.
+    /// once. Since E2.4 the boot continuation reads no storage, so it has no
+    /// sleep of its own here.
     fn wait_once(&self, observed: u64, deadline: Option<u64>) {
         use crate::task::park::{self, WaitEnd, WaitMode};
         assert_io_context();
@@ -55,7 +56,7 @@ impl KernelWait {
         if crate::task::scheduler::current_thread_id().is_none() {
             return;
         }
-        let end = park::wait_allowing_boot_idle(
+        let end = park::wait(
             &self.queue,
             || self.generation() != observed,
             deadline,

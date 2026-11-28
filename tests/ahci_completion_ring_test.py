@@ -169,9 +169,15 @@ fn record_wrap_dump() {
                 ".wait_timeout_uninterruptible_observed(cmd_num,TIMEOUT_NS,|stage|trace_wait_event(port,cmd_num,stage))",
                 ".wait_timeout_uninterruptible(cmd_num,TIMEOUT_NS)")
             self.assertEqual(hashlib.sha256(actual.encode()).hexdigest(), digest, name)
+        # E2.4 (design §6): the wait decides by the block I/O caller rule and
+        # its sleep moved into `sleep`, where the observations now sit. Both
+        # bodies are pinned with the observations erased.
         observed = normalized(without_observations(body(completion, "wait_timeout_inner_observed")))
         self.assertEqual(hashlib.sha256(observed.encode()).hexdigest(),
-                         "ab810fbeb732e417729c911d1333ff47d7f7cb6c6df43418fab77016582534ba")
+                         "144b97b0b0f42883926aa4bee7362c094a373876737f73b2ff9f07863c742288")
+        observed_sleep = normalized(without_observations(body(completion, "sleep")))
+        self.assertEqual(hashlib.sha256(observed_sleep.encode()).hexdigest(),
+                         "a500a16c4bc815b32e545a08b06e6ebfb9dee8a7358411cb29dde940fc5e8ee1")
         self.assertEqual(normalized(body(completion, "wait_timeout_inner")),
                          "{self.wait_timeout_inner_observed(expected_token,timeout_ns,wait_mode,|_|{})}")
         self.assertIn("observe(WaitStage::Park);", completion)

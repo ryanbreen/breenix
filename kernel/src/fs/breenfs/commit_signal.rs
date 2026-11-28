@@ -39,14 +39,14 @@ impl WakeSignal {
     /// kill ends the wait with EINTR: the kill's wake returns the thread to
     /// the park, and its publication is then refused (`task::park`). A
     /// context that may not park gets a receipt and EINTR, so its caller
-    /// unwinds; the boot continuation keeps its pre-E2.2 sleep until E2.4.
+    /// unwinds. Since E2.4 the boot continuation reads no storage.
     #[cfg(not(test))]
     pub fn wait(&self, observed: u64, deadline: Option<u64>) -> Result<(), Errno> {
         use crate::task::{park::{self, WaitEnd, WaitMode}, thread::current_wait_must_unwind};
         const INTERRUPTED: Errno = Errno(crate::syscall::errno::EINTR);
         if current_wait_must_unwind() { return Err(INTERRUPTED); }
         crate::block::cache_kernel::assert_io_context();
-        let end = park::wait_allowing_boot_idle(&self.queue, || self.epoch() != observed, deadline, WaitMode::Uninterruptible);
+        let end = park::wait(&self.queue, || self.epoch() != observed, deadline, WaitMode::Uninterruptible);
         let result = match end {
             Ok(WaitEnd::Condition | WaitEnd::Woken | WaitEnd::Timeout | WaitEnd::Interrupted(_)) => Ok(()),
             Ok(WaitEnd::NoMemory) => {

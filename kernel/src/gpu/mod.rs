@@ -2287,10 +2287,11 @@ fn wait_for_completion<T>(deadline: Option<u64>, interruptible: bool, mode: Comp
                 .unwrap_or_else(|| now_ns().saturating_add(100_000)))
         } else { None };
         let wake = probe.map(|at| deadline.unwrap_or(u64::MAX).min(at)).or(deadline);
-        let unheld = crate::per_cpu::preempt_count() == 0;
-        if unheld { crate::per_cpu::preempt_disable(); }
+        // The prepared wait holds one braked level through publication and
+        // its checks; a kernel thread at baseline 0 takes it (`task::park`).
+        let braked = crate::task::park::braked_for_prepared_wait();
         let woke = wait_event_prepared(seen, wake, mode != CompletionWait::Worker && probe.is_some());
-        if unheld { crate::per_cpu::preempt_enable(); }
+        drop(braked);
         if woke.is_err() && interruptible { return Err(Stop::Interrupted); }
     }
 }
@@ -2381,16 +2382,11 @@ fn wait_for_traced<T>(deadline: Option<u64>, interruptible: bool, mut f: impl Fn
             continue;
         }
         let wake = Some(deadline.unwrap_or(u64::MAX).min(now_ns().saturating_add(EXAMINE_NS)));
-        // A queued wait holds the one preemption level syscall entry takes, and
+        // A queued wait holds the one braked level syscall entry takes, and
         // `wait_prepared` releases it only for the halt. A kernel thread (the console's
-        // render thread) runs at count 0, so it takes the level here. Released unheld,
-        // the count underflows, the halt sees a caller that cannot be preempted and keeps
-        // the CPU, and the request this wait needs stays queued for a kgpu waiting on
-        // that CPU (#1826).
-        let unheld = crate::per_cpu::preempt_count() == 0;
-        if unheld {
-            crate::per_cpu::preempt_disable();
-        }
+        // render thread) runs at baseline 0, so it takes a syscall's shape here, one
+        // `park::Braked` level (#1826).
+        let braked = crate::task::park::braked_for_prepared_wait();
         #[cfg(target_arch = "x86_64")]
         let blocked = trace.map(|_| (now_ns(), crate::time::get_ticks()));
         #[cfg(target_arch = "x86_64")]
@@ -2404,9 +2400,7 @@ fn wait_for_traced<T>(deadline: Option<u64>, interruptible: bool, mut f: impl Fn
             // outstanding work, for which the caller hands progress to kgpu.
             t.blocked(stage, if polled { 1 } else { 2 }, at, tick);
         }
-        if unheld {
-            crate::per_cpu::preempt_enable();
-        }
+        drop(braked);
         if woke.is_err() && interruptible {
             return Err(Stop::Interrupted);
         }

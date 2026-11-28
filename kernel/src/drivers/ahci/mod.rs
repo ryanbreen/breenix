@@ -23,6 +23,9 @@ use spin::{Mutex, MutexGuard};
 
 use crate::task::completion::{Completion, WaitStage};
 
+mod admission;
+use admission::Admission;
+use crate::task::park::IoContext;
 mod command_ring;
 use command_ring::{CommandRing, Event, EventKind};
 mod geometry;
@@ -415,21 +418,18 @@ fn io_tid() -> Option<u64> {
 static PORT_IO_WAITERS: [crate::task::waitqueue::WaitQueueHead; MAX_PORTS] =
     [const { crate::task::waitqueue::WaitQueueHead::new() }; MAX_PORTS];
 
-#[cfg(target_arch = "aarch64")]
-#[inline]
-fn relax_port_io_wait() {
-    unsafe {
-        core::arch::asm!("yield", options(nomem, nostack));
-    }
-}
-
 /// Acquire exclusive ownership of a port's slot-0 I/O lifecycle.
 ///
-/// Returns with the port mutex held and the caller recorded as its owner.
+/// Returns with the port mutex held, the caller recorded as its owner, and
+/// the caller's context, which picks how its commands are waited for. The
+/// block I/O caller rule decides admission (`admission::decide`, design §6):
+/// a sleeping caller parks for a busy port; early boot owns the controller
+/// and is refused a port another thread owns; any other context is refused,
+/// with a receipt, whatever the port's state.
 fn begin_port_io(
     port: usize,
     read: bool,
-) -> Result<MutexGuard<'static, ()>, (AhciReadError, u64)> {
+) -> Result<(MutexGuard<'static, ()>, IoContext), (AhciReadError, u64)> {
     let deadline = {
         let (secs, nanos) = crate::time::get_monotonic_time_ns();
         (secs * 1_000_000_000 + nanos).saturating_add(AHCI_TIMEOUT_SECS * 1_000_000_000)
@@ -438,73 +438,81 @@ fn begin_port_io(
         if read && crate::task::thread::current_wait_must_unwind() {
             return Err((AhciReadError::Interrupted, PORT_IO_OWNER[port].load(Ordering::Acquire)));
         }
+        // The caller's context, read before the port lock is taken.
+        let context = crate::task::park::context_inputs();
+        let token_held = crate::task::park::early_boot_io_held();
         let guard = PORT_IO_LOCK[port].lock();
         let owner = PORT_IO_OWNER[port].load(Ordering::Acquire);
-        if owner == 0 {
-            PORT_IO_OWNER[port].store(io_tid().unwrap_or(OWNER_WITHOUT_TID), Ordering::Release);
-            if PORT_RECOVERY[port].load(Ordering::Acquire) == PORT_READY {
-                return Ok(guard);
+        let io = match admission::decide(context, token_held, owner) {
+            Admission::Acquire(io) => io,
+            Admission::Refuse(error) => {
+                drop(guard);
+                crate::task::park::record_io_refusal(crate::task::park_core::classify(context));
+                return Err((error, owner));
             }
-            // Keep logical ownership without holding a lock during recovery.
-            drop(guard);
-            let result = ensure_port_ready(AHCI_ABAR.load(Ordering::Relaxed), port);
-            let guard = PORT_IO_LOCK[port].lock();
-            if let Err(error) = result {
-                end_port_io(port, guard);
-                return Err((AhciReadError::Setup(error), 0));
-            }
-            return Ok(guard);
-        }
-        drop(guard);
-        // The park contract decides whether this context may wait
-        // (`task::park`). ARM64 boot loads PID 1's image before the timer
-        // starts, which is EarlyBoot, so it polls. A refused context gets a
-        // receipt; E2.4 removes CannotPark and the polling fallback (design
-        // §6).
-        if crate::task::park::require_sleepable().is_err() {
-            // Refuse this context on x86 and retain ARM64's polling fallback.
-            #[cfg(target_arch = "x86_64")]
-            return Err((AhciReadError::CannotPark, owner));
-            #[cfg(target_arch = "aarch64")]
-            {
-                relax_port_io_wait();
+            Admission::Park => {
+                drop(guard);
+                let (secs, nanos) = crate::time::get_monotonic_time_ns();
+                if secs * 1_000_000_000 + nanos >= deadline {
+                    return Err((AhciReadError::AdmissionTimeout, owner));
+                }
+                park_for_port(port, read, owner, deadline)?;
                 continue;
             }
-        }
-        let (secs, nanos) = crate::time::get_monotonic_time_ns();
-        if secs * 1_000_000_000 + nanos >= deadline {
-            return Err((AhciReadError::AdmissionTimeout, owner));
-        }
-        // The park releases the caller's baseline for the switch and
-        // restores it (`task::park`). x86 syscall entry keeps IF clear; the
-        // switch enables interrupts around HLT and the wait restores the
-        // entry mask, so IF is not a prerequisite for parking. Each end
-        // loops back to the owner check above.
-        use crate::task::park::{WaitEnd, WaitMode};
-        let result = match crate::task::park::wait(
-            &PORT_IO_WAITERS[port],
-            || PORT_IO_OWNER[port].load(Ordering::Acquire) == 0,
-            Some(deadline),
-            WaitMode::Uninterruptible,
-        ) {
-            Ok(WaitEnd::Condition | WaitEnd::Woken | WaitEnd::Timeout | WaitEnd::Interrupted(_)) => Ok(()),
-            Ok(WaitEnd::NoMemory | WaitEnd::Killed) if read => {
-                if crate::task::thread::current_wait_must_unwind() {
-                    Err((AhciReadError::Interrupted, owner))
-                } else {
-                    // The waiter entry is gone. Let the port owner run and
-                    // retry admission within the original deadline.
-                    crate::block::cache_kernel::park_for_wait_retry();
-                    Ok(())
-                }
-            }
-            Ok(WaitEnd::NoMemory) => Err((AhciReadError::WaiterAllocation, owner)),
-            Ok(WaitEnd::Killed) => Err((AhciReadError::WaitPublication, owner)),
-            // The context changed between the check and the wait; the check
-            // above refuses or polls on the next pass.
-            Err(_) => Ok(()),
         };
-        result?;
+        // A sleeping caller needs something to complete its commands on
+        // this CPU: the controller's interrupt or this CPU's completion
+        // poller (DEV-48(3)). A CPU without one is not ready: an error, never
+        // a poll.
+        if io == IoContext::Sleepable && !completion_ready_here() {
+            drop(guard);
+            return Err((AhciReadError::CompletionNotReady, owner));
+        }
+        PORT_IO_OWNER[port].store(io_tid().unwrap_or(OWNER_WITHOUT_TID), Ordering::Release);
+        if PORT_RECOVERY[port].load(Ordering::Acquire) == PORT_READY {
+            return Ok((guard, io));
+        }
+        // Keep logical ownership without holding a lock during recovery.
+        drop(guard);
+        let result = ensure_port_ready(AHCI_ABAR.load(Ordering::Relaxed), port);
+        let guard = PORT_IO_LOCK[port].lock();
+        if let Err(error) = result {
+            end_port_io(port, guard);
+            return Err((AhciReadError::Setup(error), 0));
+        }
+        return Ok((guard, io));
+    }
+}
+
+/// Park a sleeping caller until the port's owner releases it. The park
+/// releases the caller's baseline for the switch and restores it
+/// (`task::park`). x86 syscall entry keeps IF clear; the switch enables
+/// interrupts around HLT and the wait restores the entry mask, so IF is not a
+/// prerequisite for parking. Each end returns to the admission check.
+fn park_for_port(port: usize, read: bool, owner: u64, deadline: u64) -> Result<(), (AhciReadError, u64)> {
+    use crate::task::park::{WaitEnd, WaitMode};
+    match crate::task::park::wait(
+        &PORT_IO_WAITERS[port],
+        || PORT_IO_OWNER[port].load(Ordering::Acquire) == 0,
+        Some(deadline),
+        WaitMode::Uninterruptible,
+    ) {
+        Ok(WaitEnd::Condition | WaitEnd::Woken | WaitEnd::Timeout | WaitEnd::Interrupted(_)) => Ok(()),
+        Ok(WaitEnd::NoMemory | WaitEnd::Killed) if read => {
+            if crate::task::thread::current_wait_must_unwind() {
+                Err((AhciReadError::Interrupted, owner))
+            } else {
+                // The waiter entry is gone. Let the port owner run and
+                // retry admission within the original deadline.
+                crate::block::cache_kernel::park_for_wait_retry();
+                Ok(())
+            }
+        }
+        Ok(WaitEnd::NoMemory) => Err((AhciReadError::WaiterAllocation, owner)),
+        Ok(WaitEnd::Killed) => Err((AhciReadError::WaitPublication, owner)),
+        // The context changed between the decision and the wait; the
+        // decision refuses it on the next pass.
+        Err(_) => Ok(()),
     }
 }
 
@@ -519,6 +527,10 @@ fn write_admission_error((error, _): (AhciReadError, u64)) -> BlockError {
     match error {
         AhciReadError::WaiterAllocation => BlockError::OutOfMemory,
         AhciReadError::AdmissionTimeout => BlockError::Timeout,
+        // The caller rule's refusals (design §6) surface as EIO.
+        AhciReadError::NotSleepable | AhciReadError::EarlyBootPortOwned | AhciReadError::CompletionNotReady => {
+            BlockError::AhciRead(error)
+        }
         _ => BlockError::DeviceNotReady,
     }
 }
@@ -1166,6 +1178,19 @@ fn defer_port_recovery(abar: u64, port: usize, state: u8) {
 // Command Token + Wait
 // =============================================================================
 
+/// How a command's completion is waited for (design §6, "Completion mode").
+/// The issuing context and the controller decide it, not a guess about the
+/// caller: early boot polls the port; a sleeping caller parks on the
+/// command's completion, which the interrupt completes or, on a controller
+/// whose completions raise no interrupt this kernel takes, this CPU's
+/// completion poller.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WaitBy {
+    EarlyBootPoll,
+    Interrupt,
+    Poller,
+}
+
 /// Token returned by `setup_cmd_slot0` that encodes the wait mode.
 /// Pass to `wait_cmd_slot0` after releasing any locks.
 struct CmdToken {
@@ -1174,10 +1199,7 @@ struct CmdToken {
     dma_index: usize,
     expected_bytes: u32,
     has_irq: bool,
-    scheduler_running: bool,
-    /// No completion interrupt: this CPU's completion poller completes the
-    /// command, and the waiter parks as it would for the interrupt.
-    polled: bool,
+    wait_by: WaitBy,
 }
 
 #[derive(Clone, Copy)]
@@ -1252,19 +1274,26 @@ fn record_lost_notification(port: usize, cmd_num: u32, regs: TimeoutRegisters) {
     ));
 }
 
-#[inline]
-fn scheduler_sleep_ready(has_irq: bool) -> bool {
-    // The scheduler-sleep path needs the scheduler dispatching here: a
-    // current thread and, on ARM64, the timer running. Before that is
-    // EarlyBoot (`task::park::context`): ARM64's pre-load of /sbin/init
-    // runs there, with the boot brake taken before timer_interrupt::init().
-    // `Completion` then decides whether this caller sleeps or polls.
-    use crate::task::park::{AtomicReason, ParkContext};
-    has_irq
-        && !matches!(
-            crate::task::park::context(),
-            ParkContext::EarlyBoot | ParkContext::Atomic(AtomicReason::NoThread)
-        )
+/// The block I/O caller rule (design §6) for a command the driver issues
+/// itself, outside `begin_port_io`: attach-time IDENTIFY and IDENTIFY after a
+/// port reset. ARM64 attaches in early boot and polls; x86 attaches on its
+/// boot_storage kernel thread, after the first dispatch, and sleeps on the
+/// completion interrupt armed before IDENTIFY. A recovery runs in the
+/// admitted caller's context or on a worker that may park.
+fn own_command_io() -> Result<IoContext, &'static str> {
+    let io = crate::task::park::io_context().map_err(|_| "AHCI: command from a context that may not sleep")?;
+    if io == IoContext::Sleepable && !completion_ready_here() {
+        return Err("AHCI: no completion source on this CPU");
+    }
+    Ok(io)
+}
+
+/// Whether a sleeping caller's command on this CPU has a completion source
+/// (design §6; DEV-48(3)): the controller's interrupt, or this CPU's
+/// completion poller. A CPU without one is not ready: its requests are
+/// refused, never polled.
+fn completion_ready_here() -> bool {
+    AHCI_IRQ.load(Ordering::Relaxed) != 0 || poller_on_this_cpu()
 }
 
 /// Wait for a slot-0 command to complete, with NO locks held.
@@ -1274,15 +1303,16 @@ fn scheduler_sleep_ready(has_irq: bool) -> bool {
 ///   2. `wait_cmd_slot0()` with no lock held     (sleeps / polls)
 ///   3. [Optional] Lock → finish (cache invalidate, copy result)
 ///
-/// Two wait modes selected by the token:
+/// The token's `WaitBy` selects the wait:
 ///
-/// SCHEDULER SLEEP (normal, timer running):
-///   Calls `Completion::wait_timeout()` which puts the thread into
-///   `BlockedOnIO` state.  The scheduler runs other threads while we wait.
-///   The ISR calls `complete()` → `unblock_for_io()` to wake us.
-///   This is the path that eliminates SCHED_RESCUE and lockup reports.
+/// SLEEP (`Interrupt` or `Poller`): `Completion::wait_timeout()` puts the
+///   thread into `BlockedOnIO` state while the scheduler runs other threads.
+///   The ISR, or this CPU's completion poller, calls `complete()` →
+///   `unblock_for_io()` to wake us.
 ///
-/// Early boot polls PxCI directly and does not arm a scheduler wake.
+/// EARLY BOOT (`EarlyBootPoll`): the boot thread, holding the early-boot
+///   I/O token, polls PxCI and PxIS (AHCI 1.3.1) against a deadline and arms
+///   no scheduler wake.
 fn wait_cmd_slot0(token: CmdToken) -> Result<(), &'static str> {
     let abar = AHCI_ABAR.load(Ordering::Relaxed);
     let port = token.port;
@@ -1334,7 +1364,7 @@ fn wait_cmd_slot0_inner(token: &CmdToken) -> Result<(), &'static str> {
     let port = token.port;
     let cmd_num = token.cmd_num;
 
-    if token.scheduler_running {
+    if token.wait_by != WaitBy::EarlyBootPoll {
         // ============================================================
         // SCHEDULER SLEEP PATH (normal operation, timer running)
         //
@@ -1343,7 +1373,7 @@ fn wait_cmd_slot0_inner(token: &CmdToken) -> Result<(), &'static str> {
         // lock, preventing a race with complete() from the ISR.
         // ============================================================
         const TIMEOUT_NS: u64 = 5_000_000_000; // 5 s — Linux default
-        if token.polled {
+        if token.wait_by == WaitBy::Poller {
             kick_poller();
         }
         let wait_result =
@@ -1354,19 +1384,18 @@ fn wait_cmd_slot0_inner(token: &CmdToken) -> Result<(), &'static str> {
             Err(_) => return Err("AHCI: command wait failed"),
         }
     } else {
+        // Only early boot polls since E2.4, so a poll with the interrupt
+        // registered is always before the scheduler dispatches.
         if token.has_irq {
             AHCI_POLLED_POST_REGISTRATION_COUNT.fetch_add(1, Ordering::Relaxed);
-            if scheduler_sleep_ready(token.has_irq) {
-                AHCI_POLLED_POST_REG_SCHEDULER_RUNNING.fetch_add(1, Ordering::Relaxed);
-            } else {
-                AHCI_POLLED_POST_REG_PRE_SCHEDULER.fetch_add(1, Ordering::Relaxed);
-            }
+            AHCI_POLLED_POST_REG_PRE_SCHEDULER.fetch_add(1, Ordering::Relaxed);
         }
         AHCI_POLLED_COMPLETION_COUNT.fetch_add(1, Ordering::Relaxed);
         let (start, freq) = read_cntpct_and_freq();
         let deadline = start + freq * AHCI_TIMEOUT_SECS;
-        // P12-Site-2: existing bounded early-boot polling. Take the status
-        // lock only to retire the slot and acknowledge the sampled event.
+        // P12-Site-2: bounded early-boot polling, with the early-boot I/O
+        // token held. Take the status lock only to retire the slot and
+        // acknowledge the sampled event.
         loop {
             let ci = port_read(abar, port, PORT_CI);
             let is = port_read(abar, port, PORT_IS);
@@ -1537,26 +1566,57 @@ fn completion_poller(cpu: usize) {
     }
 }
 
-/// Start a completion poller on each online CPU without one, when the
-/// controller's completions raise no interrupt this kernel takes. CPU 0's waits
-/// until the boot sequence releases it, as its softirq daemon does.
+/// Start `cpu`'s completion poller, when the controller's completions raise
+/// no interrupt this kernel takes (DEV-48(3)): each CPU's poller starts as
+/// that CPU comes online, before it dispatches. CPU 0's starts at the first
+/// dispatch, before the early-boot token is revoked, and arms the
+/// controller's completion source for the readiness check there; each
+/// secondary's starts in its bring-up, before it unmasks interrupts. A
+/// secondary that arrives ahead of a lower-numbered one is not yet counted
+/// online, and the scheduler treats it as offline (`cpu_accepts_wakeups`,
+/// `spawn_on_cpu`) until it is; the arrival whose count
+/// covers it starts its poller (`admission::pollers_to_start`). A CPU without
+/// a poller is not ready: its sleeping requests are refused.
 #[cfg(target_arch = "aarch64")]
-pub fn start_completion_pollers() {
-    if AHCI_ABAR.load(Ordering::Relaxed) == 0 || AHCI_IRQ.load(Ordering::Relaxed) != 0 {
+pub fn start_completion_poller(cpu: usize) {
+    use crate::arch_impl::aarch64::smp;
+    if AHCI_ABAR.load(Ordering::Relaxed) == 0 || AHCI_IRQ.load(Ordering::Relaxed) != 0 || cpu >= POLLER_CPUS {
         return;
     }
-    let online = crate::arch_impl::aarch64::smp::cpus_online() as usize;
-    for cpu in 0..online.min(POLLER_CPUS) {
-        if cpu == 0 && crate::per_cpu_aarch64::preempt_count() != 0 {
-            continue;
+    let counted = smp::cpus_online() as usize;
+    let (mut online, mut spawned) = (0u64, 0u64);
+    for other in 0..POLLER_CPUS {
+        online |= u64::from(smp::is_cpu_online(other)) << other;
+        spawned |= u64::from(POLLER_SPAWNED[other].load(Ordering::Acquire)) << other;
+    }
+    let start = admission::pollers_to_start(cpu, counted, online, spawned);
+    if start & (1 << cpu) == 0 && spawned & (1 << cpu) == 0 {
+        // A CPU counted online out of order cannot take a CPU-affine thread
+        // yet. The arrival whose count covers it starts its poller.
+        crate::serial_println!("[ahci] no completion poller on CPU {} yet: not counted online", cpu);
+    }
+    for other in (0..POLLER_CPUS).filter(|other| start & (1 << other) != 0) {
+        spawn_completion_poller(other);
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn spawn_completion_poller(cpu: usize) {
+    if POLLER_SPAWNED[cpu].swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let name = alloc::format!("kahci_poll/{cpu}");
+    match crate::task::kthread::kthread_run_on_cpu(move || completion_poller(cpu), &name, cpu) {
+        Ok(handle) => {
+            // Published at the spawn, so the CPU is ready before the poller
+            // first runs: a waiter's kick finds it, and its first look finds
+            // the command armed.
+            POLLER_TID[cpu].store(handle.tid(), Ordering::Release);
+            if cpu == 0 {
+                crate::task::park::arm_completion_source(crate::task::park::BlockSource::Ahci, 0);
+            }
         }
-        if POLLER_SPAWNED[cpu].swap(true, Ordering::AcqRel) {
-            continue;
-        }
-        let name = alloc::format!("kahci_poll/{cpu}");
-        if let Err(error) = crate::task::kthread::kthread_run_on_cpu(move || completion_poller(cpu), &name, cpu) {
-            crate::serial_println!("[ahci] no completion poller on CPU {}: {:?}", cpu, error);
-        }
+        Err(error) => crate::serial_println!("[ahci] no completion poller on CPU {}: {:?}", cpu, error),
     }
 }
 
@@ -1634,15 +1694,14 @@ impl AhciController {
                 core::hint::spin_loop();
             }
         }
-        let controller = Self::init_common(abar_virt)?;
-
-        // Set up MSI/MSI-X interrupt after the controller is running.
-        #[cfg(target_arch = "aarch64")]
-        setup_ahci_msi(pci_dev);
+        // x86 attaches on the boot_storage kernel thread, after the first
+        // dispatch, where IDENTIFY sleeps on its completion (design §6). So
+        // the completion interrupt is armed before init_common issues it.
         #[cfg(target_arch = "x86_64")]
         {
             if uses_msi(pci_dev) {
-                // A failure leaves AHCI_IRQ at 0: commands then poll PORT_CI.
+                // A failure leaves AHCI_IRQ at 0: the controller then has no
+                // completion source, and its sleeping commands are refused.
                 match crate::arch_impl::x86_64::msi::enable(pci_dev, timeout_msi::interrupt_entry) {
                     Ok(vector) => {
                         AHCI_IRQ_EDGE.store(true, Ordering::Relaxed);
@@ -1655,16 +1714,28 @@ impl AhciController {
                             vector
                         );
                     }
-                    Err(e) => log::warn!("[ahci] MSI not enabled, completions are polled: {}", e),
+                    Err(e) => log::warn!("[ahci] MSI not enabled, no completion source: {}", e),
                 }
             } else {
                 AHCI_IRQ_EDGE.store(false, Ordering::Relaxed);
                 AHCI_IRQ.store(pci_dev.interrupt_line as u32, Ordering::Release);
                 pci_dev.enable_intx();
             }
-            let ghc = hba_read(abar_virt, HBA_GHC);
-            hba_write(abar_virt, HBA_GHC, ghc | GHC_IE);
         }
+
+        let controller = match Self::init_common(abar_virt) {
+            Ok(controller) => controller,
+            Err(error) => {
+                // No controller completes through the interrupt armed above.
+                #[cfg(target_arch = "x86_64")]
+                AHCI_IRQ.store(0, Ordering::Release);
+                return Err(error);
+            }
+        };
+
+        // Set up MSI/MSI-X interrupt after the controller is running.
+        #[cfg(target_arch = "aarch64")]
+        setup_ahci_msi(pci_dev);
 
         Ok(controller)
     }
@@ -1709,8 +1780,14 @@ impl AhciController {
         let ghc = hba_read(abar_virt, HBA_GHC);
         #[cfg(target_arch = "aarch64")]
         hba_write(abar_virt, HBA_GHC, ghc | GHC_AE | GHC_IE);
+        // x86 arms its completion interrupt before this (AhciController::init),
+        // so IDENTIFY's completion can raise it.
         #[cfg(target_arch = "x86_64")]
-        hba_write(abar_virt, HBA_GHC, (ghc | GHC_AE) & !GHC_IE);
+        hba_write(
+            abar_virt,
+            HBA_GHC,
+            (ghc | GHC_AE) & !GHC_IE | if AHCI_IRQ.load(Ordering::Acquire) != 0 { GHC_IE } else { 0 },
+        );
 
         // Read capabilities
         let cap = hba_read(abar_virt, HBA_CAP);
@@ -1991,7 +2068,7 @@ impl AhciController {
     /// # Preconditions
     /// DMA structures must be fully set up and cache-cleaned before calling.
     fn setup_cmd_slot0(
-        &self, port: usize, dma_index: usize, expected_bytes: u32,
+        &self, port: usize, dma_index: usize, expected_bytes: u32, io: IoContext,
     ) -> Result<CmdToken, &'static str> {
         let abar = self.abar_virt;
         if port_read(abar, port, PORT_CMD) & PORT_CMD_ST == 0 {
@@ -2000,11 +2077,13 @@ impl AhciController {
 
         // --- Determine wait mode BEFORE arming completions ---
         let has_irq = AHCI_IRQ.load(Ordering::Relaxed) != 0 && port < MAX_PORTS;
-
-        let scheduler_running = scheduler_sleep_ready(has_irq);
-
-        let polled = !has_irq && port < MAX_PORTS && poller_on_this_cpu() && scheduler_sleep_ready(true);
-        let scheduler_running = scheduler_running || polled;
+        let wait_by = match io {
+            IoContext::EarlyBoot => WaitBy::EarlyBootPoll,
+            IoContext::Sleepable if has_irq => WaitBy::Interrupt,
+            IoContext::Sleepable if port < MAX_PORTS && poller_on_this_cpu() => WaitBy::Poller,
+            IoContext::Sleepable => return Err("AHCI: no completion source on this CPU"),
+        };
+        let scheduler_running = wait_by != WaitBy::EarlyBootPoll;
 
         // Suppress device interrupts until the status lock is released. A
         // completion during publication is latched in PxIS and raises the
@@ -2060,8 +2139,7 @@ impl AhciController {
             dma_index,
             expected_bytes,
             has_irq,
-            scheduler_running,
-            polled,
+            wait_by,
         })
     }
 
@@ -2616,7 +2694,7 @@ impl AhciController {
 
         drop(dma_lock);
 
-        self.setup_cmd_slot0(port, dma_index, IDENTIFY_BYTES as u32)
+        self.setup_cmd_slot0(port, dma_index, IDENTIFY_BYTES as u32, own_command_io()?)
     }
 
     /// Set up a multi-sector read DMA command and issue PORT_CI.
@@ -2635,6 +2713,7 @@ impl AhciController {
         lba: u64,
         count: u16,
         logical_bytes: usize,
+        io: IoContext,
     ) -> Result<(CmdToken, usize), AhciReadError> {
         let byte_count = usize::from(count) * logical_bytes;
         if byte_count == 0 || byte_count > DMA_BUFFER_BYTES {
@@ -2687,7 +2766,7 @@ impl AhciController {
             dma_cache_clean(dma_ptr, core::mem::size_of::<PortDmaMem>());
         } // DMA lock released
 
-        let token = self.setup_cmd_slot0(port, dma_index, byte_count as u32)
+        let token = self.setup_cmd_slot0(port, dma_index, byte_count as u32, io)
             .map_err(AhciReadError::Issue)?;
         Ok((token, byte_count))
     }
@@ -2703,6 +2782,7 @@ impl AhciController {
         lba: u64,
         buffer: &[u8],
         logical_bytes: usize,
+        io: IoContext,
     ) -> Result<CmdToken, &'static str> {
         let count = buffer.len() / logical_bytes;
         if count == 0 || buffer.len() > DMA_BUFFER_BYTES || buffer.len() % logical_bytes != 0 {
@@ -2751,14 +2831,14 @@ impl AhciController {
             dma_cache_clean(dma_ptr, core::mem::size_of::<PortDmaMem>());
         } // DMA lock released
 
-        self.setup_cmd_slot0(port, dma_index, buffer.len() as u32)
+        self.setup_cmd_slot0(port, dma_index, buffer.len() as u32, io)
     }
 
     /// Set up a FLUSH CACHE EXT command and issue PORT_CI.
     ///
     /// Returns a `CmdToken`; caller waits with `wait_cmd_slot0()` after
     /// releasing the `AHCI_CONTROLLER` lock.
-    fn setup_flush_port(&self, port: usize, dma_index: usize) -> Result<CmdToken, &'static str> {
+    fn setup_flush_port(&self, port: usize, dma_index: usize, io: IoContext) -> Result<CmdToken, &'static str> {
         self.wait_ready(port)?;
 
         {
@@ -2784,7 +2864,7 @@ impl AhciController {
             dma_cache_clean(dma_ptr, core::mem::size_of::<PortDmaMem>());
         } // DMA lock released
 
-        self.setup_cmd_slot0(port, dma_index, 0)
+        self.setup_cmd_slot0(port, dma_index, 0, io)
     }
 }
 
@@ -3448,7 +3528,7 @@ pub fn get_irq() -> Option<u32> {
 /// perturbing command completion timing.
 pub fn emit_polling_attribution_once_if_scheduler_ready() {
     let has_irq = AHCI_IRQ.load(Ordering::Relaxed) != 0;
-    if !scheduler_sleep_ready(has_irq) {
+    if !has_irq || crate::task::park::context() == crate::task::park::ParkContext::EarlyBoot {
         return;
     }
 
@@ -3534,7 +3614,7 @@ impl BlockDevice for AhciBlockDevice {
             let chunk = remaining.min(DMA_BUFFER_BYTES / self.block_size());
             let request = ReadRequest::new(self.port_num, current_block);
 
-            let port_guard = begin_port_io(self.port_num, true)
+            let (port_guard, io) = begin_port_io(self.port_num, true)
                 .map_err(|(error, owner)| request.failed(error, owner, None))?;
             let owner = PORT_IO_OWNER[self.port_num].load(Ordering::Relaxed);
             let setup_result = {
@@ -3543,7 +3623,7 @@ impl BlockDevice for AhciBlockDevice {
                     Err(AhciReadError::Interrupted)
                 } else {
                     ctrl.as_ref().ok_or(AhciReadError::ControllerAbsent).and_then(|ctrl| {
-                        ctrl.setup_read_sectors(self.port_num, self.dma_index, current_block, chunk as u16, self.block_size())
+                        ctrl.setup_read_sectors(self.port_num, self.dma_index, current_block, chunk as u16, self.block_size(), io)
                     })
                 }
             }; // AHCI_CONTROLLER lock released
@@ -3612,12 +3692,12 @@ impl BlockDevice for AhciBlockDevice {
             let chunk = &buf[offset..offset + byte_count];
 
             // ── PHASE 1: lock + setup ───────────────────────────────────────
-            let port_guard = begin_port_io(self.port_num, false).map_err(write_admission_error)?;
+            let (port_guard, io) = begin_port_io(self.port_num, false).map_err(write_admission_error)?;
             let setup_result: Result<CmdToken, BlockError> = {
                 let ctrl = AHCI_CONTROLLER.lock();
                 match ctrl.as_ref() {
                     Some(ctrl) => ctrl
-                        .setup_write_sectors(self.port_num, self.dma_index, current_block, chunk, self.block_size())
+                        .setup_write_sectors(self.port_num, self.dma_index, current_block, chunk, self.block_size(), io)
                         .map_err(|_| BlockError::IoError),
                     None => Err(BlockError::DeviceNotReady),
                 }
@@ -3644,6 +3724,10 @@ impl BlockDevice for AhciBlockDevice {
         Ok(())
     }
 
+    fn max_single_write_bytes(&self) -> usize {
+        DMA_BUFFER_BYTES
+    }
+
     fn block_size(&self) -> usize {
         self.geometry.logical_bytes
     }
@@ -3656,12 +3740,12 @@ impl BlockDevice for AhciBlockDevice {
         if self.is_read_only() { return Ok(()); }
         if crate::block::hardware_disk_read_only(crate::block::HardwareDisk::Ahci(self.port_num)) { return Ok(()); }
         // ── PHASE 1: lock + setup ───────────────────────────────────────────
-        let port_guard = begin_port_io(self.port_num, false).map_err(write_admission_error)?;
+        let (port_guard, io) = begin_port_io(self.port_num, false).map_err(write_admission_error)?;
         let setup_result: Result<CmdToken, BlockError> = {
             let ctrl = AHCI_CONTROLLER.lock();
             match ctrl.as_ref() {
                 Some(ctrl) => ctrl
-                    .setup_flush_port(self.port_num, self.dma_index)
+                    .setup_flush_port(self.port_num, self.dma_index, io)
                     .map_err(|_| BlockError::IoError),
                 None => Err(BlockError::DeviceNotReady),
             }
@@ -3714,6 +3798,11 @@ pub fn init() -> Result<usize, &'static str> {
     );
 
     let controller = AhciController::init(ahci_dev)?;
+    crate::task::park::attach_completion_source(
+        crate::task::park::BlockSource::Ahci,
+        0,
+        AHCI_IRQ.load(Ordering::Acquire) != 0,
+    );
 
     let sata_count = controller
         .ports
@@ -3864,6 +3953,11 @@ pub fn init_platform(abar_phys: u64) -> Result<usize, &'static str> {
     }
 
     let controller = AhciController::init_from_mmio(abar_phys)?;
+    crate::task::park::attach_completion_source(
+        crate::task::park::BlockSource::Ahci,
+        0,
+        AHCI_IRQ.load(Ordering::Acquire) != 0,
+    );
     crate::drivers::device_class::found(
         crate::drivers::device_class::Class::Storage,
         format_args!("platform AHCI controller at {:#x}", abar_phys),
