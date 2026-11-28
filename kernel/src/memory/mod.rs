@@ -38,6 +38,8 @@ pub mod table_reclaim;
 pub mod tlb;
 #[cfg(target_arch = "x86_64")]
 pub mod tlb_request;
+#[cfg(target_arch = "aarch64")]
+pub mod tlbi;
 pub mod vma;
 pub mod locked;
 

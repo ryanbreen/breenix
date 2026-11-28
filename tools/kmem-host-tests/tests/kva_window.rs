@@ -19,6 +19,8 @@ mod kva_window;
 #[allow(dead_code)]
 #[path = "../../../kernel/src/memory/tlb_request.rs"]
 mod tlb_request;
+#[path = "../../../kernel/src/memory/tlbi.rs"]
+mod tlbi;
 #[path = "../../../kernel/src/memory/x86_kernel_half.rs"]
 mod x86_kernel_half;
 
@@ -579,4 +581,34 @@ fn two_mib_leaves_map_and_reclaim_whole_on_x86() {
 #[test]
 fn two_mib_leaves_map_and_reclaim_whole_on_arm64() {
     two_mib_leaves_map_and_reclaim_whole::<kva_map::Arm64>();
+}
+
+/// Check first (review of E1-5): an ARM64 window page's `TLBI VAAE1IS`
+/// operand. Per the Arm ARM (TLBI VAAE1IS), bits [43:0] carry VA[55:12],
+/// bits [47:44] are the TTL hint, and bits [63:48] are RES0. A TTL that
+/// does not describe the entry (4 KiB granule, level 3, 0b0111) or say
+/// nothing (0b0000) leaves the architecture no obligation to invalidate it.
+/// A TTBR1 address has VA[59:56] set, so `va >> 12` puts 0b1111 (64 KiB
+/// granule, level 3) in the TTL and ones in the RES0 bits: the CPU may keep
+/// the window's writable global translation after its frame is released.
+#[test]
+fn arm64_window_page_flush_operand_names_the_page_with_no_wrong_ttl() {
+    const TTL_NONE: u64 = 0b0000;
+    const TTL_4K_LEVEL3: u64 = 0b0111;
+    let mut pages = Vec::new();
+    for slot in [1usize, 2, 3, 64, 446] {
+        let base = kva_window::slot_va(slot);
+        pages.extend([base, base + PAGE, base + (1 << 39) - PAGE]);
+    }
+    pages.push(0x0000_7fff_ffff_f000);
+    for va in pages {
+        let operand = tlbi::vaa_operand(va);
+        assert_eq!(operand & ((1 << 44) - 1), (va >> 12) & ((1 << 44) - 1), "VA[55:12] of {va:#x}");
+        let ttl = (operand >> 44) & 0xf;
+        assert!(
+            ttl == TTL_NONE || ttl == TTL_4K_LEVEL3,
+            "operand {operand:#x} for the 4 KiB page {va:#x} has TTL {ttl:#06b}",
+        );
+        assert_eq!(operand >> 48, 0, "RES0 bits [63:48] of the operand for {va:#x}");
+    }
 }
