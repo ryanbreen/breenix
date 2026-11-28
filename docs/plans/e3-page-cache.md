@@ -2382,9 +2382,13 @@ boundary) are not recorded here: the builder stops and asks the coordinator.
   between, so a growth in that gap would otherwise leave the new binding's grown pages absent. A
   population's merge drops its copy of a page that became resident while it read, and Holes only a
   claim holds keep eviction pending, so a failed mmap leaves none behind.
-- **E3-2, an unprepared growth.** ext2's preallocation grows a file without `prepare_resize` and drops
-  its guard between steps, so its transition tries to reserve the room itself, and a page left without
-  room stays absent (the counted SIGBUS rather than 00 bytes), because Q3 rules out E3 work on ext2.
+- **E3-2 review, ext2's preallocation.** ext2's fallocate calls `prepare_resize` before each batch,
+  under the guard that batch holds, because its last batch publishes the larger size and a Hole
+  reservation that failed after that was lost, leaving the newly valid pages absent under a successful
+  fallocate. This repairs E3-2's own change to the mapping hooks ext2 already calls (its resize calls
+  `prepare_resize` too); ext2 stays MappedOnly under Q3. The transition still reserves room itself for
+  a page a population claimed after the reservation, and a page left without room stays absent (the
+  counted SIGBUS rather than 00 bytes).
 - **E3-2, `prepare_write`'s frames.** A write gives cleared frames to the bound Holes and the bound
   pages past EOF it reaches, and no longer to an absent bound page below EOF, because that page's bytes
   are unknown and a cleared frame under a partial write would publish 00 bytes as file bytes.
