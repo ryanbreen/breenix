@@ -2427,6 +2427,16 @@ boundary) are not recorded here: the builder stops and asks the coordinator.
   open counts as write access even with `O_RDONLY`, because both change the file. A path
   `truncate` holds a writer for its duration, after its permission check, so EACCES is still reported
   before ETXTBSY. `ftruncate` and `fallocate` need a descriptor open for writing, which already counts.
+  `pwrite64` and `mmap` hold their descriptor's open description until the write returns or the
+  binding is published, because a concurrent last close would otherwise end the write access, and an exec
+  could start sharing the file's pages, while the write or the shared binding was still pending.
+- **E3-3, mmap refuses first.** `map_file` asks `MapState::refuse_text_busy` before it claims shared
+  write access or clears the range, and `bind` keeps the same check, because a refusal found only in
+  `bind` comes after `MAP_FIXED` has unmapped the old mapping; under the binding gate the early answer
+  holds until `bind`, since `deny_write` rises from 0 only while an exec holds the gate as its writer.
+- **E3-3, populated runs.** Exec populates each stretch of adjacent file pages that a piece maps or
+  copies, holding one claim per run, rather than one span from the lowest file page to the highest,
+  because the pages between two loads are mapped by neither and a sparse gap between them can be large.
 - **E3-3, `ICACHE_CLEAN`.** The flag is set only while the file has no shared writable binding, and a
   shared write fault, a `write()` and a truncation's tail zeroing clear it, because stores through a
   writable shared entry change the bytes without a fault; the loader's existing whole instruction-cache
@@ -2438,10 +2448,13 @@ boundary) are not recorded here: the builder stops and asks the coordinator.
   image's segments (through its reader and through the cache's transfer), not device reads, because the
   host BreenFS block cache serves a repeated read of a small image without a device read on the old
   tree too, so a device count could not be red.
-- **E3-3, stores in the host checks.** The checks assert that text is mapped without PROT_WRITE and
-  data as a private writable mapping of the cache frame; the store outcomes themselves (SIGSEGV, and a
-  copy) are the kernel's existing permission and copy-on-write fault paths, which the host model does
-  not run.
+- **E3-3, stores in the host checks.** The host checks map each cached piece through the production
+  `ExecImage::map` and `entry_flags` into a recording table, and drop the exec load before they check
+  write refusal, as `MappedElf::load` does; a store's outcome under each recorded entry (SIGSEGV for
+  text, a private copy for data) is modeled from the entry's flags, because the kernel's permission and
+  copy-on-write fault paths do not run on the host. The `bind` record is a host stand-in that calls
+  the production `MapInner::refuse_text_busy`, because the kernel's record carries page-table and
+  process fields the host model does not have.
 - **E3-3, the check commit.** Each interface the checks drive is new, so the check commit carries the
   cache path with admission switched off (`ExecImage::ADMIT` false: exec copies each image and a write
   is not refused, today's behaviour), and the next commit turns admission on, because a seam the
