@@ -71,18 +71,25 @@ impl Guard {
         let Err(mut observed) = OWNER.compare_exchange(0, id, Acquire, Relaxed) else {
             return Some(Self);
         };
+        if observed & !WAITERS == id {
+            // Same-thread reentry from a signal handler cannot wait for
+            // itself. A fork child whose thread was inside the allocator
+            // when a handler forked is the same case: the interrupted call
+            // resumes and releases the lock. A raw clone that shares this
+            // thread's descriptor can also hold it under this ID; bypassing
+            // the cache for that hold is safe, only slower.
+            return None;
+        }
+        // From here this call does not hold the lock in an interrupted frame:
+        // a handler that interrupts this loop releases what it takes before
+        // it returns. So a later hold under this ID is a raw clone's, and
+        // this call sets the waiter bit and waits for it like any other.
         loop {
             if observed == 0 {
                 match OWNER.compare_exchange(0, id | WAITERS, Acquire, Relaxed) {
                     Ok(_) => return Some(Self),
                     Err(other) => observed = other,
                 }
-            } else if observed & !WAITERS == id {
-                // Same-thread reentry from a signal handler cannot wait for
-                // itself. A fork child whose thread was inside the allocator
-                // when a handler forked is the same case: the interrupted call
-                // resumes and releases the lock.
-                return None;
             } else if observed & WAITERS == 0 {
                 match OWNER.compare_exchange(observed, observed | WAITERS, Relaxed, Relaxed) {
                     Ok(_) => observed |= WAITERS,
