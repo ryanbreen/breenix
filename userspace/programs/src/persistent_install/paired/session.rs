@@ -453,6 +453,7 @@ impl<'w> Session<'w> {
                     .ok_or("missing previous generation")?;
                 let report = apply(
                     &self.stage()?.0,
+                    &self.rust_dir()?,
                     id,
                     previous,
                     &self.inventory(id)?,

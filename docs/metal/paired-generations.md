@@ -416,7 +416,8 @@ Only the selection moves into the generation:
   manifest's `runtime` map (written by `scripts/devbox/toolchain.py`, `{'fork_commit', 'files', 'runtime'}`) gives
   each runtime file's size, mode and SHA-256, and the draft's `/lib/<name>` for each of them (today `ld-breenix.so`
   and `libc.so`) must match. A selection whose runtime differs from the draft's `/lib` is a verify error, so a pair
-  cannot select a toolchain built against another runtime. The cold verify on the trial repeats the check. A version that no retained generation
+  cannot select a toolchain built against another runtime. Unless the inventory carries the selection, apply first
+  writes that runtime into the draft from the selected entry (10.2, DEV-55). The cold verify on the trial repeats the check. A version that no retained generation
   selects stays where it is. Removing it is an explicit operator action, not part of reclamation.
 
 ### 4.6 Publish
@@ -854,6 +855,34 @@ Review of PR #3273 (the same rule):
 - The host test places set-ID `su` under `/bin` because `layout.tsv` names that installed path.
 - Legacy `--replace-usr` keeps the existing selector in place and requires an installer that supports it because
   shared `CURRENT` resolves through the selected root even after a rollback or an interrupted replacement.
+- **The selected toolchain's runtime entry is the source of truth for the draft's `/lib` runtime (DEV-55).** An
+  image with no `/lib` (today's) left the draft with the clone's runtime, so on the R240 the draft kept #3208's
+  diagnostic loader (ed076ff2) while the selected entry and the pin are 1a4e95a2, and verify refused it. The
+  rule:
+  - In the draft only, apply writes each `/lib/<name>` row of the selected version's `MANIFEST.json` `runtime`
+    map (today `/lib/libc.so` and `/lib/ld-breenix.so`). It uses the entry's size, mode and SHA-256, and takes
+    the draft root's owner (root:root on the box). Each write goes through the staging tree's descriptors, so
+    the running root is not edited. The new pair carries the
+    entry's runtime, and try-once rollback covers a mistake.
+  - What the draft held at that path follows 4.3's table, as a locally changed managed file does:
+    - it is kept when it already matches the entry;
+    - it is replaced in place when it matches the old baseline;
+    - otherwise it is moved to `.breenix-carried/<previous id>/lib/<name>` with set-ID cleared and listed in the
+      receipt's `carried`. The diagnostic loader takes this route.
+  - The bytes come from a source whose size and SHA-256 match the entry: the uploaded object named by that
+    SHA-256, or a regular file already in the draft's `/lib`. On the R240 that file is the kept
+    `/lib/.ld-breenix.so-before-1a4e95a2`. The version directory in `/opt` does not hold the runtime (the stager
+    keeps it in its own `runtime/<id>` directory), and the host uploads only inventory objects. With no
+    matching source, apply refuses and names the path and the SHA-256, before it moves anything. Each copy is
+    checked against the SHA-256 again before it is renamed in.
+  - The step runs before the inventory's carries, retirements and installs, while the uploaded objects and the
+    draft's `/lib` are still as the upload left them. Its paths count as owned: the retirement pass skips them,
+    `onBox` does not list them, and the new baseline lists them. The next pair therefore
+    replaces a previous managed runtime without carrying it.
+  - An inventory that carries the selection (E6) owns the runtime itself: the step is skipped, and an
+    inventory row at a `/lib` runtime path is applied by the inventory's rules.
+  - Verify is unchanged: it still requires the draft's `/lib` to match the selected entry (4.5), on the draft
+    and again on the trial.
 
 ### 10.3 PR C detail deviations (DEV-39(2))
 
