@@ -1,0 +1,253 @@
+//! The staging tree on the live writer and the root epoch
+//! (docs/metal/paired-generations.md 3.1 and 3.3, checks T-A3 and T-A5).
+//! These run against the production adapter, so they live beside it rather
+//! than in tests/snapshot.rs, which reaches only the Files layer.
+use super::*;
+use alloc::vec;
+use std::sync::Mutex as HostMutex;
+
+struct NoWait;
+impl Wait for NoWait {
+    fn generation(&self) -> u64 {
+        0
+    }
+    fn wait(&self, _: u64) {
+        panic!("sequential staging check waited for I/O")
+    }
+    fn wake_all(&self) {}
+}
+
+pub(super) struct Disk(HostMutex<Vec<u8>>);
+impl BlockDevice for Disk {
+    fn read_block(&self, block: u64, bytes: &mut [u8]) -> Result<(), BlockError> {
+        let start = block as usize * BLOCK_SIZE;
+        bytes.copy_from_slice(&self.0.lock().unwrap()[start..start + bytes.len()]);
+        Ok(())
+    }
+    fn write_block(&self, block: u64, bytes: &[u8]) -> Result<(), BlockError> {
+        let start = block as usize * BLOCK_SIZE;
+        self.0.lock().unwrap()[start..start + bytes.len()].copy_from_slice(bytes);
+        Ok(())
+    }
+    fn block_size(&self) -> usize {
+        BLOCK_SIZE
+    }
+    fn num_blocks(&self) -> u64 {
+        16384
+    }
+    fn flush(&self) -> Result<(), BlockError> {
+        Ok(())
+    }
+}
+
+/// A persistent writer: `gen-A` booted, with the default tree, as the
+/// kernel's `mount_persistent_cached` builds it.
+pub(super) fn persistent() -> Arc<BreenFs<impl Wait>> {
+    let disk = Arc::new(Disk(HostMutex::new(vec![0; 64 * 1024 * 1024])));
+    let sb = Superblock {
+        fs_uuid: [0x5a; 16],
+        generation: 1,
+        slot: 1,
+        total_blocks: 16384,
+        next_root_id: 2,
+        ..Superblock::default()
+    };
+    let mut files = Files::format(super::super::commit::DeviceStore(disk.as_ref()), &sb).unwrap();
+    files.create_empty_root(b"gen-A", Time::default()).unwrap();
+    files.fsync(disk.as_ref(), &mut Committer::format(sb)).unwrap();
+    // The kernel mounts the booted pair from the system cache, which lives forever.
+    let cache: &'static BufferCache<NoWait> = Box::leak(Box::new(BufferCache::new(NoWait)));
+    let fs = BreenFs::mount_persistent_cached(disk, cache, 91, b"gen-A").unwrap();
+    fs.init_service().unwrap();
+    fs
+}
+
+pub(super) fn request(name: &[u8], flags: u32) -> SnapshotRequest {
+    let mut request = SnapshotRequest { flags, name_len: name.len() as u32, name: [0; 256] };
+    request.name[..name.len()].copy_from_slice(name);
+    request
+}
+
+pub(super) fn ioctl<W: Wait, T>(fs: &BreenFs<W>, request: u64, arg: &mut T) -> Result<u64, Errno> {
+    let node = fs.open(2)?;
+    fs.ioctl(&node, request, arg as *mut T as u64)
+}
+
+pub(super) fn clone_root<W: Wait>(fs: &BreenFs<W>, name: &[u8], flags: u32) {
+    ioctl(fs, SNAPSHOT_CREATE, &mut request(name, flags)).unwrap();
+}
+
+pub(super) fn epoch<W: Wait>(fs: &BreenFs<W>) -> u64 {
+    let mut out = RootEpoch::default();
+    ioctl(fs, ROOT_EPOCH, &mut out).unwrap();
+    out.epoch
+}
+
+pub(super) fn freeze<W: Wait>(fs: &BreenFs<W>) -> Result<u64, (Errno, RootEpoch)> {
+    let mut out = RootEpoch::default();
+    ioctl(fs, ROOT_FREEZE, &mut out).map(|_| out.epoch).map_err(|error| (error, out))
+}
+
+pub(super) fn thaw<W: Wait>(fs: &BreenFs<W>) {
+    ioctl(fs, ROOT_THAW, &mut RootEpoch::default()).unwrap();
+}
+
+pub(super) fn file<W: Wait>(fs: &BreenFs<W>, dir: u64, name: &[u8]) -> Result<Arc<VNode>, Errno> {
+    let ino = fs.create(dir, name, NewNode::Regular { attrs: InodeAttrs::new(0o100644, 0, 0) })?;
+    fs.open(ino)
+}
+
+pub(super) fn write<W: Wait>(fs: &BreenFs<W>, node: &VNode, offset: u64, bytes: &[u8]) -> Result<usize, Errno> {
+    let req = WriteReq { at: WriteAt::Offset(offset), limit: u64::MAX, clear_setid: false };
+    fs.write(node, req, bytes).map(|result| result.bytes).map_err(|error| error.errno())
+}
+
+fn read<W: Wait>(fs: &BreenFs<W>, ino: u64) -> Vec<u8> {
+    let node = fs.open(ino).unwrap();
+    let mut bytes = vec![0; fs.getattr(ino).unwrap().size as usize];
+    assert_eq!(fs.read(&node, 0, &mut bytes).unwrap(), bytes.len());
+    bytes
+}
+
+fn names<W: Wait>(fs: &BreenFs<W>, dir: u64) -> Vec<Vec<u8>> {
+    let mut names = Vec::new();
+    fs.readdir(dir, 0, &mut |entry, _| {
+        names.push(entry.name);
+        Ok(true)
+    })
+    .unwrap();
+    names
+}
+
+const STAGED_ROOT: u64 = ops::STAGING_TREE | 2;
+
+
+/// T-A3: attach refuses the booted root, root 1, a read-only root, a missing
+/// root and a second staging tree; the attached root cannot be deleted or
+/// renamed; detach waits for an open staged file. The epoch ignores reads,
+/// atime touches, default-tree and staging writes, and counts booted writes.
+/// ROOT_FREEZE refuses booted-root changes with EROFS and holds the epoch
+/// while default-tree writes and atime touches continue; ROOT_THAW admits
+/// writes again. A booted write split around the freeze is counted in the
+/// epoch the freeze returns for the part before it, and refused after it.
+#[test]
+fn staging_refusals_epoch_and_freeze() {
+    let fs = persistent();
+    clone_root(&fs, b"B.new", 0);
+    clone_root(&fs, b"C.new", 0);
+    clone_root(&fs, b"ro", SNAPSHOT_READ_ONLY);
+    assert_eq!(fs.attach_staging(b"gen-A"), Err(Errno(EBUSY)), "booted root");
+    assert_eq!(fs.attach_staging(b"default"), Err(Errno(EBUSY)), "root 1");
+    assert_eq!(fs.attach_staging(b"ro"), Err(Errno(EROFS)), "read-only root");
+    assert_eq!(fs.attach_staging(b"missing"), Err(Errno(ENOENT)));
+    assert_eq!(fs.attach_staging(b"B.new"), Ok(STAGED_ROOT));
+    assert_eq!(fs.attach_staging(b"C.new"), Err(Errno(EBUSY)), "second staging tree");
+    assert_eq!(ioctl(&fs, SNAPSHOT_DELETE, &mut request(b"B.new", 0)), Err(Errno(EBUSY)));
+    let mut rename = SnapshotRename { from: request(b"B.new", 0), to: request(b"gen-B", 0) };
+    assert_eq!(ioctl(&fs, SNAPSHOT_RENAME, &mut rename), Err(Errno(EBUSY)));
+
+    let booted = file(&fs, 2, b"booted").unwrap();
+    let start = epoch(&fs);
+    let mut bytes = [0; 4];
+    fs.read(&booted, 0, &mut bytes).unwrap();
+    fs.touch(&booted, true);
+    fs.getattr(booted.ino).unwrap();
+    assert_eq!(epoch(&fs), start, "a read and an atime touch");
+    let log = file(&fs, fs.default_root_inode(), b"log").unwrap();
+    write(&fs, &log, 0, b"default").unwrap();
+    assert_eq!(epoch(&fs), start, "a default-tree write");
+    let staged = file(&fs, STAGED_ROOT, b"staged").unwrap();
+    write(&fs, &staged, 0, b"staged").unwrap();
+    assert_eq!(epoch(&fs), start, "a staging write");
+    write(&fs, &booted, 0, b"live").unwrap();
+    assert!(epoch(&fs) > start, "a booted-root write");
+
+    assert_eq!(fs.detach_staging(), Err(Errno(EBUSY)), "an open staged file");
+    drop(staged);
+    fs.detach_staging().unwrap();
+    assert_eq!(fs.getattr(STAGED_ROOT).map(|attrs| attrs.ino), Err(Errno(ENOENT)));
+
+    let frozen = freeze(&fs).unwrap();
+    assert_eq!(frozen, epoch(&fs));
+    let file_attrs = || NewNode::Regular { attrs: InodeAttrs::new(0o100644, 0, 0) };
+    assert_eq!(fs.create(2, b"refused", file_attrs()), Err(Errno(EROFS)));
+    assert_eq!(write(&fs, &booted, 0, b"late"), Err(Errno(EROFS)));
+    let renamed = fs.rename(2, b"booted", 2, b"moved", RenameMode::Replace, &|_, _, _, _| Ok(()));
+    assert_eq!(renamed, Err(Errno(EROFS)));
+    let chmod = SetAttr { expected: None, mode: Some(0o600), uid: None, gid: None, atime: None, mtime: None };
+    assert_eq!(fs.setattr(booted.ino, chmod), Err(Errno(EROFS)));
+    assert_eq!(epoch(&fs), frozen);
+    write(&fs, &log, 0, b"DEFAULT").unwrap();
+    fs.touch(&booted, true);
+    fs.sync().unwrap();
+    assert_eq!(epoch(&fs), frozen, "default-tree writes and atime touches while frozen");
+    thaw(&fs);
+    write(&fs, &booted, 0, b"open").unwrap();
+    assert!(epoch(&fs) > frozen);
+
+    // The fixed interleaving: a write of two parts, with the freeze between them.
+    let large = file(&fs, 2, b"large").unwrap();
+    let before = epoch(&fs);
+    let returned = std::rc::Rc::new(core::cell::Cell::new(None));
+    let (hook_fs, hook_returned) = (fs.clone(), returned.clone());
+    measurement::on_write_part(Some(Box::new(move || hook_returned.set(Some(freeze(&hook_fs))))));
+    let bytes = vec![0x5a; WRITE_PART + 4096];
+    let written = write(&fs, &large, 0, &bytes);
+    measurement::on_write_part(None);
+    let frozen = returned.get().expect("the freeze ran between the parts").unwrap();
+    assert_eq!(written, Ok(WRITE_PART), "the second part is refused");
+    assert!(frozen > before, "the first part is counted in the frozen epoch");
+    assert_eq!(epoch(&fs), frozen);
+    assert_eq!(fs.getattr(large.ino).unwrap().size, WRITE_PART as u64);
+    thaw(&fs);
+    fs.shutdown("staging-refusals", u64::MAX).unwrap();
+}
+
+/// T-A5: two clones whose local inodes alias (a file in A is a directory in
+/// B at the same number; the next number has different bytes and extents).
+/// After A's inodes are stat'ed, read, listed and mapped, detaching A and
+/// attaching B serves B's inode, entries and bytes from every cache.
+#[test]
+fn reattach_serves_the_new_root_not_cached_inodes() {
+    let fs = persistent();
+    clone_root(&fs, b"A.new", 0);
+    clone_root(&fs, b"B.new", 0);
+    fs.attach_staging(b"A.new").unwrap();
+    let first = file(&fs, STAGED_ROOT, b"first").unwrap();
+    let second = file(&fs, STAGED_ROOT, b"second").unwrap();
+    write(&fs, &first, 0, b"A's first file").unwrap();
+    write(&fs, &second, 0, b"A's second file").unwrap();
+    let (aliased, other) = (first.ino, second.ino);
+    drop((first, second));
+    fs.detach_staging().unwrap();
+    fs.attach_staging(b"B.new").unwrap();
+    let dir = fs.create(STAGED_ROOT, b"dir", NewNode::Directory { attrs: InodeAttrs::new(0o040755, 0, 0) }).unwrap();
+    assert_eq!(dir, aliased, "the fixture needs aliased inode numbers");
+    let second = file(&fs, dir, b"second").unwrap();
+    assert_eq!(second.ino, other);
+    let b_bytes: Vec<u8> = (0..3 * 4096).map(|i| (i % 251) as u8).collect();
+    write(&fs, &second, 0, &b_bytes).unwrap();
+    file(&fs, dir, b"entry").unwrap();
+    drop(second);
+    fs.detach_staging().unwrap();
+
+    fs.attach_staging(b"A.new").unwrap();
+    assert_eq!(fs.getattr(aliased).unwrap().kind, NodeKind::Regular);
+    assert_eq!(read(&fs, aliased), b"A's first file");
+    assert_eq!(read(&fs, other), b"A's second file");
+    let mapped = crate::memory::file_map::bind_host(fs.open(other).unwrap(), 4096, true, false, true);
+    assert_eq!(mapped.load(0), Ok(b'A'));
+    drop(mapped);
+    fs.detach_staging().unwrap();
+
+    fs.attach_staging(b"B.new").unwrap();
+    assert_eq!(fs.getattr(aliased).unwrap().kind, NodeKind::Directory);
+    assert_eq!(names(&fs, aliased), [b"second".to_vec(), b"entry".to_vec()]);
+    assert_eq!(fs.getattr(other).unwrap().size, b_bytes.len() as u64);
+    assert_eq!(read(&fs, other), b_bytes);
+    let mapped = crate::memory::file_map::bind_host(fs.open(other).unwrap(), 3 * 4096, true, false, true);
+    assert_eq!(mapped.load(4096 + 7), Ok(b_bytes[4096 + 7]));
+    drop(mapped);
+    fs.detach_staging().unwrap();
+    fs.shutdown("staging-reattach", u64::MAX).unwrap();
+}

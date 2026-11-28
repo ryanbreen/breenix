@@ -294,3 +294,26 @@ fn install_renames_an_empty_staging_root_without_copying_shared_state() {
     assert_eq!(read(&selected, &device, bin), b"next");
     assert_eq!(shared.lookup(2, b"machine-state").unwrap(), shared_ino);
 }
+
+/// T-A1 (docs/metal/paired-generations.md 9): a persistent writer attaches a
+/// writable clone of its booted root as the staging tree. Creates, overwrites,
+/// truncates, unlinks, hard links, symlinks and chmods there, interleaved with
+/// booted-root and default-tree writes across several commits, reach only the
+/// clone, and each root equals its model after a fresh recovery mount.
+#[test]
+fn staging_tree_writes_reach_only_the_clone() {
+    use breenfs_host_tests::staging_stream::{recovered, Run, STREAM};
+    let device = RecordingDevice::new(test_image::image()).unwrap();
+    let mut run = Run::begin(&device).unwrap();
+    for step in STREAM {
+        run.step(step).unwrap_or_else(|error| panic!("{step:?}: {error:?}"));
+    }
+    test_image::check(&device.durable_image(), "staging");
+    let fresh = RecordingDevice::new(device.durable_image()).unwrap();
+    let state = recovered(&fresh).unwrap();
+    let expected = run.expected();
+    for (name, root) in &expected {
+        assert_eq!(state.get(name), Some(root), "root {}", String::from_utf8_lossy(name));
+    }
+    assert_eq!(state.len(), expected.len());
+}

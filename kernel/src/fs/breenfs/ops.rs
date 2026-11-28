@@ -419,6 +419,10 @@ impl DirectoryCookies {
 // In a persistent mount, default-root inodes are tagged only in memory.
 // Both trees retain their on-disk inode numbers and share one SPACE transaction.
 pub(super) const DEFAULT_TREE: u64 = 1 << 63;
+// A writable clone attached to the live writer for a paired deploy
+// (docs/metal/paired-generations.md 3.1). The tag is the two-bit field
+// `ino & TREE_TAGS`, with three valid values: 0, DEFAULT_TREE and STAGING_TREE.
+pub const STAGING_TREE: u64 = 1 << 62;
 
 pub struct Files<'a, S: NodeStore + 'a> {
     txn: Transaction<'a, S>,
@@ -568,6 +572,19 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
     }
 
     pub fn includes_default_tree(&self) -> bool { self.default.is_some() }
+
+    /// Serve root `id` as the staging tree, tagged STAGING_TREE (3.1).
+    pub fn include_staging_tree(&mut self, id: u64) -> Result<(), Error> {
+        let _ = id;
+        Err(Error::EBUSY)
+    }
+
+    /// Stop serving the staging tree once it is committed; returns its root id.
+    pub fn exclude_staging_tree(&mut self) -> Result<u64, Error> {
+        Err(Error::EINVAL)
+    }
+
+    pub fn includes_staging_tree(&self) -> bool { false }
 
     pub(super) fn tag(&self, ino: u64) -> u64 {
         if self.default.is_some() { ino & DEFAULT_TREE } else { 0 }

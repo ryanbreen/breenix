@@ -45,6 +45,23 @@ pub mod measurement {
         static COMMITS: core::cell::Cell<[u64; 3]> = const { core::cell::Cell::new([0; 3]) };
         static EVENTS: core::cell::RefCell<Option<Vec<Event>>> = const { core::cell::RefCell::new(None) };
         static MATERIALIZED: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+        static WRITE_PART: core::cell::RefCell<Option<alloc::boxed::Box<dyn FnMut()>>> =
+            const { core::cell::RefCell::new(None) };
+    }
+    /// Run `hook` on this thread after each part of a split write that leaves
+    /// more to admit, with no mount lock held (paired generations T-A3).
+    pub fn on_write_part(hook: Option<alloc::boxed::Box<dyn FnMut()>>) {
+        WRITE_PART.with(|slot| *slot.borrow_mut() = hook);
+    }
+    pub(super) fn write_part_done() {
+        let hook = WRITE_PART.with(|slot| slot.borrow_mut().take());
+        if let Some(mut hook) = hook {
+            hook();
+            WRITE_PART.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                if slot.is_none() { *slot = Some(hook); }
+            });
+        }
     }
     /// Replayed changes and refreshed inodes since the last take (x11c M2).
     pub fn take_materialized() -> u64 { MATERIALIZED.with(|n| n.replace(0)) }
@@ -199,6 +216,10 @@ mod extent_runs;
 #[cfg(test)]
 #[path = "../../../../tools/breenfs-host-tests/src/free_space.rs"]
 mod free_space;
+
+#[cfg(test)]
+#[path = "../../../../tools/breenfs-host-tests/src/staging_tree.rs"]
+pub(super) mod staging_tree;
 
 // Extended attributes use ABI errno 61 for an absent attribute.
 const ENODATA: i32 = 61;
@@ -1797,6 +1818,21 @@ impl<W: Wait + 'static> BreenFs<W> {
             Ok(())
         }
     }
+    /// Serve writable root `name` beside the booted tree, under this writer
+    /// (docs/metal/paired-generations.md 3.1). Returns its root inode.
+    pub fn attach_staging(&self, name: &[u8]) -> Result<u64, Errno> {
+        let _ = name;
+        Err(Errno(EBUSY))
+    }
+    /// Commit and release the staging tree after its mount left the registry.
+    pub fn detach_staging(&self) -> Result<(), Errno> {
+        Err(Errno(EINVAL))
+    }
+    /// Whether `ino` is the root of the attached staging tree.
+    pub fn is_staging_root(&self, ino: u64) -> bool {
+        let _ = ino;
+        false
+    }
     fn mount_with(
         device: Arc<dyn BlockDevice>,
         cache: Cache<W>,
@@ -2505,6 +2541,8 @@ impl<W: Wait + 'static> BreenFs<W> {
                 return Ok(WriteResult { offset, bytes: done, limited: written.limited });
             }
             part.at = WriteAt::Offset(written.offset + written.bytes as u64);
+            #[cfg(test)]
+            measurement::write_part_done();
         }
     }
     /// One commit-worker pass. Preparation and opening G+1 are serialized;

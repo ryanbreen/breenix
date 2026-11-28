@@ -501,7 +501,10 @@ fn umount(target: u64, flags: u64) -> Result<(), u64> {
     let point =
         crate::syscall::metadata::resolve_at(crate::syscall::at_path::AT_FDCWD, &raw, true, &cred)?;
     if let Some(result) = crate::fs::breenfs::mount::unmount(&point.target, flags) {
-        return result;
+        let staging = result?;
+        // The walk holds the staging root; detach requires no staged node in use.
+        drop(point);
+        return staging.map_or(Ok(()), |staging| staging.finish());
     }
     let mount = {
         let mut mounts = MOUNTS.lock();
