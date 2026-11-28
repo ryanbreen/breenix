@@ -1105,6 +1105,8 @@ class Driver:
             if not (the_layout and current.get('writableRoot') and generation
                     and build.get('writablePersistentRoot') is True and not slots.get('next')):
                 raise Finish(m.EXIT_CANCELLED, '/usr replacement requires a writable CURRENT, a supported build and no NEXT')
+            if build.get('replaceUsrPreservesRustSelection') is not True:
+                raise Finish(m.EXIT_CANCELLED, '/usr replacement requires a build that preserves rust-current')
             return self.prepare_replace_usr(inputs, build, the_layout, generation)
         writable_install = any(slot.get('writableRoot') for name, slot in slots.items()
                                if name in ('current', 'previous') and slot)
@@ -2317,6 +2319,12 @@ class Driver:
                 m.write_json(self.dir / 'run.json', run)
                 self.seen.update(('manager-slot', 'live-flash-trial'))
                 self.event('live-flash-trial', observed_at=observed_at, token=token, commit=commit)
+        if found := re.fullmatch(r'breenix-manager: live flash: rollback ([0-9a-f]{32})', line):
+            token = found[1]
+            with m.locked('live-flash-record'):
+                entry = m.read_json(metal_live_flash.record_path(m, token))
+                if entry and entry.get('paired'):
+                    metal_live_flash.transition(m, token, 'rolled-back')
         if (persistent(self.args) and session(self.args) and self.kernel_started is None
                 and 'live-flash-trial' in self.seen
                 and re.fullmatch(r'breenix-manager: live flash: candidate returned \(0x[0-9a-f]+\); restarting', line)):
@@ -2622,6 +2630,9 @@ class Driver:
                 if ('live-flash-reset' in self.seen and self.requested_reset_at is not None
                         and observed_at >= self.requested_reset_at):
                     continue
+                if persistent(self.args) and session(self.args) and getattr(self, 'id', None):
+                    if metal_live_flash.pending_pair(m, self.id):
+                        continue
                 self.event('power-off-observed', observed_at=observed_at, seconds=elapsed)
                 raise Finish(m.EXIT_DONE if session(self.args) else m.EXIT_SHORT,
                              'the machine powered off during the boot')
@@ -2690,6 +2701,13 @@ class Driver:
     def persistent_deadlines(self):
         """A persistent boot: POST until the manager starts, then silence bounds until the kernel; a session has no
         deadline after that, a check boot its mode deadline."""
+        active = metal_live_flash.pending_pair(m, self.id) if session(self.args) else None
+        if active:
+            # The deploy host owns the trial deadline and asks this lease to
+            # reset it. Keep the driver around until that decision, bounded by
+            # the attempt's age. The lease ceiling below still applies.
+            if self.lease_ceiling is None or m.now() < self.lease_ceiling:
+                return
         if self.requested_reset_at is not None and m.now() - self.requested_reset_at > 600:
             raise Finish(m.EXIT_HUNG, 'requested reboot did not return to SSH', hung=True)
         if getattr(self.args, 'upgrade_parent', None) or self.migration_phase in metal_migration.VERIFY_PHASES:
@@ -2899,6 +2917,8 @@ class Driver:
             self.checkpoint()
             self.check_power_cut_deadline()
             self.pump_serial()
+            if persistent(self.args) and session(self.args):
+                self.paired_reset()
             self.pump_http()
             self.pump_bmc()
             if m.now() - last_console_check >= 1:
@@ -2913,6 +2933,32 @@ class Driver:
                 self.phase_name = 'download'
             self.check_deadlines()
             time.sleep(0.25)
+
+    def paired_reset(self):
+        path = self.dir / 'paired-reset.json'
+        request = m.read_json(path)
+        if not request:
+            return
+        path.unlink()
+        token = request.get('token', '')
+        if (not metal_live_flash.TOKEN.fullmatch(token)
+                or not metal_live_flash.pending_pair(m, self.id, token)
+                or not 0 <= m.now() - request.get('requestedAt', 0) <= 120):
+            return
+        self.event('paired-reset-requested', token=token)
+        if not self.power_off(hung=True):
+            raise Finish(m.EXIT_INCOMPLETE, 'paired rollback could not power off the persistent lease')
+        self.kernel_started = None
+        self.manager_started = None
+        self.shutdown_action = None
+        self.fatal_at = None
+        self.power_seen_on = False
+        self.clean_mounts.clear()
+        self.seen.difference_update(('bootloader', 'manager-slot', 'live-flash-trial', 'live-flash-reset'))
+        with self.bmc_lock:
+            self.bmc_events = []
+        self.power_on()
+        self.requested_reset_at = m.now()
 
     def check_power_cut_deadline(self):
         if self.power_cut is not None and (seconds := self.power_cut['afterSeconds']) is not None:
@@ -3466,6 +3512,9 @@ def main():
                        help='a test payload served with this type instead of its form\'s own')
         p.add_argument('--serve-as', choices=('boot.iso', 'boot.efi'),
                        help='answer the fixed URI with a redirect to this name beside it, and serve the file there')
+    p = sub.add_parser('paired-reset')
+    p.add_argument('id')
+    p.add_argument('token')
     p = sub.add_parser('stop')
     p.add_argument('id')
     p = sub.add_parser('inputs-ready')
@@ -3594,6 +3643,13 @@ def main():
         if not args.id or not re.fullmatch(r'\d{8}T\d{6}Z-metal', args.id):
             parser.error('run needs --id in the form YYYYMMDDTHHMMSSZ-metal')
         return Driver(args).run()
+    if args.command == 'paired-reset':
+        try:
+            metal_live_flash.request_reset(m, args.id, args.token)
+            return 0
+        except (OSError, ValueError) as error:
+            print(str(error), file=sys.stderr)
+            return 1
     if args.command == 'stop':
         directory = m.boot_dir(args.id)
         if not directory.is_dir() or (directory / 'ended').exists():

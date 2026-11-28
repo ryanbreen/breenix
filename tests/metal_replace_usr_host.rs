@@ -3,7 +3,7 @@
 #[path = "../userspace/programs/src/persistent_install.rs"]
 mod installer;
 
-use std::{fs, path::Path};
+use std::{fs, os::unix::fs::{symlink, MetadataExt}, path::Path};
 
 fn main() {
     let scratch = std::env::args_os().nth(1).unwrap();
@@ -24,7 +24,6 @@ fn main() {
     fs::write(target.join(".complete"), b"original identity").unwrap();
     installer::replace_usr(&source, &target).unwrap();
     assert_eq!(fs::read(target.join("usr/bin/new")).unwrap(), b"replacement");
-    use std::os::unix::fs::MetadataExt;
     assert_eq!(fs::metadata(target.join("usr/bin/new")).unwrap().ino(),
                fs::metadata(target.join("usr/bin/alias")).unwrap().ino());
     assert_eq!(fs::read_link(target.join("usr/bin/link")).unwrap(), Path::new("new"));
@@ -35,4 +34,35 @@ fn main() {
         assert_eq!(fs::read_dir(target.join(dir)).unwrap().count(), 1);
     }
     assert_eq!(fs::read(target.join(".complete")).unwrap(), b"original identity");
+    paired_selection_survives(Path::new(&scratch));
+}
+
+fn paired_selection_survives(scratch: &Path) {
+    let source = scratch.join("paired-image");
+    let target = scratch.join("paired-root");
+    let runtime_dir = "usr/lib/breenix";
+    let selection = target.join(runtime_dir).join("rust-current");
+    fs::create_dir_all(source.join(runtime_dir)).unwrap();
+    fs::create_dir_all(target.join(runtime_dir)).unwrap();
+    fs::write(source.join(runtime_dir).join("incoming"), b"from image").unwrap();
+    fs::write(target.join(runtime_dir).join("retired"), b"old payload").unwrap();
+    fs::write(&selection, b"paired-version\n").unwrap();
+    let selection_inode = fs::metadata(&selection).unwrap().ino();
+
+    let current = scratch.join("shared-opt/breenix/rust/CURRENT");
+    fs::create_dir_all(current.parent().unwrap()).unwrap();
+    symlink("/usr/lib/breenix/rust-current", &current).unwrap();
+
+    for incoming in [true, false] {
+        if !incoming {
+            fs::remove_dir_all(source.join("usr/lib")).unwrap();
+        }
+        installer::replace_usr(&source, &target).unwrap();
+        let link = fs::read_link(&current).unwrap();
+        assert_eq!(fs::read(target.join(link.strip_prefix("/").unwrap())).unwrap(),
+                   b"paired-version\n");
+        assert_eq!(fs::metadata(&selection).unwrap().ino(), selection_inode);
+        assert_eq!(target.join(runtime_dir).join("incoming").exists(), incoming);
+        assert!(!target.join(runtime_dir).join("retired").exists());
+    }
 }

@@ -828,7 +828,34 @@ Review of PR #3273 (the same rule):
 - **Attach reads the draft's root directory**, past `observed`, and refuses a damaged one with its error. A
   metadata `EIO` through `observed` latches the mount failed, and that mount is the booted writer.
 
-### 10.2 PR C detail deviations (DEV-39(2))
+### 10.2 PR B detail deviations (DEV-39(2))
+
+- The installer uses `f_bavail` for the size preflight because BreenFS already deducts the global reserve and
+  outstanding reservations before reporting it.
+- A directory `fsync` on the opened BreenFS staging tree supplies the 32 MiB barrier because BreenFS commits the
+  shared writer through that operation and Breenix has no `syncfs` syscall.
+- A private inode anchor in the draft's incoming directory holds an adopted object through publication of the
+  final hard-link member, so a retry can finish a partially published group without requesting its bytes again.
+- The fresh baseline uses the existing `BREENIX-IMAGE-1` encoder for inventory-owned paths because listing pet
+  additions in that baseline would classify them as removable image files on the next deploy.
+- Verification compares each material inventory field and uses the inventory mtime for its digest because an
+  unchanged cloned inode can legally retain its existing mtime.
+- The rollback evidence combines the manager's commit and init boot-ID serial lines with the matching SSH boot ID
+  and root source because Breenix's `/proc/version` has no kernel commit field.
+- The upload builds bsync from the tools commit and supplies it with a private OpenSSH configuration because
+  the boot host's uploader must use the same strict host-key and identity checks as the other SSH commands.
+- The static installer uses Breenix's descriptor-relative syscalls for four calls whose C symbols are exported
+  only by the hosted archive.
+- A carried set-ID file with links outside its path is copied to an independent archive inode before unlinking
+  the managed path because clearing the old inode's set-ID bits would alter the other links.
+- The host treats an absent `liveManager.manifestVersion` as version 1 and reads version 2 from the installed
+  manager record because the candidate build's manager may differ from the one installed on the ESP; PR C's
+  replacement receipt supplies that field after the firmware confirms installation.
+- The host test places set-ID `su` under `/bin` because `layout.tsv` names that installed path.
+- Legacy `--replace-usr` keeps the existing selector in place and requires an installer that supports it because
+  shared `CURRENT` resolves through the selected root even after a rollback or an interrupted replacement.
+
+### 10.3 PR C detail deviations (DEV-39(2))
 
 - The manager checks the legacy journal replay before executing it so a detected torn rename takes the read-only
   fallback before it can delete an ambiguous directory entry.
