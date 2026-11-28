@@ -430,6 +430,7 @@ fn checked_retirement(path: &Path) -> bool {
 
 fn apply(
     root: &Dir,
+    rust: &Dir,
     id: &str,
     previous: &str,
     inventory: &Inventory,
@@ -437,6 +438,13 @@ fn apply(
 ) -> Result<String, String> {
     let old = baseline(root)?.unwrap_or_default();
     let valid = inventory.matches(root)?;
+    let (toolchain, runtime) = runtime_plan(root, rust, inventory)?;
+    // Runtime files take the draft root's owner, root:root on the box.
+    let owner = {
+        use std::os::unix::fs::MetadataExt as _;
+        let meta = root.file.metadata().map_err(io_error)?;
+        (meta.uid(), meta.gid())
+    };
     let incoming_name = OsStr::new(INCOMING);
     let incoming = root.dir(incoming_name, Some(0o700)).map_err(io_error)?;
     let objects = incoming
@@ -449,6 +457,7 @@ fn apply(
         .rows
         .iter()
         .map(|row| row.path.as_path())
+        .chain(runtime.iter().map(|file| file.path.as_path()))
         .collect();
     let mut existing = BTreeSet::new();
     for dir in ["bin", "sbin", "lib", "usr"] {
@@ -483,6 +492,13 @@ fn apply(
                 }
             }
         }
+        for file in &runtime {
+            if let Some((RuntimeAction::Carry, _)) =
+                runtime_action(root, file, &old, owner).map_err(io_error)?
+            {
+                carried.push(display_path(&file.path));
+            }
+        }
         for path in existing
             .iter()
             .filter(|p| !owned.contains(p.as_path()) && checked_retirement(p))
@@ -515,6 +531,9 @@ fn apply(
             .map_err(io_error)?;
         report
     };
+    // Before the inventory's carries, retirements and installs, while the uploaded objects
+    // and the draft's /lib are still as the upload left them.
+    install_runtime(root, &objects, previous, &toolchain, &runtime, &old, owner)?;
 
     for (group, yes) in inventory.groups.iter().zip(&valid) {
         if *yes {
@@ -682,14 +701,15 @@ fn apply(
     }
     write_path(root, GENERATION, format!("{id}\n").as_bytes(), 0o644).map_err(io_error)?;
     let mut managed = BTreeMap::new();
-    for row in &inventory.rows {
+    let paths = inventory.rows.iter().map(|row| &row.path);
+    for path in paths.chain(runtime.iter().map(|file| &file.path)) {
         let (dir, info) = root
-            .lookup(&row.path)
+            .lookup(path)
             .map_err(io_error)?
             .ok_or("inventory path disappeared")?;
         managed.insert(
-            row.path.clone(),
-            fingerprint(&dir, row.leaf(), info).map_err(io_error)?,
+            path.clone(),
+            fingerprint(&dir, path.file_name().unwrap(), info).map_err(io_error)?,
         );
     }
     let image = local::baseline_text(managed);
@@ -738,6 +758,7 @@ pub(crate) fn have_fixture(path: &Path, bytes: &[u8]) -> Result<Vec<String>, Str
 #[cfg(feature = "paired-host-test")]
 pub(crate) fn apply_fixture(
     path: &Path,
+    rust: &Path,
     id: &str,
     previous: &str,
     bytes: &[u8],
@@ -745,6 +766,7 @@ pub(crate) fn apply_fixture(
 ) -> Result<String, String> {
     apply(
         &Dir::open(path).map_err(io_error)?,
+        &Dir::open(rust).map_err(io_error)?,
         id,
         previous,
         &Inventory::parse(bytes)?,
@@ -921,7 +943,9 @@ pub(crate) fn verify_runtime_fixture(path: &Path, rust: &Path) -> Result<(), Str
     )
 }
 
-fn toolchain(root: &Dir, rust: &Dir) -> Result<(), String> {
+/// The toolchain version the draft selects: its ID, its directory in shared
+/// /opt/breenix/rust and its parsed MANIFEST.json.
+fn selected_manifest(root: &Dir, rust: &Dir) -> Result<(String, Dir, serde_json::Value), String> {
     let selected = field(root, SELECTION).map_err(|err| format!("/{SELECTION}: {err}"))?;
     let id = version_id(&selected)?;
     let place = format!("/opt/breenix/rust/{id}");
@@ -936,34 +960,242 @@ fn toolchain(root: &Dir, rust: &Dir) -> Result<(), String> {
     if manifest["id"].as_str() != Some(id) {
         return Err(format!("toolchain manifest does not identify {id}"));
     }
-    let payload = manifest["files"]
-        .as_object()
-        .filter(|files| !files.is_empty())
-        .ok_or("empty toolchain file inventory")?;
+    Ok((id.to_owned(), version, manifest))
+}
+
+/// The manifest's runtime rows as `(<name>, facts)`, each naming one file directly in /lib.
+fn runtime_rows(manifest: &serde_json::Value) -> Result<Vec<(&str, &serde_json::Value)>, String> {
     let runtime = manifest["runtime"]
         .as_object()
         .ok_or("missing toolchain runtime inventory")?;
-    for required in ["libc.so", "ld-breenix.so"] {
+    // scripts/devbox/toolchain.py keys each runtime row by its absolute path,
+    // `/lib/<name>`; the check reads it as `<name>` inside the draft's /lib.
+    for required in ["/lib/libc.so", "/lib/ld-breenix.so"] {
         if !runtime.contains_key(required) {
             return Err(format!("missing toolchain runtime {required}"));
         }
     }
+    runtime
+        .iter()
+        .map(|(path, facts)| {
+            path.strip_prefix("/lib/")
+                .filter(|name| {
+                    !name.is_empty() && !name.contains('/') && !matches!(*name, "." | "..")
+                })
+                .map(|name| (name, facts))
+                .ok_or_else(|| format!("unsafe toolchain runtime path {path:?}"))
+        })
+        .collect()
+}
+
+/// One runtime file the draft's /lib must hold, from the selected toolchain's entry.
+struct Runtime {
+    path: PathBuf,
+    size: u64,
+    mode: u32,
+    sha: String,
+}
+
+/// What the runtime step does with one entry's path in the draft (design 4.3's rules).
+#[derive(PartialEq)]
+enum RuntimeAction {
+    Keep,
+    Replace,
+    Carry,
+}
+
+/// DEV-55: the selected toolchain's runtime entry is the source of truth for the draft's
+/// /lib runtime. The draft keeps the clone's selection unless the inventory carries one, and
+/// an inventory that carries the selection, or a /lib runtime path, owns that path itself.
+fn runtime_plan(
+    root: &Dir,
+    rust: &Dir,
+    inventory: &Inventory,
+) -> Result<(String, Vec<Runtime>), String> {
+    let carries = |path: &Path| inventory.rows.iter().any(|row| row.path == path);
+    // Begin writes the selection before the clone (4.5), so a draft without one only
+    // occurs outside a deploy; verify refuses it, naming the selection.
+    if carries(Path::new(SELECTION))
+        || root
+            .lookup(Path::new(SELECTION))
+            .map_err(io_error)?
+            .is_none()
+    {
+        return Ok((String::new(), Vec::new()));
+    }
+    let (id, _, manifest) = selected_manifest(root, rust)?;
+    let mut plan = Vec::new();
+    for (name, facts) in runtime_rows(&manifest)? {
+        let path = Path::new("lib").join(name);
+        if carries(&path) {
+            continue;
+        }
+        let size = facts["size"].as_u64();
+        let mode = facts["mode"]
+            .as_str()
+            .and_then(|mode| u32::from_str_radix(mode, 8).ok())
+            .filter(|mode| *mode <= 0o7777);
+        let sha = facts["sha256"]
+            .as_str()
+            .filter(|sha| sha.len() == 64 && is_hex(sha));
+        let (Some(size), Some(mode), Some(sha)) = (size, mode, sha) else {
+            return Err(format!(
+                "toolchain {id} has an invalid runtime row for /lib/{name}"
+            ));
+        };
+        plan.push(Runtime {
+            path,
+            size,
+            mode,
+            sha: sha.into(),
+        });
+    }
+    Ok((id, plan))
+}
+
+fn runtime_action(
+    root: &Dir,
+    runtime: &Runtime,
+    old: &BTreeMap<PathBuf, String>,
+    owner: (u32, u32),
+) -> io::Result<Option<(RuntimeAction, Info)>> {
+    let Some((dir, info)) = root.lookup(&runtime.path)? else {
+        return Ok(None);
+    };
+    let leaf = runtime.path.file_name().expect("validated runtime path");
+    if info.kind() == REG
+        && info.size == runtime.size
+        && info.mode & 0o7777 == runtime.mode
+        && (info.uid, info.gid) == owner
+        && info.links == 1
+        && digest_file(dir.read_file(leaf)?)? == runtime.sha
+    {
+        return Ok(Some((RuntimeAction::Keep, info)));
+    }
+    let action =
+        if info.kind() == REG && old.get(&runtime.path) == Some(&fingerprint(&dir, leaf, info)?) {
+            RuntimeAction::Replace
+        } else {
+            RuntimeAction::Carry
+        };
+    Ok(Some((action, info)))
+}
+
+/// Bytes with the entry's size and SHA-256: the uploaded object named by that SHA-256, or a
+/// regular file already in the draft's /lib (on the R240, the pinned loader the diagnostic
+/// delivery kept). Only the bytes are taken, by content; the name does not matter.
+fn runtime_source(lib: &Dir, objects: &Dir, runtime: &Runtime) -> io::Result<Option<File>> {
+    let mut candidates = vec![(objects, OsString::from(&runtime.sha))];
+    candidates.extend(lib.names()?.into_iter().map(|name| (lib, name)));
+    for (dir, name) in candidates {
+        let Some(info) = dir.info(&name)? else {
+            continue;
+        };
+        if info.kind() == REG
+            && info.size == runtime.size
+            && digest_file(dir.read_file(&name)?)? == runtime.sha
+        {
+            return dir.read_file(&name).map(Some);
+        }
+    }
+    Ok(None)
+}
+
+/// Write each planned runtime file into the draft, moving a locally changed one aside first.
+/// Each source is opened before anything moves, and the copy is checked against the entry's
+/// SHA-256 before it is renamed in. Rerunning after an interruption keeps what is finished.
+fn install_runtime(
+    root: &Dir,
+    objects: &Dir,
+    previous: &str,
+    toolchain: &str,
+    plan: &[Runtime],
+    old: &BTreeMap<PathBuf, String>,
+    owner: (u32, u32),
+) -> Result<(), String> {
+    for runtime in plan {
+        let action = runtime_action(root, runtime, old, owner).map_err(io_error)?;
+        if matches!(action, Some((RuntimeAction::Keep, _))) {
+            continue;
+        }
+        let (lib, leaf) = root.parent(&runtime.path, true).map_err(io_error)?;
+        let shown = display_path(&runtime.path);
+        let mut source = runtime_source(&lib, objects, runtime)
+            .map_err(io_error)?
+            .ok_or_else(|| {
+                format!(
+                    "no object or file in the draft's /lib matches toolchain {toolchain}'s {shown} \
+                     (SHA-256 {}, {} bytes)",
+                    runtime.sha, runtime.size
+                )
+            })?;
+        if let Some((RuntimeAction::Carry, info)) = action {
+            carry(root, &runtime.path, previous, info).map_err(io_error)?;
+        }
+        lib.atomic(leaf, |temp| {
+            let result = (|| {
+                let mut output = lib.create(temp)?;
+                let mut hash = local::sha256::Sha256::new();
+                let mut buffer = [0u8; 64 * 1024];
+                let mut size = 0u64;
+                use std::io::Write as _;
+                loop {
+                    let count = source.read(&mut buffer)?;
+                    if count == 0 {
+                        break;
+                    }
+                    hash.update(&buffer[..count]);
+                    output.write_all(&buffer[..count])?;
+                    size += count as u64;
+                }
+                if size != runtime.size || local::hex(hash.finalize()) != runtime.sha {
+                    return Err(io::Error::other(format!(
+                        "runtime source changed for {shown}"
+                    )));
+                }
+                tree::owner_mode(&output, owner.0, owner.1, runtime.mode)?;
+                output.sync_all()
+            })();
+            if result.is_err() {
+                let _ = lib.remove(temp, false);
+            }
+            result
+        })
+        .map_err(io_error)?;
+    }
+    Ok(())
+}
+
+fn toolchain(root: &Dir, rust: &Dir) -> Result<(), String> {
+    let (id, version, manifest) = selected_manifest(root, rust)?;
+    let id = id.as_str();
+    let payload = manifest["files"]
+        .as_object()
+        .filter(|files| !files.is_empty())
+        .ok_or("empty toolchain file inventory")?;
+    let runtime = runtime_rows(&manifest)?;
+    let payload: Vec<_> = payload.iter().map(|(path, facts)| (path.as_str(), facts)).collect();
     let libraries = root
         .dir(OsStr::new("lib"), None)
         .map_err(|err| format!("/lib: {err}"))?;
     for (root, rows, hash) in [(&version, payload, false), (&libraries, runtime, true)] {
         for (path, facts) in rows {
             let path = Path::new(path);
+            let shown = if hash {
+                Path::new("/lib").join(path)
+            } else {
+                path.to_path_buf()
+            };
             if path.is_absolute()
                 || path
                     .components()
                     .any(|part| !matches!(part, std::path::Component::Normal(_)))
                 || hash && path.components().count() != 1
             {
-                return Err(format!("unsafe toolchain manifest path {path:?}"));
+                return Err(format!("unsafe toolchain manifest path {shown:?}"));
             }
             let Some((dir, info)) = root.lookup(path).map_err(io_error)? else {
-                return Err(format!("missing toolchain file {path:?}"));
+                return Err(format!("missing toolchain file {shown:?}"));
             };
             let mode = facts["mode"]
                 .as_str()
@@ -981,7 +1213,7 @@ fn toolchain(root: &Dir, rust: &Dir) -> Result<(), String> {
                         != sha.unwrap()
             {
                 return Err(format!(
-                    "toolchain {id} metadata or runtime bytes differ at {path:?}"
+                    "toolchain {id} metadata or runtime bytes differ at {shown:?}"
                 ));
             }
         }

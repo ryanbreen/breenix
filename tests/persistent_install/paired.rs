@@ -89,6 +89,18 @@ impl Fixture {
     fn meta(&self, path: &str) -> fs::Metadata {
         fs::metadata(self.0.join(path)).unwrap()
     }
+
+    /// Apply to a draft that selects no toolchain, beside an empty /opt/breenix/rust.
+    fn apply(
+        &self,
+        id: &str,
+        previous: &str,
+        inventory: &[u8],
+        checkpoint: &mut dyn FnMut() -> Result<(), String>,
+    ) -> Result<String, String> {
+        let rust = Fixture::new();
+        installer::paired::apply_fixture(&self.0, &rust.0, id, previous, inventory, checkpoint)
+    }
 }
 
 impl Drop for Fixture {
@@ -135,7 +147,7 @@ fn applies_inventory_over_clone_and_resumes_at_each_file() {
         }
         let mut seen = 0;
         assert!(
-            installer::paired::apply_fixture(&f.0, ID, OLD, &inventory, &mut || {
+            f.apply(ID, OLD, &inventory, &mut || {
                 seen += 1;
                 if seen == cut + 1 {
                     Err("cut".into())
@@ -146,7 +158,7 @@ fn applies_inventory_over_clone_and_resumes_at_each_file() {
             .is_err()
         );
         let receipt =
-            installer::paired::apply_fixture(&f.0, ID, OLD, &inventory, &mut || Ok(())).unwrap();
+            f.apply(ID, OLD, &inventory, &mut || Ok(())).unwrap();
         assert!(receipt.contains("/usr/restore"));
         assert_eq!(
             installer::paired::verify_fixture(&f.0, &inventory).unwrap(),
@@ -180,7 +192,7 @@ fn refuses_symlinked_parents_and_selection_leaves() {
     let inventory = f.inventory(&[("/usr/lib/keep", "reg", 0o644, "-", b"bad")]);
     fs::remove_dir_all(f.0.join("usr/lib")).unwrap();
     symlink(f.0.join("home"), f.0.join("usr/lib")).unwrap();
-    assert!(installer::paired::apply_fixture(&f.0, ID, OLD, &inventory, &mut || Ok(())).is_err());
+    assert!(f.apply(ID, OLD, &inventory, &mut || Ok(())).is_err());
     assert!(installer::paired::select_fixture(&f.0, "version").is_err());
     fs::remove_file(f.0.join("usr/lib")).unwrap();
     fs::create_dir_all(f.0.join("usr/lib/breenix")).unwrap();
@@ -199,10 +211,10 @@ fn missing_baseline_carries_a_pet_edit_and_unknown_header_refuses() {
     f.write("lib/runtime", b"pet", 0o644);
     let inventory = f.inventory(&[("/lib/runtime", "reg", 0o644, "-", b"fresh")]);
     f.write(".breenix-image", b"BREENIX-IMAGE-99\0", 0o600);
-    assert!(installer::paired::apply_fixture(&f.0, ID, OLD, &inventory, &mut || Ok(())).is_err());
+    assert!(f.apply(ID, OLD, &inventory, &mut || Ok(())).is_err());
     assert_eq!(f.read("lib/runtime"), b"pet");
     fs::remove_file(f.0.join(".breenix-image")).unwrap();
-    installer::paired::apply_fixture(&f.0, ID, OLD, &inventory, &mut || Ok(())).unwrap();
+    f.apply(ID, OLD, &inventory, &mut || Ok(())).unwrap();
     assert_eq!(
         f.read(&format!(".breenix-carried/{OLD}/lib/runtime")),
         b"pet"
@@ -266,7 +278,7 @@ fn runtime_readback_rejects_mismatched_bytes() {
     };
     let manifest = serde_json::json!({
         "id": "old-version", "files": {"bin/rustc": facts(b"rustc")},
-        "runtime": {"libc.so": facts(b"libc"), "ld-breenix.so": facts(b"loader")}
+        "runtime": {"/lib/libc.so": facts(b"libc"), "/lib/ld-breenix.so": facts(b"loader")}
     });
     opt.write(
         "old-version/MANIFEST.json",
@@ -277,7 +289,67 @@ fn runtime_readback_rejects_mismatched_bytes() {
     root.write("lib/libc.so", b"oops", 0o755);
     assert!(installer::paired::verify_runtime_fixture(&root.0, &opt.0)
         .unwrap_err()
-        .contains("libc.so"));
+        .contains("/lib/libc.so"));
+}
+
+/// The R240's paired deploy of dfe80725 stopped verify with "missing toolchain runtime
+/// libc.so": the box's manifest, written by scripts/devbox/toolchain.py, keys its runtime
+/// rows `/lib/libc.so` and `/lib/ld-breenix.so` (tests/devbox_toolchain_test.py pins that),
+/// and the check looked for bare names, which toolchain.py does not write. A row must name
+/// one file directly in `/lib`; the 8 rows below that do not are refused.
+#[test]
+fn runtime_readback_reads_the_producers_lib_paths() {
+    let root = Fixture::new();
+    let opt = Fixture::new();
+    fs::create_dir_all(opt.0.join("old-version/bin")).unwrap();
+    opt.write("old-version/bin/rustc", b"rustc", 0o755);
+    root.write("usr/lib/breenix/rust-current", b"old-version\n", 0o644);
+    root.write("lib/libc.so", b"libc", 0o755);
+    root.write("lib/ld-breenix.so", b"loader", 0o755);
+    fs::create_dir_all(root.0.join("etc")).unwrap();
+    root.write("etc/libc.so", b"libc", 0o755);
+    let facts = |bytes: &[u8]| {
+        serde_json::json!({
+            "size": bytes.len(), "mode": "0755", "sha256": installer::paired::digest(bytes)
+        })
+    };
+    let check = |runtime: serde_json::Value| {
+        let manifest = serde_json::json!({
+            "id": "old-version", "files": {"bin/rustc": facts(b"rustc")}, "runtime": runtime
+        });
+        let path = opt.0.join("old-version/MANIFEST.json");
+        let _ = fs::remove_file(&path);
+        opt.write("old-version/MANIFEST.json", manifest.to_string().as_bytes(), 0o444);
+        installer::paired::verify_runtime_fixture(&root.0, &opt.0)
+    };
+    check(serde_json::json!({
+        "/lib/ld-breenix.so": facts(b"loader"), "/lib/libc.so": facts(b"libc")
+    }))
+    .unwrap();
+    let error = check(serde_json::json!({
+        "libc.so": facts(b"libc"), "ld-breenix.so": facts(b"loader")
+    }))
+    .unwrap_err();
+    assert!(error.contains("/lib/libc.so"), "{error}");
+    let error = check(serde_json::json!({"/lib/libc.so": facts(b"libc")})).unwrap_err();
+    assert!(error.contains("/lib/ld-breenix.so"), "{error}");
+    for unsafe_path in [
+        "libc.so",
+        "/etc/libc.so",
+        "/lib/../etc/libc.so",
+        "/lib//libc.so",
+        "/lib/./libc.so",
+        "/lib/sub/libc.so",
+        "/lib/libc.so/",
+        "/lib/",
+    ] {
+        let error = check(serde_json::json!({
+            "/lib/libc.so": facts(b"libc"), "/lib/ld-breenix.so": facts(b"loader"),
+            unsafe_path: facts(b"libc")
+        }))
+        .unwrap_err();
+        assert!(error.contains("unsafe toolchain"), "{unsafe_path}: {error}");
+    }
 }
 
 /// The rehearsal on the built image (paired_image.rs) first stopped verify with a bare
@@ -305,12 +377,123 @@ fn runtime_readback_names_what_is_missing() {
     };
     let manifest = serde_json::json!({
         "id": "old-version", "files": {"bin/rustc": facts(b"rustc")},
-        "runtime": {"libc.so": facts(b"libc"), "ld-breenix.so": facts(b"loader")}
+        "runtime": {"/lib/libc.so": facts(b"libc"), "/lib/ld-breenix.so": facts(b"loader")}
     });
     opt.write("old-version/MANIFEST.json", manifest.to_string().as_bytes(), 0o444);
     fs::remove_dir_all(root.0.join("lib")).unwrap();
     let error = check();
     assert!(error.contains("/lib"), "{error}");
+}
+
+/// DEV-55. The R240's running root carries #3208's diagnostic loader (ed076ff2) at
+/// /lib/ld-breenix.so, while its selected toolchain's runtime entry, the repository pin and
+/// the kept /lib/.ld-breenix.so-before-1a4e95a2 are 1a4e95a2. The image carries no /lib, so
+/// the draft kept the clone's loader and verify refused it. The selected entry is the source
+/// of truth: apply writes the draft's /lib runtime from bytes whose size and SHA-256 match
+/// the entry (an uploaded object, or a file already in the draft's /lib), and moves the
+/// loader the draft held into .breenix-carried/<previous>/, as design 4.3 does for a locally
+/// changed managed file. With no such bytes, apply refuses before it moves anything.
+#[test]
+fn apply_writes_the_selected_runtime_into_the_draft() {
+    const NEXT: &str = "20261128T000000Z-metal";
+    let opt = Fixture::new();
+    fs::create_dir_all(opt.0.join("pinned/bin")).unwrap();
+    opt.write("pinned/bin/rustc", b"rustc", 0o755);
+    let facts = |bytes: &[u8]| {
+        serde_json::json!({
+            "size": bytes.len(), "mode": "0755", "sha256": installer::paired::digest(bytes)
+        })
+    };
+    let manifest = serde_json::json!({
+        "id": "pinned", "files": {"bin/rustc": facts(b"rustc")},
+        "runtime": {"/lib/libc.so": facts(b"libc"), "/lib/ld-breenix.so": facts(b"pinned loader")}
+    });
+    opt.write("pinned/MANIFEST.json", manifest.to_string().as_bytes(), 0o444);
+    // The box: a baseline that predates the devbox runtime, then the runtime sync, then the
+    // diagnostic loader delivered over it with the pinned one kept beside it.
+    let draft = || {
+        let f = Fixture::new();
+        f.write("usr/lib/breenix/rust-current", b"pinned\n", 0o644);
+        let pre = installer::paired::record_fixture(&f.0).unwrap();
+        f.write(".breenix-image", pre.as_ref(), 0o600);
+        f.write("lib/libc.so", b"libc", 0o755);
+        f.write("lib/ld-breenix.so", b"diagnostic loader", 0o755);
+        f
+    };
+    let rows: &[(&str, &str, u32, &str, &[u8])] = &[("/bin/tool", "reg", 0o755, "-", b"tool")];
+
+    let f = draft();
+    f.write("lib/.ld-breenix.so-before-pinned", b"pinned loader", 0o755);
+    let inventory = f.inventory(rows);
+    let receipt = installer::paired::apply_fixture(&f.0, &opt.0, ID, OLD, &inventory, &mut || {
+        Ok(())
+    })
+    .unwrap();
+    let receipt: serde_json::Value = serde_json::from_str(&receipt).unwrap();
+    assert_eq!(receipt["carried"], serde_json::json!(["/lib/ld-breenix.so"]), "{receipt}");
+    assert!(!receipt["onBox"].to_string().contains("/lib/libc.so"), "{receipt}");
+    assert_eq!(f.read("lib/ld-breenix.so"), b"pinned loader");
+    assert_eq!(f.meta("lib/ld-breenix.so").mode() & 0o7777, 0o755);
+    assert_eq!(f.meta("lib/ld-breenix.so").nlink(), 1);
+    assert_eq!(
+        f.read(&format!(".breenix-carried/{OLD}/lib/ld-breenix.so")),
+        b"diagnostic loader"
+    );
+    assert!(!f.0.join(format!(".breenix-carried/{OLD}/lib/libc.so")).exists());
+    assert_eq!(f.read("lib/libc.so"), b"libc");
+    assert_eq!(f.read("lib/.ld-breenix.so-before-pinned"), b"pinned loader");
+    installer::paired::verify_runtime_fixture(&f.0, &opt.0).unwrap();
+    assert_eq!(
+        installer::paired::verify_fixture(&f.0, &inventory).unwrap(),
+        installer::paired::digest(&inventory)
+    );
+    // The new baseline lists the runtime, so the next pair replaces a previous managed
+    // runtime without carrying it, and keeps a matching one.
+    let baseline = f.read(".breenix-image");
+    for name in ["lib/libc.so\0", "lib/ld-breenix.so\0"] {
+        assert!(
+            baseline.windows(name.len()).any(|window| window == name.as_bytes()),
+            "{name}"
+        );
+    }
+    fs::create_dir_all(f.0.join(".breenix-incoming/objects")).unwrap();
+    let inventory = f.inventory(rows);
+    let receipt =
+        installer::paired::apply_fixture(&f.0, &opt.0, NEXT, ID, &inventory, &mut || Ok(()))
+            .unwrap();
+    assert!(receipt.contains(r#""carried":[]"#), "{receipt}");
+    assert!(!f.0.join(format!(".breenix-carried/{ID}")).exists());
+
+    // An uploaded object named by the entry's SHA-256 is a source too.
+    let f = draft();
+    f.write(
+        &format!(
+            ".breenix-incoming/objects/{}",
+            installer::paired::digest(b"pinned loader")
+        ),
+        b"pinned loader",
+        0o600,
+    );
+    let inventory = f.inventory(rows);
+    installer::paired::apply_fixture(&f.0, &opt.0, ID, OLD, &inventory, &mut || Ok(())).unwrap();
+    assert_eq!(f.read("lib/ld-breenix.so"), b"pinned loader");
+    installer::paired::verify_runtime_fixture(&f.0, &opt.0).unwrap();
+
+    // Bytes that only share the size or the name are not a source: apply names the file and
+    // the entry, and the draft's loader stays where it was.
+    let f = draft();
+    f.write("lib/.ld-breenix.so-before-other", b"pinned Loader", 0o755);
+    let inventory = f.inventory(rows);
+    let error =
+        installer::paired::apply_fixture(&f.0, &opt.0, ID, OLD, &inventory, &mut || Ok(()))
+            .unwrap_err();
+    assert!(error.contains("/lib/ld-breenix.so"), "{error}");
+    assert!(
+        error.contains(&installer::paired::digest(b"pinned loader")),
+        "{error}"
+    );
+    assert_eq!(f.read("lib/ld-breenix.so"), b"diagnostic loader");
+    assert!(!f.0.join(".breenix-carried").exists());
 }
 
 #[test]
@@ -320,7 +503,7 @@ fn publication_keeps_epoch_outside_the_draft_and_refuses_changed_or_stale_boot()
     let inventory = f.inventory(&[("/bin/tool", "reg", 0o755, "-", b"application")]);
     let state = Fixture::new();
     state.write("epoch", b"10\n1-2-3\ngen-old\n", 0o600);
-    installer::paired::apply_fixture(&f.0, ID, OLD, &inventory, &mut || Ok(())).unwrap();
+    f.apply(ID, OLD, &inventory, &mut || Ok(())).unwrap();
     assert!(!f.0.join(".breenix-incoming").exists());
     let e1 = state.read("epoch");
 
@@ -421,7 +604,7 @@ fn applies_and_rereads_a_non_utf8_payload_path() {
     let f = Fixture::new();
     f.write("home/keep", b"home", 0o644);
     let inventory = f.inventory_bytes(rows);
-    installer::paired::apply_fixture(&f.0, ID, OLD, &inventory, &mut || Ok(())).unwrap();
+    f.apply(ID, OLD, &inventory, &mut || Ok(())).unwrap();
     assert_eq!(
         installer::paired::verify_fixture(&f.0, &inventory).unwrap(),
         installer::paired::digest(&inventory)
@@ -436,7 +619,7 @@ fn applies_and_rereads_a_non_utf8_payload_path() {
     // A second generation over the first reads that baseline back.
     fs::create_dir_all(f.0.join(".breenix-incoming/objects")).unwrap();
     let inventory = f.inventory_bytes(rows);
-    installer::paired::apply_fixture(&f.0, NEXT, ID, &inventory, &mut || Ok(())).unwrap();
+    f.apply(NEXT, ID, &inventory, &mut || Ok(())).unwrap();
     assert!(!f.0.join(format!(".breenix-carried/{ID}")).exists());
     assert_eq!(fs::read(&link).unwrap(), b"child");
     assert_eq!(f.read("home/keep"), b"home");
