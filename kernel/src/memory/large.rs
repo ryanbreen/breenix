@@ -29,6 +29,7 @@ use super::frame_allocator::{self, FrameOwner};
 use super::kmem::{self, AllocError, Ctx, Layer};
 use super::kva::{self, WindowId};
 use super::kva_extent::Allocation;
+use super::large_check::{self, Place};
 use super::span_arena::{self, Arena, Miss, Unmapped, SPAN_BYTES};
 use super::vmap::{self, Block, Space, PAGE};
 
@@ -455,87 +456,53 @@ pub struct SelfCheck {
     pub vmap_moves: u64,
 }
 
-/// A byte pattern for offset `i` of check block `tag`.
-fn pattern(tag: u8, i: usize) -> u8 {
-    (i as u8).wrapping_mul(31).wrapping_add(tag)
-}
+/// The span and vmap layers as `large_check` reaches them, at boot.
+struct KernelLayers;
 
-/// Fill `len` bytes at `ptr` with block `tag`'s pattern.
-///
-/// # Safety
-///
-/// `[ptr, ptr + len)` is a live block's.
-unsafe fn fill(ptr: NonNull<u8>, len: usize, tag: u8) {
-    for i in 0..len {
-        unsafe { ptr.as_ptr().add(i).write_volatile(pattern(tag, i)) };
+impl large_check::Layers for KernelLayers {
+    fn allocate(&mut self, layout: Layout) -> Option<NonNull<u8>> {
+        allocate(layout, Ctx::Normal).ok()
+    }
+
+    unsafe fn reallocate(&mut self, ptr: NonNull<u8>, layout: Layout, new_size: usize) -> Option<NonNull<u8>> {
+        unsafe { reallocate(ptr, layout, new_size, Ctx::Normal) }.ok()
+    }
+
+    unsafe fn deallocate(&mut self, ptr: NonNull<u8>, layout: Layout) {
+        unsafe { deallocate(ptr, layout) }
+    }
+
+    fn place(&self, ptr: NonNull<u8>) -> Place {
+        match kva::window_of(ptr.as_ptr() as u64) {
+            Some(WindowId::Span) => Place::Span,
+            Some(WindowId::Vmap) => Place::Vmap,
+            _ => Place::Elsewhere,
+        }
+    }
+
+    fn dma_refused(&self, ptr: NonNull<u8>, len: usize) -> bool {
+        crate::memory::dma::bus_address(ptr.as_ptr(), len).is_err()
+    }
+
+    unsafe fn fill(&mut self, ptr: NonNull<u8>, len: usize, tag: u8) {
+        for i in 0..len {
+            // SAFETY: the caller's block holds `len` bytes.
+            unsafe { ptr.as_ptr().add(i).write_volatile(large_check::pattern(tag, i)) };
+        }
+    }
+
+    unsafe fn holds(&self, ptr: NonNull<u8>, len: usize, tag: u8) -> bool {
+        // SAFETY: as in `fill`.
+        (0..len).all(|i| unsafe { ptr.as_ptr().add(i).read_volatile() } == large_check::pattern(tag, i))
     }
 }
 
-/// Whether `len` bytes at `ptr` hold block `tag`'s pattern.
-///
-/// # Safety
-///
-/// As for `fill`.
-unsafe fn holds(ptr: NonNull<u8>, len: usize, tag: u8) -> bool {
-    (0..len).all(|i| unsafe { ptr.as_ptr().add(i).read_volatile() } == pattern(tag, i))
-}
-
-/// The init self-check (E1-7): span blocks allocated, written, grown in
-/// place and freed, with their span given back; a 4 MiB vmap block of
-/// discontiguous frames grown in place and then moved without a copy; and
-/// `dma::bus_address` refusing both windows' addresses and accepting a
-/// direct-map frame. Each step is checked through the bytes the CPU reads.
+/// The init self-check (E1-7): `large_check::run` over the kernel's span
+/// and vmap layers, then `dma::bus_address` accepting a direct-map frame.
 pub fn self_check() -> Result<SelfCheck, &'static str> {
     let spans_before = SPANS_MAPPED.load(Ordering::Relaxed);
     let moves_before = VMAP_MOVES.load(Ordering::Relaxed);
-    let small = Layout::from_size_align(16 << 10, 4096).map_err(|_| "layout")?;
-    let a = allocate(small, Ctx::Normal).map_err(|_| "no span block")?;
-    let b = allocate(small, Ctx::Normal).map_err(|_| "no second span block")?;
-    if kva::window_of(a.as_ptr() as u64) != Some(WindowId::Span) || a.as_ptr() as usize % 4096 != 0 {
-        return Err("a span block is outside the span window or misaligned");
-    }
-    // SAFETY: each block is live for the lengths named.
-    unsafe {
-        fill(a, small.size(), 1);
-        fill(b, small.size(), 2);
-        // `b` follows `a`, so `a` has no room after it; free `b` and grow `a`.
-        deallocate(b, small);
-        let grown = reallocate(a, small, 64 << 10, Ctx::Normal).map_err(|_| "a span block did not grow")?;
-        if grown != a || !holds(a, small.size(), 1) {
-            return Err("a span block with free space after it moved or lost bytes when it grew");
-        }
-        deallocate(a, Layout::from_size_align_unchecked(64 << 10, 4096));
-    }
-    if crate::memory::dma::bus_address(a.as_ptr(), 4096).is_ok() {
-        return Err("dma::bus_address accepted a span address");
-    }
-
-    let big = Layout::from_size_align(4 << 20, 8).map_err(|_| "layout")?;
-    let v = allocate(big, Ctx::Normal).map_err(|_| "no vmap block")?;
-    if kva::window_of(v.as_ptr() as u64) != Some(WindowId::Vmap) {
-        return Err("a vmap block is outside the vmap window");
-    }
-    // SAFETY: `v` is live for each length named, and each resize keeps its bytes.
-    let result = unsafe {
-        fill(v, big.size(), 3);
-        let grown = reallocate(v, big, 6 << 20, Ctx::Normal).map_err(|_| "a vmap block did not grow")?;
-        // A second block right after it blocks the next growth, which moves.
-        let blocker = allocate(big, Ctx::Normal).map_err(|_| "no second vmap block")?;
-        let six = Layout::from_size_align_unchecked(6 << 20, 8);
-        let moved = reallocate(grown, six, 10 << 20, Ctx::Normal).map_err(|_| "a vmap block did not move")?;
-        let ok = grown == v && moved != grown && holds(moved, big.size(), 3);
-        let refused = crate::memory::dma::bus_address(moved.as_ptr(), 8192).is_err();
-        deallocate(blocker, big);
-        deallocate(moved, Layout::from_size_align_unchecked(10 << 20, 8));
-        if !ok {
-            Err("a vmap block lost bytes or did not stay in place when it grew")
-        } else if !refused {
-            Err("dma::bus_address accepted a vmap address")
-        } else {
-            Ok(())
-        }
-    };
-    result?;
+    large_check::run(&mut KernelLayers)?;
 
     let frame = frame_allocator::allocate_frame_for(FrameOwner::Other).ok_or("no frame for the DMA check")?;
     let pa = frame.start_address().as_u64();

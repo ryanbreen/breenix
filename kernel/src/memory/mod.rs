@@ -23,6 +23,7 @@ pub mod kva_extent;
 pub mod kva_map;
 pub mod kva_window;
 pub mod large;
+mod large_check;
 pub mod magazine;
 pub mod kernel_stack;
 pub mod layout;

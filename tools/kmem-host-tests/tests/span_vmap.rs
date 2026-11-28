@@ -28,6 +28,8 @@ mod kva_map;
 #[allow(dead_code)]
 #[path = "../../../kernel/src/memory/kva_window.rs"]
 mod kva_window;
+#[path = "../../../kernel/src/memory/large_check.rs"]
+mod large_check;
 #[allow(dead_code)]
 #[path = "../../../kernel/src/memory/span_arena.rs"]
 mod span_arena;
@@ -809,4 +811,215 @@ fn a_span_serves_an_aligned_request_from_a_hole_below_its_worst_case() {
     assert!(unsafe { arena.free(hole, big.size()) }.unwrap().is_none());
     let request = Layout::from_size_align(4097, 4096).unwrap();
     assert_eq!(arena.allocate(request), Ok(hole), "the arena asked for a new span with a fitting hole");
+}
+
+/// The span and vmap layers as `large_check` reaches them, over the real
+/// span arena and vmap code in two windows, as `large.rs` glues them: a
+/// span block that cannot resize in place moves to `kmem_core::moved_layer`,
+/// and each unmap is flushed at once, as on ARM64. The `fail_at`-th request
+/// (allocation or resize) fails with nothing changed. It records the blocks
+/// live and the most data frames held at once.
+struct HostLayers {
+    spans: World,
+    vmaps: World,
+    arena: SpanArena,
+    span_bases: HashSet<usize>,
+    blocks: HashMap<u64, vmap::Block>,
+    live: HashSet<usize>,
+    requests: usize,
+    fail_at: Option<usize>,
+    peak: usize,
+}
+
+impl HostLayers {
+    fn new(fail_at: Option<usize>) -> Self {
+        HostLayers {
+            spans: World::new(WindowId::Span, 320, 1024),
+            vmaps: World::new(WindowId::Vmap, 321, 4096),
+            arena: SpanArena::new(0),
+            span_bases: HashSet::new(),
+            blocks: HashMap::new(),
+            live: HashSet::new(),
+            requests: 0,
+            fail_at,
+            peak: 0,
+        }
+    }
+
+    fn held(&self) -> usize {
+        [&self.spans, &self.vmaps].iter().map(|world| world.taken.borrow().len() - world.offered.borrow().len()).sum()
+    }
+
+    fn fails(&mut self) -> bool {
+        let request = self.requests;
+        self.requests += 1;
+        self.fail_at == Some(request)
+    }
+
+    fn span_alloc(&mut self, layout: Layout) -> NonNull<u8> {
+        match self.arena.allocate(layout) {
+            Ok(ptr) => ptr,
+            Err(span_arena::Miss::NeedSpan) => {
+                let span = self.spans.map_span();
+                self.span_bases.insert(span.base.as_ptr() as usize);
+                unsafe { self.arena.adopt(span.base, span.token, layout) }.ok().unwrap()
+            }
+            Err(miss) => panic!("{miss:?}"),
+        }
+    }
+
+    fn vmap_alloc(&mut self, layout: Layout) -> Option<NonNull<u8>> {
+        let block = vmap::allocate(&mut HostVmap(&self.vmaps), layout.size(), layout.align()).ok()?;
+        self.blocks.insert(block.allocation.start, block);
+        NonNull::new(block.allocation.start as *mut u8)
+    }
+
+    fn fresh(&mut self, layout: Layout) -> Option<NonNull<u8>> {
+        match kmem_core::route(layout, 1 << 30).ok()? {
+            Layer::Vmap => self.vmap_alloc(layout),
+            _ => Some(self.span_alloc(layout)),
+        }
+    }
+
+    /// The host address of byte `i` of the block at `ptr`.
+    fn byte(&self, ptr: NonNull<u8>, i: usize) -> *mut u8 {
+        use large_check::Layers;
+        match self.place(ptr) {
+            large_check::Place::Vmap => {
+                let va = ptr.as_ptr() as u64 + i as u64;
+                let pa = translate(&self.vmaps.phys, self.vmaps.root, va).expect("an unmapped page in a live vmap block");
+                unsafe { self.vmaps.phys.bytes(pa).add((va % PAGE) as usize) }
+            }
+            _ => unsafe { ptr.as_ptr().add(i) },
+        }
+    }
+}
+
+impl large_check::Layers for HostLayers {
+    fn allocate(&mut self, layout: Layout) -> Option<NonNull<u8>> {
+        if self.fails() {
+            return None;
+        }
+        let ptr = self.fresh(layout)?;
+        self.live.insert(ptr.as_ptr() as usize);
+        self.peak = self.peak.max(self.held());
+        Some(ptr)
+    }
+
+    unsafe fn reallocate(&mut self, ptr: NonNull<u8>, layout: Layout, new_size: usize) -> Option<NonNull<u8>> {
+        if self.fails() {
+            return None;
+        }
+        let new_ptr = match self.place(ptr) {
+            large_check::Place::Vmap => {
+                let start = ptr.as_ptr() as u64;
+                let mut block = self.blocks.remove(&start).unwrap();
+                assert_eq!(block.size, layout.size());
+                let resized = vmap::resize(&mut HostVmap(&self.vmaps), &mut block, new_size);
+                self.vmaps.flush();
+                self.blocks.insert(block.allocation.start, block);
+                resized.ok()?;
+                NonNull::new(block.allocation.start as *mut u8).unwrap()
+            }
+            _ if unsafe { self.arena.resize(ptr, layout.size(), new_size) }.unwrap() => ptr,
+            _ => {
+                let new_layout = Layout::from_size_align(new_size, layout.align()).unwrap();
+                let new_ptr = match kmem_core::moved_layer(new_layout, 1 << 30).ok()? {
+                    Layer::Vmap => self.vmap_alloc(new_layout)?,
+                    _ => self.span_alloc(new_layout),
+                };
+                for i in 0..layout.size().min(new_size) {
+                    unsafe { self.byte(new_ptr, i).write(self.byte(ptr, i).read()) };
+                }
+                self.live.insert(new_ptr.as_ptr() as usize);
+                unsafe { self.deallocate(ptr, layout) };
+                new_ptr
+            }
+        };
+        self.live.remove(&(ptr.as_ptr() as usize));
+        self.live.insert(new_ptr.as_ptr() as usize);
+        self.peak = self.peak.max(self.held());
+        Some(new_ptr)
+    }
+
+    unsafe fn deallocate(&mut self, ptr: NonNull<u8>, layout: Layout) {
+        assert!(self.live.remove(&(ptr.as_ptr() as usize)), "a free of a block that is not live");
+        match self.place(ptr) {
+            large_check::Place::Vmap => {
+                let block = self.blocks.remove(&(ptr.as_ptr() as u64)).unwrap();
+                assert_eq!(block.size, layout.size());
+                vmap::free(&mut HostVmap(&self.vmaps), block);
+                self.vmaps.flush();
+            }
+            _ => {
+                if let Some(span) = unsafe { self.arena.free(ptr, layout.size()) }.unwrap() {
+                    self.span_bases.remove(&(span.base.as_ptr() as usize));
+                    self.spans.unmap_span(span);
+                    self.spans.flush();
+                }
+            }
+        }
+    }
+
+    fn place(&self, ptr: NonNull<u8>) -> large_check::Place {
+        let va = ptr.as_ptr() as u64;
+        if va >= kva_window::slot_va(321) && va - kva_window::slot_va(321) < 1 << 30 {
+            large_check::Place::Vmap
+        } else if self.span_bases.contains(&(ptr.as_ptr() as usize & !(SPAN_BYTES - 1))) {
+            large_check::Place::Span
+        } else {
+            large_check::Place::Elsewhere
+        }
+    }
+
+    fn dma_refused(&self, ptr: NonNull<u8>, len: usize) -> bool {
+        struct Windows(large_check::Place);
+        impl dma_core::AddressSpace for Windows {
+            fn region(&self, _: u64) -> dma_core::Region {
+                match self.0 {
+                    large_check::Place::Span => dma_core::Region::Window { window: WindowId::Span as u8 },
+                    large_check::Place::Vmap => dma_core::Region::Window { window: WindowId::Vmap as u8 },
+                    large_check::Place::Elsewhere => dma_core::Region::Other,
+                }
+            }
+            fn bus(&self, _: u64) -> Option<u64> {
+                None
+            }
+        }
+        dma_core::bus_address(&Windows(self.place(ptr)), ptr.as_ptr() as u64, len as u64).is_err()
+    }
+
+    unsafe fn fill(&mut self, ptr: NonNull<u8>, len: usize, tag: u8) {
+        for i in 0..len {
+            unsafe { self.byte(ptr, i).write(large_check::pattern(tag, i)) };
+        }
+    }
+
+    unsafe fn holds(&self, ptr: NonNull<u8>, len: usize, tag: u8) -> bool {
+        (0..len).all(|i| unsafe { self.byte(ptr, i).read() } == large_check::pattern(tag, i))
+    }
+}
+
+/// The boot self-check (E1-7) over the real layers: it passes, holds at
+/// most one span and 16 pages of data frames at once, so it advances the
+/// frame frontier by little more than the 2 MiB span the layer needs before
+/// 32-bit DMA drivers take contiguous runs there; and a failure of each of
+/// its requests in turn returns an error with none of its blocks live.
+#[test]
+fn the_self_check_holds_one_span_and_frees_its_blocks_on_each_failure() {
+    let mut layers = HostLayers::new(None);
+    assert_eq!(large_check::run(&mut layers), Ok(()));
+    assert!(layers.live.is_empty(), "the passing check left blocks live");
+    let (requests, peak) = (layers.requests, layers.peak);
+    let leaks: Vec<(usize, usize)> = (0..requests)
+        .filter_map(|fail_at| {
+            let mut layers = HostLayers::new(Some(fail_at));
+            assert!(large_check::run(&mut layers).is_err(), "a failed request {fail_at} passed the check");
+            (!layers.live.is_empty()).then_some((fail_at, layers.live.len()))
+        })
+        .collect();
+    assert!(
+        peak <= 512 + 16 && leaks.is_empty(),
+        "the check held {peak} data frames at once (bound 528); failed requests left blocks live, as (request, blocks): {leaks:?}"
+    );
 }
