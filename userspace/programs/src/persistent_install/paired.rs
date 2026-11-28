@@ -1,5 +1,5 @@
 //! Apply a sealed userspace inventory to a writable clone of the booted root.
-use super::{layout, local};
+use super::{is_metal_generation, layout, local};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     ffi::{OsStr, OsString},
@@ -266,8 +266,8 @@ impl Inventory {
                 ));
             }
         }
-        // Matching all material fields yields the publisher's exact rows with
-        // its mtime column, since unchanged files retain their on-box mtime.
+        // Reuse the publisher's mtime column after comparing the material
+        // fields. An unchanged file can keep its on-box mtime.
         Ok(self.sha.clone())
     }
 }
@@ -754,6 +754,27 @@ pub(crate) fn verify_fixture(path: &Path, bytes: &[u8]) -> Result<String, String
 #[cfg(feature = "paired-host-test")]
 pub(crate) fn select_fixture(path: &Path, id: &str) -> Result<(), String> {
     set_selection(&Dir::open(path).map_err(io_error)?, id).map_err(io_error)
+}
+
+fn reclaimable(name: &str, number: u64, retained: &[String], booted: &str) -> bool {
+    number != 1
+        && name != booted
+        && !retained.iter().any(|root| root == name)
+        && (name.strip_prefix("gen-").is_some_and(is_metal_generation)
+            || name.strip_suffix(".new").is_some_and(is_metal_generation))
+}
+
+#[cfg(feature = "paired-host-test")]
+pub(crate) fn reclaim_fixture(
+    roots: &BTreeMap<String, u64>,
+    retained: &[String],
+    booted: &str,
+) -> Vec<String> {
+    roots
+        .iter()
+        .filter(|(name, number)| reclaimable(name, **number, retained, booted))
+        .map(|(name, _)| name.clone())
+        .collect()
 }
 
 fn epoch_record(epoch: u64, boot: &str, root: &str) -> String {

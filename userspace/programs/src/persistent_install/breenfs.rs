@@ -1,5 +1,5 @@
 //! Copy the staged OS tree into an independent root on the BreenFS system volume.
-use super::{fail, layout, local, own, read_fixtures, recovered_slots, require_directory, valid_id,
+use super::{fail, is_metal_generation, layout, local, own, read_fixtures, recovered_slots, require_directory, valid_id,
             Copier, Totals, READY};
 use crate::breenfs_abi::{SnapshotNext, SnapshotRename, SnapshotRequest, SNAPSHOT_CREATE, SNAPSHOT_DELETE,
           SNAPSHOT_EMPTY, SNAPSHOT_NEXT, SNAPSHOT_READ_ONLY, SNAPSHOT_RENAME};
@@ -165,11 +165,6 @@ fn installed_image(id: &str) -> Result<bool, String> {
     }
 }
 
-pub(super) fn is_metal_generation(name: &str) -> bool {
-    let Some(id) = name.strip_suffix("-metal") else { return false; };
-    id.len() == 16 && id.as_bytes()[8] == b'T' && id.as_bytes()[15] == b'Z'
-        && id.as_bytes()[..8].iter().chain(&id.as_bytes()[9..15]).all(u8::is_ascii_digit)
-}
 
 fn move_old_tree(staged: &Path, id: &str) -> Result<std::path::PathBuf, String> {
     let name = format!(".breenix-carry-{id}");

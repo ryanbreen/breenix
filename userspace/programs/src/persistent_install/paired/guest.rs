@@ -1,7 +1,7 @@
 //! The live writer's clone, epoch custody and publication protocol.
 use super::*;
 use crate::{
-    breenfs::{is_metal_generation, request},
+    breenfs::request,
     breenfs_abi::{
         RootEpoch, SnapshotNext, SnapshotRename, ROOT_EPOCH, ROOT_FREEZE, ROOT_THAW,
         SNAPSHOT_CREATE, SNAPSHOT_DELETE, SNAPSHOT_NEXT, SNAPSHOT_RENAME,
@@ -180,12 +180,7 @@ impl Guest {
             return Err("a retained slot's root is missing".into());
         }
         for (name, (number, _)) in &roots {
-            if *number != 1
-                && name != &self.booted
-                && !retained.contains(name)
-                && (name.strip_prefix("gen-").is_some_and(is_metal_generation)
-                    || name.strip_suffix(".new").is_some_and(is_metal_generation))
-            {
+            if reclaimable(name, *number, retained, &self.booted) {
                 self.delete(name)?;
             }
         }

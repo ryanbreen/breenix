@@ -298,8 +298,8 @@ def monitor(serial, token, previous_boot):
         if 'breenix-manager: started:' in line:
             selected = None
             rolled_back = False
-        elif f'breenix-manager: live flash: trial {token} ' in line:
-            selected = ('trial', None)
+        elif found := re.search(rf'breenix-manager: live flash: trial {token} ([0-9a-f]{{40}})$', line):
+            selected = ('trial', found[1])
         elif line.endswith(f'breenix-manager: live flash: rollback {token}'):
             rolled_back = True
         elif found := re.search(r'breenix-manager: booting current ([0-9a-f]{40})$', line):
@@ -353,8 +353,8 @@ def prepare_inventory(stage, inputs):
         raise ValueError('the build did not deliver a userspace payload')
     publisher = inputs / 'inventory.tsv'
     if publisher.is_file():
-        # The publisher is authoritative. Match every object to the delivered
-        # image; its bytes are verified independently during extraction.
+        # Use the publisher's rows and look up their inodes in the delivered
+        # image. Object extraction checks the resulting bytes.
         by_path = {row.split('\t', 1)[0]: (row, inode) for row, inode in rows}
         expected = publisher.read_text().splitlines(keepends=True)
         if not expected or any(line.split('\t', 1)[0] not in by_path for line in expected):
@@ -569,10 +569,10 @@ def run_paired(runner, args):
                         lambda have: stage_objects(operation, guest, id, have), inventory_sha)
                     version = context['manifestVersion']
                     body = manifest(token, entry, version)
-                    operation('state', token, 'arming', check=True)
-                    arming = True
                     with tempfile_image(service, entry['image']) as image:
                         publish(guest, 'kernel.img', image, entry['size'], entry['sha256'], guard)
+                    operation('state', token, 'arming', check=True)
+                    arming = True
                     publish(guest, 'manifest', body, guard=guard)
                     print(f'[metal-run] armed pair {token} for {commit} and gen-{id}', flush=True)
                     from_reboot = time.monotonic()
@@ -636,6 +636,8 @@ def run_paired(runner, args):
                             outcome = 'rolled-back'
                             break
                         if phase == 'trial':
+                            if fallback != commit:
+                                raise ValueError('the manager trial commit disagrees with the staged kernel')
                             trial_boot = selected_boot
                             identity = guest('cat /usr/share/factory/generation')
                             identity = identity.stdout.decode().strip() if identity.returncode == 0 else None
@@ -775,7 +777,7 @@ def run(runner, args):
                             recorded = json.loads(service('cat', f'{state}/live-flash/{token}.json',
                                                           capture_output=True, check=True).stdout)
                             entry['baseCommit'] = recorded['baseCommit']
-                            if phase == 'trial' and not broken:
+                            if phase == 'trial' and fallback_commit == commit and not broken:
                                 publish(guest, 'committed', (token + '\n').encode(),
                                         guard=f'test "$({HEALTH})" = {new_boot} && ')
                                 outcome = 'committed'

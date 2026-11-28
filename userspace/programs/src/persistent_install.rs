@@ -743,6 +743,13 @@ pub(crate) fn install_tree_with_local(source: &Path, target: &Path, id: &str, pr
     Ok(copier.totals)
 }
 
+#[cfg(any(target_os = "breenix", feature = "paired-host-test"))]
+fn is_metal_generation(name: &str) -> bool {
+    let Some(id) = name.strip_suffix("-metal") else { return false; };
+    id.len() == 16 && id.as_bytes()[8] == b'T' && id.as_bytes()[15] == b'Z'
+        && id.as_bytes()[..8].iter().chain(&id.as_bytes()[9..15]).all(u8::is_ascii_digit)
+}
+
 fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }

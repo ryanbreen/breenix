@@ -159,8 +159,8 @@ class PairedFlashTest(unittest.TestCase):
                 self.assertEqual(len(self.flash['manifest'](self.token, build, version).splitlines()), rows)
 
     def test_atomic_host_publication_and_retention_across_cuts(self):
-        # Cuts before the bput rename preserve the prior committed bytes. A
-        # completed kernel write never constitutes an arm or acknowledgement.
+        # A cut before the bput rename preserves the prior committed bytes.
+        # Arm and acknowledgement have their own publication points.
         fields = {'size': 99, 'sha256': 'a' * 64, 'baseNoteSha256': 'b' * 64,
                   'commit': self.commit, 'userland': self.trial}
         manifest = self.flash['manifest'](self.token, fields, 2)
