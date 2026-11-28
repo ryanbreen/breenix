@@ -2058,7 +2058,8 @@ pub fn fill_by_reads(file: &dyn MappingIo, pages: &mut FillBatch) -> Result<(), 
 /// 19.2): `on_copy` runs before each copy into a batch's frame, and
 /// `on_filled` between a fill's report and the merge that publishes it, the
 /// window a claim's mark covers (6.1a). `discarded` counts this thread's
-/// filled pages that a merge dropped because a change marked their claim.
+/// filled pages that a merge dropped because a change marked their claim,
+/// and `data_pages` the pages its fills reported Data.
 #[cfg(test)]
 pub mod fill_window {
     extern crate std;
@@ -2069,6 +2070,7 @@ pub mod fill_window {
         static COPY: RefCell<Hook> = const { RefCell::new(None) };
         static FILLED: RefCell<Hook> = const { RefCell::new(None) };
         static DISCARDED: Cell<u64> = const { Cell::new(0) };
+        static DATA: Cell<u64> = const { Cell::new(0) };
     }
     /// Run `hook(page)` before each copy into the frame of file page `page`.
     pub fn on_copy(hook: Hook) {
@@ -2080,6 +2082,9 @@ pub mod fill_window {
     }
     pub fn discarded() -> u64 {
         DISCARDED.with(Cell::get)
+    }
+    pub fn data_pages() -> u64 {
+        DATA.with(Cell::get)
     }
     /// The hook runs out of its slot, so a fill it starts runs no hook.
     fn run(slot: &'static std::thread::LocalKey<RefCell<Hook>>, page: u64) {
@@ -2102,6 +2107,9 @@ pub mod fill_window {
     }
     pub(super) fn discard(pages: u64) {
         DISCARDED.with(|count| count.set(count.get() + pages));
+    }
+    pub(super) fn data() {
+        DATA.with(|count| count.set(count.get() + 1));
     }
 }
 
@@ -2214,7 +2222,11 @@ pub(crate) fn populate_through(
             }
             for (page, frame, outcome) in batch.into_pages() {
                 match outcome {
-                    FillPage::Data => read.push((page, frame)),
+                    FillPage::Data => {
+                        #[cfg(test)]
+                        fill_window::data();
+                        read.push((page, frame));
+                    }
                     // A Hole holds no frame (E3-2's Hole set).
                     FillPage::Hole => {
                         holes.try_reserve(1).map_err(|_| MapError::NoMemory)?;
