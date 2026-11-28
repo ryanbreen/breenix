@@ -7,17 +7,24 @@
 //! of memory once the new size is on disk.
 //!
 //! Invariant: for every binding and every file page index `i` in its range
-//! below the mapped page count, `i` is resident in the cache, or `i` is
-//! poisoned (its bytes are unknown until re-read), or the file's bytes for `i`
-//! are zero (a page made valid by extension and not written since). A fault
-//! therefore never needs I/O: it maps the resident page, inserts and maps a
-//! zero page, or raises SIGBUS for a poisoned page.
+//! below the mapped page count, `i` is resident in the cache, or `i` is a
+//! Hole (a page an EOF extension made valid and no write has reached since,
+//! whose bytes are zero), or `i` is poisoned (its bytes are unknown until
+//! re-read). A fault needs no I/O: it maps the resident page, gives a Hole a
+//! zero frame of its own and maps it, or raises SIGBUS for a poisoned page.
+//! An index in none of the three is absent: its bytes are unknown, so a fault
+//! on it is SIGBUS, counted in `absent_bound`, and never a page of zeros
+//! (docs/plans/e3-page-cache.md, sections 5.1 and 5.3).
+//! claim-lint:ok: normative invariant of docs/plans/e3-page-cache.md 5.3, enforced by MapInner::fault_frame and checked by tools/vfs-host-tests/tests/mapped_coherence.rs.
 //!
-//! Allocation: every hook that runs after the disk changes (commit, failed
-//! write invalidation, the EOF transition and revocation) uses capacity the
-//! write or resize reserved before it, so none of them allocates. The cache
-//! and the poison set are sorted vectors for that reason: inserting into
-//! reserved capacity, draining a range and truncating never allocate.
+//! Allocation: the hooks that run after the disk changes (commit, failed
+//! write invalidation, the EOF transition and revocation) use capacity the
+//! write or resize reserved before them. The cache, the Hole set and the
+//! poison set are sorted vectors for that reason: inserting into reserved
+//! capacity, draining a range and truncating do not allocate. The one
+//! exception is a growth that a filesystem did not prepare (ext2's
+//! preallocation): its transition tries to reserve the Hole room itself, and
+//! the pages it cannot record stay absent.
 //!
 //! Lock order: filesystem, PROCESS_MANAGER, VNode table, `MapState`,
 //! frame ledger and allocator. Signal-frame delivery also takes `MapState`
@@ -161,6 +168,15 @@ const SIGSEGV: u32 = crate::signal::constants::SIGSEGV;
 
 static NEXT_BINDING: AtomicU64 = AtomicU64::new(1);
 
+/// Faults refused because a bound page below EOF had no cache entry
+/// (`absent_bound` in `/proc/breenix/pagecache`). Any count is a bug report.
+static ABSENT_BOUND: AtomicU64 = AtomicU64::new(0);
+
+/// The `absent_bound` count of `/proc/breenix/pagecache`.
+pub(crate) fn absent_bound() -> u64 {
+    ABSENT_BOUND.load(Ordering::Relaxed)
+}
+
 fn pages(size: u64) -> u64 {
     size.div_ceil(PAGE_SIZE)
 }
@@ -219,6 +235,10 @@ struct MapInner {
     /// except while a size transition is between publication and this update.
     mapped_size: u64,
     pages: PageVec<CachePage>,
+    /// Hole entries: page indices an EOF extension made valid for a binding,
+    /// which no write has reached since, so their file bytes read as 00. A
+    /// Hole holds no frame; a fault gives it one.
+    holes: PageVec<()>,
     /// Bound page indices whose file bytes are unknown after a failed mutation.
     poisoned: PageVec<()>,
     /// Sorted by id: ids are issued under this lock, in increasing order.
@@ -345,25 +365,43 @@ impl<T> PageVec<T> {
 
 /// Call `run` for each maximal run `[low, high)` of page indices in
 /// `[first, last)` that some binding covers, in increasing order.
-fn bound_runs(bindings: &[BindingRec], first: u64, last: u64, mut run: impl FnMut(u64, u64)) {
+fn bound_runs(bindings: &[BindingRec], first: u64, last: u64, run: impl FnMut(u64, u64)) {
+    held_runs(bindings, &[], first, last, run);
+}
+
+/// `bound_runs` over the pages a binding covers or a population claims. A
+/// claimed page is bound once mmap publishes the binding, so the hooks that
+/// keep a bound page's state (its Hole entry, the frame a write past EOF
+/// fills) keep it for a claimed page too, as eviction does.
+fn held_runs(
+    bindings: &[BindingRec],
+    claims: &[Claim],
+    first: u64,
+    last: u64,
+    mut run: impl FnMut(u64, u64),
+) {
+    let ranges = || {
+        bindings
+            .iter()
+            .map(|rec| (rec.pgoff, rec.pgoff + rec.pages))
+            .chain(claims.iter().map(|claim| (claim.first, claim.last)))
+    };
     let mut cursor = first;
     while cursor < last {
         // The run starts at the lowest covered index at or after the cursor
-        // and extends over every binding that overlaps or abuts it.
-        let Some(low) = bindings
-            .iter()
-            .filter(|rec| rec.pgoff + rec.pages > cursor && rec.pgoff < last)
-            .map(|rec| rec.pgoff.max(cursor))
+        // and extends while some range overlaps or abuts its end.
+        let Some(low) = ranges()
+            .filter(|(from, to)| *to > cursor && *from < last)
+            .map(|(from, _)| from.max(cursor))
             .min()
         else {
             return;
         };
         let mut high = low;
         loop {
-            let reach = bindings
-                .iter()
-                .filter(|rec| rec.pgoff <= high && rec.pgoff + rec.pages > high)
-                .map(|rec| rec.pgoff + rec.pages)
+            let reach = ranges()
+                .filter(|(from, to)| *from <= high && *to > high)
+                .map(|(_, to)| to)
                 .max();
             match reach {
                 Some(end) => high = end.min(last),
@@ -521,7 +559,7 @@ impl Drop for Binding {
             }
             (
                 removed,
-                !inner.pages.is_empty() || !inner.poisoned.is_empty(),
+                !inner.pages.is_empty() || !inner.holes.is_empty() || !inner.poisoned.is_empty(),
             )
         };
         // Pages this binding covered may now be unbound: ask the filesystem service
@@ -602,19 +640,87 @@ impl MapInner {
     }
 
     /// Visit, in increasing order, the pages of `[first, last)` that a
-    /// binding covers and the cache neither holds nor has poisoned, and
-    /// return how many there are.
-    fn holes(&self, first: u64, last: u64, mut visit: impl FnMut(u64)) -> usize {
-        let mut holes = 0usize;
-        bound_runs(&self.bindings, first, last, |low, high| {
+    /// binding covers or a population claims, that hold no frame and are not poisoned, and whose
+    /// bytes are known to read as 00: Holes, and pages past the mapped EOF.
+    /// Return how many there are. An absent page below EOF is not visited:
+    /// its bytes are unknown, so a cleared frame would be wrong for it.
+    fn unbacked(&self, first: u64, last: u64, mut visit: impl FnMut(u64)) -> usize {
+        let valid = pages(self.mapped_size);
+        let mut count = 0usize;
+        held_runs(&self.bindings, &self.populating, first, last, |low, high| {
             for index in low..high {
-                if !self.pages.contains(index) && !self.poisoned.contains(index) {
+                if !self.pages.contains(index)
+                    && !self.poisoned.contains(index)
+                    && (index >= valid || self.holes.contains(index))
+                {
                     visit(index);
-                    holes += 1;
+                    count += 1;
                 }
             }
         });
-        holes
+        count
+    }
+
+    /// At most the number of Hole entries an extension over `[first, last)`
+    /// adds: the bound or claimed pages there that are neither resident,
+    /// Holes nor poisoned.
+    fn new_holes(&self, first: u64, last: u64) -> usize {
+        let mut wanted = 0usize;
+        held_runs(&self.bindings, &self.populating, first, last, |low, high| {
+            let known = self.pages.range(low, high).len()
+                + self.holes.range(low, high).len()
+                + self.poisoned.range(low, high).len();
+            wanted += ((high - low) as usize).saturating_sub(known);
+        });
+        wanted
+    }
+
+    /// Room in the Hole set for an extension over the pages `[first, last)`,
+    /// reserved before the disk changes. Bindings made later without the
+    /// filesystem guard come from fork and VMA splits, which cover only pages
+    /// already bound. A population may claim pages later without that guard;
+    /// `add_holes` reserves room for those itself.
+    fn reserve_holes(&mut self, first: u64, last: u64) -> Result<(), &'static str> {
+        let wanted = self.new_holes(first, last);
+        if wanted > self.holes.spare() {
+            self.holes.try_reserve(wanted)?;
+        }
+        Ok(())
+    }
+
+    /// Record the bound or claimed pages of `[first, last)` that an
+    /// extension made valid as Holes, in room `reserve_holes` made. Room for
+    /// a page claimed after the reservation is reserved here; a page left
+    /// without room stays absent, so a fault on it is the counted SIGBUS,
+    /// not zeros.
+    fn add_holes(&mut self, first: u64, last: u64) {
+        let wanted = self.new_holes(first, last);
+        if wanted > self.holes.spare() {
+            let _ = self.holes.try_reserve(wanted);
+        }
+        let MapInner { holes, pages, poisoned, bindings, populating, .. } = self;
+        let sorted = holes.len();
+        held_runs(bindings, populating, first, last, |low, high| {
+            for index in low..high {
+                let present = holes.entries[..sorted]
+                    .binary_search_by_key(&index, |(key, _)| *key)
+                    .is_ok();
+                if !present
+                    && !pages.contains(index)
+                    && !poisoned.contains(index)
+                    && holes.spare() > 0
+                {
+                    holes.entries.push((index, ()));
+                }
+            }
+        });
+        holes.entries.sort_unstable_by_key(|(index, _)| *index);
+    }
+
+    /// Drop the Hole entries of `[first, last)`: their bytes are about to
+    /// change, or have changed. Does not allocate.
+    fn drop_holes(&mut self, first: u64, last: u64) {
+        self.holes.retain(|index| index < first || index >= last);
     }
 
     /// Room in the poison set for every bound page of `[first, last)` that
@@ -658,6 +764,31 @@ impl MapInner {
         poisoned.entries.sort_unstable_by_key(|(index, _)| *index);
     }
 
+    /// The cache frame a fault maps for the bound index `index` below EOF.
+    /// An error is SIGBUS for the access. Called under the map lock with
+    /// PROCESS_MANAGER held, so it does no I/O.
+    fn fault_frame(&mut self, index: u64) -> Result<PhysFrame, &'static str> {
+        if self.poisoned.contains(index) {
+            return Err("Unknown mapped file bytes");
+        }
+        if let Some(page) = self.pages.get(index) {
+            return Ok(page.frame);
+        }
+        if !self.holes.contains(index) {
+            // Absent: the bytes are unknown, and a fault cannot read them
+            // (docs/plans/e3-page-cache.md 5.3). It gets no page of 00 bytes.
+            ABSENT_BOUND.fetch_add(1, Ordering::Relaxed);
+            return Err("Absent bound file page");
+        }
+        // A Hole: its file bytes read as 00 (see the module invariant). The
+        // bindings share the one frame it gets here.
+        let page = CachePage::allocate()?;
+        let frame = page.frame;
+        self.pages.try_insert(index, page)?;
+        self.holes.remove(index);
+        Ok(frame)
+    }
+
     fn rec_mut(&mut self, id: u64) -> Option<&mut BindingRec> {
         self.bindings.iter_mut().find(|rec| rec.id == id)
     }
@@ -675,6 +806,7 @@ impl MapState {
                 inner: Mutex::new(MapInner {
                     mapped_size: size,
                     pages: PageVec::new(),
+                    holes: PageVec::new(),
                     poisoned: PageVec::new(),
                     bindings: Vec::new(),
                     populating: Vec::new(),
@@ -732,7 +864,10 @@ impl MapState {
 
     pub(crate) fn nonempty(&self) -> bool {
         let inner = self.state.inner.lock();
-        !inner.pages.is_empty() || !inner.poisoned.is_empty() || !inner.bindings.is_empty()
+        !inner.pages.is_empty()
+            || !inner.holes.is_empty()
+            || !inner.poisoned.is_empty()
+            || !inner.bindings.is_empty()
     }
 
     pub(crate) fn cache_pages(&self) -> usize {
@@ -1115,17 +1250,20 @@ impl MapState {
             inner.mapped_size = size;
             self.state.resident.store(false, Ordering::Release);
             inner.poisoned = PageVec::new();
+            inner.holes = PageVec::new();
             core::mem::replace(&mut inner.pages, PageVec::new())
         };
         drop(stale);
     }
 
-    /// mmap failed after `populate`: pages it read that no binding covers
-    /// are left for the filesystem service to retire.
+    /// mmap failed after `populate`: pages it read, and Holes a growth
+    /// recorded for its claim, that no binding covers are left for the
+    /// filesystem service to retire.
     pub(crate) fn abandon_population(&self) {
         let unbound = {
             let inner = self.state.inner.lock();
-            let unbound = inner.pages.keys().any(|index| !inner.bound(index));
+            let unbound = inner.pages.keys().chain(inner.holes.keys())
+                .any(|index| !inner.bound(index));
             unbound
         };
         if unbound {
@@ -1149,7 +1287,10 @@ impl MapState {
         let keep = inner.pages.len() - count;
         inner.pages.entries.truncate(keep);
         *budget -= count;
-        if inner.pages.is_empty() { inner.poisoned = PageVec::new(); }
+        if inner.pages.is_empty() {
+            inner.poisoned = PageVec::new();
+            inner.holes = PageVec::new();
+        }
         self.refresh(&inner);
         !inner.pages.is_empty()
     }
@@ -1162,6 +1303,7 @@ impl MapState {
         let mut inner = self.state.inner.lock();
         let MapInner {
             pages,
+            holes,
             poisoned,
             bindings,
             populating,
@@ -1175,6 +1317,7 @@ impl MapState {
                     .any(|claim| claim.first <= index && index < claim.last)
         };
         poisoned.retain(|index| !unbound(index));
+        holes.retain(|index| !unbound(index));
         // Retired frames are released in place: the frame allocator follows
         // the map lock in the lock order.
         pages.entries.retain(|(index, page)| {
@@ -1193,68 +1336,85 @@ impl MapState {
         // Dirty unbound pages still owe eviction after writeback. Preserve
         // that request even when this pass has no clean page left to retire;
         // writeback owns rescheduling until those pages become clean. Pages
-        // only a population holds stay pending; its drop requests the pass.
-        let pending = pages.entries.iter().any(|(index, _)| unmapped(*index));
+        // and Holes only a population holds stay pending; its drop requests
+        // the pass.
+        let pending = pages.entries.iter().any(|(index, _)| unmapped(*index))
+            || holes.keys().any(|index| unmapped(index));
         self.state.eviction_pending.store(pending, Ordering::Release);
         more
     }
 
     /// Before a write of `len` bytes at `offset`, while the disk is
-    /// unchanged: put zero frames in the cache for the bound holes the write
-    /// fills, so `commit_write` only copies bytes, and reserve the poison
-    /// room `invalidate` needs if the write fails. A hole's file bytes are
-    /// zero (see the module invariant), so its zero frame is already
+    /// unchanged: put cleared frames in the cache for the bound or claimed
+    /// Holes and pages past EOF that the write reaches, so `commit_write`
+    /// only copies bytes; reserve the Hole room the EOF transition needs for
+    /// the pages the write's extension makes valid; and reserve the poison
+    /// room `invalidate` needs if the write fails. A Hole's file bytes read
+    /// as 00 (see the module invariant), so its cleared frame is already
     /// correct; past EOF no fault maps it.
     pub(crate) fn prepare_write(&self, offset: u64, len: usize) -> Result<(), &'static str> {
         let end = offset.checked_add(len as u64).ok_or("File too large")?;
         let (first, last) = (offset / PAGE_SIZE, pages(end));
-        let wanted = {
+        let mut prepared: Vec<(u64, CachePage)> = Vec::new();
+        loop {
             let mut inner = self.state.inner.lock();
-            if inner.bindings.is_empty() {
+            if inner.bindings.is_empty() && inner.populating.is_empty() {
                 return Ok(());
             }
             inner.reserve_poison(first, last)?;
-            inner.holes(first, last, |_| {})
-        };
-        if wanted == 0 {
-            return Ok(());
-        }
-        let mut prepared = Vec::new();
-        prepared
-            .try_reserve(wanted)
-            .map_err(|_| "Out of memory for file mapping")?;
-        for _ in 0..wanted {
-            prepared.push((0, CachePage::allocate()?));
-        }
-        let mut inner = self.state.inner.lock();
-        inner.pages.try_reserve(prepared.len())?;
-        // The lock was released while frames were allocated. Faults may have
-        // filled holes meanwhile, and nothing makes new ones, so the holes
-        // left are at most `wanted`; the frames left over are released.
-        let mut filled = 0;
-        inner.holes(first, last, |index| {
-            if let Some(slot) = prepared.get_mut(filled) {
-                slot.0 = index;
-                filled += 1;
+            let valid = pages(inner.mapped_size);
+            if last > valid {
+                inner.reserve_holes(valid, last)?;
             }
-        });
-        prepared.truncate(filled);
-        inner.pages.merge_reserved(prepared);
-        self.state.resident.store(
-            !inner.pages.is_empty() || !inner.poisoned.is_empty(),
-            Ordering::Release,
-        );
-        Ok(())
+            let wanted = inner.unbacked(first, last, |_| {});
+            if wanted == 0 {
+                return Ok(());
+            }
+            if prepared.len() >= wanted {
+                inner.pages.try_reserve(wanted)?;
+                // Faults may have given Holes frames while the lock was
+                // released, so the frames left over are released.
+                let mut filled = 0;
+                inner.unbacked(first, last, |index| {
+                    if let Some(slot) = prepared.get_mut(filled) {
+                        slot.0 = index;
+                        filled += 1;
+                    }
+                });
+                prepared.truncate(filled);
+                for (index, _) in &prepared {
+                    inner.holes.remove(*index);
+                }
+                inner.pages.merge_reserved(prepared);
+                self.state.resident.store(
+                    !inner.pages.is_empty() || !inner.poisoned.is_empty(),
+                    Ordering::Release,
+                );
+                return Ok(());
+            }
+            // Frames are allocated without the lock. A population may claim
+            // more of the range meanwhile (it needs no filesystem guard), so
+            // the count is taken again under the lock before the frames go in.
+            drop(inner);
+            prepared
+                .try_reserve(wanted - prepared.len())
+                .map_err(|_| "Out of memory for file mapping")?;
+            while prepared.len() < wanted {
+                prepared.push((0, CachePage::allocate()?));
+            }
+        }
     }
 
     /// After a successful write of `bytes` at `offset`: the cache takes the
     /// written bytes, so the bindings that map a cache page see them.
-    /// Copies into pages already in the cache and marks populations' claims
-    /// on the others; does not allocate.
+    /// Copies into pages already in the cache, drops the Hole entries the
+    /// write reached (`prepare_write` gave the bound ones frames), and marks
+    /// populations' claims on the others; does not allocate.
     pub(crate) fn commit_write(&self, offset: u64, bytes: &[u8]) {
         let end = offset + bytes.len() as u64;
         let mut inner = self.state.inner.lock();
         inner.mark_populating(offset / PAGE_SIZE, pages(end));
+        inner.drop_holes(offset / PAGE_SIZE, pages(end));
         for (index, page) in inner.pages.range(offset / PAGE_SIZE, pages(end)) {
             let start = offset.max(index * PAGE_SIZE);
             let stop = end.min((index + 1) * PAGE_SIZE);
@@ -1272,12 +1432,16 @@ impl MapState {
     }
 
     /// Before a resize from `before` to `length`: reserve the poison room
-    /// `invalidate` needs for the boundary page if the resize fails.
+    /// `invalidate` needs for the boundary page if the resize fails, and for
+    /// a growth the Hole room the EOF transition needs.
     pub(crate) fn prepare_resize(&self, before: u64, length: u64) -> Result<(), &'static str> {
         let boundary = before.min(length);
-        self.state.inner
-            .lock()
-            .reserve_poison(boundary / PAGE_SIZE, pages(boundary.saturating_add(1)))
+        let mut inner = self.state.inner.lock();
+        inner.reserve_poison(boundary / PAGE_SIZE, pages(boundary.saturating_add(1)))?;
+        if length > before {
+            inner.reserve_holes(pages(before), pages(length))?;
+        }
+        Ok(())
     }
 
     /// A mutation failed after it may have changed the bytes of `[offset,
@@ -1290,8 +1454,10 @@ impl MapState {
         let cached = {
             let mut inner = self.state.inner.lock();
             // Dirty cache pages are authoritative even if the disk mutation
-            // failed; poison only pages that lack dirty custody.
+            // failed; poison only pages that lack dirty custody. A Hole's
+            // bytes are unknown now too: it is poisoned like any clean page.
             inner.poison(first, last);
+            inner.drop_holes(first, last);
             inner.mark_populating(first, last);
             self.state.resident.store(
                 !inner.pages.is_empty() || !inner.poisoned.is_empty(),
@@ -1311,10 +1477,11 @@ impl MapState {
     }
 
     /// Bring the cache to `size`, the EOF the filesystem published, on success or
-    /// failure of the mutation. Growth only moves the EOF: the new pages are
-    /// holes, which faults fill with zero pages. A shrink drops the cache,
-    /// poison and parked copies past the new EOF, in place, and removes every
-    /// entry there. Allocates nothing.
+    /// failure of the mutation. Growth moves the EOF and records the bound
+    /// pages it makes valid as Holes, in the room `prepare_write` or
+    /// `prepare_resize` reserved, so a fault gives each a zero frame. A shrink
+    /// drops the cache, Holes, poison and parked copies past the new EOF, in
+    /// place, and removes every entry there. Allocates nothing when prepared.
     /// claim-lint:ok: kernel/src/memory/file_map.rs transition retains the reserved-capacity PageVec and revocation algorithm.
     pub(crate) fn transition(&self, size: u64) {
         let old = {
@@ -1332,6 +1499,7 @@ impl MapState {
                 inner.sync_if_executable(boundary / PAGE_SIZE);
             }
             if size > old {
+                inner.add_holes(pages(old), pages(size));
                 return;
             }
             // A population's copy of the boundary page or a page past the new
@@ -1345,6 +1513,7 @@ impl MapState {
             // Entries hold their own frame references, so the cache's may go
             // first. Bytes past EOF read as zero once the file grows again.
             inner.pages.truncate_from(keep);
+            inner.holes.truncate_from(keep);
             inner.poisoned.truncate_from(keep);
             self.refresh(&inner);
             old
@@ -1534,14 +1703,26 @@ fn revoke_entry(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MapError {
     NoMemory,
-    Io,
+    /// The backend refused the transfer or a read, with its errno; a read
+    /// shorter than the size it was sampled against is EIO.
+    Io(Errno),
+}
+
+impl MapError {
+    /// The errno mmap reports for this population failure.
+    pub(crate) fn errno(self) -> i32 {
+        use crate::syscall::errno::ENOMEM;
+        match self {
+            MapError::NoMemory => ENOMEM,
+            MapError::Io(errno) => errno.0,
+        }
+    }
 }
 
 /// A population's transfer lease and its claim on the pages it populates.
 /// Until it is dropped, after mmap has published the binding or given up,
 /// eviction keeps the claimed pages: the binding is published later, and a
-/// fault on a bound page the cache lacks maps a fresh page of 00 bytes (the
-/// hole case in `resolve_page`).
+/// fault on a bound page the cache lacks is SIGBUS (`MapInner::fault_frame`).
 pub(crate) struct Population {
     file: Box<dyn MappingIo>,
     map: MapState,
@@ -1589,7 +1770,7 @@ pub(crate) fn populate(
     static NEXT_CLAIM: AtomicU64 = AtomicU64::new(0);
     // The block cache's per-request limit, in pages.
     const POPULATE_RUN_PAGES: u64 = crate::block::cache::RUN_BYTES as u64 / PAGE_SIZE;
-    let file = handle.filesystem.mapping_io(handle).map_err(|_| MapError::Io)?;
+    let file = handle.filesystem.mapping_io(handle).map_err(MapError::Io)?;
     let map = &handle.map;
     let id = NEXT_CLAIM.fetch_add(1, Ordering::Relaxed);
     let end = first.saturating_add(count);
@@ -1653,7 +1834,7 @@ pub(crate) fn populate(
             let length = if pages == 1 {
                 // SAFETY: a fresh cache frame, reached only through `read`.
                 let frame = unsafe { core::slice::from_raw_parts_mut(read[start].1.ptr(), PAGE_SIZE as usize) };
-                file.read_into(low * PAGE_SIZE, frame).map_err(|_| MapError::Io)?
+                file.read_into(low * PAGE_SIZE, frame).map_err(MapError::Io)?
             } else {
                 // One staging buffer for the population's multi-page runs.
                 let bytes = pages * PAGE_SIZE as usize;
@@ -1663,7 +1844,7 @@ pub(crate) fn populate(
                 }
                 let length = file
                     .read_into(low * PAGE_SIZE, &mut staging[..bytes])
-                    .map_err(|_| MapError::Io)?;
+                    .map_err(MapError::Io)?;
                 for (n, (_, page)) in read[start..].iter().enumerate() {
                     let from = n * PAGE_SIZE as usize;
                     let take = length.saturating_sub(from).min(PAGE_SIZE as usize);
@@ -1689,16 +1870,22 @@ pub(crate) fn populate(
             .and_then(|claim| claim.stale.take());
         let marked = |index: u64| stale.is_some_and(|(low, high)| low <= index && index < high);
         if short.is_some_and(|index| !marked(index)) {
-            return Err(MapError::Io);
+            return Err(MapError::Io(Errno(crate::syscall::errno::EIO)));
         }
         let valid = pages(inner.mapped_size);
-        read.retain(|(index, _)| !marked(*index) && *index < valid);
+        // A page that became resident while this round read (a fault on a
+        // Hole, or `prepare_write`'s frame for a claimed page) is the cache's
+        // own: the mutation hooks keep it, so this round's copy is dropped.
+        read.retain(|(index, _)| {
+            !marked(*index) && *index < valid && !inner.pages.contains(*index)
+        });
         inner
             .pages
             .try_reserve(read.len())
             .map_err(|_| MapError::NoMemory)?;
         for (index, _) in &read {
             inner.poisoned.remove(*index);
+            inner.holes.remove(*index);
         }
         inner.pages.merge_reserved(read);
         map.state.resident.store(
@@ -2354,22 +2541,8 @@ pub(crate) fn resolve_page(
         drop(parked);
         return FaultOutcome::Resolved;
     }
-    if inner.poisoned.contains(index) {
+    let Ok(frame) = inner.fault_frame(index) else {
         return FaultOutcome::Signal(SIGBUS);
-    }
-    let frame = match inner.pages.get(index) {
-        Some(page) => page.frame,
-        None => match CachePage::allocate() {
-            // A hole: its file bytes are zero (see the module invariant).
-            Ok(page) => {
-                let frame = page.frame;
-                if inner.pages.try_insert(index, page).is_err() {
-                    return FaultOutcome::Signal(SIGBUS);
-                }
-                frame
-            }
-            Err(_) => return FaultOutcome::Signal(SIGBUS),
-        },
     };
     object.map.state.resident.store(true, Ordering::Release);
     if prot.contains(Protection::EXEC) {
