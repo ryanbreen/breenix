@@ -24,11 +24,11 @@ pub mod readahead;
 /// struct A;
 /// struct B;
 /// unsafe impl NodeSource for A {
-///     fn alloc_node(&mut self) -> Option<NonNull<Node>> { None }
+///     fn alloc_node(&mut self) -> Option<NonNull<Node>> { unreachable!() }
 ///     unsafe fn free_node(&mut self, _: NonNull<Node>) {}
 /// }
 /// unsafe impl NodeSource for B {
-///     fn alloc_node(&mut self) -> Option<NonNull<Node>> { None }
+///     fn alloc_node(&mut self) -> Option<NonNull<Node>> { unreachable!() }
 ///     unsafe fn free_node(&mut self, _: NonNull<Node>) {}
 /// }
 /// let mut list = NodeList::new();
@@ -45,11 +45,11 @@ pub mod readahead;
 /// struct A;
 /// struct B;
 /// unsafe impl NodeSource for A {
-///     fn alloc_node(&mut self) -> Option<NonNull<Node>> { None }
+///     fn alloc_node(&mut self) -> Option<NonNull<Node>> { unreachable!() }
 ///     unsafe fn free_node(&mut self, _: NonNull<Node>) {}
 /// }
 /// unsafe impl NodeSource for B {
-///     fn alloc_node(&mut self) -> Option<NonNull<Node>> { None }
+///     fn alloc_node(&mut self) -> Option<NonNull<Node>> { unreachable!() }
 ///     unsafe fn free_node(&mut self, _: NonNull<Node>) {}
 /// }
 /// let mut tree = PageTree::new();

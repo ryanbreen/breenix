@@ -14,7 +14,7 @@
 //! while its mount holds no other charge, which keeps BreenFS's progress
 //! rule; a part is at most `limit / 2`. Each mount's charge is a count of its
 //! own ([`MountCharge`]) that the charge updates, and the lone part claims it
-//! at zero, so two writers overlapping on one mount cannot both take it.
+//! while it reads 0, so two writers overlapping on one mount cannot both take it.
 //!
 //! Units are frames. The module has no kernel dependency.
 
@@ -107,11 +107,11 @@ impl DirtyCount {
 
     /// Charge `pages` of `mount` before they become dirty. A part that would
     /// pass `limit` is admitted only as the lone part of a mount that holds
-    /// no charge: it claims the mount's count at zero, so of writers that
+    /// no charge: it claims the mount's count while it reads 0, so of writers that
     /// overlap on one mount at most one is admitted past `limit`.
     pub fn try_charge(&self, mount: &MountCharge, pages: u64, limit: u64) -> Result<(), Throttle> {
-        // The mount's count first, so a lone part's claim below sees every
-        // charge of the mount that is in progress.
+        // The mount's count first, so a lone part's claim below sees the
+        // mount's charges that are in progress.
         mount.charged.fetch_add(pages, Ordering::AcqRel);
         let mut current = self.charged.load(Ordering::Acquire);
         loop {
@@ -128,7 +128,7 @@ impl DirtyCount {
             }
         }
         // Over the limit: withdraw from the mount, then claim the lone part's
-        // exception, which needs the mount's count to be zero.
+        // exception, which needs the mount's count to read 0.
         mount.charged.fetch_sub(pages, Ordering::AcqRel);
         if mount
             .charged

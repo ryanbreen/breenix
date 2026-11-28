@@ -68,7 +68,7 @@ fn a_charge_never_passes_the_limit_except_a_mount_with_nothing_charged() {
 
 #[test]
 fn two_writers_on_one_empty_mount_take_the_lone_part_exception_once() {
-    // limit 120, with 100 charged by another mount; this mount holds nothing.
+    // limit 120, with 100 charged by another mount; this mount's charge is 0.
     let count = DirtyCount::new();
     count.charge_unchecked(&MountCharge::new(), 100);
     // Two writers to different files on the mount overlap (their io locks

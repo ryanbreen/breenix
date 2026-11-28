@@ -55,7 +55,7 @@ pub trait PageLinks {
     fn set_links(&mut self, page: u64, links: Links);
     /// Replace the page's bits word with `new` if it holds `current`, as one
     /// atomic compare-and-exchange of that word alone; on failure return the
-    /// bits it holds. A hit uses only this and `links`, so it never writes
+    /// bits it holds. A hit uses only this and `links`, so it does not write
     /// `prev`, `next` or a membership bit.
     fn compare_exchange_bits(&self, page: u64, current: u8, new: u8) -> Result<(), u8>;
 }
@@ -257,7 +257,7 @@ impl Default for Lru {
 /// or isolates the page meanwhile keeps its links and membership bits, and
 /// the hit retries against the bits the scan left. A list operation's store
 /// of a word it read before the hit can drop the hit's `REFERENCED`; that
-/// loses one reference hint, never a list change.
+/// loses one reference hint and no list change.
 pub fn mark_referenced<P: PageLinks>(pages: &P, page: u64) {
     let mut bits = pages.links(page).bits;
     while bits & (ON_LRU | ISOLATED) != 0 && bits & REFERENCED == 0 {

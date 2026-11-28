@@ -115,8 +115,8 @@ impl Node {
 /// # Safety
 ///
 /// `alloc_node` returns memory valid for reads and writes of one `Node`, owned
-/// by the caller until it is passed back to `free_node`. Every instance of the
-/// implementing type draws from one allocator: `free_node` on any instance
+/// by the caller until it is passed back to `free_node`. The instances of the
+/// implementing type share one allocator: `free_node` on any instance
 /// accepts a node from `alloc_node` on any instance of the same type. A type
 /// whose instances own separate storage does not meet this.
 pub unsafe trait NodeSource {
