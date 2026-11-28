@@ -1126,16 +1126,18 @@ fn validate_x86_direct_loopback_gates(main: &str, registry: &str) -> Result<(), 
 }
 
 fn validate_x86_userspace_phase_launches_loopback_wake_test(source: &str) -> Result<(), String> {
-    let kernel_main_continue = function_body(source, "kernel_main_continue")
-        .ok_or_else(|| "missing kernel_main_continue".to_string())?;
-    let compact = compact_whitespace(kernel_main_continue);
+    // The x86 userspace phase is the boot_storage thread's program phase
+    // since E2.4x (DEV-48), not the boot continuation's kernel_main_continue.
+    let programs = function_body(source, "run_x86_boot_programs")
+        .ok_or_else(|| "missing run_x86_boot_programs".to_string())?;
+    let compact = compact_whitespace(programs);
     let load = "kernel::userspace_test::get_test_binary(\"loopback_wake_test\")";
     if compact.matches(load).count() != 1 {
-        return Err("kernel_main_continue must load loopback_wake_test exactly once".to_string());
+        return Err("run_x86_boot_programs must load loopback_wake_test exactly once".to_string());
     }
     let launch = "process::creation::create_user_process(String::from(\"loopback_wake_test\")";
     if compact.matches(launch).count() != 1 {
-        return Err("kernel_main_continue must launch loopback_wake_test exactly once".to_string());
+        return Err("run_x86_boot_programs must launch loopback_wake_test exactly once".to_string());
     }
     Ok(())
 }
@@ -2178,7 +2180,7 @@ fn deliberately_broken_x86_loopback_gate_variants_fail_the_validator() {
 #[test]
 fn x86_userspace_phase_launches_loopback_wake_test() {
     validate_x86_userspace_phase_launches_loopback_wake_test(&repo_text("kernel/src/main.rs"))
-        .expect("kernel_main_continue loads and launches loopback_wake_test exactly once");
+        .expect("run_x86_boot_programs loads and launches loopback_wake_test exactly once");
 }
 
 #[test]
@@ -2259,10 +2261,10 @@ fn x86_userspace_launch_validator_rejects_missing_loopback_binary_load() {
 #[test]
 fn x86_userspace_launch_validator_rejects_missing_loopback_process_launch() {
     let source = repo_text("kernel/src/main.rs");
-    let launch = "process::creation::create_user_process(\n                    String::from(\"loopback_wake_test\")";
+    let launch = "process::creation::create_user_process(\n                        String::from(\"loopback_wake_test\")";
     let mutated = source.replacen(
         launch,
-        "process::creation::create_user_process_removed(\n                    String::from(\"loopback_wake_test\")",
+        "process::creation::create_user_process_removed(\n                        String::from(\"loopback_wake_test\")",
         1,
     );
     assert_ne!(
