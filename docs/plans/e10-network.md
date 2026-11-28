@@ -1,8 +1,8 @@
 # E10 network stack
 
 DEV-41(2) starts the network design under DEV-29 and covers audit R21, R22, R23
-and R28. The implementation order starts with **NewReno, modern virtio-net, and
-hashed TCP lookups**, independently of E1 and R240 delivery. The shared packet
+and R28. The implementation order starts with **NewReno, legacy and modern
+virtio-net, and hashed TCP lookups**, independently of E1 and R240 delivery. The shared packet
 data path follows E1's frame-backed allocations. Protocol behavior comes from
 the RFCs, device behavior from the hardware specifications, and current behavior
 from Breenix and saved benchmark receipts. Linux is a measured black-box peer.
@@ -266,12 +266,29 @@ address matching. Contention in bind/close is decoupled from receive lookup.
 
 ### Virtio-net
 
-Use virtio 1.2 split queues. On modern MMIO require `VERSION_1`, negotiate
-features and verify `FEATURES_OK`, then publish queue addresses and set
-`DRIVER_OK`. Retain the existing legacy fallback for legacy devices. Derive
+Use virtio 1.2 split queues on both MMIO transports in PR 2. Derive
 ring offsets, alignment and allocation from the selected power-of-two depth.
 Start at 256, support up to 1024 if advertised and within the DMA budget, and
-honor smaller device maxima. Post RX capacity proportional to ring size. Size
+honor smaller device maxima. Post RX capacity proportional to ring size.
+Both transports negotiate advertised `MRG_RXBUF`, `EVENT_IDX`, `CSUM`,
+`HOST_TSO4` with `CSUM`, and `CTRL_VQ` with `MQ` when supported. Both also
+get the new TX completion path. A device offering only MAC/STATUS still gets
+the larger queues when space and `QueueNumMax` permit.
+
+On MMIO version 1, negotiate the supported legacy feature word during reset
+and initialization without `VERSION_1` or `FEATURES_OK`. Set `GuestPageSize`
+after reset and before queue setup. Each queue uses a zeroed, physically
+contiguous split-ring allocation, with descriptors and the available ring
+first and the used ring padded to `QueueAlign`. Configure `QueueNum` and
+`QueueAlign`, then publish the base page through `QueuePFN`. Use guest-endian
+ring and header fields and the legacy framing rules when selecting descriptor
+chains. The legacy packet header is 10 bytes without `MRG_RXBUF` and 12 bytes
+with it. On MMIO version 2, require `VERSION_1`, negotiate features and verify
+`FEATURES_OK`, then publish the individual queue addresses and set
+`QueueReady`. Both paths set `DRIVER_OK` after queues are configured.
+[OASIS Virtio 1.2 §§2.7.2–2.7.4, 3.1, 4.2.3–4.2.4, 5.1.6.1](https://docs.oasis-open.org/virtio/virtio/v1.2/virtio-v1.2.html).
+
+Size
 queue pairs from online CPUs, device maximum and memory budget. Negotiate
 `CTRL_VQ` with `MQ`, confirm the control command setting the active queue-pair
 count, and keep a one-pair configuration if the feature or activation is
@@ -342,7 +359,7 @@ concurrency, loss or RTT named in the prediction.
 | PR | Scope and dependency | Deterministic check | Expected ARM64 QEMU rows |
 | --- | --- | --- | --- |
 | 1 | NewReno policy interface, send admission and RTO. **No E1.** | Drive the production send/ACK path with a fixed clock and an eight-SMSS flight with two losses and no more application data. Check admission, the third duplicate ACK's first repair and `(cwnd, ssthresh) = (7, 4) SMSS`, another duplicate raising cwnd to 8 SMSS, a three-SMSS partial ACK lowering it to 6 SMSS and repairing the next hole while restarting the timer, and the full ACK lowering cwnd to 2 SMSS and exiting. In the timeout trace check one oldest-range repair, backoff, cwnd of one SMSS and the highest-sent recovery marker. Repeat the same segment's timeout and inject three qualifying duplicate ACKs within the marked flight. Check the unchanged first-timeout ssthresh and no fast retransmit, then allow a fresh recovery after ACK progress beyond the marker. | TX and SCP down benefit when sender loss or queue bursts dominate. A clean path can show slower startup. RX and SCP up are controls. |
-| 2 | Modern virtio-net rings, merged RX, checksum/TSO, EVENT_IDX, TX completion and multiqueue. **No E1.** | Run the production setup with fake version-1 MMIO advertising a 256-entry maximum and the PR's feature bits. Check 256 entries, more than four posted RX buffers, exact guest-page/PFN/used-ring offsets, the accepted low feature word and the 10-/12-byte legacy headers with merge disabled/enabled. Check modern VERSION_1 and FEATURES_OK separately. Drive merge and event-index wrap, malformed merges, offload header bytes, control-command rejection and TX full-to-available without RX traffic. | TX and RX are primary. SCP up/down may improve if packet service limits either direction. |
+| 2 | Legacy and modern virtio-net rings, merged RX, checksum/TSO, EVENT_IDX, TX completion and multiqueue. **No E1.** | Run the production setup with fake version-1 MMIO advertising a 256-entry maximum and the PR's feature bits. Check 256 entries, more than four posted RX buffers, exact guest-page/PFN/used-ring offsets, the accepted low feature word and the 10-/12-byte legacy headers with merge disabled/enabled. Check modern VERSION_1 and FEATURES_OK separately. Drive merge and event-index wrap, malformed merges, offload header bytes, control-command rejection and TX full-to-available without RX traffic. | TX and RX are primary on the existing legacy rig. SCP up/down may improve if packet service limits either direction. Record which features were offered and enabled.
 | 3 | Hashed established, listener and bind indexes. **No E1.** | Collision fixture with unrelated connections drives production demux and bind. Check exact/wildcard selection, TIME_WAIT and reuse conflicts, and that a failed reservation preserves the established, listener and bind indexes. A fixed comparison counter shows lookup work stays within the affected bucket. | TX/RX and SCP up/down can gain with many active sockets. Little movement is expected on the standard single-flow rows. |
 | 4 | Nagle default and live `TCP_NODELAY`. **No E1.** | With an outstanding small write, verify that the next small write waits, an ACK or full MSS permits output, and enabling NODELAY flushes eligible data. | SSH and SCP up/down are sensitive to small writes and delayed ACKs. TX/RX are bulk controls. |
 | 5 | Frame-backed packet descriptors, receive ownership and virtio scatter-gather. **E1-8 and prerequisites**, with E1-16 coordination. | Force descriptor exhaustion and an ACK preceding DMA completion. Check reference retirement and exact bytes across odd fragment boundaries, software checksum and fallback. | TX/RX gain from fewer copies and allocations. SCP up/down can follow. |
@@ -378,12 +395,12 @@ concurrency, loss or RTT named in the prediction.
   host stays busy for 30 minutes, record measured load and proceed. Keep any
   controlled loss/RTT or concurrent attribution cases distinct from the
   baseline row IDs. The saved QEMU baseline presents legacy MMIO (device
-  version 1 in the saved serial), so PR 2 must record the transport version
-  and compare matching profiles. Keep the legacy series comparable. Use a
-  matched modern profile for feature attribution, marking a base that cannot
-  attach as failed with its reason. Report a flat or worse row alongside the
-  observed counters. These series measure performance under DEV-41 and do not replace
-  the deterministic behavior checks.
+  version 1 in the saved serial). PR 2 measures both guests on that same
+  profile and records the transport version and enabled features. Any
+  additional modern-MMIO attribution uses a separate matched profile, marking
+  a base that cannot attach as failed with its reason. Report a flat or worse
+  row alongside the observed counters. These series measure performance under
+  DEV-41 and complement the deterministic behavior checks.
 - DEV-39(2) gives builders ownership of fit details. Record a detail
   deviation and one sentence of reason in this plan in the same PR. Escalate
   changes to a data structure, subsystem interface, ABI/on-disk format, lock
@@ -398,6 +415,9 @@ concurrency, loss or RTT named in the prediction.
 - Keep the Phase 0 TX publication lock, TX-submit reap, ISN/port selection and
   existing timeout counter as the starting point because they have already
   landed since the audit.
+- Apply the same ring and feature policy on legacy MMIO because the bbench rig
+  and standard ARM64 QEMU launcher use the same device profile as the saved
+  version-1 baseline.
 - Require `VERSION_1` when using modern MMIO because the existing helper
   intersects the requested mask and net currently requests only MAC/STATUS.
 - Use the RFC 6298 one-second computed RTO floor in PR 1 because the existing
