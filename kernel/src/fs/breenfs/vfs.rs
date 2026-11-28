@@ -337,8 +337,12 @@ struct Mount<W: Wait + 'static> {
     frozen: bool,
     writable: bool,
     // ROOT_FREEZE (paired generations 3.3): written only under the mount
-    // exclusion; read there by admission and without it by mapping refusal.
+    // exclusion; read there by admission and without it by mapping refusal
+    // and by touch().
     root_frozen: AtomicBool,
+    // Booted-tree mtime and ctime stamps from FIFO writes, which touch()
+    // records with no mount exclusion; part of the root epoch.
+    root_touches: AtomicU64,
     signal: Arc<CommitSignal>,
     scrub_signal: Arc<CommitSignal>,
     // The open generation, read by touch() without the mount exclusion; the
@@ -2023,7 +2027,8 @@ impl<W: Wait + 'static> BreenFs<W> {
     /// The epoch with the booted tree's writable shared mappings and files
     /// with unwritten mapped stores (3.3, DEV-44).
     fn root_epoch(&self, state: &MountState<W>) -> RootEpoch {
-        let mut epoch = RootEpoch { epoch: state.root_epoch, writable_mappings: 0, dirty_files: 0 };
+        let touches = self.inner.root_touches.load(Ordering::SeqCst);
+        let mut epoch = RootEpoch { epoch: state.root_epoch + touches, writable_mappings: 0, dirty_files: 0 };
         for (&ino, entry) in &state.nodes {
             if state.files.tag(ino) != 0 {
                 continue;
@@ -2060,8 +2065,10 @@ impl<W: Wait + 'static> BreenFs<W> {
             return Err((error, self.root_epoch(&state)));
         }
         // Raise the flag before counting: a binding counted after this read
-        // sees the flag and is refused (MapInner::gain_writable_shared).
-        let was = self.inner.root_frozen.swap(true, Ordering::AcqRel);
+        // sees the flag and is refused (MapInner::gain_writable_shared), and
+        // so does a FIFO stamp (touch(), whose count and flag read pair with
+        // this store and root_epoch's load, all SeqCst).
+        let was = self.inner.root_frozen.swap(true, Ordering::SeqCst);
         let epoch = self.root_epoch(&state);
         if busy(epoch) {
             self.inner.root_frozen.store(was, Ordering::Release);
@@ -2243,6 +2250,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             default_root,
             frozen,
             root_frozen: AtomicBool::new(false),
+            root_touches: AtomicU64::new(0),
             writable,
             signal,
             scrub_signal: Arc::new(CommitSignal::new()),
@@ -4171,6 +4179,17 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         let Some(pin) = node.pin::<NodePin<W>>() else {
             return;
         };
+        // A FIFO write's mtime and ctime change the booted tree with no
+        // admission (3.3). Count it, then read the freeze: either the freeze
+        // counts it in E2 or it sees the freeze and is refused, as on a
+        // read-only mount, returning its count.
+        if !read && node.ino & ops::TREE_TAGS == 0 {
+            self.inner.root_touches.fetch_add(1, Ordering::SeqCst);
+            if self.inner.root_frozen.load(Ordering::SeqCst) {
+                self.inner.root_touches.fetch_sub(1, Ordering::SeqCst);
+                return;
+            }
+        }
         // FIFO callers can hold PM and stream locks: record only atomics here.
         #[cfg(not(test))]
         let seconds = crate::time::current_unix_time_coarse() as u64;
