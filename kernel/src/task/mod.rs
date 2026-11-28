@@ -27,6 +27,8 @@ pub mod thread;
 pub mod user_dispatch;
 pub mod userspace_completion;
 pub mod event_queue;
+pub mod park;
+pub mod park_core;
 pub mod waitqueue;
 pub(crate) mod wake_inbox;
 

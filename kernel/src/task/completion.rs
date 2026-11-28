@@ -138,25 +138,13 @@ fn finish_wait_current() {
     });
 }
 
-#[inline]
-fn restore_syscall_preempt_state() {
-    #[cfg(target_arch = "aarch64")]
-    crate::per_cpu_aarch64::preempt_disable();
-    #[cfg(not(target_arch = "aarch64"))]
-    crate::per_cpu::preempt_disable();
-}
-
+/// The sleep path serves a context that may park and holds a braked
+/// baseline (a syscall, or a `park::Braked` worker): its sleep releases that
+/// one level (`task::park`). Other contexts poll until E2.4 makes each
+/// sleepable caller park (design §6, "Completion mode").
 #[inline]
 fn syscall_sleep_path_available() -> bool {
-    #[cfg(target_arch = "aarch64")]
-    {
-        crate::per_cpu_aarch64::preempt_count() > 0
-            && crate::arch_impl::aarch64::timer_interrupt::is_initialized()
-    }
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        crate::per_cpu::preempt_count() > 0
-    }
+    crate::task::park::sleepable_braked()
 }
 
 /// Idle's saved boot continuation is discarded after Ring 3 starts.
@@ -164,14 +152,8 @@ fn syscall_sleep_path_available() -> bool {
 /// Do not release that caller's brake or publish idle as BlockedOnIO.
 /// Before the aarch64 timer runs, idle takes the bounded spin path
 /// instead, since nothing would end a WFI on a lost interrupt.
-fn idle_halt_wait_available(tid: Option<u64>) -> bool {
-    #[cfg(target_arch = "x86_64")]
-    let idle_poll_available = true;
-    #[cfg(target_arch = "aarch64")]
-    let idle_poll_available = crate::arch_impl::aarch64::timer_interrupt::is_initialized();
-    idle_poll_available
-        && crate::task::scheduler::with_current(|sched| Some(sched.idle_thread()) == tid)
-            == Some(true)
+fn idle_halt_wait_available() -> bool {
+    crate::task::park::context() == crate::task::park::ParkContext::Atomic(crate::task::park::AtomicReason::Idle)
 }
 
 /// Whether a wait from the current context gives up the CPU until an
@@ -180,7 +162,7 @@ fn idle_halt_wait_available(tid: Option<u64>) -> bool {
 /// its timer does, a wait busy-polls the CPU instead.
 pub fn wait_sleeps() -> bool {
     let tid = crate::task::scheduler::current_thread_id();
-    tid.is_some() && (idle_halt_wait_available(tid) || syscall_sleep_path_available())
+    tid.is_some() && (idle_halt_wait_available() || syscall_sleep_path_available())
 }
 
 /// The x86 boot continuation is the idle task, not a sleepable worker.
@@ -416,7 +398,7 @@ impl Completion {
         // fall through to the polling path below.
         let tid = crate::task::scheduler::current_thread_id();
 
-        if idle_halt_wait_available(tid) {
+        if idle_halt_wait_available() {
             return Ok(wait_idle_completion(self, expected_token, timeout_ns));
         }
 
@@ -502,18 +484,15 @@ impl Completion {
                     return Err(EINTR);
                 }
 
-                // Enable preemption so the scheduler can switch us out.
-                // SAFETY: caller guarantees no locks are held at this point.
-                #[cfg(target_arch = "aarch64")]
-                crate::per_cpu_aarch64::preempt_enable();
-                #[cfg(not(target_arch = "aarch64"))]
-                crate::per_cpu::preempt_enable();
+                // Release the braked baseline so the scheduler can switch us
+                // out. The caller holds no locks at this point.
+                let released = crate::task::park::release_for_sleep();
 
                 loop {
                     if wait_mode.signal_pending() {
                         self.waiter.store(0, Ordering::Release);
                         finish_wait_current();
-                        restore_syscall_preempt_state();
+                        crate::task::park::retake_after_sleep(released);
                         return Err(EINTR);
                     }
 
@@ -541,7 +520,7 @@ impl Completion {
                         finish_wait_current();
                         // Restore preempt_count to the value expected by the
                         // syscall exit path (preempt_disable was called on entry).
-                        restore_syscall_preempt_state();
+                        crate::task::park::retake_after_sleep(released);
                         return Ok(true);
                     }
 
@@ -587,13 +566,13 @@ impl Completion {
                     observe(WaitStage::Recheck);
                     if self.done.load(Ordering::Acquire) == expected_token {
                         self.waiter.store(0, Ordering::Release);
-                        restore_syscall_preempt_state();
+                        crate::task::park::retake_after_sleep(released);
                         return Ok(true);
                     }
 
                     if wait_mode.signal_pending() {
                         self.waiter.store(0, Ordering::Release);
-                        restore_syscall_preempt_state();
+                        crate::task::park::retake_after_sleep(released);
                         return Err(EINTR);
                     }
 
@@ -609,7 +588,7 @@ impl Completion {
                         let now_ns = secs as u64 * 1_000_000_000 + nanos as u64;
                         if now_ns >= deadline_ns {
                             self.waiter.store(0, Ordering::Release);
-                            restore_syscall_preempt_state();
+                            crate::task::park::retake_after_sleep(released);
                             return Ok(false);
                         }
                     }
@@ -619,7 +598,7 @@ impl Completion {
                         let now_ns = secs * 1_000_000_000 + nanos;
                         if now_ns >= deadline_ns {
                             self.waiter.store(0, Ordering::Release);
-                            restore_syscall_preempt_state();
+                            crate::task::park::retake_after_sleep(released);
                             return Ok(false);
                         }
                     }

@@ -60,11 +60,10 @@ pub(super) fn pause(nanoseconds: u64) {
 fn service() {
     loop {
         // Device waits release this syscall-style brake while blocked and
-        // restore it on return. Restore the kthread's preemption state each pass.
-        #[cfg(target_arch = "aarch64")]
-        crate::per_cpu_aarch64::preempt_disable();
-        #[cfg(target_arch = "x86_64")]
-        crate::per_cpu::preempt_disable();
+        // restore it on return. Restore the kthread's preemption state each
+        // pass. The brake is a `park::Braked` guard (E2.2, design §3.2), so
+        // the park contract treats the pass as a syscall-shaped context.
+        let braked = crate::task::park::Braked::new();
 
         let mut more = false;
         let mut retry = false;
@@ -112,9 +111,6 @@ fn service() {
             wait(&WORK, None, || !PENDING.load(Ordering::Acquire));
         }
 
-        #[cfg(target_arch = "aarch64")]
-        crate::per_cpu_aarch64::preempt_enable();
-        #[cfg(target_arch = "x86_64")]
-        crate::per_cpu::preempt_enable();
+        drop(braked);
     }
 }

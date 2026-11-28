@@ -627,12 +627,9 @@ fn console_sync_can_sleep() -> bool {
     if TX_THREAD.get().is_none() || !crate::per_cpu::is_initialized() {
         return false;
     }
-    if crate::per_cpu::in_interrupt() || crate::per_cpu::preempt_count() != 1 {
-        return false;
-    }
-    let tid = crate::task::scheduler::current_thread_id();
-    let idle = crate::task::scheduler::with_current(|sched| Some(sched.idle_thread()) == tid);
-    tid.is_some() && idle == Some(false)
+    // The park contract decides (`task::park`): a non-idle thread outside
+    // interrupt context that holds exactly its braked baseline.
+    crate::task::park::sleepable_braked()
 }
 
 /// Write the ring out until `target` retained producer bytes have gone to the log UART (with

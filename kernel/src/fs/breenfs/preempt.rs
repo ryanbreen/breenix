@@ -24,14 +24,12 @@ mod context {
     use crate::per_cpu_aarch64 as cpu;
 
     pub fn can_yield() -> bool {
-        // Foreground x86 syscalls mask IRQs; nested brakes and interrupt/boot
-        // contexts also retain their caller's scheduling constraints.
-        cpu::preempt_count() == 1 && !cpu::in_interrupt()
-            && crate::arch_interrupts_enabled()
-            && crate::task::scheduler::current_thread_id().is_some()
-            // Boot runs as idle: its continuation is not a resumable worker.
-            // Let the scheduler identify it on either architecture.
-            && crate::task::scheduler::is_current_idle_thread() == Some(false)
+        // A braked context that may park (a syscall, or a `park::Braked`
+        // worker such as the commit worker) releases its brake here so the
+        // scheduler can run. Nested brakes, interrupt context and the boot
+        // continuation (idle) may not park (`task::park::context`). Foreground
+        // x86 syscalls mask IRQs and keep their CPU here.
+        crate::arch_interrupts_enabled() && crate::task::park::sleepable_braked()
     }
     pub fn need_resched() -> bool { cpu::need_resched() }
     pub fn preempt_enable() { cpu::preempt_enable(); }

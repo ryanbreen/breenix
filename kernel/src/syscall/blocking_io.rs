@@ -35,10 +35,8 @@ pub(crate) fn wait_prepared(queue: &WaitQueueHead, outcome: PrepareOutcome) -> R
     // entry level through the signal check and releases it for the halt only.
     // A kernel thread can wait already preemptible, at level 0: releasing a
     // level it did not take would underflow, and restoring one afterwards would
-    // leave it held, so a level is released and restored only when the caller
-    // holds one.
-    let release_preempt =
-        crate::per_cpu::preempt_count() & crate::arch_impl::current::constants::PREEMPT_MASK != 0;
+    // leave it held, so `task::park::release_for_sleep` releases a level, and
+    // `retake_after_sleep` restores it, only when the caller holds one.
     // A thread switched out in its published blocked state runs again only
     // when something wakes it, and a signal that was already pending wakes
     // nothing: its wake may have ended an earlier sleep of this wait. Preempted
@@ -60,14 +58,10 @@ pub(crate) fn wait_prepared(queue: &WaitQueueHead, outcome: PrepareOutcome) -> R
         if !waiting {
             break None;
         }
-        if release_preempt {
-            crate::per_cpu::preempt_enable();
-        }
+        let released = crate::task::park::release_for_sleep();
         crate::task::scheduler::yield_current();
         crate::arch_halt_while_blocked();
-        if release_preempt {
-            crate::per_cpu::preempt_disable();
-        }
+        crate::task::park::retake_after_sleep(released);
     };
 
     queue.take_waiter(tid);
@@ -179,7 +173,8 @@ pub(crate) fn read_terminal(
 /// The sleep is the wait queue's own `schedule_current_wait`, which releases
 /// and restores the system call's preemption level. A wake for a handled
 /// signal returns `Ok`, and the caller retries before sleeping again. A
-/// caller holding no preemption level only retries.
+/// caller without a braked baseline (`task::park::sleepable_braked`) only
+/// retries.
 pub(crate) fn wait_prepared_killable(queue: &WaitQueueHead, outcome: PrepareOutcome) -> Result<(), i32> {
     match outcome {
         PrepareOutcome::Mismatch => {
@@ -193,9 +188,9 @@ pub(crate) fn wait_prepared_killable(queue: &WaitQueueHead, outcome: PrepareOutc
         PrepareOutcome::OutOfMemory => return Err(errno::ENOMEM),
         PrepareOutcome::Queued => {}
     }
-    let syscall_level =
-        crate::per_cpu::preempt_count() & crate::arch_impl::current::constants::PREEMPT_MASK != 0;
-    if syscall_level && !crate::syscall::fatal_signal_pending() {
+    // The sleep releases the caller's braked baseline (`task::park`). A
+    // caller without one to release only retries.
+    if crate::task::park::sleepable_braked() && !crate::syscall::fatal_signal_pending() {
         crate::task::waitqueue::schedule_current_wait();
     }
     queue.finish_wait();

@@ -35,38 +35,21 @@ impl WakeSignal {
         #[cfg(not(test))]
         self.queue.wake_up_deferred();
     }
+    /// Sleep until the epoch moves past `observed` or `deadline`. A claimed
+    /// kill ends the wait with EINTR: the kill's wake returns the thread to
+    /// the park, and its publication is then refused (`task::park`). A
+    /// context that may not park gets a receipt and EINTR, so its caller
+    /// unwinds; the boot continuation keeps its pre-E2.2 sleep until E2.4.
     #[cfg(not(test))]
     pub fn wait(&self, observed: u64, deadline: Option<u64>) -> Result<(), Errno> {
-        use crate::task::{thread::{current_wait_must_unwind, ThreadState}, waitqueue::PrepareOutcome};
+        use crate::task::{park::{self, WaitEnd, WaitMode}, thread::current_wait_must_unwind};
         const INTERRUPTED: Errno = Errno(crate::syscall::errno::EINTR);
         if current_wait_must_unwind() { return Err(INTERRUPTED); }
         crate::block::cache_kernel::assert_io_context();
-        #[cfg(target_arch = "x86_64")]
-        use crate::per_cpu as cpu;
-        #[cfg(target_arch = "aarch64")]
-        use crate::per_cpu_aarch64 as cpu;
-        let add_brake = cpu::preempt_count() == 0;
-        if add_brake {
-            cpu::preempt_disable();
-        }
-        assert_eq!(
-            cpu::preempt_count(),
-            1,
-            "breenfs wait has nested preemption guards"
-        );
-        let outcome = self
-            .queue
-            .prepare_to_wait_checked(ThreadState::BlockedOnIO, deadline, || {
-                self.epoch() == observed
-            });
-        let result = match outcome {
-            PrepareOutcome::Queued => {
-                crate::task::waitqueue::schedule_current_wait();
-                self.queue.finish_wait();
-                Ok(())
-            }
-            PrepareOutcome::Mismatch => Ok(()),
-            PrepareOutcome::OutOfMemory => {
+        let end = park::wait_allowing_boot_idle(&self.queue, || self.epoch() != observed, deadline, WaitMode::Uninterruptible);
+        let result = match end {
+            Ok(WaitEnd::Condition | WaitEnd::Woken | WaitEnd::Timeout | WaitEnd::Interrupted(_)) => Ok(()),
+            Ok(WaitEnd::NoMemory) => {
                 if !current_wait_must_unwind() && deadline.is_none_or(|limit| monotonic_ns() < limit) {
                     crate::block::cache_kernel::park_for_wait_retry();
                 }
@@ -74,11 +57,8 @@ impl WakeSignal {
             }
             // A kill can refuse a blocked publication after the caller
             // checked its condition. Unwind instead of retrying that wait.
-            PrepareOutcome::PublishFailed => Err(INTERRUPTED),
+            Ok(WaitEnd::Killed) | Err(_) => Err(INTERRUPTED),
         };
-        if add_brake {
-            cpu::preempt_enable();
-        }
         if current_wait_must_unwind() { Err(INTERRUPTED) } else { result }
     }
 }

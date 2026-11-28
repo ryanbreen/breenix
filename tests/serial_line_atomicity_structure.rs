@@ -331,7 +331,14 @@ fn console_log_sync_sleeps_in_a_syscall_instead_of_spinning() {
         assert!(wait.contains(step), "console wait must sleep through {step}");
     }
     let can_sleep = function_body(&source, "console_sync_can_sleep").expect("sleep rule");
-    for condition in ["TX_THREAD.get().is_none()", "in_interrupt()", "preempt_count() != 1", "idle_thread()"] {
-        assert!(can_sleep.contains(condition), "sleep rule must check {condition}");
-    }
+    assert!(can_sleep.contains("TX_THREAD.get().is_none()"), "sleep rule must check the transmit thread");
+    // E2.2: interrupt context, idle and the exact syscall level are the park
+    // contract's decision (task::park::sleepable_braked: Sleepable, which
+    // excludes interrupt context and idle and requires depth == baseline,
+    // at a baseline of exactly 1).
+    assert!(can_sleep.contains("crate::task::park::sleepable_braked()"), "sleep rule must ask the park contract");
+    assert!(!can_sleep.contains("preempt_count"), "the sleep rule may not decide from the depth by hand");
+    let park = repo_text("kernel/src/task/park.rs");
+    let braked = function_body(&park, "sleepable_braked").expect("park rule");
+    assert!(braked.contains("context() == ParkContext::Sleepable && baseline() == 1"));
 }
