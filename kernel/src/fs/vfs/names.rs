@@ -14,13 +14,25 @@ pub fn parent_name(node: &VNode) -> Result<(Arc<VNode>, Vec<u8>), Errno> {
     let fs = &node.filesystem;
     let parent = fs.open(fs.parent(node.ino)?)?;
     let mut name = None;
-    fs.readdir(parent.ino, 0, &mut |entry, _| {
-        if entry.ino != node.ino || entry.name == b"." || entry.name == b".." {
-            return Ok(true);
+    // A readdir call may end early, as getdents64 replies do (BreenFS ends
+    // one at a batch boundary after a concurrent edit): resume from its
+    // cookie until a call returns no entries.
+    let mut cookie = 0;
+    loop {
+        let mut seen = false;
+        let next = fs.readdir(parent.ino, cookie, &mut |entry, _| {
+            seen = true;
+            if entry.ino != node.ino || entry.name == b"." || entry.name == b".." {
+                return Ok(true);
+            }
+            name = Some(entry.name);
+            Ok(false)
+        })?;
+        if name.is_some() || !seen || next == cookie {
+            break;
         }
-        name = Some(entry.name);
-        Ok(false)
-    })?;
+        cookie = next;
+    }
     let name = name.ok_or(Errno(ENOENT))?;
     if fs.parent(node.ino)? != parent.ino {
         return Err(Errno(ENOENT));

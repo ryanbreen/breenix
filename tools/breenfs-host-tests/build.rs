@@ -131,6 +131,7 @@ fn main() {
         "    pub(crate) fn writeback_pending(",
         "    pub(crate) fn writeback(",
         "    fn writeback_snapshot(",
+        "    pub(crate) fn refresh_writeback(",
         "    pub(crate) fn complete_writeback(",
         "    pub(crate) fn complete_writeback_through(",
         "    pub(crate) fn service_writeback(",

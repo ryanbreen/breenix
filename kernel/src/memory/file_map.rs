@@ -1233,6 +1233,25 @@ impl MapState {
         Ok((snapshot.last().map(|page| page.index + 1), latest))
     }
 
+    /// Under the filesystem's mount guard: copy the resident pages from page
+    /// `first` over `bytes`, the writeback's private copy. A write that
+    /// completed after the snapshot copied its bytes into these pages under
+    /// that guard (`commit_write`), so an edit attempt that copies here
+    /// before it changes file pages stages bytes at least as new as the
+    /// file's. A page no longer resident keeps the snapshot's bytes.
+    pub(crate) fn refresh_writeback(&self, first: u64, bytes: &mut [u8]) {
+        let inner = self.state.inner.lock();
+        for (slot, chunk) in bytes.chunks_mut(PAGE_SIZE as usize).enumerate() {
+            let Some(page) = inner.pages.get(first + slot as u64) else { continue; };
+            let ptr = (super::physical_memory_offset().as_u64()
+                + page.frame.start_address().as_u64()) as *const u8;
+            // SAFETY: the map lock pins the cache frame during the copy.
+            unsafe {
+                core::ptr::copy_nonoverlapping(ptr, chunk.as_mut_ptr(), chunk.len());
+            }
+        }
+    }
+
     /// Called under the mount guard after a successful barrier or an epoch
     /// check establishing that this snapshot already matches durable bytes.
     /// A new write fault changes gen. Shared writable mappings retain dirty

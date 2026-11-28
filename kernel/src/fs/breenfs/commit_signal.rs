@@ -13,6 +13,18 @@ pub struct CommitSignal {
     waiters: WakeSignal,
 }
 
+// Host checks: the next commit waits on this thread end as a kill's does,
+// with EINTR (the kernel's current_wait_must_unwind).
+#[cfg(test)]
+std::thread_local! {
+    static INTERRUPTS: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
+}
+/// Host checks: end this thread's next `count` commit waits with EINTR.
+#[cfg(test)]
+pub fn interrupt_waits(count: u32) {
+    INTERRUPTS.with(|waits| waits.set(count));
+}
+
 pub struct WakeSignal {
     epoch: AtomicU64,
     #[cfg(not(test))]
@@ -98,6 +110,9 @@ impl CommitSignal {
                 epoch: observed,
             });
             let _ = deadline;
+            if INTERRUPTS.with(|count| count.replace(count.get().saturating_sub(1)) != 0) {
+                return Err(Errno(crate::syscall::errno::EINTR));
+            }
             std::thread::yield_now();
             Ok(())
         }

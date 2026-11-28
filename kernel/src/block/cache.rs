@@ -365,6 +365,71 @@ impl<W: Wait> BufferCache<W> {
         })
     }
 
+    /// Copy `count` consecutive resident blocks into `bytes` without device
+    /// admission, which can queue behind another caller's in-flight request.
+    /// False, with `bytes` unspecified, when any block is not resident.
+    pub fn read_resident(&self, device: &dyn BlockDevice, start: u64, count: usize, bytes: &mut [u8]) -> bool {
+        let size = device.block_size();
+        if size == 0 || bytes.len() < count.saturating_mul(size) {
+            return false;
+        }
+        let identity = device.identity();
+        let found = self.with(|state| {
+            for i in 0..count {
+                let key = (identity, start + i as u64);
+                state.touch(key);
+                match state.buffers.get(&key).map(|entry| &entry.status) {
+                    Some(BufferState::Clean { buffer, .. } | BufferState::Dirty { buffer, .. }) => {
+                        bytes[i * size..][..size].copy_from_slice(buffer);
+                    }
+                    _ => return false,
+                }
+            }
+            true
+        });
+        if found {
+            self.count_by(count, |c| &mut c.hits);
+        }
+        found
+    }
+
+    /// Count one block the caller read from `device` itself, outside device
+    /// admission, and keep it as a clean copy when the key has no entry and
+    /// the cache has room. A no-wait pass's fetch (E2 design 7.2) does this:
+    /// its reader holds a generation pin, so no write can reach the block,
+    /// and a reader queued at admission must not wait behind it.
+    pub fn adopt_clean(&self, device: &dyn BlockDevice, block: u64, bytes: &[u8]) {
+        self.count(|c| &mut c.misses);
+        self.count(|c| &mut c.device_reads);
+        let key = (device.identity(), block);
+        let charge = self.with(|state| {
+            if state.buffers.contains_key(&key) {
+                return None;
+            }
+            state.reserve(bytes.len(), self.bound, &self.resident)
+        });
+        let Some(charge) = charge else { return };
+        let mut copy = Vec::new();
+        if copy.try_reserve_exact(bytes.len()).is_err() {
+            return;
+        }
+        copy.extend_from_slice(bytes);
+        let buffer = Arc::new(Buffer { bytes: copy, charge });
+        self.with(|state| {
+            if state.buffers.contains_key(&key) {
+                return;
+            }
+            state.next_generation = state.next_generation.checked_add(1).expect("cache generation exhausted");
+            let generation = state.next_generation;
+            state.buffers.insert(key, Entry {
+                status: BufferState::Clean { buffer, used: 0 },
+                generation,
+                waiters: 0,
+            });
+            state.touch(key);
+        });
+    }
+
     pub fn status(&self, device: &dyn BlockDevice, block: u64) -> Option<BufferStatus> {
         self.with(|state| {
             state

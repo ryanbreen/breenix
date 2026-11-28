@@ -127,7 +127,9 @@ Each invariant is checked by a deterministic test named in §9.
   that address space's locks (§5).
 - **I7, no device wait under a filesystem-wide lock.** BreenFS submits and waits for device requests with
   no `MountLock` held. The exceptions are a mount that has not been published yet and the commit workers'
-  `PublishToken`, which is not a `MountLock` and which no foreground operation takes (§7.3a).
+  `PublishToken`, which is not a `MountLock` and which no foreground operation takes (§7.3a). Until E5,
+  ruling DEV-53(2) adds a named list of tree-edit paths, the I7 exception list under E2.5 below, which
+  may only shrink.
 - **I8, polling only at early boot.** A caller polls only while it holds the early-boot I/O token, which
   stops being issued when the scheduler first dispatches (§6). A device with no usable interrupt still has
   a poller thread, but that thread is the device's completion source. It is not a mode the caller picks.
@@ -738,7 +740,10 @@ which is not a `MountLock` and which the I7 guard checks no foreground thread ev
 
 E2.5 is the first step of E5 ("release the mount lock before I/O") and carries the I7 guard. E5 then adds
 per-inode locks, per-node tree locks, N+1 copy-on-write over N with no replay, and the dentry cache, and
-keeps I7 throughout. The PR belongs to E2's sequence. If E5's lane starts first, the coordinator decides
+keeps I7 throughout. Under ruling DEV-53(2), E2.5 leaves the tree edits on a named I7 exception list
+(below, under E2.5). E5's per-node locks and no-replay copy-on-write close that list, and E5's design
+says so: its PRs remove names from the list in `tools/breenfs-host-tests/src/lock_order.rs` until it is
+empty. The PR belongs to E2's sequence. If E5's lane starts first, the coordinator decides
 which lane carries it (§12, Q3). It must not land twice.
 
 ext2's lock (#728) moves onto the park contract in E2.2. It keeps holding its lock across device reads,
@@ -1243,6 +1248,163 @@ The builder resolved these details against the code. Each has one sentence of re
   `disk.walk` and `disk.sequential-*` off the R240 until #3226 closes.
 - **Boot.** Not needed. The host harness runs the production BreenFS code and settles lock order and the
   interleavings.
+
+#### E2.5 as built: deviations (rulings DEV-39(2), DEV-53)
+
+Ruling DEV-53 chose option B: E2.5 keeps §7's scope, and the tree edits that read cold nodes under the
+state lock become a named I7 exception list. The builder resolved these details against the code. Each
+has one sentence of reason.
+
+**I7's exception list.** Each name is an `i7::exception("...")` scope in `kernel/src/fs/breenfs/vfs.rs`.
+The host guard (`tools/breenfs-host-tests/src/lock_order.rs`) fails on a device request made under a
+`MountLock` outside these scopes, and `I7_EXCEPTIONS` pins the list: a scope the list does not name, or
+a listed name with no scope left, fails `i7_exception_list_names_exactly_the_sites`. E5 empties it.
+
+| Scope | Paths |
+|---|---|
+| `mutation` | namespace, attribute, data and snapshot changes: create, mkdir, symlink, link, unlink, rmdir, rename, setattr, xattr set and remove, write, truncate (not its tail lookup, a no-wait pass), mapped writeback (not its setup in `mapping_io`, which runs as passes), clearing a mapping's privilege bits, snapshot create, delete and rename, staging attach and detach, with their admission reads |
+| `apply_touches` | a read's pending touch stamps, applied as an edit of their own after its pass |
+| `refresh` | the refresh loops in `edited()` and `materialize()` |
+| `replay` | N+1's changes replayed onto N's view in `materialize()` |
+
+`i7::strict()` takes a data edit's page reads back out of the `mutation` scope, so 7.3a's first row stays
+under the guard.
+
+**The guard and the passes.**
+
+- **The guard counts holds at the hook sites.** A thread-local count is kept where `MountLock` observes
+  `Event::Acquire` and `Event::Release`, rather than through the observer, because the observer is one
+  callback per thread and the guard has to see the requests of each thread a check starts.
+- **No-wait mode is per thread.** A pass's owner is a thread token held in the mount's `DecodedNodes`,
+  which the mount's stores share, because the commit worker reads the frozen generation through
+  those stores with no lock while a foreground pass runs.
+- **What the no-wait store checks.** The pending commit, the decoded cache, the operation's held nodes
+  and `BufferCache::pin`, and not `read_verified`, whose admission ticket queues even a hit behind another
+  thread's request (ruling DEV-53(3)).
+- **Held nodes, not pinned cache entries.** Step 2's "pins the cache entries for itself" becomes a set of
+  decoded nodes the operation owns and lends to each of its passes, because the node buffer cache is
+  private to a view and the decoded cache is budgeted, so neither can promise the next pass a hit.
+- **The read with the lock released.** BlockDevice is synchronous, so submitting and parking is one read
+  (ruling DEV-53(3)). It goes through a `NodeFetcher` of the view that recorded the miss: the bytes enter
+  that view's buffer-cache keyspace and the decoded cache, as the view's own read did, because with a
+  temporary store a refused decoded insert left the node uncached and `metadata_cache_stat_10000` read 386
+  nodes after a commit instead of 2. The fetcher reads the device outside the cache's admission queue,
+  which is keyed by the view, because a caller reading through the view under the state lock would queue
+  behind the fetch; the reader's pin keeps writes off those blocks. A view's cache identity is now a
+  counter rather than its box address, so a reused address cannot inherit another view's entries.
+- **Data runs go straight into the caller's buffer.** A clean run a pass could not take from memory is
+  read with the lock released into the caller's buffer, and a later pass keeps those bytes when it
+  reaches the same run (file range, device blocks and checksums), because with pinned cache entries a
+  read larger than the cache could not complete. The mapping overlay stays in the pass under the lock,
+  because `file_map::overlay` relies on the mount guard to pin its frames.
+- **Raw node reads carry a generation ceiling.** A deferred `NodeStore::get` records its store's
+  generation, because the fetch has to verify the node against the view that asked for it. `Held` keys
+  the raw bytes it lends by address and that generation (review M3 on #3310), because one address can
+  hold different nodes in two views a read-only mount moves between.
+- **A read-only mount's passes follow the newest publication** (review M2 on #3310). Each pass starts
+  with `observe_publication`, which only read() ran before, and a pass that needed the device pins with
+  `DeviceMounts::pin_published`: under the `published` lock, and only while its view's generation is the
+  newest published, else it passes again. The reason: the blocks a generation P reaches are released at
+  P+1 or later and promoted by a transaction at P+3 or later, which opens only after P+1 installs and
+  moves `published` under that lock, while the observer's own state lock does not exclude the writer.
+  When the pass could not open the newer view from memory, `MountState::observing` names its superblock,
+  the pin is of that generation, and the misses are fetched through a store of that view, dropped after
+  the fetch, because the installed view's cache can answer an address the newer tree reused (review M3).
+  `check_durable_roots`, scrub batches and `snapshot_status` copy and pin the newest superblock in one
+  step (`pin_view`, `pin_newest`).
+- **Touch stamps.** A pass records the inodes it read whose stamps are pending and leaves them pending. Its
+  operation applies them afterwards in an `apply_touches` step, and only getattr, whose answer reports the
+  times, passes again; open, read, readlink and the rest keep the first pass's answer.
+- **The publication hold.** `PASS_HOLD` is 4. A reader past it holds a count on its `DeviceMounts`
+  that the writer's freeze checks under the state lock, and its release wakes the writable mount's
+  commit signal, which the constructor registers there, because a read-only mount's reader has to hold
+  off a writer on another mount (review M2 on #3310). The host check publishes a commit that moves the reader's
+  block on each of its passes, and the reader finishes within the hold and one more pass.
+- **readdir's per-pass buffer.** A pass collects up to 64 KiB of entries, counted as name bytes plus 24
+  (at least their getdents64 record size), and the sink sees them once the pass completes. A sink that
+  takes a whole batch gets the next one from the batch's last cookie, unless a metadata edit
+  (`finish_metadata`, counted in `MountState::metadata_edits`) landed since the call's first batch: then
+  the call returns at the batch boundary, because getdents64 appends a call's batches into one reply and
+  a rename between them would show both names (review M6 on #3310). `vfs::names::parent_name`, which
+  scanned a directory with one readdir call, resumes from the returned cookie until it finds the name or
+  a call returns no entries.
+- **A generation view's reads are passes of its writer** (getattr, open, lookup, parent, readdir,
+  readlink and read), because a view reads its projected root under the writer's state lock.
+- **An empty read leaves atime alone.** A read at or past EOF, or into an empty buffer, does not touch
+  the inode, as before E2.5, where it returned ahead of the touch.
+- **xattr get and list run as passes too,** because they are read-only and read cold nodes as getattr
+  does.
+- **Allocation-time promotion.** `Transaction::reserve_extent` promotes PENDING space when the free index
+  has no fit, inside tree edits that take no bound argument, so the transaction's carried `SpaceState`
+  holds a shared cell with the device's oldest pin, which the pin table updates; `promote_pending` and
+  `Quarantine::promote` also take the bound as an argument.
+- **C1 is retired.** `mount_exclusion.rs` asserted that a holder's cold read runs under the mount
+  exclusion, which I7 removes; `a_cached_stat_completes_while_a_reader_waits_on_the_device` replaces it.
+- **The fixed interleaving.** Reader A's first device request is its file's cold data, since the gate
+  stops a thread's first request whatever it reads.
+- **Reuse past the horizon.** On the old tree the check is red because reader A holds the state lock in
+  the device, so P+1 cannot install; it is not red on `promote_pending` itself, because the old tree has
+  no reader outside the lock. With the pins, the released block is still outside FREE in the durable
+  space tree after P+4.
+
+**Writers and the commit worker (§7.3).**
+
+- **Who the worker is.** The kthread records its thread token when it starts, and the host's worker
+  stand-ins (`measurement::as_worker`, used by `sync_generation`, `service` and `service_at`) record
+  theirs.
+- **The reservation-pressure publication parks too.** `reserve_with_pressure` published inline on a
+  foreground thread when space ran short, which would have taken the PublishToken, so a foreground caller
+  sets the reservation-pressure flag, wakes the worker and parks on commit progress.
+- **With no worker running** (before `init_service`, or after shutdown stops it) the caller publishes the
+  generation itself, as before, because there is no worker to park on.
+- **The worker's deferral.** When another publisher owns the detached generation, admission on the
+  worker returns EAGAIN with `worker_deferred` set, and `commit_due` keeps the mappings' dirty custody as
+  it does for ENOMEM, because admission has no other channel back to the worker's loop.
+- **Showing the worker case is reached.** The worker check asserts that the owner published at the full
+  budget (two publications in one pass) and that the deferring worker left its mapping dirty, instead of
+  running a variant that deadlocks, because a deadlocking check can report only by timing out. The
+  owner case passes on the tree before the fix, because it guards behaviour the change keeps (the owner
+  publishes inline at the full budget); the other-publisher case is the check that fails there (review
+  M8 on #3310, answered without a change).
+- **The contender spin stays a retry.** `MountLock::lock` has no error channel, so a context the park
+  refuses keeps its receipt and retries, as E2.3 kept its halts.
+
+**The 7.3a rows.**
+
+- **Partial-page edits.** The edit attempt itself is the no-wait pass: `DirtyPages::write` and `shrink`
+  prepare their pages before changing the dirty map, so an attempt refused for a cold page leaves the dirty map unchanged and
+  returns its grant. The writer stages the page, verified against its REF checksums, and repeats its
+  admission; a staged page is used only while the extent still names the same blocks and checksums.
+  Mapped writeback's EOF page takes the same path, and each of its attempts copies the resident mapped
+  pages over its private buffer under the lock (`FileMap::refresh_writeback`) before it edits, because a
+  write that completed meanwhile copied its bytes into those pages under the same lock (review C1 on
+  #3310).
+- **A partial truncate's tail lookup** (whether an extent backs the new EOF page) is a no-wait pass in a
+  strict scope (`tail_backed`); a cold node is staged before anything is reserved and the admission
+  repeats, because the lookup is not a tree edit (review M5 on #3310). `mapping_io`'s inode read and
+  open run as passes for the same reason.
+- **The PublishToken** is `MountLock::uncounted`, the same sleeping exclusion with no I7 count. A mount's
+  constructor takes it through recovery and root selection, because recovery can publish orphan
+  reclamation and the mount is not published yet. The newest published superblock moves to its own
+  spin-locked copy. A writable recovery's orphan commits take `recover::Readers`: their transactions are
+  bounded by the device's oldest pin, and each commit's superblock is published before the next opens,
+  because a read-only mount of the device can be reading through them (review M4 on #3310).
+- **Selection.** `DeviceMounts::selection` becomes a per-root marker. A delete and a snapshot rename mark
+  their root under the state lock, hand the mark to `MountState::marked` with the generation that carries
+  the change, and sync with no lock held; that generation's install drops the mark, and an abandoned
+  publication, which fails the mount, clears them, because a sync that returns EINTR must not let a
+  constructor claim a root a queued delete still removes (review M7 on #3310); a constructor, a generation view or a
+  staging attach that would select a marked root fails with EBUSY. Detach takes no marker, because the
+  staging tree's own claim already refuses a delete. A constructor checks the marker after claiming its
+  root and while it holds the token, so a delete either sees the claim or the constructor sees the mark.
+- **The durable-root probe repeats.** The pin keeps the generation's nodes, but its superblock's ring
+  slot can be rewritten once two later commits publish, so a failed probe is repeated, up to three times,
+  while the durable generation moves.
+- **Scrub progress.** While a batch walks with the lock released, SCRUB_STATUS reports the progress the
+  batch saved when it left.
+
+**bbench.** The before series is `e2-5-before-eee7edc9-20261128` (31 Breenix rows measured) and the after
+series is recorded at the PR's head on the same base; the PR body has both.
 
 ### E2.6: lock types and the validator
 

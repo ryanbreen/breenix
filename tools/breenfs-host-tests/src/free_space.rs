@@ -335,7 +335,7 @@ fn frozen_orphan_reclaim_peak(scratch_alive: bool) -> isize {
     let scratch = scratch_alive.then_some(scratch);
     let start = live();
     reset_peak();
-    files.prepare_commit().unwrap();
+    files.prepare_commit(u64::MAX).unwrap();
     let measured = peak() - start;
     drop(scratch);
     measured

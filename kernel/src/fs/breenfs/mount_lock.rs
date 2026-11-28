@@ -33,6 +33,10 @@ pub struct MountLock<T> {
     queue: crate::task::waitqueue::WaitQueueHead,
     #[cfg(test)]
     host: HostPark,
+    // Host checks: whether the I7 guard counts this lock's holders. The
+    // device's PublishToken (vfs.rs) is built on this lock and is not one.
+    #[cfg(test)]
+    counted: bool,
     value: UnsafeCell<T>,
 }
 
@@ -71,7 +75,25 @@ impl<T> MountLock<T> {
             queue: crate::task::waitqueue::WaitQueueHead::new(),
             #[cfg(test)]
             host: HostPark::default(),
+            #[cfg(test)]
+            counted: true,
             value: UnsafeCell::new(value),
+        }
+    }
+
+    /// The same sleeping exclusion for a lock that is not a mount lock (the
+    /// device's PublishToken, E2 design 7.3a): the host I7 guard does not
+    /// count its holders.
+    pub fn uncounted(value: T) -> Self {
+        #[cfg(test)]
+        {
+            let mut lock = Self::new(value);
+            lock.counted = false;
+            lock
+        }
+        #[cfg(not(test))]
+        {
+            Self::new(value)
         }
     }
 
@@ -106,6 +128,10 @@ impl<T> MountLock<T> {
             .ok()
             .map(|_| {
                 #[cfg(test)]
+                if self.counted {
+                    HELD.with(|held| held.set(held.get() + 1));
+                }
+                #[cfg(test)]
                 super::preempt::context::observe(super::preempt::context::Event::Acquire(self as *const Self as usize));
                 MountGuard {
                     lock: self,
@@ -119,6 +145,10 @@ impl<T> MountLock<T> {
     fn release(&self) {
         #[cfg(test)]
         super::preempt::context::observe(super::preempt::context::Event::Release(self as *const Self as usize));
+        #[cfg(test)]
+        if self.counted {
+            HELD.with(|held| held.set(held.get() - 1));
+        }
         self.held.store(false, Ordering::SeqCst);
         #[cfg(not(test))]
         let parked = crate::task::park::should_wake(&self.parked);
@@ -199,12 +229,19 @@ impl<T> MountLock<T> {
     pub fn parks(&self) -> u64 {
         self.host.parks.load(Ordering::SeqCst)
     }
+}
 
-    /// Host checks: whether a guard is live.
-    #[cfg(test)]
-    pub fn is_held(&self) -> bool {
-        self.held.load(Ordering::SeqCst)
-    }
+// Host checks: the MountLock guards this thread holds, counted where the
+// Acquire and Release events are observed (the I7 guard, design §8 E2.5).
+#[cfg(test)]
+std::thread_local! {
+    static HELD: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
+}
+
+/// Host checks: how many MountLock guards the current thread holds.
+#[cfg(test)]
+pub fn held_by_current_thread() -> u32 {
+    HELD.with(core::cell::Cell::get)
 }
 
 #[cfg(test)]

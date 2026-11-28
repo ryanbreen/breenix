@@ -324,7 +324,7 @@ fn finish(device: &RecordingDevice, mut sb: Superblock, shared: (u64, u64)) -> S
         assert_eq!(REAP_PER_COMMIT, 16);
         // Calling again in the same transaction cannot obtain another budget.
         assert_eq!(txn.reap_step().unwrap(), None);
-        txn.promote_pending().unwrap();
+        txn.promote_pending(u64::MAX).unwrap();
         sb = mount.commit(device, &mut txn, &BTreeMap::new()).unwrap();
         verify(device, &sb, shared);
         assert_eq!(txn.dead_count(), dead(device, &sb).len() as u64);
@@ -342,7 +342,7 @@ fn finish(device: &RecordingDevice, mut sb: Superblock, shared: (u64, u64)) -> S
     // Drain the two-generation quarantine; SPACE COW itself remains quarantined
     // in steady state and is identical in the no-snapshot baseline.
     for _ in 0..3 {
-        txn.promote_pending().unwrap();
+        txn.promote_pending(u64::MAX).unwrap();
         sb = mount.commit(device, &mut txn, &BTreeMap::new()).unwrap();
         verify(device, &sb, shared);
         let state = txn.space_state().unwrap();
@@ -427,7 +427,7 @@ fn budgeted_three_level_deletion_recovers_and_returns_space() {
                     .unwrap();
             assert_eq!(txn.dead_count(), 1);
             assert_eq!(txn.reap_step().unwrap(), Some(original.root.addr));
-            txn.promote_pending().unwrap();
+            txn.promote_pending(u64::MAX).unwrap();
             sb = mount.commit(&dev, &mut txn, &BTreeMap::new()).unwrap();
             verify(&dev, &sb, shared);
             assert!(!dead(&dev, &sb).is_empty());
@@ -491,7 +491,7 @@ fn reap_uses_the_freeing_reserve_and_selects_lowest_address() {
         assert_eq!(txn.reap_step().unwrap(), Some(addr));
     }
     assert_eq!(txn.dead_count(), 0);
-    txn.promote_pending().unwrap();
+    txn.promote_pending(u64::MAX).unwrap();
     sb = mount.commit(&dev, &mut txn, &BTreeMap::new()).unwrap();
     ledger.release(grant);
     test_image::check(&dev.durable_image(), "reaper-reserve");
