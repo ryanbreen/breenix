@@ -1114,8 +1114,10 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         ProcEntryType::PageCache => {
             use core::fmt::Write;
             let mut report = String::new();
-            report.try_reserve_exact(40).map_err(|_| -12)?;
+            report.try_reserve_exact(3 * 40).map_err(|_| -12)?;
             let _ = writeln!(report, "absent_bound {}", crate::memory::file_map::absent_bound());
+            let _ = writeln!(report, "exec_copy_fallbacks {}", crate::memory::file_map::exec_copy_fallbacks());
+            let _ = writeln!(report, "etxtbsy_refusals {}", crate::memory::file_map::etxtbsy_refusals());
             text(report)
         }
         ProcEntryType::Kmem => {

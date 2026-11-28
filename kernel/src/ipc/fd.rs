@@ -186,6 +186,9 @@ pub type MountedNode = (Arc<crate::fs::vfs::VNode>, crate::fs::attrs::MountFlags
 pub(crate) struct OpenFileDescription {
     status: AtomicU32,
     pub(crate) flock: spin::Once<Arc<crate::fs::flock::FileLocks>>,
+    /// A regular file opened with write access counts in its file's writers
+    /// until its last descriptor closes (ETXTBSY, docs/plans/e3-page-cache.md 10.3).
+    writer: spin::Once<crate::memory::file_map::WriteOpen>,
 }
 
 impl OpenFileDescription {
@@ -193,6 +196,7 @@ impl OpenFileDescription {
         Self {
             status: AtomicU32::new(status),
             flock: spin::Once::new(),
+            writer: spin::Once::new(),
         }
     }
 
@@ -322,6 +326,12 @@ impl FileDescriptor {
             mount_flags: Default::default(),
             opened: crate::tty::revoke::now(),
         })
+    }
+
+    /// Keep a regular file's write access with this new description, for as
+    /// long as any descriptor shares it.
+    pub(crate) fn hold_writer(&self, writer: crate::memory::file_map::WriteOpen) {
+        self.description.writer.call_once(|| writer);
     }
 
     /// The open clock when the description was created.

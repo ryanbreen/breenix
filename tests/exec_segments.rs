@@ -449,13 +449,18 @@ mod exec_interp {
             program.load_interpreter(
                 table,
                 REGION..REGION + 0x10000,
+                true,
                 |path, consume| {
                     assert_eq!(path, PATH);
                     let node = VNode { ino: 2, map: fs::vfs::Map };
-                    exec::read_image(fs, &node, MountFlags::default(), &cred, || false, true, consume)
+                    exec::read_image(fs, &node, MountFlags::default(), &cred, || false, true,
+                        |size, read| consume(size, read, None))
                         .map(|(plan, _)| plan)
                 },
-                Table::map_page,
+                |table, image, bias, read, _| {
+                    image.load_segments(read, |addr, flags| table.map_page(addr + bias, flags), |_, _| {})?;
+                    Ok(false)
+                },
             )
         }
     }
