@@ -374,3 +374,34 @@ fn frozen_set_id_shared_write_is_busy() {
     drop(node);
     fs.shutdown("freeze-setid", u64::MAX).unwrap();
 }
+
+/// Review of PR #3273: a FIFO write sets the FIFO's mtime and ctime, a
+/// persistent change to the booted tree made through `touch(node, false)`
+/// with no mutation admission. It advances the epoch, and while frozen it
+/// is refused: the timestamps stay as they were, as on a read-only mount.
+#[test]
+fn fifo_writes_count_in_the_epoch_and_respect_the_freeze() {
+    let fs = persistent();
+    let ino = fs.create(2, b"fifo", NewNode::Fifo { attrs: InodeAttrs::new(0o010644, 0, 0) }).unwrap();
+    let fifo = fs.open(ino).unwrap();
+    let old = Timestamp { sec: 1000, nsec: 0 };
+    let set_old = || {
+        let attrs = SetAttr { mtime: Some(old), ..SetAttr::default() };
+        fs.setattr(ino, attrs).unwrap();
+    };
+    set_old();
+    let e1 = epoch(&fs);
+    fs.touch(&fifo, false);
+    fs.sync().unwrap();
+    assert_ne!(fs.getattr(ino).unwrap().times.mtime, old, "the fixture's FIFO write sets mtime");
+    assert!(epoch(&fs) > e1, "a FIFO write after the clone left E1 == E2");
+    set_old();
+    let e2 = freeze(&fs).unwrap();
+    fs.touch(&fifo, false);
+    fs.sync().unwrap();
+    assert_eq!(fs.getattr(ino).unwrap().times.mtime, old, "a FIFO write changed mtime after ROOT_FREEZE");
+    assert_eq!(epoch(&fs), e2);
+    thaw(&fs);
+    drop(fifo);
+    fs.shutdown("freeze-fifo", u64::MAX).unwrap();
+}
