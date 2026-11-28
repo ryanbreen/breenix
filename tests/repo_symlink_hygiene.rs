@@ -14,7 +14,7 @@
 //! written.
 
 use proc_macro2::{Delimiter, TokenStream, TokenTree};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use syn::{punctuated::Punctuated, visit::Visit, Expr, ItemMod, Lit, Meta, Token};
 
@@ -28,9 +28,13 @@ fn repo_text(relative: &str) -> String {
 }
 
 fn git(args: &[&str]) -> String {
+    git_at(&repo_root(), args)
+}
+
+fn git_at(root: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
         .args(args)
-        .current_dir(repo_root())
+        .current_dir(root)
         .output()
         .unwrap_or_else(|e| panic!("run git {args:?}: {e}"));
     assert!(
@@ -45,8 +49,8 @@ fn git(args: &[&str]) -> String {
 const SYMLINK_MODE: &str = "120000";
 
 /// Every tracked symlink, as `(path, link target)`.
-fn tracked_symlinks() -> Vec<(String, String)> {
-    let index = git(&["ls-files", "-s", "-z"]);
+fn tracked_symlinks(root: &Path) -> Vec<(String, String)> {
+    let index = git_at(root, &["ls-files", "-s", "-z"]);
     assert!(
         !index.trim().is_empty(),
         "git index listing is empty - the oracle would be vacuous"
@@ -64,7 +68,7 @@ fn tracked_symlinks() -> Vec<(String, String)> {
                 return None;
             }
             // A symlink blob's contents are its target.
-            Some((path.to_owned(), git(&["cat-file", "blob", object])))
+            Some((path.to_owned(), git_at(root, &["cat-file", "blob", object])))
         })
         .collect()
 }
@@ -187,11 +191,9 @@ const GENERATED_SOURCES: &[&str] = &[
     "tools/regular-read-host-tests/tests/fixtures/shared_offset.rs",
 ];
 
-#[test]
-fn tracked_source_references_resolve_to_files() {
-    let root = repo_root();
+fn source_reference_errors(root: &Path) -> Vec<String> {
     let mut missing = Vec::new();
-    for (name, target) in tracked_symlinks() {
+    for (name, target) in tracked_symlinks(root) {
         let link = root.join(&name);
         if !link.is_symlink() || !link.is_file() || !link.parent().unwrap().join(&target).is_file()
         {
@@ -199,15 +201,18 @@ fn tracked_source_references_resolve_to_files() {
         }
     }
 
-    let sources = git(&[
-        "ls-files",
-        "-z",
-        "--",
-        "*.rs",
-        // Scan Breenix source only, per the clean-room rule.
-        ":(exclude)vendor/**",
-        ":(exclude)libs/libc/**",
-    ]);
+    let sources = git_at(
+        root,
+        &[
+            "ls-files",
+            "-z",
+            "--",
+            "*.rs",
+            // Scan Breenix source only, per the clean-room rule.
+            ":(exclude)vendor/**",
+            ":(exclude)libs/libc/**",
+        ],
+    );
     for source in sources.split('\0').filter(|source| !source.is_empty()) {
         if GENERATED_SOURCES.contains(&source) {
             continue;
@@ -216,7 +221,8 @@ fn tracked_source_references_resolve_to_files() {
         if file.is_symlink() && !file.is_file() {
             continue; // Already reported by the symlink check.
         }
-        let text = repo_text(source);
+        let text = std::fs::read_to_string(&file)
+            .unwrap_or_else(|_| panic!("read repository file {source}"));
         if !text.contains("path") {
             continue;
         }
@@ -244,11 +250,112 @@ fn tracked_source_references_resolve_to_files() {
         }
         .visit_file(&parsed);
     }
+    missing
+}
+
+#[test]
+fn tracked_source_references_resolve_to_files() {
+    let missing = source_reference_errors(&repo_root());
     assert!(
         missing.is_empty(),
         "repository source references with no target file:\n{}",
         missing.join("\n")
     );
+}
+
+struct SourceFixture(PathBuf);
+
+impl SourceFixture {
+    fn new(name: &str, sources: &[(&str, &str)]) -> Self {
+        let target = repo_root().join("target");
+        std::fs::create_dir_all(&target).unwrap();
+        let root = target.join(format!("hygiene-{name}-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        let fixture = Self(root);
+        git_at(&fixture.0, &["init", "--quiet"]);
+        for (path, source) in sources {
+            let file = fixture.0.join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, source).unwrap();
+        }
+        git_at(&fixture.0, &["add", "."]);
+        fixture
+    }
+
+    fn errors(&self) -> Vec<String> {
+        source_reference_errors(&self.0)
+    }
+}
+
+impl Drop for SourceFixture {
+    fn drop(&mut self) {
+        std::fs::remove_dir_all(&self.0).unwrap();
+    }
+}
+
+#[test]
+fn source_fixture_checks_plain_modules_in_both_file_layouts() {
+    let fixture = SourceFixture::new(
+        "plain",
+        &[
+            ("src/lib.rs", "mod flat; mod directory;"),
+            ("src/flat.rs", "mod missing;"),
+            ("src/directory/mod.rs", ""),
+        ],
+    );
+    let errors = fixture.errors();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(errors[0].contains("src/flat.rs: mod missing"), "{errors:?}");
+}
+
+#[test]
+fn source_fixture_checks_inline_path_without_external_children() {
+    let fixture = SourceFixture::new(
+        "inline",
+        &[("src/lib.rs", r#"#[path = "absent"] mod inline {}"#)],
+    );
+    let errors = fixture.errors();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(errors[0].contains("src/lib.rs: mod inline"), "{errors:?}");
+}
+
+#[test]
+fn source_fixture_rejects_paths_found_only_in_the_other_context() {
+    let fixture = SourceFixture::new(
+        "context",
+        &[
+            (
+                "src/lib.rs",
+                r#"mod normal; #[path = "explicit.rs"] mod alias;"#,
+            ),
+            (
+                "src/normal.rs",
+                r#"mod inline { #[path = "normal_only.rs"] mod wrong; }"#,
+            ),
+            ("src/inline/normal_only.rs", ""),
+            (
+                "src/explicit.rs",
+                r#"mod inline { #[path = "wrong.rs"] mod wrong; }"#,
+            ),
+            ("src/explicit/inline/wrong.rs", ""),
+        ],
+    );
+    let errors = fixture.errors();
+    assert_eq!(errors.len(), 2, "{errors:?}");
+    assert!(errors
+        .iter()
+        .any(|e| e.contains("src/normal.rs: mod wrong")));
+    assert!(errors
+        .iter()
+        .any(|e| e.contains("src/explicit.rs: mod wrong")));
+}
+
+#[test]
+fn source_fixture_accepts_a_tracked_directory_symlink() {
+    let fixture = SourceFixture::new("symlink", &[("src/lib.rs", "")]);
+    std::os::unix::fs::symlink("src", fixture.0.join("alias")).unwrap();
+    git_at(&fixture.0, &["add", "alias"]);
+    assert_eq!(fixture.errors(), Vec::<String>::new());
 }
 
 /// A symlink target is portable when it does not begin at the filesystem root.
@@ -258,7 +365,7 @@ fn target_is_absolute(target: &str) -> bool {
 
 #[test]
 fn tracked_symlinks_name_no_absolute_path() {
-    let offenders: Vec<String> = tracked_symlinks()
+    let offenders: Vec<String> = tracked_symlinks(&repo_root())
         .into_iter()
         .filter(|(_, target)| target_is_absolute(target))
         .map(|(path, target)| format!("{path} -> {target}"))
