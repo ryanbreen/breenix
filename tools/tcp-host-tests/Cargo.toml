@@ -1,0 +1,17 @@
+[package]
+name = "tcp-host-tests"
+version = "0.1.0"
+edition = "2021"
+
+# Host checks of the kernel's TCP (kernel/src/net/tcp.rs, compiled unchanged)
+# driven through its own receive and timer entry points with a fixed clock and
+# scripted loss. Run: cargo test --manifest-path tools/tcp-host-tests/Cargo.toml
+
+[workspace]
+
+[dependencies]
+spin = "0.9.8"
+log = "0.4"
+
+[lib]
+doctest = false
