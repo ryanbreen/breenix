@@ -1033,12 +1033,36 @@ goes first, and E2.4 then follows as designed.
   continuation.
 - **The fault legs.** `fs_fault_inject` stays between the root and home mounts. `ext2_lock_race` moves
   from after the `boot_tests` gates to the end of the mount phase, after `fence_seal`, because it reads
-  the mounted root and needs only a running scheduler, which the thread has. `block_fence_inject`
-  stays after `fence_seal`.
+  the mounted root and needs only a running scheduler, which the thread has (the review answers below
+  place it just outside the braked mount phase). `block_fence_inject` stays after `fence_seal`.
 - **The continuation's wait.** It halts with interrupts enabled at depth 0 until the thread reports its
   mounts: a flag wait, with no storage access. A fatal root-mount failure halts the thread after
   `BREENIX_ROOT_MOUNT_FATAL`, and the continuation keeps waiting, so the boot stops at the same line as
   before.
+
+#### E2.4x review answers: more deviations (PR #3283 review, ruling DEV-39(2))
+
+- **"Sleepable" is one braked level on today's tree.** DEV-48 asks for a sleepable kernel thread. Both
+  phases run under `braked(..)`, one `park::Braked` level, as `breenfs-commit` and ARM64's `test-loader`
+  do (§3.2), because at baseline 0 the thread could be preempted inside AHCI's `PORT_IO_LOCK` spin
+  section with a braked `breenfs-commit` then spinning on CPU 0, and `completion::wait_sleeps` (idle, or
+  exactly one braked level) would make its block waits poll against VirtIO's 30 s bootstrap cutoff. The
+  park between the phases is at baseline 0, and E2.4's completion collapse does not change this choice.
+- **`ext2_lock_race` runs after the braked mount phase**, still before the thread reports its mounts,
+  because its driver only starts and waits for kernel threads that take their own braked level and needs
+  its CPU preemptible.
+- **The storage self-tests move to the thread.** AHCI attach (with IDENTIFY) and the VirtIO and NVMe
+  sector-0 reads leave the continuation's `run_post_init_self_tests` for `run_storage_self_tests`, the
+  thread's first step, because each waits for a block completion after AP start (§6 boot order). They
+  now follow `bcm5720::start_networking`, `xhci::init` and `gk208::initialize_clocks` rather than
+  precede them; disk order is unchanged, because `block::devices()` lists controllers in a fixed order.
+- **Serial storage commands get their own thread.** TEST, FORKTEST and EXECTEST load programs from
+  disk, and the non-production console executor runs on the idle continuation, so each command runs on a
+  braked kernel thread of its own (`serial_storage_command`). The executor itself stays where it was.
+- **The end of loading follows the last test process.** x86 testing opens BTRT's loading bracket before
+  its first test process and closes it, and starts the completion reporter, after the late `hello_time`,
+  as ARM64's `test-loader` brackets its loads. Before this, the reporter started before that
+  `hello_time` and x86 had no BTRT bracket, so early exits could finish either report early.
 
 ### E2.4: block I/O caller rule
 
