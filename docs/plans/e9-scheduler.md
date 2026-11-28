@@ -915,6 +915,28 @@ of their steps, keeping each CPU's program order. The steps are sequentially con
   - A structure test that no shootdown wait is reachable under an `IrqSpinLock`, which E2.6's validator
     also checks at run time.
   - The S9 model is red on a seam over today's protocol with PCIDs enabled and no generation check.
+  - **Activation against target selection.** A host model races one CPU switching to address space A
+    against an initiator that has edited A's page tables. No interleaving may leave the CPU both
+    untargeted by the shootdown and running A on a cached PCID at the old generation. If it could, the
+    CPU would keep translating to a frame the initiator then frees. Red on §9.2 as first written. That
+    text targets "the CPUs that have A loaded now", and it gives no order between the activating CPU's
+    generation read and its entry into A's loaded set.
+
+    ```pycon
+    >>> ACTIVATE = ['read_gen', 'set_loaded']
+    >>> CHANGE = ['bump_gen', 'read_loaded']
+    >>> def stale_and_untargeted(order):
+    ...     gen, loaded, seen_gen, targeted = 0, False, None, None
+    ...     for step in order:
+    ...         if step == 'read_gen': seen_gen = gen
+    ...         if step == 'set_loaded': loaded = True
+    ...         if step == 'bump_gen': gen += 1
+    ...         if step == 'read_loaded': targeted = loaded
+    ...     return seen_gen == 0 and not targeted
+    >>> sum(stale_and_untargeted(order) for order in interleavings(ACTIVATE, CHANGE))
+    0
+
+    ```
 - **Rows.** None on QEMU (ARM64). On the R240: `process.fork-exec`, the compile rows and `ssh.round-trip`. <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
 - **Boot.** x86 only. Its evidence is the coordinator's batched kernel-only flash (DEV-31(2), DEV-32).
 
