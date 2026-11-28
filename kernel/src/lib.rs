@@ -48,6 +48,9 @@ pub mod tls;
 pub use arch_impl::aarch64::elf;
 pub mod ipc;
 pub mod irq_safe_mutex;
+
+/// Per-CPU, per-source interrupt counts for /proc/stat and /proc/interrupts.
+pub mod irq_count;
 #[cfg(target_arch = "x86_64")]
 pub mod irq_log;
 #[cfg(target_arch = "x86_64")]

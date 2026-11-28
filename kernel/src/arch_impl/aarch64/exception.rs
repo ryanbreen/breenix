@@ -20,6 +20,54 @@ use crate::arch_impl::traits::SyscallFrame;
 
 /// Per-CPU sync exception counter: detects if a CPU is stuck in an infinite fault loop.
 pub static SYNC_EXCEPTION_COUNT: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+
+/// GIC INTIDs 0-1019 (SGIs, PPIs and SPIs), counted per CPU at acknowledgement
+/// for /proc/stat's `intr` line and /proc/interrupts.
+pub const IRQ_SOURCE_COUNT: usize = 1020;
+pub static IRQ_SOURCES: crate::irq_count::IrqCounts<{ constants::MAX_CPUS }, IRQ_SOURCE_COUNT> =
+    crate::irq_count::IrqCounts::new();
+
+/// The controller and device /proc/interrupts names `source` by.
+pub fn irq_source_label(source: usize) -> (&'static str, &'static str) {
+    let id = source as u32;
+    let kind = match source {
+        0..=15 => "GIC-SGI",
+        16..=31 => "GIC-PPI",
+        _ => "GIC-SPI",
+    };
+    let block = (0..crate::drivers::virtio::block_mmio::MAX_BLOCK_DEVICES)
+        .any(|index| crate::drivers::virtio::block_mmio::get_irq(index) == Some(id));
+    let name = if id == constants::SGI_RESCHEDULE {
+        "reschedule"
+    } else if id == constants::SGI_TIMER_REARM {
+        "timer-rearm"
+    } else if id == constants::SGI_WAKE {
+        "wake"
+    } else if id == crate::arch_impl::aarch64::timer_interrupt::VIRT_TIMER_IRQ
+        || id == crate::arch_impl::aarch64::timer_interrupt::PHYS_TIMER_IRQ
+    {
+        "timer"
+    } else if id == UART0_IRQ {
+        "uart"
+    } else if crate::drivers::virtio::net_mmio::get_irq() == Some(id) {
+        "virtio-net"
+    } else if block {
+        "virtio-blk"
+    } else if crate::drivers::virtio::input_mmio::get_irq() == Some(id) {
+        "virtio-keyboard"
+    } else if crate::drivers::virtio::input_mmio::get_tablet_irq() == Some(id) {
+        "virtio-tablet"
+    } else if crate::drivers::virtio::sound_mmio::get_irq() == Some(id) {
+        "virtio-sound"
+    } else if crate::drivers::xhci::get_irq() == Some(id) {
+        "xhci"
+    } else if crate::gpu::irq() == Some(id) {
+        "gpu"
+    } else {
+        ""
+    };
+    (kind, name)
+}
 /// Number of instruction aborts and PC-alignment faults taken from EL0.
 pub static EL0_INSTRUCTION_FAULTS: AtomicU64 = AtomicU64::new(0);
 
@@ -2625,6 +2673,14 @@ pub extern "C" fn handle_irq(frame: *const Aarch64ExceptionFrame) {
 
     // Acknowledge the interrupt from GIC
     if let Some(irq_id) = gic::acknowledge_irq() {
+        if have_percpu {
+            // IRQs stay masked until the handler below, so this CPU's row
+            // has one writer.
+            IRQ_SOURCES.note(
+                crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize,
+                irq_id as usize,
+            );
+        }
         if have_percpu {
             crate::per_cpu_aarch64::irq_enter();
         }

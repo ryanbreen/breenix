@@ -1422,6 +1422,15 @@ The E9.1 implementation records these details.
   make the owner miss its own lock and trigger a retry SGI on release.
 - **ARM64 peer timer expiry uses a separate published heap minimum** because the tick's claim
   advances its retry timestamp even when the underlying timer already needs service.
+- **DEV-54(3b)'s per-CPU, per-source counts are /proc/interrupts, and /proc/stat gains the `intr`
+  line** because proc(5)'s /proc/stat layout carries per-source totals only (its `cpuN` fields
+  are times, not counts), and /proc/interrupts is the standard per-CPU, per-source table.
+- **The `intr` line's columns end at the highest INTID with a count** so /proc/stat stays a few
+  hundred bytes rather than 1,020 columns; a printed column keeps its INTID position.
+- **Only ARM64 gets the two surfaces** because x86's interrupt entries count neither a total nor a
+  source today, so an x86 `intr` line would have no counts to show.
+- **/proc/stat keeps its existing `cpuN <ticks> <idle>` lines** because the rig and the suites
+  parse that layout; proc(5)'s time fields there are not part of this change.
 
 The ready hint excludes the current and selected next threads. Affinity, liveness, and
 stack custody still govern candidate selection under the lock. A failed steal try-lock

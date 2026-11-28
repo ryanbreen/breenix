@@ -37,6 +37,7 @@ fn json_string(value: &str) -> String {
 fn counters() -> BTreeMap<&'static str, String> {
     [
         "/proc/stat",
+        "/proc/interrupts",
         "/proc/self/stat",
         "/proc/meminfo",
         "/proc/cowinfo",
