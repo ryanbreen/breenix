@@ -16,12 +16,59 @@
 #[path = "../../userspace/programs/src/persistent_install.rs"]
 mod installer;
 
+/// The rehearsal's scratch directories. The rehearsal runs as root and deletes its
+/// workspace recursively when it ends, so the workspace must be a directory it made.
+mod workspace {
+    use std::{fs, path::PathBuf};
+
+    /// A new, empty directory under the temporary directory, owned by this run.
+    pub fn workspace(prefix: &str) -> PathBuf {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "{prefix}-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_workspace_never_reuses_a_directory_that_already_exists() {
+        use std::os::unix::fs::PermissionsExt;
+        // A host directory at each name a predictable scheme would pick in this process,
+        // holding a file the run must not touch.
+        let prefix = "paired-workspace-check";
+        let planted: Vec<PathBuf> = (0..64)
+            .map(|n| std::env::temp_dir().join(format!("{prefix}-{}-{n}", std::process::id())))
+            .collect();
+        for dir in &planted {
+            fs::create_dir_all(dir).unwrap();
+            fs::write(dir.join("host-file"), b"keep").unwrap();
+        }
+        let dir = workspace(prefix);
+        let reused = planted.contains(&dir);
+        let empty = fs::read_dir(&dir).unwrap().next().is_none();
+        let mode = fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        if !reused {
+            fs::remove_dir(&dir).unwrap();
+        }
+        for dir in &planted {
+            fs::remove_file(dir.join("host-file")).unwrap();
+            fs::remove_dir(dir).unwrap();
+        }
+        assert!(!reused && empty, "workspace reused {}", dir.display());
+        assert_eq!(mode, 0o700, "workspace {} is open to others", dir.display());
+    }
+}
+
 #[cfg(target_os = "linux")]
 mod rehearsal {
     use super::installer::paired::{
         digest,
         session::{Places, Roots, Session, Writer, PROTOCOL},
     };
+    use super::workspace::workspace;
     use std::{
         cell::{Cell, RefCell},
         collections::{BTreeMap, BTreeSet, HashMap},
@@ -608,14 +655,8 @@ mod rehearsal {
             0,
             "the rehearsal reproduces root-owned and set-ID files; run it as root (linux.sh)"
         );
-        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let base = std::env::temp_dir().join(format!(
-            "paired-image-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
+        let base = workspace("paired-image");
         let stage = base.join("host-stage");
-        fs::create_dir_all(&base).unwrap();
         helper(
             &[OsStr::new("inputs"), image.as_os_str(), stage.as_os_str()],
             None,
@@ -1053,11 +1094,7 @@ mod rehearsal {
     }
 
     fn fixture(with_baseline: bool) {
-        let dir = std::env::temp_dir().join(format!(
-            "paired-fixture-{}-{with_baseline}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&dir).unwrap();
+        let dir = workspace("paired-fixture");
         let image = dir.join("fixture.img");
         helper(&[OsStr::new("fixture"), image.as_os_str()], None);
         rehearse(&image, with_baseline);
