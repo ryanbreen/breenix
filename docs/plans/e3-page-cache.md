@@ -1562,6 +1562,24 @@ b'AAAA'
 
 ```
 
+**Truncation leaves a frozen page alone (7.5).** The new last page is a `Writeback` page: G's batch holds
+its frame, and G's CRC is computed from it. A shrink then zeroes the page's tail.
+
+```pycon
+>>> RULE = 'zero-in-place'
+>>> frozen = bytearray(b'GGGGGGGG')
+>>> crc_input = bytes(frozen)
+>>> def shrink_tail(entry, keep):
+...     if RULE == 'copy-under-writeback':
+...         entry = bytearray(entry)
+...     entry[keep:] = bytes(len(entry) - keep)
+...     return entry
+>>> entry = shrink_tail(frozen, 4)
+>>> (bytes(frozen) == crc_input, bytes(entry))
+(True, b'GGGG\x00\x00\x00\x00')
+
+```
+
 ## 20. bbench rows (DEV-31)
 
 | Row | Ratio (28668b28) | Expected to move in | Parity reachable from E3 alone |
