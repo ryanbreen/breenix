@@ -977,6 +977,25 @@ of their steps, keeping each CPU's program order. The steps are sequentially con
   - A host model of the idle protocol: a wake, a deadline post and a deferred-work raise at each point
     of the idle entry sequence always leave the CPU running or kicked, never halted with work pending. <!-- claim-lint:ok: normative requirement of docs/plans/e9-scheduler.md under ruling DEV-41(2), not a measured result. -->
   - Owed kicks: a refused send is retried at the sender's next unlock and within the 1 ms bound.
+  - **Kick and drain latency.** A host model sends a kick that finds the xAPIC ICR busy for 2 µs. The
+    sender has no further unlock or interrupt exit for a second, and the woken thread's CPU has a
+    deadline 100 µs away. The kick must land before that deadline. A second case leaves a drain
+    remainder past the R17 budget (`DRAIN_BUDGET`, `wake_inbox.rs:8`) on a CPU about to idle tickless
+    with no deadline armed. The remainder must be drained before the CPU halts. Red on §8.3 as first
+    written, which retries an owed kick on a 1 ms housekeeping deadline. That text also lets an idle CPU
+    halt with only its queue, deferred work and owed kicks checked.
+
+    ```pycon
+    >>> RETRY_DEADLINE_NS = 1_000_000
+    >>> def kick_latency_ns(icr_busy_ns, next_unlock_ns):
+    ...     return min(next_unlock_ns, RETRY_DEADLINE_NS) if icr_busy_ns else 0
+    >>> kick_latency_ns(icr_busy_ns=2_000, next_unlock_ns=10**9) < 100_000
+    True
+    >>> IDLE_RECHECK_READS = {'run queue', 'deferred work', 'owed kicks'}
+    >>> 'wake inbox' in IDLE_RECHECK_READS
+    True
+
+    ```
   - The liveness seam: a tickless idle CPU is not reported stalled before its deadline plus the bound.
     Red on today's tick-based rule.
   - A kernel test: an idle CPU takes no timer interrupts over 100 ms with no deadlines armed, and takes
