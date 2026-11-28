@@ -18,6 +18,12 @@ static SERIAL: Mutex<()> = Mutex::new(());
 static CLOCK_MS: AtomicU64 = AtomicU64::new(0);
 static REFUSE: AtomicBool = AtomicBool::new(false);
 static WIRE: Mutex<Vec<Sent>> = Mutex::new(Vec::new());
+/// The largest TCP payload the route's device segments in one batch, if
+/// the route has segmentation offload (by default it has not).
+static BATCH_LIMIT: Mutex<Option<usize>> = Mutex::new(None);
+/// Batches the device was given: (local port, sequence number, payload
+/// length, MSS).
+static BATCHES: Mutex<Vec<(u16, u32, usize, u16)>> = Mutex::new(Vec::new());
 
 /// Run one check at a time, with the clock at `start_ms` and the record empty.
 pub fn lock(start_ms: u64) -> MutexGuard<'static, ()> {
@@ -25,7 +31,24 @@ pub fn lock(start_ms: u64) -> MutexGuard<'static, ()> {
     CLOCK_MS.store(start_ms, Ordering::SeqCst);
     REFUSE.store(false, Ordering::SeqCst);
     WIRE.lock().unwrap().clear();
+    *BATCH_LIMIT.lock().unwrap() = None;
+    BATCHES.lock().unwrap().clear();
     guard
+}
+
+/// Give the route a device that segments batches of up to `limit` payload
+/// bytes, or take it away.
+pub fn offer_batches(limit: Option<usize>) {
+    *BATCH_LIMIT.lock().unwrap() = limit;
+}
+
+/// The batches sent from `local_port` since the last look, as (sequence
+/// number, payload length, MSS).
+pub fn take_batches(local_port: u16) -> Vec<(u32, usize, u16)> {
+    let mut batches = BATCHES.lock().unwrap();
+    let (mine, rest): (Vec<_>, Vec<_>) = batches.drain(..).partition(|b| b.0 == local_port);
+    *batches = rest;
+    mine.into_iter().map(|(_, seq, len, mss)| (seq, len, mss)).collect()
 }
 
 pub fn now_ms() -> u64 {
