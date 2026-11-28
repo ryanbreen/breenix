@@ -119,7 +119,7 @@ impl Copier<'_> {
     }
 
     /// Replace `path` with `text` at `mode`: written beside it, flushed, renamed over it.
-    fn write_file(&mut self, path: &Path, text: &str, mode: u32) -> Result<(), String> {
+    fn write_file(&mut self, path: &Path, text: impl AsRef<[u8]>, mode: u32) -> Result<(), String> {
         let mut name = path.file_name().unwrap_or_default().to_owned();
         name.push(".new");
         let staging = path.with_file_name(name);
@@ -129,7 +129,7 @@ impl Copier<'_> {
         let mut file = self.change("create", &staging, || File::create(&staging))?;
         // The mode is set before any bytes are written, so others cannot read private text.
         self.change("chmod", &staging, || fs::set_permissions(&staging, fs::Permissions::from_mode(mode)))?;
-        self.change("write", &staging, || file.write_all(text.as_bytes()))?;
+        self.change("write", &staging, || file.write_all(text.as_ref()))?;
         self.change("sync file", &staging, || file.sync_all())?;
         drop(file);
         self.change("rename", path, || fs::rename(&staging, path))?;

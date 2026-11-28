@@ -38,6 +38,17 @@ impl Fixture {
     }
 
     fn inventory(&self, rows: &[(&str, &str, u32, &str, &[u8])]) -> Vec<u8> {
+        let rows: Vec<(&[u8], &str, u32, &[u8], &[u8])> = rows
+            .iter()
+            .map(|&(path, kind, mode, group, value)| {
+                (path.as_bytes(), kind, mode, group.as_bytes(), value)
+            })
+            .collect();
+        self.inventory_bytes(&rows)
+    }
+
+    /// Like `inventory`, with each path and group as raw bytes.
+    fn inventory_bytes(&self, rows: &[(&[u8], &str, u32, &[u8], &[u8])]) -> Vec<u8> {
         let meta = fs::metadata(&self.0).unwrap();
         let mut rows = rows.to_vec();
         rows.sort_by_key(|row| row.0);
@@ -50,12 +61,12 @@ impl Fixture {
                     self.write(&format!(".breenix-incoming/objects/{digest}"), value, 0o600);
                     (value.len(), digest)
                 };
-                let hex = |path: &str| {
-                    path.bytes()
+                let hex = |path: &[u8]| {
+                    path.iter()
                         .map(|byte| format!("{byte:02x}"))
                         .collect::<String>()
                 };
-                let group = if *group == "-" {
+                let group = if *group == b"-" {
                     "-".into()
                 } else {
                     hex(group)
@@ -108,7 +119,7 @@ fn applies_inventory_over_clone_and_resumes_at_each_file() {
         f.write("usr/restore", b"old", 0o644);
         f.write("bin/su", b"old", 0o4755);
         let pre = installer::paired::record_fixture(&f.0).unwrap();
-        f.write(".breenix-image", pre.as_bytes(), 0o600);
+        f.write(".breenix-image", pre.as_ref(), 0o600);
         f.write("bin/su", b"pet", 0o4755);
         f.write("usr/pet", b"pet", 0o644);
         f.write("home/keep", b"home", 0o644);
@@ -355,4 +366,45 @@ fn reclaim_restarts_after_each_durable_delete_and_each_draft_publication_state()
             }
         }
     }
+}
+
+/// The built image carries `rust-std-child_test` and a hard link to it whose final byte is
+/// 0xff (scripts/install-layout.sh), for the rust-std suite's non-UTF-8 current_exe case.
+/// Apply must record that path in the draft's baseline, and the next apply must read it back.
+/// Linux only: APFS refuses a file name that is not UTF-8 (EILSEQ) before the installer sees it.
+#[cfg(target_os = "linux")]
+#[test]
+fn applies_and_rereads_a_non_utf8_payload_path() {
+    use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
+    const CHILD: &[u8] = b"/usr/libexec/breenix/rust-std-child_test";
+    const LINK: &[u8] = b"/usr/libexec/breenix/rust-std-child_test\xff";
+    const NEXT: &str = "20261128T000000Z-metal";
+    let rows: &[(&[u8], &str, u32, &[u8], &[u8])] = &[
+        (b"/usr/libexec", "dir", 0o755, b"-", b""),
+        (b"/usr/libexec/breenix", "dir", 0o755, b"-", b""),
+        (CHILD, "reg", 0o755, CHILD, b"child"),
+        (LINK, "reg", 0o755, CHILD, b"child"),
+    ];
+    let f = Fixture::new();
+    f.write("home/keep", b"home", 0o644);
+    let inventory = f.inventory_bytes(rows);
+    installer::paired::apply_fixture(&f.0, ID, OLD, &inventory, &mut || Ok(())).unwrap();
+    assert_eq!(
+        installer::paired::verify_fixture(&f.0, &inventory).unwrap(),
+        installer::paired::digest(&inventory)
+    );
+    let link = f.0.join(OsStr::from_bytes(&LINK[1..]));
+    assert_eq!(fs::read(&link).unwrap(), b"child");
+    assert_eq!(fs::metadata(&link).unwrap().ino(), f.meta("usr/libexec/breenix/rust-std-child_test").ino());
+    let baseline = f.read(".breenix-image");
+    let row = [&b"\t"[..], &LINK[1..], b"\0"].concat();
+    assert!(baseline.windows(row.len()).any(|window| window == row));
+
+    // A second generation over the first reads that baseline back.
+    fs::create_dir_all(f.0.join(".breenix-incoming/objects")).unwrap();
+    let inventory = f.inventory_bytes(rows);
+    installer::paired::apply_fixture(&f.0, NEXT, ID, &inventory, &mut || Ok(())).unwrap();
+    assert!(!f.0.join(format!(".breenix-carried/{ID}")).exists());
+    assert_eq!(fs::read(&link).unwrap(), b"child");
+    assert_eq!(f.read("home/keep"), b"home");
 }
