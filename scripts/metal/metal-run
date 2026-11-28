@@ -154,8 +154,12 @@ def wait_smb_ready(env, boot_id, suite, smb_helper=False):
 
 
 def incus(*arguments, **options):
-    return subprocess.run(['sudo', '-n', 'incus', *arguments], stdin=options.pop('stdin', subprocess.DEVNULL),
-                          **options)
+    # Default to DEVNULL so the service command does not read the caller's
+    # stdin. A call that sends input= gets subprocess.run's own pipe, and
+    # subprocess.run refuses an explicit stdin beside input=.
+    if 'stdin' not in options and 'input' not in options:
+        options['stdin'] = subprocess.DEVNULL
+    return subprocess.run(['sudo', '-n', 'incus', *arguments], **options)
 
 
 def in_metal(env, *command, **options):
