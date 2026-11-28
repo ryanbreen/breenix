@@ -208,7 +208,7 @@ fn insert_clone_vm_member(
         alloc::string::String::from(name),
         VirtAddr::new(0x0040_0000),
     );
-    let mut thread = crate::task::thread::Thread::new(
+    let thread = crate::task::thread::Thread::new(
         alloc::string::String::from(name),
         member_entry,
         VirtAddr::new(0x0080_0000),
@@ -216,6 +216,10 @@ fn insert_clone_vm_member(
         VirtAddr::new(0x0001_0000),
         crate::task::thread::ThreadPrivilege::Kernel,
     );
+    #[cfg(target_arch = "x86_64")]
+    let mut thread = thread.ok()?;
+    #[cfg(target_arch = "aarch64")]
+    let mut thread = thread;
     thread.owner_pid = Some(pid.as_u64());
     process.set_main_thread(thread);
     process.inherited_cr3 = Some(leader_root);

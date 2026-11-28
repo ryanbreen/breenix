@@ -83,7 +83,7 @@ use kernel::test_framework;
 ))]
 use kernel::{clock_gettime_test, time_test};
 #[cfg(all(target_arch = "x86_64", feature = "testing"))]
-use kernel::{contract_runner, gdt_tests, userspace_fault_tests};
+use kernel::{gdt_tests, userspace_fault_tests};
 #[cfg(target_arch = "x86_64")]
 use kernel::{
     drivers, gdt, interrupts, keyboard, logger, memory, net, per_cpu, preempt_count_test, process,
@@ -1758,7 +1758,7 @@ fn run_x86_boot_programs() {
         #[cfg(feature = "testing")]
         {
             log::info!("Running contract tests...");
-            let (passed, failed) = contract_runner::run_all_contracts();
+            let (passed, failed) = kernel::contract_runner::run_all_contracts();
             log::info!("Contract tests: {} passed, {} failed", passed, failed);
             if failed > 0 {
                 panic!("Contract test failures!");

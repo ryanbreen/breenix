@@ -2039,7 +2039,7 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         alloc::string::String::from("teardown_pairing_parent"),
         entry,
     );
-    let mut parent_thread = crate::task::thread::Thread::new(
+    let parent_thread = crate::task::thread::Thread::new(
         alloc::string::String::from("teardown_pairing_parent_main"),
         test_user_entry,
         stack_top,
@@ -2047,6 +2047,10 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         tls,
         parent_privilege,
     );
+    #[cfg(target_arch = "x86_64")]
+    let mut parent_thread = parent_thread.expect("x86 boot-test fixture thread");
+    #[cfg(target_arch = "aarch64")]
+    let mut parent_thread = parent_thread;
     parent_thread.owner_pid = Some(parent_pid.as_u64());
     #[cfg(target_arch = "aarch64")]
     let parent_context = parent_thread.context.clone();
@@ -2877,7 +2881,7 @@ pub fn exec_supersede_cohort_test() -> crate::test_framework::registry::TestResu
         alloc::string::String::from("exec_cohort_parent"),
         entry,
     );
-    let mut parent_thread = crate::task::thread::Thread::new(
+    let parent_thread = crate::task::thread::Thread::new(
         alloc::string::String::from("exec_cohort_parent_main"),
         test_user_entry,
         stack_top,
@@ -2885,6 +2889,10 @@ pub fn exec_supersede_cohort_test() -> crate::test_framework::registry::TestResu
         tls,
         crate::task::thread::ThreadPrivilege::Kernel,
     );
+    #[cfg(target_arch = "x86_64")]
+    let mut parent_thread = parent_thread.expect("x86 boot-test fixture thread");
+    #[cfg(target_arch = "aarch64")]
+    let mut parent_thread = parent_thread;
     parent_thread.owner_pid = Some(parent_pid.as_u64());
     parent_process.page_table = Some(parent_page_table);
     parent_process.set_main_thread(parent_thread);
@@ -3490,7 +3498,7 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
         let tls = VirtAddr::new(0x0001_0000);
         let mut process =
             crate::process::Process::new(pid, alloc::string::String::from(name), entry);
-        let mut thread = crate::task::thread::Thread::new(
+        let thread = crate::task::thread::Thread::new(
             alloc::string::String::from(name),
             test_user_entry,
             stack_top,
@@ -3498,6 +3506,10 @@ pub fn exec_detach_oracle_test() -> crate::test_framework::registry::TestResult 
             tls,
             crate::task::thread::ThreadPrivilege::Kernel,
         );
+        #[cfg(target_arch = "x86_64")]
+        let mut thread = thread.expect("x86 boot-test fixture thread");
+        #[cfg(target_arch = "aarch64")]
+        let mut thread = thread;
         thread.owner_pid = Some(pid.as_u64());
         process.set_main_thread(thread);
         process
@@ -4734,7 +4746,7 @@ pub fn clone_admission_oracle_test() -> crate::test_framework::registry::TestRes
         name: &'static str,
         state: crate::task::thread::ThreadState,
     ) -> crate::task::thread::Thread {
-        let mut thread = crate::task::thread::Thread::new(
+        let thread = crate::task::thread::Thread::new(
             alloc::string::String::from(name),
             test_user_entry,
             VirtAddr::new(0x0080_0000),
@@ -4742,6 +4754,10 @@ pub fn clone_admission_oracle_test() -> crate::test_framework::registry::TestRes
             VirtAddr::new(0x0001_0000),
             crate::task::thread::ThreadPrivilege::Kernel,
         );
+        #[cfg(target_arch = "x86_64")]
+        let mut thread = thread.expect("x86 boot-test fixture thread");
+        #[cfg(target_arch = "aarch64")]
+        let mut thread = thread;
         thread.owner_pid = Some(pid.as_u64());
         thread.state = state;
         thread
@@ -5021,7 +5037,7 @@ pub fn init_designation_oracle_test() -> crate::test_framework::registry::TestRe
         pid: crate::process::ProcessId,
         name: &'static str,
     ) -> crate::task::thread::Thread {
-        let mut thread = crate::task::thread::Thread::new(
+        let thread = crate::task::thread::Thread::new(
             alloc::string::String::from(name),
             test_user_entry,
             VirtAddr::new(0x0080_0000),
@@ -5029,6 +5045,10 @@ pub fn init_designation_oracle_test() -> crate::test_framework::registry::TestRe
             VirtAddr::new(0x0001_0000),
             crate::task::thread::ThreadPrivilege::Kernel,
         );
+        #[cfg(target_arch = "x86_64")]
+        let mut thread = thread.expect("x86 boot-test fixture thread");
+        #[cfg(target_arch = "aarch64")]
+        let mut thread = thread;
         thread.owner_pid = Some(pid.as_u64());
         thread.state = crate::task::thread::ThreadState::Ready;
         thread
@@ -5723,7 +5743,7 @@ pub fn init_group_refusal_oracle_test() -> crate::test_framework::registry::Test
         pid: crate::process::ProcessId,
         name: &'static str,
     ) -> crate::task::thread::Thread {
-        let mut thread = crate::task::thread::Thread::new(
+        let thread = crate::task::thread::Thread::new(
             alloc::string::String::from(name),
             test_user_entry,
             VirtAddr::new(0x0080_0000),
@@ -5731,6 +5751,10 @@ pub fn init_group_refusal_oracle_test() -> crate::test_framework::registry::Test
             VirtAddr::new(0x0001_0000),
             crate::task::thread::ThreadPrivilege::Kernel,
         );
+        #[cfg(target_arch = "x86_64")]
+        let mut thread = thread.expect("x86 boot-test fixture thread");
+        #[cfg(target_arch = "aarch64")]
+        let mut thread = thread;
         thread.owner_pid = Some(pid.as_u64());
         thread.state = crate::task::thread::ThreadState::Ready;
         thread
@@ -6342,7 +6366,7 @@ pub fn kernel_stack_ownership_oracle_test() -> crate::test_framework::registry::
                                 alloc::string::String::from("kernel_stack_ownership_parent"),
                                 VirtAddr::new(0x0040_0000),
                             );
-                            let mut parent_thread = crate::task::thread::Thread::new(
+                            let parent_thread = crate::task::thread::Thread::new(
                                 alloc::string::String::from("kernel_stack_ownership_parent_main"),
                                 fork_parent_entry,
                                 VirtAddr::new(0x0080_0000),
@@ -6350,6 +6374,10 @@ pub fn kernel_stack_ownership_oracle_test() -> crate::test_framework::registry::
                                 VirtAddr::new(0x0001_0000),
                                 crate::task::thread::ThreadPrivilege::User,
                             );
+                            #[cfg(target_arch = "x86_64")]
+                            let mut parent_thread = parent_thread.expect("x86 boot-test fixture thread");
+                            #[cfg(target_arch = "aarch64")]
+                            let mut parent_thread = parent_thread;
                             parent_thread.owner_pid = Some(parent_pid.as_u64());
                             #[cfg(target_arch = "aarch64")]
                             let parent_context = parent_thread.context.clone();

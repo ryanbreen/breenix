@@ -1110,14 +1110,6 @@ impl ProcessPageTable {
             .map(|slot| ((slot as u64) << 39) | GATE_SENTINEL_PAGE_OFFSET)
     }
 
-    #[cfg(all(feature = "boot_tests", target_arch = "x86_64"))]
-    pub(crate) fn custody_frames_for_gate(&self) -> alloc::vec::Vec<PhysFrame> {
-        let mut frames = alloc::vec::Vec::with_capacity(self.tables.leases.len() + 1);
-        frames.extend(self.tables.leases.iter().map(|lease| lease.frame()));
-        frames.push(self.root_lease.frame());
-        frames
-    }
-
     /// Walk all mapped user pages in this page table
     ///
     /// This walks the entire page table hierarchy (L4 -> L3 -> L2 -> L1) and calls
