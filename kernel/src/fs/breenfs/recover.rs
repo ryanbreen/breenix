@@ -39,10 +39,26 @@ impl core::fmt::Display for Failure {
 }
 
 pub fn recover(device: &dyn BlockDevice, writable: bool) -> Result<Superblock, Error> {
-    recover_detailed(device, writable).map_err(|failure| failure.error)
+    recover_detailed(device, writable, None).map_err(|failure| failure.error)
 }
 
-pub(crate) fn recover_detailed(device: &dyn BlockDevice, writable: bool) -> Result<Superblock, Failure> {
+/// The device's readers, for a writable recovery that commits while other
+/// mounts of the device may be reading (E2 design 7.1, review M4 on #3310).
+pub(crate) struct Readers<'a> {
+    /// The device's oldest pinned generation, or u64::MAX: the orphan
+    /// commits promote PENDING space only up to it, as a mount's do.
+    pub(crate) reuse_bound: &'a alloc::sync::Arc<core::sync::atomic::AtomicU64>,
+    /// Each orphan commit's superblock, published as the newest before the
+    /// next commit opens, so a reader pins a generation no later
+    /// preparation has passed.
+    pub(crate) published: &'a dyn Fn(&Superblock),
+}
+
+pub(crate) fn recover_detailed(
+    device: &dyn BlockDevice,
+    writable: bool,
+    readers: Option<Readers<'_>>,
+) -> Result<Superblock, Failure> {
     let total = commit::partition_blocks(device)
         .map_err(|e| Failure::new(e, "geometry", None, "supported-sector-size-and-length"))?;
     let mut slots = Vec::new();
@@ -154,10 +170,16 @@ pub(crate) fn recover_detailed(device: &dyn BlockDevice, writable: bool) -> Resu
             {
                 let mut files = super::ops::Files::new(DeviceStore(device), &chosen, id, true)
                     .map_err(|error| orphan_failure(orphan_error(error), "orphan-open", "valid-files-view"))?;
+                if let Some(readers) = &readers {
+                    files.set_reuse_bound(readers.reuse_bound.clone());
+                }
                 let mut committer = commit::Committer::new(chosen);
                 chosen = files
                     .fsync(device, &mut committer)
                     .map_err(|error| orphan_failure(orphan_error(error), "orphan-commit", "durable-reclaim"))?;
+                if let Some(readers) = &readers {
+                    (readers.published)(&chosen);
+                }
             }
         }
     }

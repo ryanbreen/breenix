@@ -2726,7 +2726,11 @@ impl<W: Wait + 'static> BreenFs<W> {
         // the removal of the root this constructor selects meanwhile, and a
         // delete already under way has marked it (design 7.3a).
         let publication = mounts.publication.recover();
-        let durable = recover::recover_detailed(device.as_ref(), writable).map_err(|failure| {
+        // Orphan reclamation commits while other mounts of the device may
+        // be reading: within their pins, publishing each generation.
+        let publish = |sb: &Superblock| *mounts.published.lock() = Some(sb.clone());
+        let readers = recover::Readers { reuse_bound: &mounts.oldest_pin, published: &publish };
+        let durable = recover::recover_detailed(device.as_ref(), writable, Some(readers)).map_err(|failure| {
             report(format_args!("breenfs {}", failure));
             recovery_errno(failure.error)
         })?;
