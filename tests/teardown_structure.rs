@@ -4469,9 +4469,8 @@ const RETURN_LEASE_PRODUCTION_CALLS: &[(&str, &str, usize)] = &[
 ];
 #[rustfmt::skip]
 const RETURN_LEASE_BOOT_FIXTURE_CALLS: &[(&str, &str, usize)] = &[
-    ("kernel/src/memory/frame_allocator_tests.rs", "fn frame_custody_refusal_gate_test", 6),
+    ("kernel/src/memory/frame_allocator_tests.rs", "fn frame_custody_refusal_gate_test", 8),
     ("kernel/src/memory/frame_allocator_tests.rs", "fn healthy_round_trip", 1),
-    ("kernel/src/memory/frame_allocator_tests.rs", "fn restore_lease", 1),
     ("kernel/src/memory/frame_allocator_tests.rs", "fn stale_lease_fixture", 1),
 ];
 #[rustfmt::skip]
@@ -4491,7 +4490,6 @@ const PROCESS_PAGE_TABLE_ABANDON_SITES: &[(&str, &str, usize)] = &[
 ];
 #[rustfmt::skip]
 const PROCESS_PAGE_TABLE_RETIRE_SITES: &[(&str, &str, usize)] = &[
-    ("kernel/src/memory/frame_allocator_tests.rs", "fn retire_with_free_list_contended", 1),
     ("kernel/src/memory/process_memory.rs", "#[cfg(feature=boot_tests)] fn page_table_custody_disposition_gate_test", 1),
     ("kernel/src/memory/process_memory.rs", "impl Drop for UnpublishedPageTable::fn drop", 1),
     ("kernel/src/memory/process_memory.rs", "impl ProcessPageTable::fn cleanup_for_exec", 1),
@@ -4504,9 +4502,11 @@ const PENDING_RECLAIM_BOUNDED_SITES: &[(&str, &str, usize)] = &[
     ("kernel/src/task/process_task.rs", "#[cfg(feature=boot_tests)] fn reclaim_progress_gate_test", 1),
 ];
 #[rustfmt::skip]
-const FRAME_LEDGER_INIT_CALLS: &[(&str, &str, usize)] = &[
-    ("kernel/src/main_aarch64.rs", "#[cfg(target_arch=aarch64)] fn kernel_main", 1),
-    ("kernel/src/memory/mod.rs", "fn init", 1),
+/// E1-3: the frame metadata is carved from the boot range set, once per
+/// architecture, before the set is published.
+const FRAME_METADATA_BUILD_CALLS: &[(&str, &str, usize)] = &[
+    ("kernel/src/memory/frame_allocator.rs", "#[cfg(target_arch=x86_64)] fn init", 1),
+    ("kernel/src/platform_config.rs", "#[cfg(target_arch=aarch64)] fn with_kernel_pools", 1),
 ];
 #[rustfmt::skip]
 const PROCESS_PAGE_TABLE_CONSTRUCTORS: &[(&str, &str, usize)] = &[
@@ -4515,7 +4515,8 @@ const PROCESS_PAGE_TABLE_CONSTRUCTORS: &[(&str, &str, usize)] = &[
     // into the frames of the table it is mapped into, so the shared loader
     // builds that table while the file lease is held; constructors take it over.
     ("kernel/src/exec_elf.rs", "#[cfg(not(test))] impl MappedElf::fn load", 1),
-    ("kernel/src/memory/process_memory.rs", "#[cfg(feature=boot_tests)] fn page_table_custody_disposition_gate_test", 6),
+    // E1-3 removes the root built for the free-list contention oracle.
+    ("kernel/src/memory/process_memory.rs", "#[cfg(feature=boot_tests)] fn page_table_custody_disposition_gate_test", 5),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn create_process", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn build_process_with_argv_at", 1),
     ("kernel/src/process/manager.rs", "impl ProcessManager::#[cfg(target_arch=aarch64)] fn exec_process", 1),
@@ -4531,7 +4532,8 @@ const PROCESS_PAGE_TABLE_CONSTRUCTORS: &[(&str, &str, usize)] = &[
     ("kernel/src/syscall/handlers.rs", "#[cfg(target_arch=x86_64)] fn sys_fork_with_parent_context", 1),
     ("kernel/src/task/process_task.rs", "#[cfg(all(feature=boot_tests,target_arch=x86_64))] fn boot_page_table_reclaim", 1),
     ("kernel/src/task/process_task.rs", "#[cfg(feature=boot_tests)] fn boot_oversized_page_table", 1),
-    ("kernel/src/task/process_task.rs", "#[cfg(feature=boot_tests)] fn reclaim_progress_gate_test", 3),
+    // E1-3 removes the root built for the x86 free-list contention oracle.
+    ("kernel/src/task/process_task.rs", "#[cfg(feature=boot_tests)] fn reclaim_progress_gate_test", 2),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn fork_exit_defer_reclaim_pairing_test", 4),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(all(feature=boot_tests,target_arch=x86_64))] fn exec_supersede_cohort_test", 3),
     // The ownership oracle constructs the fork arm's parent page table plus one page table for each of its two fork children.
@@ -6701,124 +6703,47 @@ fn validate_frame_return_choke_point(
         validate_census(&return_lease_calls, &allowed_return_lease_calls),
     );
 
+    // E1-3: the free list is threaded through the frame metadata. Only
+    // with_free_frames names it, under a plain lock with interrupts masked;
+    // no capacity is reserved, and the boot fixtures go through that helper.
     let allocator = source(sources, "kernel/src/memory/frame_allocator.rs");
-    let init = function_body(allocator, "init_frame_ledger");
     record_unit(
         &mut failures,
         "allocator FREE_FRAMES capability escaped",
         validate_free_frame_capabilities(
             "kernel/src/memory/frame_allocator.rs",
             allocator,
-            &[
-                "init_frame_ledger",
-                "with_free_frames",
-                "ensure_free_frame_capacity",
-                "allocate_candidate",
-                "return_lease",
-                "memory_stats",
-            ],
-        ),
-    );
-    record_unit(
-        &mut failures,
-        "init_frame_ledger free-list alias methods changed",
-        validate_alias_methods(
-            init,
-            &[
-                "lock",
-                "capacity",
-                "len",
-                "try_reserve",
-                "expect",
-                "push",
-                "swap_remove",
-                "iter",
-                "copied",
-            ],
-            &[],
-        ),
-    );
-    let init_methods = alias_method_calls(init);
-    if init_methods.iter().filter(|method| *method == "push").count() != 1
-        || !init.contains(
-            "if seed_free_frame(&ledger, frame) {\n                free_list.push(frame);\n            }",
-        )
-    {
-        eprintln!("bootstrap free-list insertion escaped its seeded-frame span");
-        failures.push("bootstrap free-list insertion escaped its seeded-frame span".to_owned());
-    }
-    record_unit(
-        &mut failures,
-        "ensure_free_frame_capacity alias methods changed",
-        validate_alias_methods(
-            function_body(allocator, "ensure_free_frame_capacity"),
-            &[
-                "try_lock",
-                "capacity",
-                "len",
-                "try_reserve",
-                "is_err",
-                "map_or",
-            ],
-            &["reserve", "map_or"],
-        ),
-    );
-    record_unit(
-        &mut failures,
-        "allocate_candidate alias methods changed",
-        validate_alias_methods(
-            function_body(allocator, "allocate_candidate"),
-            &["try_lock", "pop", "len", "and_then"],
-            &[],
-        ),
-    );
-    record_unit(
-        &mut failures,
-        "return_lease alias methods changed",
-        validate_alias_methods(
-            function_body(allocator, "return_lease"),
-            &["try_lock", "len", "capacity", "push", "map_or_else"],
-            &["push", "map_or_else"],
+            &["with_free_frames"],
         ),
     );
     record_unit(
         &mut failures,
         "with_free_frames alias methods changed",
-        validate_alias_methods(
-            function_body(allocator, "with_free_frames"),
-            &["try_lock"],
-            &["Some"],
-        ),
+        validate_alias_methods(function_body(allocator, "with_free_frames"), &["lock"], &[]),
     );
-    record_unit(
-        &mut failures,
-        "memory_stats alias methods changed",
-        validate_alias_methods(
-            function_body(allocator, "memory_stats"),
-            &["try_lock", "len"],
-            &[],
-        ),
-    );
-
+    for (user, methods) in [
+        ("allocate_candidate", &["pop"][..]),
+        ("return_lease", &["push"][..]),
+        ("memory_stats", &["len"][..]),
+    ] {
+        let body = function_body(allocator, user);
+        let mask = code_mask(body);
+        let pinned = code_offsets(body, &mask, "with_free_frames(|free_list|").len() == 1
+            && methods.iter().all(|method| body.contains(&format!("free_list.{method}(")))
+            && ["push(", "pop(", "len("]
+                .iter()
+                .filter(|call| !methods.iter().any(|method| call.starts_with(method)))
+                .all(|call| !body.contains(&format!("free_list.{call}")));
+        if !pinned {
+            eprintln!("free-list user {user} changed its list calls");
+            failures.push(format!("free-list user {user} changed its list calls"));
+        }
+    }
     let fixture = source(sources, "kernel/src/memory/frame_allocator_tests.rs");
     record_unit(
         &mut failures,
         "fixture FREE_FRAMES capability escaped",
-        validate_free_frame_capabilities(
-            "kernel/src/memory/frame_allocator_tests.rs",
-            fixture,
-            &[
-                "inject_duplicate_candidates",
-                "remove_duplicate_candidates",
-                "republish_lost_frame",
-                "retire_with_free_list_contended",
-                "with_free_list_held",
-                "free_frame_count",
-                "free_list_len_for_gate",
-                "take_free_frame",
-                "frame_custody_refusal_gate_test",
-            ],
-        ),
+        validate_free_frame_capabilities("kernel/src/memory/frame_allocator_tests.rs", fixture, &[]),
     );
 
     for (path, module) in sources.iter().filter(|(path, _)| {
@@ -6854,16 +6779,25 @@ fn validate_frame_return_choke_point(
 }
 
 fn validate_frame_ledger_hot_paths(sources: &[(String, String)]) -> Result<(), ()> {
+    const FORBIDDEN: [&str; 7] = [
+        "log::",
+        "serial_println!",
+        "format!",
+        "vec!",
+        "Vec::new",
+        "Vec::with_capacity",
+        "alloc::",
+    ];
     let allocator = source(sources, "kernel/src/memory/frame_allocator.rs");
     const ROOTS: [&str; 8] = [
-        "frame_ordinal",
-        "get",
+        "frame_meta",
         "claim_frame",
         "counted",
         "return_lease",
         "acquire_leaf_mapping",
         "decref_leaf_mapping",
         "deallocate_leaf_frame",
+        "with_free_frames",
     ];
     let bodies = module_function_bodies(allocator);
     let reached = transitively_called_functions(allocator, &ROOTS);
@@ -6875,20 +6809,16 @@ fn validate_frame_ledger_hot_paths(sources: &[(String, String)]) -> Result<(), (
     }
     for name in reached {
         for body in bodies.get(&name).into_iter().flatten() {
-            for forbidden in [
-                "log::",
-                "serial_println!",
-                "format!",
-                "vec!",
-                "Vec::new",
-                "Vec::with_capacity",
-                "alloc::",
-            ] {
-                if body.contains(forbidden) {
-                    return Err(());
-                }
+            if FORBIDDEN.iter().any(|forbidden| body.contains(forbidden)) {
+                return Err(());
             }
         }
+    }
+    // The metadata module is the lease rules and the free list: it may not
+    // log, format or touch the heap anywhere.
+    let metadata = normalized_code(source(sources, "kernel/src/memory/frame_meta.rs"));
+    if FORBIDDEN.iter().chain(&["Vec<", "Box<", "Box::"]).any(|forbidden| metadata.contains(forbidden)) {
+        return Err(());
     }
     let returned = function_body(allocator, "return_lease");
     for forbidden in ["reserve(", "try_reserve(", "resize(", "with_capacity("] {
@@ -6896,75 +6826,66 @@ fn validate_frame_ledger_hot_paths(sources: &[(String, String)]) -> Result<(), (
             return Err(());
         }
     }
-    let boundary = returned
-        .find("if free_list.len() == free_list.capacity() {")
-        .ok_or(())?;
-    let push = returned.find("free_list.push(lease.frame);").ok_or(())?;
-    (boundary < push).then_some(()).ok_or(())
+    let retire = returned.find("meta.retire(frame, lease.generation)").ok_or(())?;
+    let guard = returned.find("if outcome == ReturnOutcome::Returned {").ok_or(())?;
+    let push = returned.find("free_list.push(meta, frame)").ok_or(())?;
+    (retire < guard && guard < push).then_some(()).ok_or(())
 }
 
 fn validate_frame_ledger_bounded_boot_allocation(sources: &[(String, String)]) -> Result<(), ()> {
+    // E1-3: the metadata is carved from the boot range set before the set is
+    // published, so no allocation path builds or grows it.
+    let metadata = source(sources, "kernel/src/memory/frame_meta.rs");
+    let build = function_body(metadata, "build");
+    // The last carve comes before the walk that builds the directory, so the
+    // walk sees the final set.
+    let carve = build.rfind("set.carve(").ok_or(())?;
+    let walk = build.find("for range in set.iter()").ok_or(())?;
     let allocator = source(sources, "kernel/src/memory/frame_allocator.rs");
-    let init = function_body(allocator, "init_frame_ledger");
-    let ledger_init = function_body(allocator, "try_new");
-    let ensure_chunk = function_body(allocator, "ensure_chunk");
-    let prepare = function_body(allocator, "prepare_frame_for_allocation");
-    let reserve = function_body(allocator, "ensure_free_frame_capacity");
-    let sequential_allocate = function_body(allocator, "allocate_frame");
-    let prepare_before_publish = sequential_allocate
-        .find("prepare_frame_for_allocation(current)")
-        .ok_or(())?
-        < sequential_allocate
-            .find("NEXT_FREE_FRAME.compare_exchange(")
-            .ok_or(())?;
-    let built_outside_once = ensure_chunk.find("slots.try_reserve_exact").ok_or(())?
-        < ensure_chunk.find(".call_once(||").ok_or(())?;
-    let contention = sequential_allocate
-        .find("PrepareFrame::Contended if capacity_contentions < 8")
+    let x86_init = function_body(allocator, "init");
+    let built = x86_init.find("super::frame_meta::build(&mut ranges, &storage)").ok_or(())?;
+    let published = x86_init.find("publish(ranges, meta);").ok_or(())?;
+    let publish = function_body(allocator, "publish");
+    let platform = source(sources, "kernel/src/platform_config.rs");
+    let pools = function_body(platform, "with_kernel_pools");
+    let extended = pools.find("arm64_direct_map::extend(").ok_or(())?;
+    let arm_built = pools
+        .find("crate::memory::frame_meta::build(&mut ranges, &LiveBootMemory)")
         .ok_or(())?;
-    let exhausted = sequential_allocate
-        .find("PrepareFrame::Exhausted => return None")
-        .ok_or(())?;
-
-    (allocator.contains("const LEDGER_CHUNK_FRAMES: usize = 64 * 1024;")
-        && init.contains("FrameLedger::try_new(total_frames, frontier)")
-        && init.contains("while chunk_start < frontier")
-        && init.contains(".ensure_chunk(chunk_start)")
-        && init.contains("advertised_frames.min(MAX_TRACKED_FRAMES)")
-        && init.contains("assert_eq!(NEXT_FREE_FRAME.load(Ordering::Acquire), frontier_snapshot)")
-        && !init.contains("(0..total_frames)")
-        && !init.contains("reserve_exact(total_frames)")
-        && ledger_init.contains("try_reserve_exact(chunk_count)")
-        && prepare.contains("ledger.ensure_chunk(index)")
-        && prepare.contains("ensure_free_frame_capacity(index + 1)")
-        && reserve.contains("try_reserve(additional)")
-        && built_outside_once
-        && prepare_before_publish
-        && contention < exhausted)
+    (carve < walk
+        && built < published
+        && publish.find("FRAME_META.call_once(").ok_or(())?
+            < publish.find("MEMORY_INFO.call_once(").ok_or(())?
+        && extended < arm_built
+        && !allocator.contains("init_frame_ledger")
+        && !allocator.contains("BOOTSTRAP_FREE_FRAMES")
+        && !allocator.contains("FREE_FRAME_CAPACITY"))
         .then_some(())
         .ok_or(())
 }
 
 fn validate_frame_ledger_boot_order(sources: &[(String, String)]) -> Result<(), ()> {
+    // E1-3: the metadata exists before the heap, before any page table the
+    // kernel builds, and before any process root.
     let memory_init = function_body(source(sources, "kernel/src/memory/mod.rs"), "init");
-    let x86_ledger = memory_init
-        .find("frame_allocator::init_frame_ledger();")
+    let x86_metadata = memory_init
+        .find("frame_allocator::init(memory_regions);")
         .ok_or(())?;
-    if memory_init.rfind("heap::init(&mapper)").ok_or(())? > x86_ledger
-        || x86_ledger > memory_init.find("slab::init();").ok_or(())?
-        || memory_init[..x86_ledger].contains("ProcessPageTable::new(")
+    if x86_metadata > memory_init.find("process_memory::init_kernel_page_table();").ok_or(())?
+        || x86_metadata > memory_init.rfind("heap::init(&mapper)").ok_or(())?
+        || memory_init[..x86_metadata].contains("ProcessPageTable::new(")
     {
         return Err(());
     }
 
     let arm_main = function_body(source(sources, "kernel/src/main_aarch64.rs"), "kernel_main");
-    let arm_ledger = arm_main
-        .find("frame_allocator::init_frame_ledger();")
+    let arm_metadata = arm_main
+        .find("frame_allocator::init_aarch64(&frame_pool.ranges, frame_metadata);")
         .ok_or(())?;
-    if arm_main.find("memory::init_aarch64_heap();").ok_or(())? > arm_ledger
-        || arm_ledger > arm_main.find("memory::kernel_stack::init();").ok_or(())?
-        || arm_ledger > arm_main.find("kernel::process::init();").ok_or(())?
-        || arm_main[..arm_ledger].contains("ProcessPageTable::new(")
+    if arm_metadata > arm_main.find("memory::init_aarch64_heap();").ok_or(())?
+        || arm_metadata > arm_main.find("memory::kernel_stack::init();").ok_or(())?
+        || arm_metadata > arm_main.find("kernel::process::init();").ok_or(())?
+        || arm_main[..arm_metadata].contains("ProcessPageTable::new(")
     {
         return Err(());
     }
@@ -6975,12 +6896,12 @@ fn validate_frame_ledger_init(sources: &[(String, String)]) -> Result<(), Vec<St
     let mut failures = Vec::new();
     record(
         &mut failures,
-        "frame-ledger init calls",
+        "frame-metadata build calls",
         validate_census(
             &census(sources, |source, mask| {
-                code_offsets(source, mask, "init_frame_ledger();")
+                code_offsets(source, mask, "frame_meta::build(")
             }),
-            FRAME_LEDGER_INIT_CALLS,
+            FRAME_METADATA_BUILD_CALLS,
         ),
     );
     record(
@@ -7007,20 +6928,15 @@ fn validate_frame_ledger_runtime_oracles(sources: &[(String, String)]) -> Result
     let stale = function_body(tests, "stale_lease_fixture");
     let gate = function_body(tests, "frame_custody_refusal_gate_test");
     let healthy_guard = function_body(tests, "frame_custody_healthy_counters_test");
-    // The contended return holds the list as this CPU's own nested holder,
-    // through `with_free_frames`: a return waits for a holder on another CPU
-    // on both architectures, so only that makes it give up rather than wait.
-    let held = function_body(tests, "with_free_list_held");
-    if held.contains("#[cfg(") || held.contains("FREE_FRAMES") {
-        return Err(());
-    }
     let above_top = function_body(tests, "above_top_of_ram_frame");
     let never_allocated = function_body(tests, "reserve_never_allocated_frame");
     let allocator = source(sources, "kernel/src/memory/frame_allocator.rs");
     let returned = function_body(allocator, "return_lease");
     let counted = function_body(allocator, "counted");
     let claim = function_body(allocator, "claim_frame");
-    let ordinal = function_body(allocator, "frame_ordinal");
+    let metadata = source(sources, "kernel/src/memory/frame_meta.rs");
+    let retire = function_body(metadata, "retire");
+    let entry = function_body(metadata, "entry");
     let registry = source(sources, "kernel/src/test_framework/registry.rs");
     let registry_mask = code_mask(registry);
     if !code_offsets(
@@ -7109,36 +7025,32 @@ fn validate_frame_ledger_runtime_oracles(sources: &[(String, String)]) -> Result
     }
     let memory_init = function_body(source(sources, "kernel/src/memory/mod.rs"), "init");
 
-    const DOUBLE_RETURN_ASSERTION: &str = "if return_lease(lease) != ReturnOutcome::Returned\n        || return_lease(lease) != ReturnOutcome::RefusedDoubleRelease\n        || FREE_FRAMES.lock().len() != free_before + 1\n        || free_frame_count(lease.frame) != 1\n        || !healthy_round_trip()\n    {";
+    const DOUBLE_RETURN_ASSERTION: &str = "if return_lease(lease) != ReturnOutcome::Returned\n        || return_lease(lease) != ReturnOutcome::RefusedDoubleRelease\n        || free_list_len_for_gate() != free_before + 1\n        || free_frame_count(lease.frame) != 1\n        || !healthy_round_trip()\n    {";
     const STALE_FIXTURE_ASSERTION: &str =
-        "if current.index != stale.index || current.generation == stale.generation {";
+        "if current.frame != stale.frame || current.generation == stale.generation {";
     const STALE_RETURN_ASSERTION: &str = "if return_lease(stale) != ReturnOutcome::RefusedStale {";
-    const GATE_PRECONDITION_ASSERTION: &str = "if start[..5] != [0; 5] {";
+    const GATE_PRECONDITION_ASSERTION: &str = "if start != [0; 5] {";
     const UNTRACKED_ASSERTION: &str =
-        "if after_untracked[3] != before_untracked[3] + 1 || free_after_untracked != free_before {";
+        "if after_untracked[3] != before_untracked[3] + 1 || free_list_len_for_gate() != free_before {";
     const NEVER_ALLOCATED_ASSERTION: &str = "if counters()[2] != before_never[2] + 1
-        || FREE_FRAMES.lock().len() != free_before
+        || free_list_len_for_gate() != free_before
         || !healthy_round_trip()
     {";
-    const CONTENTION_ASSERTION: &str = "if outcome != ReturnOutcome::LostContended {";
-    const DUPLICATE_CLEANUP: &str = "let replacement = allocate_frame_leased();\n    remove_duplicate_candidates(live.frame);\n    let live_after =";
-    const DUPLICATE_OWNER_ASSERTION: &str = "if live_before.is_none()\n        || live_after != live_before\n        || !replacement_is_distinct\n        || counters()[4] != duplicate_before + 3\n    {";
-    const AGGREGATE_ASSERTION: &str = "if end[0] != start[0] + 1\n        || end[1] != start[1] + 1\n        || end[2] != start[2] + 1\n        || end[3] != start[3] + 1\n        || end[4] != start[4] + 3\n        || end[5] < start[5] + 1\n    {";
-    // The O2/B, O2/D and O2/E guards. Pinned through their opening brace so an
+    const DUPLICATE_CLEANUP: &str = "let replacement = allocate_frame_leased();\n    remove_candidates(&frames);\n    let live_after =";
+    const DUPLICATE_OWNER_ASSERTION: &str = "if live_before.contains(&None)\n        || live_after != live_before\n        || !replacement_is_distinct\n        || counters()[4] != duplicate_before + 3\n    {";
+    const AGGREGATE_ASSERTION: &str = "if end[0] != start[0] + 1\n        || end[1] != start[1] + 1\n        || end[2] != start[2] + 1\n        || end[3] != start[3] + 1\n        || end[4] != start[4] + 3\n    {";
+    // The O2/B and O2/D guards. Pinned through their opening brace so an
     // always-false operand of ANY spelling — not just the nine the vacuity rule
     // knows — reds the suite (review-sweep-r4 finding 2).
-    const STALE_OWNER_ASSERTION: &str = "if state\n        .is_none_or(|state| state & STATE_MASK != ST_ALLOCATED || state >> 2 != current.generation)\n    {";
+    const STALE_OWNER_ASSERTION: &str =
+        "if frame_state(current.frame) != Some((ST_ALLOCATED, current.generation)) {";
     const STALE_RECOVERY_ASSERTION: &str =
         "if return_lease(current) != ReturnOutcome::Returned || !healthy_round_trip() {";
-    const DUPLICATE_FIXTURE_ASSERTION: &str = "if !inject_duplicate_candidates(live.frame, 3) {";
+    const DUPLICATE_FIXTURE_ASSERTION: &str = "if !inject_live_candidates(&frames) {";
     const DUPLICATE_CLEANUP_ASSERTION: &str = "if !replacement_returned || !live_returned {";
     const DUPLICATE_RECOVERY_ASSERTION: &str = "if !healthy_round_trip() {";
-    const CONTENDED_ISOLATION_ASSERTION: &str = "if lost_state.is_none_or(|state| state & STATE_MASK != ST_FREE)\n        || free_frame_count(contended.frame) != 0\n    {";
-    const CONTENDED_RECOVERY_ASSERTION: &str = "if return_lease(repaired) != ReturnOutcome::Returned\n        || counters()[..5] != before_healthy[..5]\n        || !healthy_round_trip()\n    {";
 
-    (take_free
-        .trim_end()
-        .ends_with("claim_frame(candidate).ok().flatten()\n}")
+    (take_free.trim_end().ends_with("claim_frame(frame, 0, 0)\n}")
         && !take_free.contains("FrameLease {")
         && stale.contains("return_lease(stale)")
         && stale.contains("take_free_frame(stale.frame)")
@@ -7147,34 +7059,27 @@ fn validate_frame_ledger_runtime_oracles(sources: &[(String, String)]) -> Result
         && gate.contains(GATE_PRECONDITION_ASSERTION)
         && gate.contains(UNTRACKED_ASSERTION)
         && gate.contains(NEVER_ALLOCATED_ASSERTION)
-        && gate.contains(CONTENTION_ASSERTION)
         && gate.contains(DOUBLE_RETURN_ASSERTION)
         && gate.contains(STALE_OWNER_ASSERTION)
         && gate.contains(STALE_RECOVERY_ASSERTION)
         && gate.contains(DUPLICATE_FIXTURE_ASSERTION)
         && gate.contains(DUPLICATE_CLEANUP_ASSERTION)
         && gate.contains(DUPLICATE_RECOVERY_ASSERTION)
-        && gate.contains(CONTENDED_ISOLATION_ASSERTION)
-        && gate.contains(CONTENDED_RECOVERY_ASSERTION)
         && gate.contains("above_top_of_ram_frame()")
         && gate.contains("deallocate_frame(untracked)")
         && gate.contains("reserve_never_allocated_frame()")
         && gate.contains("deallocate_frame(never_frame)")
         && never_allocated.contains("BootInfoFrameAllocator::get_usable_frame(index)")
-        && never_allocated.contains("prepare_frame_for_allocation(index)")
         && never_allocated.contains("NEXT_FREE_FRAME\n            .compare_exchange(")
-        && never_allocated.find("prepare_frame_for_allocation(index)").ok_or(())?
-            < never_allocated.find(".compare_exchange(").ok_or(())?
         && never_allocated.contains(".is_ok()\n        {\n            return Some(frame);")
         && !gate.contains("FrameLease {")
         && above_top.contains("MEMORY_INFO.get()")
         && above_top.contains("region.end")
         && above_top.contains(".max()")
-        && returned.contains("if observed >> 2 != lease.generation {")
-        && returned.contains(
-            "ST_FREE => return counted(ReturnOutcome::RefusedDoubleRelease),",
-        )
-        && ordinal.trim_end().ends_with("None\n}")
+        && returned.contains("meta.retire(frame, lease.generation)")
+        && retire.contains("if observed >> 2 != generation {")
+        && retire.contains("ST_FREE => return ReturnOutcome::RefusedDoubleRelease,")
+        && entry.contains("!= ST_UNTRACKED).then_some(meta)")
         && counted.contains(
             "ReturnOutcome::RefusedStale => teardown::FRAME_RETURN_REFUSED_STALE.increment()",
         )
@@ -7187,17 +7092,13 @@ fn validate_frame_ledger_runtime_oracles(sources: &[(String, String)]) -> Result
         && counted.contains(
             "ReturnOutcome::RefusedUntracked => teardown::FRAME_RETURN_REFUSED_UNTRACKED.increment()",
         )
-        && counted.contains("ReturnOutcome::LostContended => teardown::FRAME_LOST_CONTENDED.increment()")
-        && claim.contains("FRAME_DUPLICATE_ALLOC_REFUSED.increment()")
+        && !counted.contains("LostContended")
         && claim.contains(
-            "ST_ALLOCATED => {\n                crate::tracing::providers::teardown::FRAME_DUPLICATE_ALLOC_REFUSED.increment();\n                return Err(ClaimError::Duplicate);",
+            "Err(ClaimError::Allocated) => {\n            teardown::FRAME_DUPLICATE_ALLOC_REFUSED.increment();",
         )
         && gate.contains(DUPLICATE_CLEANUP)
         && gate.contains(DUPLICATE_OWNER_ASSERTION)
-        && gate.contains("let outcome = with_free_list_held(|| return_lease(contended));")
-        && normalized_code(held)
-            == "fn with_free_list_held<R>(f: impl FnOnce() -> R) -> R { with_free_frames(|_| f()) }"
-        && gate.matches("healthy_round_trip()").count() == 5
+        && gate.matches("healthy_round_trip()").count() == 4
         && gate.contains(AGGREGATE_ASSERTION)
         && refusal_def.contains("name: \"frame_custody_refusal_gate\"")
         && refusal_def.contains("arch: Arch::Aarch64")
@@ -7205,7 +7106,7 @@ fn validate_frame_ledger_runtime_oracles(sources: &[(String, String)]) -> Result
         && healthy_def.contains("name: \"frame_custody_healthy_counters\"")
         && healthy_def.contains("arch: Arch::Aarch64")
         && healthy_def.contains("stage: TestStage::ProcessContext")
-        && healthy_guard.contains("if counters()[..5] != [1, 1, 1, 1, 3] {")
+        && healthy_guard.contains("if counters() != [1, 1, 1, 1, 3] {")
         && healthy_guard.contains("TestResult::Fail(")
         && serial < parallel
         && function_body(registry, "test_timer_init").contains("test_timer_ticks()")
@@ -7277,7 +7178,7 @@ fn validate_no_vacuous_test_conditions(sources: &[(String, String)]) -> Result<(
 /// the diagnosis attached — so it is allowed alongside the plain `exit 1`
 /// sites below.
 fn validate_x86_frame_custody_harness(script: &str) -> Result<(), ()> {
-    const FRAME_VECTOR: &str = "FRAME_CUSTODY_PATTERN='\\[FRAME_CUSTODY_COUNTERS:x86:double=1:stale=1:never=1:untracked=1:duplicate=3:contended=[1-9][0-9]*\\]'";
+    const FRAME_VECTOR: &str = "FRAME_CUSTODY_PATTERN='\\[FRAME_CUSTODY_COUNTERS:x86:double=1:stale=1:never=1:untracked=1:duplicate=3\\]'";
     const PT_CUSTODY_VECTOR: &str = "PT_CUSTODY_LITERAL='[PT_CUSTODY_COUNTERS:x86:recorded=14:no_proof=0:no_arch=0:terminated=1:undecided=1:retired=2:returned=14:lost=0:requeued=0]'";
     const PT_COHORT_VECTOR: &str = "PT_COHORT_LITERAL='[PT_RETIRE_COHORT:x86:children=64:retired=65:returned=642:recorded=577:lost=0:no_arch=0:undecided=0:mid_retire=0:kstack_returns=64:balance=0]'";
     const PT_EXEC_COHORT_VECTOR: &str = "PT_EXEC_COHORT_LITERAL='[PT_EXEC_COHORT:x86:children=16:superseded=3:roots=64:returned=640:recorded=576:lost=0:leaf_recorded=192:leaf_released=192:leaf_returned=192:custody_refused=0:decref_unregistered=0:undecided=0:mid_retire=0:no_arch=0:balance=0]' # The returned and recorded table-frame fields are pinned from the measured run.";
@@ -7442,13 +7343,12 @@ fn validate_workqueue_progress_wait(registry: &str) -> Result<(), ()> {
 }
 
 fn validate_frame_ledger_counter_inventory(provider: &str) -> Result<(), ()> {
-    const EXPECTED: [&str; 7] = [
+    const EXPECTED: [&str; 6] = [
         "FRAME_RETURN_REFUSED_DOUBLE",
         "FRAME_RETURN_REFUSED_STALE",
         "FRAME_RETURN_REFUSED_NEVER_ALLOCATED",
         "FRAME_RETURN_REFUSED_UNTRACKED",
         "FRAME_DUPLICATE_ALLOC_REFUSED",
-        "FRAME_LOST_CONTENDED",
         "FRAME_RETURN_REFUSED_LIVE_LEAF",
     ];
     let expected: BTreeSet<_> = EXPECTED.into_iter().map(str::to_owned).collect();
@@ -7482,11 +7382,12 @@ fn validate_frame_ledger_counter_inventory(provider: &str) -> Result<(), ()> {
     // already declared in PR-1 and are not part of this delta.
     // #653 adds RECLAIM_PASS_SELECTION_CAPPED, the production drain's
     // selection-cap counter, for 87. G35 adds PT_RECLAIM_NONEMPTY, for 88.
+    // E1-3 removes FRAME_LOST_CONTENDED with LostContended, for 87.
     (declared == expected
         && EXPECTED
             .iter()
             .all(|counter| inventory.contains(&format!("&{counter},")))
-        && provider.contains("pub const COUNTER_COUNT: usize = 88;"))
+        && provider.contains("pub const COUNTER_COUNT: usize = 87;"))
     .then_some(())
     .ok_or(())
 }
@@ -7760,11 +7661,12 @@ fn validate_process_page_table_counter_inventory(sources: &[(String, String)]) -
     // already declared in PR-1 and are not part of this delta.
     // #653 adds RECLAIM_PASS_SELECTION_CAPPED, the production drain's
     // selection-cap counter, for 87. G35 adds PT_RECLAIM_NONEMPTY, for 88.
+    // E1-3 removes FRAME_LOST_CONTENDED with LostContended, for 87.
     if declared != expected
         || !EXPECTED
             .iter()
             .all(|counter| inventory.contains(&format!("&{counter},")))
-        || !provider.contains("pub const COUNTER_COUNT: usize = 88;")
+        || !provider.contains("pub const COUNTER_COUNT: usize = 87;")
     {
         return Err(());
     }
@@ -7798,7 +7700,9 @@ fn validate_process_page_table_counter_inventory(sources: &[(String, String)]) -
         && drop_body.contains("PT_ROOT_DROPPED_UNDECIDED")
         && drop_body.contains("PT_ROOT_DROPPED_MID_RETIRE")
         && retire.contains("record_pt_frame_returned")
-        && retire.contains("record_pt_frame_lost")
+        // E1-3: a returned frame is linked, not dropped, so retirement has no lost arm.
+        && !retire.contains("record_pt_frame_lost")
+        && !retire.contains("LostContended")
         && retire.contains("record_pt_root_retired")
         && task.contains("PT_RETIRE_BUDGET_REQUEUED")
         && map_page.contains("PT_ROOT_SLOT_REFUSED")
@@ -7998,13 +7902,15 @@ fn validate_leaf_custody(sources: &[(String, String)]) -> Result<(), ()> {
     }
 
     let decref = function_body(allocator, "decref_leaf_mapping");
-    let returned = function_body(allocator, "return_lease");
-    if !decref.contains("if refs == 0 {")
+    let frame_meta = source(sources, "kernel/src/memory/frame_meta.rs");
+    let meta_decref = function_body(frame_meta, "decref_leaf");
+    let retire = function_body(frame_meta, "retire");
+    if !meta_decref.contains("if refs == 0 {\n                return Decref::Refused;")
+        || !decref.contains("Decref::Refused => {")
         || !decref.contains("LEAF_DECREF_UNREGISTERED")
-        || !decref.contains("return false;")
-        || decref.contains("return true;")
-        || !returned.contains("if slot.leaf_refs.load(Ordering::Acquire) != 0 {")
-        || !returned.contains("ReturnOutcome::RefusedLiveLeaf")
+        || !decref.contains("Decref::Remaining | Decref::External => false,")
+        || decref.matches("true").count() != 1
+        || !retire.contains("if meta.leaf_refs.load(Ordering::Acquire) != 0 {\n                        return ReturnOutcome::RefusedLiveLeaf;")
         || !metadata.contains("decref_leaf_mapping(frame)")
     {
         return Err(());
@@ -8427,9 +8333,6 @@ fn validate_process_page_table_runtime_oracle(sources: &[(String, String)]) -> R
         || !gate.contains("drop(undecided);")
         || !gate.contains("after_abandon[3] != start[3] + 1")
         || !gate.contains("after_drop[4] != after_abandon[4] + 1")
-        || !gate.contains("retire_with_free_list_contended(")
-        || !gate.contains("PT_RETIRE_FRAMES_LOST.aggregate() != lost_before + 1")
-        || !gate.contains("republish_frame_for_gate(root)")
         || !gate.contains("for sentinel in sentinels")
         || !gate.contains("retiring.map_page(page, frame, flags)")
         || !gate.contains("let recorded = retiring.recorded_table_frames_for_gate();")
@@ -8461,7 +8364,7 @@ fn validate_process_page_table_runtime_oracle(sources: &[(String, String)]) -> R
         || gate.contains("no_arch.abandon(AbandonReason::NoArchPipeline);")
         || gate.contains("after_no_arch[2] != after_drop[2] + 1")
         || !gate.contains("PT_TABLE_FRAMES_RETURNED.aggregate()")
-        || gate.matches("free_list_len_for_gate()").count() != 11
+        || gate.matches("free_list_len_for_gate()").count() != 8
         || gate.contains("&& false")
         || gate.contains("|| true")
     {
@@ -8801,7 +8704,6 @@ fn frame_ledger_return_and_initialization_ratchets_are_exact() {
         "FRAME_RETURN_REFUSED_NEVER_ALLOCATED",
         "FRAME_RETURN_REFUSED_UNTRACKED",
         "FRAME_DUPLICATE_ALLOC_REFUSED",
-        "FRAME_LOST_CONTENDED",
         "FRAME_RETURN_REFUSED_LIVE_LEAF",
     ] {
         check(
@@ -8832,12 +8734,121 @@ fn frame_ledger_return_and_initialization_ratchets_are_exact() {
     // already declared in PR-1 and are not part of this delta.
     // #653 adds RECLAIM_PASS_SELECTION_CAPPED, the production drain's
     // selection-cap counter, for 87. G35 adds PT_RECLAIM_NONEMPTY, for 88.
+    // E1-3 removes FRAME_LOST_CONTENDED with LostContended, for 87.
     check(
         &mut failures,
-        "COUNTER_COUNT is no longer 88",
-        provider.contains("pub const COUNTER_COUNT: usize = 88;"),
+        "COUNTER_COUNT is no longer 87",
+        provider.contains("pub const COUNTER_COUNT: usize = 87;"),
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// E1-3: each frame-metadata ratchet rejects a deliberately broken variant of
+/// the structure it pins.
+#[test]
+fn frame_metadata_ratchets_reject_broken_variants() {
+    const ALLOCATOR: &str = "kernel/src/memory/frame_allocator.rs";
+    const FIXTURE: &str = "kernel/src/memory/frame_allocator_tests.rs";
+    const METADATA: &str = "kernel/src/memory/frame_meta.rs";
+    let sources = rust_sources_below("kernel/src");
+    assert!(validate_frame_return_choke_point(&sources).is_ok());
+    assert!(validate_frame_ledger_hot_paths(&sources).is_ok());
+    assert!(validate_frame_ledger_bounded_boot_allocation(&sources).is_ok());
+    assert!(validate_frame_ledger_init(&sources).is_ok());
+    assert!(validate_frame_ledger_runtime_oracles(&sources).is_ok());
+    let broken = |path: &str, anchor: &str, replacement: &str| {
+        let original = source(&sources, path);
+        assert!(original.contains(anchor), "mutation anchor moved in {path}: {anchor}");
+        with_replaced_source(&sources, path, original.replacen(anchor, replacement, 1))
+    };
+
+    // R1: the free list is reached only through with_free_frames, and each
+    // user makes only its own call on it.
+    for (path, anchor, replacement) in [
+        (ALLOCATOR, "with_free_frames(|free_list| free_list.pop(meta))",
+            "with_free_frames(|free_list| { free_list.push(meta, 0); free_list.pop(meta) })"),
+        (ALLOCATOR, "with_free_frames(|free_list| free_list.push(meta, frame));",
+            "with_free_frames(|free_list| { free_list.pop(meta); free_list.push(meta, frame) });"),
+        (ALLOCATOR, "let free_list_frames = with_free_frames(|free_list| free_list.len());",
+            "let free_list_frames = with_free_frames(|free_list| { free_list.pop(meta()); free_list.len() });"),
+        (ALLOCATOR, "pub fn memory_stats() -> MemoryStats {",
+            "fn rogue_push(frame: u64) { if let Some(meta) = frame_meta() { FREE_FRAMES.lock().push(meta, frame); } }\n\npub fn memory_stats() -> MemoryStats {"),
+        (ALLOCATOR, "        with_free_frames(|free_list| free_list.push(meta, frame));\n    }\n    counted(outcome)",
+            "        with_free_frames(|free_list| free_list.push(meta, frame));\n    }\n    if outcome != ReturnOutcome::Returned { with_free_frames(|free_list| free_list.push(meta, frame)); }\n    counted(outcome)"),
+        (FIXTURE, "pub fn free_list_len_for_gate() -> usize {",
+            "fn rogue_fixture() -> usize { FREE_FRAMES.lock().len() }\n\npub fn free_list_len_for_gate() -> usize {"),
+    ] {
+        let variant = broken(path, anchor, replacement);
+        assert!(validate_frame_return_choke_point(&variant).is_err(), "R1 accepted: {replacement}");
+    }
+
+    // R7: no logging, formatting or heap work on the lease paths, in the
+    // allocator glue or anywhere in the metadata module.
+    for (path, anchor, replacement) in [
+        (ALLOCATOR, "pub(crate) fn return_lease(lease: FrameLease) -> ReturnOutcome {",
+            "pub(crate) fn return_lease(lease: FrameLease) -> ReturnOutcome { log::info!(\"return\");"),
+        (ALLOCATOR, "fn counted(outcome: ReturnOutcome) -> ReturnOutcome {",
+            "fn note() { log::warn!(\"refused\"); }\n\nfn counted(outcome: ReturnOutcome) -> ReturnOutcome { note();"),
+        (ALLOCATOR, "pub(crate) fn return_lease(lease: FrameLease) -> ReturnOutcome {",
+            "pub(crate) fn return_lease(lease: FrameLease) -> ReturnOutcome { let _spare: alloc::vec::Vec<u64> = alloc::vec::Vec::with_capacity(1);"),
+        (METADATA, "    pub fn entry(&self, pfn: u64) -> Option<&FrameMeta> {",
+            "    pub fn entry(&self, pfn: u64) -> Option<&FrameMeta> {\n        log::trace!(\"entry {}\", pfn);"),
+        (METADATA, "pub struct FreeList {", "pub struct Spill(alloc::boxed::Box<[u64]>);\n\npub struct FreeList {"),
+    ] {
+        let variant = broken(path, anchor, replacement);
+        assert!(validate_frame_ledger_hot_paths(&variant).is_err(), "R7 accepted: {replacement}");
+    }
+
+    // The metadata is carved and built before the ranges are published.
+    for (path, anchor, replacement) in [
+        (ALLOCATOR, "    FRAME_META.call_once(|| meta);\n    MEMORY_INFO.call_once(|| ranges);",
+            "    MEMORY_INFO.call_once(|| ranges);\n    FRAME_META.call_once(|| meta);"),
+        ("kernel/src/platform_config.rs",
+            "let metadata = crate::memory::frame_meta::build(&mut ranges, &LiveBootMemory);",
+            "let metadata = Ok(crate::memory::frame_meta::FrameMetaMap::empty());"),
+        (METADATA, "    stats.spare_pages = pool.count;",
+            "    let _late = set.carve(PAGE_SIZE, PAGE_SIZE, u64::MAX);\n    stats.spare_pages = pool.count;"),
+    ] {
+        let variant = broken(path, anchor, replacement);
+        assert!(validate_frame_ledger_bounded_boot_allocation(&variant).is_err(), "boot carve accepted: {replacement}");
+    }
+
+    // R9: the metadata precedes the heap, kernel page tables and process roots.
+    for (path, anchor, replacement) in [
+        ("kernel/src/memory/mod.rs", "    frame_allocator::init(memory_regions);",
+            "    let _p = process_memory::ProcessPageTable::new();\n    frame_allocator::init(memory_regions);"),
+        ("kernel/src/main_aarch64.rs",
+            "    kernel::memory::frame_allocator::init_aarch64(&frame_pool.ranges, frame_metadata);\n    kernel::memory::init_aarch64_heap();",
+            "    kernel::memory::init_aarch64_heap();\n    kernel::memory::frame_allocator::init_aarch64(&frame_pool.ranges, frame_metadata);"),
+        ("kernel/src/main_aarch64.rs",
+            "    kernel::memory::frame_allocator::init_aarch64(&frame_pool.ranges, frame_metadata);",
+            "    let _p = kernel::memory::process_memory::ProcessPageTable::new();\n    kernel::memory::frame_allocator::init_aarch64(&frame_pool.ranges, frame_metadata);"),
+    ] {
+        let variant = broken(path, anchor, replacement);
+        assert!(validate_frame_ledger_init(&variant).is_err(), "R9 accepted: {replacement}");
+    }
+
+    // The O2 refusal gate and the lease rules stay mutation-sensitive.
+    for (path, anchor, replacement) in [
+        (METADATA, "if observed >> 2 != generation {", "if observed >> 2 != generation && false {"),
+        (METADATA, "ST_FREE => return ReturnOutcome::RefusedDoubleRelease,", "ST_FREE => return ReturnOutcome::Returned,"),
+        (METADATA, "!= ST_UNTRACKED).then_some(meta)", "!= 4).then_some(meta)"),
+        (ALLOCATOR, "ReturnOutcome::RefusedStale => teardown::FRAME_RETURN_REFUSED_STALE.increment(),",
+            "ReturnOutcome::RefusedStale => {}"),
+        (FIXTURE, "let current = take_free_frame(stale.frame)?;",
+            "let current = FrameLease { frame: stale.frame, generation: stale.generation + 1 };"),
+        (FIXTURE, "deallocate_frame(untracked);",
+            "let _ = return_lease(FrameLease { frame: untracked, generation: 0 });"),
+        (FIXTURE, "if start != [0; 5] {", "if start != [0; 5] && start[0] == u64::MAX {"),
+        (FIXTURE, "if !inject_live_candidates(&frames) {", "if !inject_live_candidates(&frames[..0]) {"),
+        (FIXTURE, "    remove_candidates(&frames);\n    let live_after =", "    let live_after ="),
+        (FIXTURE, "        || end[4] != start[4] + 3\n    {", "        || end[4] < start[4]\n    {"),
+        (FIXTURE, "if counters() != [1, 1, 1, 1, 3] {", "if counters() == [0; 5] {"),
+    ] {
+        let variant = broken(path, anchor, replacement);
+        assert!(validate_frame_ledger_runtime_oracles(&variant).is_err(), "O2 accepted: {replacement}");
+    }
+
 }
 
 #[test]
@@ -10125,7 +10136,8 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
     // already declared in PR-1 and are not part of this delta.
     // #653 adds RECLAIM_PASS_SELECTION_CAPPED, the production drain's
     // selection-cap counter, for 87. G35 adds PT_RECLAIM_NONEMPTY, for 88.
-    assert_eq!(declarations.len(), 88);
+    // E1-3 removes FRAME_LOST_CONTENDED with LostContended, for 87.
+    assert_eq!(declarations.len(), 87);
     assert_eq!(
         readers, declarations,
         "every counter must have an inventory reader"
@@ -12204,25 +12216,26 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         post_publish_record,
     );
     assert!(validate_leaf_custody(&post_publish_record).is_err());
-    let fail_open_decref = allocator.replacen(
-        "if refs == 0 {",
-        "if refs == 0 { return true; } if false {",
+    let frame_meta = source(&sources, "kernel/src/memory/frame_meta.rs");
+    let fail_open_decref = frame_meta.replacen(
+        "if refs == 0 {\n                return Decref::Refused;",
+        "if refs == 0 {\n                return Decref::Last;",
         1,
     );
     let fail_open_decref = with_replaced_source(
         &sources,
-        "kernel/src/memory/frame_allocator.rs",
+        "kernel/src/memory/frame_meta.rs",
         fail_open_decref,
     );
     assert!(validate_leaf_custody(&fail_open_decref).is_err());
-    let live_leaf_return = allocator.replacen(
-        "ST_ALLOCATED => {\n                if slot.leaf_refs.load(Ordering::Acquire) != 0 {",
-        "ST_ALLOCATED => {\n                if slot.leaf_refs.load(Ordering::Acquire) != 0 && false {",
+    let live_leaf_return = frame_meta.replacen(
+        "if meta.leaf_refs.load(Ordering::Acquire) != 0 {\n                        return ReturnOutcome::RefusedLiveLeaf;",
+        "if meta.leaf_refs.load(Ordering::Acquire) != 0 && false {\n                        return ReturnOutcome::RefusedLiveLeaf;",
         1,
     );
     let live_leaf_return = with_replaced_source(
         &sources,
-        "kernel/src/memory/frame_allocator.rs",
+        "kernel/src/memory/frame_meta.rs",
         live_leaf_return,
     );
     assert!(validate_leaf_custody(&live_leaf_return).is_err());
@@ -12447,651 +12460,7 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         assert!(validate_pr1c_retirement_oracles(&weakened).is_err());
     }
 
-    // R1: seven syntactically distinct ways to bypass the return choke point,
-    // planted in the free-list closure allocate_candidate pops from.
-    for insertion in [
-        "list.push(frame);",
-        "list.insert(0, frame);",
-        "list /* trivia */ .insert(0, frame);",
-        "list.push_within_capacity(frame);",
-    ] {
-        let broken = allocator.replacen(
-            "free_list.and_then(|list| list.pop())",
-            &format!("free_list.and_then(|list| {{ let frame = list.pop()?; {insertion} Some(frame) }})"),
-            1,
-        );
-        let broken = with_replaced_source(&sources, "kernel/src/memory/frame_allocator.rs", broken);
-        assert!(validate_frame_return_choke_point(&broken).is_err());
-    }
-    // The same bypasses inside the closures the free list is handed to: the
-    // x86_64 `with_free_frames` callers and the `reserve` and `push` closures.
-    for (anchor, mutation) in [
-        (
-            "free_list.and_then(|list| list.pop())",
-            "free_list.and_then(|list| { list.push(frame); list.pop() })",
-        ),
-        (
-            "free_list.and_then(|list| list.pop())",
-            "free_list.and_then(|list| { let spare = &mut *list; spare.insert(0, frame); list.pop() })",
-        ),
-        ("free_list.push(lease.frame);", "free_list.insert(0, lease.frame);"),
-        (
-            "free_list.try_reserve(additional)",
-            "free_list.extend_from_slice(&[frame]); free_list.try_reserve(additional)",
-        ),
-    ] {
-        assert!(allocator.contains(anchor), "mutation anchor moved: {anchor}");
-        let broken = allocator.replacen(anchor, mutation, 1);
-        let broken = with_replaced_source(&sources, "kernel/src/memory/frame_allocator.rs", broken);
-        assert!(
-            validate_frame_return_choke_point(&broken).is_err(),
-            "closure bypass not caught: {mutation}"
-        );
-    }
-    let reborrowed = allocator.replacen(
-        "free_list.and_then(|list| list.pop())",
-        "free_list.and_then(|list| { let frame = list.pop()?; let spare = &mut *list; spare.insert(0, frame); Some(frame) })",
-        1,
-    );
-    let reborrowed =
-        with_replaced_source(&sources, "kernel/src/memory/frame_allocator.rs", reborrowed);
-    assert!(validate_frame_return_choke_point(&reborrowed).is_err());
-    let typed_reborrow = allocator.replacen(
-        "free_list.and_then(|list| list.pop())",
-        "free_list.and_then(|list| { let frame = list.pop()?; let spare: &mut Vec<PhysFrame> = &mut *list; spare.insert(0, frame); Some(frame) })",
-        1,
-    );
-    let typed_reborrow = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator.rs",
-        typed_reborrow,
-    );
-    assert!(validate_frame_return_choke_point(&typed_reborrow).is_err());
-    let parenthesized_reborrow = allocator.replacen(
-        "free_list.and_then(|list| list.pop())",
-        "free_list.and_then(|list| { let frame = list.pop()?; (*list).insert(0, frame); Some(frame) })",
-        1,
-    );
-    let parenthesized_reborrow = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator.rs",
-        parenthesized_reborrow,
-    );
-    assert!(validate_frame_return_choke_point(&parenthesized_reborrow).is_err());
-    let indexed_alias_store = allocator.replacen(
-        "free_list.and_then(|list| list.pop())",
-        "free_list.and_then(|list| { let frame = list.pop()?; if list.len() > 0 { list[0] = frame; } Some(frame) })",
-        1,
-    );
-    let indexed_alias_store = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator.rs",
-        indexed_alias_store,
-    );
-    assert!(validate_frame_return_choke_point(&indexed_alias_store).is_err());
-    let deref_alias_store = allocator.replacen(
-        "free_list.and_then(|list| list.pop())",
-        "free_list.and_then(|list| { let frame = list.pop()?; *list = alloc::vec![frame, frame]; Some(frame) })",
-        1,
-    );
-    let deref_alias_store = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator.rs",
-        deref_alias_store,
-    );
-    assert!(validate_frame_return_choke_point(&deref_alias_store).is_err());
-    // R1: the same physical bypass through an indexed, sliced or branch-selected alias.
-    let indexed_element_replace = allocator.replacen(
-        "free_list.and_then(|list| list.pop())",
-        "free_list.and_then(|list| { let frame = list.pop()?; core::mem::replace(&mut list[0], frame); Some(frame) })",
-        1,
-    );
-    let indexed_element_replace = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator.rs",
-        indexed_element_replace,
-    );
-    assert!(validate_frame_return_choke_point(&indexed_element_replace).is_err());
-    let indexed_element_swap = allocator.replacen(
-        "free_list.and_then(|list| list.pop())",
-        "free_list.and_then(|list| { let frame = list.pop()?; let mut spare = frame; core::mem::swap(&mut list[0], &mut spare); Some(frame) })",
-        1,
-    );
-    let indexed_element_swap = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator.rs",
-        indexed_element_swap,
-    );
-    assert!(validate_frame_return_choke_point(&indexed_element_swap).is_err());
-    let indexed_element_clone_from = allocator.replacen(
-        "free_list.and_then(|list| list.pop())",
-        "free_list.and_then(|list| { let frame = list.pop()?; list[0].clone_from(&frame); Some(frame) })",
-        1,
-    );
-    let indexed_element_clone_from = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator.rs",
-        indexed_element_clone_from,
-    );
-    assert!(validate_frame_return_choke_point(&indexed_element_clone_from).is_err());
-    let sliced_copy_from_slice = allocator.replacen(
-        "free_list.and_then(|list| list.pop())",
-        "free_list.and_then(|list| { let frame = list.pop()?; list[..].copy_from_slice(&[frame]); Some(frame) })",
-        1,
-    );
-    let sliced_copy_from_slice = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator.rs",
-        sliced_copy_from_slice,
-    );
-    assert!(validate_frame_return_choke_point(&sliced_copy_from_slice).is_err());
-    let sliced_fill = allocator.replacen(
-        "free_list.and_then(|list| list.pop())",
-        "free_list.and_then(|list| { let frame = list.pop()?; list[0..1].fill(frame); Some(frame) })",
-        1,
-    );
-    let sliced_fill = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator.rs",
-        sliced_fill,
-    );
-    assert!(validate_frame_return_choke_point(&sliced_fill).is_err());
-    let indexed_helper_export = allocator.replacen(
-        "free_list.and_then(|list| list.pop())",
-        "free_list.and_then(|list| { let frame = list.pop()?; publish_frame(&mut list[0], frame); Some(frame) })",
-        1,
-    );
-    let indexed_helper_export = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator.rs",
-        indexed_helper_export,
-    );
-    assert!(validate_frame_return_choke_point(&indexed_helper_export).is_err());
-    let conditional_branch_alias_store = allocator.replacen(
-        "free_list.and_then(|list| list.pop())",
-        "free_list.and_then(|list| { let frame = list.pop()?; let mut spare = alloc::vec![frame]; let dest = if list.len() > 1 { &mut spare } else { &mut *list }; *dest = alloc::vec![frame]; Some(frame) })",
-        1,
-    );
-    let conditional_branch_alias_store = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator.rs",
-        conditional_branch_alias_store,
-    );
-    assert!(validate_frame_return_choke_point(&conditional_branch_alias_store).is_err());
-    let conditional_branch_alias_method = allocator.replacen(
-        "free_list.and_then(|list| list.pop())",
-        "free_list.and_then(|list| { let frame = list.pop()?; let mut spare = alloc::vec![frame]; let dest = if list.len() > 1 { &mut spare } else { &mut *list }; dest.push(frame); Some(frame) })",
-        1,
-    );
-    let conditional_branch_alias_method = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator.rs",
-        conditional_branch_alias_method,
-    );
-    assert!(validate_frame_return_choke_point(&conditional_branch_alias_method).is_err());
-    let helper_export = allocator.replacen(
-        "free_list.and_then(|list| list.pop())",
-        "free_list.and_then(|list| { let frame = list.pop()?; stash_frame(&mut list, frame); Some(frame) })",
-        1,
-    );
-    let helper_export = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator.rs",
-        helper_export,
-    );
-    assert!(validate_frame_return_choke_point(&helper_export).is_err());
-    let ufcs_export = allocator.replacen(
-        "free_list.and_then(|list| list.pop())",
-        "free_list.and_then(|list| { let frame = list.pop()?; Vec::insert(&mut list, 0, frame); Some(frame) })",
-        1,
-    );
-    let ufcs_export = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator.rs",
-        ufcs_export,
-    );
-    assert!(validate_frame_return_choke_point(&ufcs_export).is_err());
-    let renamed_alias = allocator.replacen(
-        "free_list.and_then(|list| list.pop())",
-        "free_list.and_then(|list| { let frame = list.pop()?; if let Some(mut aliased) = FREE_FRAMES.try_lock() { aliased.insert(0, frame); } Some(frame) })",
-        1,
-    );
-    let renamed_alias = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator.rs",
-        renamed_alias,
-    );
-    assert!(validate_frame_return_choke_point(&renamed_alias).is_err());
-    let matched_alias = allocator.replacen(
-        "free_list.and_then(|list| list.pop())",
-        "free_list.and_then(|list| { let frame = list.pop()?; match FREE_FRAMES.try_lock() { Some(mut renamed) => renamed.insert(0, frame), None => {} } Some(frame) })",
-        1,
-    );
-    let matched_alias = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator.rs",
-        matched_alias,
-    );
-    assert!(validate_frame_return_choke_point(&matched_alias).is_err());
-    let fixture_escape = format!(
-        "{fixture}\nfn rogue_fixture(frame: PhysFrame) {{ FREE_FRAMES.lock().append(&mut alloc::vec![frame]); FREE_FRAMES.lock().extend_from_slice(&[frame]); }}"
-    );
-    let fixture_escape = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator_tests.rs",
-        fixture_escape,
-    );
-    assert!(validate_frame_return_choke_point(&fixture_escape).is_err());
-    let process_escape = format!(
-        "{process_memory}\nfn rogue_return(frame: PhysFrame) {{ crate::memory::frame_allocator::deallocate_frame(frame); }}"
-    );
-    let process_escape = with_replaced_source(
-        &sources,
-        "kernel/src/memory/process_memory.rs",
-        process_escape,
-    );
-    assert!(validate_frame_return_choke_point(&process_escape).is_err());
-    let extra_process_return = with_replaced_source(
-        &sources,
-        "kernel/src/memory/process_memory.rs",
-        format!("{process_memory}\nfn rogue_lease_return(lease: FrameLease) {{ return_lease(lease); }}"),
-    );
-    assert!(validate_frame_return_choke_point(&extra_process_return).is_err());
-    let cross_file_return = with_replaced_source(
-        &sources,
-        "kernel/src/process/manager.rs",
-        format!(
-            "{process_manager}\n#[cfg(test)] fn synthetic_cross_file_return() {{ if let Some(lease) = crate::memory::frame_allocator::allocate_frame_leased() {{ let _ = crate::memory::frame_allocator::return_lease(lease); }} }}"
-        ),
-    );
-    assert!(validate_frame_return_choke_point(&cross_file_return).is_err());
-    let unseeded_bootstrap_push = allocator.replacen(
-        "        bootstrap.len = 0;",
-        "        free_list.push(PhysFrame::containing_address(PhysAddr::new(0x100000)));\n        bootstrap.len = 0;",
-        1,
-    );
-    let unseeded_bootstrap_push = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator.rs",
-        unseeded_bootstrap_push,
-    );
-    assert!(validate_frame_return_choke_point(&unseeded_bootstrap_push).is_err());
-
-    // R7: direct and transitive logging plus hidden capacity growth.
-    let logged_counter = allocator.replacen(
-        "match outcome {",
-        "match outcome { _ if false => { log::warn!(\"refused\"); },",
-        1,
-    );
-    let logged_counter = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator.rs",
-        logged_counter,
-    );
-    assert!(validate_frame_ledger_hot_paths(&logged_counter).is_err());
-    let logged_return = allocator.replacen(
-        "pub(crate) fn return_lease(lease: FrameLease) -> ReturnOutcome {",
-        "pub(crate) fn return_lease(lease: FrameLease) -> ReturnOutcome { log::info!(\"return\");",
-        1,
-    );
-    let logged_return = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator.rs",
-        logged_return,
-    );
-    assert!(validate_frame_ledger_hot_paths(&logged_return).is_err());
-    let growing_return = allocator.replacen(
-        "pub(crate) fn return_lease(lease: FrameLease) -> ReturnOutcome {",
-        "pub(crate) fn return_lease(lease: FrameLease) -> ReturnOutcome { let _ = FREE_FRAMES.lock().try_reserve(1);",
-        1,
-    );
-    let growing_return = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator.rs",
-        growing_return,
-    );
-    assert!(validate_frame_ledger_hot_paths(&growing_return).is_err());
-    let logged_get = allocator.replacen(
-        "fn get(&self, index: usize) -> Option<&FrameLedgerSlot> {",
-        "fn get(&self, index: usize) -> Option<&FrameLedgerSlot> { log::warn!(\"ledger get {}\", index);",
-        1,
-    );
-    let logged_get =
-        with_replaced_source(&sources, "kernel/src/memory/frame_allocator.rs", logged_get);
-    assert!(validate_frame_ledger_hot_paths(&logged_get).is_err());
-    let transitive_helper_log = allocator.replacen(
-        "pub(crate) fn return_lease(lease: FrameLease) -> ReturnOutcome {",
-        "fn note_return(frame: PhysFrame) { log::info!(\"returned {:#x}\", frame.start_address().as_u64()); }\n\nfn return_lease(lease: FrameLease) -> ReturnOutcome { note_return(lease.frame);",
-        1,
-    );
-    let transitive_helper_log = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator.rs",
-        transitive_helper_log,
-    );
-    assert!(validate_frame_ledger_hot_paths(&transitive_helper_log).is_err());
-
-    // R9: each ordering negative calls the ordering validator directly.
-    let memory_mod = source(&sources, "kernel/src/memory/mod.rs");
-    let late_x86 = memory_mod.replacen(
-        "frame_allocator::init_frame_ledger();\n\n    // Initialize slab caches (must be after heap)\n    slab::init();",
-        "// Initialize slab caches (must be after heap)\n    slab::init();\n    frame_allocator::init_frame_ledger();",
-        1,
-    );
-    let late_x86 = with_replaced_source(&sources, "kernel/src/memory/mod.rs", late_x86);
-    assert!(validate_frame_ledger_boot_order(&late_x86).is_err());
-    let arm_main = source(&sources, "kernel/src/main_aarch64.rs");
-    let late_arm = arm_main.replacen(
-        "kernel::memory::frame_allocator::init_frame_ledger();\n    kernel::memory::kernel_stack::init();",
-        "kernel::memory::kernel_stack::init();\n    kernel::memory::frame_allocator::init_frame_ledger();",
-        1,
-    );
-    let late_arm = with_replaced_source(&sources, "kernel/src/main_aarch64.rs", late_arm);
-    assert!(validate_frame_ledger_boot_order(&late_arm).is_err());
-    let preledger_root = arm_main.replacen(
-        "kernel::memory::frame_allocator::init_frame_ledger();",
-        "let _p = kernel::memory::process_memory::ProcessPageTable::new();\n    kernel::memory::frame_allocator::init_frame_ledger();",
-        1,
-    );
-    let preledger_root =
-        with_replaced_source(&sources, "kernel/src/main_aarch64.rs", preledger_root);
-    assert!(validate_frame_ledger_boot_order(&preledger_root).is_err());
-    let indirect_constructor = with_synthetic_source(
-        &sources,
-        "kernel/src/memory/indirect_constructor.rs",
-        "fn rogue() { let _shadow = ProcessPageTable::new().expect(\"root alloc\"); }",
-    );
-    assert!(validate_frame_ledger_init(&indirect_constructor).is_err());
-
-    // Demand-backing and pre-publication preparation cannot regress.
-    let eager_ledger = allocator.replacen(
-        "let advertised_frames =",
-        "let _eager: Vec<_> = (0..total_frames).collect();\n    let advertised_frames =",
-        1,
-    );
-    let eager_ledger = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator.rs",
-        eager_ledger,
-    );
-    assert!(validate_frame_ledger_bounded_boot_allocation(&eager_ledger).is_err());
-    let whole_ram_reserve = allocator.replacen(
-        "let advertised_frames =",
-        "FREE_FRAMES.lock().reserve_exact(total_frames);\n    let advertised_frames =",
-        1,
-    );
-    let whole_ram_reserve = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator.rs",
-        whole_ram_reserve,
-    );
-    assert!(validate_frame_ledger_bounded_boot_allocation(&whole_ram_reserve).is_err());
-    let post_publish_prepare = allocator.replacen(
-        "match prepare_frame_for_allocation(current) {",
-        "let _after_publish = NEXT_FREE_FRAME.compare_exchange(current, current + 1, Ordering::SeqCst, Ordering::SeqCst);\n            match prepare_frame_for_allocation(current) {",
-        1,
-    );
-    let post_publish_prepare = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator.rs",
-        post_publish_prepare,
-    );
-    assert!(validate_frame_ledger_bounded_boot_allocation(&post_publish_prepare).is_err());
-
-    // O2 mechanisms and fixtures must remain mutation-sensitive.
-    let double_push = allocator.replacen(
-        "ST_FREE => return counted(ReturnOutcome::RefusedDoubleRelease),",
-        "ST_FREE => { FREE_FRAMES.lock().push(lease.frame); return counted(ReturnOutcome::RefusedDoubleRelease); },",
-        1,
-    );
-    let double_push = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator.rs",
-        double_push,
-    );
-    assert!(validate_frame_ledger_runtime_oracles(&double_push).is_err());
-    let stale_disabled = allocator.replacen(
-        "if observed >> 2 != lease.generation {",
-        "if observed >> 2 != lease.generation && false {",
-        1,
-    );
-    let stale_disabled = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator.rs",
-        stale_disabled,
-    );
-    assert!(validate_frame_ledger_runtime_oracles(&stale_disabled).is_err());
-    let stale_miscounted = allocator.replacen(
-        "ReturnOutcome::RefusedStale => teardown::FRAME_RETURN_REFUSED_STALE.increment()",
-        "ReturnOutcome::RefusedStale => teardown::FRAME_RETURN_REFUSED_DOUBLE.increment()",
-        1,
-    );
-    let stale_miscounted = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator.rs",
-        stale_miscounted,
-    );
-    assert!(validate_frame_ledger_runtime_oracles(&stale_miscounted).is_err());
-    let escaped_duplicate = allocator.replacen(
-        "crate::tracing::providers::teardown::FRAME_DUPLICATE_ALLOC_REFUSED.increment();\n                return Err(ClaimError::Duplicate);",
-        "crate::tracing::providers::teardown::FRAME_DUPLICATE_ALLOC_REFUSED.increment();\n                return Ok(None);",
-        1,
-    );
-    let escaped_duplicate = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator.rs",
-        escaped_duplicate,
-    );
-    assert!(validate_frame_ledger_runtime_oracles(&escaped_duplicate).is_err());
-    let broken_bounds = allocator.replacen(
-        "\n    None\n}\n\nfn frame_in_external_leaf_span",
-        "\n    Some(0)\n}\n\nfn frame_in_external_leaf_span",
-        1,
-    );
-    let broken_bounds = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator.rs",
-        broken_bounds,
-    );
-    assert!(validate_frame_ledger_runtime_oracles(&broken_bounds).is_err());
-    let synthetic_stale = fixture.replacen(
-        "let current = take_free_frame(stale.frame)?;",
-        "let current = FrameLease { frame: stale.frame, index: stale.index, generation: stale.generation + 1 };",
-        1,
-    );
-    let synthetic_stale = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator_tests.rs",
-        synthetic_stale,
-    );
-    assert!(validate_frame_ledger_runtime_oracles(&synthetic_stale).is_err());
-    let unchecked_stale = fixture.replacen(
-        "if current.index != stale.index || current.generation == stale.generation {",
-        "if false {",
-        1,
-    );
-    let unchecked_stale = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator_tests.rs",
-        unchecked_stale,
-    );
-    assert!(validate_frame_ledger_runtime_oracles(&unchecked_stale).is_err());
-    let hand_forged_untracked = fixture.replacen(
-        "deallocate_frame(untracked);",
-        "let forged = FrameLease { frame: untracked, index: u32::MAX, generation: 0 }; let _ = return_lease(forged);",
-        1,
-    );
-    let hand_forged_untracked = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator_tests.rs",
-        hand_forged_untracked,
-    );
-    assert!(validate_frame_ledger_runtime_oracles(&hand_forged_untracked).is_err());
-    let unreserved_never_allocated = fixture.replacen(
-        "if NEXT_FREE_FRAME\n            .compare_exchange(index, index + 1, Ordering::SeqCst, Ordering::SeqCst)\n            .is_ok()",
-        "if true",
-        1,
-    );
-    let unreserved_never_allocated = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator_tests.rs",
-        unreserved_never_allocated,
-    );
-    assert!(validate_frame_ledger_runtime_oracles(&unreserved_never_allocated).is_err());
-    let muted_live_owner_assertion = fixture.replacen(
-        "|| live_after != live_before",
-        "|| (live_after != live_before) && false",
-        1,
-    );
-    let muted_live_owner_assertion = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator_tests.rs",
-        muted_live_owner_assertion,
-    );
-    assert!(validate_frame_ledger_runtime_oracles(&muted_live_owner_assertion).is_err());
-    let conditional_duplicate_cleanup = fixture.replacen(
-        "    remove_duplicate_candidates(live.frame);\n    let live_after =",
-        "    if false { remove_duplicate_candidates(live.frame); }\n    let live_after =",
-        1,
-    );
-    let conditional_duplicate_cleanup = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator_tests.rs",
-        conditional_duplicate_cleanup,
-    );
-    assert!(validate_frame_ledger_runtime_oracles(&conditional_duplicate_cleanup).is_err());
-    let neutered_gate_precondition = fixture.replacen(
-        "if start[..5] != [0; 5] {",
-        "if start[..5] != [0; 5] && false {",
-        1,
-    );
-    let neutered_gate_precondition = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator_tests.rs",
-        neutered_gate_precondition,
-    );
-    assert!(validate_frame_ledger_runtime_oracles(&neutered_gate_precondition).is_err());
-    let neutered_untracked_guard = fixture.replacen(
-        "if after_untracked[3] != before_untracked[3] + 1 || free_after_untracked != free_before {",
-        "if after_untracked[3] != before_untracked[3] + 1 || free_after_untracked != free_before && false {",
-        1,
-    );
-    let neutered_untracked_guard = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator_tests.rs",
-        neutered_untracked_guard,
-    );
-    assert!(validate_frame_ledger_runtime_oracles(&neutered_untracked_guard).is_err());
-    let neutered_never_guard = fixture.replacen(
-        "if counters()[2] != before_never[2] + 1\n        || FREE_FRAMES.lock().len() != free_before\n        || !healthy_round_trip()\n    {",
-        "if counters()[2] != before_never[2] + 1\n        || FREE_FRAMES.lock().len() != free_before\n        || !healthy_round_trip() && false\n    {",
-        1,
-    );
-    let neutered_never_guard = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator_tests.rs",
-        neutered_never_guard,
-    );
-    assert!(validate_frame_ledger_runtime_oracles(&neutered_never_guard).is_err());
-    let neutered_contention_guard = fixture.replacen(
-        "if outcome != ReturnOutcome::LostContended {",
-        "if outcome != ReturnOutcome::LostContended && false {",
-        1,
-    );
-    let neutered_contention_guard = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator_tests.rs",
-        neutered_contention_guard,
-    );
-    assert!(validate_frame_ledger_runtime_oracles(&neutered_contention_guard).is_err());
-    let neutered_healthy_guard = fixture.replacen(
-        "if counters()[..5] != [1, 1, 1, 1, 3] {",
-        "if counters()[..5] != [1, 1, 1, 1, 3] && false {",
-        1,
-    );
-    let neutered_healthy_guard = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator_tests.rs",
-        neutered_healthy_guard,
-    );
-    assert!(validate_frame_ledger_runtime_oracles(&neutered_healthy_guard).is_err());
-    let neutered_stale_owner_guard = fixture.replacen(
-        "|state| state & STATE_MASK != ST_ALLOCATED || state >> 2 != current.generation)",
-        "|state| state & STATE_MASK != ST_ALLOCATED || state >> 2 != current.generation) && 1 == 2",
-        1,
-    );
-    let neutered_stale_owner_guard = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator_tests.rs",
-        neutered_stale_owner_guard,
-    );
-    assert!(validate_frame_ledger_runtime_oracles(&neutered_stale_owner_guard).is_err());
-    let neutered_stale_recovery_guard = fixture.replacen(
-        "if return_lease(current) != ReturnOutcome::Returned || !healthy_round_trip() {",
-        "if return_lease(current) != ReturnOutcome::Returned || !healthy_round_trip() && 1 == 2 {",
-        1,
-    );
-    let neutered_stale_recovery_guard = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator_tests.rs",
-        neutered_stale_recovery_guard,
-    );
-    assert!(validate_frame_ledger_runtime_oracles(&neutered_stale_recovery_guard).is_err());
-    let neutered_duplicate_fixture_guard = fixture.replacen(
-        "if !inject_duplicate_candidates(live.frame, 3) {",
-        "if !inject_duplicate_candidates(live.frame, 3) && 1 == 2 {",
-        1,
-    );
-    let neutered_duplicate_fixture_guard = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator_tests.rs",
-        neutered_duplicate_fixture_guard,
-    );
-    assert!(validate_frame_ledger_runtime_oracles(&neutered_duplicate_fixture_guard).is_err());
-    let neutered_duplicate_cleanup_guard = fixture.replacen(
-        "if !replacement_returned || !live_returned {",
-        "if !replacement_returned || !live_returned && 1 == 2 {",
-        1,
-    );
-    let neutered_duplicate_cleanup_guard = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator_tests.rs",
-        neutered_duplicate_cleanup_guard,
-    );
-    assert!(validate_frame_ledger_runtime_oracles(&neutered_duplicate_cleanup_guard).is_err());
-    let neutered_duplicate_recovery_guard = fixture.replacen(
-        "if !healthy_round_trip() {",
-        "if !healthy_round_trip() && 1 == 2 {",
-        1,
-    );
-    let neutered_duplicate_recovery_guard = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator_tests.rs",
-        neutered_duplicate_recovery_guard,
-    );
-    assert!(validate_frame_ledger_runtime_oracles(&neutered_duplicate_recovery_guard).is_err());
-    let neutered_contended_isolation_guard = fixture.replacen(
-        "if lost_state.is_none_or(|state| state & STATE_MASK != ST_FREE)\n        || free_frame_count(contended.frame) != 0\n    {",
-        "if lost_state.is_none_or(|state| state & STATE_MASK != ST_FREE)\n        || free_frame_count(contended.frame) != 0 && 1 == 2\n    {",
-        1,
-    );
-    let neutered_contended_isolation_guard = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator_tests.rs",
-        neutered_contended_isolation_guard,
-    );
-    assert!(validate_frame_ledger_runtime_oracles(&neutered_contended_isolation_guard).is_err());
-    let neutered_contended_recovery_guard = fixture.replacen(
-        "if return_lease(repaired) != ReturnOutcome::Returned\n        || counters()[..5] != before_healthy[..5]\n        || !healthy_round_trip()\n    {",
-        "if return_lease(repaired) != ReturnOutcome::Returned\n        || counters()[..5] != before_healthy[..5]\n        || !healthy_round_trip() && 1 == 2\n    {",
-        1,
-    );
-    let neutered_contended_recovery_guard = with_replaced_source(
-        &sources,
-        "kernel/src/memory/frame_allocator_tests.rs",
-        neutered_contended_recovery_guard,
-    );
-    assert!(validate_frame_ledger_runtime_oracles(&neutered_contended_recovery_guard).is_err());
+    // The frame-metadata probes run in frame_metadata_ratchets_reject_broken_variants.
 
     // Registration is keyed by the function identity, not display spelling.
     let registry = source(&sources, "kernel/src/test_framework/registry.rs");
@@ -13310,8 +12679,8 @@ fn deliberately_broken_variants_fail_the_ratchet() {
     let missing_counter_reader = provider.replacen("    &FRAME_RETURN_REFUSED_DOUBLE,\n", "", 1);
     assert!(validate_frame_ledger_counter_inventory(&missing_counter_reader).is_err());
     let unproduced_counter = provider.replacen(
-        "counter!(FRAME_LOST_CONTENDED, \"Frame returns lost to contention\");",
-        "counter!(FRAME_LOST_CONTENDED, \"Frame returns lost to contention\");\ncounter!(FRAME_RETURN_REFUSED_UNUSED, \"Unproduced frame refusal\");",
+        "counter!(\n    FRAME_RETURN_REFUSED_LIVE_LEAF,",
+        "counter!(FRAME_RETURN_REFUSED_UNUSED, \"Unproduced frame refusal\");\ncounter!(\n    FRAME_RETURN_REFUSED_LIVE_LEAF,",
         1,
     );
     assert!(validate_frame_ledger_counter_inventory(&unproduced_counter).is_err());
